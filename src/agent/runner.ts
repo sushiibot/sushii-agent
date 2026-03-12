@@ -5,18 +5,234 @@ import { getConversationContext } from "../tools/getConversationContext.ts";
 import { getUserProfile } from "../tools/getUserProfile.ts";
 import { getRecentActivity } from "../tools/getRecentActivity.ts";
 import { getCurrentMemberInfo } from "../tools/getCurrentMemberInfo.ts";
+import { searchAuditLog } from "../tools/searchAuditLog.ts";
+import { resolveUsersByName } from "../tools/resolveUsersByName.ts";
+import { fetchChannelMessages } from "../tools/fetchChannelMessages.ts";
+
+export interface UserNames {
+  username: string | null;
+  displayName: string | null;
+}
+
+type MessageRowLike = {
+  discord_id: string;
+  channel_id: string;
+  author_id: string;
+  author_username: string | null;
+  author_display_name: string | null;
+  content: string;
+  reply_to_id: string | null;
+  created_at: number;
+  deleted_at?: number | null;
+  is_automod?: number;
+};
+
+function formatMessageRow(row: MessageRowLike): string {
+  const seconds = Math.floor(row.created_at / 1000);
+  const displayPart = row.author_display_name ? ` (${row.author_display_name})` : "";
+  const author = `${row.author_username ?? "unknown"}${displayPart} <@${row.author_id}>`;
+  let line = `msg:${row.channel_id}/${row.discord_id} <t:${seconds}:f> ${author}: ${row.content}`;
+  if (row.reply_to_id) line += ` (reply_to: msg:${row.channel_id}/${row.reply_to_id})`;
+  if (row.deleted_at) line += " [DELETED]";
+  if (row.is_automod) line += " [AUTOMOD]";
+  return line;
+}
+
+function extractUsersFromResult(result: unknown): Map<string, UserNames> {
+  const users = new Map<string, UserNames>();
+
+  if (Array.isArray(result)) {
+    for (const row of result) {
+      if (!row || typeof row !== "object") continue;
+
+      // Message rows and user candidates (have author_id)
+      if ("author_id" in row) {
+        const r = row as { author_id: string; author_username?: string | null; author_display_name?: string | null };
+        if (r.author_id && !users.has(r.author_id)) {
+          users.set(r.author_id, { username: r.author_username ?? null, displayName: r.author_display_name ?? null });
+        }
+      }
+
+      // Audit log entries
+      if ("executorId" in row) {
+        const r = row as { executorId: string | null; executorUsername?: string | null; targetId?: string | null };
+        if (r.executorId && !users.has(r.executorId)) {
+          users.set(r.executorId, { username: r.executorUsername ?? null, displayName: null });
+        }
+        if (r.targetId && !users.has(r.targetId)) {
+          users.set(r.targetId, { username: null, displayName: null });
+        }
+      }
+    }
+  }
+
+  // getCurrentMemberInfo result
+  if (result && typeof result === "object" && !Array.isArray(result) && "userId" in result) {
+    const d = result as { userId: string; username?: string; displayName?: string };
+    if (d.userId && !users.has(d.userId)) {
+      users.set(d.userId, { username: d.username ?? null, displayName: d.displayName ?? null });
+    }
+  }
+
+  return users;
+}
+
+function formatToolResult(result: unknown): string {
+  // Error objects
+  if (result && typeof result === "object" && !Array.isArray(result) && "error" in result) {
+    return (result as { error: string }).error;
+  }
+
+  if (Array.isArray(result)) {
+    if (result.length === 0) return "(no results)";
+    const first = result[0] as Record<string, unknown>;
+
+    // Audit log entries
+    if ("executorId" in first) {
+      return result
+        .map(
+          (e: {
+            action: string;
+            executorId: string | null;
+            targetId: string | null;
+            reason: string | null;
+            createdAt: number;
+            changes: Array<{ key: string; old: unknown; new: unknown }>;
+          }) => {
+            const seconds = Math.floor(e.createdAt / 1000);
+            const executor = e.executorId ? `<@${e.executorId}>` : "unknown";
+            const target = e.targetId ? `<@${e.targetId}>` : "unknown";
+            let line = `<t:${seconds}:f> ${e.action} — ${executor} → ${target}`;
+            if (e.reason) line += ` | reason: "${e.reason}"`;
+            if (e.changes.length > 0) {
+              const changeStrs = e.changes
+                .map((c) => `${c.key}: ${JSON.stringify(c.old)}→${JSON.stringify(c.new)}`)
+                .join(", ");
+              line += `\n  changes: ${changeStrs}`;
+            }
+            return line;
+          },
+        )
+        .join("\n");
+    }
+
+    // Message rows (from DB or Discord API — have discord_id)
+    if ("discord_id" in first) {
+      return result.map((r) => formatMessageRow(r as MessageRowLike)).join("\n");
+    }
+
+    // User candidates (resolveUsersByName — have author_id + last_active but no discord_id)
+    if ("author_id" in first && "last_active" in first) {
+      return result
+        .map(
+          (u: {
+            author_id: string;
+            author_username: string | null;
+            author_display_name: string | null;
+            last_active: number;
+            message_count: number;
+          }) => {
+            const seconds = Math.floor(u.last_active / 1000);
+            const name =
+              u.author_display_name && u.author_display_name !== u.author_username
+                ? `${u.author_username} / ${u.author_display_name}`
+                : (u.author_username ?? "unknown");
+            return `<@${u.author_id}> ${name} — last active <t:${seconds}:R>, ${u.message_count} messages`;
+          },
+        )
+        .join("\n");
+    }
+
+    return JSON.stringify(result, null, 2);
+  }
+
+  // getUserProfile result
+  if (result && typeof result === "object" && "summary" in result) {
+    const r = result as {
+      summary: {
+        first_seen: number | null;
+        last_seen: number | null;
+        total_messages: number;
+        channel_count: number;
+      } | null;
+      channelDistribution: { channel_id: string; count: number }[];
+      dailyActivity: { day: string; count: number }[];
+    };
+
+    if (!r.summary || r.summary.total_messages === 0) {
+      return "(no messages found for this user in the cache)";
+    }
+
+    const lines: string[] = [];
+    if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:f>`);
+    if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:f>`);
+    lines.push(`total messages: ${r.summary.total_messages} across ${r.summary.channel_count} channels`);
+
+    if (r.channelDistribution.length > 0) {
+      lines.push("top channels:");
+      for (const ch of r.channelDistribution) {
+        lines.push(`  <#${ch.channel_id}>: ${ch.count} messages`);
+      }
+    }
+
+    if (r.dailyActivity.length > 0) {
+      lines.push("daily activity (recent 30 days):");
+      for (const d of r.dailyActivity) {
+        lines.push(`  ${d.day}: ${d.count}`);
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  // getCurrentMemberInfo result
+  if (result && typeof result === "object" && "userId" in result) {
+    const r = result as {
+      userId: string;
+      isStillInServer: boolean;
+      username?: string;
+      displayName?: string;
+      joinedAt?: number | null;
+      roles?: { id: string; name: string }[];
+    };
+
+    if (!r.isStillInServer) {
+      return `<@${r.userId}> — not in server`;
+    }
+
+    const lines: string[] = [];
+    lines.push(`user: ${r.username} (<@${r.userId}>)`);
+    if (r.displayName && r.displayName !== r.username) lines.push(`display name: ${r.displayName}`);
+    if (r.joinedAt) lines.push(`joined: <t:${Math.floor(r.joinedAt / 1000)}:f>`);
+    lines.push("in server: yes");
+    if (r.roles && r.roles.length > 0) {
+      lines.push(`roles: ${r.roles.map((role) => `${role.name} (${role.id})`).join(", ")}`);
+    } else {
+      lines.push("roles: none");
+    }
+    return lines.join("\n");
+  }
+
+  return JSON.stringify(result, null, 2);
+}
+
+export interface RunToolsResult {
+  results: ChatCompletionMessageParam[];
+  discoveredUsers: Map<string, UserNames>;
+}
 
 export async function runTools(
   toolCalls: ChatCompletionMessageToolCall[],
   guildId: string,
   client: Client<true>,
-): Promise<ChatCompletionMessageParam[]> {
-  const results = await Promise.all(
+): Promise<RunToolsResult> {
+  const rawResults = await Promise.all(
     toolCalls.map(async (call) => {
       let result: unknown;
 
       try {
         const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
+        console.log(`[tool] ${call.function.name}`, JSON.stringify(args));
 
         switch (call.function.name) {
           case "search_messages":
@@ -37,6 +253,25 @@ export async function runTools(
               guildId,
             } as Parameters<typeof getRecentActivity>[0]);
             break;
+          case "resolve_users_by_name":
+            result = resolveUsersByName({
+              ...args,
+              guildId,
+            } as Parameters<typeof resolveUsersByName>[0]);
+            break;
+          case "search_audit_log":
+            result = await searchAuditLog({
+              ...args,
+              guildId,
+              client,
+            } as Parameters<typeof searchAuditLog>[0]);
+            break;
+          case "fetch_channel_messages":
+            result = await fetchChannelMessages({
+              ...args,
+              client,
+            } as Parameters<typeof fetchChannelMessages>[0]);
+            break;
           case "get_current_member_info":
             result = await getCurrentMemberInfo({
               ...args,
@@ -48,16 +283,32 @@ export async function runTools(
             result = { error: `Unknown tool: ${call.function.name}` };
         }
       } catch (err) {
+        console.error(`[tool] ${call.function.name} error:`, err);
         result = { error: String(err) };
       }
 
-      return {
-        role: "tool" as const,
-        tool_call_id: call.id,
-        content: JSON.stringify(result),
-      };
+      return { call, result };
     }),
   );
 
-  return results;
+  const discoveredUsers = new Map<string, UserNames>();
+  const results: ChatCompletionMessageParam[] = [];
+
+  for (const { call, result } of rawResults) {
+    // Extract users from structured result before converting to plain text
+    for (const [id, names] of extractUsersFromResult(result)) {
+      if (!discoveredUsers.has(id)) discoveredUsers.set(id, names);
+    }
+
+    const content = formatToolResult(result);
+    console.log(`[tool] ${call.function.name} result length=${content.length}`);
+
+    results.push({
+      role: "tool" as const,
+      tool_call_id: call.id,
+      content,
+    });
+  }
+
+  return { results, discoveredUsers };
 }
