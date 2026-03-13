@@ -55,4 +55,25 @@ export const MIGRATIONS: string[][] = [
       updated_at INTEGER NOT NULL
     )`,
   ],
+
+  // Migration 1 — add author username/display name to messages
+  [
+    `ALTER TABLE messages ADD COLUMN author_username TEXT`,
+    `ALTER TABLE messages ADD COLUMN author_display_name TEXT`,
+  ],
+
+  // Migration 2 — track AutoMod alert messages (MessageType.AutoModerationAction = 24)
+  [
+    `ALTER TABLE messages ADD COLUMN is_automod INTEGER NOT NULL DEFAULT 0`,
+  ],
+
+  // Migration 3 — track whether the author is a bot
+  [
+    `ALTER TABLE messages ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`,
+  ],
+
+  // Migration 4 — store initial thread context snapshot for stable prompt caching
+  [
+    `ALTER TABLE conversations ADD COLUMN initial_thread_context TEXT`,
+  ],
 ];

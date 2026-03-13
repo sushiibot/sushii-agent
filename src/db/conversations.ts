@@ -5,11 +5,17 @@ interface ConversationRow {
   thread_id: string;
   guild_id: string;
   messages: string;
+  initial_thread_context: string | null;
   created_at: number;
   updated_at: number;
 }
 
-export function loadConversation(threadId: string): ChatCompletionMessageParam[] {
+export interface ConversationData {
+  messages: ChatCompletionMessageParam[];
+  initialThreadContext: string | null;
+}
+
+export function loadConversation(threadId: string): ConversationData {
   const db = getDb();
   const row = db
     .query<ConversationRow, [string]>(
@@ -17,24 +23,28 @@ export function loadConversation(threadId: string): ChatCompletionMessageParam[]
     )
     .get(threadId);
 
-  if (!row) return [];
-  return JSON.parse(row.messages) as ChatCompletionMessageParam[];
+  if (!row) return { messages: [], initialThreadContext: null };
+  return {
+    messages: JSON.parse(row.messages) as ChatCompletionMessageParam[],
+    initialThreadContext: row.initial_thread_context,
+  };
 }
 
 export function saveConversation(
   threadId: string,
   guildId: string,
   messages: ChatCompletionMessageParam[],
+  initialThreadContext: string,
 ): void {
   const db = getDb();
   const now = Date.now();
 
   db.run(
-    `INSERT INTO conversations (thread_id, guild_id, messages, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO conversations (thread_id, guild_id, messages, initial_thread_context, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(thread_id) DO UPDATE SET
        messages = excluded.messages,
        updated_at = excluded.updated_at`,
-    [threadId, guildId, JSON.stringify(messages), now, now],
+    [threadId, guildId, JSON.stringify(messages), initialThreadContext, now, now],
   );
 }

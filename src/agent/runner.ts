@@ -25,14 +25,22 @@ type MessageRowLike = {
   created_at: number;
   deleted_at?: number | null;
   is_automod?: number;
+  reply_to_content?: string | null;
+  reply_to_author_id?: string | null;
 };
 
 function formatMessageRow(row: MessageRowLike): string {
   const seconds = Math.floor(row.created_at / 1000);
   const displayPart = row.author_display_name ? ` (${row.author_display_name})` : "";
   const author = `${row.author_username ?? "unknown"}${displayPart} <@${row.author_id}>`;
-  let line = `msg:${row.channel_id}/${row.discord_id} <t:${seconds}:f> ${author}: ${row.content}`;
-  if (row.reply_to_id) line += ` (reply_to: msg:${row.channel_id}/${row.reply_to_id})`;
+  let line = `msg:${row.channel_id}/${row.discord_id} <t:${seconds}:R> ${author}: ${row.content}`;
+  if (row.reply_to_id) {
+    if (row.reply_to_content != null && row.reply_to_author_id != null) {
+      line += `\n  ↳ <@${row.reply_to_author_id}>: ${row.reply_to_content}`;
+    } else {
+      line += ` (reply_to: msg:${row.channel_id}/${row.reply_to_id})`;
+    }
+  }
   if (row.deleted_at) line += " [DELETED]";
   if (row.is_automod) line += " [AUTOMOD]";
   return line;
@@ -45,32 +53,13 @@ function extractUsersFromResult(result: unknown): Map<string, UserNames> {
     for (const row of result) {
       if (!row || typeof row !== "object") continue;
 
-      // Message rows and user candidates (have author_id)
-      if ("author_id" in row) {
-        const r = row as { author_id: string; author_username?: string | null; author_display_name?: string | null };
-        if (r.author_id && !users.has(r.author_id)) {
-          users.set(r.author_id, { username: r.author_username ?? null, displayName: r.author_display_name ?? null });
-        }
-      }
-
-      // Audit log entries
+      // Audit log entries — executor name is not visible in formatted output
       if ("executorId" in row) {
-        const r = row as { executorId: string | null; executorUsername?: string | null; targetId?: string | null };
+        const r = row as { executorId: string | null; executorUsername?: string | null };
         if (r.executorId && !users.has(r.executorId)) {
           users.set(r.executorId, { username: r.executorUsername ?? null, displayName: null });
         }
-        if (r.targetId && !users.has(r.targetId)) {
-          users.set(r.targetId, { username: null, displayName: null });
-        }
       }
-    }
-  }
-
-  // getCurrentMemberInfo result
-  if (result && typeof result === "object" && !Array.isArray(result) && "userId" in result) {
-    const d = result as { userId: string; username?: string; displayName?: string };
-    if (d.userId && !users.has(d.userId)) {
-      users.set(d.userId, { username: d.username ?? null, displayName: d.displayName ?? null });
     }
   }
 
@@ -102,7 +91,7 @@ function formatToolResult(result: unknown): string {
             const seconds = Math.floor(e.createdAt / 1000);
             const executor = e.executorId ? `<@${e.executorId}>` : "unknown";
             const target = e.targetId ? `<@${e.targetId}>` : "unknown";
-            let line = `<t:${seconds}:f> ${e.action} — ${executor} → ${target}`;
+            let line = `<t:${seconds}:R> ${e.action} — ${executor} → ${target}`;
             if (e.reason) line += ` | reason: "${e.reason}"`;
             if (e.changes.length > 0) {
               const changeStrs = e.changes
@@ -164,8 +153,8 @@ function formatToolResult(result: unknown): string {
     }
 
     const lines: string[] = [];
-    if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:f>`);
-    if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:f>`);
+    if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:R>`);
+    if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:R>`);
     lines.push(`total messages: ${r.summary.total_messages} across ${r.summary.channel_count} channels`);
 
     if (r.channelDistribution.length > 0) {
@@ -203,7 +192,7 @@ function formatToolResult(result: unknown): string {
     const lines: string[] = [];
     lines.push(`user: ${r.username} (<@${r.userId}>)`);
     if (r.displayName && r.displayName !== r.username) lines.push(`display name: ${r.displayName}`);
-    if (r.joinedAt) lines.push(`joined: <t:${Math.floor(r.joinedAt / 1000)}:f>`);
+    if (r.joinedAt) lines.push(`joined: <t:${Math.floor(r.joinedAt / 1000)}:R>`);
     lines.push("in server: yes");
     if (r.roles && r.roles.length > 0) {
       lines.push(`roles: ${r.roles.map((role) => `${role.name} (${role.id})`).join(", ")}`);

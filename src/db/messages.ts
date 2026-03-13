@@ -1,23 +1,33 @@
-import type { Message } from "discord.js";
+import { MessageType, type Message } from "discord.js";
 import { config } from "../config.ts";
 import { getDb } from "./index.ts";
+import { buildMessageContent } from "../utils/flattenMessage.ts";
 
 export function insertMessage(message: Message): void {
   if (!message.guildId) return;
 
   const db = getDb();
+  const displayName = message.member?.displayName ?? message.author.displayName;
+
+  const content = buildMessageContent(message);
+
   db.run(
     `INSERT OR IGNORE INTO messages
-      (discord_id, guild_id, channel_id, author_id, content, reply_to_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      (discord_id, guild_id, channel_id, author_id, content, reply_to_id, created_at,
+       author_username, author_display_name, is_automod, is_bot)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       message.id,
       message.guildId,
       message.channelId,
       message.author.id,
-      message.content ?? "",
+      content,
       message.reference?.messageId ?? null,
       message.createdTimestamp,
+      message.author.username,
+      displayName !== message.author.username ? displayName : null,
+      message.type === MessageType.AutoModerationAction ? 1 : 0,
+      message.author.bot ? 1 : 0,
     ],
   );
 }

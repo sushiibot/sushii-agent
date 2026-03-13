@@ -13,7 +13,7 @@ export async function resolveOrCreateThread(
   }
 
   const thread = await message.startThread({
-    name: "ModAssist Investigation",
+    name: "sushii-agent investigation",
     autoArchiveDuration: 1440, // 24 hours
   });
 
@@ -32,7 +32,7 @@ export async function renameThread(
         {
           role: "user",
           content:
-            "Generate a concise thread title (under 50 characters) summarizing this investigation. Examples: 'User 123456 — spam check', 'Incident 2024-03-09 #general'. Return only the title, no quotes or punctuation.",
+            "Write a thread title of 8 words or fewer summarizing this investigation. Return only the title, no quotes or punctuation.",
         },
       ],
       max_tokens: 60,

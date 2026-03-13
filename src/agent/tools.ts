@@ -6,7 +6,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "search_messages",
       description:
-        "Search or browse the server's cached message history (last 30 days). Provide a query for full-text search ranked by relevance; omit it to browse recent messages by time. Supports optional filters for users, channel, and time range.",
+        "Search or browse the server's cached message history (last 30 days). Provide a query for full-text search ranked by relevance; omit it to browse recent messages by time. Supports optional filters for users, channel, and time range. Bot messages are excluded by default — set include_bots=true when searching modmail threads, log channels, or other bot-forwarded content.",
       parameters: {
         type: "object",
         properties: {
@@ -39,6 +39,10 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           is_automod: {
             type: "boolean",
             description: "If true, return only AutoMod alert messages (flagged/blocked content). If false, exclude them. Omit to return all messages.",
+          },
+          include_bots: {
+            type: "boolean",
+            description: "If true, include messages from bots (e.g. modmail relay, log bots). Defaults to false to reduce noise from fun/utility bots.",
           },
         },
         required: [],

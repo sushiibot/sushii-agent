@@ -1,0 +1,54 @@
+{
+  "167058919611564043": {
+    "allowedRoles": ["960926821275275284"],
+    "allowedChannels": ["749822555019280434"]
+  },
+  "187450744427773963": {
+    "allowedRoles": ["314495867123924992"],
+    "allowedChannels": [
+      "1356443720240730182",
+      "546248590666760215",
+      "1356443720240730182",
+      "969393641569284127"
+    ],
+    "emojiMap": {
+      "<:JennieLmao2:799030229229109299>": "😂",
+      "<:JennieThink:729878231943217162>": "🤔",
+      "<:JenniePout:797881376975224853>": "🙁",
+      "<a:ajenniechew:395937281279787028>": "🙂"
+    },
+    "rules": [
+      "1. Be respectful. No harassment, slurs, doxing, violent speech, or discrimination. No bashing of artists, groups, or individuals. No gatekeeping. No unsolicited idol accountability discussions. Dismissive or hostile language directed at someone (e.g. \"stfu\", \"shut up\") is a Rule 1 violation, not Rule 2.",
+      "2. No NSFW/disturbing content. No sexual comments, NSFW media, or content that could trigger distress (creepy images, scare gifs, etc.). Rule 2 is specifically for sexual/disturbing content, not general rudeness.",
+      "3. No spam or disruptive content. No excessive emojis/caps, copypastas, pasted lyrics, random memes/gifs, or shitposting. Keep media relevant.",
+      "4. Avoid sensitive topics (self harm, abuse, etc.).",
+      "5. No advertising. No server invites, referral links, or subscription solicitation. DM ads are an instant ban.",
+      "6. Keep extended conversations in English.",
+      "7. No sharing personal info (photos, private socials, identifiable info).",
+      "8. Do not discuss muted/banned members.",
+      "9. No fanfics, roleplaying, e-dating, or flirting with members.",
+      "10. Do not backseat moderate. Ping Mods or use the report bot instead.",
+      "11. No begging (Nitro, gifts, etc.), including via DM."
+    ]
+  },
+  "138194444645040128": {
+    "allowedRoles": ["960926821275275284"],
+    "allowedChannels": [
+      "159593156143218688",
+      "318893006444822528",
+      "1377867209287798834",
+      "969672257683214346"
+    ],
+    "rules": [
+      "1. Be respectful. No harassment, slurs, threats, doxxing, or discrimination. Don't escalate conflict; ping mods instead. Dismissive or hostile language directed at someone (e.g. \"stfu\", \"shut up\", telling someone off) is a Rule 1 violation, not Rule 2.",
+      "2. Keep it appropriate. No NSFW content, sexual remarks, or disturbing/shock content. Rule 2 is specifically for sexual/disturbing content, not general rudeness.",
+      "3. No spam or disruption. No emoji floods, random memes/GIFs, copypastas, or begging.",
+      "4. Be authentic. No AI-generated misleading content, fanfics, or joking about idol relationships.",
+      "5. Protect privacy. Don't share selfies, personal info, or discuss triggering topics.",
+      "6. No advertising. No server invites, self-promotion, or referral links. DM-only if someone asks.",
+      "7. English only. All chat must be in English.",
+      "8. Respect mod decisions. Don't ask about banned/muted users. DM the mod bot if it involves you.",
+      "9. Don't backseat moderate. Report violations to mods; don't enforce rules yourself."
+    ]
+  }
+}

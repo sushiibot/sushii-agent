@@ -7,9 +7,9 @@ Discord moderation intelligence bot. Caches server messages locally and answers 
 Mention the bot in a whitelisted channel with a plain-English question. It creates a thread, runs a tool-calling agent against the local message cache, and posts a synthesized response. Follow-up messages in the same thread resume the conversation.
 
 ```
-@ModAssist has user 123456789 been causing problems recently?
-@ModAssist show me what was said in #general around that deleted message
-@ModAssist what channels does this user post in most?
+@sushii-agent has user 123456789 been causing problems recently?
+@sushii-agent show me what was said in #general around that deleted message
+@sushii-agent what channels does this user post in most?
 ```
 
 The bot is **read-only** — it never writes moderation actions.
@@ -70,7 +70,7 @@ DISCORD_BOT_TOKEN=your_bot_token_here
 OPENAI_API_KEY=your_api_key_here
 OPENAI_BASE_URL=https://api.anthropic.com/v1
 OPENAI_MODEL=claude-opus-4-6
-DATABASE_PATH=./data/modassist.db
+DATABASE_PATH=./data/sushii-agent.db
 
 # Which users and channels are allowed to query the bot, per guild
 GUILD_CONFIG={"YOUR_GUILD_ID": {"allowedUsers": ["MOD_USER_ID_1", "MOD_USER_ID_2"], "allowedChannels": ["MOD_CHANNEL_ID"]}}
@@ -103,7 +103,7 @@ The `./data` directory is mounted as a volume for the SQLite database.
 | `OPENAI_API_KEY` | yes | — | API key for your LLM provider |
 | `OPENAI_BASE_URL` | no | `https://api.anthropic.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | no | `claude-opus-4-6` | Model name passed to the API |
-| `DATABASE_PATH` | no | `./data/modassist.db` | Path to the SQLite database file |
+| `DATABASE_PATH` | no | `./data/sushii-agent.db` | Path to the SQLite database file |
 | `GUILD_CONFIG` | yes | — | JSON object mapping guild IDs to access config |
 
 ### Using other providers
@@ -162,5 +162,5 @@ bunx tsc --noEmit
 - Writing moderation actions (warnings, kicks, bans)
 - Cross-server search
 - Semantic / embedding-based search
-- `@ModAssist clear` to reset thread context
+- `@sushii-agent clear` to reset thread context
 - Web dashboard

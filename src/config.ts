@@ -1,6 +1,10 @@
 export interface GuildConfig {
-  allowedUsers: string[];
+  allowedRoles: string[];
   allowedChannels: string[];
+  /** Maps custom emoji names to unicode equivalents, e.g. { "blobheart": "❤️" } */
+  emojiMap?: Record<string, string>;
+  /** Server rules injected into the agent system prompt */
+  rules?: string;
 }
 
 export interface Config {
@@ -22,11 +26,30 @@ function optional(name: string, defaultValue: string): string {
   return process.env[name] ?? defaultValue;
 }
 
+import { readFileSync } from "fs";
+
+function loadGuildConfig(): Record<string, GuildConfig> {
+  const filePath = optional("GUILD_CONFIG_PATH", "./guild-config.json");
+  let raw: Record<string, GuildConfig & { rules?: string | string[] }>;
+  try {
+    raw = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (e) {
+    throw new Error(`Failed to load guild config from ${filePath}: ${e}`);
+  }
+  // Normalize rules: join array form into a single string
+  for (const cfg of Object.values(raw)) {
+    if (Array.isArray(cfg.rules)) {
+      cfg.rules = cfg.rules.join("\n");
+    }
+  }
+  return raw as Record<string, GuildConfig>;
+}
+
 export const config: Config = {
   discordBotToken: required("DISCORD_BOT_TOKEN"),
   openaiApiKey: required("OPENAI_API_KEY"),
   openaiBaseUrl: optional("OPENAI_BASE_URL", "https://api.anthropic.com/v1"),
   openaiModel: optional("OPENAI_MODEL", "claude-opus-4-6"),
-  databasePath: optional("DATABASE_PATH", "./data/modassist.db"),
-  guildConfig: JSON.parse(required("GUILD_CONFIG")),
+  databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
+  guildConfig: loadGuildConfig(),
 };
