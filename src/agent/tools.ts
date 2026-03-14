@@ -109,7 +109,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           },
           limit: {
             type: "number",
-            description: "Maximum number of messages to return (default: 50, max: 200)",
+            description: "Maximum number of messages to return (default: 15, max: 200). Start small — call again with a higher limit if more history is needed.",
           },
         },
         required: ["user_id"],
@@ -179,7 +179,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "fetch_channel_messages",
       description:
-        "Fetch messages directly from the Discord API by ID or ID range — use this when a message is not in the local cache (e.g. older than 30 days, or a mod linked a specific message). For a single message provide message_id. To get a message AND its surrounding context (recommended when investigating a linked message), use around instead — it returns the message plus messages before and after in one call.",
+        "Fetch messages directly from the Discord API by ID or ID range — use this when a message is not in the local cache (e.g. older than 30 days, or a mod linked a specific message). Use message_id alone when you only need that specific message. Use around only when you genuinely need surrounding context to understand an incident, and keep the limit small (5–10). Start narrow and expand if needed.",
       parameters: {
         type: "object",
         properties: {
@@ -205,10 +205,32 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           },
           limit: {
             type: "number",
-            description: "Number of messages to return for range fetches (1–100, default 50). Ignored when message_id is set.",
+            description: "Number of messages to return for range fetches (1–100, default 10). Start small and fetch more only if needed. Ignored when message_id is set.",
           },
         },
         required: ["channel_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "inspect_image",
+      description:
+        "Fetch and inspect all images attached to a specific message. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext]) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated.",
+      parameters: {
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "Discord channel ID — the first number in a msg:channelId/messageId reference.",
+          },
+          message_id: {
+            type: "string",
+            description: "Discord message ID — the second number in a msg:channelId/messageId reference.",
+          },
+        },
+        required: ["channel_id", "message_id"],
       },
     },
   },

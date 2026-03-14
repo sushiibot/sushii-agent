@@ -27,7 +27,7 @@ interface MessageRow {
 export function getRecentActivity(args: GetRecentActivityArgs): MessageRow[] {
   const db = getDb();
   const days = args.days ?? 7;
-  const limit = Math.min(args.limit ?? 50, 200);
+  const limit = Math.min(args.limit ?? 15, 200);
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
 
   return db

@@ -31,6 +31,7 @@ export function flattenEmbeds(message: Pick<Message, "embeds">): string[] {
     if (embed.title) parts.push(embed.title);
     if (embed.description) parts.push(embed.description);
     for (const field of embed.fields) {
+      if (field.name === "decision_id") continue;
       parts.push(`${field.name}: ${field.value}`);
     }
     if (embed.footer?.text) parts.push(embed.footer.text);

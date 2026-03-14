@@ -31,14 +31,12 @@ type MessageRowLike = {
 
 function formatMessageRow(row: MessageRowLike): string {
   const seconds = Math.floor(row.created_at / 1000);
-  const displayPart = row.author_display_name ? ` (${row.author_display_name})` : "";
-  const author = `${row.author_username ?? "unknown"}${displayPart} <@${row.author_id}>`;
-  let line = `msg:${row.channel_id}/${row.discord_id} <t:${seconds}:R> ${author}: ${row.content}`;
+  let line = `msg:${row.channel_id}/${row.discord_id} <t:${seconds}:R> <@${row.author_id}>: ${row.content}`;
   if (row.reply_to_id) {
     if (row.reply_to_content != null && row.reply_to_author_id != null) {
-      line += `\n  ↳ <@${row.reply_to_author_id}>: ${row.reply_to_content}`;
+      line += `\n  [replying to <@${row.reply_to_author_id}>: ${row.reply_to_content}]`;
     } else {
-      line += ` (reply_to: msg:${row.channel_id}/${row.reply_to_id})`;
+      line += `\n  [replying to: msg:${row.channel_id}/${row.reply_to_id}]`;
     }
   }
   if (row.deleted_at) line += " [DELETED]";
@@ -52,6 +50,14 @@ function extractUsersFromResult(result: unknown): Map<string, UserNames> {
   if (Array.isArray(result)) {
     for (const row of result) {
       if (!row || typeof row !== "object") continue;
+
+      // Message rows — author name stripped from output, inject via identity mappings instead
+      if ("discord_id" in row) {
+        const r = row as MessageRowLike;
+        if (!users.has(r.author_id)) {
+          users.set(r.author_id, { username: r.author_username ?? null, displayName: r.author_display_name ?? null });
+        }
+      }
 
       // Audit log entries — executor name is not visible in formatted output
       if ("executorId" in row) {
@@ -208,6 +214,7 @@ function formatToolResult(result: unknown): string {
 export interface RunToolsResult {
   results: ChatCompletionMessageParam[];
   discoveredUsers: Map<string, UserNames>;
+  pendingImages: string[];
 }
 
 export async function runTools(
@@ -261,6 +268,25 @@ export async function runTools(
               client,
             } as Parameters<typeof fetchChannelMessages>[0]);
             break;
+          case "inspect_image": {
+            const { channel_id, message_id } = args as { channel_id: string; message_id: string };
+            try {
+              const channel = await client.channels.fetch(channel_id);
+              if (!channel || !channel.isTextBased()) {
+                result = { error: `Channel ${channel_id} is not a text channel` };
+                break;
+              }
+              const msg = await channel.messages.fetch(message_id);
+              const imageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+              const urls = [...msg.attachments.values()]
+                .filter((a) => a.contentType && imageTypes.some((t) => a.contentType!.startsWith(t)))
+                .map((a) => a.url);
+              result = { imageUrls: urls };
+            } catch (err) {
+              result = { error: `Failed to fetch message: ${err}` };
+            }
+            break;
+          }
           case "get_current_member_info":
             result = await getCurrentMemberInfo({
               ...args,
@@ -282,8 +308,21 @@ export async function runTools(
 
   const discoveredUsers = new Map<string, UserNames>();
   const results: ChatCompletionMessageParam[] = [];
+  const pendingImages: string[] = [];
 
   for (const { call, result } of rawResults) {
+    // inspect_image — collect URLs to inject as image content in the next completion
+    if (call.function.name === "inspect_image" && result && typeof result === "object" && "imageUrls" in result) {
+      const urls = (result as { imageUrls: string[] }).imageUrls;
+      if (urls.length === 0) {
+        results.push({ role: "tool" as const, tool_call_id: call.id, content: "No image attachments found on that message." });
+      } else {
+        pendingImages.push(...urls);
+        results.push({ role: "tool" as const, tool_call_id: call.id, content: `${urls.length} image(s) queued — they will appear in the next message for your analysis.` });
+      }
+      continue;
+    }
+
     // Extract users from structured result before converting to plain text
     for (const [id, names] of extractUsersFromResult(result)) {
       if (!discoveredUsers.has(id)) discoveredUsers.set(id, names);
@@ -299,5 +338,5 @@ export async function runTools(
     });
   }
 
-  return { results, discoveredUsers };
+  return { results, discoveredUsers, pendingImages };
 }

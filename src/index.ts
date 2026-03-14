@@ -2,7 +2,7 @@ import { initDb, closeDb } from "./db/index.ts";
 import { client, startBot } from "./bot.ts";
 
 async function main() {
-  console.log("Starting ModAssist...");
+  console.log("Starting sushii-agent...");
 
   await initDb();
   console.log("Database initialized");

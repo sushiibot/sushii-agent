@@ -15,7 +15,7 @@ import {
   deleteOldMessages,
 } from "./db/messages.ts";
 import { loadConversation, saveConversation } from "./db/conversations.ts";
-import { runAgentLoop, expandMessageLinks, formatThinkingBlocks, buildSystemPrompt, type UserNames } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames } from "./agent/loop.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
 
@@ -173,7 +173,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
     }
 
     const { response, updatedHistory } = agentResult;
-    const expanded = expandMessageLinks(formatThinkingBlocks(response), message.guildId);
+    const expanded = expandMessageLinks(response, message.guildId);
     for (const chunk of splitMessage(expanded)) {
       await thread.send({ content: chunk, allowedMentions: { parse: [] } });
     }
