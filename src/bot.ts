@@ -2,8 +2,13 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   Partials,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
+  TextDisplayBuilder,
   type Message,
+  type MessageCreateOptions,
   type ThreadChannel,
 } from "discord.js";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
@@ -147,8 +152,17 @@ client.on(Events.MessageCreate, async (message: Message) => {
   try {
     const { thread, isNew } = await resolveOrCreateThread(message);
     const { messages: existingHistory, initialThreadContext } = loadConversation(thread.id);
-    // Use stored context on subsequent turns for stable prompt caching; only fetch on first invocation
-    const threadContext = initialThreadContext ?? (isNew ? "" : await fetchThreadContext(thread, client.user!.id));
+    // Use stored context on subsequent turns for stable prompt caching; only fetch on first invocation.
+    // For new threads created from a non-thread channel, fetch recent parent channel messages as context
+    // so the agent can see things like AutoMod alerts posted before the trigger message.
+    let threadContext: string;
+    if (initialThreadContext != null) {
+      threadContext = initialThreadContext;
+    } else if (isNew) {
+      threadContext = await fetchParentChannelContext(message, client.user!.id);
+    } else {
+      threadContext = await fetchThreadContext(thread, client.user!.id);
+    }
 
     await thread.sendTyping();
     const typingInterval = setInterval(() => thread.sendTyping(), 8000);
@@ -174,16 +188,20 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
     const { response, updatedHistory } = agentResult;
     const expanded = expandMessageLinks(response, message.guildId);
-    for (const chunk of splitMessage(expanded)) {
-      await thread.send({ content: chunk, allowedMentions: { parse: [] } });
+    for (const msgOpts of buildComponentMessages(expanded)) {
+      await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
     }
 
     saveConversation(thread.id, message.guildId, updatedHistory, threadContext);
 
-    // Rename thread once there's real context (agent used a tool), even if not the first exchange
-    const hasToolUse = updatedHistory.some((m) => m.role === "tool");
+    // Rename thread when there's enough context:
+    // - 3+ tool uses on first turn (rich investigation), OR
+    // - any tool use on a follow-up turn (user sent another message, so we have more context)
+    const toolUseCount = updatedHistory.filter((m) => m.role === "tool").length;
+    const userTurnCount = updatedHistory.filter((m) => m.role === "user").length;
     const isDefaultName = thread.name === "sushii-agent investigation";
-    if (hasToolUse && (isNew || isDefaultName)) {
+    const enoughContext = toolUseCount >= 3 || userTurnCount >= 2;
+    if (toolUseCount > 0 && enoughContext && (isNew || isDefaultName)) {
       await renameThread(thread, updatedHistory);
     }
   } catch (err) {
@@ -238,6 +256,13 @@ function isChannelAllowed(message: Message, allowedChannels: string[]): boolean 
   return false;
 }
 
+function formatMessageLine(m: Message): string {
+  const ts = Math.floor(m.createdTimestamp / 1000);
+  const authorLabel = m.author.bot ? `${m.author.username} [bot]` : m.author.username;
+  const content = buildMessageContent(m);
+  return `<t:${ts}:R> [${authorLabel}]: ${content}`;
+}
+
 async function fetchThreadContext(
   thread: ThreadChannel,
   botId: string,
@@ -249,39 +274,104 @@ async function fetchThreadContext(
     .filter((m) => m.author.id !== botId)
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
-  if (!messages.length) return "";
-
-  return messages
-    .map((m) => {
-      const ts = Math.floor(m.createdTimestamp / 1000);
-      const authorLabel = m.author.bot ? `${m.author.username} [bot]` : m.author.username;
-      const content = buildMessageContent(m);
-      return `<t:${ts}:R> [${authorLabel}]: ${content}`;
-    })
-    .join("\n");
+  return messages.map(formatMessageLine).join("\n");
 }
 
-function splitMessage(content: string, maxLength = 2000): string[] {
-  if (content.length <= maxLength) return [content];
+async function fetchParentChannelContext(
+  triggerMessage: Message,
+  botId: string,
+  limit = 20,
+): Promise<string> {
+  if (triggerMessage.channel.isThread()) return "";
 
-  const chunks: string[] = [];
-  let remaining = content;
+  const fetched = await triggerMessage.channel.messages.fetch({
+    before: triggerMessage.id,
+    limit,
+  });
 
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLength) {
-      chunks.push(remaining);
-      break;
+  const messages = [...fetched.values()]
+    .filter((m) => m.author.id !== botId)
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+  return messages.map(formatMessageLine).join("\n");
+}
+
+// Max characters per TextDisplay component (Discord limit)
+const TEXT_DISPLAY_MAX = 4000;
+// Max top-level components per message (Discord limit)
+const MAX_COMPONENTS = 40;
+
+type RawElement = { kind: "text"; content: string } | { kind: "separator" };
+
+function parseElements(text: string): RawElement[] {
+  // Strip leading and trailing dividers (useless at boundaries)
+  const cleaned = text
+    .replace(/^(\s*---\s*\n)+/, "")
+    .replace(/(\n\s*---\s*)+$/, "")
+    .trim();
+
+  const elements: RawElement[] = [];
+  const sections = cleaned.split(/\n---\n/);
+
+  for (let i = 0; i < sections.length; i++) {
+    if (i > 0) elements.push({ kind: "separator" });
+
+    const section = sections[i].trim();
+    if (!section) continue;
+
+    if (section.length <= TEXT_DISPLAY_MAX) {
+      elements.push({ kind: "text", content: section });
+    } else {
+      // Split oversized sections at newline boundaries
+      let remaining = section;
+      while (remaining.length > TEXT_DISPLAY_MAX) {
+        const splitAt = remaining.lastIndexOf("\n", TEXT_DISPLAY_MAX);
+        const cutAt = splitAt > 0 ? splitAt : TEXT_DISPLAY_MAX;
+        elements.push({ kind: "text", content: remaining.slice(0, cutAt).trimEnd() });
+        remaining = remaining.slice(cutAt).trimStart();
+      }
+      if (remaining) elements.push({ kind: "text", content: remaining });
     }
-
-    // Prefer splitting at a newline boundary
-    const splitAt = remaining.lastIndexOf("\n", maxLength);
-    const cutAt = splitAt > 0 ? splitAt : maxLength;
-
-    chunks.push(remaining.slice(0, cutAt));
-    remaining = remaining.slice(cutAt).trimStart();
   }
 
-  return chunks;
+  return elements;
+}
+
+function buildComponentMessages(text: string): MessageCreateOptions[] {
+  const elements = parseElements(text);
+  const messages: MessageCreateOptions[] = [];
+  let components: (TextDisplayBuilder | SeparatorBuilder)[] = [];
+
+  const flush = () => {
+    if (components.length === 0) return;
+    // Drop trailing separator before flushing
+    while (components.length > 0 && components[components.length - 1] instanceof SeparatorBuilder) {
+      components.pop();
+    }
+    if (components.length > 0) {
+      messages.push({ components, flags: MessageFlags.IsComponentsV2 });
+    }
+    components = [];
+  };
+
+  for (const el of elements) {
+    if (el.kind === "separator") {
+      // Skip separator at start of a new message
+      if (components.length === 0) continue;
+      // Flush if no room for separator + at least one text after
+      if (components.length >= MAX_COMPONENTS - 1) {
+        flush();
+        continue; // separator would be at start of new msg — skip it
+      }
+      components.push(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
+    } else {
+      if (components.length >= MAX_COMPONENTS) flush();
+      components.push(new TextDisplayBuilder({ content: el.content }));
+    }
+  }
+
+  flush();
+  return messages;
 }
 
 export async function startBot(): Promise<void> {
