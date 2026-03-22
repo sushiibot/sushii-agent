@@ -1,11 +1,22 @@
 import { ComponentType, type Message } from "discord.js";
 import type {
   ContainerComponent,
+  FileComponent,
+  MediaGalleryComponent,
   SectionComponent,
   TextDisplayComponent,
+  ThumbnailComponent,
 } from "discord.js";
 
 type AnyComponent = Message["components"][number];
+
+function mediaLabel(url: string): string {
+  const filename = url.split("/").pop()?.split("?")[0] ?? "file";
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  const imageExts = ["png", "jpg", "jpeg", "gif", "webp"];
+  const type = imageExts.includes(ext) ? "image" : "file";
+  return `[${type}: ${filename}]`;
+}
 
 function flattenComponents(components: readonly AnyComponent[]): string[] {
   const parts: string[] = [];
@@ -14,11 +25,24 @@ function flattenComponents(components: readonly AnyComponent[]): string[] {
       case ComponentType.TextDisplay:
         parts.push((comp as TextDisplayComponent).content);
         break;
-      case ComponentType.Section:
-        parts.push(...flattenComponents((comp as SectionComponent).components as AnyComponent[]));
+      case ComponentType.Section: {
+        const section = comp as SectionComponent;
+        parts.push(...flattenComponents(section.components as AnyComponent[]));
+        if (section.accessory.type === ComponentType.Thumbnail) {
+          parts.push(mediaLabel((section.accessory as ThumbnailComponent).media.url));
+        }
         break;
+      }
       case ComponentType.Container:
         parts.push(...flattenComponents((comp as ContainerComponent).components as AnyComponent[]));
+        break;
+      case ComponentType.MediaGallery:
+        for (const item of (comp as MediaGalleryComponent).items) {
+          parts.push(mediaLabel(item.media.url));
+        }
+        break;
+      case ComponentType.File:
+        parts.push(mediaLabel((comp as FileComponent).file.url));
         break;
     }
   }
