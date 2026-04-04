@@ -94,6 +94,7 @@ export async function runAgentLoop(
   guildId: string,
   client: Client<true>,
   opts: AgentLoopOptions = {},
+  sessionId?: string,
 ): Promise<{ response: string; updatedHistory: ChatCompletionMessageParam[] }> {
   const systemPrompt = buildSystemPrompt(opts);
 
@@ -117,24 +118,33 @@ export async function runAgentLoop(
   messages.push({ role: "user", content: query });
 
   let iterations = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  let totalCost: number | null = null;
   console.log(`[agent] starting loop (history=${existingHistory.length} messages, knownUsers=${knownUsers.size})`);
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
     console.log(`[agent] iteration ${iterations}`);
 
-    const response = await openai.chat.completions.create({
+    const createParams = {
       model: config.openaiModel,
       messages,
       tools: TOOL_DEFINITIONS,
       max_tokens: 4096,
-    });
+      ...(sessionId ? { session_id: sessionId } : {}),
+    };
+    const response = await openai.chat.completions.create(createParams as typeof createParams & { stream?: false });
 
     const choice = response.choices[0];
     if (!choice) throw new Error("No choices returned from API");
 
     const usage = response.usage;
     if (usage) {
+      totalPromptTokens += usage.prompt_tokens;
+      totalCompletionTokens += usage.completion_tokens;
+      const cost = (usage as unknown as Record<string, unknown>)["cost"];
+      if (typeof cost === "number") totalCost = (totalCost ?? 0) + cost;
       console.log(`[agent] tokens: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`);
     }
 
@@ -142,9 +152,10 @@ export async function runAgentLoop(
 
     if (choice.finish_reason === "stop") {
       const content = fixBlockquotes(choice.message.content ?? "(no response)");
+      const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
       console.log(`[agent] done after ${iterations} iteration(s), response length=${content.length}`);
       // Strip system prompt from stored history
-      return { response: content, updatedHistory: messages.slice(1) };
+      return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
     }
 
     if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
@@ -175,10 +186,16 @@ export async function runAgentLoop(
     // Unexpected finish reason — treat as final response
     console.log(`[agent] unexpected finish_reason=${choice.finish_reason}, treating as final`);
     const content = fixBlockquotes(choice.message.content ?? "(no response)");
-    return { response: content, updatedHistory: messages.slice(1) };
+    const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
+    return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
   }
 
   throw new Error(`Agent loop exceeded ${MAX_ITERATIONS} iterations`);
+}
+
+function buildFooter(model: string, promptTokens: number, completionTokens: number, cost: number | null): string {
+  const costStr = cost != null ? ` · $${cost.toFixed(4)}` : "";
+  return `-# ${model} · ${promptTokens.toLocaleString()} in / ${completionTokens.toLocaleString()} out${costStr}`;
 }
 
 /** Fix bare ">" lines so Discord renders them as empty blockquote continuation lines. */

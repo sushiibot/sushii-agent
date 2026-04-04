@@ -1,5 +1,6 @@
 import {
   Client,
+  ContainerBuilder,
   Events,
   GatewayIntentBits,
   MessageFlags,
@@ -181,6 +182,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
           rules: guildConfig.rules,
           mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
         },
+        thread.id,
       );
     } finally {
       clearInterval(typingInterval);
@@ -188,7 +190,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
     const { response, updatedHistory } = agentResult;
     const expanded = expandMessageLinks(response, message.guildId);
-    for (const msgOpts of buildComponentMessages(expanded)) {
+    const componentMsgs = buildComponentMessages(expanded);
+    for (const msgOpts of componentMsgs) {
       await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
     }
 
@@ -340,33 +343,37 @@ function parseElements(text: string): RawElement[] {
 function buildComponentMessages(text: string): MessageCreateOptions[] {
   const elements = parseElements(text);
   const messages: MessageCreateOptions[] = [];
-  let components: (TextDisplayBuilder | SeparatorBuilder)[] = [];
+
+  // Track inner components separately so we can drop trailing separators cleanly
+  type Inner = TextDisplayBuilder | SeparatorBuilder;
+  let inner: Inner[] = [];
+  let charCount = 0;
 
   const flush = () => {
-    if (components.length === 0) return;
-    // Drop trailing separator before flushing
-    while (components.length > 0 && components[components.length - 1] instanceof SeparatorBuilder) {
-      components.pop();
+    // Drop trailing separators
+    while (inner.length > 0 && inner[inner.length - 1] instanceof SeparatorBuilder) inner.pop();
+    if (inner.length === 0) return;
+
+    const container = new ContainerBuilder();
+    for (const c of inner) {
+      if (c instanceof TextDisplayBuilder) container.addTextDisplayComponents(c);
+      else container.addSeparatorComponents(c as SeparatorBuilder);
     }
-    if (components.length > 0) {
-      messages.push({ components, flags: MessageFlags.IsComponentsV2 });
-    }
-    components = [];
+    messages.push({ components: [container], flags: MessageFlags.IsComponentsV2 });
+    inner = [];
+    charCount = 0;
   };
 
   for (const el of elements) {
     if (el.kind === "separator") {
-      // Skip separator at start of a new message
-      if (components.length === 0) continue;
-      // Flush if no room for separator + at least one text after
-      if (components.length >= MAX_COMPONENTS - 1) {
-        flush();
-        continue; // separator would be at start of new msg — skip it
-      }
-      components.push(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
+      if (inner.length === 0) continue; // skip leading separator in a new container
+      if (inner.length >= MAX_COMPONENTS - 1) { flush(); continue; }
+      inner.push(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
     } else {
-      if (components.length >= MAX_COMPONENTS) flush();
-      components.push(new TextDisplayBuilder({ content: el.content }));
+      // Flush if adding this element would exceed total displayable text limit or component count
+      if (charCount + el.content.length > TEXT_DISPLAY_MAX || inner.length >= MAX_COMPONENTS) flush();
+      inner.push(new TextDisplayBuilder({ content: el.content }));
+      charCount += el.content.length;
     }
   }
 
