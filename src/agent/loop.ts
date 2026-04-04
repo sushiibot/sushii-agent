@@ -1,9 +1,12 @@
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { Client } from "discord.js";
+import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { openai } from "./client.ts";
 import { config } from "../config.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
 import { runTools, type UserNames } from "./runner.ts";
+
+const tracer = trace.getTracer("sushii-agent");
 
 export const BEHAVIOR_INSTRUCTIONS = `You are a moderation intelligence assistant for Discord servers. You help moderators investigate user behavior, understand context around incidents, and make informed decisions.
 
@@ -96,101 +99,133 @@ export async function runAgentLoop(
   opts: AgentLoopOptions = {},
   sessionId?: string,
 ): Promise<{ response: string; updatedHistory: ChatCompletionMessageParam[] }> {
-  const systemPrompt = buildSystemPrompt(opts);
+  return tracer.startActiveSpan("agent.loop", {
+    attributes: {
+      "agent.model": config.openaiModel,
+      "agent.history_length": existingHistory.length,
+      "agent.guild_id": guildId,
+    },
+  }, async (span) => {
+    const systemPrompt = buildSystemPrompt(opts);
 
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: systemPrompt },
-    ...existingHistory,
-  ];
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompt },
+      ...existingHistory,
+    ];
 
-  const knownUsers = new Map<string, UserNames>();
+    const knownUsers = new Map<string, UserNames>();
 
-  // Inject identity note for users mentioned in this message (full user objects from Discord)
-  if (opts.mentionedUsers?.size) {
-    const novel = [...opts.mentionedUsers.entries()].filter(([id]) => !knownUsers.has(id));
-    if (novel.length > 0) {
-      for (const [id, userNames] of novel) knownUsers.set(id, userNames);
-      messages.push({ role: "system", content: buildUserNote(novel) });
-      console.log(`[agent] injected mention user note for ${novel.length} user(s)`);
-    }
-  }
-
-  messages.push({ role: "user", content: query });
-
-  let iterations = 0;
-  let totalPromptTokens = 0;
-  let totalCompletionTokens = 0;
-  let totalCost: number | null = null;
-  console.log(`[agent] starting loop (history=${existingHistory.length} messages, knownUsers=${knownUsers.size})`);
-
-  while (iterations < MAX_ITERATIONS) {
-    iterations++;
-    console.log(`[agent] iteration ${iterations}`);
-
-    const createParams = {
-      model: config.openaiModel,
-      messages,
-      tools: TOOL_DEFINITIONS,
-      max_tokens: 4096,
-      ...(sessionId ? { session_id: sessionId } : {}),
-    };
-    const response = await openai.chat.completions.create(createParams as typeof createParams & { stream?: false });
-
-    const choice = response.choices[0];
-    if (!choice) throw new Error("No choices returned from API");
-
-    const usage = response.usage;
-    if (usage) {
-      totalPromptTokens += usage.prompt_tokens;
-      totalCompletionTokens += usage.completion_tokens;
-      const cost = (usage as unknown as Record<string, unknown>)["cost"];
-      if (typeof cost === "number") totalCost = (totalCost ?? 0) + cost;
-      console.log(`[agent] tokens: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`);
-    }
-
-    messages.push(choice.message);
-
-    if (choice.finish_reason === "stop") {
-      const content = fixBlockquotes(choice.message.content ?? "(no response)");
-      const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
-      console.log(`[agent] done after ${iterations} iteration(s), response length=${content.length}`);
-      // Strip system prompt from stored history
-      return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
-    }
-
-    if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
-      const names = choice.message.tool_calls.map((t) => t.function.name).join(", ");
-      console.log(`[agent] tool calls: ${names}`);
-      const { results: toolResults, discoveredUsers, pendingImages } = await runTools(choice.message.tool_calls, guildId, client);
-      messages.push(...toolResults);
-
-      if (pendingImages.length > 0) {
-        messages.push({
-          role: "user",
-          content: pendingImages.map((url) => ({ type: "image_url" as const, image_url: { url } })),
-        });
-        console.log(`[agent] injected ${pendingImages.length} image(s) for inspection`);
-      }
-
-      // Inject a resolved-users note for any newly discovered users
-      const novel = [...discoveredUsers.entries()].filter(([id]) => !knownUsers.has(id));
+    // Inject identity note for users mentioned in this message (full user objects from Discord)
+    if (opts.mentionedUsers?.size) {
+      const novel = [...opts.mentionedUsers.entries()].filter(([id]) => !knownUsers.has(id));
       if (novel.length > 0) {
         for (const [id, userNames] of novel) knownUsers.set(id, userNames);
         messages.push({ role: "system", content: buildUserNote(novel) });
-        console.log(`[agent] injected user note for ${novel.length} new user(s)`);
+        console.log(`[agent] injected mention user note for ${novel.length} user(s)`);
       }
-
-      continue;
     }
 
-    // Unexpected finish reason — treat as final response
-    console.log(`[agent] unexpected finish_reason=${choice.finish_reason}, treating as final`);
-    const content = fixBlockquotes(choice.message.content ?? "(no response)");
-    const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
-    return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
-  }
+    messages.push({ role: "user", content: query });
 
-  throw new Error(`Agent loop exceeded ${MAX_ITERATIONS} iterations`);
+    let iterations = 0;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let totalCost: number | null = null;
+    console.log(`[agent] starting loop (history=${existingHistory.length} messages, knownUsers=${knownUsers.size})`);
+
+    try {
+      while (iterations < MAX_ITERATIONS) {
+        iterations++;
+        console.log(`[agent] iteration ${iterations}`);
+
+        const createParams = {
+          model: config.openaiModel,
+          messages,
+          tools: TOOL_DEFINITIONS,
+          max_tokens: 4096,
+          ...(sessionId ? { session_id: sessionId } : {}),
+        };
+        const response = await openai.chat.completions.create(createParams as typeof createParams & { stream?: false });
+
+        const choice = response.choices[0];
+        if (!choice) throw new Error("No choices returned from API");
+
+        const usage = response.usage;
+        if (usage) {
+          totalPromptTokens += usage.prompt_tokens;
+          totalCompletionTokens += usage.completion_tokens;
+          const cost = (usage as unknown as Record<string, unknown>)["cost"];
+          if (typeof cost === "number") totalCost = (totalCost ?? 0) + cost;
+          console.log(`[agent] tokens: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`);
+        }
+
+        messages.push(choice.message);
+
+        if (choice.finish_reason === "stop") {
+          const content = fixBlockquotes(choice.message.content ?? "(no response)");
+          const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
+          console.log(`[agent] done after ${iterations} iteration(s), response length=${content.length}`);
+          // Strip system prompt from stored history
+          return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
+        }
+
+        if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
+          const names = choice.message.tool_calls.map((t) => t.function.name).join(", ");
+          console.log(`[agent] tool calls: ${names}`);
+          const toolCalls = choice.message.tool_calls;
+          const { results: toolResults, discoveredUsers, pendingImages } = await tracer.startActiveSpan(
+            "agent.tool_calls",
+            { attributes: { "agent.tools": names, "agent.iteration": iterations } },
+            async (toolSpan) => {
+              try {
+                return await runTools(toolCalls, guildId, client);
+              } finally {
+                toolSpan.end();
+              }
+            },
+          );
+          messages.push(...toolResults);
+
+          if (pendingImages.length > 0) {
+            messages.push({
+              role: "user",
+              content: pendingImages.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+            });
+            console.log(`[agent] injected ${pendingImages.length} image(s) for inspection`);
+          }
+
+          // Inject a resolved-users note for any newly discovered users
+          const novel = [...discoveredUsers.entries()].filter(([id]) => !knownUsers.has(id));
+          if (novel.length > 0) {
+            for (const [id, userNames] of novel) knownUsers.set(id, userNames);
+            messages.push({ role: "system", content: buildUserNote(novel) });
+            console.log(`[agent] injected user note for ${novel.length} new user(s)`);
+          }
+
+          continue;
+        }
+
+        // Unexpected finish reason — treat as final response
+        console.log(`[agent] unexpected finish_reason=${choice.finish_reason}, treating as final`);
+        const content = fixBlockquotes(choice.message.content ?? "(no response)");
+        const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
+        return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
+      }
+
+      throw new Error(`Agent loop exceeded ${MAX_ITERATIONS} iterations`);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      span.recordException(err instanceof Error ? err : errMsg);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
+      throw err;
+    } finally {
+      span.setAttribute("agent.iterations", iterations);
+      span.setAttribute("agent.prompt_tokens", totalPromptTokens);
+      span.setAttribute("agent.completion_tokens", totalCompletionTokens);
+      if (totalCost != null) span.setAttribute("agent.cost_usd", totalCost);
+      span.end();
+    }
+  });
 }
 
 function buildFooter(model: string, promptTokens: number, completionTokens: number, cost: number | null): string {

@@ -12,6 +12,7 @@ import {
   type MessageCreateOptions,
   type ThreadChannel,
 } from "discord.js";
+import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
 import { config } from "./config.ts";
 import {
@@ -24,6 +25,8 @@ import { loadConversation, saveConversation } from "./db/conversations.ts";
 import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames } from "./agent/loop.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
+
+const tracer = trace.getTracer("sushii-agent");
 
 export const client = new Client({
   intents: [
@@ -150,71 +153,90 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const trigger = isMention ? "mention" : "reply";
   console.log(`[bot] triggered by ${trigger} from ${message.author.username} (${message.author.id}) in ${message.channelId}`);
 
-  try {
-    const { thread, isNew } = await resolveOrCreateThread(message);
-    const { messages: existingHistory, initialThreadContext } = loadConversation(thread.id);
-    // Use stored context on subsequent turns for stable prompt caching; only fetch on first invocation.
-    // For new threads created from a non-thread channel, fetch recent parent channel messages as context
-    // so the agent can see things like AutoMod alerts posted before the trigger message.
-    let threadContext: string;
-    if (initialThreadContext != null) {
-      threadContext = initialThreadContext;
-    } else if (isNew) {
-      threadContext = await fetchParentChannelContext(message, client.user!.id);
-    } else {
-      threadContext = await fetchThreadContext(thread, client.user!.id);
-    }
-
-    await thread.sendTyping();
-    const typingInterval = setInterval(() => thread.sendTyping(), 8000);
-
-    let agentResult: Awaited<ReturnType<typeof runAgentLoop>>;
+  await tracer.startActiveSpan("discord.message", {
+    attributes: {
+      "discord.guild_id": message.guildId,
+      "discord.channel_id": message.channelId,
+      "discord.message_id": message.id,
+      "discord.user_id": message.author.id,
+      "discord.trigger": trigger,
+    },
+  }, async (span) => {
     try {
-      agentResult = await runAgentLoop(
-        query,
-        existingHistory,
-        message.guildId,
-        client as Client<true>,
-        {
-          threadContext: threadContext || undefined,
-          currentChannelId: thread.id,
-          emojiMap: guildConfig.emojiMap,
-          rules: guildConfig.rules,
-          mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
-        },
-        thread.id,
-      );
+      const { thread, isNew } = await resolveOrCreateThread(message);
+      span.setAttribute("discord.thread_id", thread.id);
+
+      const { messages: existingHistory, initialThreadContext } = loadConversation(thread.id);
+      // Use stored context on subsequent turns for stable prompt caching; only fetch on first invocation.
+      // For new threads created from a non-thread channel, fetch recent parent channel messages as context
+      // so the agent can see things like AutoMod alerts posted before the trigger message.
+      let threadContext: string;
+      if (initialThreadContext != null) {
+        threadContext = initialThreadContext;
+      } else if (isNew) {
+        threadContext = await fetchParentChannelContext(message, client.user!.id);
+      } else {
+        threadContext = await fetchThreadContext(thread, client.user!.id);
+      }
+
+      await thread.sendTyping();
+      const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+
+      let agentResult: Awaited<ReturnType<typeof runAgentLoop>>;
+      try {
+        agentResult = await runAgentLoop(
+          query,
+          existingHistory,
+          message.guildId!,
+          client as Client<true>,
+          {
+            threadContext: threadContext || undefined,
+            currentChannelId: thread.id,
+            emojiMap: guildConfig.emojiMap,
+            rules: guildConfig.rules,
+            mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
+          },
+          thread.id,
+        );
+      } finally {
+        clearInterval(typingInterval);
+      }
+
+      const { response, updatedHistory } = agentResult;
+      const expanded = expandMessageLinks(response, message.guildId!);
+      const componentMsgs = buildComponentMessages(expanded);
+      for (const msgOpts of componentMsgs) {
+        await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+      }
+
+      saveConversation(thread.id, message.guildId!, updatedHistory, threadContext);
+
+      // Rename thread when there's enough context:
+      // - 3+ tool uses on first turn (rich investigation), OR
+      // - any tool use on a follow-up turn (user sent another message, so we have more context)
+      const toolUseCount = updatedHistory.filter((m) => m.role === "tool").length;
+      const userTurnCount = updatedHistory.filter((m) => m.role === "user").length;
+      const isDefaultName = thread.name === "sushii-agent investigation";
+      const enoughContext = toolUseCount >= 3 || userTurnCount >= 2;
+      if (toolUseCount > 0 && enoughContext && (isNew || isDefaultName)) {
+        await renameThread(thread, updatedHistory);
+      }
+
+      span.setStatus({ code: SpanStatusCode.OK });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      span.recordException(err instanceof Error ? err : errMsg);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
+      console.error("Error handling mention:", err);
+      try {
+        await message.reply("An error occurred while processing your request. Check the logs.");
+      } catch {
+        // Ignore reply errors
+      }
     } finally {
-      clearInterval(typingInterval);
+      span.end();
     }
-
-    const { response, updatedHistory } = agentResult;
-    const expanded = expandMessageLinks(response, message.guildId);
-    const componentMsgs = buildComponentMessages(expanded);
-    for (const msgOpts of componentMsgs) {
-      await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-    }
-
-    saveConversation(thread.id, message.guildId, updatedHistory, threadContext);
-
-    // Rename thread when there's enough context:
-    // - 3+ tool uses on first turn (rich investigation), OR
-    // - any tool use on a follow-up turn (user sent another message, so we have more context)
-    const toolUseCount = updatedHistory.filter((m) => m.role === "tool").length;
-    const userTurnCount = updatedHistory.filter((m) => m.role === "user").length;
-    const isDefaultName = thread.name === "sushii-agent investigation";
-    const enoughContext = toolUseCount >= 3 || userTurnCount >= 2;
-    if (toolUseCount > 0 && enoughContext && (isNew || isDefaultName)) {
-      await renameThread(thread, updatedHistory);
-    }
-  } catch (err) {
-    console.error("Error handling mention:", err);
-    try {
-      await message.reply("An error occurred while processing your request. Check the logs.");
-    } catch {
-      // Ignore reply errors
-    }
-  }
+  });
 });
 
 client.on(Events.MessageUpdate, (_old, newMsg) => {
