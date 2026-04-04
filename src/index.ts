@@ -1,3 +1,4 @@
+import "./telemetry.ts";
 import { initDb, closeDb } from "./db/index.ts";
 import { client, startBot } from "./bot.ts";
 
