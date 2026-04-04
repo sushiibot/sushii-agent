@@ -10,6 +10,9 @@ const exporter =
 
 traceloop.initialize({
   appName: "sushii-agent",
+  // Disable batching outside production so spans are exported immediately.
+  // In production, batching reduces export overhead.
   disableBatch: process.env.NODE_ENV !== "production",
   exporter,
 });
+
