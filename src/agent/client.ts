@@ -1,8 +1,12 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { config } from "../config.ts";
 
-export const openaiProvider = createOpenAI({
+const _openaiProvider = createOpenAI({
   apiKey: config.openaiApiKey,
   baseURL: config.openaiBaseUrl,
   compatibility: "compatible",
 });
+
+// Use .chat() explicitly — @ai-sdk/openai v3 defaults to Responses API,
+// but OpenRouter only supports Chat Completions.
+export const openaiProvider = (model: string) => _openaiProvider.chat(model);
