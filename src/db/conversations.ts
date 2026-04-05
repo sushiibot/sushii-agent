@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type { CoreMessage } from "ai";
 import { getDb } from "./index.ts";
 
 interface ConversationRow {
@@ -11,7 +11,7 @@ interface ConversationRow {
 }
 
 export interface ConversationData {
-  messages: ChatCompletionMessageParam[];
+  messages: CoreMessage[];
   initialThreadContext: string | null;
 }
 
@@ -25,7 +25,7 @@ export function loadConversation(threadId: string): ConversationData {
 
   if (!row) return { messages: [], initialThreadContext: null };
   return {
-    messages: JSON.parse(row.messages) as ChatCompletionMessageParam[],
+    messages: JSON.parse(row.messages) as CoreMessage[],
     initialThreadContext: row.initial_thread_context,
   };
 }
@@ -33,7 +33,7 @@ export function loadConversation(threadId: string): ConversationData {
 export function saveConversation(
   threadId: string,
   guildId: string,
-  messages: ChatCompletionMessageParam[],
+  messages: CoreMessage[],
   initialThreadContext: string,
 ): void {
   const db = getDb();

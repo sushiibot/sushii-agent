@@ -1,7 +1,8 @@
-import OpenAI from "openai";
+import { createOpenAI } from "@ai-sdk/openai";
 import { config } from "../config.ts";
 
-export const openai = new OpenAI({
+export const openaiProvider = createOpenAI({
   apiKey: config.openaiApiKey,
   baseURL: config.openaiBaseUrl,
+  compatibility: "compatible",
 });

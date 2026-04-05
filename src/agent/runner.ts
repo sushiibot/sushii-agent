@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageParam, ChatCompletionMessageToolCall } from "openai/resources/chat/completions";
+import type { CoreToolMessage } from "ai";
 import type { Client } from "discord.js";
 import { searchMessages } from "../tools/searchMessages.ts";
 import { getConversationContext } from "../tools/getConversationContext.ts";
@@ -211,14 +211,16 @@ function formatToolResult(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
+type AiToolCall = { toolCallId: string; toolName: string; args: Record<string, unknown> };
+
 export interface RunToolsResult {
-  results: ChatCompletionMessageParam[];
+  toolMessage: CoreToolMessage;
   discoveredUsers: Map<string, UserNames>;
   pendingImages: string[];
 }
 
 export async function runTools(
-  toolCalls: ChatCompletionMessageToolCall[],
+  toolCalls: AiToolCall[],
   guildId: string,
   client: Client<true>,
 ): Promise<RunToolsResult> {
@@ -227,10 +229,10 @@ export async function runTools(
       let result: unknown;
 
       try {
-        const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
-        console.log(`[tool] ${call.function.name}`, JSON.stringify(args));
+        const args = call.args;
+        console.log(`[tool] ${call.toolName}`, JSON.stringify(args));
 
-        switch (call.function.name) {
+        switch (call.toolName) {
           case "search_messages":
             result = searchMessages({ ...args, guildId } as Parameters<typeof searchMessages>[0]);
             break;
@@ -295,7 +297,7 @@ export async function runTools(
             } as Parameters<typeof getCurrentMemberInfo>[0]);
             break;
           default:
-            result = { error: `Unknown tool: ${call.function.name}` };
+            result = { error: `Unknown tool: ${call.toolName}` };
         }
       } catch (err) {
         console.error(`[tool] ${call.function.name} error:`, err);
@@ -307,18 +309,18 @@ export async function runTools(
   );
 
   const discoveredUsers = new Map<string, UserNames>();
-  const results: ChatCompletionMessageParam[] = [];
+  const toolResultParts: CoreToolMessage["content"] = [];
   const pendingImages: string[] = [];
 
   for (const { call, result } of rawResults) {
     // inspect_image — collect URLs to inject as image content in the next completion
-    if (call.function.name === "inspect_image" && result && typeof result === "object" && "imageUrls" in result) {
+    if (call.toolName === "inspect_image" && result && typeof result === "object" && "imageUrls" in result) {
       const urls = (result as { imageUrls: string[] }).imageUrls;
       if (urls.length === 0) {
-        results.push({ role: "tool" as const, tool_call_id: call.id, content: "No image attachments found on that message." });
+        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, result: "No image attachments found on that message." });
       } else {
         pendingImages.push(...urls);
-        results.push({ role: "tool" as const, tool_call_id: call.id, content: `${urls.length} image(s) queued — they will appear in the next message for your analysis.` });
+        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, result: `${urls.length} image(s) queued — they will appear in the next message for your analysis.` });
       }
       continue;
     }
@@ -329,14 +331,10 @@ export async function runTools(
     }
 
     const content = formatToolResult(result);
-    console.log(`[tool] ${call.function.name} result length=${content.length}`);
+    console.log(`[tool] ${call.toolName} result length=${content.length}`);
 
-    results.push({
-      role: "tool" as const,
-      tool_call_id: call.id,
-      content,
-    });
+    toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, result: content });
   }
 
-  return { results, discoveredUsers, pendingImages };
+  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages };
 }

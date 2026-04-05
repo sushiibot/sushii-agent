@@ -1,6 +1,7 @@
 import type { Message, ThreadChannel } from "discord.js";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import { openai } from "../agent/client.ts";
+import type { CoreMessage } from "ai";
+import { generateText } from "ai";
+import { openaiProvider } from "../agent/client.ts";
 import { config } from "../config.ts";
 
 export async function resolveOrCreateThread(
@@ -22,11 +23,11 @@ export async function resolveOrCreateThread(
 
 export async function renameThread(
   thread: ThreadChannel,
-  history: ChatCompletionMessageParam[],
+  history: CoreMessage[],
 ): Promise<void> {
   try {
-    const response = await openai.chat.completions.create({
-      model: config.openaiModel,
+    const result = await generateText({
+      model: openaiProvider(config.openaiModel),
       messages: [
         ...history,
         {
@@ -35,10 +36,10 @@ export async function renameThread(
             "Write a thread title of 8 words or fewer summarizing this investigation. Return only the title, no quotes or punctuation.",
         },
       ],
-      max_tokens: 60,
+      maxTokens: 60,
     });
 
-    const title = response.choices[0]?.message.content?.trim();
+    const title = result.text.trim();
     if (title) {
       await thread.setName(title.slice(0, 100));
     }

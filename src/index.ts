@@ -1,5 +1,4 @@
-import "./telemetry.ts";
-import * as traceloop from "@traceloop/node-server-sdk";
+import { sdk } from "./telemetry.ts";
 import { initDb, closeDb } from "./db/index.ts";
 import { client, startBot } from "./bot.ts";
 
@@ -19,7 +18,7 @@ async function main() {
     client.destroy();
     closeDb();
     try {
-      await traceloop.forceFlush();
+      await sdk.shutdown();
     } catch (err) {
       console.error("Telemetry flush failed:", err);
     }

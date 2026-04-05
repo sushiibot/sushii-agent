@@ -1,18 +1,14 @@
-import * as traceloop from "@traceloop/node-server-sdk";
-import { OTLPTraceExporter as OTLPTraceExporterHttp } from "@opentelemetry/exporter-trace-otlp-http";
-import { OTLPTraceExporter as OTLPTraceExporterGrpc } from "@opentelemetry/exporter-trace-otlp-grpc";
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 
-const protocol = process.env.OTEL_EXPORTER_OTLP_PROTOCOL ?? "http/protobuf";
-const exporter =
-  protocol === "grpc"
-    ? new OTLPTraceExporterGrpc()
-    : new OTLPTraceExporterHttp();
-
-traceloop.initialize({
-  appName: "sushii-agent",
-  // Disable batching outside production so spans are exported immediately.
-  // In production, batching reduces export overhead.
-  disableBatch: process.env.NODE_ENV !== "production",
-  exporter,
+export const sdk = new NodeSDK({
+  traceExporter: new OTLPTraceExporter(),
 });
 
+sdk.start();
+
+const endpoint =
+  process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ??
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
+  "http://localhost:4318";
+console.log(`OTel traces → ${endpoint}`);

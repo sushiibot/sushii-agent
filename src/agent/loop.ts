@@ -1,12 +1,24 @@
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type { CoreMessage } from "ai";
+import { generateText, jsonSchema } from "ai";
 import type { Client } from "discord.js";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
-import { openai } from "./client.ts";
+import { openaiProvider } from "./client.ts";
 import { config } from "../config.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
 import { runTools, type UserNames } from "./runner.ts";
 
 const tracer = trace.getTracer("sushii-agent");
+
+// Convert TOOL_DEFINITIONS (OpenAI JSON schema format) to AI SDK tool map
+const AI_TOOLS = Object.fromEntries(
+  TOOL_DEFINITIONS.map((def) => [
+    def.function.name,
+    {
+      description: def.function.description,
+      parameters: jsonSchema(def.function.parameters as Record<string, unknown>),
+    },
+  ]),
+) as Parameters<typeof generateText>[0]["tools"];
 
 export const BEHAVIOR_INSTRUCTIONS = `You are a moderation intelligence assistant for Discord servers. You help moderators investigate user behavior, understand context around incidents, and make informed decisions.
 
@@ -65,7 +77,7 @@ function buildUserNote(novel: [string, UserNames][]): string {
 
 export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
   const now = new Date();
-  const currentDate = now.toISOString().split("T")[0]; // e.g. "2026-03-19"
+  const currentDate = now.toISOString().split("T")[0];
   const systemParts = [BEHAVIOR_INSTRUCTIONS, `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). Do NOT use it to compute or write timestamp math in your responses — always use Discord timestamp format instead.`];
 
   if (opts.emojiMap && Object.keys(opts.emojiMap).length > 0) {
@@ -93,12 +105,12 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
 
 export async function runAgentLoop(
   query: string,
-  existingHistory: ChatCompletionMessageParam[],
+  existingHistory: CoreMessage[],
   guildId: string,
   client: Client<true>,
   opts: AgentLoopOptions = {},
   sessionId?: string,
-): Promise<{ response: string; updatedHistory: ChatCompletionMessageParam[] }> {
+): Promise<{ response: string; updatedHistory: CoreMessage[] }> {
   return tracer.startActiveSpan("agent.loop", {
     attributes: {
       "agent.model": config.openaiModel,
@@ -108,14 +120,13 @@ export async function runAgentLoop(
   }, async (span) => {
     const systemPrompt = buildSystemPrompt(opts);
 
-    const messages: ChatCompletionMessageParam[] = [
+    const messages: CoreMessage[] = [
       { role: "system", content: systemPrompt },
       ...existingHistory,
     ];
 
     const knownUsers = new Map<string, UserNames>();
 
-    // Inject identity note for users mentioned in this message (full user objects from Discord)
     if (opts.mentionedUsers?.size) {
       const novel = [...opts.mentionedUsers.entries()].filter(([id]) => !knownUsers.has(id));
       if (novel.length > 0) {
@@ -130,7 +141,6 @@ export async function runAgentLoop(
     let iterations = 0;
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
-    let totalCost: number | null = null;
     console.log(`[agent] starting loop (history=${existingHistory.length} messages, knownUsers=${knownUsers.size})`);
 
     try {
@@ -138,63 +148,73 @@ export async function runAgentLoop(
         iterations++;
         console.log(`[agent] iteration ${iterations}`);
 
-        const createParams = {
-          model: config.openaiModel,
+        const result = await generateText({
+          model: openaiProvider(config.openaiModel),
           messages,
-          tools: TOOL_DEFINITIONS,
-          max_tokens: 4096,
-          ...(sessionId ? { session_id: sessionId } : {}),
-        };
-        const response = await openai.chat.completions.create(createParams as typeof createParams & { stream?: false });
+          tools: AI_TOOLS,
+          maxTokens: 4096,
+          maxSteps: 1,
+          experimental_telemetry: {
+            isEnabled: true,
+            functionId: "agent-loop",
+            metadata: { guildId, iteration: iterations },
+          },
+          ...(sessionId ? { providerOptions: { openai: { session_id: sessionId } } } : {}),
+        });
 
-        const choice = response.choices[0];
-        if (!choice) throw new Error("No choices returned from API");
+        const { text, toolCalls, finishReason, usage } = result;
 
-        const usage = response.usage;
         if (usage) {
-          totalPromptTokens += usage.prompt_tokens;
-          totalCompletionTokens += usage.completion_tokens;
-          const cost = (usage as unknown as Record<string, unknown>)["cost"];
-          if (typeof cost === "number") totalCost = (totalCost ?? 0) + cost;
-          console.log(`[agent] tokens: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens} total=${usage.total_tokens}`);
+          totalPromptTokens += usage.promptTokens;
+          totalCompletionTokens += usage.completionTokens;
+          console.log(`[agent] tokens: prompt=${usage.promptTokens} completion=${usage.completionTokens} total=${usage.totalTokens}`);
         }
 
-        messages.push(choice.message);
-
-        if (choice.finish_reason === "stop") {
-          const content = fixBlockquotes(choice.message.content ?? "(no response)");
-          const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
+        if (finishReason === "stop" || !toolCalls?.length) {
+          messages.push({ role: "assistant", content: text });
+          const content = fixBlockquotes(text ?? "(no response)");
+          const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens);
           console.log(`[agent] done after ${iterations} iteration(s), response length=${content.length}`);
-          // Strip system prompt from stored history
           return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
         }
 
-        if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
-          const names = choice.message.tool_calls.map((t) => t.function.name).join(", ");
+        if (finishReason === "tool-calls" && toolCalls.length > 0) {
+          const names = toolCalls.map((t) => t.toolName).join(", ");
           console.log(`[agent] tool calls: ${names}`);
-          const toolCalls = choice.message.tool_calls;
-          const { results: toolResults, discoveredUsers, pendingImages } = await tracer.startActiveSpan(
+
+          // Add assistant message with tool calls to history
+          messages.push({
+            role: "assistant",
+            content: toolCalls.map((tc) => ({
+              type: "tool-call" as const,
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              args: tc.args as Record<string, unknown>,
+            })),
+          });
+
+          const { toolMessage, discoveredUsers, pendingImages } = await tracer.startActiveSpan(
             "agent.tool_calls",
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
               try {
-                return await runTools(toolCalls, guildId, client);
+                return await runTools(toolCalls as { toolCallId: string; toolName: string; args: Record<string, unknown> }[], guildId, client);
               } finally {
                 toolSpan.end();
               }
             },
           );
-          messages.push(...toolResults);
+
+          messages.push(toolMessage);
 
           if (pendingImages.length > 0) {
             messages.push({
               role: "user",
-              content: pendingImages.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+              content: pendingImages.map((url) => ({ type: "image" as const, image: url })),
             });
             console.log(`[agent] injected ${pendingImages.length} image(s) for inspection`);
           }
 
-          // Inject a resolved-users note for any newly discovered users
           const novel = [...discoveredUsers.entries()].filter(([id]) => !knownUsers.has(id));
           if (novel.length > 0) {
             for (const [id, userNames] of novel) knownUsers.set(id, userNames);
@@ -205,10 +225,11 @@ export async function runAgentLoop(
           continue;
         }
 
-        // Unexpected finish reason — treat as final response
-        console.log(`[agent] unexpected finish_reason=${choice.finish_reason}, treating as final`);
-        const content = fixBlockquotes(choice.message.content ?? "(no response)");
-        const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens, totalCost);
+        // Unexpected finish reason
+        console.log(`[agent] unexpected finish_reason=${finishReason}, treating as final`);
+        messages.push({ role: "assistant", content: text });
+        const content = fixBlockquotes(text ?? "(no response)");
+        const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens);
         return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
@@ -222,15 +243,13 @@ export async function runAgentLoop(
       span.setAttribute("agent.iterations", iterations);
       span.setAttribute("agent.prompt_tokens", totalPromptTokens);
       span.setAttribute("agent.completion_tokens", totalCompletionTokens);
-      if (totalCost != null) span.setAttribute("agent.cost_usd", totalCost);
       span.end();
     }
   });
 }
 
-function buildFooter(model: string, promptTokens: number, completionTokens: number, cost: number | null): string {
-  const costStr = cost != null ? ` · $${cost.toFixed(4)}` : "";
-  return `-# ${model} · ${promptTokens.toLocaleString()} in / ${completionTokens.toLocaleString()} out${costStr}`;
+function buildFooter(model: string, promptTokens: number, completionTokens: number): string {
+  return `-# ${model} · ${promptTokens.toLocaleString()} in / ${completionTokens.toLocaleString()} out`;
 }
 
 /** Fix bare ">" lines so Discord renders them as empty blockquote continuation lines. */
@@ -245,4 +264,3 @@ export function expandMessageLinks(text: string, guildId: string): string {
       `https://discord.com/channels/${guildId}/${channelId}/${messageId}`,
   );
 }
-
