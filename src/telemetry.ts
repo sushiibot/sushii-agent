@@ -3,14 +3,14 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { CompressionAlgorithm } from "@opentelemetry/otlp-exporter-base";
 import { trace } from "@opentelemetry/api";
 
-// Disable gzip compression — zlib/stream compat issues with Bun can silently drop exports
 const exporter = new OTLPTraceExporter({
   compression: CompressionAlgorithm.NONE,
 });
 
-const provider = new BasicTracerProvider();
-provider.addSpanProcessor(new BatchSpanProcessor(exporter));
-provider.register();
+const provider = new BasicTracerProvider({
+  spanProcessors: [new BatchSpanProcessor(exporter)],
+});
+trace.setGlobalTracerProvider(provider);
 
 export const sdk = {
   shutdown: () => provider.shutdown(),
