@@ -1,4 +1,4 @@
-import { sdk } from "./telemetry.ts";
+import { otelSDK } from "./telemetry.ts";
 import { initDb, closeDb } from "./db/index.ts";
 import { client, startBot } from "./bot.ts";
 
@@ -18,7 +18,7 @@ async function main() {
     client.destroy();
     closeDb();
     try {
-      await sdk.shutdown();
+      await otelSDK?.shutdown();
     } catch (err) {
       console.error("Telemetry flush failed:", err);
     }

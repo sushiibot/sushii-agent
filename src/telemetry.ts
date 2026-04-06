@@ -1,30 +1,80 @@
-import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { context, metrics, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { CompressionAlgorithm } from "@opentelemetry/otlp-exporter-base";
-import { envDetector } from "@opentelemetry/resources";
-import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
-import { trace } from "@opentelemetry/api";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { UndiciInstrumentation } from "@opentelemetry/instrumentation-undici";
+import { detectResources, envDetector, resourceFromAttributes } from "@opentelemetry/resources";
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 
-// BasicTracerProvider doesn't auto-read OTEL_* env vars — detect them explicitly.
-// envDetector reads OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES.
-const resource = await envDetector.detect();
+// OTel is opt-in — activate by setting OTEL_EXPORTER_OTLP_ENDPOINT.
+// All configuration uses standard OTel env vars:
+//   OTEL_EXPORTER_OTLP_ENDPOINT     HTTP collector base URL (default: http://localhost:4318)
+//   OTEL_EXPORTER_OTLP_HEADERS      auth headers (key=value,key2=value2)
+//   OTEL_SERVICE_NAME               service name
+//   OTEL_RESOURCE_ATTRIBUTES        e.g. deployment.environment=production
+//   OTEL_TRACES_SAMPLER / _ARG      sampling (default: parentbased_always_on)
+//   GIT_HASH                        mapped to service.version
+//   OTEL_METRIC_EXPORT_INTERVAL     metric flush interval in ms (default 60000)
 
-const exporter = new OTLPTraceExporter({
-  compression: CompressionAlgorithm.NONE,
-});
+export interface OtelSDK {
+  shutdown: () => Promise<void>;
+}
 
-const provider = new BasicTracerProvider({
-  resource,
-  spanProcessors: [new BatchSpanProcessor(exporter)],
-});
-trace.setGlobalTracerProvider(provider);
+export function setupOtel(): OtelSDK {
+  const resource = detectResources({ detectors: [envDetector] }).merge(
+    resourceFromAttributes({
+      [ATTR_SERVICE_VERSION]: process.env.GIT_HASH ?? "unknown",
+    }),
+  );
 
-export const sdk = {
-  shutdown: () => provider.shutdown(),
-};
+  // BasicTracerProvider + HTTP exporter works correctly in Bun.
+  // NodeSDK / NodeTracerProvider rely on async_hooks and import-in-the-middle
+  // which silently produce NonRecordingSpan no-ops in Bun.
+  const tracerProvider = new BasicTracerProvider({
+    resource,
+    spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter())],
+  });
+  trace.setGlobalTracerProvider(tracerProvider);
 
-const endpoint =
-  process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ??
-  process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
-  "http://localhost:4318";
-console.log(`OTel traces → ${endpoint} (service: ${resource.attributes[ATTR_SERVICE_NAME]})`);
+  // AsyncLocalStorage is supported by Bun — required for correct parent-child
+  // span relationships across async boundaries.
+  const contextManager = new AsyncLocalStorageContextManager();
+  contextManager.enable();
+  context.setGlobalContextManager(contextManager);
+
+  // UndiciInstrumentation uses diagnostics_channel (no module patching) so it
+  // works in Bun. Captures HTTP calls made by discord.js.
+  registerInstrumentations({
+    instrumentations: [new UndiciInstrumentation()],
+  });
+
+  const parsed = parseInt(process.env.OTEL_METRIC_EXPORT_INTERVAL ?? "", 10);
+  const exportIntervalMillis = Number.isNaN(parsed) ? 60_000 : parsed;
+
+  const meterProvider = new MeterProvider({
+    resource,
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter(),
+        exportIntervalMillis,
+      }),
+    ],
+  });
+  metrics.setGlobalMeterProvider(meterProvider);
+
+  return {
+    shutdown: () => Promise.all([tracerProvider.shutdown(), meterProvider.shutdown()]).then(() => {}),
+  };
+}
+
+// Initialise only when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+let otelSDK: OtelSDK | null = null;
+if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+  otelSDK = setupOtel();
+}
+
+export { otelSDK };
+export const tracer = trace.getTracer("sushii-agent");
