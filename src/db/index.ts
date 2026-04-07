@@ -3,6 +3,9 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { config } from "../config.ts";
 import { MIGRATIONS } from "./schema.ts";
+import { getLogger } from "../logger.ts";
+
+const logger = getLogger("db");
 
 let _db: Database;
 
@@ -34,7 +37,7 @@ function runMigrations(db: Database): void {
   const currentVersion = row.user_version;
 
   for (let i = currentVersion; i < MIGRATIONS.length; i++) {
-    console.log(`Running migration ${i}...`);
+    logger.info({ migration: i }, "running migration");
     for (const sql of MIGRATIONS[i]) {
       db.exec(sql);
     }

@@ -2,6 +2,9 @@ import { MessageType, type Message } from "discord.js";
 import { config } from "../config.ts";
 import { getDb } from "./index.ts";
 import { buildMessageContent } from "../utils/flattenMessage.ts";
+import { getLogger } from "../logger.ts";
+
+const logger = getLogger("db");
 
 export function insertMessage(message: Message): void {
   if (!message.guildId) return;
@@ -62,7 +65,7 @@ export function deleteOldMessages(): void {
       [threshold, guildId],
     );
     if (result.changes > 0) {
-      console.log(`Deleted ${result.changes} old messages from guild ${guildId}`);
+      logger.info({ changes: result.changes, guildId }, "deleted old messages");
     }
   }
 

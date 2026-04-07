@@ -15,6 +15,9 @@ import {
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
 import { config } from "./config.ts";
+import { getLogger } from "./logger.ts";
+
+const logger = getLogger("bot");
 import {
   insertMessage,
   updateMessageContent,
@@ -93,7 +96,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
         files: [{ attachment: buf, name: `conversation-${thread.id}.json` }],
       });
     } catch (err) {
-      console.error("Error handling dump-chat:", err);
+      logger.error({ err }, "Error handling dump-chat");
       await message.reply("Failed to dump conversation.").catch(() => {});
     }
     return;
@@ -151,7 +154,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const query = `${replyContext}[Message from ${message.author.username} (<@${message.author.id}>)]\n${normalizedQuery}`;
 
   const trigger = isMention ? "mention" : "reply";
-  console.log(`[bot] triggered by ${trigger} from ${message.author.username} (${message.author.id}) in ${message.channelId}`);
+  logger.info({ trigger, username: message.author.username, userId: message.author.id, channelId: message.channelId }, "triggered");
 
   await tracer.startActiveSpan("discord.message", {
     attributes: {
@@ -227,7 +230,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       span.recordException(err instanceof Error ? err : errMsg);
       span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
-      console.error("Error handling mention:", err);
+      logger.error({ err }, "Error handling mention");
       try {
         await message.reply("An error occurred while processing your request. Check the logs.");
       } catch {
@@ -253,8 +256,8 @@ client.on(Events.MessageDelete, (message) => {
 });
 
 client.once(Events.ClientReady, (c) => {
-  console.log(`Logged in as ${c.user.tag}`);
-  console.log(`Watching guilds: ${Object.keys(config.guildConfig).join(", ")}`);
+  logger.info({ tag: c.user.tag }, "Logged in");
+  logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
 });
 
 async function isReplyToBot(message: Message, botId: string): Promise<boolean> {

@@ -1,12 +1,13 @@
 import { otelSDK } from "./telemetry.ts";
 import { initDb, closeDb } from "./db/index.ts";
 import { client, startBot } from "./bot.ts";
+import logger from "./logger.ts";
 
 async function main() {
-  console.log("Starting sushii-agent...");
+  logger.info("Starting sushii-agent...");
 
   await initDb();
-  console.log("Database initialized");
+  logger.info("Database initialized");
 
   await startBot();
 
@@ -14,13 +15,13 @@ async function main() {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log("Shutting down...");
+    logger.info("Shutting down...");
     client.destroy();
     closeDb();
     try {
       await otelSDK?.shutdown();
     } catch (err) {
-      console.error("Telemetry flush failed:", err);
+      logger.error({ err }, "Telemetry flush failed");
     }
     process.exit(0);
   };
@@ -30,6 +31,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  logger.error({ err }, "Fatal error");
   process.exit(1);
 });
