@@ -1,8 +1,11 @@
 import type { Message, ThreadChannel } from "discord.js";
-import type { CoreMessage } from "ai";
+import type { ModelMessage } from "ai";
 import { generateText } from "ai";
 import { openaiProvider } from "../agent/client.ts";
 import { config } from "../config.ts";
+import { getLogger } from "../logger.ts";
+
+const logger = getLogger("threads");
 
 export async function resolveOrCreateThread(
   message: Message,
@@ -23,7 +26,7 @@ export async function resolveOrCreateThread(
 
 export async function renameThread(
   thread: ThreadChannel,
-  history: CoreMessage[],
+  history: ModelMessage[],
 ): Promise<void> {
   try {
     const result = await generateText({
@@ -36,7 +39,7 @@ export async function renameThread(
             "Write a thread title of 8 words or fewer summarizing this investigation. Return only the title, no quotes or punctuation.",
         },
       ],
-      maxTokens: 60,
+      maxOutputTokens: 60,
     });
 
     const title = result.text.trim();
@@ -44,6 +47,6 @@ export async function renameThread(
       await thread.setName(title.slice(0, 100));
     }
   } catch (err) {
-    console.error("Failed to rename thread:", err);
+    logger.error({ err }, "Failed to rename thread");
   }
 }

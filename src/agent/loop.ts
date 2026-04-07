@@ -1,11 +1,14 @@
-import type { CoreMessage } from "ai";
+import type { ModelMessage } from "ai";
 import { generateText, jsonSchema } from "ai";
 import type { Client } from "discord.js";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { openaiProvider } from "./client.ts";
 import { config } from "../config.ts";
+import { getLogger } from "../logger.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
 import { runTools, type UserNames } from "./runner.ts";
+
+const logger = getLogger("agent");
 
 const tracer = trace.getTracer("sushii-agent");
 
@@ -15,7 +18,7 @@ const AI_TOOLS = Object.fromEntries(
     def.function.name,
     {
       description: def.function.description,
-      parameters: jsonSchema(def.function.parameters as Record<string, unknown>),
+      inputSchema: jsonSchema(def.function.parameters as Record<string, unknown>),
     },
   ]),
 ) as Parameters<typeof generateText>[0]["tools"];
@@ -105,12 +108,12 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
 
 export async function runAgentLoop(
   query: string,
-  existingHistory: CoreMessage[],
+  existingHistory: ModelMessage[],
   guildId: string,
   client: Client<true>,
   opts: AgentLoopOptions = {},
   sessionId?: string,
-): Promise<{ response: string; updatedHistory: CoreMessage[] }> {
+): Promise<{ response: string; updatedHistory: ModelMessage[] }> {
   return tracer.startActiveSpan("agent.loop", {
     attributes: {
       "agent.model": config.openaiModel,
@@ -120,7 +123,7 @@ export async function runAgentLoop(
   }, async (span) => {
     const systemPrompt = buildSystemPrompt(opts);
 
-    const messages: CoreMessage[] = [
+    const messages: ModelMessage[] = [
       { role: "system", content: systemPrompt },
       ...existingHistory,
     ];
@@ -132,28 +135,27 @@ export async function runAgentLoop(
       if (novel.length > 0) {
         for (const [id, userNames] of novel) knownUsers.set(id, userNames);
         messages.push({ role: "system", content: buildUserNote(novel) });
-        console.log(`[agent] injected mention user note for ${novel.length} user(s)`);
+        logger.debug({ count: novel.length }, "injected mention user note");
       }
     }
 
     messages.push({ role: "user", content: query });
 
     let iterations = 0;
-    let totalPromptTokens = 0;
-    let totalCompletionTokens = 0;
-    console.log(`[agent] starting loop (history=${existingHistory.length} messages, knownUsers=${knownUsers.size})`);
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    logger.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
 
     try {
       while (iterations < MAX_ITERATIONS) {
         iterations++;
-        console.log(`[agent] iteration ${iterations}`);
+        logger.debug({ iteration: iterations }, "iteration");
 
         const result = await generateText({
           model: openaiProvider(config.openaiModel),
           messages,
           tools: AI_TOOLS,
-          maxTokens: 4096,
-          maxSteps: 1,
+          maxOutputTokens: 4096,
           experimental_telemetry: {
             isEnabled: true,
             functionId: "agent-loop",
@@ -165,22 +167,22 @@ export async function runAgentLoop(
         const { text, toolCalls, finishReason, usage } = result;
 
         if (usage) {
-          totalPromptTokens += usage.promptTokens;
-          totalCompletionTokens += usage.completionTokens;
-          console.log(`[agent] tokens: prompt=${usage.promptTokens} completion=${usage.completionTokens} total=${usage.totalTokens}`);
+          totalInputTokens += usage.inputTokens ?? 0;
+          totalOutputTokens += usage.outputTokens ?? 0;
+          logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }, "tokens");
         }
 
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
           const content = fixBlockquotes(text ?? "(no response)");
-          const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens);
-          console.log(`[agent] done after ${iterations} iteration(s), response length=${content.length}`);
+          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens);
+          logger.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
         }
 
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
-          console.log(`[agent] tool calls: ${names}`);
+          logger.debug({ tools: names }, "tool calls");
 
           // Add assistant message with tool calls to history
           messages.push({
@@ -189,7 +191,7 @@ export async function runAgentLoop(
               type: "tool-call" as const,
               toolCallId: tc.toolCallId,
               toolName: tc.toolName,
-              args: tc.args as Record<string, unknown>,
+              input: tc.input as Record<string, unknown>,
             })),
           });
 
@@ -198,7 +200,7 @@ export async function runAgentLoop(
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
               try {
-                return await runTools(toolCalls as { toolCallId: string; toolName: string; args: Record<string, unknown> }[], guildId, client);
+                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client);
               } finally {
                 toolSpan.end();
               }
@@ -212,24 +214,24 @@ export async function runAgentLoop(
               role: "user",
               content: pendingImages.map((url) => ({ type: "image" as const, image: url })),
             });
-            console.log(`[agent] injected ${pendingImages.length} image(s) for inspection`);
+            logger.debug({ count: pendingImages.length }, "injected images for inspection");
           }
 
           const novel = [...discoveredUsers.entries()].filter(([id]) => !knownUsers.has(id));
           if (novel.length > 0) {
             for (const [id, userNames] of novel) knownUsers.set(id, userNames);
             messages.push({ role: "system", content: buildUserNote(novel) });
-            console.log(`[agent] injected user note for ${novel.length} new user(s)`);
+            logger.debug({ count: novel.length }, "injected user note for new users");
           }
 
           continue;
         }
 
         // Unexpected finish reason
-        console.log(`[agent] unexpected finish_reason=${finishReason}, treating as final`);
+        logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
         const content = fixBlockquotes(text ?? "(no response)");
-        const footer = buildFooter(config.openaiModel, totalPromptTokens, totalCompletionTokens);
+        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens);
         return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
@@ -241,15 +243,15 @@ export async function runAgentLoop(
       throw err;
     } finally {
       span.setAttribute("agent.iterations", iterations);
-      span.setAttribute("agent.prompt_tokens", totalPromptTokens);
-      span.setAttribute("agent.completion_tokens", totalCompletionTokens);
+      span.setAttribute("agent.input_tokens", totalInputTokens);
+      span.setAttribute("agent.output_tokens", totalOutputTokens);
       span.end();
     }
   });
 }
 
-function buildFooter(model: string, promptTokens: number, completionTokens: number): string {
-  return `-# ${model} · ${promptTokens.toLocaleString()} in / ${completionTokens.toLocaleString()} out`;
+function buildFooter(model: string, inputTokens: number, outputTokens: number): string {
+  return `-# ${model} · ${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out`;
 }
 
 /** Fix bare ">" lines so Discord renders them as empty blockquote continuation lines. */

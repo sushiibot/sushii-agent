@@ -1,4 +1,4 @@
-import type { CoreMessage } from "ai";
+import type { ModelMessage } from "ai";
 import { getDb } from "./index.ts";
 
 interface ConversationRow {
@@ -11,7 +11,7 @@ interface ConversationRow {
 }
 
 export interface ConversationData {
-  messages: CoreMessage[];
+  messages: ModelMessage[];
   initialThreadContext: string | null;
 }
 
@@ -25,7 +25,7 @@ export function loadConversation(threadId: string): ConversationData {
 
   if (!row) return { messages: [], initialThreadContext: null };
   return {
-    messages: JSON.parse(row.messages) as CoreMessage[],
+    messages: JSON.parse(row.messages) as ModelMessage[],
     initialThreadContext: row.initial_thread_context,
   };
 }
@@ -33,7 +33,7 @@ export function loadConversation(threadId: string): ConversationData {
 export function saveConversation(
   threadId: string,
   guildId: string,
-  messages: CoreMessage[],
+  messages: ModelMessage[],
   initialThreadContext: string,
 ): void {
   const db = getDb();

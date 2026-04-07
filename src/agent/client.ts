@@ -4,7 +4,6 @@ import { config } from "../config.ts";
 const _openaiProvider = createOpenAI({
   apiKey: config.openaiApiKey,
   baseURL: config.openaiBaseUrl,
-  compatibility: "compatible",
 });
 
 // Use .chat() explicitly — @ai-sdk/openai v3 defaults to Responses API,

@@ -1,4 +1,4 @@
-import type { CoreToolMessage } from "ai";
+import type { ToolModelMessage } from "ai";
 import type { Client } from "discord.js";
 import { searchMessages } from "../tools/searchMessages.ts";
 import { getConversationContext } from "../tools/getConversationContext.ts";
@@ -8,6 +8,9 @@ import { getCurrentMemberInfo } from "../tools/getCurrentMemberInfo.ts";
 import { searchAuditLog } from "../tools/searchAuditLog.ts";
 import { resolveUsersByName } from "../tools/resolveUsersByName.ts";
 import { fetchChannelMessages } from "../tools/fetchChannelMessages.ts";
+import { getLogger } from "../logger.ts";
+
+const logger = getLogger("tool");
 
 export interface UserNames {
   username: string | null;
@@ -211,10 +214,10 @@ function formatToolResult(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
-type AiToolCall = { toolCallId: string; toolName: string; args: Record<string, unknown> };
+type AiToolCall = { toolCallId: string; toolName: string; input: Record<string, unknown> };
 
 export interface RunToolsResult {
-  toolMessage: CoreToolMessage;
+  toolMessage: ToolModelMessage;
   discoveredUsers: Map<string, UserNames>;
   pendingImages: string[];
 }
@@ -229,49 +232,49 @@ export async function runTools(
       let result: unknown;
 
       try {
-        const args = call.args;
-        console.log(`[tool] ${call.toolName}`, JSON.stringify(args));
+        const input = call.input;
+        logger.debug({ tool: call.toolName, input }, "tool call");
 
         switch (call.toolName) {
           case "search_messages":
-            result = searchMessages({ ...args, guildId } as Parameters<typeof searchMessages>[0]);
+            result = searchMessages({ ...input, guildId } as Parameters<typeof searchMessages>[0]);
             break;
           case "get_conversation_context":
             result = getConversationContext({
-              ...args,
+              ...input,
               guildId,
             } as Parameters<typeof getConversationContext>[0]);
             break;
           case "get_user_profile":
-            result = getUserProfile({ ...args, guildId } as Parameters<typeof getUserProfile>[0]);
+            result = getUserProfile({ ...input, guildId } as Parameters<typeof getUserProfile>[0]);
             break;
           case "get_recent_activity":
             result = getRecentActivity({
-              ...args,
+              ...input,
               guildId,
             } as Parameters<typeof getRecentActivity>[0]);
             break;
           case "resolve_users_by_name":
             result = resolveUsersByName({
-              ...args,
+              ...input,
               guildId,
             } as Parameters<typeof resolveUsersByName>[0]);
             break;
           case "search_audit_log":
             result = await searchAuditLog({
-              ...args,
+              ...input,
               guildId,
               client,
             } as Parameters<typeof searchAuditLog>[0]);
             break;
           case "fetch_channel_messages":
             result = await fetchChannelMessages({
-              ...args,
+              ...input,
               client,
             } as Parameters<typeof fetchChannelMessages>[0]);
             break;
           case "inspect_image": {
-            const { channel_id, message_id } = args as { channel_id: string; message_id: string };
+            const { channel_id, message_id } = input as { channel_id: string; message_id: string };
             try {
               const channel = await client.channels.fetch(channel_id);
               if (!channel || !channel.isTextBased()) {
@@ -291,7 +294,7 @@ export async function runTools(
           }
           case "get_current_member_info":
             result = await getCurrentMemberInfo({
-              ...args,
+              ...input,
               guildId,
               client,
             } as Parameters<typeof getCurrentMemberInfo>[0]);
@@ -300,7 +303,7 @@ export async function runTools(
             result = { error: `Unknown tool: ${call.toolName}` };
         }
       } catch (err) {
-        console.error(`[tool] ${call.function.name} error:`, err);
+        logger.error({ err, tool: call.toolName }, "tool error");
         result = { error: String(err) };
       }
 
@@ -309,7 +312,7 @@ export async function runTools(
   );
 
   const discoveredUsers = new Map<string, UserNames>();
-  const toolResultParts: CoreToolMessage["content"] = [];
+  const toolResultParts: ToolModelMessage["content"] = [];
   const pendingImages: string[] = [];
 
   for (const { call, result } of rawResults) {
@@ -317,10 +320,10 @@ export async function runTools(
     if (call.toolName === "inspect_image" && result && typeof result === "object" && "imageUrls" in result) {
       const urls = (result as { imageUrls: string[] }).imageUrls;
       if (urls.length === 0) {
-        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, result: "No image attachments found on that message." });
+        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: "No image attachments found on that message." } });
       } else {
         pendingImages.push(...urls);
-        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, result: `${urls.length} image(s) queued — they will appear in the next message for your analysis.` });
+        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: `${urls.length} image(s) queued — they will appear in the next message for your analysis.` } });
       }
       continue;
     }
@@ -331,9 +334,9 @@ export async function runTools(
     }
 
     const content = formatToolResult(result);
-    console.log(`[tool] ${call.toolName} result length=${content.length}`);
+    logger.debug({ tool: call.toolName, resultLength: content.length }, "tool result");
 
-    toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, result: content });
+    toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: content } });
   }
 
   return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages };
