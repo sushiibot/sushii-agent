@@ -50,19 +50,17 @@ You have access to a 30-day cache of server messages. Use tools to search and an
 
 ## Message Evidence Format
 
-Whenever you present a message — even a single one — use this two-line format with NO code backticks:
+Whenever you present a message — even a single one — use this two-line format:
 
 <example>
-<t:SECONDS:f> <@author_id> msg:channel_id/message_id
+t:SECONDS:f u:author_id msg:channel_id/message_id
 > message content here
 </example>
 
-These are THREE separate tokens with a space between each. <t:SECONDS:f> ends with the closing angle bracket, then a space, then <@author_id> starts fresh. Never merge them — <t:SECONDS:f@author_id> is invalid and will not render in Discord.
-
 - For multi-line messages, prefix EVERY line with \`> \` (including blank separator lines between paragraphs) — use \`> \` with a trailing space, never a bare \`>\`.
-- Never wrap Discord tokens (timestamps, mentions, channel refs, emojis) in backticks — output them raw so Discord renders them.
+- Do not wrap t:, u:, c:, or msg: tokens in backticks — output them as plain text.
 - Never describe what a message said in prose ("they said X", "the user wrote Y") or use narration words ("says", "counters", "agrees", "argues") — show the message directly.
-- Add a note on the timestamp line only when it adds real context (e.g. "replying to <@id>", "bot response to .throw").
+- Add a note on the timestamp line only when it adds real context (e.g. "replying to u:id", "bot response to .throw").
 - Put your take or summary after the evidence block, not before.
 
 ## Output Structure
@@ -73,9 +71,9 @@ These are THREE separate tokens with a space between each. <t:SECONDS:f> ends wi
 
 ## Formatting
 
-- Reference users as <@user_id> and channels as <#channel_id>. Only use IDs returned by tools — fabricating an ID will ping the wrong person.
-- Any field containing a Discord user ID (executorId, targetId, author_id, userId, etc.) must be formatted as <@id>, never as a raw number.
-- Timestamps: tool results return timestamps in milliseconds — divide by 1000 to get seconds. You do not know what time it is; only Discord's client does. Use <t:SECONDS:f> (absolute) for message evidence and action timestamps. Use <t:SECONDS:R> (relative) for join dates, account ages, and last-seen references. Never write out dates, times, or approximations like "~11 days ago".
+- Reference users as u:user_id and channels as c:channel_id. Only use IDs returned by tools — fabricating an ID will ping the wrong person.
+- Any field containing a Discord user ID (executorId, targetId, author_id, userId, etc.) must be formatted as u:id, never as a raw number.
+- Timestamps: tool results return timestamps in milliseconds — divide by 1000 to get seconds. You do not know what time it is; only Discord's client does. Use t:SECONDS:f (absolute) for message evidence and action timestamps. Use t:SECONDS:R (relative) for join dates, account ages, and last-seen references. Never write out dates, times, or approximations like "~11 days ago".
 - Custom emojis must include the full ID: <:name:123456789> — never write <:name:> without the ID or it will appear as broken text.
 - Resolve IDs from user input: a <@mention> → extract and use the numeric user_id directly (never ask for it again); a bare 17–20 digit number → treat as user_id by default (channel ID only if context clearly says so, message ID only if the user says so); a msg:{channel_id}/{message_id} link → call get_conversation_context with the message_id (get_conversation_context doesn't require a channel_id — never tell a mod you need one to look up a message).
 - Internal "[Internal: user identity mappings...]" notes are injected alongside tool results. Use these silently to resolve name references in follow-up questions. Never surface them to the user — do not output a "Resolved users" section or any list of identity mappings. Only ask for a user ID if the name genuinely cannot be matched.
@@ -129,7 +127,7 @@ export type { UserNames };
 function buildUserNote(novel: [string, UserNames][]): string {
   const lines = novel.map(([id, names]) => {
     const parts = [names.username, names.displayName].filter(Boolean);
-    return `• <@${id}> = ${parts.join(" / ") || "(unknown)"}`;
+    return `• u:${id} = ${parts.join(" / ") || "(unknown)"}`;
   });
   return `[Internal: user identity mappings for resolving names — do not quote or surface this to the user]\n${lines.join("\n")}`;
 }
@@ -142,14 +140,14 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
   // Bot's own identity
   if (opts.botId) {
     const nameStr = opts.botUsername ? ` (${opts.botUsername})` : "";
-    systemParts.push(`Your identity: Your Discord user ID is ${opts.botId}${nameStr}. When you see <@${opts.botId}> in messages, that is yourself. Never confuse your own messages with those of other users.`);
+    systemParts.push(`Your identity: Your Discord user ID is ${opts.botId}${nameStr}. When you see u:${opts.botId} in messages, that is yourself. Never confuse your own messages with those of other users.`);
   }
 
   // Current channel context
   if (opts.currentChannel) {
     const ch = opts.currentChannel;
     const privacy = ch.isPrivate ? "private (not visible to regular members)" : "public";
-    const lines = [`Current channel: #${ch.name} (<#${ch.id}>) — ${ch.type}, ${privacy}`];
+    const lines = [`Current channel: #${ch.name} (c:${ch.id}) — ${ch.type}, ${privacy}`];
     if (ch.categoryName) lines.push(`Category: ${ch.categoryName}`);
     if (ch.parentChannelName) lines.push(`Parent channel: #${ch.parentChannelName}`);
     if (ch.topic) lines.push(`Topic: ${ch.topic}`);
@@ -165,7 +163,7 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
       ? u.roles.map((r) => `${r.name} (${r.id})`).join(", ")
       : "none";
     const lines = [
-      `Request from: ${u.username}${displayStr} (<@${u.id}>)`,
+      `Request from: ${u.username}${displayStr} (u:${u.id})`,
       `Moderator: ${modStr}`,
       `Roles: ${roleStr}`,
     ];
@@ -309,7 +307,7 @@ export async function runAgentLoop(
 
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
-          const content = fixBlockquotes(text ?? "(no response)");
+          const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"));
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit, usedTools);
           logger.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
@@ -323,7 +321,7 @@ export async function runAgentLoop(
           }
 
           if (text && opts.onInterimText) {
-            await opts.onInterimText(fixBlockquotes(text));
+            await opts.onInterimText(expandDiscordTokens(fixBlockquotes(text)));
           }
 
           // Add assistant message with tool calls to history
@@ -379,7 +377,7 @@ export async function runAgentLoop(
         // Unexpected finish reason
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
-        const content = fixBlockquotes(text ?? "(no response)");
+        const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"));
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit, usedTools);
         return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
       }
@@ -419,19 +417,30 @@ function buildFooter(
   const statsLine = `-# ${model} · ${contextTokens.toLocaleString()} ctx (${ctxPct}%) · ${totalOutputTokens.toLocaleString()} out`;
   if (usedTools.length === 0) return statsLine;
 
-  const toolStrings = usedTools.map(({ name, input }) => {
+  const toolLines = usedTools.map(({ name, input }) => {
     const args = Object.entries(input)
       .map(([k, v]) => `${k}=${formatToolArg(v)}`)
       .join(", ");
-    return args ? `${name}(${args})` : name;
+    return `-# - ${args ? `${name}(${args})` : name}`;
   });
-  const toolsLine = `-# ${toolStrings.join(" · ")}`;
-  return `${statsLine}\n${toolsLine}`;
+  return `${statsLine}\n${toolLines.join("\n")}`;
 }
 
 /** Fix bare ">" lines so Discord renders them as empty blockquote continuation lines. */
 function fixBlockquotes(text: string): string {
   return text.replace(/^>$/gm, "> ");
+}
+
+/**
+ * Expand short-prefix tokens the model outputs into Discord-rendered syntax.
+ * The model writes u:ID, c:ID, t:SECONDS:FLAG — we expand them here so the
+ * model never has to produce angle-bracket syntax directly.
+ */
+function expandDiscordTokens(text: string): string {
+  return text
+    .replace(/\bu:(\d{15,20})\b/g, "<@$1>")
+    .replace(/\bc:(\d{15,20})\b/g, "<#$1>")
+    .replace(/\bt:(\d{8,12}):([A-Za-z])\b/g, "<t:$1:$2>");
 }
 
 export function expandMessageLinks(text: string, guildId: string): string {

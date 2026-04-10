@@ -41,10 +41,10 @@ type MessageRowLike = {
 
 function formatMessageRow(row: MessageRowLike): string {
   const seconds = Math.floor(row.created_at / 1000);
-  let line = `msg:${row.channel_id}/${row.discord_id} <t:${seconds}:R> <@${row.author_id}>: ${row.content}`;
+  let line = `msg:${row.channel_id}/${row.discord_id} t:${seconds}:R u:${row.author_id}: ${row.content}`;
   if (row.reply_to_id) {
     if (row.reply_to_content != null && row.reply_to_author_id != null) {
-      line += `\n  [replying to <@${row.reply_to_author_id}>: ${row.reply_to_content}]`;
+      line += `\n  [replying to u:${row.reply_to_author_id}: ${row.reply_to_content}]`;
     } else {
       line += `\n  [replying to: msg:${row.channel_id}/${row.reply_to_id}]`;
     }
@@ -103,9 +103,9 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
             changes: Array<{ key: string; old: unknown; new: unknown }>;
           }) => {
             const seconds = Math.floor(e.createdAt / 1000);
-            const executor = e.executorId ? `<@${e.executorId}>` : "unknown";
-            const target = e.targetId ? `<@${e.targetId}>` : "unknown";
-            let line = `<t:${seconds}:R> ${e.action} — ${executor} → ${target}`;
+            const executor = e.executorId ? `u:${e.executorId}` : "unknown";
+            const target = e.targetId ? `u:${e.targetId}` : "unknown";
+            let line = `t:${seconds}:R ${e.action} — ${executor} → ${target}`;
             if (e.reason) line += ` | reason: "${e.reason}"`;
             if (e.changes.length > 0) {
               const changeStrs = e.changes
@@ -145,7 +145,7 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
               u.author_display_name && u.author_display_name !== u.author_username
                 ? `${u.author_username} / ${u.author_display_name}`
                 : (u.author_username ?? "unknown");
-            return `<@${u.author_id}> ${name} — last active <t:${seconds}:R>, ${u.message_count} messages`;
+            return `u:${u.author_id} ${name} — last active t:${seconds}:R, ${u.message_count} messages`;
           },
         )
         .join("\n");
@@ -164,21 +164,21 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
       };
 
       const userId = input?.user_id as string | undefined;
-      const header = userId ? `Profile for <@${userId}>:` : "Profile:";
+      const header = userId ? `Profile for u:${userId}:` : "Profile:";
 
       if (!r.summary || r.summary.total_messages === 0) {
         return `${header}\n(no messages found for this user in the cache)`;
       }
 
       const lines: string[] = [header];
-      if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:R>`);
-      if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:R>`);
+      if (r.summary.first_seen) lines.push(`first seen: t:${Math.floor(r.summary.first_seen / 1000)}:R`);
+      if (r.summary.last_seen) lines.push(`last seen: t:${Math.floor(r.summary.last_seen / 1000)}:R`);
       lines.push(`total messages: ${r.summary.total_messages} across ${r.summary.channel_count} channels`);
 
       if (r.channelDistribution.length > 0) {
         lines.push("top channels:");
         for (const ch of r.channelDistribution) {
-          lines.push(`  <#${ch.channel_id}>: ${ch.count} messages`);
+          lines.push(`  c:${ch.channel_id}: ${ch.count} messages`);
         }
       }
 
@@ -203,13 +203,13 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
       };
 
       if (!r.isStillInServer) {
-        return `<@${r.userId}> — not in server`;
+        return `u:${r.userId} — not in server`;
       }
 
       const lines: string[] = [];
-      lines.push(`user: ${r.username} (<@${r.userId}>)`);
+      lines.push(`user: ${r.username} (u:${r.userId})`);
       if (r.displayName && r.displayName !== r.username) lines.push(`display name: ${r.displayName}`);
-      if (r.joinedAt) lines.push(`joined: <t:${Math.floor(r.joinedAt / 1000)}:R>`);
+      if (r.joinedAt) lines.push(`joined: t:${Math.floor(r.joinedAt / 1000)}:R`);
       lines.push("in server: yes");
       if (r.roles && r.roles.length > 0) {
         lines.push(`roles: ${r.roles.map((role) => `${role.name} (${role.id})`).join(", ")}`);
@@ -252,7 +252,7 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
         lines.push(`[${name}]`);
         for (const ch of cats) {
           const privacy = ch.isPrivate ? "private" : "public";
-          let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
+          let line = `  c:${ch.id} #${ch.name} (${ch.type}, ${privacy})`;
           if (ch.topic) line += ` — ${ch.topic}`;
           lines.push(line);
         }
@@ -261,7 +261,7 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
         lines.push("[No category]");
         for (const ch of noCat) {
           const privacy = ch.isPrivate ? "private" : "public";
-          let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
+          let line = `  c:${ch.id} #${ch.name} (${ch.type}, ${privacy})`;
           if (ch.topic) line += ` — ${ch.topic}`;
           lines.push(line);
         }
@@ -289,14 +289,14 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
       // Single memory object
       if (result && typeof result === "object" && !Array.isArray(result)) {
         const r = result as { title: string; content: string; updated_at: number };
-        return `**${r.title}** (updated <t:${Math.floor(r.updated_at / 1000)}:R>)\n${r.content}`;
+        return `**${r.title}** (updated t:${Math.floor(r.updated_at / 1000)}:R)\n${r.content}`;
       }
       // Array of memories
       if (Array.isArray(result)) {
         if (result.length === 0) return "(no results)";
         type MemoryRow = { title: string; content: string; updated_at: number };
         return (result as MemoryRow[])
-          .map((m) => `**${m.title}** (updated <t:${Math.floor(m.updated_at / 1000)}:R>)\n${m.content}`)
+          .map((m) => `**${m.title}** (updated t:${Math.floor(m.updated_at / 1000)}:R)\n${m.content}`)
           .join("\n\n---\n\n");
       }
       return JSON.stringify(result, null, 2);
@@ -315,11 +315,11 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
         parentChannelName?: string;
       };
       const lines: string[] = [];
-      lines.push(`<#${r.id}> #${r.name}`);
+      lines.push(`c:${r.id} #${r.name}`);
       lines.push(`type: ${r.type}`);
       lines.push(`privacy: ${r.isPrivate ? "private (not visible to @everyone)" : "public"}`);
       if (r.categoryName) lines.push(`category: ${r.categoryName}`);
-      if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (<#${r.parentChannelId}>)`);
+      if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (c:${r.parentChannelId})`);
       if (r.topic) lines.push(`topic: ${r.topic}`);
       return lines.join("\n");
     }
