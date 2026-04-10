@@ -1,5 +1,6 @@
 import type { Client } from "discord.js";
-import { ChannelType, PermissionFlagsBits } from "discord.js";
+import { ChannelType } from "discord.js";
+import { channelTypeName, isPrivateChannel } from "./channelUtils.ts";
 
 export interface ChannelInfo {
   id: string;
@@ -9,25 +10,6 @@ export interface ChannelInfo {
   topic?: string;
   categoryId?: string;
   categoryName?: string;
-}
-
-function channelTypeName(type: ChannelType): string {
-  switch (type) {
-    case ChannelType.GuildText: return "text";
-    case ChannelType.GuildVoice: return "voice";
-    case ChannelType.GuildAnnouncement: return "announcement";
-    case ChannelType.GuildForum: return "forum";
-    case ChannelType.GuildStageVoice: return "stage";
-    case ChannelType.PublicThread: return "thread (public)";
-    case ChannelType.PrivateThread: return "thread (private)";
-    default: return "other";
-  }
-}
-
-function isPrivateChannel(channel: { type: ChannelType; permissionOverwrites?: { cache: Map<string, { deny: { has: (flag: bigint) => boolean } }> } }, everyoneRoleId: string): boolean {
-  if (channel.type === ChannelType.PrivateThread) return true;
-  const overwrite = channel.permissionOverwrites?.cache?.get(everyoneRoleId);
-  return overwrite?.deny?.has(PermissionFlagsBits.ViewChannel) ?? false;
 }
 
 export async function listGuildChannels({

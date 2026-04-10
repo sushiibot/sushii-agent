@@ -20,6 +20,7 @@ export async function listGuildRoles({
 }): Promise<RoleInfo[]> {
   const guild = await client.guilds.fetch(guildId);
   await guild.roles.fetch();
+  await guild.members.fetch();
 
   return [...guild.roles.cache.values()]
     .filter((r) => r.name !== "@everyone")

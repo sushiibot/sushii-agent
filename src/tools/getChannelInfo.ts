@@ -1,5 +1,6 @@
 import type { Client } from "discord.js";
-import { ChannelType, PermissionFlagsBits } from "discord.js";
+import { ChannelType } from "discord.js";
+import { channelTypeName, isPrivateChannel } from "./channelUtils.ts";
 
 export interface ChannelDetail {
   id: string;
@@ -11,19 +12,6 @@ export interface ChannelDetail {
   categoryName?: string;
   parentChannelId?: string;
   parentChannelName?: string;
-}
-
-function channelTypeName(type: ChannelType): string {
-  switch (type) {
-    case ChannelType.GuildText: return "text";
-    case ChannelType.GuildVoice: return "voice";
-    case ChannelType.GuildAnnouncement: return "announcement";
-    case ChannelType.GuildForum: return "forum";
-    case ChannelType.GuildStageVoice: return "stage";
-    case ChannelType.PublicThread: return "thread (public)";
-    case ChannelType.PrivateThread: return "thread (private)";
-    default: return "other";
-  }
 }
 
 export async function getChannelInfo({
@@ -43,13 +31,7 @@ export async function getChannelInfo({
   const guild = await client.guilds.fetch(guildId);
   const everyoneRoleId = guild.roles.everyone.id;
 
-  let isPrivate = false;
-  if (channel.type === ChannelType.PrivateThread) {
-    isPrivate = true;
-  } else if ("permissionOverwrites" in channel) {
-    const overwrite = (channel.permissionOverwrites as { cache: Map<string, { deny: { has: (flag: bigint) => boolean } }> }).cache.get(everyoneRoleId);
-    isPrivate = overwrite?.deny?.has(PermissionFlagsBits.ViewChannel) ?? false;
-  }
+  const isPrivate = isPrivateChannel(channel as Parameters<typeof isPrivateChannel>[0], everyoneRoleId);
 
   const detail: ChannelDetail = {
     id: channel.id,
