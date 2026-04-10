@@ -74,7 +74,7 @@ t:SECONDS:f u:author_id msg:channel_id/message_id
 - Reference users as u:user_id and channels as c:channel_id. Only use IDs returned by tools — fabricating an ID will ping the wrong person.
 - Any field containing a Discord user ID (executorId, targetId, author_id, userId, etc.) must be formatted as u:id, never as a raw number.
 - Timestamps: tool results return timestamps in milliseconds — divide by 1000 to get seconds. You do not know what time it is; only Discord's client does. Use t:SECONDS:f (absolute) for message evidence and action timestamps. Use t:SECONDS:R (relative) for join dates, account ages, and last-seen references. Never write out dates, times, or approximations like "~11 days ago".
-- Custom emojis must include the full ID: <:name:123456789> — never write <:name:> without the ID or it will appear as broken text.
+- Custom emojis: use \`e:name\` tokens (e.g. \`e:JennieLmao2\`). The bot expands these to Discord syntax automatically — never write raw \`<:name:id>\` syntax.
 - Resolve IDs from user input: a <@mention> → extract and use the numeric user_id directly (never ask for it again); a bare 17–20 digit number → treat as user_id by default (channel ID only if context clearly says so, message ID only if the user says so); a msg:{channel_id}/{message_id} link → call get_conversation_context with the message_id (get_conversation_context doesn't require a channel_id — never tell a mod you need one to look up a message).
 - Internal "[Internal: user identity mappings...]" notes are injected alongside tool results. Use these silently to resolve name references in follow-up questions. Never surface them to the user — do not output a "Resolved users" section or any list of identity mappings. Only ask for a user ID if the name genuinely cannot be matched.
 
@@ -195,10 +195,10 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
 
   if (opts.emojiMap && Object.keys(opts.emojiMap).length > 0) {
     const entries = Object.entries(opts.emojiMap)
-      .map(([name, unicode]) => `${unicode} :${name}:`)
+      .map(([name]) => `e:${name}`)
       .join("  ");
     systemParts.push(
-      `Server emojis (custom name → Discord syntax):\n${entries}\nUse the full Discord syntax exactly as shown (e.g. \`<:JennieLmao2:799030229229109299>\`) — always include the opening \`<\`. Do not use other emojis.`,
+      `Server emojis — use as \`e:name\` tokens (e.g. \`e:JennieLmao2\`). Available:\n${entries}\nDo not use other emojis. Do not include angle brackets or IDs — the bot expands \`e:name\` to the correct Discord syntax automatically.`,
     );
   }
 
@@ -307,7 +307,7 @@ export async function runAgentLoop(
 
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
-          const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"));
+          const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit, usedTools);
           logger.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
@@ -321,7 +321,7 @@ export async function runAgentLoop(
           }
 
           if (text && opts.onInterimText) {
-            await opts.onInterimText(expandDiscordTokens(fixBlockquotes(text)));
+            await opts.onInterimText(expandDiscordTokens(fixBlockquotes(text), opts.emojiMap));
           }
 
           // Add assistant message with tool calls to history
@@ -377,7 +377,7 @@ export async function runAgentLoop(
         // Unexpected finish reason
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
-        const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"));
+        const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit, usedTools);
         return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
       }
@@ -433,14 +433,20 @@ function fixBlockquotes(text: string): string {
 
 /**
  * Expand short-prefix tokens the model outputs into Discord-rendered syntax.
- * The model writes u:ID, c:ID, t:SECONDS:FLAG — we expand them here so the
+ * The model writes u:ID, c:ID, t:SECONDS:FLAG, e:name — we expand them here so the
  * model never has to produce angle-bracket syntax directly.
  */
-function expandDiscordTokens(text: string): string {
-  return text
+function expandDiscordTokens(text: string, emojiMap?: Record<string, string>): string {
+  let result = text
     .replace(/\bu:(\d{15,20})\b/g, "<@$1>")
     .replace(/\bc:(\d{15,20})\b/g, "<#$1>")
     .replace(/\bt:(\d{8,12}):([A-Za-z])\b/g, "<t:$1:$2>");
+
+  if (emojiMap) {
+    result = result.replace(/\be:(\w+)\b/g, (match, name) => emojiMap[name] ?? match);
+  }
+
+  return result;
 }
 
 export function expandMessageLinks(text: string, guildId: string): string {
