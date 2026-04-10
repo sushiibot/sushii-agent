@@ -219,17 +219,16 @@ export async function runAgentLoop(
 
     const knownUsers = new Map<string, UserNames>();
 
-    // Seed knownUsers from existing history so we don't re-inject notes for already-noted users
+    // Seed knownUsers from ALL system messages in existing history so we don't re-inject
+    // identity notes for users already noted in prior turns — both mentionedUsers and
+    // tool-discovered users (whose IDs appear as <@id> in [Internal: user identity mappings] notes).
     for (const msg of messages) {
       if (msg.role !== "system") continue;
       const text = typeof msg.content === "string" ? msg.content : null;
       if (!text) continue;
-      // Check mentionedUsers first (they're available before the loop)
-      if (opts.mentionedUsers) {
-        for (const [id, names] of opts.mentionedUsers) {
-          if (!knownUsers.has(id) && text.includes(id)) {
-            knownUsers.set(id, names);
-          }
+      for (const [, id] of text.matchAll(/<@(\d+)>/g)) {
+        if (!knownUsers.has(id)) {
+          knownUsers.set(id, opts.mentionedUsers?.get(id) ?? { username: "(unknown)", displayName: null });
         }
       }
     }
