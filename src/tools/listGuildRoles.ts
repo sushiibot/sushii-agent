@@ -21,8 +21,6 @@ export async function listGuildRoles({
   try {
     const guild = await client.guilds.fetch(guildId);
     await guild.roles.fetch();
-    await guild.members.fetch();
-
     return [...guild.roles.cache.values()]
       .filter((r) => r.name !== "@everyone")
       .sort((a, b) => b.position - a.position)

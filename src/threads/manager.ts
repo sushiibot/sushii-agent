@@ -29,11 +29,19 @@ export async function renameThread(
   history: ModelMessage[],
 ): Promise<void> {
   try {
-    const recentHistory = history.slice(-10);
+    const textHistory = history
+      .filter((m) => {
+        if (m.role === "user") return typeof m.content === "string";
+        if (m.role === "assistant") return typeof m.content === "string" && (m.content as string).trim().length > 0;
+        return false;
+      })
+      .slice(-6)
+      .map((m) => ({ ...m, content: (m.content as string).slice(0, 500) })) as ModelMessage[];
+
     const result = await generateText({
       model: openaiProvider(config.openaiModel),
       messages: [
-        ...recentHistory,
+        ...textHistory,
         {
           role: "user",
           content:
