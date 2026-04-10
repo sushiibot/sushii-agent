@@ -35,10 +35,10 @@ export async function fetchChannelMessages(
     if (!fetched || !fetched.isTextBased()) {
       return { error: `Channel ${args.channel_id} is not a text channel` };
     }
-    channel = fetched;
-    if ("guildId" in fetched && fetched.guildId !== args.guildId) {
+    if (fetched.isDMBased() || fetched.guildId !== args.guildId) {
       return { error: `Channel ${args.channel_id} does not belong to this guild` };
     }
+    channel = fetched;
   } catch (err) {
     return { error: `Failed to fetch channel: ${err}` };
   }

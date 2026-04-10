@@ -29,10 +29,10 @@ export async function getChannelInfo({
   } catch (err) {
     return { error: `Failed to fetch channel ${channel_id}: ${err}` };
   }
-  if (!channel || !("guild" in channel)) {
+  if (!channel || channel.isDMBased()) {
     return { error: `Channel ${channel_id} not found or not a guild channel` };
   }
-  if ("guildId" in channel && channel.guildId !== guildId) {
+  if (channel.guildId !== guildId) {
     return { error: `Channel ${channel_id} does not belong to this guild` };
   }
 

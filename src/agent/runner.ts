@@ -340,7 +340,6 @@ function coerceNumericFields(input: Record<string, unknown>, fields: string[]): 
 type AiToolCall = { toolCallId: string; toolName: string; input: Record<string, unknown> };
 
 export interface PendingQuestion {
-  toolCallId: string;
   question: string;
   choices: string[];
 }
@@ -415,7 +414,7 @@ export async function runTools(
                 result = { error: `Channel ${channel_id} is not a text channel` };
                 break;
               }
-              if ("guildId" in channel && channel.guildId !== guildId) {
+              if (channel.isDMBased() || channel.guildId !== guildId) {
                 result = { error: `Channel ${channel_id} does not belong to this guild` };
                 break;
               }
@@ -488,7 +487,7 @@ export async function runTools(
     // ask_question — pause the loop, send buttons to Discord
     if (call.toolName === "ask_question" && result && typeof result === "object" && "_askQuestion" in result) {
       const r = result as unknown as { question: string; choices: string[] };
-      pendingQuestion = { toolCallId: call.toolCallId, question: r.question, choices: r.choices };
+      pendingQuestion = { question: r.question, choices: r.choices };
       askQuestionToolCallId = call.toolCallId;
       toolResultParts.push({
         type: "tool-result",
