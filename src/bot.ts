@@ -366,7 +366,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
   await interaction.deferUpdate();
   await disableQuestionButtons(interaction as ButtonInteraction, pending.question, choice);
 
-  await withThreadLock(threadId, async () => {
+  try {
+    await withThreadLock(threadId, async () => {
     const thread = await client.channels.fetch(threadId);
     if (!thread?.isThread()) return;
 
@@ -427,6 +428,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       clearInterval(typingInterval);
     }
   }); // end withThreadLock
+  } catch (err) {
+    logger.error({ err }, "Unexpected error in button interaction handler");
+  }
 });
 
 async function sendQuestionWithButtons(
@@ -661,9 +665,17 @@ export async function startBot(): Promise<void> {
   // Hourly: prune stale questions from DB and re-sync the in-memory map
   setInterval(() => {
     deleteStalePendingQuestions(24 * 60 * 60 * 1000);
-    pendingChoices.clear();
+    const fresh = new Map<string, PendingQuestionState>();
     for (const pq of loadAllPendingQuestions()) {
-      pendingChoices.set(pq.threadId, { question: pq.question, choices: pq.choices, triggeredByUserId: pq.triggeredByUserId });
+      fresh.set(pq.threadId, { question: pq.question, choices: pq.choices, triggeredByUserId: pq.triggeredByUserId });
+    }
+    // Remove stale entries
+    for (const key of [...pendingChoices.keys()]) {
+      if (!fresh.has(key)) pendingChoices.delete(key);
+    }
+    // Add/update new entries
+    for (const [key, val] of fresh) {
+      pendingChoices.set(key, val);
     }
   }, 60 * 60 * 1000);
 
