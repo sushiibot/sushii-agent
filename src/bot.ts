@@ -290,6 +290,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
             memoryIndex,
             memoryCount,
             memoryLimit: MEMORY_LIMIT,
+            onInterimText: async (text) => {
+              const expanded = expandMessageLinks(text, guildId);
+              const componentMsgs = buildComponentMessages(expanded);
+              for (const msgOpts of componentMsgs) {
+                await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+              }
+              await thread.sendTyping();
+            },
           },
           thread.id,
         );
@@ -454,6 +462,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
             memoryIndex: freshMemoryIndex,
             memoryCount: freshMemoryCount,
             memoryLimit: MEMORY_LIMIT,
+            onInterimText: async (text) => {
+              const expanded = expandMessageLinks(text, guildId);
+              const componentMsgs = buildComponentMessages(expanded);
+              for (const msgOpts of componentMsgs) {
+                await threadChannel.send({ ...msgOpts, allowedMentions: { parse: [] } });
+              }
+              await threadChannel.sendTyping();
+            },
           },
           pending.threadId,
         );
@@ -574,6 +590,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
           memoryIndex,
           memoryCount,
           memoryLimit: MEMORY_LIMIT,
+          onInterimText: async (text) => {
+            const expanded = expandMessageLinks(text, guildId);
+            const componentMsgs = buildComponentMessages(expanded);
+            for (const msgOpts of componentMsgs) {
+              await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+            }
+            await thread.sendTyping();
+          },
         },
         threadId,
       );

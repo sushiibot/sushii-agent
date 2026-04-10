@@ -118,6 +118,7 @@ export interface AgentLoopOptions {
   memoryIndex?: string[]; // titles only — agent fetches content via read_memory
   memoryCount?: number;
   memoryLimit?: number;
+  onInterimText?: (text: string) => Promise<void>;
 }
 
 export type { UserNames };
@@ -272,6 +273,7 @@ export async function runAgentLoop(
     let iterations = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let lastInputTokens = 0;
     logger.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
 
     try {
@@ -297,13 +299,14 @@ export async function runAgentLoop(
         if (usage) {
           totalInputTokens += usage.inputTokens ?? 0;
           totalOutputTokens += usage.outputTokens ?? 0;
+          lastInputTokens = usage.inputTokens ?? 0;
           logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }, "tokens");
         }
 
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
           const content = fixBlockquotes(text ?? "(no response)");
-          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens);
+          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit);
           logger.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
         }
@@ -311,6 +314,10 @@ export async function runAgentLoop(
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
           logger.debug({ tools: names }, "tool calls");
+
+          if (text && opts.onInterimText) {
+            await opts.onInterimText(fixBlockquotes(text));
+          }
 
           // Add assistant message with tool calls to history
           messages.push({
@@ -366,7 +373,7 @@ export async function runAgentLoop(
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
         const content = fixBlockquotes(text ?? "(no response)");
-        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens);
+        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit);
         return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
@@ -385,8 +392,9 @@ export async function runAgentLoop(
   });
 }
 
-function buildFooter(model: string, inputTokens: number, outputTokens: number): string {
-  return `-# ${model} · ${inputTokens.toLocaleString()} in / ${outputTokens.toLocaleString()} out`;
+function buildFooter(model: string, totalInputTokens: number, totalOutputTokens: number, contextTokens: number, contextLimit: number): string {
+  const ctxPct = Math.round((contextTokens / contextLimit) * 100);
+  return `-# ${model} · ${contextTokens.toLocaleString()} ctx (${ctxPct}%) · ${totalOutputTokens.toLocaleString()} out`;
 }
 
 /** Fix bare ">" lines so Discord renders them as empty blockquote continuation lines. */
