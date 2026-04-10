@@ -76,4 +76,25 @@ export const MIGRATIONS: string[][] = [
   [
     `ALTER TABLE conversations ADD COLUMN initial_thread_context TEXT`,
   ],
+
+  // Migration 5 — server context (CLAUDE.md equivalent) + agent memory
+  [
+    `CREATE TABLE IF NOT EXISTS server_context (
+      guild_id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS agent_memory (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(guild_id, title)
+    )`,
+
+    `CREATE INDEX IF NOT EXISTS idx_agent_memory_guild ON agent_memory(guild_id)`,
+  ],
 ];
