@@ -27,7 +27,7 @@ import {
   softDeleteMessage,
   deleteOldMessages,
 } from "./db/messages.ts";
-import { loadConversation, saveConversation } from "./db/conversations.ts";
+import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
 import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type AgentLoopResult } from "./agent/loop.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
@@ -51,7 +51,11 @@ const threadLocks = new Map<string, Promise<void>>();
 
 function withThreadLock(threadId: string, fn: () => Promise<void>): Promise<void> {
   const prev = threadLocks.get(threadId) ?? Promise.resolve();
-  const next = prev.then(fn, fn); // run fn even if prev rejected
+  const next = prev.then(fn, fn).finally(() => {
+    if (threadLocks.get(threadId) === next) {
+      threadLocks.delete(threadId);
+    }
+  });
   threadLocks.set(threadId, next);
   return next;
 }
@@ -644,6 +648,9 @@ export async function startBot(): Promise<void> {
   // Run cleanup on startup, then daily
   deleteOldMessages();
   setInterval(deleteOldMessages, 24 * 60 * 60 * 1000);
+
+  deleteStaleConversations(90 * 24 * 60 * 60 * 1000); // 90-day TTL
+  setInterval(() => deleteStaleConversations(90 * 24 * 60 * 60 * 1000), 24 * 60 * 60 * 1000);
 
   // Delete stale pending questions (older than 24h) before restoring, then schedule hourly cleanup
   deleteStalePendingQuestions(24 * 60 * 60 * 1000);
