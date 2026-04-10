@@ -40,17 +40,18 @@ export function getConversationContext(
   }
 
   // Get N messages before (inclusive of anchor) and N after in the same channel
+  // Use id-based ordering to avoid duplicates when multiple messages share the same timestamp
   const before = db
     .prepare<MessageRow, [string, string, number, number]>(
       `SELECT discord_id, guild_id, channel_id, author_id,
               author_username, author_display_name, content, reply_to_id,
               created_at, edited_at, deleted_at, is_automod
        FROM messages
-       WHERE channel_id = ? AND guild_id = ? AND created_at <= ?
-       ORDER BY created_at DESC
+       WHERE channel_id = ? AND guild_id = ? AND id <= ?
+       ORDER BY id DESC
        LIMIT ?`,
     )
-    .all(anchor.channel_id, args.guildId, anchor.created_at, window + 1);
+    .all(anchor.channel_id, args.guildId, anchor.id, window + 1);
 
   const after = db
     .prepare<MessageRow, [string, string, number, number]>(
@@ -58,11 +59,11 @@ export function getConversationContext(
               author_username, author_display_name, content, reply_to_id,
               created_at, edited_at, deleted_at, is_automod
        FROM messages
-       WHERE channel_id = ? AND guild_id = ? AND created_at > ?
-       ORDER BY created_at ASC
+       WHERE channel_id = ? AND guild_id = ? AND id > ?
+       ORDER BY id ASC
        LIMIT ?`,
     )
-    .all(anchor.channel_id, args.guildId, anchor.created_at, window);
+    .all(anchor.channel_id, args.guildId, anchor.id, window);
 
   const contextMessages = [...before.reverse(), ...after];
 

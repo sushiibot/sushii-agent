@@ -20,7 +20,8 @@ export function resolveUsersByName(args: ResolveUsersByNameArgs): UserCandidate[
   const days = args.days ?? 30;
   const limit = Math.min(args.limit ?? 10, 25);
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
-  const pattern = `%${args.name}%`;
+  const escapedName = args.name.replace(/[%_\\]/g, '\\$&');
+  const pattern = `%${escapedName}%`;
 
   return db
     .prepare<UserCandidate, [string, number, string, string]>(
@@ -29,7 +30,7 @@ export function resolveUsersByName(args: ResolveUsersByNameArgs): UserCandidate[
        FROM messages
        WHERE guild_id = ?
          AND created_at >= ?
-         AND (author_username LIKE ? OR author_display_name LIKE ?)
+         AND (author_username LIKE ? ESCAPE '\\' OR author_display_name LIKE ? ESCAPE '\\')
        GROUP BY author_id
        ORDER BY last_active DESC
        LIMIT ${limit}`,

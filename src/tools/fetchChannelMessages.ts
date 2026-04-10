@@ -64,14 +64,14 @@ export async function fetchChannelMessages(
       return [toResult(msg)];
     }
 
-    const limit = Math.min(Math.max(args.limit ?? 50, 1), 100);
+    const limit = Math.min(Math.max(args.limit ?? 10, 1), 100);
     const options: { before?: string; after?: string; around?: string; limit: number } = { limit };
     if (args.before) options.before = args.before;
     else if (args.after) options.after = args.after;
     else if (args.around) options.around = args.around;
 
     const messages = await channel.messages.fetch(options);
-    return [...messages.values()].map(toResult);
+    return [...messages.values()].map(toResult).sort((a, b) => a.created_at - b.created_at);
   } catch (err) {
     return { error: `Failed to fetch messages: ${err}` };
   }

@@ -30,7 +30,7 @@ interface MessageRow {
 
 export function searchMessages(args: SearchMessagesArgs): MessageRow[] | { error: string } {
   const db = getDb();
-  const limit = Math.min(args.limit ?? 50, 200);
+  const limit = Math.min(args.limit ?? 20, 100);
 
   if (args.query) {
     // FTS path — ranked by relevance

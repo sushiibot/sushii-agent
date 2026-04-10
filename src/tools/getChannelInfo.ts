@@ -23,9 +23,17 @@ export async function getChannelInfo({
   guildId: string;
   client: Client<true>;
 }): Promise<ChannelDetail | { error: string }> {
-  const channel = await client.channels.fetch(channel_id);
+  let channel: Awaited<ReturnType<typeof client.channels.fetch>>;
+  try {
+    channel = await client.channels.fetch(channel_id);
+  } catch (err) {
+    return { error: `Failed to fetch channel ${channel_id}: ${err}` };
+  }
   if (!channel || !("guild" in channel)) {
     return { error: `Channel ${channel_id} not found or not a guild channel` };
+  }
+  if ("guildId" in channel && channel.guildId !== guildId) {
+    return { error: `Channel ${channel_id} does not belong to this guild` };
   }
 
   const guild = await client.guilds.fetch(guildId);
