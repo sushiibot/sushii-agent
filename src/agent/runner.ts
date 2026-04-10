@@ -398,6 +398,7 @@ export async function runTools(
           case "fetch_channel_messages":
             result = await fetchChannelMessages({
               ...input,
+              guildId,
               client,
             } as Parameters<typeof fetchChannelMessages>[0]);
             break;
@@ -407,6 +408,10 @@ export async function runTools(
               const channel = await client.channels.fetch(channel_id);
               if (!channel || !channel.isTextBased()) {
                 result = { error: `Channel ${channel_id} is not a text channel` };
+                break;
+              }
+              if ("guildId" in channel && channel.guildId !== guildId) {
+                result = { error: `Channel ${channel_id} does not belong to this guild` };
                 break;
               }
               const msg = await channel.messages.fetch(message_id);

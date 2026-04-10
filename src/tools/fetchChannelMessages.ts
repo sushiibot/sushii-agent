@@ -4,6 +4,7 @@ import { buildMessageContent } from "../utils/flattenMessage.ts";
 interface FetchChannelMessagesArgs {
   channel_id: string;
   client: Client<true>; // injected by runner
+  guildId: string; // injected by runner
   // Single message fetch
   message_id?: string;
   // Range fetch (mutually exclusive)
@@ -35,6 +36,9 @@ export async function fetchChannelMessages(
       return { error: `Channel ${args.channel_id} is not a text channel` };
     }
     channel = fetched;
+    if ("guildId" in fetched && fetched.guildId !== args.guildId) {
+      return { error: `Channel ${args.channel_id} does not belong to this guild` };
+    }
   } catch (err) {
     return { error: `Failed to fetch channel: ${err}` };
   }

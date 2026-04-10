@@ -82,9 +82,9 @@ export function getConversationContext(
         `SELECT discord_id, guild_id, channel_id, author_id,
                 author_username, author_display_name, content, reply_to_id,
                 created_at, edited_at, deleted_at, is_automod
-         FROM messages WHERE discord_id IN (${placeholders})`,
+         FROM messages WHERE discord_id IN (${placeholders}) AND guild_id = ?`,
       )
-      .all(...toFetch);
+      .all(...toFetch, args.guildId);
 
     const nextFetch: string[] = [];
     for (const p of parents) {
