@@ -29,10 +29,11 @@ export async function renameThread(
   history: ModelMessage[],
 ): Promise<void> {
   try {
+    const recentHistory = history.slice(-10);
     const result = await generateText({
       model: openaiProvider(config.openaiModel),
       messages: [
-        ...history,
+        ...recentHistory,
         {
           role: "user",
           content:
