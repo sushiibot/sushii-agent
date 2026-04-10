@@ -19,6 +19,8 @@ interface MessageRow {
   edited_at: number | null;
   deleted_at: number | null;
   is_automod: number;
+  reply_to_content: string | null;
+  reply_to_author_id: string | null;
 }
 
 export function getConversationContext(
@@ -43,24 +45,30 @@ export function getConversationContext(
   // Use id-based ordering to avoid duplicates when multiple messages share the same timestamp
   const before = db
     .prepare<MessageRow, [string, string, number, number]>(
-      `SELECT discord_id, guild_id, channel_id, author_id,
-              author_username, author_display_name, content, reply_to_id,
-              created_at, edited_at, deleted_at, is_automod
-       FROM messages
-       WHERE channel_id = ? AND guild_id = ? AND id <= ?
-       ORDER BY id DESC
+      `SELECT m.discord_id, m.guild_id, m.channel_id, m.author_id,
+              m.author_username, m.author_display_name, m.content, m.reply_to_id,
+              m.created_at, m.edited_at, m.deleted_at, m.is_automod,
+              p.content AS reply_to_content,
+              p.author_id AS reply_to_author_id
+       FROM messages m
+       LEFT JOIN messages p ON m.reply_to_id = p.discord_id AND m.guild_id = p.guild_id
+       WHERE m.channel_id = ? AND m.guild_id = ? AND m.id <= ?
+       ORDER BY m.id DESC
        LIMIT ?`,
     )
     .all(anchor.channel_id, args.guildId, anchor.id, window + 1);
 
   const after = db
     .prepare<MessageRow, [string, string, number, number]>(
-      `SELECT discord_id, guild_id, channel_id, author_id,
-              author_username, author_display_name, content, reply_to_id,
-              created_at, edited_at, deleted_at, is_automod
-       FROM messages
-       WHERE channel_id = ? AND guild_id = ? AND id > ?
-       ORDER BY id ASC
+      `SELECT m.discord_id, m.guild_id, m.channel_id, m.author_id,
+              m.author_username, m.author_display_name, m.content, m.reply_to_id,
+              m.created_at, m.edited_at, m.deleted_at, m.is_automod,
+              p.content AS reply_to_content,
+              p.author_id AS reply_to_author_id
+       FROM messages m
+       LEFT JOIN messages p ON m.reply_to_id = p.discord_id AND m.guild_id = p.guild_id
+       WHERE m.channel_id = ? AND m.guild_id = ? AND m.id > ?
+       ORDER BY m.id ASC
        LIMIT ?`,
     )
     .all(anchor.channel_id, args.guildId, anchor.id, window);
@@ -79,10 +87,14 @@ export function getConversationContext(
     const placeholders = toFetch.map(() => "?").join(",");
     const parents = db
       .prepare<MessageRow, string[]>(
-        `SELECT discord_id, guild_id, channel_id, author_id,
-                author_username, author_display_name, content, reply_to_id,
-                created_at, edited_at, deleted_at, is_automod
-         FROM messages WHERE discord_id IN (${placeholders}) AND guild_id = ?`,
+        `SELECT m.discord_id, m.guild_id, m.channel_id, m.author_id,
+                m.author_username, m.author_display_name, m.content, m.reply_to_id,
+                m.created_at, m.edited_at, m.deleted_at, m.is_automod,
+                p.content AS reply_to_content,
+                p.author_id AS reply_to_author_id
+         FROM messages m
+         LEFT JOIN messages p ON m.reply_to_id = p.discord_id AND m.guild_id = p.guild_id
+         WHERE m.discord_id IN (${placeholders}) AND m.guild_id = ?`,
       )
       .all(...toFetch, args.guildId);
 
