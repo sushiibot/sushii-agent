@@ -45,13 +45,23 @@ export function saveConversation(
     ? messages.slice(messages.length - MAX_HISTORY_MESSAGES)
     : messages;
 
+  // Walk forward past any orphaned tool/system messages at the front that
+  // may have been created by slicing between an assistant tool-call message
+  // and its corresponding tool result messages. The LLM API rejects histories
+  // that start with tool results without a preceding tool call.
+  let startIdx = 0;
+  while (startIdx < messagesToSave.length && messagesToSave[startIdx].role !== "user") {
+    startIdx++;
+  }
+  const safeMsgs = startIdx > 0 ? messagesToSave.slice(startIdx) : messagesToSave;
+
   db.run(
     `INSERT INTO conversations (thread_id, guild_id, messages, initial_thread_context, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(thread_id) DO UPDATE SET
        messages = excluded.messages,
        updated_at = excluded.updated_at`,
-    [threadId, guildId, JSON.stringify(messagesToSave), initialThreadContext, now, now],
+    [threadId, guildId, JSON.stringify(safeMsgs), initialThreadContext, now, now],
   );
 }
 
