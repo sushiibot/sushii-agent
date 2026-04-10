@@ -8,6 +8,13 @@ import { getCurrentMemberInfo } from "../tools/getCurrentMemberInfo.ts";
 import { searchAuditLog } from "../tools/searchAuditLog.ts";
 import { resolveUsersByName } from "../tools/resolveUsersByName.ts";
 import { fetchChannelMessages } from "../tools/fetchChannelMessages.ts";
+import { listGuildChannels } from "../tools/listGuildChannels.ts";
+import { getChannelInfo } from "../tools/getChannelInfo.ts";
+import { listGuildRoles } from "../tools/listGuildRoles.ts";
+import { readMemoryTool } from "../tools/readMemory.ts";
+import { writeMemoryTool } from "../tools/writeMemory.ts";
+import { deleteMemoryTool } from "../tools/deleteMemory.ts";
+import { updateServerContextTool } from "../tools/updateServerContext.ts";
 import { getLogger } from "../logger.ts";
 
 const logger = getLogger("tool");
@@ -211,15 +218,103 @@ function formatToolResult(result: unknown): string {
     return lines.join("\n");
   }
 
+  // listGuildChannels result — array with isPrivate field
+  if (Array.isArray(result) && result.length > 0 && "isPrivate" in (result[0] as Record<string, unknown>)) {
+    type ChannelInfo = { id: string; name: string; type: string; isPrivate: boolean; topic?: string; categoryId?: string; categoryName?: string; parentChannelId?: string; parentChannelName?: string };
+    const channels = result as ChannelInfo[];
+
+    // Group by category
+    const byCategory = new Map<string, { name: string; channels: ChannelInfo[] }>();
+    const noCat: ChannelInfo[] = [];
+
+    for (const ch of channels) {
+      if (ch.categoryName && ch.categoryId) {
+        if (!byCategory.has(ch.categoryId)) byCategory.set(ch.categoryId, { name: ch.categoryName, channels: [] });
+        byCategory.get(ch.categoryId)!.channels.push(ch);
+      } else {
+        noCat.push(ch);
+      }
+    }
+
+    const lines: string[] = [];
+    for (const { name, channels: cats } of byCategory.values()) {
+      lines.push(`[${name}]`);
+      for (const ch of cats) {
+        const privacy = ch.isPrivate ? "private" : "public";
+        let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
+        if (ch.topic) line += ` — ${ch.topic}`;
+        lines.push(line);
+      }
+    }
+    if (noCat.length > 0) {
+      lines.push("[No category]");
+      for (const ch of noCat) {
+        const privacy = ch.isPrivate ? "private" : "public";
+        let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
+        if (ch.topic) line += ` — ${ch.topic}`;
+        lines.push(line);
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  // listGuildRoles result — array with isAdmin/isModerator fields
+  if (Array.isArray(result) && result.length > 0 && "isModerator" in (result[0] as Record<string, unknown>)) {
+    type RoleInfo = { id: string; name: string; position: number; color?: string; isAdmin: boolean; isModerator: boolean; memberCount: number };
+    return (result as RoleInfo[])
+      .map((r) => {
+        const flags: string[] = [];
+        if (r.isAdmin) flags.push("admin");
+        else if (r.isModerator) flags.push("moderator permissions");
+        const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+        const colorStr = r.color ? ` ${r.color}` : "";
+        return `${r.name} (${r.id})${colorStr}${flagStr} — ${r.memberCount} members`;
+      })
+      .join("\n");
+  }
+
+  // read_memory result — single memory or array of memories
+  if (result && typeof result === "object" && !Array.isArray(result) && "title" in result && "content" in result) {
+    const r = result as { title: string; content: string; updated_at: number };
+    return `**${r.title}** (updated <t:${Math.floor(r.updated_at / 1000)}:R>)\n${r.content}`;
+  }
+  if (Array.isArray(result) && result.length > 0 && "title" in (result[0] as Record<string, unknown>) && "content" in (result[0] as Record<string, unknown>)) {
+    type MemoryRow = { title: string; content: string; updated_at: number };
+    return (result as MemoryRow[])
+      .map((m) => `**${m.title}** (updated <t:${Math.floor(m.updated_at / 1000)}:R>)\n${m.content}`)
+      .join("\n\n---\n\n");
+  }
+
+  // getChannelInfo result — single object with id + isPrivate
+  if (result && typeof result === "object" && !Array.isArray(result) && "isPrivate" in result && "id" in result) {
+    const r = result as { id: string; name: string; type: string; isPrivate: boolean; topic?: string; categoryName?: string; categoryId?: string; parentChannelId?: string; parentChannelName?: string };
+    const lines: string[] = [];
+    lines.push(`<#${r.id}> #${r.name}`);
+    lines.push(`type: ${r.type}`);
+    lines.push(`privacy: ${r.isPrivate ? "private (not visible to @everyone)" : "public"}`);
+    if (r.categoryName) lines.push(`category: ${r.categoryName}`);
+    if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (<#${r.parentChannelId}>)`);
+    if (r.topic) lines.push(`topic: ${r.topic}`);
+    return lines.join("\n");
+  }
+
   return JSON.stringify(result, null, 2);
 }
 
 type AiToolCall = { toolCallId: string; toolName: string; input: Record<string, unknown> };
 
+export interface PendingQuestion {
+  toolCallId: string;
+  question: string;
+  choices: string[];
+}
+
 export interface RunToolsResult {
   toolMessage: ToolModelMessage;
   discoveredUsers: Map<string, UserNames>;
   pendingImages: string[];
+  pendingQuestion?: PendingQuestion;
 }
 
 export async function runTools(
@@ -299,6 +394,35 @@ export async function runTools(
               client,
             } as Parameters<typeof getCurrentMemberInfo>[0]);
             break;
+          case "list_guild_channels":
+            result = await listGuildChannels({ guildId, client });
+            break;
+          case "get_channel_info":
+            result = await getChannelInfo({
+              ...input,
+              guildId,
+              client,
+            } as Parameters<typeof getChannelInfo>[0]);
+            break;
+          case "list_guild_roles":
+            result = await listGuildRoles({ guildId, client });
+            break;
+          case "update_server_context":
+            result = updateServerContextTool({ ...input, guildId } as Parameters<typeof updateServerContextTool>[0]);
+            break;
+          case "read_memory":
+            result = readMemoryTool({ ...input, guildId } as Parameters<typeof readMemoryTool>[0]);
+            break;
+          case "write_memory":
+            result = writeMemoryTool({ ...input, guildId } as Parameters<typeof writeMemoryTool>[0]);
+            break;
+          case "delete_memory":
+            result = deleteMemoryTool({ ...input, guildId } as Parameters<typeof deleteMemoryTool>[0]);
+            break;
+          case "ask_question":
+            // Handled as a special pause — tool result is a placeholder
+            result = { _askQuestion: true, question: input.question, choices: input.choices };
+            break;
           default:
             result = { error: `Unknown tool: ${call.toolName}` };
         }
@@ -314,8 +438,22 @@ export async function runTools(
   const discoveredUsers = new Map<string, UserNames>();
   const toolResultParts: ToolModelMessage["content"] = [];
   const pendingImages: string[] = [];
+  let pendingQuestion: PendingQuestion | undefined;
 
   for (const { call, result } of rawResults) {
+    // ask_question — pause the loop, send buttons to Discord
+    if (call.toolName === "ask_question" && result && typeof result === "object" && "_askQuestion" in result) {
+      const r = result as unknown as { question: string; choices: string[] };
+      pendingQuestion = { toolCallId: call.toolCallId, question: r.question, choices: r.choices };
+      toolResultParts.push({
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: { type: "text", value: "Question sent to moderator. Awaiting their response via button click." },
+      });
+      continue;
+    }
+
     // inspect_image — collect URLs to inject as image content in the next completion
     if (call.toolName === "inspect_image" && result && typeof result === "object" && "imageUrls" in result) {
       const urls = (result as { imageUrls: string[] }).imageUrls;
@@ -339,5 +477,5 @@ export async function runTools(
     toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: content } });
   }
 
-  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages };
+  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages, pendingQuestion };
 }

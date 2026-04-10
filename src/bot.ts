@@ -1,13 +1,19 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
   Client,
   ContainerBuilder,
   Events,
   GatewayIntentBits,
   MessageFlags,
+  PermissionFlagsBits,
   Partials,
   SeparatorBuilder,
   SeparatorSpacingSize,
   TextDisplayBuilder,
+  type ButtonInteraction,
   type Message,
   type MessageCreateOptions,
   type ThreadChannel,
@@ -25,11 +31,22 @@ import {
   deleteOldMessages,
 } from "./db/messages.ts";
 import { loadConversation, saveConversation } from "./db/conversations.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type AgentLoopResult } from "./agent/loop.ts";
+import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
 
 const tracer = trace.getTracer("sushii-agent");
+
+// In-memory map of threadId → pending question state (survives only current process)
+interface PendingQuestionState {
+  question: string;
+  choices: string[];
+}
+const pendingChoices = new Map<string, PendingQuestionState>();
+
+// Custom ID prefix for ask_question button interactions
+const ASK_BTN_PREFIX = "agq:";
 
 export const client = new Client({
   intents: [
@@ -153,6 +170,26 @@ client.on(Events.MessageCreate, async (message: Message) => {
   // Include author identity so the agent knows who "me" refers to
   const query = `${replyContext}[Message from ${message.author.username} (<@${message.author.id}>)]\n${normalizedQuery}`;
 
+  // Collect triggering user's roles for agent context
+  const memberRoles = message.member
+    ? [...message.member.roles.cache.values()]
+        .filter((r) => r.id !== message.guild?.roles.everyone.id)
+        .sort((a, b) => b.position - a.position)
+        .map((r) => ({ id: r.id, name: r.name }))
+    : [];
+
+  const isModerator = message.member?.roles.cache.hasAny(...guildConfig.allowedRoles) ?? false;
+
+  const triggeringUser = {
+    id: message.author.id,
+    username: message.author.username,
+    displayName: message.member?.displayName !== message.author.username ? message.member?.displayName : null,
+    roles: memberRoles,
+    isModerator,
+  };
+
+  const currentChannel = getChannelContext(message);
+
   const trigger = isMention ? "mention" : "reply";
   logger.info({ trigger, username: message.author.username, userId: message.author.id, channelId: message.channelId }, "triggered");
 
@@ -182,6 +219,11 @@ client.on(Events.MessageCreate, async (message: Message) => {
         threadContext = await fetchThreadContext(thread, client.user!.id);
       }
 
+      const guildId = message.guildId!;
+      const serverContext = getServerContext(guildId);
+      const memoryIndex = listMemoryTitles(guildId);
+      const memoryCount = getMemoryCount(guildId);
+
       await thread.sendTyping();
       const typingInterval = setInterval(() => thread.sendTyping(), 8000);
 
@@ -190,7 +232,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
         agentResult = await runAgentLoop(
           query,
           existingHistory,
-          message.guildId!,
+          guildId,
           client as Client<true>,
           {
             threadContext: threadContext || undefined,
@@ -198,6 +240,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
             emojiMap: guildConfig.emojiMap,
             rules: guildConfig.rules,
             mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
+            botId: client.user!.id,
+            botUsername: client.user!.username,
+            triggeringUser,
+            currentChannel,
+            serverContext,
+            memoryIndex,
+            memoryCount,
+            memoryLimit: MEMORY_LIMIT,
           },
           thread.id,
         );
@@ -205,24 +255,32 @@ client.on(Events.MessageCreate, async (message: Message) => {
         clearInterval(typingInterval);
       }
 
-      const { response, updatedHistory } = agentResult;
-      const expanded = expandMessageLinks(response, message.guildId!);
-      const componentMsgs = buildComponentMessages(expanded);
-      for (const msgOpts of componentMsgs) {
-        await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-      }
+      const { response, updatedHistory, pendingQuestion } = agentResult;
 
-      saveConversation(thread.id, message.guildId!, updatedHistory, threadContext);
+      if (pendingQuestion) {
+        // Save state and send question+buttons — loop resumes on button click
+        saveConversation(thread.id, guildId, updatedHistory, threadContext);
+        pendingChoices.set(thread.id, { question: pendingQuestion.question, choices: pendingQuestion.choices });
+        await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
+      } else {
+        const expanded = expandMessageLinks(response, guildId);
+        const componentMsgs = buildComponentMessages(expanded);
+        for (const msgOpts of componentMsgs) {
+          await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+        }
 
-      // Rename thread when there's enough context:
-      // - 3+ tool uses on first turn (rich investigation), OR
-      // - any tool use on a follow-up turn (user sent another message, so we have more context)
-      const toolUseCount = updatedHistory.filter((m) => m.role === "tool").length;
-      const userTurnCount = updatedHistory.filter((m) => m.role === "user").length;
-      const isDefaultName = thread.name === "sushii-agent investigation";
-      const enoughContext = toolUseCount >= 3 || userTurnCount >= 2;
-      if (toolUseCount > 0 && enoughContext && (isNew || isDefaultName)) {
-        await renameThread(thread, updatedHistory);
+        saveConversation(thread.id, guildId, updatedHistory, threadContext);
+
+        // Rename thread when there's enough context:
+        // - 3+ tool uses on first turn (rich investigation), OR
+        // - any tool use on a follow-up turn (user sent another message, so we have more context)
+        const toolUseCount = updatedHistory.filter((m) => m.role === "tool").length;
+        const userTurnCount = updatedHistory.filter((m) => m.role === "user").length;
+        const isDefaultName = thread.name === "sushii-agent investigation";
+        const enoughContext = toolUseCount >= 3 || userTurnCount >= 2;
+        if (toolUseCount > 0 && enoughContext && (isNew || isDefaultName)) {
+          await renameThread(thread, updatedHistory);
+        }
       }
 
       span.setStatus({ code: SpanStatusCode.OK });
@@ -260,6 +318,126 @@ client.once(Events.ClientReady, (c) => {
   logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
 });
 
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith(ASK_BTN_PREFIX)) return;
+
+  const parts = interaction.customId.slice(ASK_BTN_PREFIX.length).split(":");
+  if (parts.length !== 2) return;
+  const [threadId, indexStr] = parts;
+  const choiceIndex = parseInt(indexStr, 10);
+
+  const pending = pendingChoices.get(threadId);
+  if (!pending || isNaN(choiceIndex) || choiceIndex < 0 || choiceIndex >= pending.choices.length) {
+    await interaction.reply({ content: "This question has expired — the bot was restarted. Please re-ask your query.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const choice = pending.choices[choiceIndex];
+  pendingChoices.delete(threadId);
+
+  // Acknowledge and update the button message to show the selection
+  await interaction.deferUpdate();
+  await disableQuestionButtons(interaction as ButtonInteraction, pending.question, choice);
+
+  const thread = await client.channels.fetch(threadId);
+  if (!thread?.isThread()) return;
+
+  const guildId = thread.guildId;
+  const guildConfig = config.guildConfig[guildId];
+  if (!guildConfig) return;
+
+  await thread.sendTyping();
+  const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+
+  try {
+    const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
+    const serverContext = getServerContext(guildId);
+    const memoryIndex = listMemoryTitles(guildId);
+    const memoryCount = getMemoryCount(guildId);
+
+    const query = `[Selected: "${choice}"]`;
+
+    const agentResult: AgentLoopResult = await runAgentLoop(
+      query,
+      existingHistory,
+      guildId,
+      client as Client<true>,
+      {
+        threadContext: initialThreadContext ?? undefined,
+        currentChannelId: threadId,
+        emojiMap: guildConfig.emojiMap,
+        rules: guildConfig.rules,
+        botId: client.user!.id,
+        botUsername: client.user!.username,
+        serverContext,
+        memoryIndex,
+        memoryCount,
+        memoryLimit: MEMORY_LIMIT,
+      },
+      threadId,
+    );
+
+    const { response, updatedHistory, pendingQuestion } = agentResult;
+
+    if (pendingQuestion) {
+      saveConversation(threadId, guildId, updatedHistory, initialThreadContext ?? "");
+      pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices });
+      await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
+    } else {
+      const expanded = expandMessageLinks(response, guildId);
+      const componentMsgs = buildComponentMessages(expanded);
+      for (const msgOpts of componentMsgs) {
+        await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+      }
+      saveConversation(threadId, guildId, updatedHistory, initialThreadContext ?? "");
+    }
+  } catch (err) {
+    logger.error({ err }, "Error handling button interaction");
+    await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
+  } finally {
+    clearInterval(typingInterval);
+  }
+});
+
+async function sendQuestionWithButtons(
+  thread: ThreadChannel,
+  question: string,
+  choices: string[],
+): Promise<void> {
+  const threadId = thread.id;
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    choices.map((label, i) =>
+      new ButtonBuilder()
+        .setCustomId(`${ASK_BTN_PREFIX}${threadId}:${i}`)
+        .setLabel(label)
+        .setStyle(ButtonStyle.Primary),
+    ),
+  );
+
+  const container = new ContainerBuilder()
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: question }))
+    .addActionRowComponents(row);
+
+  await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
+}
+
+async function disableQuestionButtons(
+  interaction: ButtonInteraction,
+  question: string,
+  selectedLabel: string,
+): Promise<void> {
+  try {
+    const container = new ContainerBuilder()
+      .addTextDisplayComponents(
+        new TextDisplayBuilder({ content: `${question}\n-# Selected: ${selectedLabel}` }),
+      );
+    await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+  } catch {
+    // Non-critical — if we can't update the message, just continue
+  }
+}
+
 async function isReplyToBot(message: Message, botId: string): Promise<boolean> {
   if (!message.reference?.messageId) return false;
   try {
@@ -270,6 +448,41 @@ async function isReplyToBot(message: Message, botId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function getChannelContext(message: Message): ChannelContext {
+  const ch = message.channel;
+
+  if (ch.isThread()) {
+    const isPrivate = ch.type === ChannelType.PrivateThread;
+    return {
+      id: ch.id,
+      name: ch.name,
+      type: isPrivate ? "thread (private)" : "thread (public)",
+      isPrivate,
+      parentChannelId: ch.parentId ?? undefined,
+      parentChannelName: ch.parent?.name ?? undefined,
+      categoryName: (ch.parent as { parent?: { name?: string } } | null)?.parent?.name ?? undefined,
+    };
+  }
+
+  let isPrivate = false;
+  const everyoneId = message.guild?.roles.everyone.id;
+  if (everyoneId && "permissionOverwrites" in ch) {
+    const overwrite = (ch.permissionOverwrites as { cache: Map<string, { deny: { has: (f: bigint) => boolean } }> }).cache.get(everyoneId);
+    isPrivate = overwrite?.deny?.has(PermissionFlagsBits.ViewChannel) ?? false;
+  }
+
+  let type = "text";
+  if (ch.type === ChannelType.GuildAnnouncement) type = "announcement";
+  else if (ch.type === ChannelType.GuildVoice) type = "voice";
+
+  const name = "name" in ch ? (ch.name ?? "(unknown)") : "(unknown)";
+  const topic = "topic" in ch && ch.topic ? ch.topic : undefined;
+  const parent = "parent" in ch ? ch.parent : null;
+  const categoryName = parent && "type" in parent && parent.type === ChannelType.GuildCategory ? parent.name : undefined;
+
+  return { id: ch.id, name, type, isPrivate, topic, categoryName };
 }
 
 function isChannelAllowed(message: Message, allowedChannels: string[]): boolean {

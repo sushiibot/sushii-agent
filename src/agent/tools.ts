@@ -252,4 +252,149 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "ask_question",
+      description:
+        "Ask the moderator a clarifying question with button choices. Use this when you genuinely need their input before you can proceed — not as a courtesy check. The conversation pauses until they click a button. Keep the question short and direct. Choices should be mutually exclusive and cover the likely answers.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "The question to ask the moderator. One sentence, no filler.",
+          },
+          choices: {
+            type: "array",
+            items: { type: "string" },
+            description: "Button labels for the moderator to choose from (2–5 options, short labels).",
+            minItems: 2,
+            maxItems: 5,
+          },
+        },
+        required: ["question", "choices"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_guild_roles",
+      description:
+        "List all roles in the server with their permissions and member counts, sorted by hierarchy. Use during server scan or when you need to understand the role structure — who the moderators are, what roles have what permissions.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_server_context",
+      description:
+        "Overwrite the server context — the persistent, always-injected knowledge base about this server (channels, roles, mod team, culture, bot setup). Call this after a server scan or when the context needs updating. Write in clear markdown sections. This fully replaces the existing content.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description: "Full markdown content for the server context. Use sections like ## Channels, ## Roles, ## Mod Team, ## Notes.",
+          },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_memory",
+      description:
+        "Read one or all agent memory entries. Call with a title to fetch a specific memory's full content. Call without a title to fetch all memories. Use when the memory index in the system prompt shows entries relevant to the current query.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Title of the specific memory to read. Omit to read all memories.",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_memory",
+      description:
+        "Save or update an agent memory entry. Use this to remember things that would help future conversations: recurring patterns, important context, corrections, anything a mod would otherwise have to re-explain. Update existing entries (same title) rather than creating near-duplicates. Keep content concise.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Short, descriptive title for this memory (used as the unique key). Be specific enough to identify it in the index.",
+          },
+          content: {
+            type: "string",
+            description: "The memory content. Keep it focused and concise — this is recalled across conversations, not stored for this session only.",
+          },
+        },
+        required: ["title", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_memory",
+      description:
+        "Delete an agent memory entry by title. Use when a memory is stale, resolved, or no longer relevant. Also use to make room when the memory limit is reached.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Exact title of the memory to delete.",
+          },
+        },
+        required: ["title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_guild_channels",
+      description:
+        "List all channels in the server, organized by category. Use this to understand the server's channel structure — which channels are private (mod-only), which are public, and how they're organized. Useful when you need to understand what channel a user was posting in, or to check if a channel is a staff channel.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_channel_info",
+      description:
+        "Get details about a specific channel — its name, type, whether it's private/mod-only, its category, and topic. Use this when you see a channel ID in tool results and need to understand what that channel is.",
+      parameters: {
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "Discord channel ID (snowflake)",
+          },
+        },
+        required: ["channel_id"],
+      },
+    },
+  },
 ];

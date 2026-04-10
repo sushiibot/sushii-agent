@@ -6,7 +6,7 @@ import { openaiProvider } from "./client.ts";
 import { config } from "../config.ts";
 import { getLogger } from "../logger.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
-import { runTools, type UserNames } from "./runner.ts";
+import { runTools, type UserNames, type PendingQuestion } from "./runner.ts";
 
 const logger = getLogger("agent");
 
@@ -60,12 +60,39 @@ Rules:
 
 const MAX_ITERATIONS = 20;
 
+export interface TriggeringUser {
+  id: string;
+  username: string;
+  displayName?: string | null;
+  roles: { id: string; name: string }[];
+  isModerator: boolean;
+}
+
+export interface ChannelContext {
+  id: string;
+  name: string;
+  type: string;
+  isPrivate: boolean;
+  topic?: string | null;
+  categoryName?: string | null;
+  parentChannelId?: string | null;
+  parentChannelName?: string | null;
+}
+
 export interface AgentLoopOptions {
   threadContext?: string;
   currentChannelId?: string;
   emojiMap?: Record<string, string>;
   rules?: string;
   mentionedUsers?: Map<string, UserNames>;
+  botId?: string;
+  botUsername?: string;
+  triggeringUser?: TriggeringUser;
+  currentChannel?: ChannelContext;
+  serverContext?: string | null;
+  memoryIndex?: string[]; // titles only — agent fetches content via read_memory
+  memoryCount?: number;
+  memoryLimit?: number;
 }
 
 export type { UserNames };
@@ -82,6 +109,62 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
   const now = new Date();
   const currentDate = now.toISOString().split("T")[0];
   const systemParts = [BEHAVIOR_INSTRUCTIONS, `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). Do NOT use it to compute or write timestamp math in your responses — always use Discord timestamp format instead.`];
+
+  // Bot's own identity
+  if (opts.botId) {
+    const nameStr = opts.botUsername ? ` (${opts.botUsername})` : "";
+    systemParts.push(`Your identity: Your Discord user ID is ${opts.botId}${nameStr}. When you see <@${opts.botId}> in messages, that is yourself. Never confuse your own messages with those of other users.`);
+  }
+
+  // Current channel context
+  if (opts.currentChannel) {
+    const ch = opts.currentChannel;
+    const privacy = ch.isPrivate ? "private (not visible to regular members)" : "public";
+    const lines = [`Current channel: #${ch.name} (<#${ch.id}>) — ${ch.type}, ${privacy}`];
+    if (ch.categoryName) lines.push(`Category: ${ch.categoryName}`);
+    if (ch.parentChannelName) lines.push(`Parent channel: #${ch.parentChannelName}`);
+    if (ch.topic) lines.push(`Topic: ${ch.topic}`);
+    systemParts.push(lines.join("\n"));
+  }
+
+  // Triggering user context
+  if (opts.triggeringUser) {
+    const u = opts.triggeringUser;
+    const displayStr = u.displayName && u.displayName !== u.username ? ` (display name: ${u.displayName})` : "";
+    const modStr = u.isModerator ? "yes — has moderation role" : "no";
+    const roleStr = u.roles.length > 0
+      ? u.roles.map((r) => `${r.name} (${r.id})`).join(", ")
+      : "none";
+    const lines = [
+      `Request from: ${u.username}${displayStr} (<@${u.id}>)`,
+      `Moderator: ${modStr}`,
+      `Roles: ${roleStr}`,
+    ];
+    systemParts.push(lines.join("\n"));
+  }
+
+  // Server context (always injected, full content)
+  if (opts.serverContext) {
+    systemParts.push(`## Server Context\n${opts.serverContext}`);
+  } else if (opts.serverContext === null) {
+    systemParts.push(
+      `## Server Context\nNot configured. At the start of this conversation, let the moderator know and suggest they type \`scan server\` so you can learn the server structure. You can still help with queries, but your awareness of this server will be limited until the scan is done.`,
+    );
+  }
+
+  // Memory index (titles only — agent fetches full content via read_memory when relevant)
+  if (opts.memoryIndex !== undefined) {
+    const limit = opts.memoryLimit ?? 25;
+    const count = opts.memoryCount ?? opts.memoryIndex.length;
+    const header = `## Agent Memory (${count}/${limit} entries)`;
+    const body =
+      opts.memoryIndex.length > 0
+        ? opts.memoryIndex.map((t, i) => `${i + 1}. "${t}"`).join("\n")
+        : "(empty)";
+    systemParts.push(
+      `${header}\nCheck this index at the start of each conversation. If any entries look relevant to the current query, call read_memory to fetch their content before proceeding. Use write_memory to save things worth remembering across conversations — recurring patterns, corrections, important context. Update existing entries rather than duplicating. Use delete_memory for stale or resolved entries.\n\n${body}`,
+    );
+  }
 
   if (opts.emojiMap && Object.keys(opts.emojiMap).length > 0) {
     const entries = Object.entries(opts.emojiMap)
@@ -106,6 +189,12 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
   return systemParts.join("\n\n---\n\n");
 }
 
+export interface AgentLoopResult {
+  response: string;
+  updatedHistory: ModelMessage[];
+  pendingQuestion?: PendingQuestion;
+}
+
 export async function runAgentLoop(
   query: string,
   existingHistory: ModelMessage[],
@@ -113,7 +202,7 @@ export async function runAgentLoop(
   client: Client<true>,
   opts: AgentLoopOptions = {},
   sessionId?: string,
-): Promise<{ response: string; updatedHistory: ModelMessage[] }> {
+): Promise<AgentLoopResult> {
   return tracer.startActiveSpan("agent.loop", {
     attributes: {
       "agent.model": config.openaiModel,
@@ -195,7 +284,7 @@ export async function runAgentLoop(
             })),
           });
 
-          const { toolMessage, discoveredUsers, pendingImages } = await tracer.startActiveSpan(
+          const { toolMessage, discoveredUsers, pendingImages, pendingQuestion } = await tracer.startActiveSpan(
             "agent.tool_calls",
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
@@ -208,6 +297,13 @@ export async function runAgentLoop(
           );
 
           messages.push(toolMessage);
+
+          // ask_question — pause loop and return to let the bot send buttons
+          if (pendingQuestion) {
+            logger.info({ question: pendingQuestion.question }, "pausing loop for ask_question");
+            span.setAttribute("agent.paused_for_question", true);
+            return { response: "", updatedHistory: messages.slice(1), pendingQuestion };
+          }
 
           if (pendingImages.length > 0) {
             messages.push({
