@@ -15,6 +15,7 @@ import { readMemoryTool } from "../tools/readMemory.ts";
 import { writeMemoryTool } from "../tools/writeMemory.ts";
 import { deleteMemoryTool } from "../tools/deleteMemory.ts";
 import { updateServerContextTool } from "../tools/updateServerContext.ts";
+import { searchGuildMessages, type SearchGuildMessagesResult } from "../tools/searchGuildMessages.ts";
 import { getLogger } from "../logger.ts";
 
 const logger = getLogger("tool");
@@ -54,27 +55,25 @@ function formatMessageRow(row: MessageRowLike): string {
   return line;
 }
 
-function extractUsersFromResult(result: unknown): Map<string, UserNames> {
+function extractUsersFromResult(rows: unknown[]): Map<string, UserNames> {
   const users = new Map<string, UserNames>();
 
-  if (Array.isArray(result)) {
-    for (const row of result) {
-      if (!row || typeof row !== "object") continue;
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
 
-      // Message rows — author name stripped from output, inject via identity mappings instead
-      if ("discord_id" in row) {
-        const r = row as MessageRowLike;
-        if (!users.has(r.author_id)) {
-          users.set(r.author_id, { username: r.author_username ?? null, displayName: r.author_display_name ?? null });
-        }
+    // Message rows — author name stripped from output, inject via identity mappings instead
+    if ("discord_id" in row) {
+      const r = row as MessageRowLike;
+      if (!users.has(r.author_id)) {
+        users.set(r.author_id, { username: r.author_username ?? null, displayName: r.author_display_name ?? null });
       }
+    }
 
-      // Audit log entries — executor name is not visible in formatted output
-      if ("executorId" in row) {
-        const r = row as { executorId: string | null; executorUsername?: string | null };
-        if (r.executorId && !users.has(r.executorId)) {
-          users.set(r.executorId, { username: r.executorUsername ?? null, displayName: null });
-        }
+    // Audit log entries — executor name is not visible in formatted output
+    if ("executorId" in row) {
+      const r = row as { executorId: string | null; executorUsername?: string | null };
+      if (r.executorId && !users.has(r.executorId)) {
+        users.set(r.executorId, { username: r.executorUsername ?? null, displayName: null });
       }
     }
   }
@@ -117,6 +116,13 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
           },
         )
         .join("\n");
+    }
+
+    case "search_guild_messages": {
+      const r = result as SearchGuildMessagesResult;
+      if (r.messages.length === 0) return `(no results — total: ${r.total_results})`;
+      const header = `total: ${r.total_results}, showing ${r.messages.length}`;
+      return header + "\n" + r.messages.map((m) => formatMessageRow(m)).join("\n");
     }
 
     case "search_messages":
@@ -409,6 +415,13 @@ export async function runTools(
               client,
             } as Parameters<typeof fetchChannelMessages>[0]);
             break;
+          case "search_guild_messages":
+            result = await searchGuildMessages({
+              ...coerceNumericFields(input, ["limit", "offset"]),
+              guildId,
+              client,
+            } as Parameters<typeof searchGuildMessages>[0]);
+            break;
           case "inspect_image": {
             const { channel_id, message_id } = input as { channel_id: string; message_id: string };
             try {
@@ -514,7 +527,13 @@ export async function runTools(
     }
 
     // Extract users from structured result before converting to plain text
-    for (const [id, names] of extractUsersFromResult(result)) {
+    const extractRows =
+      call.toolName === "search_guild_messages"
+        ? (result as SearchGuildMessagesResult).messages
+        : Array.isArray(result)
+          ? result
+          : [];
+    for (const [id, names] of extractUsersFromResult(extractRows)) {
       if (!discoveredUsers.has(id)) discoveredUsers.set(id, names);
     }
 

@@ -6,7 +6,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "search_messages",
       description:
-        "Search or browse the server's cached message history (last 30 days). Provide a query for full-text search ranked by relevance; omit it to browse recent messages by time. Supports optional filters for users, channel, and time range. Bot messages are excluded by default — set include_bots=true when searching modmail threads, log channels, or other bot-forwarded content.",
+        "Search or browse the server's cached message history (last ~30 days). Provide a query for full-text search ranked by relevance; omit it to browse recent messages by time. Supports optional filters for users, channel, and time range. Bot messages are excluded by default — set include_bots=true when searching modmail threads, log channels, or other bot-forwarded content. For messages older than the cache, use search_guild_messages instead.",
       parameters: {
         type: "object",
         properties: {
@@ -43,6 +43,55 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           include_bots: {
             type: "boolean",
             description: "If true, include messages from bots (e.g. modmail relay, log bots). Defaults to false to reduce noise from fun/utility bots.",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_guild_messages",
+      description:
+        "Search all guild message history via the Discord API — use this when the local cache (last ~30 days) doesn't have what you need, e.g. for older incidents or long-term behaviour patterns. Slower than search_messages and limited to 25 results per call; use offset to paginate. At least one of content, author_id, or channel_id is required.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description: "Filter by message content (substring match, max 1024 chars).",
+          },
+          author_id: {
+            type: "string",
+            description: "Filter to messages from this Discord user ID.",
+          },
+          channel_id: {
+            type: "string",
+            description: "Filter to messages in this channel ID.",
+          },
+          has: {
+            type: "string",
+            enum: ["image", "video", "file", "embed", "link", "poll"],
+            description: "Filter to messages that contain this type of attachment or embed.",
+          },
+          limit: {
+            type: "number",
+            description: "Results per page (1–25, default 25).",
+          },
+          offset: {
+            type: "number",
+            description: "Pagination offset (0–9975). Use to page through results beyond the first 25.",
+          },
+          sort_by: {
+            type: "string",
+            enum: ["timestamp", "relevance"],
+            description: "Sort by timestamp (default) or relevance when content is provided.",
+          },
+          sort_order: {
+            type: "string",
+            enum: ["asc", "desc"],
+            description: "Sort direction (default: desc — newest first).",
           },
         },
         required: [],
