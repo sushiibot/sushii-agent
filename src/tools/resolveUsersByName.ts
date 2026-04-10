@@ -24,7 +24,7 @@ export function resolveUsersByName(args: ResolveUsersByNameArgs): UserCandidate[
   const pattern = `%${escapedName}%`;
 
   return db
-    .prepare<UserCandidate, [string, number, string, string]>(
+    .prepare<UserCandidate, [string, number, string, string, number]>(
       `SELECT author_id, author_username, author_display_name,
               MAX(created_at) AS last_active, COUNT(*) AS message_count
        FROM messages
@@ -33,7 +33,7 @@ export function resolveUsersByName(args: ResolveUsersByNameArgs): UserCandidate[
          AND (author_username LIKE ? ESCAPE '\\' OR author_display_name LIKE ? ESCAPE '\\')
        GROUP BY author_id
        ORDER BY last_active DESC
-       LIMIT ${limit}`,
+       LIMIT ?`,
     )
-    .all(args.guildId, since, pattern, pattern);
+    .all(args.guildId, since, pattern, pattern, limit);
 }

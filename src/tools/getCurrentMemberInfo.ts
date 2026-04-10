@@ -19,10 +19,10 @@ export async function getCurrentMemberInfo(args: GetCurrentMemberInfoArgs) {
       username: member.user.username,
       displayName: member.displayName,
       joinedAt: member.joinedAt?.getTime() ?? null,
-      roles: member.roles.cache
+      roles: [...member.roles.cache.values()]
         .filter((r) => r.id !== args.guildId) // exclude @everyone
-        .map((r) => ({ id: r.id, name: r.name }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort((a, b) => b.position - a.position)
+        .map((r) => ({ id: r.id, name: r.name })),
       isStillInServer: true,
     };
   } catch {
