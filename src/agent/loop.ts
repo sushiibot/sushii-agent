@@ -219,6 +219,21 @@ export async function runAgentLoop(
 
     const knownUsers = new Map<string, UserNames>();
 
+    // Seed knownUsers from existing history so we don't re-inject notes for already-noted users
+    for (const msg of messages) {
+      if (msg.role !== "system") continue;
+      const text = typeof msg.content === "string" ? msg.content : null;
+      if (!text) continue;
+      // Check mentionedUsers first (they're available before the loop)
+      if (opts.mentionedUsers) {
+        for (const [id, names] of opts.mentionedUsers) {
+          if (!knownUsers.has(id) && text.includes(id)) {
+            knownUsers.set(id, names);
+          }
+        }
+      }
+    }
+
     if (opts.mentionedUsers?.size) {
       const novel = [...opts.mentionedUsers.entries()].filter(([id]) => !knownUsers.has(id));
       if (novel.length > 0) {
