@@ -82,7 +82,7 @@ function extractUsersFromResult(result: unknown): Map<string, UserNames> {
   return users;
 }
 
-function formatToolResult(toolName: string, result: unknown): string {
+function formatToolResult(toolName: string, result: unknown, input?: Record<string, unknown>): string {
   // Error objects — applies to all tools
   if (result && typeof result === "object" && !Array.isArray(result) && "error" in result) {
     return (result as { error: string }).error;
@@ -163,11 +163,14 @@ function formatToolResult(toolName: string, result: unknown): string {
         dailyActivity: { day: string; count: number }[];
       };
 
+      const userId = input?.user_id as string | undefined;
+      const header = userId ? `Profile for <@${userId}>:` : "Profile:";
+
       if (!r.summary || r.summary.total_messages === 0) {
-        return "(no messages found for this user in the cache)";
+        return `${header}\n(no messages found for this user in the cache)`;
       }
 
-      const lines: string[] = [];
+      const lines: string[] = [header];
       if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:R>`);
       if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:R>`);
       lines.push(`total messages: ${r.summary.total_messages} across ${r.summary.channel_count} channels`);
@@ -515,7 +518,7 @@ export async function runTools(
       if (!discoveredUsers.has(id)) discoveredUsers.set(id, names);
     }
 
-    const content = formatToolResult(call.toolName, result);
+    const content = formatToolResult(call.toolName, result, call.input);
     logger.debug({ tool: call.toolName, resultLength: content.length }, "tool result");
 
     toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: content } });
