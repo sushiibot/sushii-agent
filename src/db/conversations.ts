@@ -53,7 +53,11 @@ export function saveConversation(
   while (startIdx < messagesToSave.length && messagesToSave[startIdx].role !== "user") {
     startIdx++;
   }
-  const safeMsgs = startIdx > 0 ? messagesToSave.slice(startIdx) : messagesToSave;
+  // If no user message exists in the trimmed window (extreme edge case), keep the
+  // untrimmed slice rather than silently wiping the conversation.
+  const safeMsgs = startIdx > 0 && startIdx < messagesToSave.length
+    ? messagesToSave.slice(startIdx)
+    : messagesToSave;
 
   db.run(
     `INSERT INTO conversations (thread_id, guild_id, messages, initial_thread_context, created_at, updated_at)
