@@ -29,7 +29,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type AgentLoopResult } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult } from "./agent/loop.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
@@ -62,6 +62,21 @@ function withThreadLock(threadId: string, fn: () => Promise<void>): Promise<void
 
 // Custom ID prefix for ask_question button interactions
 const ASK_BTN_PREFIX = "agq:";
+// Custom ID prefix for initial server scan approval buttons
+const SCAN_BTN_PREFIX = "srv:";
+
+interface PendingScanState {
+  threadId: string;
+  guildId: string;
+  query: string;
+  threadContext: string;
+  triggeringUser: TriggeringUser | undefined;
+  currentChannel: ChannelContext | undefined;
+  mentionedUsers?: Map<string, UserNames>;
+}
+
+// Per-guild pending scan approval state (cleared on approval or skip)
+const pendingScans = new Map<string, PendingScanState>();
 
 export const client = new Client({
   intents: [
@@ -237,6 +252,17 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
       const guildId = message.guildId!;
       const serverContext = getServerContext(guildId);
+
+      if (serverContext === null) {
+        if (pendingScans.has(guildId)) {
+          await thread.send("A server scan is pending approval. Please re-ask after it completes.");
+          return;
+        }
+        pendingScans.set(guildId, { threadId: thread.id, guildId, query, threadContext, triggeringUser, currentChannel, mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined });
+        await sendScanApprovalMessage(thread, guildId);
+        return;
+      }
+
       const memoryIndex = listMemoryTitles(guildId);
       const memoryCount = getMemoryCount(guildId);
 
@@ -337,6 +363,122 @@ client.once(Events.ClientReady, (c) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isButton()) return;
+
+  if (interaction.customId.startsWith(SCAN_BTN_PREFIX)) {
+    const rest = interaction.customId.slice(SCAN_BTN_PREFIX.length);
+    const colonIdx = rest.indexOf(":");
+    if (colonIdx === -1) return;
+    const guildId = rest.slice(0, colonIdx);
+    const choice = rest.slice(colonIdx + 1); // "yes" | "no"
+
+    const pending = pendingScans.get(guildId);
+    if (!pending) {
+      await interaction.reply({ content: "Scan approval expired — please re-trigger the bot.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    pendingScans.delete(guildId);
+    await interaction.deferUpdate();
+    await disableScanButtons(interaction as ButtonInteraction, choice === "yes" ? "Scan server" : "Skip");
+
+    const guildConfig = config.guildConfig[guildId];
+    if (!guildConfig) return;
+
+    await withThreadLock(pending.threadId, async () => {
+      const threadChannel = await client.channels.fetch(pending.threadId);
+      if (!threadChannel?.isThread()) return;
+
+      if (choice === "yes") {
+        // Run scan agent loop first (fresh history, no user query)
+        await threadChannel.sendTyping();
+        const scanTypingInterval = setInterval(() => threadChannel.sendTyping(), 8000);
+        const scanQuery = "[System: Perform initial server scan. Use listGuildChannels, listGuildRoles, and getRecentActivity to gather information about this server's structure and recent activity. Then call updateServerContext with a concise summary covering channels, roles, and any notable patterns. This is a background initialization task — do not address the user directly.]";
+        try {
+          const scanResult = await runAgentLoop(
+            scanQuery,
+            [],
+            guildId,
+            client as Client<true>,
+            {
+              currentChannelId: pending.threadId,
+              emojiMap: guildConfig.emojiMap,
+              rules: guildConfig.rules,
+              botId: client.user!.id,
+              botUsername: client.user!.username,
+              triggeringUser: pending.triggeringUser,
+              currentChannel: pending.currentChannel,
+              serverContext: null,
+              memoryIndex: [],
+              memoryCount: 0,
+              memoryLimit: MEMORY_LIMIT,
+            },
+            pending.threadId,
+          );
+          if (scanResult.response) {
+            const expanded = expandMessageLinks(scanResult.response, guildId);
+            const componentMsgs = buildComponentMessages(expanded);
+            for (const msgOpts of componentMsgs) {
+              await threadChannel.send({ ...msgOpts, allowedMentions: { parse: [] } });
+            }
+          }
+        } finally {
+          clearInterval(scanTypingInterval);
+        }
+      }
+
+      // Run original user query with fresh history and updated server context
+      const freshServerContext = getServerContext(guildId);
+      const freshMemoryIndex = listMemoryTitles(guildId);
+      const freshMemoryCount = getMemoryCount(guildId);
+
+      await threadChannel.sendTyping();
+      const typingInterval = setInterval(() => threadChannel.sendTyping(), 8000);
+
+      try {
+        const agentResult = await runAgentLoop(
+          pending.query,
+          [],
+          guildId,
+          client as Client<true>,
+          {
+            threadContext: pending.threadContext || undefined,
+            currentChannelId: pending.threadId,
+            emojiMap: guildConfig.emojiMap,
+            rules: guildConfig.rules,
+            mentionedUsers: pending.mentionedUsers,
+            botId: client.user!.id,
+            botUsername: client.user!.username,
+            triggeringUser: pending.triggeringUser,
+            currentChannel: pending.currentChannel,
+            serverContext: freshServerContext,
+            memoryIndex: freshMemoryIndex,
+            memoryCount: freshMemoryCount,
+            memoryLimit: MEMORY_LIMIT,
+          },
+          pending.threadId,
+        );
+
+        const { response, updatedHistory, pendingQuestion } = agentResult;
+        if (pendingQuestion) {
+          saveConversation(pending.threadId, guildId, updatedHistory, pending.threadContext || null);
+          pendingChoices.set(pending.threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: pending.triggeringUser?.id ?? interaction.user.id });
+          savePendingQuestion({ threadId: pending.threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: pending.triggeringUser?.id ?? interaction.user.id, createdAt: Date.now() });
+          await sendQuestionWithButtons(threadChannel, pendingQuestion.question, pendingQuestion.choices);
+        } else {
+          const expanded = expandMessageLinks(response, guildId);
+          const componentMsgs = buildComponentMessages(expanded);
+          for (const msgOpts of componentMsgs) {
+            await threadChannel.send({ ...msgOpts, allowedMentions: { parse: [] } });
+          }
+          saveConversation(pending.threadId, guildId, updatedHistory, pending.threadContext || null);
+        }
+      } finally {
+        clearInterval(typingInterval);
+      }
+    });
+    return;
+  }
+
   if (!interaction.customId.startsWith(ASK_BTN_PREFIX)) return;
 
   const parts = interaction.customId.slice(ASK_BTN_PREFIX.length).split(":");
@@ -462,6 +604,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
     logger.error({ err }, "Unexpected error in button interaction handler");
   }
 });
+
+async function sendScanApprovalMessage(thread: ThreadChannel, guildId: string): Promise<void> {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${SCAN_BTN_PREFIX}${guildId}:yes`)
+      .setLabel("Scan server")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`${SCAN_BTN_PREFIX}${guildId}:no`)
+      .setLabel("Skip")
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  const container = new ContainerBuilder()
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: "No server context found. Would you like me to scan the server first (channels, roles, recent activity) before handling your request?" }))
+    .addActionRowComponents(row);
+
+  await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
+}
+
+async function disableScanButtons(interaction: ButtonInteraction, selectedLabel: string): Promise<void> {
+  try {
+    const container = new ContainerBuilder()
+      .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# Selected: ${selectedLabel}` }));
+    await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+  } catch {
+    // Non-critical
+  }
+}
 
 async function sendQuestionWithButtons(
   thread: ThreadChannel,
