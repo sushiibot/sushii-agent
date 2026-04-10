@@ -48,3 +48,9 @@ export function saveConversation(
     [threadId, guildId, JSON.stringify(messages), initialThreadContext, now, now],
   );
 }
+
+export function deleteStaleConversations(maxAgeMs: number): void {
+  const db = getDb();
+  const cutoff = Date.now() - maxAgeMs;
+  db.run("DELETE FROM conversations WHERE updated_at < ?", [cutoff]);
+}

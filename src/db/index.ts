@@ -38,9 +38,17 @@ function runMigrations(db: Database): void {
 
   for (let i = currentVersion; i < MIGRATIONS.length; i++) {
     logger.info({ migration: i }, "running migration");
-    for (const sql of MIGRATIONS[i]) {
-      db.exec(sql);
+    db.exec("BEGIN");
+    try {
+      for (const sql of MIGRATIONS[i]) {
+        db.exec(sql);
+      }
+      db.exec(`PRAGMA user_version = ${i + 1}`);
+      db.exec("COMMIT");
+      logger.info({ migration: i + 1 }, "migration complete");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
     }
-    db.exec(`PRAGMA user_version = ${i + 1}`);
   }
 }

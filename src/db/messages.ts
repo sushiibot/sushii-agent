@@ -63,6 +63,6 @@ export function deleteOldMessages(): void {
     logger.info({ changes: result.changes }, "deleted old messages");
   }
 
-  // Rebuild FTS index after bulk deletions
-  db.exec("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')");
+  // Optimize FTS index after bulk deletions (merges segments without full reconstruction)
+  db.exec("INSERT INTO messages_fts(messages_fts) VALUES ('optimize')");
 }
