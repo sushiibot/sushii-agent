@@ -8,7 +8,6 @@ export interface RoleInfo {
   color?: string;
   isAdmin: boolean;
   isModerator: boolean;
-  memberCount: number;
 }
 
 export async function listGuildRoles({
@@ -37,7 +36,6 @@ export async function listGuildRoles({
             perms.has(PermissionFlagsBits.KickMembers) ||
             perms.has(PermissionFlagsBits.ModerateMembers) ||
             perms.has(PermissionFlagsBits.ManageMessages),
-          memberCount: r.members.size,
         };
         const hex = r.hexColor;
         if (hex && hex !== "#000000") info.color = hex;

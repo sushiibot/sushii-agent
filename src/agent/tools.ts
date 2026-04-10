@@ -282,7 +282,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "list_guild_roles",
       description:
-        "List all roles in the server with their permissions and member counts, sorted by hierarchy. Use during server scan or when you need to understand the role structure — who the moderators are, what roles have what permissions.",
+        "List all roles in the server with their permissions, sorted by hierarchy. Use during server scan or when you need to understand the role structure — who the moderators are, what roles have what permissions.",
       parameters: {
         type: "object",
         properties: {},
