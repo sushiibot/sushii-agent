@@ -181,7 +181,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
         (await message.channel.messages.fetch(message.reference.messageId));
       if (refMsg.author.id !== client.user!.id) {
         const refContent = buildMessageContent(refMsg);
-        replyContext = `[Replying to message from ${refMsg.author.username} (<@${refMsg.author.id}>)]\n${refContent}\n\n`;
+        replyContext = `Replying to u:${refMsg.author.id} (${refMsg.author.username}):\n${refContent}\n\n`;
         // Also collect identity info from the referenced message's mentions
         for (const [userId, user] of refMsg.mentions.users) {
           if (!mentionedUsers.has(userId)) {
@@ -754,9 +754,9 @@ function isChannelAllowed(message: Message, allowedChannels: string[]): boolean 
 
 function formatMessageLine(m: Message): string {
   const ts = Math.floor(m.createdTimestamp / 1000);
-  const authorLabel = m.author.bot ? `${m.author.username} [bot]` : m.author.username;
+  const botSuffix = m.author.bot ? " [bot]" : "";
   const content = buildMessageContent(m);
-  return `<t:${ts}:R> [${authorLabel}]: ${content}`;
+  return `t:${ts}:R u:${m.author.id} (${m.author.username}${botSuffix}): ${content}`;
 }
 
 async function fetchThreadContext(
