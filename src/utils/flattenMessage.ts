@@ -69,10 +69,9 @@ export function buildMessageContent(message: Message): string {
 
   if (message.content) {
     parts.push(message.content);
-  } else {
-    for (const sticker of message.stickers.values()) {
-      parts.push(`[sticker: ${sticker.name}]`);
-    }
+  }
+  for (const sticker of message.stickers.values()) {
+    parts.push(`[sticker: ${sticker.name}]`);
   }
 
   for (const attachment of message.attachments.values()) {
