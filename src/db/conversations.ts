@@ -34,7 +34,7 @@ export function saveConversation(
   threadId: string,
   guildId: string,
   messages: ModelMessage[],
-  initialThreadContext: string,
+  initialThreadContext: string | null,
 ): void {
   const db = getDb();
   const now = Date.now();

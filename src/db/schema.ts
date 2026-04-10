@@ -97,4 +97,15 @@ export const MIGRATIONS: string[][] = [
 
     `CREATE INDEX IF NOT EXISTS idx_agent_memory_guild ON agent_memory(guild_id)`,
   ],
+
+  // Migration 6 — persist pending questions across restarts
+  [
+    `CREATE TABLE IF NOT EXISTS pending_questions (
+      thread_id TEXT PRIMARY KEY,
+      question TEXT NOT NULL,
+      choices TEXT NOT NULL,
+      triggered_by_user_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`,
+  ],
 ];

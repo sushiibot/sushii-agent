@@ -8,7 +8,6 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
-  PermissionFlagsBits,
   Partials,
   SeparatorBuilder,
   SeparatorSpacingSize,
@@ -22,8 +21,6 @@ import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
 import { config } from "./config.ts";
 import { getLogger } from "./logger.ts";
-
-const logger = getLogger("bot");
 import {
   insertMessage,
   updateMessageContent,
@@ -31,17 +28,21 @@ import {
   deleteOldMessages,
 } from "./db/messages.ts";
 import { loadConversation, saveConversation } from "./db/conversations.ts";
+import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions } from "./db/pendingQuestions.ts";
 import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type AgentLoopResult } from "./agent/loop.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
+import { isPrivateChannel } from "./tools/channelUtils.ts";
 
+const logger = getLogger("bot");
 const tracer = trace.getTracer("sushii-agent");
 
-// In-memory map of threadId → pending question state (survives only current process)
+// In-memory map of threadId → pending question state (restored from DB on startup)
 interface PendingQuestionState {
   question: string;
   choices: string[];
+  triggeredByUserId: string;
 }
 const pendingChoices = new Map<string, PendingQuestionState>();
 
@@ -260,7 +261,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
       if (pendingQuestion) {
         // Save state and send question+buttons — loop resumes on button click
         saveConversation(thread.id, guildId, updatedHistory, threadContext);
-        pendingChoices.set(thread.id, { question: pendingQuestion.question, choices: pendingQuestion.choices });
+        pendingChoices.set(thread.id, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: message.author.id });
+        savePendingQuestion({ threadId: thread.id, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: message.author.id, createdAt: Date.now() });
         await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
       } else {
         const expanded = expandMessageLinks(response, guildId);
@@ -333,8 +335,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
+  if (interaction.user.id !== pending.triggeredByUserId) {
+    await interaction.reply({
+      content: `Only <@${pending.triggeredByUserId}> can respond to this question.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   const choice = pending.choices[choiceIndex];
   pendingChoices.delete(threadId);
+  deletePendingQuestion(threadId);
 
   // Acknowledge and update the button message to show the selection
   await interaction.deferUpdate();
@@ -381,8 +392,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const { response, updatedHistory, pendingQuestion } = agentResult;
 
     if (pendingQuestion) {
-      saveConversation(threadId, guildId, updatedHistory, initialThreadContext ?? "");
-      pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices });
+      saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
+      pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id });
+      savePendingQuestion({ threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id, createdAt: Date.now() });
       await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
     } else {
       const expanded = expandMessageLinks(response, guildId);
@@ -390,7 +402,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       for (const msgOpts of componentMsgs) {
         await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
       }
-      saveConversation(threadId, guildId, updatedHistory, initialThreadContext ?? "");
+      saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
     }
   } catch (err) {
     logger.error({ err }, "Error handling button interaction");
@@ -466,12 +478,8 @@ function getChannelContext(message: Message): ChannelContext {
     };
   }
 
-  let isPrivate = false;
   const everyoneId = message.guild?.roles.everyone.id;
-  if (everyoneId && "permissionOverwrites" in ch) {
-    const overwrite = (ch.permissionOverwrites as { cache: Map<string, { deny: { has: (f: bigint) => boolean } }> }).cache.get(everyoneId);
-    isPrivate = overwrite?.deny?.has(PermissionFlagsBits.ViewChannel) ?? false;
-  }
+  const isPrivate = everyoneId ? isPrivateChannel(ch as Parameters<typeof isPrivateChannel>[0], everyoneId) : false;
 
   let type = "text";
   if (ch.type === ChannelType.GuildAnnouncement) type = "announcement";
@@ -623,6 +631,11 @@ export async function startBot(): Promise<void> {
   // Run cleanup on startup, then daily
   deleteOldMessages();
   setInterval(deleteOldMessages, 24 * 60 * 60 * 1000);
+
+  // Restore pending questions from DB so buttons remain functional after restart
+  for (const pq of loadAllPendingQuestions()) {
+    pendingChoices.set(pq.threadId, { question: pq.question, choices: pq.choices, triggeredByUserId: pq.triggeredByUserId });
+  }
 
   await client.login(config.discordBotToken);
 }
