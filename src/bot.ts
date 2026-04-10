@@ -470,12 +470,13 @@ async function sendQuestionWithButtons(
 ): Promise<void> {
   const threadId = thread.id;
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    choices.map((label, i) =>
-      new ButtonBuilder()
+    choices.map((label, i) => {
+      const safeLabel = label.length > 80 ? label.slice(0, 77) + "..." : label;
+      return new ButtonBuilder()
         .setCustomId(`${ASK_BTN_PREFIX}${threadId}:${i}`)
-        .setLabel(label)
-        .setStyle(ButtonStyle.Primary),
-    ),
+        .setLabel(safeLabel)
+        .setStyle(ButtonStyle.Primary);
+    }),
   );
 
   const container = new ContainerBuilder()
