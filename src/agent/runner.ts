@@ -82,18 +82,16 @@ function extractUsersFromResult(result: unknown): Map<string, UserNames> {
   return users;
 }
 
-function formatToolResult(result: unknown): string {
-  // Error objects
+function formatToolResult(toolName: string, result: unknown): string {
+  // Error objects — applies to all tools
   if (result && typeof result === "object" && !Array.isArray(result) && "error" in result) {
     return (result as { error: string }).error;
   }
 
-  if (Array.isArray(result)) {
-    if (result.length === 0) return "(no results)";
-    const first = result[0] as Record<string, unknown>;
-
-    // Audit log entries
-    if ("executorId" in first) {
+  switch (toolName) {
+    case "search_audit_log": {
+      if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
+      if (result.length === 0) return "(no results)";
       return result
         .map(
           (e: {
@@ -121,13 +119,18 @@ function formatToolResult(result: unknown): string {
         .join("\n");
     }
 
-    // Message rows (from DB or Discord API — have discord_id)
-    if ("discord_id" in first) {
+    case "search_messages":
+    case "get_conversation_context":
+    case "get_recent_activity":
+    case "fetch_channel_messages": {
+      if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
+      if (result.length === 0) return "(no results)";
       return result.map((r) => formatMessageRow(r as MessageRowLike)).join("\n");
     }
 
-    // User candidates (resolveUsersByName — have author_id + last_active but no discord_id)
-    if ("author_id" in first && "last_active" in first) {
+    case "resolve_users_by_name": {
+      if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
+      if (result.length === 0) return "(no results)";
       return result
         .map(
           (u: {
@@ -148,158 +151,188 @@ function formatToolResult(result: unknown): string {
         .join("\n");
     }
 
-    return JSON.stringify(result, null, 2);
-  }
+    case "get_user_profile": {
+      const r = result as {
+        summary: {
+          first_seen: number | null;
+          last_seen: number | null;
+          total_messages: number;
+          channel_count: number;
+        } | null;
+        channelDistribution: { channel_id: string; count: number }[];
+        dailyActivity: { day: string; count: number }[];
+      };
 
-  // getUserProfile result
-  if (result && typeof result === "object" && "summary" in result) {
-    const r = result as {
-      summary: {
-        first_seen: number | null;
-        last_seen: number | null;
-        total_messages: number;
-        channel_count: number;
-      } | null;
-      channelDistribution: { channel_id: string; count: number }[];
-      dailyActivity: { day: string; count: number }[];
-    };
-
-    if (!r.summary || r.summary.total_messages === 0) {
-      return "(no messages found for this user in the cache)";
-    }
-
-    const lines: string[] = [];
-    if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:R>`);
-    if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:R>`);
-    lines.push(`total messages: ${r.summary.total_messages} across ${r.summary.channel_count} channels`);
-
-    if (r.channelDistribution.length > 0) {
-      lines.push("top channels:");
-      for (const ch of r.channelDistribution) {
-        lines.push(`  <#${ch.channel_id}>: ${ch.count} messages`);
+      if (!r.summary || r.summary.total_messages === 0) {
+        return "(no messages found for this user in the cache)";
       }
-    }
 
-    if (r.dailyActivity.length > 0) {
-      lines.push("daily activity (recent 30 days):");
-      for (const d of r.dailyActivity) {
-        lines.push(`  ${d.day}: ${d.count}`);
+      const lines: string[] = [];
+      if (r.summary.first_seen) lines.push(`first seen: <t:${Math.floor(r.summary.first_seen / 1000)}:R>`);
+      if (r.summary.last_seen) lines.push(`last seen: <t:${Math.floor(r.summary.last_seen / 1000)}:R>`);
+      lines.push(`total messages: ${r.summary.total_messages} across ${r.summary.channel_count} channels`);
+
+      if (r.channelDistribution.length > 0) {
+        lines.push("top channels:");
+        for (const ch of r.channelDistribution) {
+          lines.push(`  <#${ch.channel_id}>: ${ch.count} messages`);
+        }
       }
+
+      if (r.dailyActivity.length > 0) {
+        lines.push("daily activity (recent 30 days):");
+        for (const d of r.dailyActivity) {
+          lines.push(`  ${d.day}: ${d.count}`);
+        }
+      }
+
+      return lines.join("\n");
     }
 
-    return lines.join("\n");
-  }
+    case "get_current_member_info": {
+      const r = result as {
+        userId: string;
+        isStillInServer: boolean;
+        username?: string;
+        displayName?: string;
+        joinedAt?: number | null;
+        roles?: { id: string; name: string }[];
+      };
 
-  // getCurrentMemberInfo result
-  if (result && typeof result === "object" && "userId" in result) {
-    const r = result as {
-      userId: string;
-      isStillInServer: boolean;
-      username?: string;
-      displayName?: string;
-      joinedAt?: number | null;
-      roles?: { id: string; name: string }[];
-    };
+      if (!r.isStillInServer) {
+        return `<@${r.userId}> — not in server`;
+      }
 
-    if (!r.isStillInServer) {
-      return `<@${r.userId}> — not in server`;
-    }
-
-    const lines: string[] = [];
-    lines.push(`user: ${r.username} (<@${r.userId}>)`);
-    if (r.displayName && r.displayName !== r.username) lines.push(`display name: ${r.displayName}`);
-    if (r.joinedAt) lines.push(`joined: <t:${Math.floor(r.joinedAt / 1000)}:R>`);
-    lines.push("in server: yes");
-    if (r.roles && r.roles.length > 0) {
-      lines.push(`roles: ${r.roles.map((role) => `${role.name} (${role.id})`).join(", ")}`);
-    } else {
-      lines.push("roles: none");
-    }
-    return lines.join("\n");
-  }
-
-  // listGuildChannels result — array with isPrivate field
-  if (Array.isArray(result) && result.length > 0 && "isPrivate" in (result[0] as Record<string, unknown>)) {
-    type ChannelInfo = { id: string; name: string; type: string; isPrivate: boolean; topic?: string; categoryId?: string; categoryName?: string; parentChannelId?: string; parentChannelName?: string };
-    const channels = result as ChannelInfo[];
-
-    // Group by category
-    const byCategory = new Map<string, { name: string; channels: ChannelInfo[] }>();
-    const noCat: ChannelInfo[] = [];
-
-    for (const ch of channels) {
-      if (ch.categoryName && ch.categoryId) {
-        if (!byCategory.has(ch.categoryId)) byCategory.set(ch.categoryId, { name: ch.categoryName, channels: [] });
-        byCategory.get(ch.categoryId)!.channels.push(ch);
+      const lines: string[] = [];
+      lines.push(`user: ${r.username} (<@${r.userId}>)`);
+      if (r.displayName && r.displayName !== r.username) lines.push(`display name: ${r.displayName}`);
+      if (r.joinedAt) lines.push(`joined: <t:${Math.floor(r.joinedAt / 1000)}:R>`);
+      lines.push("in server: yes");
+      if (r.roles && r.roles.length > 0) {
+        lines.push(`roles: ${r.roles.map((role) => `${role.name} (${role.id})`).join(", ")}`);
       } else {
-        noCat.push(ch);
+        lines.push("roles: none");
       }
+      return lines.join("\n");
     }
 
-    const lines: string[] = [];
-    for (const { name, channels: cats } of byCategory.values()) {
-      lines.push(`[${name}]`);
-      for (const ch of cats) {
-        const privacy = ch.isPrivate ? "private" : "public";
-        let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
-        if (ch.topic) line += ` — ${ch.topic}`;
-        lines.push(line);
+    case "list_guild_channels": {
+      if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
+      if (result.length === 0) return "(no results)";
+      type ChannelInfo = {
+        id: string;
+        name: string;
+        type: string;
+        isPrivate: boolean;
+        topic?: string;
+        categoryId?: string;
+        categoryName?: string;
+        parentChannelId?: string;
+        parentChannelName?: string;
+      };
+      const channels = result as ChannelInfo[];
+
+      const byCategory = new Map<string, { name: string; channels: ChannelInfo[] }>();
+      const noCat: ChannelInfo[] = [];
+
+      for (const ch of channels) {
+        if (ch.categoryName && ch.categoryId) {
+          if (!byCategory.has(ch.categoryId)) byCategory.set(ch.categoryId, { name: ch.categoryName, channels: [] });
+          byCategory.get(ch.categoryId)!.channels.push(ch);
+        } else {
+          noCat.push(ch);
+        }
       }
-    }
-    if (noCat.length > 0) {
-      lines.push("[No category]");
-      for (const ch of noCat) {
-        const privacy = ch.isPrivate ? "private" : "public";
-        let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
-        if (ch.topic) line += ` — ${ch.topic}`;
-        lines.push(line);
+
+      const lines: string[] = [];
+      for (const { name, channels: cats } of byCategory.values()) {
+        lines.push(`[${name}]`);
+        for (const ch of cats) {
+          const privacy = ch.isPrivate ? "private" : "public";
+          let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
+          if (ch.topic) line += ` — ${ch.topic}`;
+          lines.push(line);
+        }
       }
+      if (noCat.length > 0) {
+        lines.push("[No category]");
+        for (const ch of noCat) {
+          const privacy = ch.isPrivate ? "private" : "public";
+          let line = `  <#${ch.id}> #${ch.name} (${ch.type}, ${privacy})`;
+          if (ch.topic) line += ` — ${ch.topic}`;
+          lines.push(line);
+        }
+      }
+
+      return lines.join("\n");
     }
 
-    return lines.join("\n");
-  }
+    case "list_guild_roles": {
+      if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
+      if (result.length === 0) return "(no results)";
+      type RoleInfo = {
+        id: string;
+        name: string;
+        position: number;
+        color?: string;
+        isAdmin: boolean;
+        isModerator: boolean;
+        memberCount: number;
+      };
+      return (result as RoleInfo[])
+        .map((r) => {
+          const flags: string[] = [];
+          if (r.isAdmin) flags.push("admin");
+          else if (r.isModerator) flags.push("moderator permissions");
+          const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+          const colorStr = r.color ? ` ${r.color}` : "";
+          return `${r.name} (${r.id})${colorStr}${flagStr} — ${r.memberCount} members`;
+        })
+        .join("\n");
+    }
 
-  // listGuildRoles result — array with isAdmin/isModerator fields
-  if (Array.isArray(result) && result.length > 0 && "isModerator" in (result[0] as Record<string, unknown>)) {
-    type RoleInfo = { id: string; name: string; position: number; color?: string; isAdmin: boolean; isModerator: boolean; memberCount: number };
-    return (result as RoleInfo[])
-      .map((r) => {
-        const flags: string[] = [];
-        if (r.isAdmin) flags.push("admin");
-        else if (r.isModerator) flags.push("moderator permissions");
-        const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
-        const colorStr = r.color ? ` ${r.color}` : "";
-        return `${r.name} (${r.id})${colorStr}${flagStr} — ${r.memberCount} members`;
-      })
-      .join("\n");
-  }
+    case "read_memory": {
+      // Single memory object
+      if (result && typeof result === "object" && !Array.isArray(result)) {
+        const r = result as { title: string; content: string; updated_at: number };
+        return `**${r.title}** (updated <t:${Math.floor(r.updated_at / 1000)}:R>)\n${r.content}`;
+      }
+      // Array of memories
+      if (Array.isArray(result)) {
+        if (result.length === 0) return "(no results)";
+        type MemoryRow = { title: string; content: string; updated_at: number };
+        return (result as MemoryRow[])
+          .map((m) => `**${m.title}** (updated <t:${Math.floor(m.updated_at / 1000)}:R>)\n${m.content}`)
+          .join("\n\n---\n\n");
+      }
+      return JSON.stringify(result, null, 2);
+    }
 
-  // read_memory result — single memory or array of memories
-  if (result && typeof result === "object" && !Array.isArray(result) && "title" in result && "content" in result) {
-    const r = result as { title: string; content: string; updated_at: number };
-    return `**${r.title}** (updated <t:${Math.floor(r.updated_at / 1000)}:R>)\n${r.content}`;
-  }
-  if (Array.isArray(result) && result.length > 0 && "title" in (result[0] as Record<string, unknown>) && "content" in (result[0] as Record<string, unknown>)) {
-    type MemoryRow = { title: string; content: string; updated_at: number };
-    return (result as MemoryRow[])
-      .map((m) => `**${m.title}** (updated <t:${Math.floor(m.updated_at / 1000)}:R>)\n${m.content}`)
-      .join("\n\n---\n\n");
-  }
+    case "get_channel_info": {
+      const r = result as {
+        id: string;
+        name: string;
+        type: string;
+        isPrivate: boolean;
+        topic?: string;
+        categoryName?: string;
+        categoryId?: string;
+        parentChannelId?: string;
+        parentChannelName?: string;
+      };
+      const lines: string[] = [];
+      lines.push(`<#${r.id}> #${r.name}`);
+      lines.push(`type: ${r.type}`);
+      lines.push(`privacy: ${r.isPrivate ? "private (not visible to @everyone)" : "public"}`);
+      if (r.categoryName) lines.push(`category: ${r.categoryName}`);
+      if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (<#${r.parentChannelId}>)`);
+      if (r.topic) lines.push(`topic: ${r.topic}`);
+      return lines.join("\n");
+    }
 
-  // getChannelInfo result — single object with id + isPrivate
-  if (result && typeof result === "object" && !Array.isArray(result) && "isPrivate" in result && "id" in result) {
-    const r = result as { id: string; name: string; type: string; isPrivate: boolean; topic?: string; categoryName?: string; categoryId?: string; parentChannelId?: string; parentChannelName?: string };
-    const lines: string[] = [];
-    lines.push(`<#${r.id}> #${r.name}`);
-    lines.push(`type: ${r.type}`);
-    lines.push(`privacy: ${r.isPrivate ? "private (not visible to @everyone)" : "public"}`);
-    if (r.categoryName) lines.push(`category: ${r.categoryName}`);
-    if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (<#${r.parentChannelId}>)`);
-    if (r.topic) lines.push(`topic: ${r.topic}`);
-    return lines.join("\n");
+    default:
+      return JSON.stringify(result, null, 2);
   }
-
-  return JSON.stringify(result, null, 2);
 }
 
 type AiToolCall = { toolCallId: string; toolName: string; input: Record<string, unknown> };
@@ -439,12 +472,14 @@ export async function runTools(
   const toolResultParts: ToolModelMessage["content"] = [];
   const pendingImages: string[] = [];
   let pendingQuestion: PendingQuestion | undefined;
+  let askQuestionToolCallId: string | undefined;
 
   for (const { call, result } of rawResults) {
     // ask_question — pause the loop, send buttons to Discord
     if (call.toolName === "ask_question" && result && typeof result === "object" && "_askQuestion" in result) {
       const r = result as unknown as { question: string; choices: string[] };
       pendingQuestion = { toolCallId: call.toolCallId, question: r.question, choices: r.choices };
+      askQuestionToolCallId = call.toolCallId;
       toolResultParts.push({
         type: "tool-result",
         toolCallId: call.toolCallId,
@@ -471,10 +506,31 @@ export async function runTools(
       if (!discoveredUsers.has(id)) discoveredUsers.set(id, names);
     }
 
-    const content = formatToolResult(result);
+    const content = formatToolResult(call.toolName, result);
     logger.debug({ tool: call.toolName, resultLength: content.length }, "tool result");
 
     toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: content } });
+  }
+
+  // If ask_question was called alongside other tools, override it with an error so the loop
+  // continues normally — ask_question must be called alone.
+  if (pendingQuestion && toolResultParts.length > 1 && askQuestionToolCallId !== undefined) {
+    const idx = toolResultParts.findIndex(
+      (p) => p.type === "tool-result" && p.toolCallId === askQuestionToolCallId,
+    );
+    if (idx !== -1) {
+      toolResultParts[idx] = {
+        type: "tool-result",
+        toolCallId: askQuestionToolCallId,
+        toolName: "ask_question",
+        output: {
+          type: "text",
+          value:
+            "ask_question must be called alone — do not combine it with other tool calls in the same turn. Try again with only ask_question.",
+        },
+      };
+    }
+    pendingQuestion = undefined;
   }
 
   return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages, pendingQuestion };
