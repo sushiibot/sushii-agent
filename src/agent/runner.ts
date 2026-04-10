@@ -10,7 +10,7 @@ import { resolveUsersByName } from "../tools/resolveUsersByName.ts";
 import { fetchChannelMessages } from "../tools/fetchChannelMessages.ts";
 import { listGuildChannels } from "../tools/listGuildChannels.ts";
 import { getChannelInfo } from "../tools/getChannelInfo.ts";
-import { listGuildRoles } from "../tools/listGuildRoles.ts";
+import { listGuildRoles, type RoleInfo } from "../tools/listGuildRoles.ts";
 import { readMemoryTool } from "../tools/readMemory.ts";
 import { writeMemoryTool } from "../tools/writeMemory.ts";
 import { deleteMemoryTool } from "../tools/deleteMemory.ts";
@@ -270,15 +270,6 @@ function formatToolResult(toolName: string, result: unknown): string {
     case "list_guild_roles": {
       if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
       if (result.length === 0) return "(no results)";
-      type RoleInfo = {
-        id: string;
-        name: string;
-        position: number;
-        color?: string;
-        isAdmin: boolean;
-        isModerator: boolean;
-        memberCount: number;
-      };
       return (result as RoleInfo[])
         .map((r) => {
           const flags: string[] = [];
@@ -286,7 +277,7 @@ function formatToolResult(toolName: string, result: unknown): string {
           else if (r.isModerator) flags.push("moderator permissions");
           const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
           const colorStr = r.color ? ` ${r.color}` : "";
-          return `${r.name} (${r.id})${colorStr}${flagStr} — ${r.memberCount} members`;
+          return `${r.name} (${r.id})${colorStr}${flagStr}`;
         })
         .join("\n");
     }
@@ -335,6 +326,17 @@ function formatToolResult(toolName: string, result: unknown): string {
   }
 }
 
+function coerceNumericFields(input: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  const out = { ...input };
+  for (const field of fields) {
+    if (field in out) {
+      const n = Number(out[field]);
+      out[field] = isNaN(n) ? undefined : n;
+    }
+  }
+  return out;
+}
+
 type AiToolCall = { toolCallId: string; toolName: string; input: Record<string, unknown> };
 
 export interface PendingQuestion {
@@ -365,11 +367,14 @@ export async function runTools(
 
         switch (call.toolName) {
           case "search_messages":
-            result = searchMessages({ ...input, guildId } as Parameters<typeof searchMessages>[0]);
+            result = searchMessages({
+              ...coerceNumericFields(input, ["limit", "since", "until"]),
+              guildId,
+            } as Parameters<typeof searchMessages>[0]);
             break;
           case "get_conversation_context":
             result = getConversationContext({
-              ...input,
+              ...coerceNumericFields(input, ["window"]),
               guildId,
             } as Parameters<typeof getConversationContext>[0]);
             break;
@@ -378,26 +383,26 @@ export async function runTools(
             break;
           case "get_recent_activity":
             result = getRecentActivity({
-              ...input,
+              ...coerceNumericFields(input, ["days", "limit"]),
               guildId,
             } as Parameters<typeof getRecentActivity>[0]);
             break;
           case "resolve_users_by_name":
             result = resolveUsersByName({
-              ...input,
+              ...coerceNumericFields(input, ["days", "limit"]),
               guildId,
             } as Parameters<typeof resolveUsersByName>[0]);
             break;
           case "search_audit_log":
             result = await searchAuditLog({
-              ...input,
+              ...coerceNumericFields(input, ["limit"]),
               guildId,
               client,
             } as Parameters<typeof searchAuditLog>[0]);
             break;
           case "fetch_channel_messages":
             result = await fetchChannelMessages({
-              ...input,
+              ...coerceNumericFields(input, ["limit"]),
               guildId,
               client,
             } as Parameters<typeof fetchChannelMessages>[0]);
