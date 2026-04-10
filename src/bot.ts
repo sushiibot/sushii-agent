@@ -28,7 +28,7 @@ import {
   deleteOldMessages,
 } from "./db/messages.ts";
 import { loadConversation, saveConversation } from "./db/conversations.ts";
-import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions } from "./db/pendingQuestions.ts";
+import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
 import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type AgentLoopResult } from "./agent/loop.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -45,6 +45,16 @@ interface PendingQuestionState {
   triggeredByUserId: string;
 }
 const pendingChoices = new Map<string, PendingQuestionState>();
+
+// Per-channel async mutex to prevent concurrent agent runs in the same thread
+const threadLocks = new Map<string, Promise<void>>();
+
+function withThreadLock(threadId: string, fn: () => Promise<void>): Promise<void> {
+  const prev = threadLocks.get(threadId) ?? Promise.resolve();
+  const next = prev.then(fn, fn); // run fn even if prev rejected
+  threadLocks.set(threadId, next);
+  return next;
+}
 
 // Custom ID prefix for ask_question button interactions
 const ASK_BTN_PREFIX = "agq:";
@@ -194,9 +204,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const trigger = isMention ? "mention" : "reply";
   logger.info({ trigger, username: message.author.username, userId: message.author.id, channelId: message.channelId }, "triggered");
 
+  await withThreadLock(message.channelId, async () => {
   await tracer.startActiveSpan("discord.message", {
     attributes: {
-      "discord.guild_id": message.guildId,
+      "discord.guild_id": message.guildId ?? undefined,
       "discord.channel_id": message.channelId,
       "discord.message_id": message.id,
       "discord.user_id": message.author.id,
@@ -300,14 +311,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
       span.end();
     }
   });
+  }); // end withThreadLock
 });
 
 client.on(Events.MessageUpdate, (_old, newMsg) => {
   if (!newMsg.guildId) return;
   if (newMsg.partial) return;
-  if (!newMsg.content) return;
 
-  updateMessageContent(newMsg.id, newMsg.content, newMsg.editedTimestamp ?? Date.now());
+  updateMessageContent(newMsg.id, buildMessageContent(newMsg), newMsg.editedTimestamp ?? Date.now());
 });
 
 client.on(Events.MessageDelete, (message) => {
@@ -351,65 +362,67 @@ client.on(Events.InteractionCreate, async (interaction) => {
   await interaction.deferUpdate();
   await disableQuestionButtons(interaction as ButtonInteraction, pending.question, choice);
 
-  const thread = await client.channels.fetch(threadId);
-  if (!thread?.isThread()) return;
+  await withThreadLock(threadId, async () => {
+    const thread = await client.channels.fetch(threadId);
+    if (!thread?.isThread()) return;
 
-  const guildId = thread.guildId;
-  const guildConfig = config.guildConfig[guildId];
-  if (!guildConfig) return;
+    const guildId = thread.guildId;
+    const guildConfig = config.guildConfig[guildId];
+    if (!guildConfig) return;
 
-  await thread.sendTyping();
-  const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+    await thread.sendTyping();
+    const typingInterval = setInterval(() => thread.sendTyping(), 8000);
 
-  try {
-    const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
-    const serverContext = getServerContext(guildId);
-    const memoryIndex = listMemoryTitles(guildId);
-    const memoryCount = getMemoryCount(guildId);
+    try {
+      const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
+      const serverContext = getServerContext(guildId);
+      const memoryIndex = listMemoryTitles(guildId);
+      const memoryCount = getMemoryCount(guildId);
 
-    const query = `[Selected: "${choice}"]`;
+      const query = `[Selected: "${choice}"]`;
 
-    const agentResult: AgentLoopResult = await runAgentLoop(
-      query,
-      existingHistory,
-      guildId,
-      client as Client<true>,
-      {
-        threadContext: initialThreadContext ?? undefined,
-        currentChannelId: threadId,
-        emojiMap: guildConfig.emojiMap,
-        rules: guildConfig.rules,
-        botId: client.user!.id,
-        botUsername: client.user!.username,
-        serverContext,
-        memoryIndex,
-        memoryCount,
-        memoryLimit: MEMORY_LIMIT,
-      },
-      threadId,
-    );
+      const agentResult: AgentLoopResult = await runAgentLoop(
+        query,
+        existingHistory,
+        guildId,
+        client as Client<true>,
+        {
+          threadContext: initialThreadContext ?? undefined,
+          currentChannelId: threadId,
+          emojiMap: guildConfig.emojiMap,
+          rules: guildConfig.rules,
+          botId: client.user!.id,
+          botUsername: client.user!.username,
+          serverContext,
+          memoryIndex,
+          memoryCount,
+          memoryLimit: MEMORY_LIMIT,
+        },
+        threadId,
+      );
 
-    const { response, updatedHistory, pendingQuestion } = agentResult;
+      const { response, updatedHistory, pendingQuestion } = agentResult;
 
-    if (pendingQuestion) {
-      saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
-      pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id });
-      savePendingQuestion({ threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id, createdAt: Date.now() });
-      await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
-    } else {
-      const expanded = expandMessageLinks(response, guildId);
-      const componentMsgs = buildComponentMessages(expanded);
-      for (const msgOpts of componentMsgs) {
-        await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+      if (pendingQuestion) {
+        saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
+        pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id });
+        savePendingQuestion({ threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id, createdAt: Date.now() });
+        await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
+      } else {
+        const expanded = expandMessageLinks(response, guildId);
+        const componentMsgs = buildComponentMessages(expanded);
+        for (const msgOpts of componentMsgs) {
+          await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+        }
+        saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
       }
-      saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
+    } catch (err) {
+      logger.error({ err }, "Error handling button interaction");
+      await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
+    } finally {
+      clearInterval(typingInterval);
     }
-  } catch (err) {
-    logger.error({ err }, "Error handling button interaction");
-    await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
-  } finally {
-    clearInterval(typingInterval);
-  }
+  }); // end withThreadLock
 });
 
 async function sendQuestionWithButtons(
@@ -632,10 +645,20 @@ export async function startBot(): Promise<void> {
   deleteOldMessages();
   setInterval(deleteOldMessages, 24 * 60 * 60 * 1000);
 
+  // Delete stale pending questions (older than 24h) before restoring, then schedule hourly cleanup
+  deleteStalePendingQuestions(24 * 60 * 60 * 1000);
   // Restore pending questions from DB so buttons remain functional after restart
   for (const pq of loadAllPendingQuestions()) {
     pendingChoices.set(pq.threadId, { question: pq.question, choices: pq.choices, triggeredByUserId: pq.triggeredByUserId });
   }
+  // Hourly: prune stale questions from DB and re-sync the in-memory map
+  setInterval(() => {
+    deleteStalePendingQuestions(24 * 60 * 60 * 1000);
+    pendingChoices.clear();
+    for (const pq of loadAllPendingQuestions()) {
+      pendingChoices.set(pq.threadId, { question: pq.question, choices: pq.choices, triggeredByUserId: pq.triggeredByUserId });
+    }
+  }, 60 * 60 * 1000);
 
   await client.login(config.discordBotToken);
 }

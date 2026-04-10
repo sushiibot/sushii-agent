@@ -1,5 +1,4 @@
 import { MessageType, type Message } from "discord.js";
-import { config } from "../config.ts";
 import { getDb } from "./index.ts";
 import { buildMessageContent } from "../utils/flattenMessage.ts";
 import { getLogger } from "../logger.ts";
@@ -59,14 +58,9 @@ export function deleteOldMessages(): void {
   const db = getDb();
   const threshold = Date.now() - 30 * 24 * 60 * 60 * 1000;
 
-  for (const guildId of Object.keys(config.guildConfig)) {
-    const result = db.run(
-      `DELETE FROM messages WHERE created_at < ? AND guild_id = ?`,
-      [threshold, guildId],
-    );
-    if (result.changes > 0) {
-      logger.info({ changes: result.changes, guildId }, "deleted old messages");
-    }
+  const result = db.run(`DELETE FROM messages WHERE created_at < ?`, [threshold]);
+  if (result.changes > 0) {
+    logger.info({ changes: result.changes }, "deleted old messages");
   }
 
   // Rebuild FTS index after bulk deletions

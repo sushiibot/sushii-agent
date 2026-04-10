@@ -59,3 +59,9 @@ export function loadAllPendingQuestions(): PendingQuestionRecord[] {
 
   return rows.map(rowToRecord);
 }
+
+export function deleteStalePendingQuestions(maxAgeMs: number): void {
+  const db = getDb();
+  const cutoff = Date.now() - maxAgeMs;
+  db.run("DELETE FROM pending_questions WHERE created_at < ?", [cutoff]);
+}
