@@ -275,7 +275,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
       if (pendingQuestion) {
         // Save state and send question+buttons — loop resumes on button click
-        saveConversation(thread.id, guildId, updatedHistory, threadContext);
+        saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
         pendingChoices.set(thread.id, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: message.author.id });
         savePendingQuestion({ threadId: thread.id, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: message.author.id, createdAt: Date.now() });
         await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
@@ -286,7 +286,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
           await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
         }
 
-        saveConversation(thread.id, guildId, updatedHistory, threadContext);
+        saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
 
         // Rename thread when there's enough context:
         // - 3+ tool uses on first turn (rich investigation), OR
@@ -384,6 +384,34 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const memoryIndex = listMemoryTitles(guildId);
       const memoryCount = getMemoryCount(guildId);
 
+      // Build triggeringUser from the button clicker
+      const member = await thread.guild.members.fetch(interaction.user.id).catch(() => null);
+      const memberRoles = member
+        ? [...member.roles.cache.values()]
+            .filter((r) => r.id !== thread.guild.roles.everyone.id)
+            .sort((a, b) => b.position - a.position)
+            .map((r) => ({ id: r.id, name: r.name }))
+        : [];
+      const isModerator = member?.roles.cache.hasAny(...guildConfig.allowedRoles) ?? false;
+      const triggeringUser = {
+        id: interaction.user.id,
+        username: interaction.user.username,
+        displayName: member?.displayName !== interaction.user.username ? member?.displayName ?? null : null,
+        roles: memberRoles,
+        isModerator,
+      };
+
+      // Build currentChannel from the thread
+      const isPrivate = thread.type === ChannelType.PrivateThread;
+      const currentChannel = {
+        id: thread.id,
+        name: thread.name,
+        type: isPrivate ? "thread (private)" : "thread (public)",
+        isPrivate,
+        parentChannelId: thread.parentId ?? undefined,
+        parentChannelName: thread.parent?.name ?? undefined,
+      };
+
       const query = `[Selected: "${choice}"]`;
 
       const agentResult: AgentLoopResult = await runAgentLoop(
@@ -398,6 +426,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
           rules: guildConfig.rules,
           botId: client.user!.id,
           botUsername: client.user!.username,
+          triggeringUser,
+          currentChannel,
           serverContext,
           memoryIndex,
           memoryCount,
