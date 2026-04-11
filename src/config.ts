@@ -3,8 +3,6 @@ export interface GuildConfig {
   allowedChannels: string[];
   /** Maps custom emoji names to unicode equivalents, e.g. { "blobheart": "❤️" } */
   emojiMap?: Record<string, string>;
-  /** Server rules injected into the agent system prompt */
-  rules?: string;
 }
 
 export interface Config {
@@ -32,19 +30,13 @@ import { readFileSync } from "fs";
 
 function loadGuildConfig(): Record<string, GuildConfig> {
   const filePath = optional("GUILD_CONFIG_PATH", "./guild-config.json");
-  let raw: Record<string, GuildConfig & { rules?: string | string[] }>;
+  let raw: Record<string, GuildConfig>;
   try {
     raw = JSON.parse(readFileSync(filePath, "utf8"));
   } catch (e) {
     throw new Error(`Failed to load guild config from ${filePath}: ${e}`);
   }
-  // Normalize rules: join array form into a single string
-  for (const cfg of Object.values(raw)) {
-    if (Array.isArray(cfg.rules)) {
-      cfg.rules = cfg.rules.join("\n");
-    }
-  }
-  return raw as Record<string, GuildConfig>;
+  return raw;
 }
 
 export const config: Config = {

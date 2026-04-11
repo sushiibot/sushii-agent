@@ -109,7 +109,6 @@ export interface AgentLoopOptions {
   threadContext?: string;
   currentChannelId?: string;
   emojiMap?: Record<string, string>;
-  rules?: string;
   mentionedUsers?: Map<string, UserNames>;
   botId?: string;
   botUsername?: string;
@@ -200,10 +199,6 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
     systemParts.push(
       `Server emojis — use as \`e:name\` tokens (e.g. \`e:JennieLmao2\`). Available:\n${entries}\nDo not use other emojis. Do not include angle brackets or IDs — the bot expands \`e:name\` to the correct Discord syntax automatically.`,
     );
-  }
-
-  if (opts.rules) {
-    systemParts.push(`Server rules:\n${opts.rules}\n\nWhen suggesting a moderation action, cite the specific rule number(s) violated (e.g. "Rule 1", "Rules 2 and 5"). Only cite rules that are directly relevant — don't list rules that weren't broken.`);
   }
 
   if (opts.threadContext) {

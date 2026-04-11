@@ -134,7 +134,6 @@ client.on(Events.MessageCreate, async (message: Message) => {
         threadContext: threadContext || undefined,
         currentChannelId: thread.id,
         emojiMap: guildConfig.emojiMap,
-        rules: guildConfig.rules,
       });
       const payload = {
         model: config.openaiModel,
@@ -289,7 +288,6 @@ client.on(Events.MessageCreate, async (message: Message) => {
             threadContext: threadContext || undefined,
             currentChannelId: thread.id,
             emojiMap: guildConfig.emojiMap,
-            rules: guildConfig.rules,
             mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
             botId: client.user!.id,
             botUsername: client.user!.username,
@@ -432,7 +430,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             {
               currentChannelId: pending.threadId,
               emojiMap: guildConfig.emojiMap,
-              rules: guildConfig.rules,
               botId: client.user!.id,
               botUsername: client.user!.username,
               triggeringUser: pending.triggeringUser,
@@ -474,7 +471,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
             threadContext: pending.threadContext || undefined,
             currentChannelId: pending.threadId,
             emojiMap: guildConfig.emojiMap,
-            rules: guildConfig.rules,
             mentionedUsers: pending.mentionedUsers,
             botId: client.user!.id,
             botUsername: client.user!.username,
@@ -603,7 +599,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           threadContext: initialThreadContext ?? undefined,
           currentChannelId: threadId,
           emojiMap: guildConfig.emojiMap,
-          rules: guildConfig.rules,
           botId: client.user!.id,
           botUsername: client.user!.username,
           triggeringUser,
