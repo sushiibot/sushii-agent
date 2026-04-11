@@ -18,7 +18,6 @@ export async function resolveOrCreateThread(
 
   const thread = await message.startThread({
     name: "sushii-agent investigation",
-    autoArchiveDuration: 1440, // 24 hours
   });
 
   return { thread, isNew: true };
