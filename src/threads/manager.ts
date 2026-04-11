@@ -44,7 +44,7 @@ export async function renameThread(
         {
           role: "user",
           content:
-            "Write a thread title of 8 words or fewer summarizing this investigation. Return only the title, no quotes or punctuation.",
+            "Write a thread title of 5 words or fewer summarizing this conversation topic. Do not include any person's name or username. Return only the title, no quotes or punctuation.",
         },
       ],
       maxOutputTokens: 60,
