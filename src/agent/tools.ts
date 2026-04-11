@@ -360,71 +360,27 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "read_memory",
+      name: "memory",
       description:
-        "Read one or all agent memory entries. Call with a title to fetch a specific memory's full content. Call without a title to fetch all memories. Use when the memory index in the system prompt shows entries relevant to the current query.",
+        "Manage persistent agent memory across conversations. Use read (no title) to list all memories, read (with title) to fetch one, write to save/update, delete to remove stale entries. Prefer updating existing entries over creating near-duplicates.",
       parameters: {
         type: "object",
         properties: {
-          title: {
+          action: {
             type: "string",
-            description: "Title of the specific memory to read. Omit to read all memories.",
+            enum: ["read", "write", "delete"],
+            description: "Operation to perform.",
           },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "write_memory",
-      description:
-        "Save or update an agent memory entry. Use this to remember things that would help future conversations: recurring patterns, important context, corrections, anything a mod would otherwise have to re-explain. Update existing entries (same title) rather than creating near-duplicates. Keep content concise.",
-      parameters: {
-        type: "object",
-        properties: {
           title: {
             type: "string",
-            description: "Short, descriptive title for this memory (used as the unique key). Be specific enough to identify it in the index.",
+            description: "Memory title (unique key). Required for write and delete; omit for read-all.",
           },
           content: {
             type: "string",
-            description: "The memory content. Keep it focused and concise — this is recalled across conversations, not stored for this session only.",
+            description: "Memory content. Required for write. Keep concise — this persists across conversations.",
           },
         },
-        required: ["title", "content"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "delete_memory",
-      description:
-        "Delete an agent memory entry by title. Use when a memory is stale, resolved, or no longer relevant. Also use to make room when the memory limit is reached.",
-      parameters: {
-        type: "object",
-        properties: {
-          title: {
-            type: "string",
-            description: "Exact title of the memory to delete.",
-          },
-        },
-        required: ["title"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "list_guild_channels",
-      description:
-        "List all channels in the server, organized by category. Use this to understand the server's channel structure — which channels are private (mod-only), which are public, and how they're organized. Useful when you need to understand what channel a user was posting in, or to check if a channel is a staff channel.",
-      parameters: {
-        type: "object",
-        properties: {},
-        required: [],
+        required: ["action"],
       },
     },
   },
@@ -433,16 +389,16 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "get_channel_info",
       description:
-        "Get details about a specific channel — its name, type, whether it's private/mod-only, its category, and topic. Use this when you see a channel ID in tool results and need to understand what that channel is.",
+        "Get channel information. Without channel_id: lists all channels in the server organized by category — use this to understand the server structure, which channels are private (mod-only), etc. With channel_id: get details about that specific channel — name, type, privacy, category, and topic.",
       parameters: {
         type: "object",
         properties: {
           channel_id: {
             type: "string",
-            description: "Discord channel ID (snowflake)",
+            description: "Discord channel ID (snowflake). Omit to list all channels.",
           },
         },
-        required: ["channel_id"],
+        required: [],
       },
     },
   },

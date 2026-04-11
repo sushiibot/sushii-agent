@@ -225,7 +225,30 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
       return lines.join("\n");
     }
 
-    case "list_guild_channels": {
+    case "get_channel_info": {
+      // Single channel detail (channel_id was provided)
+      if (result && typeof result === "object" && !Array.isArray(result) && "id" in (result as object)) {
+        const r = result as {
+          id: string;
+          name: string;
+          type: string;
+          isPrivate: boolean;
+          topic?: string;
+          categoryName?: string;
+          categoryId?: string;
+          parentChannelId?: string;
+          parentChannelName?: string;
+        };
+        const lines: string[] = [];
+        lines.push(`c:${r.id} #${r.name}`);
+        lines.push(`type: ${r.type}`);
+        lines.push(`privacy: ${r.isPrivate ? "private (not visible to @everyone)" : "public"}`);
+        if (r.categoryName) lines.push(`category: ${r.categoryName}`);
+        if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (c:${r.parentChannelId})`);
+        if (r.topic) lines.push(`topic: ${r.topic}`);
+        return lines.join("\n");
+      }
+      // Channel list (no channel_id — same rendering as old list_guild_channels)
       if (!Array.isArray(result)) return JSON.stringify(result, null, 2);
       if (result.length === 0) return "(no results)";
       type ChannelInfo = {
@@ -291,43 +314,21 @@ function formatToolResult(toolName: string, result: unknown, input?: Record<stri
         .join("\n");
     }
 
-    case "read_memory": {
-      // Single memory object
-      if (result && typeof result === "object" && !Array.isArray(result)) {
+    case "memory": {
+      // Single memory object (read by title)
+      if (result && typeof result === "object" && !Array.isArray(result) && "title" in (result as object)) {
         const r = result as { title: string; content: string; updated_at: number };
         return `**${r.title}** (updated t:${Math.floor(r.updated_at / 1000)}:R)\n${r.content}`;
       }
-      // Array of memories
+      // Array of memories (read all)
       if (Array.isArray(result)) {
-        if (result.length === 0) return "(no results)";
+        if (result.length === 0) return "(no memories)";
         type MemoryRow = { title: string; content: string; updated_at: number };
         return (result as MemoryRow[])
           .map((m) => `**${m.title}** (updated t:${Math.floor(m.updated_at / 1000)}:R)\n${m.content}`)
           .join("\n\n---\n\n");
       }
       return JSON.stringify(result, null, 2);
-    }
-
-    case "get_channel_info": {
-      const r = result as {
-        id: string;
-        name: string;
-        type: string;
-        isPrivate: boolean;
-        topic?: string;
-        categoryName?: string;
-        categoryId?: string;
-        parentChannelId?: string;
-        parentChannelName?: string;
-      };
-      const lines: string[] = [];
-      lines.push(`c:${r.id} #${r.name}`);
-      lines.push(`type: ${r.type}`);
-      lines.push(`privacy: ${r.isPrivate ? "private (not visible to @everyone)" : "public"}`);
-      if (r.categoryName) lines.push(`category: ${r.categoryName}`);
-      if (r.parentChannelName) lines.push(`parent channel: #${r.parentChannelName} (c:${r.parentChannelId})`);
-      if (r.topic) lines.push(`topic: ${r.topic}`);
-      return lines.join("\n");
     }
 
     default:
@@ -452,15 +453,16 @@ export async function runTools(
               client,
             } as Parameters<typeof getCurrentMemberInfo>[0]);
             break;
-          case "list_guild_channels":
-            result = await listGuildChannels({ guildId, client });
-            break;
           case "get_channel_info":
-            result = await getChannelInfo({
-              ...input,
-              guildId,
-              client,
-            } as Parameters<typeof getChannelInfo>[0]);
+            if (input.channel_id) {
+              result = await getChannelInfo({
+                ...input,
+                guildId,
+                client,
+              } as Parameters<typeof getChannelInfo>[0]);
+            } else {
+              result = await listGuildChannels({ guildId, client });
+            }
             break;
           case "list_guild_roles":
             result = await listGuildRoles({ guildId, client });
@@ -468,15 +470,17 @@ export async function runTools(
           case "update_server_context":
             result = updateServerContextTool({ ...input, guildId } as Parameters<typeof updateServerContextTool>[0]);
             break;
-          case "read_memory":
-            result = readMemoryTool({ ...input, guildId } as Parameters<typeof readMemoryTool>[0]);
+          case "memory": {
+            const action = input.action as string;
+            if (action === "write") {
+              result = writeMemoryTool({ ...input, guildId } as Parameters<typeof writeMemoryTool>[0]);
+            } else if (action === "delete") {
+              result = deleteMemoryTool({ ...input, guildId } as Parameters<typeof deleteMemoryTool>[0]);
+            } else {
+              result = readMemoryTool({ ...input, guildId } as Parameters<typeof readMemoryTool>[0]);
+            }
             break;
-          case "write_memory":
-            result = writeMemoryTool({ ...input, guildId } as Parameters<typeof writeMemoryTool>[0]);
-            break;
-          case "delete_memory":
-            result = deleteMemoryTool({ ...input, guildId } as Parameters<typeof deleteMemoryTool>[0]);
-            break;
+          }
           case "ask_question":
             // Handled as a special pause — tool result is a placeholder
             result = { _askQuestion: true, question: input.question, choices: input.choices };
