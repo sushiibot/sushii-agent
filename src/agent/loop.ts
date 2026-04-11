@@ -119,6 +119,8 @@ export interface AgentLoopOptions {
   memoryCount?: number;
   memoryLimit?: number;
   onInterimText?: (text: string) => Promise<void>;
+  /** Called each iteration with the current batch of tool calls being dispatched. When provided, tool lines are omitted from the final footer. */
+  onToolsDispatched?: (tools: { name: string; input: Record<string, unknown> }[]) => Promise<void>;
 }
 
 export type { UserNames };
@@ -307,7 +309,8 @@ export async function runAgentLoop(
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
           const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
-          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
+          const footerTools = opts.onToolsDispatched ? [] : usedTools;
+          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
           logger.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
         }
@@ -315,8 +318,13 @@ export async function runAgentLoop(
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
           logger.debug({ tools: names }, "tool calls");
-          for (const tc of toolCalls) {
-            usedTools.push({ name: tc.toolName, input: tc.input as Record<string, unknown> });
+          const dispatchedTools = toolCalls.map((tc) => ({ name: tc.toolName, input: tc.input as Record<string, unknown> }));
+          for (const tool of dispatchedTools) {
+            usedTools.push(tool);
+          }
+
+          if (opts.onToolsDispatched) {
+            await opts.onToolsDispatched(dispatchedTools);
           }
 
           if (text && !text.startsWith("[Internal:") && opts.onInterimText) {
@@ -377,7 +385,7 @@ export async function runAgentLoop(
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
         const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
-        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
+        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
         return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
@@ -404,7 +412,7 @@ export async function runAgentLoop(
       }
       messages.push({ role: "assistant", content: finalResult.text });
       const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text ?? "(no response)"), opts.emojiMap);
-      const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
+      const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
       return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -420,7 +428,7 @@ export async function runAgentLoop(
   });
 }
 
-function formatToolArg(value: unknown): string {
+export function formatToolArg(value: unknown): string {
   if (typeof value === "string") {
     const truncated = value.length > 40 ? `${value.slice(0, 40)}…` : value;
     return `"${truncated}"`;

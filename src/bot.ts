@@ -33,7 +33,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult } from "./agent/loop.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -42,6 +42,59 @@ import { isPrivateChannel } from "./tools/channelUtils.ts";
 
 const logger = getLogger("bot");
 const tracer = trace.getTracer("sushii-agent");
+
+/**
+ * Tracks tool calls during an agent loop iteration and displays them as a live
+ * Discord message that gets edited in place. Multiple rapid calls are batched
+ * together with a debounce so we don't hit rate limits.
+ */
+class ToolProgressTracker {
+  private msg: Message | null = null;
+  private lines: string[] = [];
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly DEBOUNCE_MS = 500;
+
+  constructor(private thread: ThreadChannel) {}
+
+  add(tools: { name: string; input: Record<string, unknown> }[]): void {
+    for (const { name, input } of tools) {
+      const args = Object.entries(input)
+        .map(([k, v]) => `${k}=${formatToolArg(v)}`)
+        .join(", ");
+      this.lines.push(args ? `${name}(${args})` : name);
+    }
+    this.scheduleFlush();
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = setTimeout(() => { void this.flush(); }, ToolProgressTracker.DEBOUNCE_MS);
+  }
+
+  private async flush(): Promise<void> {
+    this.flushTimer = null;
+    // Discord regular message content limit is 2000 chars
+    const content = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 1990);
+    try {
+      if (!this.msg) {
+        this.msg = await this.thread.send({ content, allowedMentions: { parse: [] } });
+      } else {
+        await this.msg.edit({ content, allowedMentions: { parse: [] } });
+      }
+    } catch (err) {
+      logger.warn({ err }, "failed to update tool progress message");
+    }
+  }
+
+  /** Flush any buffered updates immediately before the final response is sent. */
+  async finalize(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+      await this.flush();
+    }
+  }
+}
 
 // In-memory map of threadId → pending question state (restored from DB on startup)
 interface PendingQuestionState {
@@ -277,6 +330,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
       await thread.sendTyping();
       const typingInterval = setInterval(() => thread.sendTyping(), 8000);
 
+      const toolTracker = new ToolProgressTracker(thread);
+
       let agentResult: Awaited<ReturnType<typeof runAgentLoop>>;
       try {
         agentResult = await runAgentLoop(
@@ -305,9 +360,13 @@ client.on(Events.MessageCreate, async (message: Message) => {
               }
               await thread.sendTyping();
             },
+            onToolsDispatched: async (tools) => {
+              toolTracker.add(tools);
+            },
           },
           thread.id,
         );
+        await toolTracker.finalize();
       } finally {
         clearInterval(typingInterval);
       }
