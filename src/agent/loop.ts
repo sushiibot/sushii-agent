@@ -381,7 +381,31 @@ export async function runAgentLoop(
         return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
-      throw new Error(`Agent loop exceeded ${MAX_ITERATIONS} iterations`);
+      // Hit iteration limit — inject a wrap-up prompt and do one final generation with no tools
+      logger.warn({ iterations }, "agent loop hit iteration limit, forcing final response");
+      messages.push({ role: "system", content: "[System: You have reached the maximum number of steps. Stop using tools and give your best final response to the user now based on what you have gathered so far.]" });
+      const finalResult = await generateText({
+        model: openaiProvider(config.openaiModel),
+        messages,
+        maxOutputTokens: 4096,
+        experimental_telemetry: {
+          isEnabled: true,
+          functionId: "agent-loop",
+          metadata: { guildId, iteration: iterations, forced: true },
+        },
+        ...(sessionId ? { providerOptions: { openai: { session_id: sessionId } } } : {}),
+      });
+      if (finalResult.usage) {
+        totalInputTokens += finalResult.usage.inputTokens ?? 0;
+        totalOutputTokens += finalResult.usage.outputTokens ?? 0;
+        totalCacheReadTokens += finalResult.usage.inputTokenDetails?.cacheReadTokens ?? 0;
+        totalCacheWriteTokens += finalResult.usage.inputTokenDetails?.cacheWriteTokens ?? 0;
+        lastInputTokens = finalResult.usage.inputTokens ?? 0;
+      }
+      messages.push({ role: "assistant", content: finalResult.text });
+      const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text ?? "(no response)"), opts.emojiMap);
+      const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
+      return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       span.recordException(err instanceof Error ? err : errMsg);
