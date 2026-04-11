@@ -319,7 +319,7 @@ export async function runAgentLoop(
             usedTools.push({ name: tc.toolName, input: tc.input as Record<string, unknown> });
           }
 
-          if (text && opts.onInterimText) {
+          if (text && !text.startsWith("[Internal:") && opts.onInterimText) {
             await opts.onInterimText(expandDiscordTokens(fixBlockquotes(text), opts.emojiMap));
           }
 
