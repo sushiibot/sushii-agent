@@ -274,6 +274,8 @@ export async function runAgentLoop(
     let iterations = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let totalCacheReadTokens = 0;
+    let totalCacheWriteTokens = 0;
     let lastInputTokens = 0;
     const usedTools: { name: string; input: Record<string, unknown> }[] = [];
     logger.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
@@ -301,14 +303,16 @@ export async function runAgentLoop(
         if (usage) {
           totalInputTokens += usage.inputTokens ?? 0;
           totalOutputTokens += usage.outputTokens ?? 0;
+          totalCacheReadTokens += usage.inputTokenDetails?.cacheReadTokens ?? 0;
+          totalCacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens ?? 0;
           lastInputTokens = usage.inputTokens ?? 0;
-          logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }, "tokens");
+          logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheRead: usage.inputTokenDetails?.cacheReadTokens, cacheWrite: usage.inputTokenDetails?.cacheWriteTokens }, "tokens");
         }
 
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
           const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
-          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit, usedTools);
+          const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
           logger.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
         }
@@ -378,7 +382,7 @@ export async function runAgentLoop(
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
         const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
-        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, lastInputTokens, config.openaiContextLimit, usedTools);
+        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
         return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
@@ -405,16 +409,35 @@ function formatToolArg(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Returns [inputPricePerM, outputPricePerM] in USD for known model name patterns. */
+function modelPricing(model: string): [number, number] | null {
+  const m = model.toLowerCase();
+  if (m.includes("opus")) return [15, 75];
+  if (m.includes("sonnet")) return [3, 15];
+  if (m.includes("haiku")) return [0.8, 4];
+  return null;
+}
+
 function buildFooter(
   model: string,
   totalInputTokens: number,
   totalOutputTokens: number,
+  totalCacheReadTokens: number,
+  totalCacheWriteTokens: number,
   contextTokens: number,
   contextLimit: number,
   usedTools: { name: string; input: Record<string, unknown> }[],
 ): string {
   const ctxPct = Math.round((contextTokens / contextLimit) * 100);
-  const statsLine = `-# ${model} · ${contextTokens.toLocaleString()} ctx (${ctxPct}%) · ${totalOutputTokens.toLocaleString()} out`;
+  const pricing = modelPricing(model);
+  const costStr = pricing
+    ? ` · $${((totalInputTokens / 1_000_000) * pricing[0] + (totalOutputTokens / 1_000_000) * pricing[1]).toFixed(4)}`
+    : "";
+  const cacheStr =
+    totalCacheReadTokens > 0 || totalCacheWriteTokens > 0
+      ? ` · cache ${totalCacheReadTokens.toLocaleString()}r ${totalCacheWriteTokens.toLocaleString()}w`
+      : "";
+  const statsLine = `-# ${model} · ${contextTokens.toLocaleString()} ctx (${ctxPct}%) · ${totalOutputTokens.toLocaleString()} out${cacheStr}${costStr}`;
   if (usedTools.length === 0) return statsLine;
 
   const toolLines = usedTools.map(({ name, input }) => {
