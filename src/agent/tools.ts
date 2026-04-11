@@ -387,6 +387,19 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "get_guild_info",
+      description:
+        "Get server-level information — name, member count, owner, creation date, verification level, boost tier, and enabled features. Use this to understand the scale and configuration of the server.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_channel_info",
       description:
         "Get channel information. Without channel_id: lists all channels in the server organized by category — use this to understand the server structure, which channels are private (mod-only), etc. With channel_id: get details about that specific channel — name, type, privacy, category, and topic.",
