@@ -23,7 +23,7 @@ import {
 } from "discord.js";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
-import { config } from "./config.ts";
+import { config, buildEmojiMap } from "./config.ts";
 import { getLogger } from "./logger.ts";
 import {
   insertMessage,
@@ -156,6 +156,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const guildConfig = config.guildConfig[message.guildId];
   if (!guildConfig) return;
 
+  const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+
   // Cache every message from configured guilds, including bots (modmail, logs, etc.)
   insertMessage(message);
 
@@ -186,7 +188,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const systemPrompt = buildSystemPrompt({
         threadContext: threadContext || undefined,
         currentChannelId: thread.id,
-        emojiMap: guildConfig.emojiMap,
+        emojiMap: emojiMap,
       });
       const payload = {
         model: config.openaiModel,
@@ -210,10 +212,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
     return;
   }
 
-  // Replace custom Discord emojis with their unicode equivalents for the agent
-  const emojiQuery = guildConfig.emojiMap
-    ? rawQuery.replace(/<a?:(\w+):\d+>/g, (match, name) => guildConfig.emojiMap![name] ?? match)
-    : rawQuery;
+  // Replace custom Discord emojis in query using the emoji map
+  const emojiQuery = rawQuery.replace(/<a?:(\w+):\d+>/g, (match, name) => emojiMap[name] ?? match);
 
   // Convert Discord message URLs to msg:{channel_id}/{message_id} so the agent can resolve them
   const normalizedQuery = emojiQuery.replace(
@@ -342,7 +342,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
           {
             threadContext: threadContext || undefined,
             currentChannelId: thread.id,
-            emojiMap: guildConfig.emojiMap,
+            emojiMap: emojiMap,
             mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
             botId: client.user!.id,
             botUsername: client.user!.username,
@@ -471,6 +471,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const guildConfig = config.guildConfig[guildId];
     if (!guildConfig) return;
 
+    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+
     await withThreadLock(pending.threadId, async () => {
       const threadChannel = await client.channels.fetch(pending.threadId);
       if (!threadChannel?.isThread()) return;
@@ -488,7 +490,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             client as Client<true>,
             {
               currentChannelId: pending.threadId,
-              emojiMap: guildConfig.emojiMap,
+              emojiMap: emojiMap,
               botId: client.user!.id,
               botUsername: client.user!.username,
               triggeringUser: pending.triggeringUser,
@@ -529,7 +531,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           {
             threadContext: pending.threadContext || undefined,
             currentChannelId: pending.threadId,
-            emojiMap: guildConfig.emojiMap,
+            emojiMap: emojiMap,
             mentionedUsers: pending.mentionedUsers,
             botId: client.user!.id,
             botUsername: client.user!.username,
@@ -610,6 +612,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const guildConfig = config.guildConfig[guildId];
     if (!guildConfig) return;
 
+    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+
     await thread.sendTyping();
     const typingInterval = setInterval(() => thread.sendTyping(), 8000);
 
@@ -657,7 +661,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         {
           threadContext: initialThreadContext ?? undefined,
           currentChannelId: threadId,
-          emojiMap: guildConfig.emojiMap,
+          emojiMap: emojiMap,
           botId: client.user!.id,
           botUsername: client.user!.username,
           triggeringUser,

@@ -1,8 +1,18 @@
 export interface GuildConfig {
   allowedRoles: string[];
   allowedChannels: string[];
-  /** Maps custom emoji names to unicode equivalents, e.g. { "blobheart": "❤️" } */
-  emojiMap?: Record<string, string>;
+  /** Discord emoji strings, e.g. ["<:blobheart:123>", "<a:wave:456>"] */
+  emojis?: string[];
+}
+
+/** Build a name → Discord syntax map from an emojis array. */
+export function buildEmojiMap(emojis: string[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const emoji of emojis) {
+    const match = emoji.match(/^<a?:(\w+):\d+>$/);
+    if (match) map[match[1]] = emoji;
+  }
+  return map;
 }
 
 export interface Config {
