@@ -325,10 +325,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
       } else {
         const expanded = expandMessageLinks(response, guildId);
         const componentMsgs = buildComponentMessages(expanded);
+        appendFeedbackButtons(componentMsgs, thread.id);
         for (const msgOpts of componentMsgs) {
           await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
         }
-        await sendFeedbackButtons(thread, thread.id);
 
         saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
 
@@ -634,10 +634,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } else {
         const expanded = expandMessageLinks(response, guildId);
         const componentMsgs = buildComponentMessages(expanded);
+        appendFeedbackButtons(componentMsgs, threadId);
         for (const msgOpts of componentMsgs) {
           await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
         }
-        await sendFeedbackButtons(thread, threadId);
         saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
       }
     } catch (err) {
@@ -720,20 +720,26 @@ async function disableQuestionButtons(
   }
 }
 
-async function sendFeedbackButtons(thread: ThreadChannel, threadId: string): Promise<void> {
+function appendFeedbackButtons(componentMsgs: MessageCreateOptions[], threadId: string): void {
+  if (componentMsgs.length === 0) return;
+  const lastMsg = componentMsgs[componentMsgs.length - 1];
+  const container = lastMsg.components?.[0] as ContainerBuilder | undefined;
+  if (!container) return;
+
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`${FEEDBACK_BTN_PREFIX}${threadId}:up`)
       .setLabel("👍 Helpful")
-      .setStyle(ButtonStyle.Success),
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`${FEEDBACK_BTN_PREFIX}${threadId}:down`)
       .setLabel("👎 Not Helpful")
-      .setStyle(ButtonStyle.Danger),
+      .setStyle(ButtonStyle.Secondary),
   );
 
-  const container = new ContainerBuilder().addActionRowComponents(row);
-  await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
+  container
+    .addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }))
+    .addActionRowComponents(row);
 }
 
 async function handleFeedbackButton(interaction: ButtonInteraction): Promise<void> {

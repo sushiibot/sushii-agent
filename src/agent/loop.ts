@@ -314,7 +314,7 @@ export async function runAgentLoop(
           const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
           logger.info({ iterations, responseLength: content.length }, "done");
-          return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
+          return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
         }
 
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
@@ -383,7 +383,7 @@ export async function runAgentLoop(
         messages.push({ role: "assistant", content: text });
         const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, usedTools);
-        return { response: `${content}\n${footer}`, updatedHistory: messages.slice(1) };
+        return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
       }
 
       throw new Error(`Agent loop exceeded ${MAX_ITERATIONS} iterations`);
