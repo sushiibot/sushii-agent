@@ -8,13 +8,17 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  ModalBuilder,
   Partials,
   SeparatorBuilder,
   SeparatorSpacingSize,
   TextDisplayBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ButtonInteraction,
   type Message,
   type MessageCreateOptions,
+  type ModalSubmitInteraction,
   type ThreadChannel,
 } from "discord.js";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
@@ -30,6 +34,7 @@ import {
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
 import { runAgentLoop, expandMessageLinks, buildSystemPrompt, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult } from "./agent/loop.ts";
+import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
@@ -64,6 +69,10 @@ function withThreadLock(threadId: string, fn: () => Promise<void>): Promise<void
 const ASK_BTN_PREFIX = "agq:";
 // Custom ID prefix for initial server scan approval buttons
 const SCAN_BTN_PREFIX = "srv:";
+// Custom ID prefix for feedback thumbs up/down buttons
+const FEEDBACK_BTN_PREFIX = "fb:";
+// Custom ID prefix for feedback modal submissions: fbm:{threadId}:{sentiment}:{buttonMsgId}
+const FEEDBACK_MODAL_PREFIX = "fbm:";
 
 interface PendingScanState {
   threadId: string;
@@ -319,6 +328,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
         for (const msgOpts of componentMsgs) {
           await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
         }
+        await sendFeedbackButtons(thread, thread.id);
 
         saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
 
@@ -370,7 +380,19 @@ client.once(Events.ClientReady, (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Handle feedback modal submissions
+  if (interaction.isModalSubmit() && interaction.customId.startsWith(FEEDBACK_MODAL_PREFIX)) {
+    await handleFeedbackModal(interaction as ModalSubmitInteraction);
+    return;
+  }
+
   if (!interaction.isButton()) return;
+
+  // Handle feedback thumbs up/down button clicks
+  if (interaction.customId.startsWith(FEEDBACK_BTN_PREFIX)) {
+    await handleFeedbackButton(interaction as ButtonInteraction);
+    return;
+  }
 
   if (interaction.customId.startsWith(SCAN_BTN_PREFIX)) {
     const rest = interaction.customId.slice(SCAN_BTN_PREFIX.length);
@@ -615,6 +637,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         for (const msgOpts of componentMsgs) {
           await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
         }
+        await sendFeedbackButtons(thread, threadId);
         saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
       }
     } catch (err) {
@@ -694,6 +717,92 @@ async function disableQuestionButtons(
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
     // Non-critical — if we can't update the message, just continue
+  }
+}
+
+async function sendFeedbackButtons(thread: ThreadChannel, threadId: string): Promise<void> {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${FEEDBACK_BTN_PREFIX}${threadId}:up`)
+      .setLabel("👍 Helpful")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`${FEEDBACK_BTN_PREFIX}${threadId}:down`)
+      .setLabel("👎 Not Helpful")
+      .setStyle(ButtonStyle.Danger),
+  );
+
+  const container = new ContainerBuilder().addActionRowComponents(row);
+  await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
+}
+
+async function handleFeedbackButton(interaction: ButtonInteraction): Promise<void> {
+  // Custom ID format: fb:{threadId}:{up|down}
+  const rest = interaction.customId.slice(FEEDBACK_BTN_PREFIX.length);
+  const lastColon = rest.lastIndexOf(":");
+  if (lastColon === -1) return;
+  const threadId = rest.slice(0, lastColon);
+  const sentiment = rest.slice(lastColon + 1); // "up" | "down"
+
+  const modal = new ModalBuilder()
+    .setCustomId(`${FEEDBACK_MODAL_PREFIX}${threadId}:${sentiment}:${interaction.message.id}`)
+    .setTitle(sentiment === "up" ? "What was helpful?" : "What could be improved?");
+
+  const textInput = new TextInputBuilder()
+    .setCustomId("fb_text")
+    .setLabel("Your feedback (optional)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(1000);
+
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(textInput));
+  await interaction.showModal(modal);
+}
+
+async function handleFeedbackModal(interaction: ModalSubmitInteraction): Promise<void> {
+  // Custom ID format: fbm:{threadId}:{sentiment}:{buttonMsgId}
+  const rest = interaction.customId.slice(FEEDBACK_MODAL_PREFIX.length);
+  const parts = rest.split(":");
+  if (parts.length < 3) return;
+  const [threadId, sentiment, buttonMsgId] = parts;
+
+  const feedbackText = interaction.fields.getTextInputValue("fb_text") ?? "";
+
+  // Acknowledge the modal immediately
+  await interaction.reply({ content: "Thanks for the feedback!", flags: MessageFlags.Ephemeral });
+
+  // Load conversation and save feedback file
+  try {
+    const thread = await client.channels.fetch(threadId);
+    if (!thread?.isThread()) return;
+
+    const guildId = thread.guildId;
+    const { messages: conversation } = loadConversation(threadId);
+
+    await saveFeedback({
+      threadId,
+      guildId,
+      userId: interaction.user.id,
+      username: interaction.user.username,
+      sentiment: sentiment === "up" ? "positive" : "negative",
+      feedback: feedbackText,
+      timestamp: new Date().toISOString(),
+      conversation,
+    });
+
+    // Update the feedback button message to show it was recorded
+    try {
+      const btnMsg = await thread.messages.fetch(buttonMsgId);
+      const label = sentiment === "up" ? "👍 Helpful" : "👎 Not Helpful";
+      const container = new ContainerBuilder().addTextDisplayComponents(
+        new TextDisplayBuilder({ content: `-# ${label} — feedback recorded, thank you!` }),
+      );
+      await btnMsg.edit({ components: [container], flags: MessageFlags.IsComponentsV2 });
+    } catch {
+      // Non-critical — button message may no longer be editable
+    }
+  } catch (err) {
+    logger.error({ err }, "Error saving feedback");
   }
 }
 

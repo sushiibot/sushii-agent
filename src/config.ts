@@ -14,6 +14,7 @@ export interface Config {
   openaiModel: string;
   openaiContextLimit: number;
   databasePath: string;
+  feedbackPath: string;
   guildConfig: Record<string, GuildConfig>;
 }
 
@@ -53,5 +54,6 @@ export const config: Config = {
   openaiModel: optional("OPENAI_MODEL", "claude-opus-4-6"),
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
+  feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
   guildConfig: loadGuildConfig(),
 };
