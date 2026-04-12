@@ -6,14 +6,14 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "search_messages",
       description:
-        "Search or browse the server's cached message history (last ~30 days). Provide a query for full-text search ranked by relevance; omit it to browse recent messages by time. Supports optional filters for users, channel, and time range. Bot messages are excluded by default — set include_bots=true when searching modmail threads, log channels, or other bot-forwarded content. For messages older than the cache, use search_guild_messages instead.",
+        "Search or browse the server's cached message history (last ~30 days). Provide a query for full-text search ranked by relevance; omit it to browse recent messages by time. Supports optional filters for users, channel, and time range. Bot messages are excluded by default — set include_bots=true when searching modmail threads, log channels, or other bot-forwarded content. For messages older than the cache, use search_guild_messages instead.\n\nSearch tips: use ONE rare, distinctive keyword rather than a phrase — multi-word queries require ALL words to appear in the same message. Single bare terms are automatically prefix-matched (e.g. 'warn' also matches 'warned', 'warning'). Use OR for alternatives (e.g. 'shelf OR shelves'), NEAR(word1 word2, 10) for proximity, or quotes for exact phrases.",
       parameters: {
         type: "object",
         properties: {
           query: {
             type: "string",
             description:
-              'Optional FTS5 search query. Supports AND, OR, NOT, phrase quotes, and prefix wildcards (e.g., "hate*" matches "hater", "hateful"). A bare * is not valid. Omit to browse without filtering by content.',
+              'Optional FTS5 search query. Prefer a single distinctive keyword (e.g. "shelf" not "shelf banned member") — multi-word queries require ALL words present in the same message. Single bare terms are auto-prefix-matched. Supports OR, NOT, NEAR(), and phrase quotes. Omit to browse without filtering by content.',
           },
           user_ids: {
             type: "array",

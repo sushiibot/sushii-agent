@@ -35,6 +35,18 @@ export function searchMessages(args: SearchMessagesArgs): MessageRow[] | { error
   const limit = Math.min(args.limit ?? 20, 100);
 
   if (args.query) {
+    // Auto-prefix-wrap bare terms so "shelf" also matches "shelved", "shelving" etc.
+    // Only applies when the query has no FTS5 operators or special syntax — if the
+    // caller already used *, OR, NEAR, NOT, or quotes, leave it as-is.
+    const hasFtsOperators = /[*"()]|\bOR\b|\bAND\b|\bNOT\b|\bNEAR\b/i.test(args.query);
+    const ftsQuery = hasFtsOperators
+      ? args.query
+      : args.query
+          .trim()
+          .split(/\s+/)
+          .map((t) => `${t}*`)
+          .join(" ");
+
     // FTS path — ranked by relevance
     let sql = `
       SELECT m.discord_id, m.guild_id, m.channel_id, m.author_id,
@@ -48,7 +60,7 @@ export function searchMessages(args: SearchMessagesArgs): MessageRow[] | { error
       WHERE messages_fts MATCH ?
         AND m.guild_id = ?
     `;
-    const params: (string | number)[] = [args.query, args.guildId];
+    const params: (string | number)[] = [ftsQuery, args.guildId];
 
     if (args.user_ids?.length) {
       sql += ` AND m.author_id IN (${args.user_ids.map(() => "?").join(", ")})`;
