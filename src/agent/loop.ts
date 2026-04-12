@@ -123,6 +123,8 @@ export interface AgentLoopOptions {
   onToolsDispatched?: (tools: { name: string; input: Record<string, unknown> }[]) => Promise<void>;
   /** Called before each generateText call to drain messages queued mid-loop by the user. */
   dequeueMessages?: () => { query: string; mentionedUsers?: Map<string, UserNames> }[];
+  /** Called before each iteration; return true to abort the loop early. */
+  isCancelled?: () => boolean;
 }
 
 export type { UserNames };
@@ -219,6 +221,7 @@ export interface AgentLoopResult {
   response: string;
   updatedHistory: ModelMessage[];
   pendingQuestion?: PendingQuestion;
+  cancelled: boolean;
 }
 
 export async function runAgentLoop(
@@ -276,11 +279,18 @@ export async function runAgentLoop(
     let totalCacheReadTokens = 0;
     let totalCacheWriteTokens = 0;
     let lastInputTokens = 0;
+    let cancelled = false;
     const usedTools: { name: string; input: Record<string, unknown> }[] = [];
     logger.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
 
     try {
       while (iterations < MAX_ITERATIONS) {
+        if (opts.isCancelled?.()) {
+          cancelled = true;
+          logger.info({ iteration: iterations }, "loop cancelled by user");
+          break;
+        }
+
         iterations++;
         logger.debug({ iteration: iterations }, "iteration");
 
@@ -324,13 +334,19 @@ export async function runAgentLoop(
           logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheRead: usage.inputTokenDetails?.cacheReadTokens, cacheWrite: usage.inputTokenDetails?.cacheWriteTokens }, "tokens");
         }
 
+        if (opts.isCancelled?.()) {
+          cancelled = true;
+          logger.info({ iteration: iterations }, "loop cancelled by user (post-generation)");
+          break;
+        }
+
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
           const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
           logger.info({ iterations, responseLength: content.length }, "done");
-          return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
+          return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
         }
 
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
@@ -378,7 +394,7 @@ export async function runAgentLoop(
           if (pendingQuestion) {
             logger.info({ question: pendingQuestion.question }, "pausing loop for ask_question");
             span.setAttribute("agent.paused_for_question", true);
-            return { response: "", updatedHistory: messages.slice(1), pendingQuestion };
+            return { response: "", updatedHistory: messages.slice(1), pendingQuestion, cancelled: false };
           }
 
           if (pendingImages.length > 0) {
@@ -404,7 +420,11 @@ export async function runAgentLoop(
         messages.push({ role: "assistant", content: text });
         const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
-        return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
+        return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
+      }
+
+      if (cancelled) {
+        return { response: "", updatedHistory: messages.slice(1), cancelled: true };
       }
 
       // Hit iteration limit — inject a wrap-up prompt and do one final generation with no tools
@@ -431,7 +451,7 @@ export async function runAgentLoop(
       messages.push({ role: "assistant", content: finalResult.text });
       const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text ?? "(no response)"), opts.emojiMap);
       const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
-      return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1) };
+      return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       span.recordException(err instanceof Error ? err : errMsg);

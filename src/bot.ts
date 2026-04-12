@@ -51,6 +51,7 @@ const tracer = trace.getTracer("sushii-agent");
 class ToolProgressTracker {
   private msg: Message | null = null;
   private lines: string[] = [];
+  private lastContent = "";
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEBOUNCE_MS = 500;
 
@@ -74,10 +75,16 @@ class ToolProgressTracker {
   private async flush(): Promise<void> {
     this.flushTimer = null;
     // Components V2 TextDisplay limit is 4000 chars per component
-    const content = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
-    const container = new ContainerBuilder().addTextDisplayComponents(
-      new TextDisplayBuilder({ content }),
+    this.lastContent = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+    const stopRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${STOP_BTN_PREFIX}${this.thread.id}`)
+        .setLabel("⬛ Stop")
+        .setStyle(ButtonStyle.Danger),
     );
+    const container = new ContainerBuilder()
+      .addTextDisplayComponents(new TextDisplayBuilder({ content: this.lastContent }))
+      .addActionRowComponents(stopRow);
     try {
       if (!this.msg) {
         this.msg = await this.thread.send({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
@@ -89,12 +96,34 @@ class ToolProgressTracker {
     }
   }
 
-  /** Flush any buffered updates immediately before the final response is sent. */
-  async finalize(): Promise<void> {
+  /** Flush pending updates, then remove the stop button. If cancelled, append a note. */
+  async finalize(cancelled = false): Promise<void> {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
-      await this.flush();
+      // Update lastContent without sending (avoid double-edit flicker)
+      if (this.lines.length > 0) {
+        this.lastContent = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+      }
+    }
+    if (!this.msg) return;
+    if (!this.lastContent && !cancelled) return;
+
+    let content: string;
+    if (cancelled && this.lastContent) {
+      content = `${this.lastContent}\n-# *(stopped)*`;
+    } else if (cancelled) {
+      content = `-# *(stopped)*`;
+    } else {
+      content = this.lastContent;
+    }
+    const container = new ContainerBuilder().addTextDisplayComponents(
+      new TextDisplayBuilder({ content }),
+    );
+    try {
+      await this.msg.edit({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
+    } catch (err) {
+      logger.warn({ err }, "failed to finalize tool progress message");
     }
   }
 }
@@ -120,6 +149,10 @@ interface MidLoopMessage {
   consumed: boolean;
 }
 const threadMidLoopQueues = new Map<string, MidLoopMessage[]>();
+// Thread IDs where the user has requested the agent loop to stop
+const threadCancellations = new Set<string>();
+// Maps threadId → userId of the user who triggered the current agent loop
+const threadTriggeringUsers = new Map<string, string>();
 
 function withThreadLock(threadId: string, fn: () => Promise<void>): Promise<void> {
   const prev = threadLocks.get(threadId) ?? Promise.resolve();
@@ -140,6 +173,8 @@ const SCAN_BTN_PREFIX = "srv:";
 const FEEDBACK_BTN_PREFIX = "fb:";
 // Custom ID prefix for feedback modal submissions: fbm:{threadId}:{sentiment}
 const FEEDBACK_MODAL_PREFIX = "fbm:";
+// Custom ID prefix for stop-loop button: stop:{threadId}
+const STOP_BTN_PREFIX = "stop:";
 
 interface PendingScanState {
   threadId: string;
@@ -364,7 +399,11 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
       const toolTracker = new ToolProgressTracker(thread);
 
-      let agentResult: Awaited<ReturnType<typeof runAgentLoop>>;
+      // Clear any stale cancellation from a previous run
+      threadCancellations.delete(thread.id);
+      threadTriggeringUsers.set(thread.id, message.author.id);
+
+      let agentResult: Awaited<ReturnType<typeof runAgentLoop>> | undefined;
       try {
         agentResult = await runAgentLoop(
           query,
@@ -406,15 +445,25 @@ client.on(Events.MessageCreate, async (message: Message) => {
               }
               return q;
             },
+            isCancelled: () => threadCancellations.has(thread.id),
           },
           thread.id,
         );
-        await toolTracker.finalize();
       } finally {
         clearInterval(typingInterval);
+        await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
+        threadCancellations.delete(thread.id);
+        threadTriggeringUsers.delete(thread.id);
       }
 
-      const { response, updatedHistory, pendingQuestion } = agentResult;
+      if (!agentResult) return;
+      const { response, updatedHistory, pendingQuestion, cancelled } = agentResult;
+
+      if (cancelled) {
+        // User stopped the loop — save history but don't send a response
+        saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
+        return;
+      }
 
       if (pendingQuestion) {
         // Save state and send question+buttons — loop resumes on button click
@@ -487,6 +536,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 
   if (!interaction.isButton()) return;
+
+  // Handle stop-loop button clicks
+  if (interaction.customId.startsWith(STOP_BTN_PREFIX)) {
+    const threadId = interaction.customId.slice(STOP_BTN_PREFIX.length);
+    const triggeringUserId = threadTriggeringUsers.get(threadId);
+    if (triggeringUserId && interaction.user.id !== triggeringUserId) {
+      await (interaction as ButtonInteraction).reply({ content: "Only the person who triggered this loop can stop it.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    threadCancellations.add(threadId);
+    await (interaction as ButtonInteraction).reply({ content: "Stopping...", flags: MessageFlags.Ephemeral });
+    return;
+  }
 
   // Handle feedback thumbs up/down button clicks
   if (interaction.customId.startsWith(FEEDBACK_BTN_PREFIX)) {
@@ -659,7 +721,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     await thread.sendTyping();
     const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+    const toolTracker = new ToolProgressTracker(thread);
+    threadCancellations.delete(threadId);
+    threadTriggeringUsers.set(threadId, interaction.user.id);
 
+    let agentResult: AgentLoopResult | undefined;
     try {
       const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
       const serverContext = getServerContext(guildId);
@@ -696,7 +762,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const query = `[Selected: "${choice}"]`;
 
-      const agentResult: AgentLoopResult = await runAgentLoop(
+      agentResult = await runAgentLoop(
         query,
         existingHistory,
         guildId,
@@ -721,13 +787,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
             }
             await thread.sendTyping();
           },
+          onToolsDispatched: async (tools) => {
+            toolTracker.add(tools);
+          },
+          isCancelled: () => threadCancellations.has(threadId),
         },
         threadId,
       );
+      const { response, updatedHistory, pendingQuestion, cancelled } = agentResult;
 
-      const { response, updatedHistory, pendingQuestion } = agentResult;
-
-      if (pendingQuestion) {
+      if (cancelled) {
+        saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
+      } else if (pendingQuestion) {
         saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
         pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id });
         savePendingQuestion({ threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id, createdAt: Date.now() });
@@ -746,6 +817,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
     } finally {
       clearInterval(typingInterval);
+      await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
+      threadCancellations.delete(threadId);
+      threadTriggeringUsers.delete(threadId);
     }
   }); // end withThreadLock
   } catch (err) {
