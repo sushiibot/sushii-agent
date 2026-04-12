@@ -73,13 +73,16 @@ class ToolProgressTracker {
 
   private async flush(): Promise<void> {
     this.flushTimer = null;
-    // Discord regular message content limit is 2000 chars
-    const content = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 1990);
+    // Components V2 TextDisplay limit is 4000 chars per component
+    const content = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+    const container = new ContainerBuilder().addTextDisplayComponents(
+      new TextDisplayBuilder({ content }),
+    );
     try {
       if (!this.msg) {
-        this.msg = await this.thread.send({ content, allowedMentions: { parse: [] } });
+        this.msg = await this.thread.send({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
       } else {
-        await this.msg.edit({ content, allowedMentions: { parse: [] } });
+        await this.msg.edit({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
       }
     } catch (err) {
       logger.warn({ err }, "failed to update tool progress message");
