@@ -121,6 +121,8 @@ export interface AgentLoopOptions {
   onInterimText?: (text: string) => Promise<void>;
   /** Called each iteration with the current batch of tool calls being dispatched. When provided, tool lines are omitted from the final footer. */
   onToolsDispatched?: (tools: { name: string; input: Record<string, unknown> }[]) => Promise<void>;
+  /** Called before each generateText call to drain messages queued mid-loop by the user. */
+  dequeueMessages?: () => { query: string; mentionedUsers?: Map<string, UserNames> }[];
 }
 
 export type { UserNames };
@@ -281,6 +283,22 @@ export async function runAgentLoop(
       while (iterations < MAX_ITERATIONS) {
         iterations++;
         logger.debug({ iteration: iterations }, "iteration");
+
+        // Inject any messages queued by the user while the previous iteration was running
+        if (opts.dequeueMessages) {
+          const pending = opts.dequeueMessages();
+          for (const { query: pendingQuery, mentionedUsers: pendingUsers } of pending) {
+            if (pendingUsers?.size) {
+              const novel = [...pendingUsers.entries()].filter(([id]) => !knownUsers.has(id));
+              if (novel.length > 0) {
+                for (const [id, names] of novel) knownUsers.set(id, names);
+                messages.push({ role: "system", content: buildUserNote(novel) });
+              }
+            }
+            messages.push({ role: "user", content: pendingQuery });
+            logger.info({ query: pendingQuery.slice(0, 80) }, "injected mid-loop message");
+          }
+        }
 
         const result = await generateText({
           model: openaiProvider(config.openaiModel),

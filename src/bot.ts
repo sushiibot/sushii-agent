@@ -110,6 +110,17 @@ const pendingChoices = new Map<string, PendingQuestionState>();
 // Per-channel async mutex to prevent concurrent agent runs in the same thread
 const threadLocks = new Map<string, Promise<void>>();
 
+// Mid-loop message injection: messages queued while an agent loop is already running
+interface MidLoopMessage {
+  query: string;
+  mentionedUsers: Map<string, UserNames>;
+  /** Original Discord message, kept for reaction updates. */
+  discordMessage: Message;
+  /** Set to true by the agent loop when it injects this message — skips the fallback withThreadLock run. */
+  consumed: boolean;
+}
+const threadMidLoopQueues = new Map<string, MidLoopMessage[]>();
+
 function withThreadLock(threadId: string, fn: () => Promise<void>): Promise<void> {
   const prev = threadLocks.get(threadId) ?? Promise.resolve();
   const next = prev.then(fn, fn).finally(() => {
@@ -127,7 +138,7 @@ const ASK_BTN_PREFIX = "agq:";
 const SCAN_BTN_PREFIX = "srv:";
 // Custom ID prefix for feedback thumbs up/down buttons
 const FEEDBACK_BTN_PREFIX = "fb:";
-// Custom ID prefix for feedback modal submissions: fbm:{threadId}:{sentiment}:{buttonMsgId}
+// Custom ID prefix for feedback modal submissions: fbm:{threadId}:{sentiment}
 const FEEDBACK_MODAL_PREFIX = "fbm:";
 
 interface PendingScanState {
@@ -287,6 +298,18 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const trigger = isMention ? "mention" : "reply";
   logger.info({ trigger, username: message.author.username, userId: message.author.id, channelId: message.channelId }, "triggered");
 
+  // If an agent loop is already running for this thread, queue the message for mid-loop injection
+  // rather than waiting for the current loop to finish and starting a fresh one.
+  let midLoopMsg: MidLoopMessage | null = null;
+  if (threadLocks.has(message.channelId)) {
+    midLoopMsg = { query, mentionedUsers, discordMessage: message, consumed: false };
+    const q = threadMidLoopQueues.get(message.channelId) ?? [];
+    q.push(midLoopMsg);
+    threadMidLoopQueues.set(message.channelId, q);
+    logger.info({ channelId: message.channelId }, "queued message for mid-loop injection");
+    message.react("⏳").catch(() => {});
+  }
+
   await withThreadLock(message.channelId, async () => {
   await tracer.startActiveSpan("discord.message", {
     attributes: {
@@ -298,6 +321,12 @@ client.on(Events.MessageCreate, async (message: Message) => {
     },
   }, async (span) => {
     try {
+      // If this message was queued for mid-loop injection and was already consumed, skip.
+      if (midLoopMsg?.consumed) {
+        logger.info({ channelId: message.channelId }, "mid-loop message consumed by running loop, skipping fallback run");
+        return;
+      }
+
       const { thread, isNew } = await resolveOrCreateThread(message);
       span.setAttribute("discord.thread_id", thread.id);
 
@@ -365,6 +394,17 @@ client.on(Events.MessageCreate, async (message: Message) => {
             },
             onToolsDispatched: async (tools) => {
               toolTracker.add(tools);
+            },
+            dequeueMessages: () => {
+              const q = threadMidLoopQueues.get(thread.id) ?? [];
+              if (q.length === 0) return [];
+              threadMidLoopQueues.set(thread.id, []);
+              for (const m of q) {
+                m.consumed = true;
+                m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+                m.discordMessage.react("✅").catch(() => {});
+              }
+              return q;
             },
           },
           thread.id,
@@ -812,7 +852,7 @@ async function handleFeedbackButton(interaction: ButtonInteraction): Promise<voi
   const sentiment = rest.slice(lastColon + 1); // "up" | "down"
 
   const modal = new ModalBuilder()
-    .setCustomId(`${FEEDBACK_MODAL_PREFIX}${threadId}:${sentiment}:${interaction.message.id}`)
+    .setCustomId(`${FEEDBACK_MODAL_PREFIX}${threadId}:${sentiment}`)
     .setTitle(sentiment === "up" ? "What was helpful?" : "What could be improved?");
 
   const textInput = new TextInputBuilder()
@@ -827,11 +867,11 @@ async function handleFeedbackButton(interaction: ButtonInteraction): Promise<voi
 }
 
 async function handleFeedbackModal(interaction: ModalSubmitInteraction): Promise<void> {
-  // Custom ID format: fbm:{threadId}:{sentiment}:{buttonMsgId}
+  // Custom ID format: fbm:{threadId}:{sentiment}
   const rest = interaction.customId.slice(FEEDBACK_MODAL_PREFIX.length);
   const parts = rest.split(":");
-  if (parts.length < 3) return;
-  const [threadId, sentiment, buttonMsgId] = parts;
+  if (parts.length < 2) return;
+  const [threadId, sentiment] = parts;
 
   const feedbackText = interaction.fields.getTextInputValue("fb_text") ?? "";
 
@@ -856,18 +896,6 @@ async function handleFeedbackModal(interaction: ModalSubmitInteraction): Promise
       timestamp: new Date().toISOString(),
       conversation,
     });
-
-    // Update the feedback button message to show it was recorded
-    try {
-      const btnMsg = await thread.messages.fetch(buttonMsgId);
-      const label = sentiment === "up" ? "👍 Helpful" : "👎 Not Helpful";
-      const container = new ContainerBuilder().addTextDisplayComponents(
-        new TextDisplayBuilder({ content: `-# ${label} — feedback recorded, thank you!` }),
-      );
-      await btnMsg.edit({ components: [container], flags: MessageFlags.IsComponentsV2 });
-    } catch {
-      // Non-critical — button message may no longer be editable
-    }
   } catch (err) {
     logger.error({ err }, "Error saving feedback");
   }
