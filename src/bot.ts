@@ -454,6 +454,13 @@ client.on(Events.MessageCreate, async (message: Message) => {
         await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
         threadCancellations.delete(thread.id);
         threadTriggeringUsers.delete(thread.id);
+        // Drain any unprocessed mid-loop messages (cancel their reactions)
+        const remainingQueue = threadMidLoopQueues.get(thread.id) ?? [];
+        for (const m of remainingQueue) {
+          m.consumed = true;
+          m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+        }
+        threadMidLoopQueues.delete(thread.id);
       }
 
       if (!agentResult) return;
@@ -462,6 +469,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
       if (cancelled) {
         // User stopped the loop — save history but don't send a response
         saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
+        await thread.send({ content: "-# *(loop stopped)*", allowedMentions: { parse: [] } }).catch(() => {});
         return;
       }
 
@@ -541,7 +549,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.customId.startsWith(STOP_BTN_PREFIX)) {
     const threadId = interaction.customId.slice(STOP_BTN_PREFIX.length);
     const triggeringUserId = threadTriggeringUsers.get(threadId);
-    if (triggeringUserId && interaction.user.id !== triggeringUserId) {
+    if (!triggeringUserId) {
+      await (interaction as ButtonInteraction).reply({ content: "No active loop to stop.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (interaction.user.id !== triggeringUserId) {
       await (interaction as ButtonInteraction).reply({ content: "Only the person who triggered this loop can stop it.", flags: MessageFlags.Ephemeral });
       return;
     }
@@ -790,6 +802,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
           onToolsDispatched: async (tools) => {
             toolTracker.add(tools);
           },
+          dequeueMessages: () => {
+            const q = threadMidLoopQueues.get(threadId) ?? [];
+            if (q.length === 0) return [];
+            threadMidLoopQueues.set(threadId, []);
+            for (const m of q) {
+              m.consumed = true;
+              m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+              m.discordMessage.react("✅").catch(() => {});
+            }
+            return q;
+          },
           isCancelled: () => threadCancellations.has(threadId),
         },
         threadId,
@@ -798,6 +821,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (cancelled) {
         saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
+        await thread.send({ content: "-# *(loop stopped)*", allowedMentions: { parse: [] } }).catch(() => {});
       } else if (pendingQuestion) {
         saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
         pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id });
@@ -820,6 +844,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
       threadCancellations.delete(threadId);
       threadTriggeringUsers.delete(threadId);
+      // Drain any unprocessed mid-loop messages (cancel their reactions)
+      const remainingQueue = threadMidLoopQueues.get(threadId) ?? [];
+      for (const m of remainingQueue) {
+        m.consumed = true;
+        m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+      }
+      threadMidLoopQueues.delete(threadId);
     }
   }); // end withThreadLock
   } catch (err) {
