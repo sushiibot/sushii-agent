@@ -342,7 +342,7 @@ export async function runAgentLoop(
 
         if (finishReason === "stop" || !toolCalls?.length) {
           messages.push({ role: "assistant", content: text });
-          const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
+          const content = expandDiscordTokens(fixBlockquotes(text || "(no response)"), opts.emojiMap);
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
           logger.info({ iterations, responseLength: content.length }, "done");
@@ -418,7 +418,7 @@ export async function runAgentLoop(
         // Unexpected finish reason
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push({ role: "assistant", content: text });
-        const content = expandDiscordTokens(fixBlockquotes(text ?? "(no response)"), opts.emojiMap);
+        const content = expandDiscordTokens(fixBlockquotes(text || "(no response)"), opts.emojiMap);
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
         return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
       }
@@ -449,7 +449,7 @@ export async function runAgentLoop(
         lastInputTokens = finalResult.usage.inputTokens ?? 0;
       }
       messages.push({ role: "assistant", content: finalResult.text });
-      const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text ?? "(no response)"), opts.emojiMap);
+      const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text || "(no response)"), opts.emojiMap);
       const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
       return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
     } catch (err) {
