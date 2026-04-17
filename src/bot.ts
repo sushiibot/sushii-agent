@@ -477,7 +477,6 @@ client.on(Events.MessageCreate, async (message: Message) => {
             },
             isCancelled: () => threadCancellations.has(thread.id),
           },
-          thread.id,
         );
       } finally {
         clearInterval(typingInterval);
@@ -647,7 +646,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
               memoryCount: 0,
               memoryLimit: MEMORY_LIMIT,
             },
-            pending.threadId,
           );
           if (scanResult.response) {
             const expanded = expandMessageLinks(scanResult.response, guildId);
@@ -697,7 +695,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
               await threadChannel.sendTyping();
             },
           },
-          pending.threadId,
         );
 
         const { response, updatedHistory, pendingQuestion } = agentResult;
@@ -846,7 +843,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
           },
           isCancelled: () => threadCancellations.has(threadId),
         },
-        threadId,
       );
       const { response, updatedHistory, pendingQuestion, cancelled } = agentResult;
 

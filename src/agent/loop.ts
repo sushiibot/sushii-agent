@@ -230,7 +230,6 @@ export async function runAgentLoop(
   guildId: string,
   client: Client<true>,
   opts: AgentLoopOptions = {},
-  sessionId?: string,
 ): Promise<AgentLoopResult> {
   return tracer.startActiveSpan("agent.loop", {
     attributes: {
@@ -242,7 +241,15 @@ export async function runAgentLoop(
     const systemPrompt = buildSystemPrompt(opts);
 
     const messages: ModelMessage[] = [
-      { role: "system", content: systemPrompt },
+      {
+        role: "system",
+        content: systemPrompt,
+        // Cache the system prompt — it's the largest static block and identical
+        // across all iterations within a single agent loop run.
+        providerOptions: {
+          openrouter: { cacheControl: { type: "ephemeral" } },
+        },
+      },
       ...existingHistory,
     ];
 
@@ -320,7 +327,7 @@ export async function runAgentLoop(
             functionId: "agent-loop",
             metadata: { guildId, iteration: iterations },
           },
-          ...(sessionId ? { providerOptions: { openai: { session_id: sessionId } } } : {}),
+          ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
         });
 
         const { text, toolCalls, finishReason, usage } = result;
@@ -439,7 +446,7 @@ export async function runAgentLoop(
           functionId: "agent-loop",
           metadata: { guildId, iteration: iterations, forced: true },
         },
-        ...(sessionId ? { providerOptions: { openai: { session_id: sessionId } } } : {}),
+        ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
       });
       if (finalResult.usage) {
         totalInputTokens += finalResult.usage.inputTokens ?? 0;
