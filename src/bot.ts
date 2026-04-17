@@ -96,6 +96,33 @@ class ToolProgressTracker {
     }
   }
 
+  /**
+   * Flush pending updates, remove the stop button, and reset state for the next batch.
+   * Call this before sending interim text so new tool dispatches start a fresh message.
+   */
+  async reset(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+      if (this.lines.length > 0) {
+        this.lastContent = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+      }
+    }
+    if (this.msg && this.lastContent) {
+      const container = new ContainerBuilder().addTextDisplayComponents(
+        new TextDisplayBuilder({ content: this.lastContent }),
+      );
+      try {
+        await this.msg.edit({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
+      } catch (err) {
+        logger.warn({ err }, "failed to reset tool progress message");
+      }
+    }
+    this.msg = null;
+    this.lines = [];
+    this.lastContent = "";
+  }
+
   /** Flush pending updates, then remove the stop button. If cancelled, append a note. */
   async finalize(cancelled = false): Promise<void> {
     if (this.flushTimer) {
@@ -424,6 +451,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
             memoryCount,
             memoryLimit: MEMORY_LIMIT,
             onInterimText: async (text) => {
+              // Reset tracker so the stop button is removed from the old tool progress
+              // message and the next batch of tool calls starts a fresh message.
+              await toolTracker.reset();
               const expanded = expandMessageLinks(text, guildId);
               const componentMsgs = buildComponentMessages(expanded);
               for (const msgOpts of componentMsgs) {
@@ -792,6 +822,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           memoryCount,
           memoryLimit: MEMORY_LIMIT,
           onInterimText: async (text) => {
+            await toolTracker.reset();
             const expanded = expandMessageLinks(text, guildId);
             const componentMsgs = buildComponentMessages(expanded);
             for (const msgOpts of componentMsgs) {
