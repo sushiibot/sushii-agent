@@ -348,7 +348,7 @@ export async function runAgentLoop(
         }
 
         if (finishReason === "stop" || !toolCalls?.length) {
-          messages.push({ role: "assistant", content: text });
+          messages.push(...result.response.messages);
           const content = expandDiscordTokens(fixBlockquotes(text || "(no response)"), opts.emojiMap);
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
@@ -372,16 +372,8 @@ export async function runAgentLoop(
             await opts.onInterimText(expandDiscordTokens(fixBlockquotes(text), opts.emojiMap));
           }
 
-          // Add assistant message with tool calls to history
-          messages.push({
-            role: "assistant",
-            content: toolCalls.map((tc) => ({
-              type: "tool-call" as const,
-              toolCallId: tc.toolCallId,
-              toolName: tc.toolName,
-              input: tc.input as Record<string, unknown>,
-            })),
-          });
+          // Add assistant message with tool calls to history (preserves reasoning_content for thinking models)
+          messages.push(...result.response.messages);
 
           const { toolMessage, discoveredUsers, pendingImages, pendingQuestion } = await tracer.startActiveSpan(
             "agent.tool_calls",
@@ -424,7 +416,7 @@ export async function runAgentLoop(
 
         // Unexpected finish reason
         logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
-        messages.push({ role: "assistant", content: text });
+        messages.push(...result.response.messages);
         const content = expandDiscordTokens(fixBlockquotes(text || "(no response)"), opts.emojiMap);
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
         return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
@@ -455,7 +447,7 @@ export async function runAgentLoop(
         totalCacheWriteTokens += finalResult.usage.inputTokenDetails?.cacheWriteTokens ?? 0;
         lastInputTokens = finalResult.usage.inputTokens ?? 0;
       }
-      messages.push({ role: "assistant", content: finalResult.text });
+      messages.push(...finalResult.response.messages);
       const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text || "(no response)"), opts.emojiMap);
       const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
       return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
