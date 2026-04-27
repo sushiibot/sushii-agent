@@ -132,7 +132,7 @@ export function searchMessages(args: SearchMessagesArgs): MessageRow[] | { error
       sql += " AND m.is_bot = 0";
     }
 
-    sql += " ORDER BY created_at DESC LIMIT ?";
+    sql += " ORDER BY m.created_at DESC LIMIT ?";
     params.push(limit);
 
     return db.prepare<MessageRow, (string | number)[]>(sql).all(...params);
