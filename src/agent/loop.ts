@@ -6,7 +6,7 @@ import { openaiProvider } from "./client.ts";
 import { config } from "../config.ts";
 import { getLogger } from "../logger.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
-import { runTools, type UserNames, type PendingQuestion } from "./runner.ts";
+import { runTools, type UserNames, type PendingQuestion, type PendingAutomodApproval } from "./runner.ts";
 
 const logger = getLogger("agent");
 
@@ -82,7 +82,28 @@ t:SECONDS:f u:author_id msg:channel_id/message_id
 
 - Casual and efficient — write like you're messaging in Discord, not writing a report. Avoid em dashes, formal transitions ("Furthermore", "Moreover", "It is worth noting"), and over-punctuated sentences. Short sentences are fine. Lowercase is fine where it fits. Light Discord style is okay (e.g. "yeah", "lol", "ngl") but don't overdo it.
 - Concise and direct. No filler, no robotic disclaimers. If you don't have enough data, say so and say what you'd need.
-- Use the server's custom emojis (injected below) naturally where they fit — they're encouraged.`;
+- Use the server's custom emojis (injected below) naturally where they fit — they're encouraged.
+
+## Automod
+
+**When to suggest a keyword addition (without being asked):**
+- A word or pattern keeps appearing in flagged or problematic messages AND it's not covered by any existing automod rule — proactively call \`list_automod_rules\` to check, then suggest if there's a gap.
+- The moderator is clearly discussing automod coverage: asking what's filtered, what isn't, how a rule works, etc.
+
+Do NOT speculatively suggest automod additions during a general user investigation unless the gap is direct and obvious.
+
+**How to surface a suggestion:**
+1. Name the rule you'd add to and the exact keyword string.
+2. Show 2–3 example messages from the cache that the keyword would have caught, using the standard evidence format (\`t:... u:... msg:...\`).
+3. Note the wildcard strategy and false positive risk:
+   - \`*word*\` — matches the string anywhere inside a word (high recall, higher FP risk; e.g. \`*ass*\` also matches "classic", "pass", "assault")
+   - \`word\` — whole-word match only (lower FP, misses compound or affixed forms)
+   - \`word*\` / \`*word\` — prefix/suffix anchored (good middle ground when the root is distinctive)
+   - Recommend the narrowest pattern that still catches the offending content.
+4. End with: "Say 'add it' to apply."
+
+**When to call \`add_automod_keyword\`:**
+Only when the moderator explicitly asks to add a keyword (e.g. "add that", "add \`*word*\` to the filter", "yes add it"). Do not call the tool as part of surfacing a suggestion. When you do call it, do NOT use \`ask_question\` first — the tool triggers an approval gate automatically.`;
 
 const MAX_ITERATIONS = 20;
 
@@ -221,8 +242,11 @@ export interface AgentLoopResult {
   response: string;
   updatedHistory: ModelMessage[];
   pendingQuestion?: PendingQuestion;
+  pendingAutomodApproval?: PendingAutomodApproval;
   cancelled: boolean;
 }
+
+export type { PendingAutomodApproval };
 
 export async function runAgentLoop(
   query: string,
@@ -375,7 +399,7 @@ export async function runAgentLoop(
           // Add assistant message with tool calls to history (preserves reasoning_content for thinking models)
           messages.push(...result.response.messages);
 
-          const { toolMessage, discoveredUsers, pendingImages, pendingQuestion } = await tracer.startActiveSpan(
+          const { toolMessage, discoveredUsers, pendingImages, pendingQuestion, pendingAutomodApproval } = await tracer.startActiveSpan(
             "agent.tool_calls",
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
@@ -394,6 +418,13 @@ export async function runAgentLoop(
             logger.info({ question: pendingQuestion.question }, "pausing loop for ask_question");
             span.setAttribute("agent.paused_for_question", true);
             return { response: "", updatedHistory: messages.slice(1), pendingQuestion, cancelled: false };
+          }
+
+          // add_automod_keyword — pause loop and return to let the bot send approval buttons
+          if (pendingAutomodApproval) {
+            logger.info({ ruleId: pendingAutomodApproval.ruleId, keyword: pendingAutomodApproval.keyword }, "pausing loop for automod keyword approval");
+            span.setAttribute("agent.paused_for_automod_approval", true);
+            return { response: "", updatedHistory: messages.slice(1), pendingAutomodApproval, cancelled: false };
           }
 
           if (pendingImages.length > 0) {

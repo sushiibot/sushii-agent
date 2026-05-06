@@ -33,7 +33,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type PendingAutomodApproval } from "./agent/loop.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -202,6 +202,8 @@ const FEEDBACK_BTN_PREFIX = "fb:";
 const FEEDBACK_MODAL_PREFIX = "fbm:";
 // Custom ID prefix for stop-loop button: stop:{threadId}
 const STOP_BTN_PREFIX = "stop:";
+// Custom ID prefix for automod keyword add approval buttons: amka:{threadId}:{approve|reject}
+const AUTOMOD_BTN_PREFIX = "amka:";
 
 interface PendingScanState {
   threadId: string;
@@ -215,6 +217,13 @@ interface PendingScanState {
 
 // Per-guild pending scan approval state (cleared on approval or skip)
 const pendingScans = new Map<string, PendingScanState>();
+
+interface PendingAutomodApprovalState extends PendingAutomodApproval {
+  triggeredByUserId: string;
+}
+
+// Per-thread pending automod keyword approval state (in-memory only, cleared on approve/reject/restart)
+const pendingAutomodApprovals = new Map<string, PendingAutomodApprovalState>();
 
 export const client = new Client({
   intents: [
@@ -464,17 +473,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
             onToolsDispatched: async (tools) => {
               toolTracker.add(tools);
             },
-            dequeueMessages: () => {
-              const q = threadMidLoopQueues.get(thread.id) ?? [];
-              if (q.length === 0) return [];
-              threadMidLoopQueues.set(thread.id, []);
-              for (const m of q) {
-                m.consumed = true;
-                m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
-                m.discordMessage.react("✅").catch(() => {});
-              }
-              return q;
-            },
+            dequeueMessages: makeDequeueMessages(thread.id),
             isCancelled: () => threadCancellations.has(thread.id),
           },
         );
@@ -493,40 +492,18 @@ client.on(Events.MessageCreate, async (message: Message) => {
       }
 
       if (!agentResult) return;
-      const { response, updatedHistory, pendingQuestion, cancelled } = agentResult;
+      await handleAgentResult(thread, guildId, thread.id, agentResult, threadContext || null, message.author.id);
 
-      if (cancelled) {
-        // User stopped the loop — save history but don't send a response
-        saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
-        await thread.send({ content: "-# *(loop stopped)*", allowedMentions: { parse: [] } }).catch(() => {});
-        return;
-      }
-
-      if (pendingQuestion) {
-        // Save state and send question+buttons — loop resumes on button click
-        saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
-        pendingChoices.set(thread.id, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: message.author.id });
-        savePendingQuestion({ threadId: thread.id, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: message.author.id, createdAt: Date.now() });
-        await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
-      } else {
-        const expanded = expandMessageLinks(response, guildId);
-        const componentMsgs = buildComponentMessages(expanded);
-        appendFeedbackButtons(componentMsgs, thread.id);
-        for (const msgOpts of componentMsgs) {
-          await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-        }
-
-        saveConversation(thread.id, guildId, updatedHistory, threadContext || null);
-
-        // Rename thread when there's enough context:
-        // - 3+ tool uses on first turn (rich investigation), OR
-        // - any tool use on a follow-up turn (user sent another message, so we have more context)
-        const toolUseCount = updatedHistory.filter((m) => m.role === "tool").length;
-        const userTurnCount = updatedHistory.filter((m) => m.role === "user").length;
+      // Rename thread when there's enough context:
+      // - 3+ tool uses on first turn (rich investigation), OR
+      // - any tool use on a follow-up turn (user sent another message, so we have more context)
+      if (!agentResult.cancelled && !agentResult.pendingQuestion && !agentResult.pendingAutomodApproval) {
+        const toolUseCount = agentResult.updatedHistory.filter((m) => m.role === "tool").length;
+        const userTurnCount = agentResult.updatedHistory.filter((m) => m.role === "user").length;
         const isDefaultName = thread.name === "sushii-agent investigation";
         const enoughContext = toolUseCount >= 3 || userTurnCount >= 2;
         if (toolUseCount > 0 && enoughContext && (isNew || isDefaultName)) {
-          await renameThread(thread, updatedHistory);
+          await renameThread(thread, agentResult.updatedHistory);
         }
       }
 
@@ -697,24 +674,154 @@ client.on(Events.InteractionCreate, async (interaction) => {
           },
         );
 
-        const { response, updatedHistory, pendingQuestion } = agentResult;
-        if (pendingQuestion) {
-          saveConversation(pending.threadId, guildId, updatedHistory, pending.threadContext || null);
-          pendingChoices.set(pending.threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: pending.triggeringUser?.id ?? interaction.user.id });
-          savePendingQuestion({ threadId: pending.threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: pending.triggeringUser?.id ?? interaction.user.id, createdAt: Date.now() });
-          await sendQuestionWithButtons(threadChannel, pendingQuestion.question, pendingQuestion.choices);
-        } else {
-          const expanded = expandMessageLinks(response, guildId);
-          const componentMsgs = buildComponentMessages(expanded);
-          for (const msgOpts of componentMsgs) {
-            await threadChannel.send({ ...msgOpts, allowedMentions: { parse: [] } });
-          }
-          saveConversation(pending.threadId, guildId, updatedHistory, pending.threadContext || null);
-        }
+        await handleAgentResult(threadChannel, guildId, pending.threadId, agentResult, pending.threadContext || null, pending.triggeringUser?.id ?? interaction.user.id);
       } finally {
         clearInterval(typingInterval);
       }
     });
+    return;
+  }
+
+  // Handle automod keyword approval buttons: amka:{threadId}:{approve|reject}
+  if (interaction.customId.startsWith(AUTOMOD_BTN_PREFIX)) {
+    const rest = interaction.customId.slice(AUTOMOD_BTN_PREFIX.length);
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon === -1) return;
+    const threadId = rest.slice(0, lastColon);
+    const choice = rest.slice(lastColon + 1); // "approve" | "reject"
+
+    const pending = pendingAutomodApprovals.get(threadId);
+    if (!pending) {
+      await interaction.reply({ content: "This approval has expired — the bot was restarted. Please re-ask the agent to add the keyword.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (interaction.user.id !== pending.triggeredByUserId) {
+      await interaction.reply({
+        content: `Only <@${pending.triggeredByUserId}> can respond to this approval.`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    pendingAutomodApprovals.delete(threadId);
+    await interaction.deferUpdate();
+    await disableAutomodApprovalButtons(interaction as ButtonInteraction, pending, choice === "approve");
+
+    try {
+      await withThreadLock(threadId, async () => {
+        const thread = await client.channels.fetch(threadId);
+        if (!thread?.isThread()) return;
+
+        const guildId = thread.guildId;
+        const guildConfig = config.guildConfig[guildId];
+        if (!guildConfig) return;
+
+        const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+        const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
+        const serverContext = getServerContext(guildId);
+        const memoryIndex = listMemoryTitles(guildId);
+        const memoryCount = getMemoryCount(guildId);
+
+        let systemMessage: string;
+
+        if (choice === "approve") {
+          try {
+            const guild = await client.guilds.fetch(guildId);
+            // Re-fetch to get current live state — avoid overwriting concurrent changes
+            const currentRule = await guild.autoModerationRules.fetch({ autoModerationRule: pending.ruleId, force: true });
+            const currentFilter = [...(currentRule.triggerMetadata.keywordFilter ?? [])];
+            const currentRegex = [...(currentRule.triggerMetadata.regexPatterns ?? [])];
+            const currentAllow = [...(currentRule.triggerMetadata.allowList ?? [])];
+
+            if (currentFilter.some(k => k.toLowerCase() === pending.keyword.toLowerCase())) {
+              systemMessage = `[System: Moderator approved, but "${pending.keyword}" is already in rule "${pending.ruleName}" (added by someone else in the meantime). No changes made.]`;
+            } else {
+              await guild.autoModerationRules.edit(pending.ruleId, {
+                triggerMetadata: {
+                  keywordFilter: [...currentFilter, pending.keyword],
+                  regexPatterns: currentRegex,
+                  allowList: currentAllow,
+                },
+                reason: `Added keyword "${pending.keyword}" via sushii-agent (approved by ${interaction.user.username})`,
+              });
+              const newCount = currentFilter.length + 1;
+              const oldCount = currentFilter.length;
+              systemMessage = `[System: Moderator approved. Keyword "${pending.keyword}" was successfully added to automod rule "${pending.ruleName}" (${oldCount} → ${newCount} keywords). The rule is now live.]`;
+              logger.info({ ruleId: pending.ruleId, keyword: pending.keyword, guildId }, "automod keyword added");
+            }
+          } catch (err) {
+            systemMessage = `[System: Moderator approved, but the Discord API call failed: ${err}. The keyword was NOT added. You may try again.]`;
+            logger.error({ err, ruleId: pending.ruleId, keyword: pending.keyword }, "automod edit failed");
+          }
+        } else {
+          systemMessage = `[System: Moderator rejected the keyword addition. "${pending.keyword}" was NOT added to rule "${pending.ruleName}".]`;
+        }
+
+        const { triggeringUser, currentChannel } = await buildInteractionContext(interaction as ButtonInteraction, thread, guildConfig);
+
+        await thread.sendTyping();
+        const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+        const toolTracker = new ToolProgressTracker(thread);
+        threadCancellations.delete(threadId);
+        threadTriggeringUsers.set(threadId, interaction.user.id);
+
+        let agentResult: AgentLoopResult | undefined;
+        try {
+          agentResult = await runAgentLoop(
+            systemMessage,
+            existingHistory,
+            guildId,
+            client as Client<true>,
+            {
+              threadContext: initialThreadContext ?? undefined,
+              currentChannelId: threadId,
+              emojiMap,
+              botId: client.user!.id,
+              botUsername: client.user!.username,
+              triggeringUser,
+              currentChannel,
+              serverContext,
+              memoryIndex,
+              memoryCount,
+              memoryLimit: MEMORY_LIMIT,
+              onInterimText: async (text) => {
+                await toolTracker.reset();
+                const expanded = expandMessageLinks(text, guildId);
+                const componentMsgs = buildComponentMessages(expanded);
+                for (const msgOpts of componentMsgs) {
+                  await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+                }
+                await thread.sendTyping();
+              },
+              onToolsDispatched: async (tools) => {
+                toolTracker.add(tools);
+              },
+              dequeueMessages: makeDequeueMessages(threadId),
+              isCancelled: () => threadCancellations.has(threadId),
+            },
+          );
+
+          await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext, interaction.user.id);
+        } catch (err) {
+          logger.error({ err }, "Error resuming loop after automod approval");
+          await thread.send("An error occurred while processing the approval. Check the logs.").catch(() => {});
+        } finally {
+          clearInterval(typingInterval);
+          await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
+          threadCancellations.delete(threadId);
+          threadTriggeringUsers.delete(threadId);
+          const remainingQueue = threadMidLoopQueues.get(threadId) ?? [];
+          for (const m of remainingQueue) {
+            m.consumed = true;
+            m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+          }
+          threadMidLoopQueues.delete(threadId);
+        }
+      });
+    } catch (err) {
+      logger.error({ err }, "Unexpected error in automod approval handler");
+    }
     return;
   }
 
@@ -771,33 +878,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const memoryIndex = listMemoryTitles(guildId);
       const memoryCount = getMemoryCount(guildId);
 
-      // Build triggeringUser from the button clicker
-      const member = await thread.guild.members.fetch(interaction.user.id).catch(() => null);
-      const memberRoles = member
-        ? [...member.roles.cache.values()]
-            .filter((r) => r.id !== thread.guild.roles.everyone.id)
-            .sort((a, b) => b.position - a.position)
-            .map((r) => ({ id: r.id, name: r.name }))
-        : [];
-      const isModerator = member?.roles.cache.hasAny(...guildConfig.allowedRoles) ?? false;
-      const triggeringUser = {
-        id: interaction.user.id,
-        username: interaction.user.username,
-        displayName: member?.displayName !== interaction.user.username ? member?.displayName ?? null : null,
-        roles: memberRoles,
-        isModerator,
-      };
-
-      // Build currentChannel from the thread
-      const isPrivate = thread.type === ChannelType.PrivateThread;
-      const currentChannel = {
-        id: thread.id,
-        name: thread.name,
-        type: isPrivate ? "thread (private)" : "thread (public)",
-        isPrivate,
-        parentChannelId: thread.parentId ?? undefined,
-        parentChannelName: thread.parent?.name ?? undefined,
-      };
+      const { triggeringUser, currentChannel } = await buildInteractionContext(interaction as ButtonInteraction, thread, guildConfig);
 
       const query = `[Selected: "${choice}"]`;
 
@@ -830,39 +911,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
           onToolsDispatched: async (tools) => {
             toolTracker.add(tools);
           },
-          dequeueMessages: () => {
-            const q = threadMidLoopQueues.get(threadId) ?? [];
-            if (q.length === 0) return [];
-            threadMidLoopQueues.set(threadId, []);
-            for (const m of q) {
-              m.consumed = true;
-              m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
-              m.discordMessage.react("✅").catch(() => {});
-            }
-            return q;
-          },
+          dequeueMessages: makeDequeueMessages(threadId),
           isCancelled: () => threadCancellations.has(threadId),
         },
       );
-      const { response, updatedHistory, pendingQuestion, cancelled } = agentResult;
-
-      if (cancelled) {
-        saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
-        await thread.send({ content: "-# *(loop stopped)*", allowedMentions: { parse: [] } }).catch(() => {});
-      } else if (pendingQuestion) {
-        saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
-        pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id });
-        savePendingQuestion({ threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId: interaction.user.id, createdAt: Date.now() });
-        await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
-      } else {
-        const expanded = expandMessageLinks(response, guildId);
-        const componentMsgs = buildComponentMessages(expanded);
-        appendFeedbackButtons(componentMsgs, threadId);
-        for (const msgOpts of componentMsgs) {
-          await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-        }
-        saveConversation(threadId, guildId, updatedHistory, initialThreadContext);
-      }
+      await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext, interaction.user.id);
     } catch (err) {
       logger.error({ err }, "Error handling button interaction");
       await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
@@ -884,6 +937,100 @@ client.on(Events.InteractionCreate, async (interaction) => {
     logger.error({ err }, "Unexpected error in button interaction handler");
   }
 });
+
+async function handleAgentResult(
+  thread: ThreadChannel,
+  guildId: string,
+  threadId: string,
+  agentResult: AgentLoopResult,
+  threadContext: string | null,
+  triggeredByUserId: string,
+): Promise<void> {
+  const { response, updatedHistory, pendingQuestion, pendingAutomodApproval, cancelled } = agentResult;
+
+  if (cancelled) {
+    saveConversation(threadId, guildId, updatedHistory, threadContext);
+    await thread.send({ content: "-# *(loop stopped)*", allowedMentions: { parse: [] } }).catch(() => {});
+  } else if (pendingQuestion) {
+    saveConversation(threadId, guildId, updatedHistory, threadContext);
+    pendingChoices.set(threadId, { question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId });
+    savePendingQuestion({ threadId, question: pendingQuestion.question, choices: pendingQuestion.choices, triggeredByUserId, createdAt: Date.now() });
+    await sendQuestionWithButtons(thread, pendingQuestion.question, pendingQuestion.choices);
+  } else if (pendingAutomodApproval) {
+    saveConversation(threadId, guildId, updatedHistory, threadContext);
+    pendingAutomodApprovals.set(threadId, { ...pendingAutomodApproval, triggeredByUserId });
+    await sendAutomodApprovalMessage(thread, pendingAutomodApproval);
+  } else {
+    const expanded = expandMessageLinks(response, guildId);
+    const componentMsgs = buildComponentMessages(expanded);
+    appendFeedbackButtons(componentMsgs, threadId);
+    for (const msgOpts of componentMsgs) {
+      await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+    }
+    saveConversation(threadId, guildId, updatedHistory, threadContext);
+  }
+}
+
+async function buildInteractionContext(
+  interaction: ButtonInteraction,
+  thread: ThreadChannel,
+  guildConfig: { allowedRoles: string[] },
+): Promise<{ triggeringUser: TriggeringUser; currentChannel: ChannelContext }> {
+  const member = await thread.guild.members.fetch(interaction.user.id).catch(() => null);
+  const memberRoles = member
+    ? [...member.roles.cache.values()]
+        .filter((r) => r.id !== thread.guild.roles.everyone.id)
+        .sort((a, b) => b.position - a.position)
+        .map((r) => ({ id: r.id, name: r.name }))
+    : [];
+  const isModerator = member?.roles.cache.hasAny(...guildConfig.allowedRoles) ?? false;
+  const triggeringUser: TriggeringUser = {
+    id: interaction.user.id,
+    username: interaction.user.username,
+    displayName: member?.displayName !== interaction.user.username ? member?.displayName ?? null : null,
+    roles: memberRoles,
+    isModerator,
+  };
+  const isPrivate = thread.type === ChannelType.PrivateThread;
+  const currentChannel: ChannelContext = {
+    id: thread.id,
+    name: thread.name,
+    type: isPrivate ? "thread (private)" : "thread (public)",
+    isPrivate,
+    parentChannelId: thread.parentId ?? undefined,
+    parentChannelName: thread.parent?.name ?? undefined,
+  };
+  return { triggeringUser, currentChannel };
+}
+
+function makeDequeueMessages(threadId: string): () => { query: string; mentionedUsers?: Map<string, UserNames> }[] {
+  return () => {
+    const q = threadMidLoopQueues.get(threadId) ?? [];
+    if (q.length === 0) return [];
+    threadMidLoopQueues.set(threadId, []);
+    for (const m of q) {
+      m.consumed = true;
+      m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+      m.discordMessage.react("✅").catch(() => {});
+    }
+    return q;
+  };
+}
+
+function buildNeighborContext(existingKeywords: string[], newKeyword: string, windowSize = 5): string {
+  const sortKey = (k: string) => k.replace(/^\*+/, "").replace(/\*+$/, "").toLowerCase();
+  const sorted = [...existingKeywords].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  const insertIdx = sorted.findIndex(k => sortKey(k) > sortKey(newKeyword));
+  const insertAt = insertIdx === -1 ? sorted.length : insertIdx;
+  const withNew = [...sorted.slice(0, insertAt), newKeyword, ...sorted.slice(insertAt)];
+  const start = Math.max(0, insertAt - windowSize);
+  const end = Math.min(withNew.length, insertAt + windowSize + 1);
+  const neighbors = withNew.slice(start, end);
+  const parts = neighbors.map((k, i) =>
+    start + i === insertAt ? `**→ ${k} ←**` : `\`${k}\``
+  );
+  return (start > 0 ? "... " : "") + parts.join(", ") + (end < withNew.length ? " ..." : "");
+}
 
 async function sendScanApprovalMessage(thread: ThreadChannel, guildId: string): Promise<void> {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -950,6 +1097,54 @@ async function disableQuestionButtons(
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
     // Non-critical — if we can't update the message, just continue
+  }
+}
+
+async function sendAutomodApprovalMessage(thread: ThreadChannel, approval: PendingAutomodApproval): Promise<void> {
+  const threadId = thread.id;
+  const { ruleName, ruleId, keyword, newKeywordFilter } = approval;
+  const oldCount = newKeywordFilter.length - 1;
+  const newCount = newKeywordFilter.length;
+
+  // Build alphabetical neighbor context (±5 around insertion point, stripping leading * for sort key)
+  const existing = newKeywordFilter.filter(k => k !== keyword);
+  const neighborStr = buildNeighborContext(existing, keyword);
+
+  const bodyLines = [
+    `**Rule:** ${ruleName} (\`${ruleId}\`)`,
+    `**Keyword to add:** \`${keyword}\``,
+    `**Keywords:** ${oldCount} → ${newCount}`,
+    "",
+    `Alphabetical neighbors:`,
+    neighborStr,
+  ];
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${AUTOMOD_BTN_PREFIX}${threadId}:approve`)
+      .setLabel("✅ Approve")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`${AUTOMOD_BTN_PREFIX}${threadId}:reject`)
+      .setLabel("❌ Reject")
+      .setStyle(ButtonStyle.Danger),
+  );
+
+  const container = new ContainerBuilder()
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: `🔒 **Automod keyword addition — awaiting approval**\n\n${bodyLines.join("\n")}` }))
+    .addActionRowComponents(row);
+
+  await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
+}
+
+async function disableAutomodApprovalButtons(interaction: ButtonInteraction, approval: PendingAutomodApproval, approved: boolean): Promise<void> {
+  try {
+    const label = approved ? "✅ Approved" : "❌ Rejected";
+    const container = new ContainerBuilder()
+      .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# ${label}: \`${approval.keyword}\` → "${approval.ruleName}"` }));
+    await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+  } catch {
+    // Non-critical
   }
 }
 

@@ -17,6 +17,8 @@ import { deleteMemoryTool } from "../tools/deleteMemory.ts";
 import { updateServerContextTool } from "../tools/updateServerContext.ts";
 import { searchGuildMessages, type SearchGuildMessagesResult } from "../tools/searchGuildMessages.ts";
 import { getGuildInfo, type GuildInfo } from "../tools/getGuildInfo.ts";
+import { listAutomodRules, type AutomodRuleInfo } from "../tools/listAutomodRules.ts";
+import { addAutomodKeyword, type PendingAutomodApproval } from "../tools/addAutomodKeyword.ts";
 import type { MemoryRow } from "../db/memory.ts";
 import { getLogger } from "../logger.ts";
 
@@ -81,7 +83,9 @@ type ToolResult =
   | { tool: "update_server_context"; data: { ok: boolean } }
   | { tool: "get_channel_info"; data: ChannelDetail | ChannelInfo[] }
   | { tool: "memory"; data: MemoryData }
-  | { tool: "get_guild_info"; data: GuildInfo };
+  | { tool: "get_guild_info"; data: GuildInfo }
+  | { tool: "list_automod_rules"; data: AutomodRuleInfo[] }
+  | { tool: "pending_automod_keyword_add"; data: PendingAutomodApproval };
 
 function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
@@ -312,11 +316,73 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
     case "update_server_context":
       return "ok";
 
-    // ask_question and inspect_image are handled before formatToolResult is called
+    case "list_automod_rules": {
+      if (result.data.length === 0) return "(no automod rules configured)";
+      return result.data
+        .map((rule) => {
+          const status = rule.enabled ? "enabled" : "disabled";
+          const lines: string[] = [`rule: "${rule.name}" (id:${rule.id}) [${rule.triggerType}] ${status}`];
+
+          if (rule.keywordFilter.length > 0) {
+            const preview = rule.keywordFilter.slice(0, 20).join(", ");
+            const more = rule.keywordFilter.length > 20 ? ` [+${rule.keywordFilter.length - 20} more]` : "";
+            lines.push(`  keywords (${rule.keywordFilter.length}): ${preview}${more}`);
+          }
+          if (rule.regexPatterns.length > 0) {
+            lines.push(`  regex: ${rule.regexPatterns.length} pattern(s)`);
+          }
+          if (rule.allowList.length > 0) {
+            lines.push(`  allow list: ${rule.allowList.length} item(s)`);
+          }
+
+          const actionStrs = rule.actions.map((a) => {
+            if (a.type === "send_alert_message" && a.channelId) return `alert → c:${a.channelId}`;
+            if (a.type === "timeout" && a.durationSeconds) return `timeout ${a.durationSeconds}s`;
+            return a.type;
+          });
+          if (actionStrs.length > 0) lines.push(`  actions: ${actionStrs.join(", ")}`);
+
+          if (rule.exemptRoleIds.length > 0) lines.push(`  exempt roles: ${rule.exemptRoleIds.map((id) => `r:${id}`).join(", ")}`);
+          if (rule.exemptChannelIds.length > 0) lines.push(`  exempt channels: ${rule.exemptChannelIds.map((id) => `c:${id}`).join(", ")}`);
+
+          return lines.join("\n");
+        })
+        .join("\n\n");
+    }
+
+    // ask_question, inspect_image, and pending_automod_keyword_add are handled before formatToolResult is called
     case "ask_question":
     case "inspect_image":
+    case "pending_automod_keyword_add":
       return "";
   }
+}
+
+/**
+ * If `pending` is set and other tool results are present, override the specified
+ * tool's result with an error and return true (meaning: the pending state was cleared).
+ */
+function enforceCalledAlone(
+  pending: unknown,
+  toolCallId: string | undefined,
+  toolName: string,
+  toolResultParts: ToolModelMessage["content"],
+): boolean {
+  if (!pending || toolResultParts.length <= 1 || toolCallId === undefined) return false;
+  const idx = toolResultParts.findIndex(
+    (p) => p.type === "tool-result" && p.toolCallId === toolCallId,
+  );
+  if (idx === -1) return false;
+  toolResultParts[idx] = {
+    type: "tool-result",
+    toolCallId,
+    toolName,
+    output: {
+      type: "text",
+      value: `${toolName} must be called alone — do not combine it with other tool calls in the same turn. Try again with only ${toolName}.`,
+    },
+  };
+  return true;
 }
 
 function coerceNumericFields(input: Record<string, unknown>, fields: string[]): Record<string, unknown> {
@@ -342,7 +408,10 @@ export interface RunToolsResult {
   discoveredUsers: Map<string, UserNames>;
   pendingImages: string[];
   pendingQuestion?: PendingQuestion;
+  pendingAutomodApproval?: PendingAutomodApproval;
 }
+
+export type { PendingAutomodApproval };
 
 export async function runTools(
   toolCalls: AiToolCall[],
@@ -485,6 +554,21 @@ export async function runTools(
             result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_guild_info", data: raw };
             break;
           }
+          case "list_automod_rules": {
+            const raw = await listAutomodRules({ guildId, client });
+            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "list_automod_rules", data: raw };
+            break;
+          }
+          case "add_automod_keyword": {
+            const raw = await addAutomodKeyword({
+              guildId,
+              ruleId: input.rule_id as string,
+              keyword: input.keyword as string,
+              client,
+            });
+            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_add", data: raw };
+            break;
+          }
           case "ask_question":
             result = { tool: "ask_question", question: input.question as string, choices: input.choices as string[] };
             break;
@@ -505,6 +589,8 @@ export async function runTools(
   const pendingImages: string[] = [];
   let pendingQuestion: PendingQuestion | undefined;
   let askQuestionToolCallId: string | undefined;
+  let pendingAutomodApproval: PendingAutomodApproval | undefined;
+  let automodApprovalToolCallId: string | undefined;
 
   for (const { call, result } of rawResults) {
     if (result.tool === "ask_question") {
@@ -515,6 +601,18 @@ export async function runTools(
         toolCallId: call.toolCallId,
         toolName: call.toolName,
         output: { type: "text", value: "Question sent to moderator. Awaiting their response via button click." },
+      });
+      continue;
+    }
+
+    if (result.tool === "pending_automod_keyword_add") {
+      pendingAutomodApproval = result.data;
+      automodApprovalToolCallId = call.toolCallId;
+      toolResultParts.push({
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: { type: "text", value: `Keyword addition queued for moderator approval. The moderator will see a confirmation prompt showing the change to rule "${result.data.ruleName}".` },
       });
       continue;
     }
@@ -539,25 +637,14 @@ export async function runTools(
     toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: content } });
   }
 
-  // If ask_question was called alongside other tools, override it with an error so the loop
-  // continues normally — ask_question must be called alone.
-  if (pendingQuestion && toolResultParts.length > 1 && askQuestionToolCallId !== undefined) {
-    const idx = toolResultParts.findIndex(
-      (p) => p.type === "tool-result" && p.toolCallId === askQuestionToolCallId,
-    );
-    if (idx !== -1) {
-      toolResultParts[idx] = {
-        type: "tool-result",
-        toolCallId: askQuestionToolCallId,
-        toolName: "ask_question",
-        output: {
-          type: "text",
-          value: "ask_question must be called alone — do not combine it with other tool calls in the same turn. Try again with only ask_question.",
-        },
-      };
-    }
+  // If ask_question or add_automod_keyword was called alongside other tools, override it with
+  // an error so the loop continues normally — these tools must be called alone.
+  if (enforceCalledAlone(pendingQuestion, askQuestionToolCallId, "ask_question", toolResultParts)) {
     pendingQuestion = undefined;
   }
+  if (enforceCalledAlone(pendingAutomodApproval, automodApprovalToolCallId, "add_automod_keyword", toolResultParts)) {
+    pendingAutomodApproval = undefined;
+  }
 
-  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages, pendingQuestion };
+  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages, pendingQuestion, pendingAutomodApproval };
 }

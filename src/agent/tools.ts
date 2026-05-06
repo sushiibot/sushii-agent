@@ -400,6 +400,41 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "list_automod_rules",
+      description:
+        "List all auto-moderation rules for this server — names, IDs, trigger types, keyword/regex counts, enabled status, and actions. Use this to understand what is currently filtered before suggesting additions or investigating what automod would or wouldn't catch. Shows full keyword lists for KEYWORD and MEMBER_PROFILE rules.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_automod_keyword",
+      description:
+        "Add a single keyword to an existing automod rule's keyword_filter. This triggers an approval gate — do NOT call ask_question before this tool, the moderator will be prompted automatically with a confirmation showing the exact change. Only works for KEYWORD and MEMBER_PROFILE trigger type rules.\n\nWildcard syntax: *word* = match anywhere, word* = prefix, *word = suffix, word = whole-word only. Max 60 chars per keyword. Case-insensitive at match time.",
+      parameters: {
+        type: "object",
+        properties: {
+          rule_id: {
+            type: "string",
+            description: "The automod rule ID (snowflake) to add the keyword to. Get this from list_automod_rules.",
+          },
+          keyword: {
+            type: "string",
+            description: "The keyword string to add. Use wildcard * where appropriate. Max 60 characters.",
+          },
+        },
+        required: ["rule_id", "keyword"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_channel_info",
       description:
         "Get channel information. Without channel_id: lists all channels in the server organized by category — use this to understand the server structure, which channels are private (mod-only), etc. With channel_id: get details about that specific channel — name, type, privacy, category, and topic.",
