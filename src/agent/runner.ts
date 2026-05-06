@@ -354,6 +354,7 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
     case "ask_question":
     case "inspect_image":
     case "pending_automod_keyword_add":
+      logger.warn({ tool: result.tool }, "formatToolResult called for tool that should have been handled earlier");
       return "";
   }
 }

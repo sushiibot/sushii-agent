@@ -33,7 +33,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type PendingAutomodApproval } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval } from "./agent/loop.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -67,6 +67,19 @@ class ToolProgressTracker {
     this.scheduleFlush();
   }
 
+  private buildContent(): string {
+    return this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+  }
+
+  private cancelPendingFlush(): void {
+    if (!this.flushTimer) return;
+    clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    if (this.lines.length > 0) {
+      this.lastContent = this.buildContent();
+    }
+  }
+
   private scheduleFlush(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = setTimeout(() => { void this.flush(); }, ToolProgressTracker.DEBOUNCE_MS);
@@ -75,7 +88,7 @@ class ToolProgressTracker {
   private async flush(): Promise<void> {
     this.flushTimer = null;
     // Components V2 TextDisplay limit is 4000 chars per component
-    this.lastContent = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+    this.lastContent = this.buildContent();
     const stopRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`${STOP_BTN_PREFIX}${this.thread.id}`)
@@ -101,13 +114,7 @@ class ToolProgressTracker {
    * Call this before sending interim text so new tool dispatches start a fresh message.
    */
   async reset(): Promise<void> {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-      if (this.lines.length > 0) {
-        this.lastContent = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
-      }
-    }
+    this.cancelPendingFlush();
     if (this.msg && this.lastContent) {
       const container = new ContainerBuilder().addTextDisplayComponents(
         new TextDisplayBuilder({ content: this.lastContent }),
@@ -125,14 +132,8 @@ class ToolProgressTracker {
 
   /** Flush pending updates, then remove the stop button. If cancelled, append a note. */
   async finalize(cancelled = false): Promise<void> {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-      // Update lastContent without sending (avoid double-edit flicker)
-      if (this.lines.length > 0) {
-        this.lastContent = this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
-      }
-    }
+    // Update lastContent without sending (avoid double-edit flicker)
+    this.cancelPendingFlush();
     if (!this.msg) return;
     if (!this.lastContent && !cancelled) return;
 
@@ -446,49 +447,18 @@ client.on(Events.MessageCreate, async (message: Message) => {
           existingHistory,
           guildId,
           client as Client<true>,
-          {
+          buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
             threadContext: threadContext || undefined,
-            currentChannelId: thread.id,
-            emojiMap: emojiMap,
             mentionedUsers: mentionedUsers.size ? mentionedUsers : undefined,
-            botId: client.user!.id,
-            botUsername: client.user!.username,
             triggeringUser,
             currentChannel,
             serverContext,
             memoryIndex,
             memoryCount,
-            memoryLimit: MEMORY_LIMIT,
-            onInterimText: async (text) => {
-              // Reset tracker so the stop button is removed from the old tool progress
-              // message and the next batch of tool calls starts a fresh message.
-              await toolTracker.reset();
-              const expanded = expandMessageLinks(text, guildId);
-              const componentMsgs = buildComponentMessages(expanded);
-              for (const msgOpts of componentMsgs) {
-                await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-              }
-              await thread.sendTyping();
-            },
-            onToolsDispatched: async (tools) => {
-              toolTracker.add(tools);
-            },
-            dequeueMessages: makeDequeueMessages(thread.id),
-            isCancelled: () => threadCancellations.has(thread.id),
-          },
+          }),
         );
       } finally {
-        clearInterval(typingInterval);
-        await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
-        threadCancellations.delete(thread.id);
-        threadTriggeringUsers.delete(thread.id);
-        // Drain any unprocessed mid-loop messages (cancel their reactions)
-        const remainingQueue = threadMidLoopQueues.get(thread.id) ?? [];
-        for (const m of remainingQueue) {
-          m.consumed = true;
-          m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
-        }
-        threadMidLoopQueues.delete(thread.id);
+        await cleanupAgentRun(thread.id, typingInterval, toolTracker, agentResult);
       }
 
       if (!agentResult) return;
@@ -773,33 +743,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
             existingHistory,
             guildId,
             client as Client<true>,
-            {
+            buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
               threadContext: initialThreadContext ?? undefined,
-              currentChannelId: threadId,
-              emojiMap,
-              botId: client.user!.id,
-              botUsername: client.user!.username,
               triggeringUser,
               currentChannel,
               serverContext,
               memoryIndex,
               memoryCount,
-              memoryLimit: MEMORY_LIMIT,
-              onInterimText: async (text) => {
-                await toolTracker.reset();
-                const expanded = expandMessageLinks(text, guildId);
-                const componentMsgs = buildComponentMessages(expanded);
-                for (const msgOpts of componentMsgs) {
-                  await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-                }
-                await thread.sendTyping();
-              },
-              onToolsDispatched: async (tools) => {
-                toolTracker.add(tools);
-              },
-              dequeueMessages: makeDequeueMessages(threadId),
-              isCancelled: () => threadCancellations.has(threadId),
-            },
+            }),
           );
 
           await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext, interaction.user.id);
@@ -807,16 +758,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           logger.error({ err }, "Error resuming loop after automod approval");
           await thread.send("An error occurred while processing the approval. Check the logs.").catch(() => {});
         } finally {
-          clearInterval(typingInterval);
-          await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
-          threadCancellations.delete(threadId);
-          threadTriggeringUsers.delete(threadId);
-          const remainingQueue = threadMidLoopQueues.get(threadId) ?? [];
-          for (const m of remainingQueue) {
-            m.consumed = true;
-            m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
-          }
-          threadMidLoopQueues.delete(threadId);
+          await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
         }
       });
     } catch (err) {
@@ -887,50 +829,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
         existingHistory,
         guildId,
         client as Client<true>,
-        {
+        buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
           threadContext: initialThreadContext ?? undefined,
-          currentChannelId: threadId,
-          emojiMap: emojiMap,
-          botId: client.user!.id,
-          botUsername: client.user!.username,
           triggeringUser,
           currentChannel,
           serverContext,
           memoryIndex,
           memoryCount,
-          memoryLimit: MEMORY_LIMIT,
-          onInterimText: async (text) => {
-            await toolTracker.reset();
-            const expanded = expandMessageLinks(text, guildId);
-            const componentMsgs = buildComponentMessages(expanded);
-            for (const msgOpts of componentMsgs) {
-              await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
-            }
-            await thread.sendTyping();
-          },
-          onToolsDispatched: async (tools) => {
-            toolTracker.add(tools);
-          },
-          dequeueMessages: makeDequeueMessages(threadId),
-          isCancelled: () => threadCancellations.has(threadId),
-        },
+        }),
       );
       await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext, interaction.user.id);
     } catch (err) {
       logger.error({ err }, "Error handling button interaction");
       await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
     } finally {
-      clearInterval(typingInterval);
-      await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
-      threadCancellations.delete(threadId);
-      threadTriggeringUsers.delete(threadId);
-      // Drain any unprocessed mid-loop messages (cancel their reactions)
-      const remainingQueue = threadMidLoopQueues.get(threadId) ?? [];
-      for (const m of remainingQueue) {
-        m.consumed = true;
-        m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
-      }
-      threadMidLoopQueues.delete(threadId);
+      await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
     }
   }); // end withThreadLock
   } catch (err) {
@@ -1001,6 +914,70 @@ async function buildInteractionContext(
     parentChannelName: thread.parent?.name ?? undefined,
   };
   return { triggeringUser, currentChannel };
+}
+
+async function cleanupAgentRun(
+  threadId: string,
+  typingInterval: ReturnType<typeof setInterval>,
+  toolTracker: ToolProgressTracker,
+  agentResult: AgentLoopResult | undefined,
+): Promise<void> {
+  clearInterval(typingInterval);
+  await toolTracker.finalize(agentResult?.cancelled ?? false).catch(() => {});
+  threadCancellations.delete(threadId);
+  threadTriggeringUsers.delete(threadId);
+  const remainingQueue = threadMidLoopQueues.get(threadId) ?? [];
+  for (const m of remainingQueue) {
+    m.consumed = true;
+    m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
+  }
+  threadMidLoopQueues.delete(threadId);
+}
+
+function buildLoopOptions(
+  thread: ThreadChannel,
+  guildId: string,
+  emojiMap: Record<string, string>,
+  toolTracker: ToolProgressTracker,
+  opts: {
+    threadContext?: string;
+    mentionedUsers?: Map<string, UserNames>;
+    triggeringUser?: TriggeringUser;
+    currentChannel?: ChannelContext;
+    serverContext: string | null;
+    memoryIndex: string[];
+    memoryCount: number;
+  },
+): AgentLoopOptions {
+  const threadId = thread.id;
+  return {
+    threadContext: opts.threadContext,
+    currentChannelId: threadId,
+    emojiMap,
+    mentionedUsers: opts.mentionedUsers,
+    botId: client.user!.id,
+    botUsername: client.user!.username,
+    triggeringUser: opts.triggeringUser,
+    currentChannel: opts.currentChannel,
+    serverContext: opts.serverContext,
+    memoryIndex: opts.memoryIndex,
+    memoryCount: opts.memoryCount,
+    memoryLimit: MEMORY_LIMIT,
+    onInterimText: async (text) => {
+      await toolTracker.reset();
+      const expanded = expandMessageLinks(text, guildId);
+      const componentMsgs = buildComponentMessages(expanded);
+      for (const msgOpts of componentMsgs) {
+        await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
+      }
+      await thread.sendTyping();
+    },
+    onToolsDispatched: async (tools) => {
+      toolTracker.add(tools);
+    },
+    dequeueMessages: makeDequeueMessages(threadId),
+    isCancelled: () => threadCancellations.has(threadId),
+  };
 }
 
 function makeDequeueMessages(threadId: string): () => { query: string; mentionedUsers?: Map<string, UserNames> }[] {
