@@ -613,40 +613,31 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await threadChannel.sendTyping();
       const typingInterval = setInterval(() => threadChannel.sendTyping(), 8000);
+      const toolTracker = new ToolProgressTracker(threadChannel);
+      threadCancellations.delete(pending.threadId);
+      threadTriggeringUsers.set(pending.threadId, pending.triggeringUser?.id ?? interaction.user.id);
 
+      let agentResult: Awaited<ReturnType<typeof runAgentLoop>> | undefined;
       try {
-        const agentResult = await runAgentLoop(
+        agentResult = await runAgentLoop(
           pending.query,
           [],
           guildId,
           client as Client<true>,
-          {
+          buildLoopOptions(threadChannel, guildId, emojiMap, toolTracker, {
             threadContext: pending.threadContext || undefined,
-            currentChannelId: pending.threadId,
-            emojiMap: emojiMap,
             mentionedUsers: pending.mentionedUsers,
-            botId: client.user!.id,
-            botUsername: client.user!.username,
             triggeringUser: pending.triggeringUser,
             currentChannel: pending.currentChannel,
             serverContext: freshServerContext,
             memoryIndex: freshMemoryIndex,
             memoryCount: freshMemoryCount,
-            memoryLimit: MEMORY_LIMIT,
-            onInterimText: async (text) => {
-              const expanded = expandMessageLinks(text, guildId);
-              const componentMsgs = buildComponentMessages(expanded);
-              for (const msgOpts of componentMsgs) {
-                await threadChannel.send({ ...msgOpts, allowedMentions: { parse: [] } });
-              }
-              await threadChannel.sendTyping();
-            },
-          },
+          }),
         );
 
         await handleAgentResult(threadChannel, guildId, pending.threadId, agentResult, pending.threadContext || null, pending.triggeringUser?.id ?? interaction.user.id);
       } finally {
-        clearInterval(typingInterval);
+        await cleanupAgentRun(pending.threadId, typingInterval, toolTracker, agentResult);
       }
     });
     return;
@@ -753,7 +744,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             }),
           );
 
-          await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext, interaction.user.id);
+          await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
         } catch (err) {
           logger.error({ err }, "Error resuming loop after automod approval");
           await thread.send("An error occurred while processing the approval. Check the logs.").catch(() => {});
@@ -838,7 +829,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           memoryCount,
         }),
       );
-      await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext, interaction.user.id);
+      await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
     } catch (err) {
       logger.error({ err }, "Error handling button interaction");
       await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});

@@ -58,7 +58,7 @@ export async function listAutomodRules({
         const info: AutomodActionInfo = { type: actionTypeName(action.type) };
         if (action.metadata.channelId) info.channelId = action.metadata.channelId;
         if (action.metadata.durationSeconds != null) info.durationSeconds = action.metadata.durationSeconds;
-        if (action.metadata.customMessage) info.customMessage = action.metadata.customMessage;
+        if (action.metadata.customMessage != null) info.customMessage = action.metadata.customMessage;
         return info;
       });
 
