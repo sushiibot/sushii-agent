@@ -435,6 +435,28 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "delete_automod_keyword",
+      description:
+        "Remove a single keyword from an existing automod rule's keyword_filter. This triggers an approval gate — do NOT call ask_question before this tool, the moderator will be prompted automatically with a confirmation showing the exact change. Returns an error immediately if the keyword is not found in the rule. Use list_automod_rules to find the exact keyword string and rule ID first.",
+      parameters: {
+        type: "object",
+        properties: {
+          rule_id: {
+            type: "string",
+            description: "The automod rule ID (snowflake) to remove the keyword from. Get this from list_automod_rules.",
+          },
+          keyword: {
+            type: "string",
+            description: "The keyword string to remove. Must match an existing entry (case-insensitive). Get the exact string from list_automod_rules.",
+          },
+        },
+        required: ["rule_id", "keyword"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_channel_info",
       description:
         "Get channel information. Without channel_id: lists all channels in the server organized by category — use this to understand the server structure, which channels are private (mod-only), etc. With channel_id: get details about that specific channel — name, type, privacy, category, and topic.",

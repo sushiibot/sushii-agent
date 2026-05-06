@@ -33,7 +33,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval, type PendingAutomodDeletion } from "./agent/loop.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -205,6 +205,8 @@ const FEEDBACK_MODAL_PREFIX = "fbm:";
 const STOP_BTN_PREFIX = "stop:";
 // Custom ID prefix for automod keyword add approval buttons: amka:{threadId}:{approve|reject}
 const AUTOMOD_BTN_PREFIX = "amka:";
+// Custom ID prefix for automod keyword delete approval buttons: amkd:{threadId}:{approve|reject}
+const AUTOMOD_DEL_BTN_PREFIX = "amkd:";
 
 interface PendingScanState {
   threadId: string;
@@ -225,6 +227,13 @@ interface PendingAutomodApprovalState extends PendingAutomodApproval {
 
 // Per-thread pending automod keyword approval state (in-memory only, cleared on approve/reject/restart)
 const pendingAutomodApprovals = new Map<string, PendingAutomodApprovalState>();
+
+interface PendingAutomodDeletionState extends PendingAutomodDeletion {
+  triggeredByUserId: string;
+}
+
+// Per-thread pending automod keyword deletion state (in-memory only, cleared on approve/reject/restart)
+const pendingAutomodDeletions = new Map<string, PendingAutomodDeletionState>();
 
 export const client = new Client({
   intents: [
@@ -467,7 +476,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
       // Rename thread when there's enough context:
       // - 3+ tool uses on first turn (rich investigation), OR
       // - any tool use on a follow-up turn (user sent another message, so we have more context)
-      if (!agentResult.cancelled && !agentResult.pendingQuestion && !agentResult.pendingAutomodApproval) {
+      if (!agentResult.cancelled && !agentResult.pendingQuestion && !agentResult.pendingAutomodApproval && !agentResult.pendingAutomodDeletion) {
         const toolUseCount = agentResult.updatedHistory.filter((m) => m.role === "tool").length;
         const userTurnCount = agentResult.updatedHistory.filter((m) => m.role === "user").length;
         const isDefaultName = thread.name === "sushii-agent investigation";
@@ -667,93 +676,118 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     pendingAutomodApprovals.delete(threadId);
     await interaction.deferUpdate();
-    await disableAutomodApprovalButtons(interaction as ButtonInteraction, pending, choice === "approve");
+    await disableAutomodActionButtons(interaction as ButtonInteraction, "add", pending.ruleName, pending.keyword, choice === "approve");
 
     try {
-      await withThreadLock(threadId, async () => {
-        const thread = await client.channels.fetch(threadId);
-        if (!thread?.isThread()) return;
+      let systemMessage: string;
 
-        const guildId = thread.guildId;
-        const guildConfig = config.guildConfig[guildId];
-        if (!guildConfig) return;
-
-        const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
-        const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
-        const serverContext = getServerContext(guildId);
-        const memoryIndex = listMemoryTitles(guildId);
-        const memoryCount = getMemoryCount(guildId);
-
-        let systemMessage: string;
-
-        if (choice === "approve") {
-          try {
-            const guild = await client.guilds.fetch(guildId);
-            // Re-fetch to get current live state — avoid overwriting concurrent changes
-            const currentRule = await guild.autoModerationRules.fetch({ autoModerationRule: pending.ruleId, force: true });
-            const currentFilter = [...(currentRule.triggerMetadata.keywordFilter ?? [])];
-            const currentRegex = [...(currentRule.triggerMetadata.regexPatterns ?? [])];
-            const currentAllow = [...(currentRule.triggerMetadata.allowList ?? [])];
-
-            if (currentFilter.some(k => k.toLowerCase() === pending.keyword.toLowerCase())) {
-              systemMessage = `[System: Moderator approved, but "${pending.keyword}" is already in rule "${pending.ruleName}" (added by someone else in the meantime). No changes made.]`;
-            } else {
-              await guild.autoModerationRules.edit(pending.ruleId, {
-                triggerMetadata: {
-                  keywordFilter: [...currentFilter, pending.keyword],
-                  regexPatterns: currentRegex,
-                  allowList: currentAllow,
-                },
-                reason: `Added keyword "${pending.keyword}" via sushii-agent (approved by ${interaction.user.username})`,
-              });
-              const newCount = currentFilter.length + 1;
-              const oldCount = currentFilter.length;
-              systemMessage = `[System: Moderator approved. Keyword "${pending.keyword}" was successfully added to automod rule "${pending.ruleName}" (${oldCount} → ${newCount} keywords). The rule is now live.]`;
-              logger.info({ ruleId: pending.ruleId, keyword: pending.keyword, guildId }, "automod keyword added");
-            }
-          } catch (err) {
-            systemMessage = `[System: Moderator approved, but the Discord API call failed: ${err}. The keyword was NOT added. You may try again.]`;
-            logger.error({ err, ruleId: pending.ruleId, keyword: pending.keyword }, "automod edit failed");
-          }
-        } else {
-          systemMessage = `[System: Moderator rejected the keyword addition. "${pending.keyword}" was NOT added to rule "${pending.ruleName}".]`;
-        }
-
-        const { triggeringUser, currentChannel } = await buildInteractionContext(interaction as ButtonInteraction, thread, guildConfig);
-
-        await thread.sendTyping();
-        const typingInterval = setInterval(() => thread.sendTyping(), 8000);
-        const toolTracker = new ToolProgressTracker(thread);
-        threadCancellations.delete(threadId);
-        threadTriggeringUsers.set(threadId, interaction.user.id);
-
-        let agentResult: AgentLoopResult | undefined;
+      if (choice === "approve") {
         try {
-          agentResult = await runAgentLoop(
-            systemMessage,
-            existingHistory,
-            guildId,
-            client as Client<true>,
-            buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
-              threadContext: initialThreadContext ?? undefined,
-              triggeringUser,
-              currentChannel,
-              serverContext,
-              memoryIndex,
-              memoryCount,
-            }),
-          );
+          const guild = await client.guilds.fetch(interaction.guildId!);
+          // Re-fetch to get current live state — avoid overwriting concurrent changes
+          const currentRule = await guild.autoModerationRules.fetch({ autoModerationRule: pending.ruleId, force: true });
+          const currentFilter = [...(currentRule.triggerMetadata.keywordFilter ?? [])];
+          const currentRegex = [...(currentRule.triggerMetadata.regexPatterns ?? [])];
+          const currentAllow = [...(currentRule.triggerMetadata.allowList ?? [])];
 
-          await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
+          if (currentFilter.some(k => k.toLowerCase() === pending.keyword.toLowerCase())) {
+            systemMessage = `[System: Moderator approved, but "${pending.keyword}" is already in rule "${pending.ruleName}" (added by someone else in the meantime). No changes made.]`;
+          } else {
+            await guild.autoModerationRules.edit(pending.ruleId, {
+              triggerMetadata: {
+                keywordFilter: [...currentFilter, pending.keyword],
+                regexPatterns: currentRegex,
+                allowList: currentAllow,
+              },
+              reason: `Added keyword "${pending.keyword}" via sushii-agent (approved by ${interaction.user.username})`,
+            });
+            const newCount = currentFilter.length + 1;
+            const oldCount = currentFilter.length;
+            systemMessage = `[System: Moderator approved. Keyword "${pending.keyword}" was successfully added to automod rule "${pending.ruleName}" (${oldCount} → ${newCount} keywords). The rule is now live.]`;
+            logger.info({ ruleId: pending.ruleId, keyword: pending.keyword, guildId: interaction.guildId }, "automod keyword added");
+          }
         } catch (err) {
-          logger.error({ err }, "Error resuming loop after automod approval");
-          await thread.send("An error occurred while processing the approval. Check the logs.").catch(() => {});
-        } finally {
-          await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
+          systemMessage = `[System: Moderator approved, but the Discord API call failed: ${err}. The keyword was NOT added. You may try again.]`;
+          logger.error({ err, ruleId: pending.ruleId, keyword: pending.keyword }, "automod edit failed");
         }
-      });
+      } else {
+        systemMessage = `[System: Moderator rejected the keyword addition. "${pending.keyword}" was NOT added to rule "${pending.ruleName}".]`;
+      }
+
+      await resumeAgentAfterApproval(interaction as ButtonInteraction, threadId, systemMessage);
     } catch (err) {
       logger.error({ err }, "Unexpected error in automod approval handler");
+    }
+    return;
+  }
+
+  // Handle automod keyword deletion approval buttons: amkd:{threadId}:{approve|reject}
+  if (interaction.customId.startsWith(AUTOMOD_DEL_BTN_PREFIX)) {
+    const rest = interaction.customId.slice(AUTOMOD_DEL_BTN_PREFIX.length);
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon === -1) return;
+    const threadId = rest.slice(0, lastColon);
+    const choice = rest.slice(lastColon + 1); // "approve" | "reject"
+
+    const pending = pendingAutomodDeletions.get(threadId);
+    if (!pending) {
+      await interaction.reply({ content: "This approval has expired — the bot was restarted. Please re-ask the agent to remove the keyword.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (interaction.user.id !== pending.triggeredByUserId) {
+      await interaction.reply({
+        content: `Only <@${pending.triggeredByUserId}> can respond to this approval.`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    pendingAutomodDeletions.delete(threadId);
+    await interaction.deferUpdate();
+    await disableAutomodActionButtons(interaction as ButtonInteraction, "remove", pending.ruleName, pending.keyword, choice === "approve");
+
+    try {
+      let systemMessage: string;
+
+      if (choice === "approve") {
+        try {
+          const guild = await client.guilds.fetch(interaction.guildId!);
+          // Re-fetch to get current live state — avoid overwriting concurrent changes
+          const currentRule = await guild.autoModerationRules.fetch({ autoModerationRule: pending.ruleId, force: true });
+          const currentFilter = [...(currentRule.triggerMetadata.keywordFilter ?? [])];
+          const currentRegex = [...(currentRule.triggerMetadata.regexPatterns ?? [])];
+          const currentAllow = [...(currentRule.triggerMetadata.allowList ?? [])];
+
+          const existingIdx = currentFilter.findIndex(k => k.toLowerCase() === pending.keyword.toLowerCase());
+          if (existingIdx === -1) {
+            systemMessage = `[System: Moderator approved, but "${pending.keyword}" is no longer in rule "${pending.ruleName}" (already removed by someone else in the meantime). No changes made.]`;
+          } else {
+            const newFilter = currentFilter.filter((_, i) => i !== existingIdx);
+            await guild.autoModerationRules.edit(pending.ruleId, {
+              triggerMetadata: {
+                keywordFilter: newFilter,
+                regexPatterns: currentRegex,
+                allowList: currentAllow,
+              },
+              reason: `Removed keyword "${pending.keyword}" via sushii-agent (approved by ${interaction.user.username})`,
+            });
+            const oldCount = currentFilter.length;
+            const newCount = newFilter.length;
+            systemMessage = `[System: Moderator approved. Keyword "${pending.keyword}" was successfully removed from automod rule "${pending.ruleName}" (${oldCount} → ${newCount} keywords). The rule is now live.]`;
+            logger.info({ ruleId: pending.ruleId, keyword: pending.keyword, guildId: interaction.guildId }, "automod keyword removed");
+          }
+        } catch (err) {
+          systemMessage = `[System: Moderator approved, but the Discord API call failed: ${err}. The keyword was NOT removed. You may try again.]`;
+          logger.error({ err, ruleId: pending.ruleId, keyword: pending.keyword }, "automod delete edit failed");
+        }
+      } else {
+        systemMessage = `[System: Moderator rejected the keyword removal. "${pending.keyword}" was NOT removed from rule "${pending.ruleName}".]`;
+      }
+
+      await resumeAgentAfterApproval(interaction as ButtonInteraction, threadId, systemMessage);
+    } catch (err) {
+      logger.error({ err }, "Unexpected error in automod deletion approval handler");
     }
     return;
   }
@@ -850,7 +884,7 @@ async function handleAgentResult(
   threadContext: string | null,
   triggeredByUserId: string,
 ): Promise<void> {
-  const { response, updatedHistory, pendingQuestion, pendingAutomodApproval, cancelled } = agentResult;
+  const { response, updatedHistory, pendingQuestion, pendingAutomodApproval, pendingAutomodDeletion, cancelled } = agentResult;
 
   if (cancelled) {
     saveConversation(threadId, guildId, updatedHistory, threadContext);
@@ -864,6 +898,10 @@ async function handleAgentResult(
     saveConversation(threadId, guildId, updatedHistory, threadContext);
     pendingAutomodApprovals.set(threadId, { ...pendingAutomodApproval, triggeredByUserId });
     await sendAutomodApprovalMessage(thread, pendingAutomodApproval);
+  } else if (pendingAutomodDeletion) {
+    saveConversation(threadId, guildId, updatedHistory, threadContext);
+    pendingAutomodDeletions.set(threadId, { ...pendingAutomodDeletion, triggeredByUserId });
+    await sendAutomodDeletionMessage(thread, pendingAutomodDeletion);
   } else {
     const expanded = expandMessageLinks(response, guildId);
     const componentMsgs = buildComponentMessages(expanded);
@@ -923,6 +961,59 @@ async function cleanupAgentRun(
     m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
   }
   threadMidLoopQueues.delete(threadId);
+}
+
+async function resumeAgentAfterApproval(
+  interaction: ButtonInteraction,
+  threadId: string,
+  systemMessage: string,
+): Promise<void> {
+  await withThreadLock(threadId, async () => {
+    const thread = await client.channels.fetch(threadId);
+    if (!thread?.isThread()) return;
+
+    const guildId = thread.guildId;
+    const guildConfig = config.guildConfig[guildId];
+    if (!guildConfig) return;
+
+    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+    const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
+    const serverContext = getServerContext(guildId);
+    const memoryIndex = listMemoryTitles(guildId);
+    const memoryCount = getMemoryCount(guildId);
+
+    const { triggeringUser, currentChannel } = await buildInteractionContext(interaction, thread, guildConfig);
+
+    await thread.sendTyping();
+    const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+    const toolTracker = new ToolProgressTracker(thread);
+    threadCancellations.delete(threadId);
+    threadTriggeringUsers.set(threadId, interaction.user.id);
+
+    let agentResult: AgentLoopResult | undefined;
+    try {
+      agentResult = await runAgentLoop(
+        systemMessage,
+        existingHistory,
+        guildId,
+        client as Client<true>,
+        buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
+          threadContext: initialThreadContext ?? undefined,
+          triggeringUser,
+          currentChannel,
+          serverContext,
+          memoryIndex,
+          memoryCount,
+        }),
+      );
+      await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
+    } catch (err) {
+      logger.error({ err }, "Error resuming loop after approval");
+      await thread.send("An error occurred while processing the approval. Check the logs.").catch(() => {});
+    } finally {
+      await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
+    }
+  });
 }
 
 function buildLoopOptions(
@@ -985,19 +1076,34 @@ function makeDequeueMessages(threadId: string): () => { query: string; mentioned
   };
 }
 
-function buildNeighborContext(existingKeywords: string[], newKeyword: string, windowSize = 5): string {
+/**
+ * Build an alphabetical neighbor context string for an automod keyword.
+ * For additions (isRemoval=false): inserts newKeyword into sorted existing list, marks it with arrows.
+ * For removals (isRemoval=true): newKeywordFilter already excludes the keyword; keyword is shown with strikethrough in-place.
+ */
+function buildNeighborContext(
+  existingKeywords: string[],
+  keyword: string,
+  opts?: { windowSize?: number; mode?: "add" | "remove" },
+): string {
+  const windowSize = opts?.windowSize ?? 5;
+  const isRemoval = opts?.mode === "remove";
   const sortKey = (k: string) => k.replace(/^\*+/, "").replace(/\*+$/, "").toLowerCase();
   const sorted = [...existingKeywords].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
-  const insertIdx = sorted.findIndex(k => sortKey(k) > sortKey(newKeyword));
+  // Find where the keyword sits (or would sit) in sorted order
+  const insertIdx = sorted.findIndex(k => sortKey(k) > sortKey(keyword));
   const insertAt = insertIdx === -1 ? sorted.length : insertIdx;
-  const withNew = [...sorted.slice(0, insertAt), newKeyword, ...sorted.slice(insertAt)];
+  const withKeyword = [...sorted.slice(0, insertAt), keyword, ...sorted.slice(insertAt)];
   const start = Math.max(0, insertAt - windowSize);
-  const end = Math.min(withNew.length, insertAt + windowSize + 1);
-  const neighbors = withNew.slice(start, end);
-  const parts = neighbors.map((k, i) =>
-    start + i === insertAt ? `**→ ${k} ←**` : `\`${k}\``
-  );
-  return (start > 0 ? "... " : "") + parts.join(", ") + (end < withNew.length ? " ..." : "");
+  const end = Math.min(withKeyword.length, insertAt + windowSize + 1);
+  const neighbors = withKeyword.slice(start, end);
+  const parts = neighbors.map((k, i) => {
+    if (start + i === insertAt) {
+      return isRemoval ? `~~\`${k}\`~~` : `**→ ${k} ←**`;
+    }
+    return `\`${k}\``;
+  });
+  return (start > 0 ? "... " : "") + parts.join(", ") + (end < withKeyword.length ? " ..." : "");
 }
 
 async function sendScanApprovalMessage(thread: ThreadChannel, guildId: string): Promise<void> {
@@ -1068,19 +1174,29 @@ async function disableQuestionButtons(
   }
 }
 
-async function sendAutomodApprovalMessage(thread: ThreadChannel, approval: PendingAutomodApproval): Promise<void> {
+async function sendAutomodActionMessage(
+  thread: ThreadChannel,
+  params: {
+    mode: "add" | "remove";
+    btnPrefix: string;
+    ruleName: string;
+    ruleId: string;
+    keyword: string;
+    oldCount: number;
+    newCount: number;
+    neighborStr: string;
+  },
+): Promise<void> {
   const threadId = thread.id;
-  const { ruleName, ruleId, keyword, newKeywordFilter } = approval;
-  const oldCount = newKeywordFilter.length - 1;
-  const newCount = newKeywordFilter.length;
-
-  // Build alphabetical neighbor context (±5 around insertion point, stripping leading * for sort key)
-  const existing = newKeywordFilter.filter(k => k !== keyword);
-  const neighborStr = buildNeighborContext(existing, keyword);
+  const { mode, btnPrefix, ruleName, ruleId, keyword, oldCount, newCount, neighborStr } = params;
+  const title = mode === "add"
+    ? "🔒 **Automod keyword addition — awaiting approval**"
+    : "🔒 **Automod keyword removal — awaiting approval**";
+  const actionLabel = mode === "add" ? "Keyword to add" : "Keyword to remove";
 
   const bodyLines = [
     `**Rule:** ${ruleName} (\`${ruleId}\`)`,
-    `**Keyword to add:** \`${keyword}\``,
+    `**${actionLabel}:** \`${keyword}\``,
     `**Keywords:** ${oldCount} → ${newCount}`,
     "",
     `Alphabetical neighbors:`,
@@ -1089,32 +1205,82 @@ async function sendAutomodApprovalMessage(thread: ThreadChannel, approval: Pendi
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${AUTOMOD_BTN_PREFIX}${threadId}:approve`)
+      .setCustomId(`${btnPrefix}${threadId}:approve`)
       .setLabel("✅ Approve")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`${AUTOMOD_BTN_PREFIX}${threadId}:reject`)
+      .setCustomId(`${btnPrefix}${threadId}:reject`)
       .setLabel("❌ Reject")
       .setStyle(ButtonStyle.Danger),
   );
 
   const container = new ContainerBuilder()
-    .addTextDisplayComponents(new TextDisplayBuilder({ content: `🔒 **Automod keyword addition — awaiting approval**\n\n${bodyLines.join("\n")}` }))
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: `${title}\n\n${bodyLines.join("\n")}` }))
     .addActionRowComponents(row);
 
   await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
 }
 
-async function disableAutomodApprovalButtons(interaction: ButtonInteraction, approval: PendingAutomodApproval, approved: boolean): Promise<void> {
+async function sendAutomodApprovalMessage(thread: ThreadChannel, approval: PendingAutomodApproval): Promise<void> {
+  const oldCount = approval.newKeywordFilter.length - 1;
+  const newCount = approval.newKeywordFilter.length;
+  const existing = approval.newKeywordFilter.filter(k => k !== approval.keyword);
+  const neighborStr = buildNeighborContext(existing, approval.keyword);
+  await sendAutomodActionMessage(thread, {
+    mode: "add",
+    btnPrefix: AUTOMOD_BTN_PREFIX,
+    ruleName: approval.ruleName,
+    ruleId: approval.ruleId,
+    keyword: approval.keyword,
+    oldCount,
+    newCount,
+    neighborStr,
+  });
+}
+
+async function disableAutomodActionButtons(
+  interaction: ButtonInteraction,
+  mode: "add" | "remove",
+  ruleName: string,
+  keyword: string,
+  approved: boolean,
+): Promise<void> {
   try {
-    const label = approved ? "✅ Approved" : "❌ Rejected";
+    let label: string;
+    if (mode === "add") {
+      label = approved
+        ? `✅ Approved: added \`${keyword}\` to "${ruleName}"`
+        : `❌ Rejected: \`${keyword}\` not added to "${ruleName}"`;
+    } else {
+      label = approved
+        ? `✅ Approved: removed \`${keyword}\` from "${ruleName}"`
+        : `❌ Rejected: \`${keyword}\` kept in "${ruleName}"`;
+    }
     const container = new ContainerBuilder()
-      .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# ${label}: \`${approval.keyword}\` → "${approval.ruleName}"` }));
+      .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# ${label}` }));
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
     // Non-critical
   }
 }
+
+async function sendAutomodDeletionMessage(thread: ThreadChannel, deletion: PendingAutomodDeletion): Promise<void> {
+  const oldCount = deletion.newKeywordFilter.length + 1;
+  const newCount = deletion.newKeywordFilter.length;
+  const neighborStr = buildNeighborContext(deletion.newKeywordFilter, deletion.keyword, { mode: "remove" });
+  await sendAutomodActionMessage(thread, {
+    mode: "remove",
+    btnPrefix: AUTOMOD_DEL_BTN_PREFIX,
+    ruleName: deletion.ruleName,
+    ruleId: deletion.ruleId,
+    keyword: deletion.keyword,
+    oldCount,
+    newCount,
+    neighborStr,
+  });
+}
+
+
 
 function appendFeedbackButtons(componentMsgs: MessageCreateOptions[], threadId: string): void {
   if (componentMsgs.length === 0) return;

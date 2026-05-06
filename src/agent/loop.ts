@@ -6,7 +6,7 @@ import { openaiProvider } from "./client.ts";
 import { config } from "../config.ts";
 import { getLogger } from "../logger.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
-import { runTools, type UserNames, type PendingQuestion, type PendingAutomodApproval } from "./runner.ts";
+import { runTools, type UserNames, type PendingQuestion, type PendingAutomodApproval, type PendingAutomodDeletion } from "./runner.ts";
 
 const logger = getLogger("agent");
 
@@ -103,7 +103,10 @@ Do NOT speculatively suggest automod additions during a general user investigati
 4. End with: "Say 'add it' to apply."
 
 **When to call \`add_automod_keyword\`:**
-Only when the moderator explicitly asks to add a keyword (e.g. "add that", "add \`*word*\` to the filter", "yes add it"). Do not call the tool as part of surfacing a suggestion. When you do call it, do NOT use \`ask_question\` first — the tool triggers an approval gate automatically.`;
+Only when the moderator explicitly asks to add a keyword (e.g. "add that", "add \`*word*\` to the filter", "yes add it"). Do not call the tool as part of surfacing a suggestion. When you do call it, do NOT use \`ask_question\` first — the tool triggers an approval gate automatically.
+
+**When to call \`delete_automod_keyword\`:**
+Only when the moderator explicitly asks to remove a keyword (e.g. "remove that", "delete \`*word*\` from the filter"). The tool returns an error immediately if the keyword is not found — use \`list_automod_rules\` first to confirm the exact keyword string. When you do call it, do NOT use \`ask_question\` first — the tool triggers an approval gate automatically.`;
 
 const MAX_ITERATIONS = 20;
 
@@ -243,10 +246,11 @@ export interface AgentLoopResult {
   updatedHistory: ModelMessage[];
   pendingQuestion?: PendingQuestion;
   pendingAutomodApproval?: PendingAutomodApproval;
+  pendingAutomodDeletion?: PendingAutomodDeletion;
   cancelled: boolean;
 }
 
-export type { PendingAutomodApproval };
+export type { PendingAutomodApproval, PendingAutomodDeletion };
 
 export async function runAgentLoop(
   query: string,
@@ -399,7 +403,7 @@ export async function runAgentLoop(
           // Add assistant message with tool calls to history (preserves reasoning_content for thinking models)
           messages.push(...result.response.messages);
 
-          const { toolMessage, discoveredUsers, pendingImages, pendingQuestion, pendingAutomodApproval } = await tracer.startActiveSpan(
+          const { toolMessage, discoveredUsers, pendingImages, pendingQuestion, pendingAutomodApproval, pendingAutomodDeletion } = await tracer.startActiveSpan(
             "agent.tool_calls",
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
@@ -425,6 +429,13 @@ export async function runAgentLoop(
             logger.info({ ruleId: pendingAutomodApproval.ruleId, keyword: pendingAutomodApproval.keyword }, "pausing loop for automod keyword approval");
             span.setAttribute("agent.paused_for_automod_approval", true);
             return { response: "", updatedHistory: messages.slice(1), pendingAutomodApproval, cancelled: false };
+          }
+
+          // delete_automod_keyword — pause loop and return to let the bot send deletion approval buttons
+          if (pendingAutomodDeletion) {
+            logger.info({ ruleId: pendingAutomodDeletion.ruleId, keyword: pendingAutomodDeletion.keyword }, "pausing loop for automod keyword deletion approval");
+            span.setAttribute("agent.paused_for_automod_deletion", true);
+            return { response: "", updatedHistory: messages.slice(1), pendingAutomodDeletion, cancelled: false };
           }
 
           if (pendingImages.length > 0) {

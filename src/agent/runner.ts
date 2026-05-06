@@ -19,6 +19,7 @@ import { searchGuildMessages, type SearchGuildMessagesResult } from "../tools/se
 import { getGuildInfo, type GuildInfo } from "../tools/getGuildInfo.ts";
 import { listAutomodRules, type AutomodRuleInfo } from "../tools/listAutomodRules.ts";
 import { addAutomodKeyword, type PendingAutomodApproval } from "../tools/addAutomodKeyword.ts";
+import { deleteAutomodKeyword, type PendingAutomodDeletion } from "../tools/deleteAutomodKeyword.ts";
 import type { MemoryRow } from "../db/memory.ts";
 import { getLogger } from "../logger.ts";
 
@@ -85,7 +86,8 @@ type ToolResult =
   | { tool: "memory"; data: MemoryData }
   | { tool: "get_guild_info"; data: GuildInfo }
   | { tool: "list_automod_rules"; data: AutomodRuleInfo[] }
-  | { tool: "pending_automod_keyword_add"; data: PendingAutomodApproval };
+  | { tool: "pending_automod_keyword_add"; data: PendingAutomodApproval }
+  | { tool: "pending_automod_keyword_delete"; data: PendingAutomodDeletion };
 
 function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
@@ -350,10 +352,11 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
         .join("\n\n");
     }
 
-    // ask_question, inspect_image, and pending_automod_keyword_add are handled before formatToolResult is called
+    // ask_question, inspect_image, and pending approvals are handled before formatToolResult is called
     case "ask_question":
     case "inspect_image":
     case "pending_automod_keyword_add":
+    case "pending_automod_keyword_delete":
       logger.warn({ tool: result.tool }, "formatToolResult called for tool that should have been handled earlier");
       return "";
   }
@@ -410,9 +413,10 @@ export interface RunToolsResult {
   pendingImages: string[];
   pendingQuestion?: PendingQuestion;
   pendingAutomodApproval?: PendingAutomodApproval;
+  pendingAutomodDeletion?: PendingAutomodDeletion;
 }
 
-export type { PendingAutomodApproval };
+export type { PendingAutomodApproval, PendingAutomodDeletion };
 
 export async function runTools(
   toolCalls: AiToolCall[],
@@ -570,6 +574,16 @@ export async function runTools(
             result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_add", data: raw };
             break;
           }
+          case "delete_automod_keyword": {
+            const raw = await deleteAutomodKeyword({
+              guildId,
+              ruleId: input.rule_id as string,
+              keyword: input.keyword as string,
+              client,
+            });
+            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_delete", data: raw };
+            break;
+          }
           case "ask_question":
             result = { tool: "ask_question", question: input.question as string, choices: input.choices as string[] };
             break;
@@ -592,6 +606,8 @@ export async function runTools(
   let askQuestionToolCallId: string | undefined;
   let pendingAutomodApproval: PendingAutomodApproval | undefined;
   let automodApprovalToolCallId: string | undefined;
+  let pendingAutomodDeletion: PendingAutomodDeletion | undefined;
+  let automodDeletionToolCallId: string | undefined;
 
   for (const { call, result } of rawResults) {
     if (result.tool === "ask_question") {
@@ -614,6 +630,18 @@ export async function runTools(
         toolCallId: call.toolCallId,
         toolName: call.toolName,
         output: { type: "text", value: `Keyword addition queued for moderator approval. The moderator will see a confirmation prompt showing the change to rule "${result.data.ruleName}".` },
+      });
+      continue;
+    }
+
+    if (result.tool === "pending_automod_keyword_delete") {
+      pendingAutomodDeletion = result.data;
+      automodDeletionToolCallId = call.toolCallId;
+      toolResultParts.push({
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: { type: "text", value: `Keyword deletion queued for moderator approval. The moderator will see a confirmation prompt showing the removal from rule "${result.data.ruleName}".` },
       });
       continue;
     }
@@ -646,6 +674,9 @@ export async function runTools(
   if (enforceCalledAlone(pendingAutomodApproval, automodApprovalToolCallId, "add_automod_keyword", toolResultParts)) {
     pendingAutomodApproval = undefined;
   }
+  if (enforceCalledAlone(pendingAutomodDeletion, automodDeletionToolCallId, "delete_automod_keyword", toolResultParts)) {
+    pendingAutomodDeletion = undefined;
+  }
 
-  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages, pendingQuestion, pendingAutomodApproval };
+  return { toolMessage: { role: "tool", content: toolResultParts }, discoveredUsers, pendingImages, pendingQuestion, pendingAutomodApproval, pendingAutomodDeletion };
 }
