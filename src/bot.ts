@@ -676,7 +676,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     pendingAutomodApprovals.delete(threadId);
     await interaction.deferUpdate();
-    await disableAutomodActionButtons(interaction as ButtonInteraction, "add", pending.ruleName, pending.keyword, choice === "approve");
+    const btn = interaction as ButtonInteraction;
 
     try {
       let systemMessage: string;
@@ -691,6 +691,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           const currentAllow = [...(currentRule.triggerMetadata.allowList ?? [])];
 
           if (currentFilter.some(k => k.toLowerCase() === pending.keyword.toLowerCase())) {
+            await setAutomodStatus(btn, `⚠️ Already exists — \`${pending.keyword}\` was already in "${pending.ruleName}" (added by someone else). No changes made.`);
             systemMessage = `[System: Moderator approved, but "${pending.keyword}" is already in rule "${pending.ruleName}" (added by someone else in the meantime). No changes made.]`;
           } else {
             await guild.autoModerationRules.edit(pending.ruleId, {
@@ -703,18 +704,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
             const newCount = currentFilter.length + 1;
             const oldCount = currentFilter.length;
+            await setAutomodStatus(btn, `✅ Added \`${pending.keyword}\` to "${pending.ruleName}" (${oldCount} → ${newCount} keywords)`);
             systemMessage = `[System: Moderator approved. Keyword "${pending.keyword}" was successfully added to automod rule "${pending.ruleName}" (${oldCount} → ${newCount} keywords). The rule is now live.]`;
             logger.info({ ruleId: pending.ruleId, keyword: pending.keyword, guildId: interaction.guildId }, "automod keyword added");
           }
         } catch (err) {
+          await setAutomodStatus(btn, `❌ Failed to add \`${pending.keyword}\` to "${pending.ruleName}" — Discord API error`);
           systemMessage = `[System: Moderator approved, but the Discord API call failed: ${err}. The keyword was NOT added. You may try again.]`;
           logger.error({ err, ruleId: pending.ruleId, keyword: pending.keyword }, "automod edit failed");
         }
       } else {
+        await setAutomodStatus(btn, `❌ Rejected — \`${pending.keyword}\` not added to "${pending.ruleName}"`);
         systemMessage = `[System: Moderator rejected the keyword addition. "${pending.keyword}" was NOT added to rule "${pending.ruleName}".]`;
       }
 
-      await resumeAgentAfterApproval(interaction as ButtonInteraction, threadId, systemMessage);
+      await resumeAgentAfterApproval(btn, threadId, systemMessage);
     } catch (err) {
       logger.error({ err }, "Unexpected error in automod approval handler");
     }
@@ -745,7 +749,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     pendingAutomodDeletions.delete(threadId);
     await interaction.deferUpdate();
-    await disableAutomodActionButtons(interaction as ButtonInteraction, "remove", pending.ruleName, pending.keyword, choice === "approve");
+    const btn = interaction as ButtonInteraction;
 
     try {
       let systemMessage: string;
@@ -761,6 +765,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
           const existingIdx = currentFilter.findIndex(k => k.toLowerCase() === pending.keyword.toLowerCase());
           if (existingIdx === -1) {
+            await setAutomodStatus(btn, `⚠️ Already removed — \`${pending.keyword}\` was already gone from "${pending.ruleName}" (removed by someone else). No changes made.`);
             systemMessage = `[System: Moderator approved, but "${pending.keyword}" is no longer in rule "${pending.ruleName}" (already removed by someone else in the meantime). No changes made.]`;
           } else {
             const newFilter = currentFilter.filter((_, i) => i !== existingIdx);
@@ -774,18 +779,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
             const oldCount = currentFilter.length;
             const newCount = newFilter.length;
+            await setAutomodStatus(btn, `✅ Removed \`${pending.keyword}\` from "${pending.ruleName}" (${oldCount} → ${newCount} keywords)`);
             systemMessage = `[System: Moderator approved. Keyword "${pending.keyword}" was successfully removed from automod rule "${pending.ruleName}" (${oldCount} → ${newCount} keywords). The rule is now live.]`;
             logger.info({ ruleId: pending.ruleId, keyword: pending.keyword, guildId: interaction.guildId }, "automod keyword removed");
           }
         } catch (err) {
+          await setAutomodStatus(btn, `❌ Failed to remove \`${pending.keyword}\` from "${pending.ruleName}" — Discord API error`);
           systemMessage = `[System: Moderator approved, but the Discord API call failed: ${err}. The keyword was NOT removed. You may try again.]`;
           logger.error({ err, ruleId: pending.ruleId, keyword: pending.keyword }, "automod delete edit failed");
         }
       } else {
+        await setAutomodStatus(btn, `❌ Rejected — \`${pending.keyword}\` kept in "${pending.ruleName}"`);
         systemMessage = `[System: Moderator rejected the keyword removal. "${pending.keyword}" was NOT removed from rule "${pending.ruleName}".]`;
       }
 
-      await resumeAgentAfterApproval(interaction as ButtonInteraction, threadId, systemMessage);
+      await resumeAgentAfterApproval(btn, threadId, systemMessage);
     } catch (err) {
       logger.error({ err }, "Unexpected error in automod deletion approval handler");
     }
@@ -1104,13 +1112,18 @@ function buildNeighborContext(
   const start = Math.max(0, insertAt - windowSize);
   const end = Math.min(withKeyword.length, insertAt + windowSize + 1);
   const neighbors = withKeyword.slice(start, end);
-  const parts = neighbors.map((k, i) => {
+  const lines: string[] = [];
+  if (start > 0) lines.push("...");
+  for (let i = 0; i < neighbors.length; i++) {
+    const k = neighbors[i];
     if (start + i === insertAt) {
-      return isRemoval ? `~~\`${k}\`~~` : `**→ ${k} ←**`;
+      lines.push(isRemoval ? `- ${k}` : `+ ${k}`);
+    } else {
+      lines.push(`  ${k}`);
     }
-    return `\`${k}\``;
-  });
-  return (start > 0 ? "... " : "") + parts.join(", ") + (end < withKeyword.length ? " ..." : "");
+  }
+  if (end < withKeyword.length) lines.push("...");
+  return `\`\`\`diff\n${lines.join("\n")}\n\`\`\``;
 }
 
 async function sendScanApprovalMessage(thread: ThreadChannel, guildId: string): Promise<void> {
@@ -1206,7 +1219,7 @@ async function sendAutomodActionMessage(
     `**${actionLabel}:** \`${keyword}\``,
     `**Keywords:** ${oldCount} → ${newCount}`,
     "",
-    `Alphabetical neighbors:`,
+    `Nearby keywords in rule:`,
     neighborStr,
   ];
 
@@ -1247,24 +1260,11 @@ async function sendAutomodApprovalMessage(thread: ThreadChannel, approval: Pendi
   });
 }
 
-async function disableAutomodActionButtons(
+async function setAutomodStatus(
   interaction: ButtonInteraction,
-  mode: "add" | "remove",
-  ruleName: string,
-  keyword: string,
-  approved: boolean,
+  label: string,
 ): Promise<void> {
   try {
-    let label: string;
-    if (mode === "add") {
-      label = approved
-        ? `✅ Approved: added \`${keyword}\` to "${ruleName}"`
-        : `❌ Rejected: \`${keyword}\` not added to "${ruleName}"`;
-    } else {
-      label = approved
-        ? `✅ Approved: removed \`${keyword}\` from "${ruleName}"`
-        : `❌ Rejected: \`${keyword}\` kept in "${ruleName}"`;
-    }
     const container = new ContainerBuilder()
       .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# ${label}` }));
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
