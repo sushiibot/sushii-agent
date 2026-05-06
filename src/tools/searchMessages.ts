@@ -35,31 +35,9 @@ export function searchMessages(args: SearchMessagesArgs): MessageRow[] | { error
   const limit = Math.min(args.limit ?? 20, 100);
 
   if (args.query) {
-    // Auto-prefix-wrap bare terms so "shelf" also matches "shelved", "shelving" etc.
-    // Only applies when the query has no FTS5 operators or special syntax — if the
-    // caller already used *, OR, NEAR, NOT, or quotes, leave it as-is.
-    const hasFtsOperators = /[*"()]|\bOR\b|\bAND\b|\bNOT\b|\bNEAR\b/i.test(args.query);
-    let ftsQuery: string;
-    if (hasFtsOperators) {
-      ftsQuery = args.query;
-    } else {
-      // Strip common stop words — they produce enormous FTS5 posting lists and make
-      // multi-word queries pathologically slow (e.g. "my*" matches millions of rows).
-      // If stripping leaves nothing, fall back to the original terms.
-      const STOP_WORDS = new Set([
-        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "was", "are", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "my", "your", "his",
-        "her", "its", "our", "their", "this", "that", "i", "you", "he", "she",
-        "it", "we", "they", "me", "him", "us", "them", "what", "who", "not",
-        "no", "so", "if", "as", "up", "can", "will", "just", "all", "any",
-      ]);
-      const terms = args.query.trim().split(/\s+/);
-      const significant = terms.filter((t) => !STOP_WORDS.has(t.toLowerCase()));
-      const effective = significant.length > 0 ? significant : terms;
-      // Only prefix-wrap tokens ≥3 chars — short tokens as exact-match are much faster
-      ftsQuery = effective.map((t) => (t.length >= 3 ? `${t}*` : t)).join(" ");
-    }
+    // Pass the query through as-is — the LLM controls wildcard syntax explicitly.
+    // Use word* for prefix matching, *word* for substring, "phrase" for exact phrases.
+    const ftsQuery = args.query;
 
     // FTS path — ranked by relevance
     let sql = `
