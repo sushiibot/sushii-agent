@@ -1,5 +1,5 @@
 import type { Client } from "discord.js";
-import { AutoModerationRuleTriggerType } from "discord-api-types/v10";
+import { fetchAutomodRule } from "./automodUtils.ts";
 
 export interface PendingAutomodDeletion {
   ruleId: string;
@@ -24,45 +24,25 @@ export async function deleteAutomodKeyword({
   keyword: string;
   client: Client<true>;
 }): Promise<PendingAutomodDeletion | { error: string }> {
-  try {
-    const guild = await client.guilds.fetch(guildId);
+  const ruleData = await fetchAutomodRule({ guildId, ruleId, client });
+  if ("error" in ruleData) return ruleData;
 
-    let rule;
-    try {
-      rule = await guild.autoModerationRules.fetch({ autoModerationRule: ruleId, force: true });
-    } catch {
-      return { error: `Rule ${ruleId} not found or bot lacks MANAGE_GUILD permission.` };
-    }
+  const { ruleName, keywordFilter, regexPatterns, allowList } = ruleData;
 
-    const supportedTypes = [
-      AutoModerationRuleTriggerType.Keyword,
-      AutoModerationRuleTriggerType.MemberProfile,
-    ];
-    if (!supportedTypes.includes(rule.triggerType as AutoModerationRuleTriggerType)) {
-      return { error: `Rule "${rule.name}" has trigger type ${rule.triggerType} which does not support keyword_filter. Only KEYWORD and MEMBER_PROFILE rules support this.` };
-    }
-
-    const currentFilter = [...(rule.triggerMetadata.keywordFilter ?? [])];
-    const regexPatterns = [...(rule.triggerMetadata.regexPatterns ?? [])];
-    const allowList = [...(rule.triggerMetadata.allowList ?? [])];
-
-    const normalizedTarget = keyword.toLowerCase();
-    const existing = currentFilter.find((k) => k.toLowerCase() === normalizedTarget);
-    if (!existing) {
-      return { error: `Keyword "${keyword}" was not found in rule "${rule.name}". Use list_automod_rules to see current keywords.` };
-    }
-
-    const newKeywordFilter = currentFilter.filter((k) => k !== existing);
-
-    return {
-      ruleId: rule.id,
-      ruleName: rule.name,
-      keyword: existing, // use the exact casing from the rule
-      newKeywordFilter,
-      regexPatterns,
-      allowList,
-    };
-  } catch (err) {
-    return { error: `Failed to prepare automod keyword deletion: ${err}` };
+  const normalizedTarget = keyword.toLowerCase();
+  const existing = keywordFilter.find((k) => k.toLowerCase() === normalizedTarget);
+  if (!existing) {
+    return { error: `Keyword "${keyword}" was not found in rule "${ruleName}". Use list_automod_rules to see current keywords.` };
   }
+
+  const newKeywordFilter = keywordFilter.filter((k) => k !== existing);
+
+  return {
+    ruleId: ruleData.ruleId,
+    ruleName,
+    keyword: existing, // use the exact casing from the rule
+    newKeywordFilter,
+    regexPatterns,
+    allowList,
+  };
 }

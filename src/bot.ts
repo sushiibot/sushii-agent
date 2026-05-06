@@ -1078,8 +1078,14 @@ function makeDequeueMessages(threadId: string): () => { query: string; mentioned
 
 /**
  * Build an alphabetical neighbor context string for an automod keyword.
- * For additions (isRemoval=false): inserts newKeyword into sorted existing list, marks it with arrows.
- * For removals (isRemoval=true): newKeywordFilter already excludes the keyword; keyword is shown with strikethrough in-place.
+ *
+ * For additions (mode="add"): `existingKeywords` is the pre-addition list.
+ * The new keyword is inserted at its sorted position and marked with arrows.
+ *
+ * For removals (mode="remove"): `existingKeywords` is the post-removal list
+ * (the keyword has already been removed). The keyword is temporarily re-inserted
+ * at its sorted position and marked with strikethrough, so the moderator can see
+ * exactly where it sat among its neighbors.
  */
 function buildNeighborContext(
   existingKeywords: string[],
@@ -1093,6 +1099,7 @@ function buildNeighborContext(
   // Find where the keyword sits (or would sit) in sorted order
   const insertIdx = sorted.findIndex(k => sortKey(k) > sortKey(keyword));
   const insertAt = insertIdx === -1 ? sorted.length : insertIdx;
+  // For removals, temporarily re-insert the keyword at its sorted position for display
   const withKeyword = [...sorted.slice(0, insertAt), keyword, ...sorted.slice(insertAt)];
   const start = Math.max(0, insertAt - windowSize);
   const end = Math.min(withKeyword.length, insertAt + windowSize + 1);
@@ -1222,6 +1229,8 @@ async function sendAutomodActionMessage(
 }
 
 async function sendAutomodApprovalMessage(thread: ThreadChannel, approval: PendingAutomodApproval): Promise<void> {
+  // PendingAutomodApproval.newKeywordFilter already includes the new keyword (post-addition),
+  // so oldCount = length - 1 and newCount = length.
   const oldCount = approval.newKeywordFilter.length - 1;
   const newCount = approval.newKeywordFilter.length;
   const existing = approval.newKeywordFilter.filter(k => k !== approval.keyword);
