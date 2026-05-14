@@ -1,4 +1,4 @@
-import { ComponentType, type Message } from "discord.js";
+import { ComponentType, type Message, type MessageSnapshot } from "discord.js";
 import type {
   ContainerComponent,
   FileComponent,
@@ -63,25 +63,47 @@ export function flattenEmbeds(message: Pick<Message, "embeds">): string[] {
   });
 }
 
-/** Build a single content string from a discord.js Message. */
-export function buildMessageContent(message: Message): string {
+type MessageLike = Pick<
+  Message,
+  "content" | "stickers" | "attachments" | "embeds" | "components"
+>;
+
+function flattenMessageFields(msg: MessageLike): string[] {
   const parts: string[] = [];
 
-  if (message.content) {
-    parts.push(message.content);
+  if (msg.content) {
+    parts.push(msg.content);
   }
-  for (const sticker of message.stickers.values()) {
+  for (const sticker of msg.stickers.values()) {
     parts.push(`[sticker: ${sticker.name}]`);
   }
-
-  for (const attachment of message.attachments.values()) {
+  for (const attachment of msg.attachments.values()) {
     const label = attachment.name ?? "file";
     const type = attachment.contentType?.split("/")[0] ?? "attachment";
     parts.push(`[${type}: ${label}]`);
   }
+  parts.push(...flattenEmbeds(msg));
+  parts.push(...flattenComponents(msg.components as AnyComponent[]));
 
-  parts.push(...flattenEmbeds(message));
-  parts.push(...flattenComponents(message.components as AnyComponent[]));
+  return parts;
+}
+
+/** Build a single content string from a discord.js Message. */
+export function buildMessageContent(message: Message): string {
+  const parts = flattenMessageFields(message);
+
+  for (const [messageId, snapshot] of message.messageSnapshots) {
+    const ref = message.reference;
+    const guildId = ref?.guildId;
+    const channelId = ref?.channelId;
+    const url =
+      guildId && channelId
+        ? `https://discord.com/channels/${guildId}/${channelId}/${messageId}`
+        : null;
+
+    const inner = flattenMessageFields(snapshot as MessageLike).join(" ") || "[empty message]";
+    parts.push(url ? `[forwarded from ${url}: ${inner}]` : `[forwarded: ${inner}]`);
+  }
 
   return parts.join(" ") || "[empty message]";
 }
