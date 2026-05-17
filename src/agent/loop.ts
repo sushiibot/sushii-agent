@@ -109,6 +109,7 @@ Only when the moderator explicitly asks to add a keyword (e.g. "add that", "add 
 Only when the moderator explicitly asks to remove a keyword (e.g. "remove that", "delete \`*word*\` from the filter"). The tool returns an error immediately if the keyword is not found — use \`list_automod_rules\` first to confirm the exact keyword string. When you do call it, do NOT use \`ask_question\` first — the tool triggers an approval gate automatically.`;
 
 const MAX_ITERATIONS = 20;
+const MAX_ZERO_RETRIES = 2;
 
 function isZeroContentResult(r: { finishReason: string; text: string; toolCalls?: unknown[]; usage?: { outputTokens?: number } }): boolean {
   return (
@@ -370,40 +371,46 @@ export async function runAgentLoop(
         // Retry on zero-content stop responses (OpenRouter cold-start / scaling events).
         // These return finishReason "stop" with no text, no tool calls, and 0 output tokens.
         // The SDK can't detect them as errors since they're valid 200 OK responses.
-        const MAX_ZERO_RETRIES = 2;
+        const accumulateUsage = (u: typeof result.usage) => {
+          if (!u) return;
+          totalInputTokens += u.inputTokens ?? 0;
+          totalOutputTokens += u.outputTokens ?? 0;
+          totalCacheReadTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
+          totalCacheWriteTokens += u.inputTokenDetails?.cacheWriteTokens ?? 0;
+          lastInputTokens = u.inputTokens ?? 0;
+        };
+
         let result = await generateText(generateParams);
-        for (let retry = 0; retry < MAX_ZERO_RETRIES; retry++) {
-          if (!isZeroContentResult(result)) break;
+        let zeroContent = isZeroContentResult(result);
+        for (let attempt = 0; attempt < MAX_ZERO_RETRIES && zeroContent; attempt++) {
           // Accumulate tokens from the discarded retry attempt before overwriting result
-          if (result.usage) {
-            totalInputTokens += result.usage.inputTokens ?? 0;
-            totalOutputTokens += result.usage.outputTokens ?? 0;
-            totalCacheReadTokens += result.usage.inputTokenDetails?.cacheReadTokens ?? 0;
-            totalCacheWriteTokens += result.usage.inputTokenDetails?.cacheWriteTokens ?? 0;
-            lastInputTokens = result.usage.inputTokens ?? 0;
-          }
-          logger.warn({ iteration: iterations, retry }, "zero-content response from provider, retrying");
+          accumulateUsage(result.usage);
+          logger.warn({ iteration: iterations, retry: attempt + 1 }, "zero-content response from provider, retrying");
           if (opts.isCancelled?.()) {
             cancelled = true;
             break;
           }
-          await new Promise<void>((r) => setTimeout(r, 500 * 2 ** retry));
+          await new Promise<void>((r) => setTimeout(r, 500 * 2 ** attempt));
           if (opts.isCancelled?.()) {
             cancelled = true;
             break;
           }
-          result = await generateText(generateParams);
+          result = await generateText({
+            ...generateParams,
+            experimental_telemetry: {
+              isEnabled: true,
+              functionId: "agent-loop",
+              metadata: { guildId, iteration: iterations, retry: attempt + 1 },
+            },
+          });
+          zeroContent = isZeroContentResult(result);
         }
         if (cancelled) break;
 
         const { text, toolCalls, finishReason, usage } = result;
 
         if (usage) {
-          totalInputTokens += usage.inputTokens ?? 0;
-          totalOutputTokens += usage.outputTokens ?? 0;
-          totalCacheReadTokens += usage.inputTokenDetails?.cacheReadTokens ?? 0;
-          totalCacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens ?? 0;
-          lastInputTokens = usage.inputTokens ?? 0;
+          accumulateUsage(usage);
           logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheRead: usage.inputTokenDetails?.cacheReadTokens, cacheWrite: usage.inputTokenDetails?.cacheWriteTokens }, "tokens");
         }
 
@@ -414,14 +421,19 @@ export async function runAgentLoop(
         }
 
         if (finishReason === "stop" || !toolCalls?.length) {
-          const zeroContent = isZeroContentResult(result);
-          if (!zeroContent) {
+          if (zeroContent) {
+            messages.push({
+              role: "assistant",
+              content: "The AI provider returned an empty response. Please try again in a moment.",
+            });
+          } else {
             messages.push(...result.response.messages);
           }
-          const fallback = zeroContent
-            ? "The AI provider returned an empty response. Please try again in a moment."
-            : undefined;
-          const content = expandDiscordTokens(fixBlockquotes(text || fallback || "(no response)"), opts.emojiMap);
+          const displayText = text
+            || (zeroContent
+              ? "The AI provider returned an empty response. Please try again in a moment."
+              : "(no response)");
+          const content = expandDiscordTokens(fixBlockquotes(displayText), opts.emojiMap);
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
           logger.info({ iterations, responseLength: content.length }, "done");
