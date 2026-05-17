@@ -1,5 +1,5 @@
 import type { Message, ThreadChannel } from "discord.js";
-import type { ModelMessage } from "ai";
+import type { ModelMessage, TextPart } from "ai";
 import { generateText } from "ai";
 import { openaiProvider } from "../agent/client.ts";
 import { config } from "../config.ts";
@@ -23,19 +23,30 @@ export async function resolveOrCreateThread(
   return { thread, isNew: true };
 }
 
+function extractText(content: ModelMessage["content"]): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .filter((p): p is TextPart => typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text")
+      .map((p) => p.text)
+      .join(" ")
+      .trim();
+  }
+  return "";
+}
+
 export async function renameThread(
   thread: ThreadChannel,
   history: ModelMessage[],
 ): Promise<void> {
   try {
     const textHistory = history
-      .filter((m) => {
-        if (m.role === "user") return typeof m.content === "string";
-        if (m.role === "assistant") return typeof m.content === "string" && (m.content as string).trim().length > 0;
-        return false;
+      .filter((m): m is ModelMessage & { role: "user" | "assistant" } => m.role === "user" || m.role === "assistant")
+      .flatMap((m) => {
+        const text = extractText(m.content);
+        return text ? [{ role: m.role, content: text.slice(0, 500) }] : [];
       })
-      .slice(-6)
-      .map((m) => ({ ...m, content: (m.content as string).slice(0, 500) })) as ModelMessage[];
+      .slice(-6);
 
     const result = await generateText({
       model: openaiProvider(config.openaiModel),
