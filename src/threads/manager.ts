@@ -27,7 +27,12 @@ function extractText(content: ModelMessage["content"]): string {
   if (typeof content === "string") return content.trim();
   if (Array.isArray(content)) {
     return content
-      .filter((p): p is TextPart => typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text")
+      .filter((p): p is TextPart =>
+        typeof p === "object" &&
+        p !== null &&
+        (p as { type?: unknown }).type === "text" &&
+        typeof (p as { text?: unknown }).text === "string"
+      )
       .map((p) => p.text)
       .join(" ")
       .trim();

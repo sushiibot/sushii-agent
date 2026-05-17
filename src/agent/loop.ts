@@ -111,6 +111,9 @@ Only when the moderator explicitly asks to remove a keyword (e.g. "remove that",
 const MAX_ITERATIONS = 20;
 const MAX_ZERO_RETRIES = 2;
 
+const ZERO_CONTENT_HISTORY = "(empty response — provider error)";
+const ZERO_CONTENT_USER_MSG = "The AI provider returned an empty response. Please try again in a moment.";
+
 function isZeroContentResult(r: { finishReason: string; text: string; toolCalls?: unknown[]; usage?: { outputTokens?: number } }): boolean {
   return (
     r.finishReason === "stop" &&
@@ -363,7 +366,7 @@ export async function runAgentLoop(
           experimental_telemetry: {
             isEnabled: true,
             functionId: "agent-loop",
-            metadata: { guildId, iteration: iterations },
+            metadata: { guildId, iteration: iterations, retry: 0 },
           },
           ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
         };
@@ -424,14 +427,14 @@ export async function runAgentLoop(
           if (zeroContent) {
             messages.push({
               role: "assistant",
-              content: "The AI provider returned an empty response. Please try again in a moment.",
+              content: ZERO_CONTENT_HISTORY,
             });
           } else {
             messages.push(...result.response.messages);
           }
           const displayText = text
             || (zeroContent
-              ? "The AI provider returned an empty response. Please try again in a moment."
+              ? ZERO_CONTENT_USER_MSG
               : "(no response)");
           const content = expandDiscordTokens(fixBlockquotes(displayText), opts.emojiMap);
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
