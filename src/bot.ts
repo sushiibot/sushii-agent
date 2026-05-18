@@ -37,6 +37,7 @@ import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, typ
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
+import { mcpClient } from "./agent/runner.ts";
 import { resolveOrCreateThread, renameThread } from "./threads/manager.ts";
 import { isPrivateChannel } from "./tools/channelUtils.ts";
 
@@ -1578,6 +1579,16 @@ export async function startBot(): Promise<void> {
       pendingChoices.set(key, val);
     }
   }, 60 * 60 * 1000);
+
+  if (mcpClient) {
+    try {
+      const mcpTools = await mcpClient.getTools();
+      TOOL_DEFINITIONS.push(...mcpTools);
+      logger.info({ count: mcpTools.length }, "loaded MCP tools from server");
+    } catch (err) {
+      logger.warn({ err }, "failed to load MCP tools from server — continuing without them");
+    }
+  }
 
   await client.login(config.discordBotToken);
 }

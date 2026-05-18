@@ -1,72 +1,7 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
-import { config } from "../config.ts";
 
-// Schemas must stay in sync with the Zod input schemas in packages/sushii-mcp/src/tools/
-const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "get_user_mod_history",
-      description:
-        "Look up every moderation action ever taken against a specific user in this guild — warns, bans, kicks, mutes, notes, etc. Use this whenever you need to know a user's rap sheet: are they a repeat offender, what were they warned for before, have they been banned and unbanned? Returns cases ordered newest-first. Each case includes: case ID, action type, timestamp, the user's tag at the time, executor (who did it), reason, and attachments. Use before_case_id for pagination if there are many cases.",
-      parameters: {
-        type: "object",
-        properties: {
-          user_id: {
-            type: "string",
-            description: "Discord user ID",
-          },
-          limit: {
-            type: "number",
-            description: "Maximum number of results (default 50, max 100)",
-          },
-          before_case_id: {
-            type: "string",
-            description:
-              "Return only cases with case_id less than this value (cursor pagination)",
-          },
-        },
-        required: ["user_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_user_cross_server_bans",
-      description:
-        "Check if a user is banned in other servers that use sushii. Use this to assess whether someone is a known bad actor across the community — a user banned in 10 servers is a very different risk profile than someone with a single local warn. Returns one entry per banning guild with: guild ID, name, member count, ban reason, and when the ban was applied. Some guilds opt out of sharing details — those entries show '[redacted]' for name and null for reason, but the ban itself is still counted. Call this when deciding whether to ban/escalate, or any time cross-server history is relevant.",
-      parameters: {
-        type: "object",
-        properties: {
-          user_id: {
-            type: "string",
-            description: "Discord user ID",
-          },
-        },
-        required: ["user_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_guild_recent_cases",
-      description:
-        "Get the latest moderation activity across the entire guild — all users, all action types, newest first. Use this to understand the current moderation climate: how active is enforcement, what kinds of actions are being taken, are there patterns around a specific issue or event? Returns the same fields as get_user_mod_history but guild-wide. Good for: getting context before making a recommendation, checking if a wave of similar incidents is already being handled, or understanding how strictly this guild enforces rules.",
-      parameters: {
-        type: "object",
-        properties: {
-          limit: {
-            type: "number",
-            description: "Maximum number of results (default 25, max 100)",
-          },
-        },
-        required: [],
-      },
-    },
-  },
-];
+// MCP tool definitions are fetched from the sushii-mcp server at startup via
+// SushiiMcpClient.getTools() and pushed into TOOL_DEFINITIONS in bot.ts startBot().
 
 export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
@@ -542,6 +477,3 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   },
 ];
 
-if (config.sushiiMcpUrl) {
-  TOOL_DEFINITIONS.push(...MCP_TOOL_DEFINITIONS);
-}

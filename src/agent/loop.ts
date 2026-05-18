@@ -12,16 +12,17 @@ const logger = getLogger("agent");
 
 const tracer = trace.getTracer("sushii-agent");
 
-// Convert TOOL_DEFINITIONS (OpenAI JSON schema format) to AI SDK tool map
-const AI_TOOLS = Object.fromEntries(
-  TOOL_DEFINITIONS.map((def) => [
-    def.function.name,
-    {
-      description: def.function.description,
-      inputSchema: jsonSchema(def.function.parameters as Record<string, unknown>),
-    },
-  ]),
-) as Parameters<typeof generateText>[0]["tools"];
+function buildAiTools(): Parameters<typeof generateText>[0]["tools"] {
+  return Object.fromEntries(
+    TOOL_DEFINITIONS.map((def) => [
+      def.function.name,
+      {
+        description: def.function.description,
+        inputSchema: jsonSchema(def.function.parameters as Record<string, unknown>),
+      },
+    ]),
+  ) as Parameters<typeof generateText>[0]["tools"];
+}
 
 export const BEHAVIOR_INSTRUCTIONS = `You are a moderation intelligence assistant for Discord servers. You help moderators investigate user behavior, understand context around incidents, and make informed decisions. You investigate and recommend — you do not execute moderation actions directly.
 
@@ -361,7 +362,7 @@ export async function runAgentLoop(
         const generateParams: Parameters<typeof generateText>[0] = {
           model: openaiProvider(config.openaiModel),
           messages,
-          tools: AI_TOOLS,
+          tools: buildAiTools(),
           maxOutputTokens: 4096,
           experimental_telemetry: {
             isEnabled: true,

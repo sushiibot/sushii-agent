@@ -27,7 +27,7 @@ import { SushiiMcpClient, type ModCase, type CrossServerBan } from "../mcp/Sushi
 
 const logger = getLogger("tool");
 
-const mcpClient =
+export const mcpClient =
   config.sushiiMcpUrl && config.sushiiMcpToken
     ? new SushiiMcpClient(config.sushiiMcpUrl, config.sushiiMcpToken)
     : null;

@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { ChatCompletionTool } from "openai/resources/chat/completions";
 
 export interface ModCase {
   guildId: string;
@@ -45,6 +46,35 @@ export class SushiiMcpClient {
     private readonly baseUrl: string,
     private readonly token: string,
   ) {}
+
+  async getTools(): Promise<ChatCompletionTool[]> {
+    const client = new Client(
+      { name: "sushii-agent", version: "1.0.0" },
+      { capabilities: {} },
+    );
+
+    const transport = new StreamableHTTPClientTransport(new URL(this.baseUrl), {
+      requestInit: {
+        headers: { Authorization: `Bearer ${this.token}` },
+      },
+    });
+
+    await client.connect(transport);
+
+    try {
+      const { tools } = await client.listTools();
+      return tools.map((tool) => ({
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          description: tool.description ?? "",
+          parameters: (tool.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
+        },
+      }));
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
 
   private async callTool(name: string, args: Record<string, unknown>) {
     const client = new Client(
