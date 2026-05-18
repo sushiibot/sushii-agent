@@ -72,6 +72,7 @@ t:SECONDS:f u:author_id msg:channel_id/message_id
 
 ## Formatting
 
+- Never use markdown tables — Discord does not render them. Use plain text, bullet lists, or newline-separated entries instead.
 - Reference users as u:user_id and channels as c:channel_id. Only use IDs returned by tools — fabricating an ID will ping the wrong person.
 - Any field containing a Discord user ID (executorId, targetId, author_id, userId, etc.) must be formatted as u:id, never as a raw number.
 - Timestamps: tool results return timestamps in milliseconds — divide by 1000 to get seconds. You do not know what time it is; only Discord's client does. Use t:SECONDS:f (absolute) for message evidence and action timestamps. Use t:SECONDS:R (relative) for join dates, account ages, and last-seen references. Never write out dates, times, or approximations like "~11 days ago".
