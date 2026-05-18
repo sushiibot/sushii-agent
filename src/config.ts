@@ -24,6 +24,8 @@ export interface Config {
   databasePath: string;
   feedbackPath: string;
   guildConfig: Record<string, GuildConfig>;
+  sushiiMcpUrl: string | undefined;
+  sushiiMcpToken: string | undefined;
 }
 
 function required(name: string): string {
@@ -58,4 +60,6 @@ export const config: Config = {
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
   guildConfig: loadGuildConfig(),
+  sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
+  sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
 };

@@ -1,4 +1,80 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import { config } from "../config.ts";
+
+// Schemas must stay in sync with the Zod input schemas in packages/sushii-mcp/src/tools/
+const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "get_user_mod_history",
+      description:
+        "Get a user's moderation case history in a guild, ordered by case ID descending (most recent first). Excludes pending cases.",
+      parameters: {
+        type: "object",
+        properties: {
+          guild_id: {
+            type: "string",
+            description: "Discord guild (server) ID",
+          },
+          user_id: {
+            type: "string",
+            description: "Discord user ID",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of results (default 50, max 100)",
+          },
+          before_case_id: {
+            type: "string",
+            description:
+              "Return only cases with case_id less than this value (cursor pagination)",
+          },
+        },
+        required: ["guild_id", "user_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_user_cross_server_bans",
+      description:
+        "Get all guilds that currently have a user banned. Results include guild metadata and apply opt-out redaction: guilds with lookupDetailsOptIn=false will have guildName set to '[redacted]' and reason set to null.",
+      parameters: {
+        type: "object",
+        properties: {
+          user_id: {
+            type: "string",
+            description: "Discord user ID",
+          },
+        },
+        required: ["user_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_guild_recent_cases",
+      description:
+        "Get the most recent moderation cases across all users in a guild, ordered by case ID descending. Includes pending cases unlike get_user_mod_history.",
+      parameters: {
+        type: "object",
+        properties: {
+          guild_id: {
+            type: "string",
+            description: "Discord guild (server) ID",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of results (default 25, max 100)",
+          },
+        },
+        required: ["guild_id"],
+      },
+    },
+  },
+];
 
 export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
@@ -473,3 +549,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     },
   },
 ];
+
+if (config.sushiiMcpUrl) {
+  TOOL_DEFINITIONS.push(...MCP_TOOL_DEFINITIONS);
+}

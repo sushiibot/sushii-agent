@@ -22,8 +22,15 @@ import { addAutomodKeyword, type PendingAutomodApproval } from "../tools/addAuto
 import { deleteAutomodKeyword, type PendingAutomodDeletion } from "../tools/deleteAutomodKeyword.ts";
 import type { MemoryRow } from "../db/memory.ts";
 import { getLogger } from "../logger.ts";
+import { config } from "../config.ts";
+import { SushiiMcpClient, type ModCase, type CrossServerBan } from "../mcp/SushiiMcpClient.ts";
 
 const logger = getLogger("tool");
+
+const mcpClient =
+  config.sushiiMcpUrl && config.sushiiMcpToken
+    ? new SushiiMcpClient(config.sushiiMcpUrl, config.sushiiMcpToken)
+    : null;
 
 export interface UserNames {
   username: string | null;
@@ -87,7 +94,10 @@ type ToolResult =
   | { tool: "get_guild_info"; data: GuildInfo }
   | { tool: "list_automod_rules"; data: AutomodRuleInfo[] }
   | { tool: "pending_automod_keyword_add"; data: PendingAutomodApproval }
-  | { tool: "pending_automod_keyword_delete"; data: PendingAutomodDeletion };
+  | { tool: "pending_automod_keyword_delete"; data: PendingAutomodDeletion }
+  | { tool: "get_user_mod_history"; data: ModCase[] }
+  | { tool: "get_user_cross_server_bans"; data: CrossServerBan[] }
+  | { tool: "get_guild_recent_cases"; data: ModCase[] };
 
 function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
@@ -352,6 +362,46 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
         .join("\n\n");
     }
 
+    case "get_user_mod_history":
+    case "get_guild_recent_cases": {
+      const cases = result.data;
+      if (cases.length === 0) {
+        return "(no cases found)";
+      }
+      return cases
+        .map((c) => {
+          const parts = [`case:${c.caseId} [${c.action}] u:${c.userId} (${c.userTag}) t:${c.actionTime}`];
+          if (c.executorId) {
+            parts.push(`  executor: u:${c.executorId}`);
+          }
+          if (c.reason) {
+            parts.push(`  reason: ${c.reason}`);
+          }
+          return parts.join("\n");
+        })
+        .join("\n");
+    }
+
+    case "get_user_cross_server_bans": {
+      const bans = result.data;
+      if (bans.length === 0) {
+        return "(no cross-server bans found)";
+      }
+      return bans
+        .map((b) => {
+          const name = b.lookupDetailsOptIn ? (b.guildName ?? "unknown") : "[redacted]";
+          const parts = [`guild:${b.guildId} ${name} (${b.guildMembers} members) optIn:${b.lookupDetailsOptIn}`];
+          if (b.actionTime) {
+            parts.push(`  banned: t:${b.actionTime}`);
+          }
+          if (b.reason) {
+            parts.push(`  reason: ${b.reason}`);
+          }
+          return parts.join("\n");
+        })
+        .join("\n");
+    }
+
     // ask_question, inspect_image, and pending approvals are handled before formatToolResult is called
     case "ask_question":
     case "inspect_image":
@@ -587,6 +637,55 @@ export async function runTools(
           case "ask_question":
             result = { tool: "ask_question", question: input.question as string, choices: input.choices as string[] };
             break;
+          case "get_user_mod_history": {
+            if (!mcpClient) {
+              result = { tool: "error", message: "sushii-mcp not configured" };
+              break;
+            }
+            try {
+              const data = await mcpClient.getUserModHistory({
+                guild_id: input.guild_id as string,
+                user_id: input.user_id as string,
+                limit: input.limit as number | undefined,
+                before_case_id: input.before_case_id as string | undefined,
+              });
+              result = { tool: "get_user_mod_history", data };
+            } catch (err) {
+              result = { tool: "error", message: String(err) };
+            }
+            break;
+          }
+          case "get_user_cross_server_bans": {
+            if (!mcpClient) {
+              result = { tool: "error", message: "sushii-mcp not configured" };
+              break;
+            }
+            try {
+              const data = await mcpClient.getUserCrossServerBans({
+                user_id: input.user_id as string,
+              });
+              result = { tool: "get_user_cross_server_bans", data };
+            } catch (err) {
+              result = { tool: "error", message: String(err) };
+            }
+            break;
+          }
+          case "get_guild_recent_cases": {
+            if (!mcpClient) {
+              result = { tool: "error", message: "sushii-mcp not configured" };
+              break;
+            }
+            try {
+              const data = await mcpClient.getGuildRecentCases({
+                guild_id: input.guild_id as string,
+                limit: input.limit as number | undefined,
+              });
+              result = { tool: "get_guild_recent_cases", data };
+            } catch (err) {
+              result = { tool: "error", message: String(err) };
+            }
+            break;
+          }
           default:
             result = { tool: "error", message: `Unknown tool: ${call.toolName}` };
         }
