@@ -12,10 +12,6 @@ const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {
-          guild_id: {
-            type: "string",
-            description: "Discord guild (server) ID",
-          },
           user_id: {
             type: "string",
             description: "Discord user ID",
@@ -30,7 +26,7 @@ const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
               "Return only cases with case_id less than this value (cursor pagination)",
           },
         },
-        required: ["guild_id", "user_id"],
+        required: ["user_id"],
       },
     },
   },
@@ -61,16 +57,12 @@ const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {
-          guild_id: {
-            type: "string",
-            description: "Discord guild (server) ID",
-          },
           limit: {
             type: "number",
             description: "Maximum number of results (default 25, max 100)",
           },
         },
-        required: ["guild_id"],
+        required: [],
       },
     },
   },

@@ -644,7 +644,7 @@ export async function runTools(
             }
             try {
               const data = await mcpClient.getUserModHistory({
-                guild_id: input.guild_id as string,
+                guild_id: guildId,
                 user_id: input.user_id as string,
                 limit: input.limit as number | undefined,
                 before_case_id: input.before_case_id as string | undefined,
@@ -677,7 +677,7 @@ export async function runTools(
             }
             try {
               const data = await mcpClient.getGuildRecentCases({
-                guild_id: input.guild_id as string,
+                guild_id: guildId,
                 limit: input.limit as number | undefined,
               });
               result = { tool: "get_guild_recent_cases", data };
