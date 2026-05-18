@@ -38,56 +38,61 @@ export interface GetGuildRecentCasesArgs {
   limit?: number;
 }
 
+// Server is stateless — create a fresh client+transport per call so there's
+// no persistent connection and startup never crashes on unreachable URL.
 export class SushiiMcpClient {
-  private client: Client;
+  constructor(
+    private readonly baseUrl: string,
+    private readonly token: string,
+  ) {}
 
-  constructor(baseUrl: string, token: string) {
-    this.client = new Client(
+  private async callTool(name: string, args: Record<string, unknown>) {
+    const client = new Client(
       { name: "sushii-agent", version: "1.0.0" },
       { capabilities: {} },
     );
 
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl), {
+    const transport = new StreamableHTTPClientTransport(new URL(this.baseUrl), {
       requestInit: {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${this.token}` },
       },
     });
 
-    this.client.connect(transport);
+    await client.connect(transport);
+
+    try {
+      return await client.callTool({ name, arguments: args });
+    } finally {
+      await client.close().catch(() => {});
+    }
   }
 
   async getUserModHistory(args: GetUserModHistoryArgs): Promise<ModCase[]> {
-    const result = await this.client.callTool({
-      name: "get_user_mod_history",
-      arguments: args as unknown as Record<string, unknown>,
-    });
-
-    const text = this.extractText(result.content);
-    return JSON.parse(text) as ModCase[];
+    const result = await this.callTool(
+      "get_user_mod_history",
+      args as unknown as Record<string, unknown>,
+    );
+    return JSON.parse(this.extractText(result.content)) as ModCase[];
   }
 
   async getUserCrossServerBans(
     args: GetUserCrossServerBansArgs,
   ): Promise<CrossServerBan[]> {
-    const result = await this.client.callTool({
-      name: "get_user_cross_server_bans",
-      arguments: args as unknown as Record<string, unknown>,
-    });
-
-    const text = this.extractText(result.content);
-    return JSON.parse(text) as CrossServerBan[];
+    const result = await this.callTool(
+      "get_user_cross_server_bans",
+      args as unknown as Record<string, unknown>,
+    );
+    return JSON.parse(this.extractText(result.content)) as CrossServerBan[];
   }
 
   async getGuildRecentCases(
     args: GetGuildRecentCasesArgs,
   ): Promise<ModCase[]> {
-    const result = await this.client.callTool({
-      name: "get_guild_recent_cases",
-      arguments: args as unknown as Record<string, unknown>,
-    });
-
-    const text = this.extractText(result.content);
-    return JSON.parse(text) as ModCase[];
+    const result = await this.callTool(
+      "get_guild_recent_cases",
+      args as unknown as Record<string, unknown>,
+    );
+    return JSON.parse(this.extractText(result.content)) as ModCase[];
   }
 
   private extractText(
