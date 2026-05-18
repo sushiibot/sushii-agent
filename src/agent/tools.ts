@@ -8,7 +8,7 @@ const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "get_user_mod_history",
       description:
-        "Get a user's moderation case history in a guild, ordered by case ID descending (most recent first). Excludes pending cases.",
+        "Look up every moderation action ever taken against a specific user in this guild — warns, bans, kicks, mutes, notes, etc. Use this whenever you need to know a user's rap sheet: are they a repeat offender, what were they warned for before, have they been banned and unbanned? Returns cases ordered newest-first. Each case includes: case ID, action type, timestamp, the user's tag at the time, executor (who did it), reason, and attachments. Use before_case_id for pagination if there are many cases.",
       parameters: {
         type: "object",
         properties: {
@@ -35,7 +35,7 @@ const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "get_user_cross_server_bans",
       description:
-        "Get all guilds that currently have a user banned. Results include guild metadata and apply opt-out redaction: guilds with lookupDetailsOptIn=false will have guildName set to '[redacted]' and reason set to null.",
+        "Check if a user is banned in other servers that use sushii. Use this to assess whether someone is a known bad actor across the community — a user banned in 10 servers is a very different risk profile than someone with a single local warn. Returns one entry per banning guild with: guild ID, name, member count, ban reason, and when the ban was applied. Some guilds opt out of sharing details — those entries show '[redacted]' for name and null for reason, but the ban itself is still counted. Call this when deciding whether to ban/escalate, or any time cross-server history is relevant.",
       parameters: {
         type: "object",
         properties: {
@@ -53,7 +53,7 @@ const MCP_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "get_guild_recent_cases",
       description:
-        "Get the most recent moderation cases across all users in a guild, ordered by case ID descending. Includes pending cases unlike get_user_mod_history.",
+        "Get the latest moderation activity across the entire guild — all users, all action types, newest first. Use this to understand the current moderation climate: how active is enforcement, what kinds of actions are being taken, are there patterns around a specific issue or event? Returns the same fields as get_user_mod_history but guild-wide. Good for: getting context before making a recommendation, checking if a wave of similar incidents is already being handled, or understanding how strictly this guild enforces rules.",
       parameters: {
         type: "object",
         properties: {
