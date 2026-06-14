@@ -494,7 +494,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
       span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
       logger.error({ err }, "Error handling mention");
       try {
-        await message.reply("An error occurred while processing your request. Check the logs.");
+        const traceId = span.spanContext().traceId;
+        await message.reply(`An error occurred while processing your request.\n-# trace: ${traceId}`);
       } catch {
         // Ignore reply errors
       }
@@ -875,7 +876,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
     } catch (err) {
       logger.error({ err }, "Error handling button interaction");
-      await thread.send("An error occurred while processing your response. Check the logs.").catch(() => {});
+      const traceId1 = trace.getActiveSpan()?.spanContext().traceId ?? "unknown";
+      await thread.send(`An error occurred while processing your response.\n-# trace: ${traceId1}`).catch(() => {});
     } finally {
       await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
     }
@@ -1018,7 +1020,8 @@ async function resumeAgentAfterApproval(
       await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
     } catch (err) {
       logger.error({ err }, "Error resuming loop after approval");
-      await thread.send("An error occurred while processing the approval. Check the logs.").catch(() => {});
+      const traceId2 = trace.getActiveSpan()?.spanContext().traceId ?? "unknown";
+      await thread.send(`An error occurred while processing the approval.\n-# trace: ${traceId2}`).catch(() => {});
     } finally {
       await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
     }

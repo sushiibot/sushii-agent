@@ -112,6 +112,7 @@ Only when the moderator explicitly asks to remove a keyword (e.g. "remove that",
 
 const MAX_ITERATIONS = 20;
 const MAX_ZERO_RETRIES = 2;
+const MAX_NETWORK_RETRIES = 3;
 
 const ZERO_CONTENT_HISTORY = "(empty response — provider error)";
 const ZERO_CONTENT_USER_MSG = "The AI provider returned an empty response. Please try again in a moment.";
@@ -385,7 +386,49 @@ export async function runAgentLoop(
           lastInputTokens = u.inputTokens ?? 0;
         };
 
-        let result = await generateText(generateParams);
+        // Handle two failure modes the SDK marks as non-retryable (AI_APICallError on 200 OK):
+        // 1. Model doesn't support vision: images in context → strip them and continue
+        // 2. Genuine transient socket drop: retry with exponential backoff
+        let result = await (async () => {
+          for (let attempt = 0; ; attempt++) {
+            try {
+              return await generateText(generateParams);
+            } catch (err) {
+              const isSocketError =
+                err instanceof Error &&
+                err.name === "AI_APICallError" &&
+                err.message.includes("socket connection was closed");
+              if (!isSocketError) throw err;
+
+              // Check if the last user message is pure image content — indicates vision is unsupported
+              const lastMsg = messages[messages.length - 1];
+              const isImageMsg =
+                lastMsg?.role === "user" &&
+                Array.isArray(lastMsg.content) &&
+                lastMsg.content.every((c: { type: string }) => c.type === "image");
+
+              if (isImageMsg) {
+                // Strip the unsupported image message and substitute a plain-text fallback
+                messages.pop();
+                messages.push({
+                  role: "system",
+                  content: "The image(s) attached to this message could not be processed — this model does not support vision. Proceed without the image content and note this limitation to the moderator.",
+                });
+                logger.warn({ iteration: iterations }, "model does not support images, substituting text fallback");
+                return await generateText(generateParams);
+              }
+
+              if (attempt < MAX_NETWORK_RETRIES) {
+                logger.warn({ iteration: iterations, attempt: attempt + 1, err }, "transient network error from provider, retrying");
+                if (opts.isCancelled?.()) throw err;
+                await new Promise<void>((r) => setTimeout(r, 1000 * 2 ** attempt));
+                if (opts.isCancelled?.()) throw err;
+                continue;
+              }
+              throw err;
+            }
+          }
+        })();
         let zeroContent = isZeroContentResult(result);
         for (let attempt = 0; attempt < MAX_ZERO_RETRIES && zeroContent; attempt++) {
           // Accumulate tokens from the discarded retry attempt before overwriting result
