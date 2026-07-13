@@ -2,3 +2,8 @@ node_modules/
 .env
 data/
 feedback-export/
+*.bak
+.claude/settings.local.json
+.kanban/
+.playwright-mcp/
+test-results/
