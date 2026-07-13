@@ -491,6 +491,17 @@ export async function runAgentLoop(
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
           logger.debug({ tools: names }, "tool calls");
+          // Some providers occasionally emit tool-call arguments as an unparsed JSON string
+          // instead of an object; normalize here so it isn't spread into a char-indexed object downstream.
+          for (const tc of toolCalls) {
+            if (typeof tc.input === "string") {
+              try {
+                tc.input = JSON.parse(tc.input);
+              } catch {
+                logger.warn({ tool: tc.toolName, input: tc.input }, "tool call input was unparseable JSON string");
+              }
+            }
+          }
           const dispatchedTools = toolCalls.map((tc) => ({ name: tc.toolName, input: tc.input as Record<string, unknown> }));
           for (const tool of dispatchedTools) {
             usedTools.push(tool);

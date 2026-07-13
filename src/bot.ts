@@ -55,6 +55,7 @@ class ToolProgressTracker {
   private lastContent = "";
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly DEBOUNCE_MS = 500;
+  private static readonly VISIBLE_LINES = 3;
 
   constructor(private thread: ThreadChannel) {}
 
@@ -69,7 +70,10 @@ class ToolProgressTracker {
   }
 
   private buildContent(): string {
-    return this.lines.map((l) => `-# - ${l}`).join("\n").slice(0, 3990);
+    const hidden = this.lines.length - ToolProgressTracker.VISIBLE_LINES;
+    const visible = hidden > 0 ? this.lines.slice(-ToolProgressTracker.VISIBLE_LINES) : this.lines;
+    const header = hidden > 0 ? [`-# ${hidden} previous tool call${hidden === 1 ? "" : "s"}...`] : [];
+    return [...header, ...visible.map((l) => `-# - ${l}`)].join("\n").slice(0, 3990);
   }
 
   private cancelPendingFlush(): void {
