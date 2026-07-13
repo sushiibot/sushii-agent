@@ -12,15 +12,19 @@ const logger = getLogger("agent");
 
 const tracer = trace.getTracer("sushii-agent");
 
-function buildAiTools(): Parameters<typeof generateText>[0]["tools"] {
+const AUTO_MOD_ONLY_TOOLS = new Set(["timeout_member", "delete_user_messages", "send_alert_message"]);
+
+function buildAiTools(autoModMode = false): Parameters<typeof generateText>[0]["tools"] {
   return Object.fromEntries(
-    TOOL_DEFINITIONS.map((def) => [
-      def.function.name,
-      {
-        description: def.function.description,
-        inputSchema: jsonSchema(def.function.parameters as Record<string, unknown>),
-      },
-    ]),
+    TOOL_DEFINITIONS
+      .filter((def) => autoModMode || !AUTO_MOD_ONLY_TOOLS.has(def.function.name))
+      .map((def) => [
+        def.function.name,
+        {
+          description: def.function.description,
+          inputSchema: jsonSchema(def.function.parameters as Record<string, unknown>),
+        },
+      ]),
   ) as Parameters<typeof generateText>[0]["tools"];
 }
 
@@ -145,6 +149,20 @@ export interface ChannelContext {
   parentChannelName?: string | null;
 }
 
+export interface AutoModTriggerContext {
+  reporterUserId: string;
+  reporterUsername: string;
+  incidentChannelId: string;
+  incidentChannelName: string;
+  triggerMessageContent: string;
+  triggerMessageId: string;
+  repliedToUserId?: string;
+  repliedToMessageId?: string;
+  modRoleId: string;
+  modImmuneRoleIds: string[];
+  newMemberThresholdDays: number;
+}
+
 export interface AgentLoopOptions {
   threadContext?: string;
   currentChannelId?: string;
@@ -165,6 +183,8 @@ export interface AgentLoopOptions {
   dequeueMessages?: () => { query: string; mentionedUsers?: Map<string, UserNames> }[];
   /** Called before each iteration; return true to abort the loop early. */
   isCancelled?: () => boolean;
+  /** When set, switches the agent into autonomous auto-mod enforcement mode. */
+  autoModTrigger?: AutoModTriggerContext;
 }
 
 export type { UserNames };
@@ -252,6 +272,45 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
       ? `\nThread channel ID: ${opts.currentChannelId} — if the thread has more history than shown above, use fetch_channel_messages with this channel_id and before=<earliest_message_id_above> to retrieve older messages.`
       : "";
     systemParts.push(`Current thread messages (all participants including bots, excluding your own prior replies):${channelNote}\n\n${opts.threadContext}`);
+  }
+
+  if (opts.autoModTrigger) {
+    const t = opts.autoModTrigger;
+    const immuneList = t.modImmuneRoleIds.length > 0 ? t.modImmuneRoleIds.join(", ") : "(none beyond allowedRoles)";
+    const repliedLine = t.repliedToUserId
+      ? `\nThe trigger message was a reply to u:${t.repliedToUserId} (msg:${t.incidentChannelId}/${t.repliedToMessageId}).`
+      : "";
+
+    systemParts.push(`## AUTO-MOD MODE — AUTONOMOUS ENFORCEMENT
+
+**This overrides the "read-only, investigate and recommend only" instruction.** You have authority to call timeout_member, delete_user_messages, and send_alert_message directly.
+
+**What triggered this run:**
+The mod role <@&${t.modRoleId}> was pinged by u:${t.reporterUserId} (${t.reporterUsername}) in c:${t.incidentChannelId} (#${t.incidentChannelName}).
+Trigger message (msg:${t.incidentChannelId}/${t.triggerMessageId}): "${t.triggerMessageContent}"${repliedLine}
+
+**Your task — execute in this order:**
+1. Investigate: call get_recent_activity and get_conversation_context (and fetch the replied-to message if present) to identify the bad actor and understand what happened. The reporter (u:${t.reporterUserId}) is NOT the target — identify the actual offending user from context.
+2. Call get_current_member_info on the suspected target to check their join date.
+3. Assess: is there a clear, confident target, an unambiguous rule violation, AND did they join within the last ${t.newMemberThresholdDays} days?
+
+**If all three conditions are met (clear target + clear violation + new member):**
+a. Call timeout_member for the offending user. Default: 3600000 ms (1 hour). Only increase if the violation strongly justifies it. Max is 2419200000 ms (28 days).
+b. Call delete_user_messages to remove their recent messages in c:${t.incidentChannelId} only.
+c. Call send_alert_message with a 3–5 sentence summary: who, what they did, join date, what action was taken, message count deleted, timeout duration. Include msg: citations.
+
+**If any condition is NOT met (ambiguous target, ambiguous violation, or member joined > ${t.newMemberThresholdDays} days ago):**
+Call send_alert_message with your investigation findings and a clear recommendation. Do NOT timeout or delete. Include why you didn't act (e.g. "member joined 14 days ago — manual review needed").
+
+**Hard constraints — check before any action:**
+- NEVER action u:${t.reporterUserId} (the reporter who triggered this).
+- NEVER action a user whose roles include any of these immune role IDs: ${immuneList}. If timeout_member returns an immune-role error, fall back to send_alert_message immediately.
+- NEVER call delete_user_messages with a channel_id other than c:${t.incidentChannelId}.
+- Timeout cap is 28 days (2419200000 ms) — clamp if the LLM suggests more.
+- If the offending user has already left the server, skip timeout/delete and call send_alert_message only.
+- Always call send_alert_message at the end — even if no action was taken.
+
+**Alert message format:** Plain prose, no markdown headers, Discord inline. Lead with what happened and who did it, state the action taken (or reason for no action), include msg: citations for key messages.`);
   }
 
   return systemParts.join("\n\n---\n\n");
@@ -364,7 +423,7 @@ export async function runAgentLoop(
         const generateParams: Parameters<typeof generateText>[0] = {
           model: openaiProvider(config.openaiModel),
           messages,
-          tools: buildAiTools(),
+          tools: buildAiTools(!!opts.autoModTrigger),
           maxOutputTokens: 4096,
           experimental_telemetry: {
             isEnabled: true,

@@ -23,7 +23,7 @@ import {
 } from "discord.js";
 import { trace, SpanStatusCode } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
-import { config, buildEmojiMap } from "./config.ts";
+import { config, buildEmojiMap, type GuildConfig } from "./config.ts";
 import { getLogger } from "./logger.ts";
 import {
   insertMessage,
@@ -33,7 +33,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval, type PendingAutomodDeletion } from "./agent/loop.ts";
+import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval, type PendingAutomodDeletion, type AutoModTriggerContext } from "./agent/loop.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -263,6 +263,12 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
   // Don't trigger the agent on bot messages
   if (message.author.bot) return;
+
+  // Auto-mod trigger: mod role pinged (doesn't require bot mention)
+  if (guildConfig.modRoleId && guildConfig.alertsChannelId && message.mentions.roles.has(guildConfig.modRoleId)) {
+    void handleAutoModTrigger(message, message.guildId, guildConfig, emojiMap);
+    return;
+  }
 
   // Respond to mentions or direct replies to the bot's messages
   const isMention = message.mentions.has(client.user!.id);
@@ -1032,6 +1038,111 @@ async function resumeAgentAfterApproval(
   });
 }
 
+async function handleAutoModTrigger(
+  message: Message,
+  guildId: string,
+  guildConfig: GuildConfig,
+  emojiMap: Record<string, string>,
+): Promise<void> {
+  const modRoleId = guildConfig.modRoleId!;
+  const alertsChannelId = guildConfig.alertsChannelId!;
+
+  try {
+    const alertsChannel = await client.channels.fetch(alertsChannelId);
+    if (!alertsChannel?.isTextBased() || alertsChannel.isDMBased() || !("startThread" in alertsChannel)) {
+      logger.error({ alertsChannelId }, "alertsChannelId is not a guild text channel");
+      return;
+    }
+
+    const incidentChannelName =
+      message.channel.isTextBased() && !message.channel.isDMBased() && "name" in message.channel
+        ? (message.channel as { name: string }).name
+        : message.channelId;
+
+    const anchor = await alertsChannel.send({
+      content: `<@&${modRoleId}> Auto-mod investigation triggered in <#${message.channelId}>`,
+      allowedMentions: { roles: [modRoleId] },
+    });
+
+    const thread = await anchor.startThread({
+      name: "auto-mod investigation",
+    });
+
+    // Resolve replied-to info if present
+    let repliedToUserId: string | undefined;
+    let repliedToMessageId: string | undefined;
+    if (message.reference?.messageId) {
+      try {
+        const ref = await message.channel.messages.fetch(message.reference.messageId);
+        if (ref && !ref.author.bot) {
+          repliedToUserId = ref.author.id;
+          repliedToMessageId = ref.id;
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
+    const immuneIds = [...new Set([...(guildConfig.modImmuneRoleIds ?? []), ...guildConfig.allowedRoles])];
+    const newMemberThresholdDays = guildConfig.newMemberThresholdDays ?? 3;
+
+    const autoModTrigger: AutoModTriggerContext = {
+      reporterUserId: message.author.id,
+      reporterUsername: message.author.username,
+      incidentChannelId: message.channelId,
+      incidentChannelName,
+      triggerMessageContent: message.content.slice(0, 500),
+      triggerMessageId: message.id,
+      repliedToUserId,
+      repliedToMessageId,
+      modRoleId,
+      modImmuneRoleIds: immuneIds,
+      newMemberThresholdDays,
+    };
+
+    const serverContext = getServerContext(guildId);
+    const memoryIndex = listMemoryTitles(guildId);
+    const memoryCount = getMemoryCount(guildId);
+
+    const query = `[Auto-mod trigger] Mod role was pinged by ${message.author.username} in #${incidentChannelName}. Message: "${message.content.slice(0, 300)}"`;
+
+    await withThreadLock(thread.id, async () => {
+      const { messages: existingHistory, initialThreadContext } = loadConversation(thread.id);
+      const threadContext = initialThreadContext ?? "";
+
+      await thread.sendTyping();
+      const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+
+      const toolTracker = new ToolProgressTracker(thread);
+      threadCancellations.delete(thread.id);
+
+      let agentResult: Awaited<ReturnType<typeof runAgentLoop>> | undefined;
+      try {
+        agentResult = await runAgentLoop(
+          query,
+          existingHistory,
+          guildId,
+          client as Client<true>,
+          buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
+            threadContext: threadContext || undefined,
+            serverContext,
+            memoryIndex,
+            memoryCount,
+            autoModTrigger,
+          }),
+        );
+      } finally {
+        await cleanupAgentRun(thread.id, typingInterval, toolTracker, agentResult);
+      }
+
+      if (!agentResult) return;
+      await handleAgentResult(thread, guildId, thread.id, agentResult, threadContext || null, client.user!.id);
+    });
+  } catch (err) {
+    logger.error({ err, guildId, channelId: message.channelId }, "Error in handleAutoModTrigger");
+  }
+}
+
 function buildLoopOptions(
   thread: ThreadChannel,
   guildId: string,
@@ -1045,6 +1156,7 @@ function buildLoopOptions(
     serverContext: string | null;
     memoryIndex: string[];
     memoryCount: number;
+    autoModTrigger?: AutoModTriggerContext;
   },
 ): AgentLoopOptions {
   const threadId = thread.id;
@@ -1061,6 +1173,7 @@ function buildLoopOptions(
     memoryIndex: opts.memoryIndex,
     memoryCount: opts.memoryCount,
     memoryLimit: MEMORY_LIMIT,
+    autoModTrigger: opts.autoModTrigger,
     onInterimText: async (text) => {
       await toolTracker.reset();
       const expanded = expandMessageLinks(text, guildId);

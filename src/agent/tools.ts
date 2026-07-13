@@ -475,5 +475,55 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
       },
     },
   },
+  // Auto-mod action tools — only available when autoModTrigger is set (gated in buildAiTools)
+  {
+    type: "function",
+    function: {
+      name: "timeout_member",
+      description:
+        "Apply a timeout (communication disable) to a member. Only available in auto-mod mode. Do NOT call this for members with mod-immune roles — the tool returns an error in that case. Default duration: 3600000 ms (1 hour). Maximum: 2419200000 ms (28 days). Duration is clamped automatically.",
+      parameters: {
+        type: "object",
+        properties: {
+          user_id: { type: "string", description: "Discord user ID of the member to timeout." },
+          duration_ms: { type: "number", description: "Timeout duration in milliseconds (default: 3600000 = 1 hour, max: 2419200000 = 28 days)." },
+          reason: { type: "string", description: "Reason for the timeout — appears in the Discord audit log." },
+        },
+        required: ["user_id", "duration_ms"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_user_messages",
+      description:
+        "Delete recent messages from a specific user in a specific channel. Only available in auto-mod mode. Scoped to the incident channel only — do NOT pass a different channel_id. Bulk-deletes messages ≤14 days old; falls back to sequential deletion for older messages. Returns counts for bulk-deleted, sequential-deleted, and errors.",
+      parameters: {
+        type: "object",
+        properties: {
+          user_id: { type: "string", description: "Discord user ID whose messages to delete." },
+          channel_id: { type: "string", description: "The incident channel ID. Must match the channel where the mod-ping occurred." },
+          limit: { type: "number", description: "Maximum number of messages to delete (default: 50, max: 100)." },
+        },
+        required: ["user_id", "channel_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_alert_message",
+      description:
+        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. Write the message as prose: who, what they did, what action was taken (or why no action), with msg: citations.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "Alert message body. 3–5 sentences. No markdown headers. Include msg: citations and t: timestamps." },
+        },
+        required: ["message"],
+      },
+    },
+  },
 ];
 

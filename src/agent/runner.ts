@@ -20,6 +20,9 @@ import { getGuildInfo, type GuildInfo } from "../tools/getGuildInfo.ts";
 import { listAutomodRules, type AutomodRuleInfo } from "../tools/listAutomodRules.ts";
 import { addAutomodKeyword, type PendingAutomodApproval } from "../tools/addAutomodKeyword.ts";
 import { deleteAutomodKeyword, type PendingAutomodDeletion } from "../tools/deleteAutomodKeyword.ts";
+import { timeoutMember, type TimeoutMemberResult } from "../tools/timeoutMember.ts";
+import { deleteUserMessages, type DeleteUserMessagesResult } from "../tools/deleteUserMessages.ts";
+import { sendAlertMessage, type SendAlertMessageResult } from "../tools/sendAlertMessage.ts";
 import type { MemoryRow } from "../db/memory.ts";
 import { getLogger } from "../logger.ts";
 import { config } from "../config.ts";
@@ -97,7 +100,10 @@ type ToolResult =
   | { tool: "pending_automod_keyword_delete"; data: PendingAutomodDeletion }
   | { tool: "get_user_mod_history"; data: ModCase[] }
   | { tool: "get_user_cross_server_bans"; data: CrossServerBan[] }
-  | { tool: "get_guild_recent_cases"; data: ModCase[] };
+  | { tool: "get_guild_recent_cases"; data: ModCase[] }
+  | { tool: "timeout_member"; data: TimeoutMemberResult }
+  | { tool: "delete_user_messages"; data: DeleteUserMessagesResult }
+  | { tool: "send_alert_message"; data: SendAlertMessageResult };
 
 function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
@@ -402,6 +408,22 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
         .join("\n");
     }
 
+    case "timeout_member": {
+      const r = result.data;
+      const mins = Math.round(r.durationMs / 60000);
+      const expires = Math.floor(r.expiresAt / 1000);
+      return `Timeout applied: u:${r.userId} muted for ${mins} minute(s) (expires t:${expires}:R)`;
+    }
+
+    case "delete_user_messages": {
+      const r = result.data;
+      const total = r.bulkDeleted + r.sequentialDeleted;
+      return `Deleted ${total} message(s) (${r.bulkDeleted} bulk, ${r.sequentialDeleted} sequential, ${r.errors} error(s)) of ${r.requested} found`;
+    }
+
+    case "send_alert_message":
+      return `Alert sent (msg:${result.data.messageId})`;
+
     // ask_question, inspect_image, and pending approvals are handled before formatToolResult is called
     case "ask_question":
     case "inspect_image":
@@ -632,6 +654,48 @@ export async function runTools(
               client,
             });
             result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_delete", data: raw };
+            break;
+          }
+          case "timeout_member": {
+            const gc = config.guildConfig[guildId];
+            if (!gc) { result = { tool: "error", message: "Guild not configured" }; break; }
+            const immuneIds = [...new Set([...(gc.modImmuneRoleIds ?? []), ...gc.allowedRoles])];
+            const raw = await timeoutMember({
+              user_id: input.user_id as string,
+              duration_ms: input.duration_ms as number,
+              reason: input.reason as string | undefined,
+              guildId,
+              client,
+              modImmuneRoleIds: immuneIds,
+            });
+            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "timeout_member", data: raw };
+            break;
+          }
+          case "delete_user_messages": {
+            const raw = await deleteUserMessages({
+              user_id: input.user_id as string,
+              channel_id: input.channel_id as string,
+              limit: input.limit as number | undefined,
+              guildId,
+              client,
+            });
+            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "delete_user_messages", data: raw };
+            break;
+          }
+          case "send_alert_message": {
+            const gc = config.guildConfig[guildId];
+            if (!gc?.alertsChannelId || !gc.modRoleId) {
+              result = { tool: "error", message: "alertsChannelId or modRoleId not configured for this guild" };
+              break;
+            }
+            const raw = await sendAlertMessage({
+              message: input.message as string,
+              guildId,
+              client,
+              alertsChannelId: gc.alertsChannelId,
+              modRoleId: gc.modRoleId,
+            });
+            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "send_alert_message", data: raw };
             break;
           }
           case "ask_question":

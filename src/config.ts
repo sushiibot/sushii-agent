@@ -3,6 +3,14 @@ export interface GuildConfig {
   allowedChannels: string[];
   /** Discord emoji strings, e.g. ["<:blobheart:123>", "<a:wave:456>"] */
   emojis?: string[];
+  /** Role ID whose ping auto-triggers an investigation. Enables the auto-mod flow. */
+  modRoleId?: string;
+  /** Channel ID where the bot posts the alert anchor and opens the investigation thread. */
+  alertsChannelId?: string;
+  /** Role IDs the agent will never action (union with allowedRoles at runtime). */
+  modImmuneRoleIds?: string[];
+  /** How many days after joining a member is considered "new" for auto-action. Defaults to 3. */
+  newMemberThresholdDays?: number;
 }
 
 /** Build a name → Discord syntax map from an emojis array. */
