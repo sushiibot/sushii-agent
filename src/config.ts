@@ -13,6 +13,10 @@ export interface GuildConfig {
   newMemberThresholdDays?: number;
   /** When true, timeout_member and delete_user_messages no-op instead of hitting the Discord API. send_alert_message still sends, tagged as a dry run. */
   autoModDryRun?: boolean;
+  /** Role IDs allowed to trigger the auto-mod flow by pinging modRoleId. If unset, anyone can trigger it. */
+  autoModTriggerRoleIds?: string[];
+  /** Minimum seconds between auto-mod triggers in the same channel. Defaults to 60. */
+  autoModCooldownSeconds?: number;
 }
 
 /** Build a name → Discord syntax map from an emojis array. */

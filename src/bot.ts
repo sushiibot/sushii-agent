@@ -240,6 +240,10 @@ interface PendingAutomodDeletionState extends PendingAutomodDeletion {
 // Per-thread pending automod keyword deletion state (in-memory only, cleared on approve/reject/restart)
 const pendingAutomodDeletions = new Map<string, PendingAutomodDeletionState>();
 
+// Last auto-mod trigger time per "guildId:channelId", to collapse repeated pings for the same incident
+const autoModCooldowns = new Map<string, number>();
+const DEFAULT_AUTOMOD_COOLDOWN_SECONDS = 60;
+
 export const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -264,8 +268,25 @@ client.on(Events.MessageCreate, async (message: Message) => {
   // Don't trigger the agent on bot messages
   if (message.author.bot) return;
 
-  // Auto-mod trigger: mod role pinged (doesn't require bot mention)
-  if (guildConfig.modRoleId && guildConfig.alertsChannelId && message.mentions.roles.has(guildConfig.modRoleId)) {
+  // Auto-mod trigger: mod role pinged by an authorized role (doesn't require bot mention)
+  const autoModEligible =
+    guildConfig.modRoleId &&
+    guildConfig.alertsChannelId &&
+    message.mentions.roles.has(guildConfig.modRoleId) &&
+    (!guildConfig.autoModTriggerRoleIds?.length ||
+      (message.member?.roles.cache.hasAny(...guildConfig.autoModTriggerRoleIds) ?? false));
+
+  if (autoModEligible) {
+    // Collapse repeated pings for the same incident into a single investigation
+    const cooldownKey = `${message.guildId}:${message.channelId}`;
+    const cooldownMs = (guildConfig.autoModCooldownSeconds ?? DEFAULT_AUTOMOD_COOLDOWN_SECONDS) * 1000;
+    const lastTriggered = autoModCooldowns.get(cooldownKey) ?? 0;
+    if (Date.now() - lastTriggered < cooldownMs) {
+      await message.react("🔁").catch(() => {});
+      return;
+    }
+    autoModCooldowns.set(cooldownKey, Date.now());
+
     void handleAutoModTrigger(message, message.guildId, guildConfig, emojiMap);
     return;
   }
