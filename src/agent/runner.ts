@@ -28,6 +28,7 @@ import type { MemoryRow } from "../db/memory.ts";
 import { getLogger } from "../logger.ts";
 import { config } from "../config.ts";
 import { SushiiMcpClient, type ModCase, type CrossServerBan } from "../mcp/SushiiMcpClient.ts";
+import type { AutoModTriggerContext } from "./loop.ts";
 
 const logger = getLogger("tool");
 
@@ -523,6 +524,7 @@ export async function runTools(
   toolCalls: AiToolCall[],
   guildId: string,
   client: Client<true>,
+  autoModTrigger?: AutoModTriggerContext,
 ): Promise<RunToolsResult> {
   const executeSingleTool = async (call: AiToolCall): Promise<{ call: AiToolCall; result: ToolResult }> => {
     let result: ToolResult;
@@ -726,6 +728,7 @@ export async function runTools(
             alertsChannelId: gc.alertsChannelId,
             modRoleId: gc.modRoleId,
             dryRun: gc.autoModDryRun,
+            anchorMessageId: autoModTrigger?.anchorMessageId,
           });
           result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "send_alert_message", data: raw };
           break;

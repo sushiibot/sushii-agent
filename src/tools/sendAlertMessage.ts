@@ -7,6 +7,8 @@ export interface SendAlertMessageArgs {
   alertsChannelId: string;
   modRoleId: string;
   dryRun?: boolean;
+  /** ID of the silent anchor message to edit in place, delivering the mod-role ping on first mention. Falls back to sending a new message if editing fails. */
+  anchorMessageId?: string;
 }
 
 export interface SendAlertMessageResult {
@@ -31,6 +33,19 @@ export async function sendAlertMessage(
   // Prepend the role mention ourselves — don't rely on LLM to include role ID syntax
   const dryRunTag = args.dryRun ? "🧪 **DRY RUN — no action was actually taken.**\n" : "";
   const content = `<@&${args.modRoleId}> ${dryRunTag}${args.message}`;
+
+  if (args.anchorMessageId) {
+    try {
+      const anchor = await channel.messages.fetch(args.anchorMessageId);
+      const edited = await anchor.edit({
+        content,
+        allowedMentions: { roles: [args.modRoleId] },
+      });
+      return { ok: true, messageId: edited.id };
+    } catch {
+      // Anchor may have been deleted or is otherwise unreachable — fall through to sending fresh.
+    }
+  }
 
   try {
     const sent = await channel.send({

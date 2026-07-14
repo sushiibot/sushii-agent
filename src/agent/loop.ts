@@ -163,6 +163,8 @@ export interface AutoModTriggerContext {
   modRoleId: string;
   modImmuneRoleIds: string[];
   newMemberThresholdDays: number;
+  /** ID of the silent anchor message send_alert_message edits in place to deliver the final ping. */
+  anchorMessageId: string;
 }
 
 export interface AgentLoopOptions {
@@ -585,7 +587,7 @@ export async function runAgentLoop(
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
               try {
-                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client);
+                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, opts.autoModTrigger);
               } finally {
                 toolSpan.end();
               }

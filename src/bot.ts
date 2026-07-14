@@ -1080,9 +1080,11 @@ async function handleAutoModTrigger(
         ? (message.channel as { name: string }).name
         : message.channelId;
 
+    // No mod-role mention here — send_alert_message edits this message in place once the
+    // investigation concludes, and Discord notifies on a mention newly added via edit.
     const anchor = await alertsChannel.send({
-      content: `<@&${modRoleId}> Auto-mod investigation triggered in <#${message.channelId}>`,
-      allowedMentions: { roles: [modRoleId] },
+      content: `🔍 Auto-mod investigating an incident in <#${message.channelId}>...`,
+      allowedMentions: { parse: [] },
     });
 
     const thread = await anchor.startThread({
@@ -1119,6 +1121,7 @@ async function handleAutoModTrigger(
       modRoleId,
       modImmuneRoleIds: immuneIds,
       newMemberThresholdDays,
+      anchorMessageId: anchor.id,
     };
 
     const serverContext = getServerContext(guildId);
