@@ -344,8 +344,10 @@ export async function runAgentLoop(
       "agent.model": config.openaiModel,
       "agent.history_length": existingHistory.length,
       "agent.guild_id": guildId,
+      ...(opts.currentChannelId && { "discord.thread_id": opts.currentChannelId }),
     },
   }, async (span) => {
+    const log = logger.child({ threadId: opts.currentChannelId, guildId });
     const systemPrompt = buildSystemPrompt(opts);
 
     const messages: ModelMessage[] = [
@@ -382,7 +384,7 @@ export async function runAgentLoop(
       if (novel.length > 0) {
         for (const [id, userNames] of novel) knownUsers.set(id, userNames);
         messages.push({ role: "system", content: buildUserNote(novel) });
-        logger.debug({ count: novel.length }, "injected mention user note");
+        log.debug({ count: novel.length }, "injected mention user note");
       }
     }
 
@@ -396,18 +398,18 @@ export async function runAgentLoop(
     let lastInputTokens = 0;
     let cancelled = false;
     const usedTools: { name: string; input: Record<string, unknown> }[] = [];
-    logger.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
+    log.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
 
     try {
       while (iterations < MAX_ITERATIONS) {
         if (opts.isCancelled?.()) {
           cancelled = true;
-          logger.info({ iteration: iterations }, "loop cancelled by user");
+          log.info({ iteration: iterations }, "loop cancelled by user");
           break;
         }
 
         iterations++;
-        logger.debug({ iteration: iterations }, "iteration");
+        log.debug({ iteration: iterations }, "iteration");
 
         // Inject any messages queued by the user while the previous iteration was running
         if (opts.dequeueMessages) {
@@ -421,7 +423,7 @@ export async function runAgentLoop(
               }
             }
             messages.push({ role: "user", content: pendingQuery });
-            logger.info({ query: pendingQuery.slice(0, 80) }, "injected mid-loop message");
+            log.info({ query: pendingQuery.slice(0, 80) }, "injected mid-loop message");
           }
         }
 
@@ -478,12 +480,12 @@ export async function runAgentLoop(
                   role: "system",
                   content: "The image(s) attached to this message could not be processed — this model does not support vision. Proceed without the image content and note this limitation to the moderator.",
                 });
-                logger.warn({ iteration: iterations }, "model does not support images, substituting text fallback");
+                log.warn({ iteration: iterations }, "model does not support images, substituting text fallback");
                 return await generateText(generateParams);
               }
 
               if (attempt < MAX_NETWORK_RETRIES) {
-                logger.warn({ iteration: iterations, attempt: attempt + 1, err }, "transient network error from provider, retrying");
+                log.warn({ iteration: iterations, attempt: attempt + 1, err }, "transient network error from provider, retrying");
                 if (opts.isCancelled?.()) throw err;
                 await new Promise<void>((r) => setTimeout(r, 1000 * 2 ** attempt));
                 if (opts.isCancelled?.()) throw err;
@@ -497,7 +499,7 @@ export async function runAgentLoop(
         for (let attempt = 0; attempt < MAX_ZERO_RETRIES && zeroContent; attempt++) {
           // Accumulate tokens from the discarded retry attempt before overwriting result
           accumulateUsage(result.usage);
-          logger.warn({ iteration: iterations, retry: attempt + 1 }, "zero-content response from provider, retrying");
+          log.warn({ iteration: iterations, retry: attempt + 1 }, "zero-content response from provider, retrying");
           if (opts.isCancelled?.()) {
             cancelled = true;
             break;
@@ -523,12 +525,12 @@ export async function runAgentLoop(
 
         if (usage) {
           accumulateUsage(usage);
-          logger.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheRead: usage.inputTokenDetails?.cacheReadTokens, cacheWrite: usage.inputTokenDetails?.cacheWriteTokens }, "tokens");
+          log.debug({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheRead: usage.inputTokenDetails?.cacheReadTokens, cacheWrite: usage.inputTokenDetails?.cacheWriteTokens }, "tokens");
         }
 
         if (opts.isCancelled?.()) {
           cancelled = true;
-          logger.info({ iteration: iterations }, "loop cancelled by user (post-generation)");
+          log.info({ iteration: iterations }, "loop cancelled by user (post-generation)");
           break;
         }
 
@@ -548,13 +550,13 @@ export async function runAgentLoop(
           const content = expandDiscordTokens(fixBlockquotes(displayText), opts.emojiMap);
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
-          logger.info({ iterations, responseLength: content.length }, "done");
+          log.info({ iterations, responseLength: content.length }, "done");
           return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
         }
 
         if (finishReason === "tool-calls" && toolCalls.length > 0) {
           const names = toolCalls.map((t) => t.toolName).join(", ");
-          logger.debug({ tools: names }, "tool calls");
+          log.debug({ tools: names }, "tool calls");
           // Some providers occasionally emit tool-call arguments as an unparsed JSON string
           // instead of an object; normalize here so it isn't spread into a char-indexed object downstream.
           for (const tc of toolCalls) {
@@ -562,7 +564,7 @@ export async function runAgentLoop(
               try {
                 tc.input = JSON.parse(tc.input);
               } catch {
-                logger.warn({ tool: tc.toolName, input: tc.input }, "tool call input was unparseable JSON string");
+                log.warn({ tool: tc.toolName, input: tc.input }, "tool call input was unparseable JSON string");
               }
             }
           }
@@ -587,7 +589,7 @@ export async function runAgentLoop(
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
               try {
-                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, opts.autoModTrigger);
+                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, opts.autoModTrigger, log);
               } finally {
                 toolSpan.end();
               }
@@ -598,21 +600,21 @@ export async function runAgentLoop(
 
           // ask_question — pause loop and return to let the bot send buttons
           if (pendingQuestion) {
-            logger.info({ question: pendingQuestion.question }, "pausing loop for ask_question");
+            log.info({ question: pendingQuestion.question }, "pausing loop for ask_question");
             span.setAttribute("agent.paused_for_question", true);
             return { response: "", updatedHistory: messages.slice(1), pendingQuestion, cancelled: false };
           }
 
           // add_automod_keyword — pause loop and return to let the bot send approval buttons
           if (pendingAutomodApproval) {
-            logger.info({ ruleId: pendingAutomodApproval.ruleId, keyword: pendingAutomodApproval.keyword }, "pausing loop for automod keyword approval");
+            log.info({ ruleId: pendingAutomodApproval.ruleId, keyword: pendingAutomodApproval.keyword }, "pausing loop for automod keyword approval");
             span.setAttribute("agent.paused_for_automod_approval", true);
             return { response: "", updatedHistory: messages.slice(1), pendingAutomodApproval, cancelled: false };
           }
 
           // delete_automod_keyword — pause loop and return to let the bot send deletion approval buttons
           if (pendingAutomodDeletion) {
-            logger.info({ ruleId: pendingAutomodDeletion.ruleId, keyword: pendingAutomodDeletion.keyword }, "pausing loop for automod keyword deletion approval");
+            log.info({ ruleId: pendingAutomodDeletion.ruleId, keyword: pendingAutomodDeletion.keyword }, "pausing loop for automod keyword deletion approval");
             span.setAttribute("agent.paused_for_automod_deletion", true);
             return { response: "", updatedHistory: messages.slice(1), pendingAutomodDeletion, cancelled: false };
           }
@@ -622,21 +624,21 @@ export async function runAgentLoop(
               role: "user",
               content: pendingImages.map((url) => ({ type: "image" as const, image: url })),
             });
-            logger.debug({ count: pendingImages.length }, "injected images for inspection");
+            log.debug({ count: pendingImages.length }, "injected images for inspection");
           }
 
           const novel = [...discoveredUsers.entries()].filter(([id]) => !knownUsers.has(id));
           if (novel.length > 0) {
             for (const [id, userNames] of novel) knownUsers.set(id, userNames);
             messages.push({ role: "system", content: buildUserNote(novel) });
-            logger.debug({ count: novel.length }, "injected user note for new users");
+            log.debug({ count: novel.length }, "injected user note for new users");
           }
 
           continue;
         }
 
         // Unexpected finish reason
-        logger.warn({ finishReason }, "unexpected finish_reason, treating as final");
+        log.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push(...result.response.messages);
         const content = expandDiscordTokens(fixBlockquotes(text || "(no response)"), opts.emojiMap);
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
@@ -648,7 +650,7 @@ export async function runAgentLoop(
       }
 
       // Hit iteration limit — inject a wrap-up prompt and do one final generation with no tools
-      logger.warn({ iterations }, "agent loop hit iteration limit, forcing final response");
+      log.warn({ iterations }, "agent loop hit iteration limit, forcing final response");
       messages.push({ role: "system", content: "[System: You have reached the maximum number of steps. Stop using tools and give your best final response to the user now based on what you have gathered so far.]" });
       const finalResult = await generateText({
         model: openaiProvider(config.openaiModel),

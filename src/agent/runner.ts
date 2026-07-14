@@ -25,6 +25,7 @@ import { deleteUserMessages, type DeleteUserMessagesResult } from "../tools/dele
 import { sendAlertMessage, type SendAlertMessageResult } from "../tools/sendAlertMessage.ts";
 import { webSearch, fetchUrlContent, type WebSearchResultItem, type UrlContentResult } from "../tools/webSearch.ts";
 import type { MemoryRow } from "../db/memory.ts";
+import type { Logger } from "pino";
 import { getLogger } from "../logger.ts";
 import { config } from "../config.ts";
 import { SushiiMcpClient, type ModCase, type CrossServerBan } from "../mcp/SushiiMcpClient.ts";
@@ -147,7 +148,7 @@ function extractUsers(result: ToolResult): Map<string, UserNames> {
   return users;
 }
 
-function formatToolResult(result: ToolResult, input: Record<string, unknown>): string {
+function formatToolResult(result: ToolResult, input: Record<string, unknown>, log: Logger): string {
   switch (result.tool) {
     case "error":
       return result.message;
@@ -459,7 +460,7 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
     case "inspect_image":
     case "pending_automod_keyword_add":
     case "pending_automod_keyword_delete":
-      logger.warn({ tool: result.tool }, "formatToolResult called for tool that should have been handled earlier");
+      log.warn({ tool: result.tool }, "formatToolResult called for tool that should have been handled earlier");
       return "";
   }
 }
@@ -525,13 +526,14 @@ export async function runTools(
   guildId: string,
   client: Client<true>,
   autoModTrigger?: AutoModTriggerContext,
+  log: Logger = logger,
 ): Promise<RunToolsResult> {
   const executeSingleTool = async (call: AiToolCall): Promise<{ call: AiToolCall; result: ToolResult }> => {
     let result: ToolResult;
 
     try {
       const input = call.input;
-      logger.debug({ tool: call.toolName, input }, "tool call");
+      log.debug({ tool: call.toolName, input }, "tool call");
 
       switch (call.toolName) {
         case "search_messages": {
@@ -805,7 +807,7 @@ export async function runTools(
           result = { tool: "error", message: `Unknown tool: ${call.toolName}` };
       }
     } catch (err) {
-      logger.error({ err, tool: call.toolName }, "tool error");
+      log.error({ err, tool: call.toolName }, "tool error");
       result = { tool: "error", message: String(err) };
     }
 
@@ -886,8 +888,8 @@ export async function runTools(
       if (!discoveredUsers.has(id)) discoveredUsers.set(id, names);
     }
 
-    const content = formatToolResult(result, call.input);
-    logger.debug({ tool: call.toolName, resultLength: content.length }, "tool result");
+    const content = formatToolResult(result, call.input, log);
+    log.debug({ tool: call.toolName, resultLength: content.length }, "tool result");
 
     toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: content } });
   }

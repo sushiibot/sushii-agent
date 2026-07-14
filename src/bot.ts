@@ -21,7 +21,7 @@ import {
   type ModalSubmitInteraction,
   type ThreadChannel,
 } from "discord.js";
-import { trace, SpanStatusCode } from "@opentelemetry/api";
+import { trace, SpanStatusCode, type Span } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
 import { config, buildEmojiMap, type GuildConfig } from "./config.ts";
 import { getLogger } from "./logger.ts";
@@ -43,6 +43,28 @@ import { isPrivateChannel } from "./tools/channelUtils.ts";
 
 const logger = getLogger("bot");
 const tracer = trace.getTracer("sushii-agent");
+
+// Wraps a Discord interaction handler in a span, recording exceptions and
+// re-throwing so callers keep their existing error handling — mirrors the
+// discord.message span below.
+function withInteractionSpan<T>(
+  name: string,
+  attributes: Record<string, string | undefined>,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
+  return tracer.startActiveSpan(name, { attributes }, async (span) => {
+    try {
+      return await fn(span);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      span.recordException(err instanceof Error ? err : errMsg);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
 
 /**
  * Tracks tool calls during an agent loop iteration and displays them as a live
@@ -608,7 +630,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
 
-    await withThreadLock(pending.threadId, async () => {
+    await withThreadLock(pending.threadId, () => withInteractionSpan("discord.interaction", {
+      "discord.thread_id": pending.threadId,
+      "discord.guild_id": guildId,
+      "discord.user_id": interaction.user.id,
+      "discord.trigger": "scan_approval",
+    }, async () => {
       const threadChannel = await client.channels.fetch(pending.threadId);
       if (!threadChannel?.isThread()) return;
 
@@ -639,6 +666,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
           if (scanResult.response) {
             const expanded = expandMessageLinks(scanResult.response, guildId);
             const componentMsgs = buildComponentMessages(expanded);
+            logger.child({ threadId: pending.threadId, guildId }).debug(
+              { messageCount: componentMsgs.length, content: expanded },
+              "discord scan response sent",
+            );
             for (const msgOpts of componentMsgs) {
               await threadChannel.send({ ...msgOpts, allowedMentions: { parse: [] } });
             }
@@ -681,7 +712,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } finally {
         await cleanupAgentRun(pending.threadId, typingInterval, toolTracker, agentResult);
       }
-    });
+    }));
     return;
   }
 
@@ -864,55 +895,62 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   try {
     await withThreadLock(threadId, async () => {
-    const thread = await client.channels.fetch(threadId);
-    if (!thread?.isThread()) return;
+      const thread = await client.channels.fetch(threadId);
+      if (!thread?.isThread()) return;
 
-    const guildId = thread.guildId;
-    const guildConfig = config.guildConfig[guildId];
-    if (!guildConfig) return;
+      const guildId = thread.guildId;
+      const guildConfig = config.guildConfig[guildId];
+      if (!guildConfig) return;
 
-    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+      await withInteractionSpan("discord.interaction", {
+        "discord.thread_id": threadId,
+        "discord.guild_id": guildId,
+        "discord.user_id": interaction.user.id,
+        "discord.trigger": "ask_question_choice",
+      }, async () => {
+        const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
 
-    await thread.sendTyping();
-    const typingInterval = setInterval(() => thread.sendTyping(), 8000);
-    const toolTracker = new ToolProgressTracker(thread);
-    threadCancellations.delete(threadId);
-    threadTriggeringUsers.set(threadId, interaction.user.id);
+        await thread.sendTyping();
+        const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+        const toolTracker = new ToolProgressTracker(thread);
+        threadCancellations.delete(threadId);
+        threadTriggeringUsers.set(threadId, interaction.user.id);
 
-    let agentResult: AgentLoopResult | undefined;
-    try {
-      const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
-      const serverContext = getServerContext(guildId);
-      const memoryIndex = listMemoryTitles(guildId);
-      const memoryCount = getMemoryCount(guildId);
+        let agentResult: AgentLoopResult | undefined;
+        try {
+          const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
+          const serverContext = getServerContext(guildId);
+          const memoryIndex = listMemoryTitles(guildId);
+          const memoryCount = getMemoryCount(guildId);
 
-      const { triggeringUser, currentChannel } = await buildInteractionContext(interaction as ButtonInteraction, thread, guildConfig);
+          const { triggeringUser, currentChannel } = await buildInteractionContext(interaction as ButtonInteraction, thread, guildConfig);
 
-      const query = `[Selected: "${choice}"]`;
+          const query = `[Selected: "${choice}"]`;
 
-      agentResult = await runAgentLoop(
-        query,
-        existingHistory,
-        guildId,
-        client as Client<true>,
-        buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
-          threadContext: initialThreadContext ?? undefined,
-          triggeringUser,
-          currentChannel,
-          serverContext,
-          memoryIndex,
-          memoryCount,
-        }),
-      );
-      await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
-    } catch (err) {
-      logger.error({ err }, "Error handling button interaction");
-      const traceId1 = trace.getActiveSpan()?.spanContext().traceId ?? "unknown";
-      await thread.send(`An error occurred while processing your response.\n-# trace: ${traceId1}`).catch(() => {});
-    } finally {
-      await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
-    }
-  }); // end withThreadLock
+          agentResult = await runAgentLoop(
+            query,
+            existingHistory,
+            guildId,
+            client as Client<true>,
+            buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
+              threadContext: initialThreadContext ?? undefined,
+              triggeringUser,
+              currentChannel,
+              serverContext,
+              memoryIndex,
+              memoryCount,
+            }),
+          );
+          await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
+        } catch (err) {
+          logger.child({ threadId, guildId }).error({ err }, "Error handling button interaction");
+          const traceId1 = trace.getActiveSpan()?.spanContext().traceId ?? "unknown";
+          await thread.send(`An error occurred while processing your response.\n-# trace: ${traceId1}`).catch(() => {});
+        } finally {
+          await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
+        }
+      });
+    }); // end withThreadLock
   } catch (err) {
     logger.error({ err }, "Unexpected error in button interaction handler");
   }
@@ -948,6 +986,10 @@ async function handleAgentResult(
     const expanded = expandMessageLinks(response, guildId);
     const componentMsgs = buildComponentMessages(expanded);
     appendFeedbackButtons(componentMsgs, threadId);
+    logger.child({ threadId, guildId }).debug(
+      { messageCount: componentMsgs.length, content: expanded },
+      "discord response sent",
+    );
     for (const msgOpts of componentMsgs) {
       await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
     }
@@ -1018,44 +1060,51 @@ async function resumeAgentAfterApproval(
     const guildConfig = config.guildConfig[guildId];
     if (!guildConfig) return;
 
-    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
-    const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
-    const serverContext = getServerContext(guildId);
-    const memoryIndex = listMemoryTitles(guildId);
-    const memoryCount = getMemoryCount(guildId);
+    await withInteractionSpan("discord.interaction", {
+      "discord.thread_id": threadId,
+      "discord.guild_id": guildId,
+      "discord.user_id": interaction.user.id,
+      "discord.trigger": "approval_resume",
+    }, async () => {
+      const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+      const { messages: existingHistory, initialThreadContext } = loadConversation(threadId);
+      const serverContext = getServerContext(guildId);
+      const memoryIndex = listMemoryTitles(guildId);
+      const memoryCount = getMemoryCount(guildId);
 
-    const { triggeringUser, currentChannel } = await buildInteractionContext(interaction, thread, guildConfig);
+      const { triggeringUser, currentChannel } = await buildInteractionContext(interaction, thread, guildConfig);
 
-    await thread.sendTyping();
-    const typingInterval = setInterval(() => thread.sendTyping(), 8000);
-    const toolTracker = new ToolProgressTracker(thread);
-    threadCancellations.delete(threadId);
-    threadTriggeringUsers.set(threadId, interaction.user.id);
+      await thread.sendTyping();
+      const typingInterval = setInterval(() => thread.sendTyping(), 8000);
+      const toolTracker = new ToolProgressTracker(thread);
+      threadCancellations.delete(threadId);
+      threadTriggeringUsers.set(threadId, interaction.user.id);
 
-    let agentResult: AgentLoopResult | undefined;
-    try {
-      agentResult = await runAgentLoop(
-        systemMessage,
-        existingHistory,
-        guildId,
-        client as Client<true>,
-        buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
-          threadContext: initialThreadContext ?? undefined,
-          triggeringUser,
-          currentChannel,
-          serverContext,
-          memoryIndex,
-          memoryCount,
-        }),
-      );
-      await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
-    } catch (err) {
-      logger.error({ err }, "Error resuming loop after approval");
-      const traceId2 = trace.getActiveSpan()?.spanContext().traceId ?? "unknown";
-      await thread.send(`An error occurred while processing the approval.\n-# trace: ${traceId2}`).catch(() => {});
-    } finally {
-      await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
-    }
+      let agentResult: AgentLoopResult | undefined;
+      try {
+        agentResult = await runAgentLoop(
+          systemMessage,
+          existingHistory,
+          guildId,
+          client as Client<true>,
+          buildLoopOptions(thread, guildId, emojiMap, toolTracker, {
+            threadContext: initialThreadContext ?? undefined,
+            triggeringUser,
+            currentChannel,
+            serverContext,
+            memoryIndex,
+            memoryCount,
+          }),
+        );
+        await handleAgentResult(thread, guildId, threadId, agentResult, initialThreadContext ?? null, interaction.user.id);
+      } catch (err) {
+        logger.child({ threadId, guildId }).error({ err }, "Error resuming loop after approval");
+        const traceId2 = trace.getActiveSpan()?.spanContext().traceId ?? "unknown";
+        await thread.send(`An error occurred while processing the approval.\n-# trace: ${traceId2}`).catch(() => {});
+      } finally {
+        await cleanupAgentRun(threadId, typingInterval, toolTracker, agentResult);
+      }
+    });
   });
 }
 
@@ -1204,6 +1253,10 @@ function buildLoopOptions(
       await toolTracker.reset();
       const expanded = expandMessageLinks(text, guildId);
       const componentMsgs = buildComponentMessages(expanded);
+      logger.child({ threadId, guildId }).debug(
+        { messageCount: componentMsgs.length, content: expanded },
+        "discord interim response sent",
+      );
       for (const msgOpts of componentMsgs) {
         await thread.send({ ...msgOpts, allowedMentions: { parse: [] } });
       }
