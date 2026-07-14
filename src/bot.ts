@@ -1070,7 +1070,7 @@ async function handleAutoModTrigger(
 
   try {
     const alertsChannel = await client.channels.fetch(alertsChannelId);
-    if (!alertsChannel?.isTextBased() || alertsChannel.isDMBased() || !("startThread" in alertsChannel)) {
+    if (!alertsChannel?.isTextBased() || alertsChannel.isDMBased() || alertsChannel.guildId !== guildId) {
       logger.error({ alertsChannelId }, "alertsChannelId is not a guild text channel");
       return;
     }
