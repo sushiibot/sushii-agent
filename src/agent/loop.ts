@@ -757,10 +757,4 @@ function expandDiscordTokens(text: string, emojiMap?: Record<string, string>): s
   return result;
 }
 
-export function expandMessageLinks(text: string, guildId: string): string {
-  return text.replace(
-    /msg:(\d+)\/(\d+)/g,
-    (_, channelId, messageId) =>
-      `https://discord.com/channels/${guildId}/${channelId}/${messageId}`,
-  );
-}
+export { expandMessageLinks } from "../utils/expandMessageLinks.ts";

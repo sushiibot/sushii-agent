@@ -729,6 +729,8 @@ export async function runTools(
             modRoleId: gc.modRoleId,
             dryRun: gc.autoModDryRun,
             anchorMessageId: autoModTrigger?.anchorMessageId,
+            incidentChannelId: autoModTrigger?.incidentChannelId,
+            triggerMessageId: autoModTrigger?.triggerMessageId,
           });
           result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "send_alert_message", data: raw };
           break;

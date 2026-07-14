@@ -1,4 +1,5 @@
 import type { Client, GuildTextBasedChannel } from "discord.js";
+import { expandMessageLinks } from "../utils/expandMessageLinks.ts";
 
 export interface SendAlertMessageArgs {
   message: string;
@@ -9,6 +10,9 @@ export interface SendAlertMessageArgs {
   dryRun?: boolean;
   /** ID of the silent anchor message to edit in place, delivering the mod-role ping on first mention. Falls back to sending a new message if editing fails. */
   anchorMessageId?: string;
+  /** Channel + message the mod-role ping originated from — always appended for context, regardless of what the model cites. */
+  incidentChannelId?: string;
+  triggerMessageId?: string;
 }
 
 export interface SendAlertMessageResult {
@@ -32,7 +36,16 @@ export async function sendAlertMessage(
 
   // Prepend the role mention ourselves — don't rely on LLM to include role ID syntax
   const dryRunTag = args.dryRun ? "🧪 **DRY RUN — no action was actually taken.**\n" : "";
-  const content = `<@&${args.modRoleId}> ${dryRunTag}${args.message}`;
+  // Re-render any msg: citations the model included as real jump links (they're posted
+  // straight to Discord here, bypassing the expansion normal chat responses get).
+  const expandedMessage = expandMessageLinks(args.message, args.guildId);
+  // Always include the original trigger, regardless of whether the model cited it, so the
+  // final alert stands alone with full context even if the anchor's own text got overwritten.
+  const triggerLine =
+    args.incidentChannelId && args.triggerMessageId
+      ? `\n\n-# Incident in <#${args.incidentChannelId}> — https://discord.com/channels/${args.guildId}/${args.incidentChannelId}/${args.triggerMessageId}`
+      : "";
+  const content = `<@&${args.modRoleId}> ${dryRunTag}${expandedMessage}${triggerLine}`;
 
   if (args.anchorMessageId) {
     try {
