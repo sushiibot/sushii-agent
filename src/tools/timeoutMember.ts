@@ -7,6 +7,7 @@ export interface TimeoutMemberArgs {
   guildId: string;
   client: Client<true>;
   modImmuneRoleIds: string[];
+  dryRun?: boolean;
 }
 
 export interface TimeoutMemberResult {
@@ -14,6 +15,7 @@ export interface TimeoutMemberResult {
   userId: string;
   durationMs: number;
   expiresAt: number;
+  dryRun?: boolean;
 }
 
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
@@ -43,10 +45,12 @@ export async function timeoutMember(
     return { error: `Cannot timeout u:${args.user_id} — they have a mod-immune role. Send alert instead.` };
   }
 
-  try {
-    await member.timeout(durationMs, args.reason ?? "Auto-mod action");
-  } catch (err) {
-    return { error: `Discord API error applying timeout: ${err}` };
+  if (!args.dryRun) {
+    try {
+      await member.timeout(durationMs, args.reason ?? "Auto-mod action");
+    } catch (err) {
+      return { error: `Discord API error applying timeout: ${err}` };
+    }
   }
 
   return {
@@ -54,5 +58,6 @@ export async function timeoutMember(
     userId: args.user_id,
     durationMs,
     expiresAt: Date.now() + durationMs,
+    ...(args.dryRun ? { dryRun: true } : {}),
   };
 }

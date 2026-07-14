@@ -6,6 +6,7 @@ export interface SendAlertMessageArgs {
   client: Client<true>;
   alertsChannelId: string;
   modRoleId: string;
+  dryRun?: boolean;
 }
 
 export interface SendAlertMessageResult {
@@ -28,7 +29,8 @@ export async function sendAlertMessage(
   }
 
   // Prepend the role mention ourselves — don't rely on LLM to include role ID syntax
-  const content = `<@&${args.modRoleId}> ${args.message}`;
+  const dryRunTag = args.dryRun ? "🧪 **DRY RUN — no action was actually taken.**\n" : "";
+  const content = `<@&${args.modRoleId}> ${dryRunTag}${args.message}`;
 
   try {
     const sent = await channel.send({

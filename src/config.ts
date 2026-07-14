@@ -11,6 +11,8 @@ export interface GuildConfig {
   modImmuneRoleIds?: string[];
   /** How many days after joining a member is considered "new" for auto-action. Defaults to 3. */
   newMemberThresholdDays?: number;
+  /** When true, timeout_member and delete_user_messages no-op instead of hitting the Discord API. send_alert_message still sends, tagged as a dry run. */
+  autoModDryRun?: boolean;
 }
 
 /** Build a name → Discord syntax map from an emojis array. */

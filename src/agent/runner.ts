@@ -412,13 +412,18 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
       const r = result.data;
       const mins = Math.round(r.durationMs / 60000);
       const expires = Math.floor(r.expiresAt / 1000);
-      return `Timeout applied: u:${r.userId} muted for ${mins} minute(s) (expires t:${expires}:R)`;
+      const verb = r.dryRun ? "[DRY RUN] Would apply timeout" : "Timeout applied";
+      return `${verb}: u:${r.userId} muted for ${mins} minute(s) (expires t:${expires}:R)`;
     }
 
     case "delete_user_messages": {
       const r = result.data;
       const total = r.bulkDeleted + r.sequentialDeleted;
-      return `Deleted ${total} message(s) (${r.bulkDeleted} bulk, ${r.sequentialDeleted} sequential, ${r.errors} error(s)) of ${r.requested} found`;
+      const verb = r.dryRun ? "[DRY RUN] Would delete" : "Deleted";
+      const header = `${verb} ${total} message(s) (${r.bulkDeleted} bulk, ${r.sequentialDeleted} sequential, ${r.errors} error(s)) of ${r.requested} found`;
+      if (r.deleted.length === 0) return header;
+      const lines = r.deleted.map((m) => `  msg:${m.id}: "${m.content}"`);
+      return `${header}\n${lines.join("\n")}`;
     }
 
     case "send_alert_message":
@@ -495,272 +500,287 @@ export async function runTools(
   guildId: string,
   client: Client<true>,
 ): Promise<RunToolsResult> {
-  const rawResults = await Promise.all(
-    toolCalls.map(async (call) => {
-      let result: ToolResult;
+  const executeSingleTool = async (call: AiToolCall): Promise<{ call: AiToolCall; result: ToolResult }> => {
+    let result: ToolResult;
 
-      try {
-        const input = call.input;
-        logger.debug({ tool: call.toolName, input }, "tool call");
+    try {
+      const input = call.input;
+      logger.debug({ tool: call.toolName, input }, "tool call");
 
-        switch (call.toolName) {
-          case "search_messages": {
-            const raw = searchMessages({
-              ...coerceNumericFields(input, ["limit", "since", "until"]),
+      switch (call.toolName) {
+        case "search_messages": {
+          const raw = searchMessages({
+            ...coerceNumericFields(input, ["limit", "since", "until"]),
+            guildId,
+          } as Parameters<typeof searchMessages>[0]);
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "search_messages", data: raw };
+          break;
+        }
+        case "get_conversation_context": {
+          const raw = getConversationContext({
+            ...coerceNumericFields(input, ["window"]),
+            guildId,
+          } as Parameters<typeof getConversationContext>[0]);
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_conversation_context", data: raw };
+          break;
+        }
+        case "get_user_profile":
+          result = { tool: "get_user_profile", data: getUserProfile({ ...input, guildId } as Parameters<typeof getUserProfile>[0]) };
+          break;
+        case "get_recent_activity":
+          result = {
+            tool: "get_recent_activity",
+            data: getRecentActivity({
+              ...coerceNumericFields(input, ["days", "limit"]),
               guildId,
-            } as Parameters<typeof searchMessages>[0]);
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "search_messages", data: raw };
-            break;
-          }
-          case "get_conversation_context": {
-            const raw = getConversationContext({
-              ...coerceNumericFields(input, ["window"]),
+            } as Parameters<typeof getRecentActivity>[0]),
+          };
+          break;
+        case "resolve_users_by_name":
+          result = {
+            tool: "resolve_users_by_name",
+            data: resolveUsersByName({
+              ...coerceNumericFields(input, ["days", "limit"]),
               guildId,
-            } as Parameters<typeof getConversationContext>[0]);
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_conversation_context", data: raw };
-            break;
-          }
-          case "get_user_profile":
-            result = { tool: "get_user_profile", data: getUserProfile({ ...input, guildId } as Parameters<typeof getUserProfile>[0]) };
-            break;
-          case "get_recent_activity":
-            result = {
-              tool: "get_recent_activity",
-              data: getRecentActivity({
-                ...coerceNumericFields(input, ["days", "limit"]),
-                guildId,
-              } as Parameters<typeof getRecentActivity>[0]),
-            };
-            break;
-          case "resolve_users_by_name":
-            result = {
-              tool: "resolve_users_by_name",
-              data: resolveUsersByName({
-                ...coerceNumericFields(input, ["days", "limit"]),
-                guildId,
-              } as Parameters<typeof resolveUsersByName>[0]),
-            };
-            break;
-          case "search_audit_log":
-            result = {
-              tool: "search_audit_log",
-              data: await searchAuditLog({
-                ...coerceNumericFields(input, ["limit"]),
-                guildId,
-                client,
-              } as Parameters<typeof searchAuditLog>[0]),
-            };
-            break;
-          case "fetch_channel_messages": {
-            const raw = await fetchChannelMessages({
+            } as Parameters<typeof resolveUsersByName>[0]),
+          };
+          break;
+        case "search_audit_log":
+          result = {
+            tool: "search_audit_log",
+            data: await searchAuditLog({
               ...coerceNumericFields(input, ["limit"]),
               guildId,
               client,
-            } as Parameters<typeof fetchChannelMessages>[0]);
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "fetch_channel_messages", data: raw };
-            break;
-          }
-          case "search_guild_messages": {
-            const raw = await searchGuildMessages({
-              ...coerceNumericFields(input, ["limit", "offset"]),
-              guildId,
-              client,
-            } as Parameters<typeof searchGuildMessages>[0]);
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "search_guild_messages", data: raw };
-            break;
-          }
-          case "inspect_image": {
-            const { channel_id, message_id } = input as { channel_id: string; message_id: string };
-            try {
-              const channel = await client.channels.fetch(channel_id);
-              if (!channel || !channel.isTextBased()) {
-                result = { tool: "error", message: `Channel ${channel_id} is not a text channel` };
-                break;
-              }
-              if (channel.isDMBased() || channel.guildId !== guildId) {
-                result = { tool: "error", message: `Channel ${channel_id} does not belong to this guild` };
-                break;
-              }
-              const msg = await channel.messages.fetch(message_id);
-              const imageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-              const urls = [...msg.attachments.values()]
-                .filter((a) => a.contentType && imageTypes.some((t) => a.contentType!.startsWith(t)))
-                .map((a) => a.url);
-              result = { tool: "inspect_image", imageUrls: urls };
-            } catch (err) {
-              result = { tool: "error", message: `Failed to fetch message: ${err}` };
-            }
-            break;
-          }
-          case "get_current_member_info":
-            result = {
-              tool: "get_current_member_info",
-              data: await getCurrentMemberInfo({ ...input, guildId, client } as Parameters<typeof getCurrentMemberInfo>[0]),
-            };
-            break;
-          case "get_channel_info": {
-            const raw = input.channel_id
-              ? await getChannelInfo({ ...input, guildId, client } as Parameters<typeof getChannelInfo>[0])
-              : await listGuildChannels({ guildId, client });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_channel_info", data: raw };
-            break;
-          }
-          case "list_guild_roles": {
-            const raw = await listGuildRoles({ guildId, client });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "list_guild_roles", data: raw };
-            break;
-          }
-          case "update_server_context": {
-            const raw = updateServerContextTool({ ...input, guildId } as Parameters<typeof updateServerContextTool>[0]);
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "update_server_context", data: raw };
-            break;
-          }
-          case "memory": {
-            const action = input.action as string;
-            const raw =
-              action === "write"
-                ? writeMemoryTool({ ...input, guildId } as Parameters<typeof writeMemoryTool>[0])
-                : action === "delete"
-                  ? deleteMemoryTool({ ...input, guildId } as Parameters<typeof deleteMemoryTool>[0])
-                  : readMemoryTool({ ...input, guildId } as Parameters<typeof readMemoryTool>[0]);
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "memory", data: raw as MemoryData };
-            break;
-          }
-          case "get_guild_info": {
-            const raw = await getGuildInfo({ guildId, client });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_guild_info", data: raw };
-            break;
-          }
-          case "list_automod_rules": {
-            const raw = await listAutomodRules({ guildId, client });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "list_automod_rules", data: raw };
-            break;
-          }
-          case "add_automod_keyword": {
-            const raw = await addAutomodKeyword({
-              guildId,
-              ruleId: input.rule_id as string,
-              keyword: input.keyword as string,
-              client,
-            });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_add", data: raw };
-            break;
-          }
-          case "delete_automod_keyword": {
-            const raw = await deleteAutomodKeyword({
-              guildId,
-              ruleId: input.rule_id as string,
-              keyword: input.keyword as string,
-              client,
-            });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_delete", data: raw };
-            break;
-          }
-          case "timeout_member": {
-            const gc = config.guildConfig[guildId];
-            if (!gc) { result = { tool: "error", message: "Guild not configured" }; break; }
-            const immuneIds = [...new Set([...(gc.modImmuneRoleIds ?? []), ...gc.allowedRoles])];
-            const raw = await timeoutMember({
-              user_id: input.user_id as string,
-              duration_ms: input.duration_ms as number,
-              reason: input.reason as string | undefined,
-              guildId,
-              client,
-              modImmuneRoleIds: immuneIds,
-            });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "timeout_member", data: raw };
-            break;
-          }
-          case "delete_user_messages": {
-            const raw = await deleteUserMessages({
-              user_id: input.user_id as string,
-              channel_id: input.channel_id as string,
-              limit: input.limit as number | undefined,
-              guildId,
-              client,
-            });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "delete_user_messages", data: raw };
-            break;
-          }
-          case "send_alert_message": {
-            const gc = config.guildConfig[guildId];
-            if (!gc?.alertsChannelId || !gc.modRoleId) {
-              result = { tool: "error", message: "alertsChannelId or modRoleId not configured for this guild" };
-              break;
-            }
-            const raw = await sendAlertMessage({
-              message: input.message as string,
-              guildId,
-              client,
-              alertsChannelId: gc.alertsChannelId,
-              modRoleId: gc.modRoleId,
-            });
-            result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "send_alert_message", data: raw };
-            break;
-          }
-          case "ask_question":
-            result = { tool: "ask_question", question: input.question as string, choices: input.choices as string[] };
-            break;
-          case "get_user_mod_history": {
-            if (!mcpClient) {
-              result = { tool: "error", message: "sushii-mcp not configured" };
-              break;
-            }
-            try {
-              const data = await mcpClient.getUserModHistory({
-                guild_id: guildId,
-                user_id: input.user_id as string,
-                limit: input.limit as number | undefined,
-                before_case_id: input.before_case_id as string | undefined,
-              });
-              result = { tool: "get_user_mod_history", data };
-            } catch (err) {
-              result = { tool: "error", message: String(err) };
-            }
-            break;
-          }
-          case "get_user_cross_server_bans": {
-            if (!mcpClient) {
-              result = { tool: "error", message: "sushii-mcp not configured" };
-              break;
-            }
-            try {
-              const data = await mcpClient.getUserCrossServerBans({
-                user_id: input.user_id as string,
-              });
-              result = { tool: "get_user_cross_server_bans", data };
-            } catch (err) {
-              result = { tool: "error", message: String(err) };
-            }
-            break;
-          }
-          case "get_guild_recent_cases": {
-            if (!mcpClient) {
-              result = { tool: "error", message: "sushii-mcp not configured" };
-              break;
-            }
-            try {
-              const data = await mcpClient.getGuildRecentCases({
-                guild_id: guildId,
-                limit: input.limit as number | undefined,
-              });
-              result = { tool: "get_guild_recent_cases", data };
-            } catch (err) {
-              result = { tool: "error", message: String(err) };
-            }
-            break;
-          }
-          default:
-            result = { tool: "error", message: `Unknown tool: ${call.toolName}` };
+            } as Parameters<typeof searchAuditLog>[0]),
+          };
+          break;
+        case "fetch_channel_messages": {
+          const raw = await fetchChannelMessages({
+            ...coerceNumericFields(input, ["limit"]),
+            guildId,
+            client,
+          } as Parameters<typeof fetchChannelMessages>[0]);
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "fetch_channel_messages", data: raw };
+          break;
         }
-      } catch (err) {
-        logger.error({ err, tool: call.toolName }, "tool error");
-        result = { tool: "error", message: String(err) };
+        case "search_guild_messages": {
+          const raw = await searchGuildMessages({
+            ...coerceNumericFields(input, ["limit", "offset"]),
+            guildId,
+            client,
+          } as Parameters<typeof searchGuildMessages>[0]);
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "search_guild_messages", data: raw };
+          break;
+        }
+        case "inspect_image": {
+          const { channel_id, message_id } = input as { channel_id: string; message_id: string };
+          try {
+            const channel = await client.channels.fetch(channel_id);
+            if (!channel || !channel.isTextBased()) {
+              result = { tool: "error", message: `Channel ${channel_id} is not a text channel` };
+              break;
+            }
+            if (channel.isDMBased() || channel.guildId !== guildId) {
+              result = { tool: "error", message: `Channel ${channel_id} does not belong to this guild` };
+              break;
+            }
+            const msg = await channel.messages.fetch(message_id);
+            const imageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+            const urls = [...msg.attachments.values()]
+              .filter((a) => a.contentType && imageTypes.some((t) => a.contentType!.startsWith(t)))
+              .map((a) => a.url);
+            result = { tool: "inspect_image", imageUrls: urls };
+          } catch (err) {
+            result = { tool: "error", message: `Failed to fetch message: ${err}` };
+          }
+          break;
+        }
+        case "get_current_member_info":
+          result = {
+            tool: "get_current_member_info",
+            data: await getCurrentMemberInfo({ ...input, guildId, client } as Parameters<typeof getCurrentMemberInfo>[0]),
+          };
+          break;
+        case "get_channel_info": {
+          const raw = input.channel_id
+            ? await getChannelInfo({ ...input, guildId, client } as Parameters<typeof getChannelInfo>[0])
+            : await listGuildChannels({ guildId, client });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_channel_info", data: raw };
+          break;
+        }
+        case "list_guild_roles": {
+          const raw = await listGuildRoles({ guildId, client });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "list_guild_roles", data: raw };
+          break;
+        }
+        case "update_server_context": {
+          const raw = updateServerContextTool({ ...input, guildId } as Parameters<typeof updateServerContextTool>[0]);
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "update_server_context", data: raw };
+          break;
+        }
+        case "memory": {
+          const action = input.action as string;
+          const raw =
+            action === "write"
+              ? writeMemoryTool({ ...input, guildId } as Parameters<typeof writeMemoryTool>[0])
+              : action === "delete"
+                ? deleteMemoryTool({ ...input, guildId } as Parameters<typeof deleteMemoryTool>[0])
+                : readMemoryTool({ ...input, guildId } as Parameters<typeof readMemoryTool>[0]);
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "memory", data: raw as MemoryData };
+          break;
+        }
+        case "get_guild_info": {
+          const raw = await getGuildInfo({ guildId, client });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "get_guild_info", data: raw };
+          break;
+        }
+        case "list_automod_rules": {
+          const raw = await listAutomodRules({ guildId, client });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "list_automod_rules", data: raw };
+          break;
+        }
+        case "add_automod_keyword": {
+          const raw = await addAutomodKeyword({
+            guildId,
+            ruleId: input.rule_id as string,
+            keyword: input.keyword as string,
+            client,
+          });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_add", data: raw };
+          break;
+        }
+        case "delete_automod_keyword": {
+          const raw = await deleteAutomodKeyword({
+            guildId,
+            ruleId: input.rule_id as string,
+            keyword: input.keyword as string,
+            client,
+          });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "pending_automod_keyword_delete", data: raw };
+          break;
+        }
+        case "timeout_member": {
+          const gc = config.guildConfig[guildId];
+          if (!gc) { result = { tool: "error", message: "Guild not configured" }; break; }
+          const immuneIds = [...new Set([...(gc.modImmuneRoleIds ?? []), ...gc.allowedRoles])];
+          const raw = await timeoutMember({
+            user_id: input.user_id as string,
+            duration_ms: input.duration_ms as number,
+            reason: input.reason as string | undefined,
+            guildId,
+            client,
+            modImmuneRoleIds: immuneIds,
+            dryRun: gc.autoModDryRun,
+          });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "timeout_member", data: raw };
+          break;
+        }
+        case "delete_user_messages": {
+          const gc = config.guildConfig[guildId];
+          const raw = await deleteUserMessages({
+            user_id: input.user_id as string,
+            channel_id: input.channel_id as string,
+            limit: input.limit as number | undefined,
+            guildId,
+            client,
+            dryRun: gc?.autoModDryRun,
+          });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "delete_user_messages", data: raw };
+          break;
+        }
+        case "send_alert_message": {
+          const gc = config.guildConfig[guildId];
+          if (!gc?.alertsChannelId || !gc.modRoleId) {
+            result = { tool: "error", message: "alertsChannelId or modRoleId not configured for this guild" };
+            break;
+          }
+          const raw = await sendAlertMessage({
+            message: input.message as string,
+            guildId,
+            client,
+            alertsChannelId: gc.alertsChannelId,
+            modRoleId: gc.modRoleId,
+            dryRun: gc.autoModDryRun,
+          });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "send_alert_message", data: raw };
+          break;
+        }
+        case "ask_question":
+          result = { tool: "ask_question", question: input.question as string, choices: input.choices as string[] };
+          break;
+        case "get_user_mod_history": {
+          if (!mcpClient) {
+            result = { tool: "error", message: "sushii-mcp not configured" };
+            break;
+          }
+          try {
+            const data = await mcpClient.getUserModHistory({
+              guild_id: guildId,
+              user_id: input.user_id as string,
+              limit: input.limit as number | undefined,
+              before_case_id: input.before_case_id as string | undefined,
+            });
+            result = { tool: "get_user_mod_history", data };
+          } catch (err) {
+            result = { tool: "error", message: String(err) };
+          }
+          break;
+        }
+        case "get_user_cross_server_bans": {
+          if (!mcpClient) {
+            result = { tool: "error", message: "sushii-mcp not configured" };
+            break;
+          }
+          try {
+            const data = await mcpClient.getUserCrossServerBans({
+              user_id: input.user_id as string,
+            });
+            result = { tool: "get_user_cross_server_bans", data };
+          } catch (err) {
+            result = { tool: "error", message: String(err) };
+          }
+          break;
+        }
+        case "get_guild_recent_cases": {
+          if (!mcpClient) {
+            result = { tool: "error", message: "sushii-mcp not configured" };
+            break;
+          }
+          try {
+            const data = await mcpClient.getGuildRecentCases({
+              guild_id: guildId,
+              limit: input.limit as number | undefined,
+            });
+            result = { tool: "get_guild_recent_cases", data };
+          } catch (err) {
+            result = { tool: "error", message: String(err) };
+          }
+          break;
+        }
+        default:
+          result = { tool: "error", message: `Unknown tool: ${call.toolName}` };
       }
+    } catch (err) {
+      logger.error({ err, tool: call.toolName }, "tool error");
+      result = { tool: "error", message: String(err) };
+    }
 
-      return { call, result };
-    }),
+    return { call, result };
+  };
+
+  // timeout_member must land before delete_user_messages — otherwise the offending
+  // user can keep posting new messages while deletion is still in flight.
+  const timeoutCalls = toolCalls.filter((c) => c.toolName === "timeout_member");
+  const otherCalls = toolCalls.filter((c) => c.toolName !== "timeout_member");
+
+  const timeoutResults = await Promise.all(timeoutCalls.map(executeSingleTool));
+  const otherResults = await Promise.all(otherCalls.map(executeSingleTool));
+
+  const resultByCallId = new Map(
+    [...timeoutResults, ...otherResults].map((r) => [r.call.toolCallId, r] as const),
   );
+  const rawResults = toolCalls.map((c) => resultByCallId.get(c.toolCallId)!);
 
   const discoveredUsers = new Map<string, UserNames>();
   const toolResultParts: ToolModelMessage["content"] = [];

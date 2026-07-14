@@ -7,6 +7,12 @@ export interface DeleteUserMessagesArgs {
   limit?: number;
   guildId: string;
   client: Client<true>;
+  dryRun?: boolean;
+}
+
+export interface DeletedMessageSummary {
+  id: string;
+  content: string;
 }
 
 export interface DeleteUserMessagesResult {
@@ -15,12 +21,22 @@ export interface DeleteUserMessagesResult {
   bulkDeleted: number;
   sequentialDeleted: number;
   errors: number;
+  deleted: DeletedMessageSummary[];
+  dryRun?: boolean;
 }
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_REPORTED_CONTENT = 200;
+const MAX_REPORTED_MESSAGES = 25;
 
 function snowflakeToMs(id: string): number {
   return Number((BigInt(id) >> 22n) + 1420070400000n);
+}
+
+function summarize(id: string, contentById: Map<string, string>): DeletedMessageSummary {
+  const raw = contentById.get(id) ?? "";
+  const content = raw.length > 0 ? raw.slice(0, MAX_REPORTED_CONTENT) : "(no text content — attachment/embed only)";
+  return { id, content };
 }
 
 export async function deleteUserMessages(
@@ -39,19 +55,25 @@ export async function deleteUserMessages(
     return { error: `Failed to fetch channel: ${err}` };
   }
 
-  // Pull message IDs from local cache first
+  // Pull message IDs (and content, for reporting) from local cache first
   const cached = searchMessages({ guildId: args.guildId, user_ids: [args.user_id], channel_id: args.channel_id, limit });
-  const messageIds: string[] = Array.isArray(cached)
-    ? cached.map((r) => r.discord_id)
-    : [];
+  const messageIds: string[] = [];
+  const contentById = new Map<string, string>();
+  if (Array.isArray(cached)) {
+    for (const r of cached) {
+      messageIds.push(r.discord_id);
+      contentById.set(r.discord_id, r.content);
+    }
+  }
 
   // API fallback if cache is thin
   if (messageIds.length < 5) {
     try {
       const fetched = await channel.messages.fetch({ limit: 100 });
       for (const [id, msg] of fetched) {
-        if (msg.author.id === args.user_id && !messageIds.includes(id)) {
+        if (msg.author.id === args.user_id && !contentById.has(id)) {
           messageIds.push(id);
+          contentById.set(id, msg.content);
         }
       }
     } catch {
@@ -68,20 +90,39 @@ export async function deleteUserMessages(
     else oldIds.push(id);
   }
 
+  if (args.dryRun) {
+    const attempted = [...recentIds, ...oldIds];
+    return {
+      ok: true,
+      requested: messageIds.length,
+      bulkDeleted: recentIds.length,
+      sequentialDeleted: oldIds.length,
+      errors: 0,
+      deleted: attempted.slice(0, MAX_REPORTED_MESSAGES).map((id) => summarize(id, contentById)),
+      dryRun: true,
+    };
+  }
+
   let bulkDeleted = 0;
   let sequentialDeleted = 0;
   let errors = 0;
+  const deleted: DeletedMessageSummary[] = [];
 
   if (recentIds.length > 0 && "bulkDelete" in channel) {
     try {
-      const deleted = await channel.bulkDelete(recentIds, true);
-      bulkDeleted = deleted.size;
+      const result = await channel.bulkDelete(recentIds, true);
+      bulkDeleted = result.size;
+      for (const id of result.keys()) deleted.push(summarize(id, contentById));
     } catch {
       // fall through to sequential
       for (const id of recentIds) {
         try {
           const msg = await channel.messages.fetch(id).catch(() => null);
-          if (msg) { await msg.delete(); sequentialDeleted++; }
+          if (msg) {
+            await msg.delete();
+            sequentialDeleted++;
+            deleted.push(summarize(id, contentById));
+          }
         } catch { errors++; }
       }
     }
@@ -90,7 +131,11 @@ export async function deleteUserMessages(
   for (const id of oldIds) {
     try {
       const msg = await channel.messages.fetch(id).catch(() => null);
-      if (msg) { await msg.delete(); sequentialDeleted++; }
+      if (msg) {
+        await msg.delete();
+        sequentialDeleted++;
+        deleted.push(summarize(id, contentById));
+      }
     } catch { errors++; }
   }
 
@@ -100,5 +145,6 @@ export async function deleteUserMessages(
     bulkDeleted,
     sequentialDeleted,
     errors,
+    deleted: deleted.slice(0, MAX_REPORTED_MESSAGES),
   };
 }

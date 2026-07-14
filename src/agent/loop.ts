@@ -296,8 +296,8 @@ Trigger message (msg:${t.incidentChannelId}/${t.triggerMessageId}): "${t.trigger
 
 **If all three conditions are met (clear target + clear violation + new member):**
 a. Call timeout_member for the offending user. Default: 3600000 ms (1 hour). Only increase if the violation strongly justifies it. Max is 2419200000 ms (28 days).
-b. Call delete_user_messages to remove their recent messages in c:${t.incidentChannelId} only.
-c. Call send_alert_message with a 3–5 sentence summary: who, what they did, join date, what action was taken, message count deleted, timeout duration. Include msg: citations.
+b. Decide separately whether to also delete their messages — deletion is NOT automatic just because you're timing someone out. Only call delete_user_messages if the message content itself is harmful for other members to keep seeing: harassment, slurs, threats, NSFW/disturbing content, doxxing, or trolling/instigation directed at other members (rude, inflammatory, deliberately annoying). Do NOT delete messages that are merely spam, low-effort, or off-topic with no harmful content — the timeout already stops further posting, and there's no benefit to scrubbing harmless clutter. When in doubt, don't delete.
+c. Call send_alert_message with a 3–5 sentence summary: who, what they did, join date, what action was taken (including whether messages were deleted and why or why not), message count deleted (if any), timeout duration. Include msg: citations.
 
 **If any condition is NOT met (ambiguous target, ambiguous violation, or member joined > ${t.newMemberThresholdDays} days ago):**
 Call send_alert_message with your investigation findings and a clear recommendation. Do NOT timeout or delete. Include why you didn't act (e.g. "member joined 14 days ago — manual review needed").
@@ -306,6 +306,7 @@ Call send_alert_message with your investigation findings and a clear recommendat
 - NEVER action u:${t.reporterUserId} (the reporter who triggered this).
 - NEVER action a user whose roles include any of these immune role IDs: ${immuneList}. If timeout_member returns an immune-role error, fall back to send_alert_message immediately.
 - NEVER call delete_user_messages with a channel_id other than c:${t.incidentChannelId}.
+- Timeout and deletion are independent decisions — timeout the account whenever the gate is met, but only delete if the content itself is harmful/trolling/inappropriate, not for plain spam.
 - Timeout cap is 28 days (2419200000 ms) — clamp if the LLM suggests more.
 - If the offending user has already left the server, skip timeout/delete and call send_alert_message only.
 - Always call send_alert_message at the end — even if no action was taken.
