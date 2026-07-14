@@ -13,11 +13,13 @@ const logger = getLogger("agent");
 const tracer = trace.getTracer("sushii-agent");
 
 const AUTO_MOD_ONLY_TOOLS = new Set(["timeout_member", "delete_user_messages", "send_alert_message"]);
+const EXA_TOOLS = new Set(["web_search", "fetch_url_content"]);
 
 function buildAiTools(autoModMode = false): Parameters<typeof generateText>[0]["tools"] {
   return Object.fromEntries(
     TOOL_DEFINITIONS
       .filter((def) => autoModMode || !AUTO_MOD_ONLY_TOOLS.has(def.function.name))
+      .filter((def) => config.exaApiKey || !EXA_TOOLS.has(def.function.name))
       .map((def) => [
         def.function.name,
         {

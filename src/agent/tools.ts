@@ -460,6 +460,51 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "web_search",
+      description:
+        "Search the public web for current information not in the message cache or your training data — e.g. known scam/phishing patterns, breaking news, verifying a claim, or looking up a linked website. Returns titles, URLs, and query-relevant excerpts.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The search query.",
+          },
+          num_results: {
+            type: "number",
+            description: "Number of results to return (default: 5, max: 10).",
+          },
+          search_type: {
+            type: "string",
+            enum: ["auto", "instant", "fast"],
+            description: "Search speed/depth tradeoff. 'auto' (default) balances relevance and speed. 'instant' is fastest for quick lookups. 'fast' trades a bit of speed for better relevance.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_url_content",
+      description:
+        "Fetch the clean parsed text content of a specific, known URL — e.g. a link a moderator pasted or a link found in a message. Use this instead of web_search when you already have the exact URL and need to know what's on the page.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "The exact URL to fetch content for.",
+          },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_channel_info",
       description:
         "Get channel information. Without channel_id: lists all channels in the server organized by category — use this to understand the server structure, which channels are private (mod-only), etc. With channel_id: get details about that specific channel — name, type, privacy, category, and topic.",

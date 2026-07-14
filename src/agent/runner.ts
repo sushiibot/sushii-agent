@@ -23,6 +23,7 @@ import { deleteAutomodKeyword, type PendingAutomodDeletion } from "../tools/dele
 import { timeoutMember, type TimeoutMemberResult } from "../tools/timeoutMember.ts";
 import { deleteUserMessages, type DeleteUserMessagesResult } from "../tools/deleteUserMessages.ts";
 import { sendAlertMessage, type SendAlertMessageResult } from "../tools/sendAlertMessage.ts";
+import { webSearch, fetchUrlContent, type WebSearchResultItem, type UrlContentResult } from "../tools/webSearch.ts";
 import type { MemoryRow } from "../db/memory.ts";
 import { getLogger } from "../logger.ts";
 import { config } from "../config.ts";
@@ -103,7 +104,9 @@ type ToolResult =
   | { tool: "get_guild_recent_cases"; data: ModCase[] }
   | { tool: "timeout_member"; data: TimeoutMemberResult }
   | { tool: "delete_user_messages"; data: DeleteUserMessagesResult }
-  | { tool: "send_alert_message"; data: SendAlertMessageResult };
+  | { tool: "send_alert_message"; data: SendAlertMessageResult }
+  | { tool: "web_search"; data: WebSearchResultItem[] }
+  | { tool: "fetch_url_content"; data: UrlContentResult };
 
 function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
@@ -428,6 +431,27 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>): s
 
     case "send_alert_message":
       return `Alert sent (msg:${result.data.messageId})`;
+
+    case "web_search": {
+      if (result.data.length === 0) return "(no results)";
+      return result.data
+        .map((r) => {
+          const lines: string[] = [`${r.title ?? "(untitled)"} — ${r.url}`];
+          if (r.publishedDate) lines.push(`  published: ${r.publishedDate}`);
+          for (const h of r.highlights) lines.push(`  "${h}"`);
+          return lines.join("\n");
+        })
+        .join("\n\n");
+    }
+
+    case "fetch_url_content": {
+      const r = result.data;
+      const lines: string[] = [`${r.title ?? "(untitled)"} — ${r.url}`];
+      if (r.publishedDate) lines.push(`published: ${r.publishedDate}`);
+      lines.push("", r.text || "(no text content)");
+      if (r.truncated) lines.push("", "[content truncated — page may contain more]");
+      return lines.join("\n");
+    }
 
     // ask_question, inspect_image, and pending approvals are handled before formatToolResult is called
     case "ask_question":
@@ -756,6 +780,20 @@ export async function runTools(
           } catch (err) {
             result = { tool: "error", message: String(err) };
           }
+          break;
+        }
+        case "web_search": {
+          const raw = await webSearch({
+            ...coerceNumericFields(input, ["num_results"]),
+            query: input.query as string,
+            search_type: input.search_type as Parameters<typeof webSearch>[0]["search_type"],
+          });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "web_search", data: raw };
+          break;
+        }
+        case "fetch_url_content": {
+          const raw = await fetchUrlContent({ url: input.url as string });
+          result = isError(raw) ? { tool: "error", message: raw.error } : { tool: "fetch_url_content", data: raw };
           break;
         }
         default:

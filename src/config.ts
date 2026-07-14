@@ -36,6 +36,7 @@ export interface Config {
   guildConfig: Record<string, GuildConfig>;
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
+  exaApiKey: string | undefined;
 }
 
 function required(name: string): string {
@@ -72,4 +73,5 @@ export const config: Config = {
   guildConfig: loadGuildConfig(),
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
+  exaApiKey: process.env["EXA_API_KEY"],
 };
