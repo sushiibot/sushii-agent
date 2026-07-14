@@ -1080,10 +1080,12 @@ async function handleAutoModTrigger(
         ? (message.channel as { name: string }).name
         : message.channelId;
 
+    const triggerMessageLink = `https://discord.com/channels/${guildId}/${message.channelId}/${message.id}`;
+
     // No mod-role mention here — send_alert_message edits this message in place once the
     // investigation concludes, and Discord notifies on a mention newly added via edit.
     const anchor = await alertsChannel.send({
-      content: `🔍 Auto-mod investigating an incident in <#${message.channelId}>...`,
+      content: `🔍 Auto-mod investigating an incident in <#${message.channelId}> — [triggering message](${triggerMessageLink})...`,
       allowedMentions: { parse: [] },
     });
 
