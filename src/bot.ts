@@ -282,7 +282,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
     const cooldownMs = (guildConfig.autoModCooldownSeconds ?? DEFAULT_AUTOMOD_COOLDOWN_SECONDS) * 1000;
     const lastTriggered = autoModCooldowns.get(cooldownKey) ?? 0;
     if (Date.now() - lastTriggered < cooldownMs) {
-      await message.react("🔁").catch(() => {});
+      logger.debug({ guildId: message.guildId, channelId: message.channelId }, "auto-mod trigger suppressed by cooldown");
       return;
     }
     autoModCooldowns.set(cooldownKey, Date.now());
