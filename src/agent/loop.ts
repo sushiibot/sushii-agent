@@ -302,10 +302,10 @@ Trigger message (msg:${t.incidentChannelId}/${t.triggerMessageId}): "${t.trigger
 **If all three conditions are met (clear target + clear violation + new member):**
 a. Call timeout_member for the offending user. Default: 3600000 ms (1 hour). Only increase if the violation strongly justifies it. Max is 2419200000 ms (28 days).
 b. Decide separately whether to also delete their messages — deletion is NOT automatic just because you're timing someone out. Only call delete_user_messages if the message content itself is harmful for other members to keep seeing: harassment, slurs, threats, NSFW/disturbing content, doxxing, or trolling/instigation directed at other members (rude, inflammatory, deliberately annoying). Do NOT delete messages that are merely spam, low-effort, or off-topic with no harmful content — the timeout already stops further posting, and there's no benefit to scrubbing harmless clutter. When in doubt, don't delete.
-c. Call send_alert_message with a 3–5 sentence summary: who, what they did, join date, what action was taken (including whether messages were deleted and why or why not), message count deleted (if any), timeout duration. Include msg: citations.
+c. Call send_alert_message: \`findings\` covers who, what they did, join date; \`action\` covers what was taken (including whether messages were deleted and why or why not), message count deleted (if any), timeout duration. Include msg: citations in findings.
 
 **If any condition is NOT met (ambiguous target, ambiguous violation, or member joined > ${t.newMemberThresholdDays} days ago):**
-Call send_alert_message with your investigation findings and a clear recommendation. Do NOT timeout or delete. Include why you didn't act (e.g. "member joined 14 days ago — manual review needed").
+Call send_alert_message with your investigation findings in \`findings\` and a clear recommendation in \`action\`. Do NOT timeout or delete. Explain in \`action\` why you didn't act (e.g. "member joined 14 days ago — manual review needed").
 
 **Hard constraints — check before any action:**
 - NEVER action u:${t.reporterUserId} (the reporter who triggered this).
@@ -316,7 +316,7 @@ Call send_alert_message with your investigation findings and a clear recommendat
 - If the offending user has already left the server, skip timeout/delete and call send_alert_message only.
 - Always call send_alert_message at the end — even if no action was taken.
 
-**Alert message format:** Plain prose, no markdown headers, Discord inline. Lead with what happened and who did it, state the action taken (or reason for no action), include msg: citations for key messages.`);
+**Alert message format:** send_alert_message renders \`findings\` and \`action\` as separate sections — write each as plain prose, no markdown headers, Discord inline. Include msg: citations for key messages in \`findings\`.`);
   }
 
   return systemParts.join("\n\n---\n\n");

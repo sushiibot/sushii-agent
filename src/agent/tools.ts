@@ -560,13 +560,14 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "send_alert_message",
       description:
-        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. Write the message as prose: who, what they did, what action was taken (or why no action), with msg: citations.",
+        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. The alert is rendered as separate sections, so keep findings and action separate rather than blending them into one paragraph.",
       parameters: {
         type: "object",
         properties: {
-          message: { type: "string", description: "Alert message body. 3–5 sentences. No markdown headers. Include msg: citations and t: timestamps." },
+          findings: { type: "string", description: "What you found during investigation: who did it, join date, prior history, the pattern observed. 2–4 sentences, prose, no markdown headers. Include msg: citations and t: timestamps." },
+          action: { type: "string", description: "What action was taken (or why none was) and the reasoning — timeout duration, whether messages were deleted and why/why not, or why manual review is needed instead. 1–3 sentences, prose, no markdown headers." },
         },
-        required: ["message"],
+        required: ["findings", "action"],
       },
     },
   },

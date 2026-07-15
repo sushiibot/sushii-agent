@@ -724,7 +724,8 @@ export async function runTools(
             break;
           }
           const raw = await sendAlertMessage({
-            message: input.message as string,
+            findings: input.findings as string,
+            action: input.action as string,
             guildId,
             client,
             alertsChannelId: gc.alertsChannelId,

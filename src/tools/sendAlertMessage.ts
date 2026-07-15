@@ -1,8 +1,17 @@
-import type { Client, GuildTextBasedChannel } from "discord.js";
-import { expandMessageLinks } from "../utils/expandMessageLinks.ts";
+import {
+  ContainerBuilder,
+  MessageFlags,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
+  TextDisplayBuilder,
+  type Client,
+  type GuildTextBasedChannel,
+} from "discord.js";
+import { renderModelText } from "../utils/discordText.ts";
 
 export interface SendAlertMessageArgs {
-  message: string;
+  findings: string;
+  action: string;
   guildId: string;
   client: Client<true>;
   alertsChannelId: string;
@@ -10,7 +19,7 @@ export interface SendAlertMessageArgs {
   dryRun?: boolean;
   /** ID of the silent anchor message to edit in place, delivering the mod-role ping on first mention. Falls back to sending a new message if editing fails. */
   anchorMessageId?: string;
-  /** Channel + message the mod-role ping originated from — always appended for context, regardless of what the model cites. */
+  /** Channel + message the mod-role ping originated from — always rendered as its own section, regardless of what the model cites. */
   incidentChannelId?: string;
   triggerMessageId?: string;
 }
@@ -34,26 +43,45 @@ export async function sendAlertMessage(
     return { error: `Failed to fetch alerts channel: ${err}` };
   }
 
-  // Prepend the role mention ourselves — don't rely on LLM to include role ID syntax
-  const dryRunTag = args.dryRun ? "🧪 **DRY RUN — no action was actually taken.**\n" : "";
-  // Re-render any msg: citations the model included as real jump links (they're posted
-  // straight to Discord here, bypassing the expansion normal chat responses get).
-  const expandedMessage = expandMessageLinks(args.message, args.guildId);
-  // Always include the original trigger, regardless of whether the model cited it, so the
-  // final alert stands alone with full context even if the anchor's own text got overwritten.
+  const renderOpts = { guildId: args.guildId };
+  const container = new ContainerBuilder().addTextDisplayComponents(
+    new TextDisplayBuilder({ content: `<@&${args.modRoleId}> 🚨 **Auto-mod alert**` }),
+  );
+
+  container.addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
   const triggerLine =
     args.incidentChannelId && args.triggerMessageId
-      ? `\n\n-# Incident in <#${args.incidentChannelId}> — https://discord.com/channels/${args.guildId}/${args.incidentChannelId}/${args.triggerMessageId}`
-      : "";
-  const content = `<@&${args.modRoleId}> ${dryRunTag}${expandedMessage}${triggerLine}`;
+      ? `Triggered by: https://discord.com/channels/${args.guildId}/${args.incidentChannelId}/${args.triggerMessageId}`
+      : "(trigger info unavailable)";
+  container.addTextDisplayComponents(new TextDisplayBuilder({ content: `**Trigger**\n${triggerLine}` }));
+
+  container.addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder({ content: `**Findings**\n${renderModelText(args.findings, renderOpts)}` }),
+  );
+
+  container.addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder({ content: `**Action taken**\n${renderModelText(args.action, renderOpts)}` }),
+  );
+
+  if (args.dryRun) {
+    container.addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
+    container.addTextDisplayComponents(
+      new TextDisplayBuilder({ content: "🧪 **DRY RUN — no action was actually taken.**" }),
+    );
+  }
+
+  const payload = {
+    components: [container],
+    flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressNotifications,
+    allowedMentions: { roles: [args.modRoleId] },
+  };
 
   if (args.anchorMessageId) {
     try {
       const anchor = await channel.messages.fetch(args.anchorMessageId);
-      const edited = await anchor.edit({
-        content,
-        allowedMentions: { roles: [args.modRoleId] },
-      });
+      const edited = await anchor.edit(payload);
       return { ok: true, messageId: edited.id };
     } catch {
       // Anchor may have been deleted or is otherwise unreachable — fall through to sending fresh.
@@ -61,10 +89,7 @@ export async function sendAlertMessage(
   }
 
   try {
-    const sent = await channel.send({
-      content,
-      allowedMentions: { roles: [args.modRoleId] },
-    });
+    const sent = await channel.send(payload);
     return { ok: true, messageId: sent.id };
   } catch (err) {
     return { error: `Failed to send alert: ${err}` };
