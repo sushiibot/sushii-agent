@@ -7,6 +7,7 @@ import { config } from "../config.ts";
 import { getLogger } from "../logger.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
 import { runTools, type UserNames, type PendingQuestion, type PendingAutomodApproval, type PendingAutomodDeletion } from "./runner.ts";
+import { renderModelText } from "../utils/discordText.ts";
 
 const logger = getLogger("agent");
 
@@ -547,7 +548,7 @@ export async function runAgentLoop(
             || (zeroContent
               ? ZERO_CONTENT_USER_MSG
               : "(no response)");
-          const content = expandDiscordTokens(fixBlockquotes(displayText), opts.emojiMap);
+          const content = renderModelText(displayText, { guildId, emojiMap: opts.emojiMap });
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
           log.info({ iterations, responseLength: content.length }, "done");
@@ -578,7 +579,7 @@ export async function runAgentLoop(
           }
 
           if (text && !text.startsWith("[Internal:") && opts.onInterimText) {
-            await opts.onInterimText(expandDiscordTokens(fixBlockquotes(text), opts.emojiMap));
+            await opts.onInterimText(renderModelText(text, { guildId, emojiMap: opts.emojiMap }));
           }
 
           // Add assistant message with tool calls to history (preserves reasoning_content for thinking models)
@@ -640,7 +641,7 @@ export async function runAgentLoop(
         // Unexpected finish reason
         log.warn({ finishReason }, "unexpected finish_reason, treating as final");
         messages.push(...result.response.messages);
-        const content = expandDiscordTokens(fixBlockquotes(text || "(no response)"), opts.emojiMap);
+        const content = renderModelText(text || "(no response)", { guildId, emojiMap: opts.emojiMap });
         const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
         return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
       }
@@ -671,7 +672,7 @@ export async function runAgentLoop(
         lastInputTokens = finalResult.usage.inputTokens ?? 0;
       }
       messages.push(...finalResult.response.messages);
-      const forcedContent = expandDiscordTokens(fixBlockquotes(finalResult.text || "(no response)"), opts.emojiMap);
+      const forcedContent = renderModelText(finalResult.text || "(no response)", { guildId, emojiMap: opts.emojiMap });
       const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
       return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
     } catch (err) {
@@ -736,27 +737,3 @@ function buildFooter(
   return `${statsLine}\n${toolLines.join("\n")}`;
 }
 
-/** Fix bare ">" lines so Discord renders them as empty blockquote continuation lines. */
-function fixBlockquotes(text: string): string {
-  return text.replace(/^>$/gm, "> ");
-}
-
-/**
- * Expand short-prefix tokens the model outputs into Discord-rendered syntax.
- * The model writes u:ID, c:ID, t:SECONDS:FLAG, e:name — we expand them here so the
- * model never has to produce angle-bracket syntax directly.
- */
-function expandDiscordTokens(text: string, emojiMap?: Record<string, string>): string {
-  let result = text
-    .replace(/\bu:(\d{15,20})\b/g, "<@$1>")
-    .replace(/\bc:(\d{15,20})\b/g, "<#$1>")
-    .replace(/\bt:(\d{8,12}):([A-Za-z])\b/g, "<t:$1:$2>");
-
-  if (emojiMap) {
-    result = result.replace(/\be:(\w+)\b/g, (match, name) => emojiMap[name] ?? match);
-  }
-
-  return result;
-}
-
-export { expandMessageLinks } from "../utils/expandMessageLinks.ts";

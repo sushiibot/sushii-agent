@@ -23,6 +23,7 @@ import {
 } from "discord.js";
 import { trace, SpanStatusCode, type Span } from "@opentelemetry/api";
 import { buildMessageContent } from "./utils/flattenMessage.ts";
+import { renderModelText } from "./utils/discordText.ts";
 import { config, buildEmojiMap, type GuildConfig } from "./config.ts";
 import { getLogger } from "./logger.ts";
 import {
@@ -33,7 +34,7 @@ import {
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
 import { savePendingQuestion, deletePendingQuestion, loadAllPendingQuestions, deleteStalePendingQuestions } from "./db/pendingQuestions.ts";
-import { runAgentLoop, expandMessageLinks, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval, type PendingAutomodDeletion, type AutoModTriggerContext } from "./agent/loop.ts";
+import { runAgentLoop, buildSystemPrompt, formatToolArg, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult, type AgentLoopOptions, type PendingAutomodApproval, type PendingAutomodDeletion, type AutoModTriggerContext } from "./agent/loop.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount, MEMORY_LIMIT } from "./db/memory.ts";
 import { TOOL_DEFINITIONS } from "./agent/tools.ts";
@@ -664,10 +665,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
             },
           );
           if (scanResult.response) {
-            const expanded = expandMessageLinks(scanResult.response, guildId);
-            const componentMsgs = buildComponentMessages(expanded);
+            const componentMsgs = buildComponentMessages(scanResult.response);
             logger.child({ threadId: pending.threadId, guildId }).debug(
-              { messageCount: componentMsgs.length, content: expanded },
+              { messageCount: componentMsgs.length, content: scanResult.response },
               "discord scan response sent",
             );
             for (const msgOpts of componentMsgs) {
@@ -983,11 +983,10 @@ async function handleAgentResult(
     pendingAutomodDeletions.set(threadId, { ...pendingAutomodDeletion, triggeredByUserId });
     await sendAutomodDeletionMessage(thread, pendingAutomodDeletion);
   } else {
-    const expanded = expandMessageLinks(response, guildId);
-    const componentMsgs = buildComponentMessages(expanded);
+    const componentMsgs = buildComponentMessages(response);
     appendFeedbackButtons(componentMsgs, threadId);
     logger.child({ threadId, guildId }).debug(
-      { messageCount: componentMsgs.length, content: expanded },
+      { messageCount: componentMsgs.length, content: response },
       "discord response sent",
     );
     for (const msgOpts of componentMsgs) {
@@ -1251,10 +1250,9 @@ function buildLoopOptions(
     autoModTrigger: opts.autoModTrigger,
     onInterimText: async (text) => {
       await toolTracker.reset();
-      const expanded = expandMessageLinks(text, guildId);
-      const componentMsgs = buildComponentMessages(expanded);
+      const componentMsgs = buildComponentMessages(text);
       logger.child({ threadId, guildId }).debug(
-        { messageCount: componentMsgs.length, content: expanded },
+        { messageCount: componentMsgs.length, content: text },
         "discord interim response sent",
       );
       for (const msgOpts of componentMsgs) {
@@ -1372,7 +1370,7 @@ async function sendQuestionWithButtons(
   );
 
   const container = new ContainerBuilder()
-    .addTextDisplayComponents(new TextDisplayBuilder({ content: question }))
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: renderModelText(question, { guildId: thread.guildId }) }))
     .addActionRowComponents(row);
 
   await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
@@ -1384,9 +1382,10 @@ async function disableQuestionButtons(
   selectedLabel: string,
 ): Promise<void> {
   try {
+    const expandedQuestion = renderModelText(question, { guildId: interaction.guildId! });
     const container = new ContainerBuilder()
       .addTextDisplayComponents(
-        new TextDisplayBuilder({ content: `${question}\n-# Selected: ${selectedLabel}` }),
+        new TextDisplayBuilder({ content: `${expandedQuestion}\n-# Selected: ${selectedLabel}` }),
       );
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
