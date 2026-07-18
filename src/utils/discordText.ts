@@ -14,6 +14,7 @@ export function renderModelText(text: string, opts: RenderModelTextOptions): str
   let result = fixBlockquotes(text);
   result = expandDiscordTokens(result, opts.emojiMap);
   result = expandMessageLinks(result, opts.guildId);
+  result = unwrapCodeSpansContainingMarkup(result);
   return result;
 }
 
@@ -22,18 +23,31 @@ function fixBlockquotes(text: string): string {
   return text.replace(/^>$/gm, "> ");
 }
 
-/** The model writes u:ID, c:ID, t:SECONDS:FLAG, e:name instead of raw angle-bracket syntax. */
+/** The model writes u:ID, c:ID, t:SECONDS[:FLAG], e:name instead of raw angle-bracket syntax. */
 function expandDiscordTokens(text: string, emojiMap?: Record<string, string>): string {
   let result = text
     .replace(/\bu:(\d{15,20})\b/g, "<@$1>")
     .replace(/\bc:(\d{15,20})\b/g, "<#$1>")
-    .replace(/\bt:(\d{8,12}):([A-Za-z])\b/g, "<t:$1:$2>");
+    // Flag defaults to :f when the model drops it.
+    .replace(/\bt:(\d{8,12})(?::([A-Za-z]))?\b/g, (_, secs, flag) => `<t:${secs}:${flag ?? "f"}>`);
 
   if (emojiMap) {
     result = result.replace(/\be:(\w+)\b/g, (match, name) => emojiMap[name] ?? match);
   }
 
   return result;
+}
+
+/**
+ * The model sometimes wraps whole evidence lines in a single inline-code span,
+ * which suppresses Discord markup (mentions, timestamps, emoji) inside it.
+ * Unwrap any single-backtick span that contains already-expanded markup.
+ */
+function unwrapCodeSpansContainingMarkup(text: string): string {
+  return text.replace(
+    /`([^`\n]*(?:<@!?\d{15,20}>|<#\d{15,20}>|<t:\d{8,12}:[A-Za-z]>|<a?:\w+:\d+>)[^`\n]*)`/g,
+    "$1",
+  );
 }
 
 /** The model writes msg:CHANNEL_ID/MESSAGE_ID citations instead of full jump links. */
