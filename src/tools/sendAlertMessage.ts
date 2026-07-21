@@ -7,7 +7,10 @@ import {
   type Client,
   type GuildTextBasedChannel,
 } from "discord.js";
+import { getLogger } from "../logger.ts";
 import { renderModelText } from "../utils/discordText.ts";
+
+const logger = getLogger("sendAlertMessage");
 
 export interface SendAlertMessageArgs {
   findings: string;
@@ -83,8 +86,9 @@ export async function sendAlertMessage(
       const anchor = await channel.messages.fetch(args.anchorMessageId);
       const edited = await anchor.edit(payload);
       return { ok: true, messageId: edited.id };
-    } catch {
+    } catch (err) {
       // Anchor may have been deleted or is otherwise unreachable — fall through to sending fresh.
+      logger.warn({ err, anchorMessageId: args.anchorMessageId }, "Failed to edit anchor message, sending fresh alert");
     }
   }
 

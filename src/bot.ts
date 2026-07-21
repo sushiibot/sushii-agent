@@ -1130,10 +1130,20 @@ async function handleAutoModTrigger(
 
     const triggerMessageLink = `https://discord.com/channels/${guildId}/${message.channelId}/${message.id}`;
 
+    // Sent as Components V2 from the start: Discord's IS_COMPONENTS_V2 flag is set at
+    // creation and can't be toggled on later via edit, so send_alert_message's in-place
+    // edit into a Container would silently fail (and fall back to a fresh message) if this
+    // anchor weren't already V2.
     // No mod-role mention here — send_alert_message edits this message in place once the
     // investigation concludes, and Discord notifies on a mention newly added via edit.
+    const anchorContainer = new ContainerBuilder().addTextDisplayComponents(
+      new TextDisplayBuilder({
+        content: `🔍 Auto-mod investigating an incident in <#${message.channelId}> — ${triggerMessageLink}...`,
+      }),
+    );
     const anchor = await alertsChannel.send({
-      content: `🔍 Auto-mod investigating an incident in <#${message.channelId}> — [triggering message](${triggerMessageLink})...`,
+      components: [anchorContainer],
+      flags: MessageFlags.IsComponentsV2,
       allowedMentions: { parse: [] },
     });
 
