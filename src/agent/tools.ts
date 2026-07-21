@@ -560,12 +560,20 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "send_alert_message",
       description:
-        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. The alert is rendered as separate sections, so keep findings and action separate rather than blending them into one paragraph.",
+        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. The alert is rendered as separate sections, so keep findings and action separate rather than blending them into one paragraph. Both fields should be skimmable, not dense prose — a mod reading this in Discord should get the gist in a few seconds.",
       parameters: {
         type: "object",
         properties: {
-          findings: { type: "string", description: "What you found during investigation: who did it, join date, prior history, the pattern observed. 2–4 sentences, prose, no markdown headers. Include msg: citations and t: timestamps." },
-          action: { type: "string", description: "What action was taken (or why none was) and the reasoning — timeout duration, whether messages were deleted and why/why not, or why manual review is needed instead. 1–3 sentences, prose, no markdown headers." },
+          findings: {
+            type: "string",
+            description:
+              "What you found during investigation, as a short bullet list (one `- ` bullet per fact/event, in chronological order if it's a timeline) — not a paragraph. Cover: who did it, join date, prior history, the pattern observed, each relevant message/reaction. Include msg: citations and t: timestamps inline on the bullet they support.",
+          },
+          action: {
+            type: "string",
+            description:
+              "Structured, labeled summary of the outcome — use bold labels on their own line, not a paragraph, e.g.:\n**Action:** <what was done, or \"none — flagged for manual review\">\n**Why:** <the specific trigger/evidence that justified it>\n**Background:** <relevant context — account age, history, prior warnings>\n**Recommendation:** <only if follow-up is needed, e.g. manual pfp review>\nOmit a label if there's nothing to say for it. Keep each line to 1 sentence.",
+          },
         },
         required: ["findings", "action"],
       },
