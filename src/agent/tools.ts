@@ -283,9 +283,10 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           },
           image_url: {
             type: "string",
-            description: "Direct URL of an image to inspect, e.g. an avatarUrl returned by get_current_member_info. Omit if using channel_id + message_id.",
+            description: "Direct URL of an image to inspect, e.g. an avatarUrl returned by get_current_member_info. Must be a Discord CDN URL (cdn.discordapp.com or media.discordapp.net) — arbitrary external URLs are rejected. Omit if using channel_id + message_id.",
           },
         },
+        anyOf: [{ required: ["image_url"] }, { required: ["channel_id", "message_id"] }],
       },
     },
   },

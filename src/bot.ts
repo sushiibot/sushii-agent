@@ -67,6 +67,11 @@ function withInteractionSpan<T>(
   });
 }
 
+/** Builds a Components V2 container holding a single TextDisplay — the common shape for plain-text component messages. */
+function buildTextDisplayContainer(content: string): ContainerBuilder {
+  return new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder({ content }));
+}
+
 /**
  * Tracks tool calls during an agent loop iteration and displays them as a live
  * Discord message that gets edited in place. Multiple rapid calls are batched
@@ -123,9 +128,7 @@ class ToolProgressTracker {
         .setLabel("⬛ Stop")
         .setStyle(ButtonStyle.Danger),
     );
-    const container = new ContainerBuilder()
-      .addTextDisplayComponents(new TextDisplayBuilder({ content: this.lastContent }))
-      .addActionRowComponents(stopRow);
+    const container = buildTextDisplayContainer(this.lastContent).addActionRowComponents(stopRow);
     try {
       if (!this.msg) {
         this.msg = await this.thread.send({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
@@ -144,9 +147,7 @@ class ToolProgressTracker {
   async reset(): Promise<void> {
     this.cancelPendingFlush();
     if (this.msg && this.lastContent) {
-      const container = new ContainerBuilder().addTextDisplayComponents(
-        new TextDisplayBuilder({ content: this.lastContent }),
-      );
+      const container = buildTextDisplayContainer(this.lastContent);
       try {
         await this.msg.edit({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
       } catch (err) {
@@ -173,9 +174,7 @@ class ToolProgressTracker {
     } else {
       content = this.lastContent;
     }
-    const container = new ContainerBuilder().addTextDisplayComponents(
-      new TextDisplayBuilder({ content }),
-    );
+    const container = buildTextDisplayContainer(content);
     try {
       await this.msg.edit({ components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } });
     } catch (err) {
@@ -1130,20 +1129,15 @@ async function handleAutoModTrigger(
 
     const triggerMessageLink = `https://discord.com/channels/${guildId}/${message.channelId}/${message.id}`;
 
-    // Sent as Components V2 from the start: Discord's IS_COMPONENTS_V2 flag is set at
-    // creation and can't be toggled on later via edit, so send_alert_message's in-place
-    // edit into a Container would silently fail (and fall back to a fresh message) if this
-    // anchor weren't already V2.
+    // Sent as Components V2 from the start since IS_COMPONENTS_V2 can't be toggled on via a later edit.
     // No mod-role mention here — send_alert_message edits this message in place once the
     // investigation concludes, and Discord notifies on a mention newly added via edit.
-    const anchorContainer = new ContainerBuilder().addTextDisplayComponents(
-      new TextDisplayBuilder({
-        content: `🔍 Auto-mod investigating an incident in <#${message.channelId}> — ${triggerMessageLink}...`,
-      }),
+    const anchorContainer = buildTextDisplayContainer(
+      `🔍 Auto-mod investigating an incident in <#${message.channelId}> — [triggering message](${triggerMessageLink})...`,
     );
     const anchor = await alertsChannel.send({
       components: [anchorContainer],
-      flags: MessageFlags.IsComponentsV2,
+      flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressEmbeds,
       allowedMentions: { parse: [] },
     });
 
@@ -1355,8 +1349,7 @@ async function sendScanApprovalMessage(thread: ThreadChannel, guildId: string): 
 
 async function disableScanButtons(interaction: ButtonInteraction, selectedLabel: string): Promise<void> {
   try {
-    const container = new ContainerBuilder()
-      .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# Selected: ${selectedLabel}` }));
+    const container = buildTextDisplayContainer(`-# Selected: ${selectedLabel}`);
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
     // Non-critical
@@ -1393,10 +1386,7 @@ async function disableQuestionButtons(
 ): Promise<void> {
   try {
     const expandedQuestion = renderModelText(question, { guildId: interaction.guildId! });
-    const container = new ContainerBuilder()
-      .addTextDisplayComponents(
-        new TextDisplayBuilder({ content: `${expandedQuestion}\n-# Selected: ${selectedLabel}` }),
-      );
+    const container = buildTextDisplayContainer(`${expandedQuestion}\n-# Selected: ${selectedLabel}`);
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
     // Non-critical — if we can't update the message, just continue
@@ -1474,8 +1464,7 @@ async function setAutomodStatus(
   label: string,
 ): Promise<void> {
   try {
-    const container = new ContainerBuilder()
-      .addTextDisplayComponents(new TextDisplayBuilder({ content: `-# ${label}` }));
+    const container = buildTextDisplayContainer(`-# ${label}`);
     await interaction.editReply({ components: [container], flags: MessageFlags.IsComponentsV2 });
   } catch {
     // Non-critical

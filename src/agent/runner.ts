@@ -114,6 +114,17 @@ function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
 }
 
+const DISCORD_CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
+
+/** Restricts model-supplied image URLs to Discord's own CDN to prevent using inspect_image as an arbitrary-URL fetch/exfiltration primitive. */
+function isDiscordCdnUrl(url: string): boolean {
+  try {
+    return DISCORD_CDN_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function extractUsers(result: ToolResult): Map<string, UserNames> {
   const users = new Map<string, UserNames>();
 
@@ -609,6 +620,10 @@ export async function runTools(
             image_url?: string;
           };
           if (image_url) {
+            if (!isDiscordCdnUrl(image_url)) {
+              result = { tool: "error", message: "image_url must be a discordapp.com or discordapp.net CDN URL." };
+              break;
+            }
             result = { tool: "inspect_image", imageUrls: [image_url] };
             break;
           }

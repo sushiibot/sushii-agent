@@ -12,6 +12,16 @@ import { renderModelText } from "../utils/discordText.ts";
 
 const logger = getLogger("sendAlertMessage");
 
+// Discord's Components V2 TextDisplay content is capped at 4000 chars per component.
+const TEXT_DISPLAY_MAX = 4000;
+
+function truncateForTextDisplay(label: string, body: string): string {
+  const content = `${label}\n${body}`;
+  if (content.length <= TEXT_DISPLAY_MAX) return content;
+  const suffix = "\n… (truncated)";
+  return content.slice(0, TEXT_DISPLAY_MAX - suffix.length) + suffix;
+}
+
 export interface SendAlertMessageArgs {
   findings: string;
   action: string;
@@ -60,12 +70,12 @@ export async function sendAlertMessage(
 
   container.addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
   container.addTextDisplayComponents(
-    new TextDisplayBuilder({ content: `**Findings**\n${renderModelText(args.findings, renderOpts)}` }),
+    new TextDisplayBuilder({ content: truncateForTextDisplay("**Findings**", renderModelText(args.findings, renderOpts)) }),
   );
 
   container.addSeparatorComponents(new SeparatorBuilder({ divider: true, spacing: SeparatorSpacingSize.Small }));
   container.addTextDisplayComponents(
-    new TextDisplayBuilder({ content: `**Action taken**\n${renderModelText(args.action, renderOpts)}` }),
+    new TextDisplayBuilder({ content: truncateForTextDisplay("**Action taken**", renderModelText(args.action, renderOpts)) }),
   );
 
   if (args.dryRun) {
