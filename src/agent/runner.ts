@@ -244,6 +244,7 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
       } else {
         lines.push("roles: none");
       }
+      if (r.avatarUrl) lines.push(`avatarUrl: ${r.avatarUrl}`);
       return lines.join("\n");
     }
 
@@ -602,7 +603,19 @@ export async function runTools(
           break;
         }
         case "inspect_image": {
-          const { channel_id, message_id } = input as { channel_id: string; message_id: string };
+          const { channel_id, message_id, image_url } = input as {
+            channel_id?: string;
+            message_id?: string;
+            image_url?: string;
+          };
+          if (image_url) {
+            result = { tool: "inspect_image", imageUrls: [image_url] };
+            break;
+          }
+          if (!channel_id || !message_id) {
+            result = { tool: "error", message: "inspect_image requires either image_url or both channel_id and message_id." };
+            break;
+          }
           try {
             const channel = await client.channels.fetch(channel_id);
             if (!channel || !channel.isTextBased()) {

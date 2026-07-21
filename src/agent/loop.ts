@@ -314,7 +314,7 @@ Trigger message (msg:${t.incidentChannelId}/${t.triggerMessageId}): "${t.trigger
 
 **Your task — execute in this order:**
 1. Investigate: call get_recent_activity and get_conversation_context (and fetch the replied-to message if present) to identify the bad actor and understand what happened. The reporter (u:${t.reporterUserId}) is NOT the target — identify the actual offending user from context.
-2. Call get_current_member_info on the suspected target to check their join date.
+2. Call get_current_member_info on the suspected target to check their join date. If other members' reactions point at the target's profile picture specifically (shock, disgust, "what is that pfp"-type reactions) rather than anything they said, call inspect_image with the returned avatarUrl to confirm the violation yourself instead of only relying on other members' reactions.
 3. Assess: is there a clear, confident target, an unambiguous rule violation, AND did they join within the last ${t.newMemberThresholdDays} days?
 
 **If all three conditions are met (clear target + clear violation + new member):**

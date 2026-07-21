@@ -269,20 +269,23 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "inspect_image",
       description:
-        "Fetch and inspect all images attached to a specific message. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext]) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated.",
+        "Fetch and inspect an image so it appears in your next message for visual analysis. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext]) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated, e.g. a member's avatar (avatarUrl from get_current_member_info) that other members reacted to with shock or called out as inappropriate.\n\nProvide either channel_id + message_id (to inspect a message's attachments) or image_url (to inspect a direct URL like an avatar) — not both.",
       parameters: {
         type: "object",
         properties: {
           channel_id: {
             type: "string",
-            description: "Discord channel ID — the first number in a msg:channelId/messageId reference.",
+            description: "Discord channel ID — the first number in a msg:channelId/messageId reference. Omit if using image_url.",
           },
           message_id: {
             type: "string",
-            description: "Discord message ID — the second number in a msg:channelId/messageId reference.",
+            description: "Discord message ID — the second number in a msg:channelId/messageId reference. Omit if using image_url.",
+          },
+          image_url: {
+            type: "string",
+            description: "Direct URL of an image to inspect, e.g. an avatarUrl returned by get_current_member_info. Omit if using channel_id + message_id.",
           },
         },
-        required: ["channel_id", "message_id"],
       },
     },
   },

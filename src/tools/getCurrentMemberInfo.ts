@@ -24,6 +24,7 @@ export async function getCurrentMemberInfo(args: GetCurrentMemberInfoArgs) {
         .sort((a, b) => b.position - a.position)
         .map((r) => ({ id: r.id, name: r.name })),
       isStillInServer: true,
+      avatarUrl: member.displayAvatarURL({ size: 256 }),
     };
   } catch {
     // DiscordAPIError 10007: Unknown Member — user has left the server
