@@ -24,6 +24,38 @@ function mediaLabel(url: string): string {
   return `[${type}: ${filename}](${url})`;
 }
 
+/** Collects image URLs from Section thumbnails, MediaGallery items, and File components — these aren't listed in `message.attachments` once referenced by a component. */
+export function collectComponentImageUrls(components: readonly AnyComponent[]): string[] {
+  const urls: string[] = [];
+  for (const comp of components) {
+    switch (comp.type) {
+      case ComponentType.Section: {
+        const section = comp as SectionComponent;
+        urls.push(...collectComponentImageUrls(section.components as AnyComponent[]));
+        if (section.accessory.type === ComponentType.Thumbnail) {
+          const url = (section.accessory as ThumbnailComponent).media.url;
+          if (isImageUrl(url)) urls.push(url);
+        }
+        break;
+      }
+      case ComponentType.Container:
+        urls.push(...collectComponentImageUrls((comp as ContainerComponent).components as AnyComponent[]));
+        break;
+      case ComponentType.MediaGallery:
+        for (const item of (comp as MediaGalleryComponent).items) {
+          if (isImageUrl(item.media.url)) urls.push(item.media.url);
+        }
+        break;
+      case ComponentType.File: {
+        const url = (comp as FileComponent).file.url;
+        if (isImageUrl(url)) urls.push(url);
+        break;
+      }
+    }
+  }
+  return urls;
+}
+
 function flattenComponents(components: readonly AnyComponent[]): string[] {
   const parts: string[] = [];
   for (const comp of components) {

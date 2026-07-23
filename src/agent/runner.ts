@@ -30,6 +30,7 @@ import { getLogger } from "../logger.ts";
 import { config } from "../config.ts";
 import { SushiiMcpClient, type ModCase, type CrossServerBan } from "../mcp/SushiiMcpClient.ts";
 import type { AutoModTriggerContext } from "./loop.ts";
+import { collectComponentImageUrls } from "../utils/flattenMessage.ts";
 
 const logger = getLogger("tool");
 
@@ -614,17 +615,56 @@ export async function runTools(
           break;
         }
         case "inspect_image": {
-          const { image_urls } = input as { image_urls?: string[] };
-          if (!image_urls || image_urls.length === 0) {
-            result = { tool: "error", message: "inspect_image requires image_urls." };
+          const { image_urls, messages } = input as {
+            image_urls?: string[];
+            messages?: { channel_id: string; message_id: string }[];
+          };
+          if ((!image_urls || image_urls.length === 0) && (!messages || messages.length === 0)) {
+            result = { tool: "error", message: "inspect_image requires image_urls, messages, or both." };
             break;
           }
-          const invalid = image_urls.filter((u) => !isDiscordCdnUrl(u));
-          if (invalid.length > 0) {
-            result = { tool: "error", message: `image_urls must be discordapp.com or discordapp.net CDN URLs. Rejected: ${invalid.join(", ")}` };
-            break;
+
+          const urls: string[] = [];
+          if (image_urls && image_urls.length > 0) {
+            const invalid = image_urls.filter((u) => !isDiscordCdnUrl(u));
+            if (invalid.length > 0) {
+              result = { tool: "error", message: `image_urls must be discordapp.com or discordapp.net CDN URLs. Rejected: ${invalid.join(", ")}` };
+              break;
+            }
+            urls.push(...image_urls);
           }
-          result = { tool: "inspect_image", imageUrls: image_urls };
+
+          if (messages && messages.length > 0) {
+            const imageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+            let messagesError: ToolResult | null = null;
+            for (const { channel_id, message_id } of messages) {
+              try {
+                const channel = await client.channels.fetch(channel_id);
+                if (!channel || !channel.isTextBased()) {
+                  messagesError = { tool: "error", message: `Channel ${channel_id} is not a text channel` };
+                  break;
+                }
+                if (channel.isDMBased() || channel.guildId !== guildId) {
+                  messagesError = { tool: "error", message: `Channel ${channel_id} does not belong to this guild` };
+                  break;
+                }
+                const msg = await channel.messages.fetch(message_id);
+                const attachmentUrls = [...msg.attachments.values()]
+                  .filter((a) => a.contentType && imageTypes.some((t) => a.contentType!.startsWith(t)))
+                  .map((a) => a.url);
+                urls.push(...attachmentUrls, ...collectComponentImageUrls(msg.components as Parameters<typeof collectComponentImageUrls>[0]));
+              } catch (err) {
+                messagesError = { tool: "error", message: `Failed to fetch message ${channel_id}/${message_id}: ${err}` };
+                break;
+              }
+            }
+            if (messagesError) {
+              result = messagesError;
+              break;
+            }
+          }
+
+          result = { tool: "inspect_image", imageUrls: urls };
           break;
         }
         case "get_current_member_info":

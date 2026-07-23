@@ -269,17 +269,29 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "inspect_image",
       description:
-        "Queue one or more images so they appear in your next message for visual analysis. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext](url)) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated, e.g. a member's avatar (avatarUrl from get_current_member_info) that other members reacted to with shock or called out as inappropriate.\n\nImage URLs come from content you've already fetched — the URL in an [image: ...](url) marker, or an avatarUrl field.",
+        "Queue one or more images so they appear in your next message for visual analysis. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext](url)) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated, e.g. a member's avatar (avatarUrl from get_current_member_info) that other members reacted to with shock or called out as inappropriate.\n\nDiscord's attachment/media URLs are signed and expire after a while, so a URL copied from older fetched content (search_messages, get_conversation_context, get_recent_activity, or anything not just fetched this turn) may already be dead. For those, pass channel_id + message_id via `messages` instead — this re-fetches the message live and always gets working URLs. Only use `image_urls` directly for URLs with no backing message (e.g. avatarUrl) or images you just fetched this same turn.",
       parameters: {
         type: "object",
         properties: {
           image_urls: {
             type: "array",
             items: { type: "string" },
-            description: "Direct URLs of images to inspect, e.g. the URL from an [image: filename.ext](url) marker, or an avatarUrl returned by get_current_member_info. Must be Discord CDN URLs (cdn.discordapp.com or media.discordapp.net) — arbitrary external URLs are rejected.",
+            description: "Direct URLs of images to inspect that have no backing Discord message, e.g. an avatarUrl returned by get_current_member_info. Must be Discord CDN URLs (cdn.discordapp.com or media.discordapp.net) — arbitrary external URLs are rejected.",
+          },
+          messages: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                channel_id: { type: "string", description: "Discord channel ID — the first number in a msg:channelId/messageId reference." },
+                message_id: { type: "string", description: "Discord message ID — the second number in a msg:channelId/messageId reference." },
+              },
+              required: ["channel_id", "message_id"],
+            },
+            description: "Messages to re-fetch live and inspect all image attachments/components from. Use this for any message whose content you fetched earlier (not this turn) to avoid expired URLs.",
           },
         },
-        required: ["image_urls"],
+        anyOf: [{ required: ["image_urls"] }, { required: ["messages"] }],
       },
     },
   },
