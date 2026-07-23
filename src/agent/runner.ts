@@ -614,42 +614,17 @@ export async function runTools(
           break;
         }
         case "inspect_image": {
-          const { channel_id, message_id, image_url } = input as {
-            channel_id?: string;
-            message_id?: string;
-            image_url?: string;
-          };
-          if (image_url) {
-            if (!isDiscordCdnUrl(image_url)) {
-              result = { tool: "error", message: "image_url must be a discordapp.com or discordapp.net CDN URL." };
-              break;
-            }
-            result = { tool: "inspect_image", imageUrls: [image_url] };
+          const { image_urls } = input as { image_urls?: string[] };
+          if (!image_urls || image_urls.length === 0) {
+            result = { tool: "error", message: "inspect_image requires image_urls." };
             break;
           }
-          if (!channel_id || !message_id) {
-            result = { tool: "error", message: "inspect_image requires either image_url or both channel_id and message_id." };
+          const invalid = image_urls.filter((u) => !isDiscordCdnUrl(u));
+          if (invalid.length > 0) {
+            result = { tool: "error", message: `image_urls must be discordapp.com or discordapp.net CDN URLs. Rejected: ${invalid.join(", ")}` };
             break;
           }
-          try {
-            const channel = await client.channels.fetch(channel_id);
-            if (!channel || !channel.isTextBased()) {
-              result = { tool: "error", message: `Channel ${channel_id} is not a text channel` };
-              break;
-            }
-            if (channel.isDMBased() || channel.guildId !== guildId) {
-              result = { tool: "error", message: `Channel ${channel_id} does not belong to this guild` };
-              break;
-            }
-            const msg = await channel.messages.fetch(message_id);
-            const imageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-            const urls = [...msg.attachments.values()]
-              .filter((a) => a.contentType && imageTypes.some((t) => a.contentType!.startsWith(t)))
-              .map((a) => a.url);
-            result = { tool: "inspect_image", imageUrls: urls };
-          } catch (err) {
-            result = { tool: "error", message: `Failed to fetch message: ${err}` };
-          }
+          result = { tool: "inspect_image", imageUrls: image_urls };
           break;
         }
         case "get_current_member_info":

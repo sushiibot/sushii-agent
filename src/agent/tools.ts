@@ -269,24 +269,17 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "inspect_image",
       description:
-        "Fetch and inspect an image so it appears in your next message for visual analysis. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext]) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated, e.g. a member's avatar (avatarUrl from get_current_member_info) that other members reacted to with shock or called out as inappropriate.\n\nProvide either channel_id + message_id (to inspect a message's attachments) or image_url (to inspect a direct URL like an avatar) — not both.",
+        "Queue one or more images so they appear in your next message for visual analysis. Call this proactively whenever a mod asks to check, review, or investigate a message that turns out to contain only images ([image: filename.ext](url)) — don't ask for confirmation first. Also call it when an image is central to the incident being investigated, e.g. a member's avatar (avatarUrl from get_current_member_info) that other members reacted to with shock or called out as inappropriate.\n\nImage URLs come from content you've already fetched — the URL in an [image: ...](url) marker, or an avatarUrl field.",
       parameters: {
         type: "object",
         properties: {
-          channel_id: {
-            type: "string",
-            description: "Discord channel ID — the first number in a msg:channelId/messageId reference. Omit if using image_url.",
-          },
-          message_id: {
-            type: "string",
-            description: "Discord message ID — the second number in a msg:channelId/messageId reference. Omit if using image_url.",
-          },
-          image_url: {
-            type: "string",
-            description: "Direct URL of an image to inspect, e.g. an avatarUrl returned by get_current_member_info. Must be a Discord CDN URL (cdn.discordapp.com or media.discordapp.net) — arbitrary external URLs are rejected. Omit if using channel_id + message_id.",
+          image_urls: {
+            type: "array",
+            items: { type: "string" },
+            description: "Direct URLs of images to inspect, e.g. the URL from an [image: filename.ext](url) marker, or an avatarUrl returned by get_current_member_info. Must be Discord CDN URLs (cdn.discordapp.com or media.discordapp.net) — arbitrary external URLs are rejected.",
           },
         },
-        anyOf: [{ required: ["image_url"] }, { required: ["channel_id", "message_id"] }],
+        required: ["image_urls"],
       },
     },
   },

@@ -10,12 +10,18 @@ import type {
 
 type AnyComponent = Message["components"][number];
 
+const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp"];
+
+function isImageUrl(url: string): boolean {
+  const filename = url.split("/").pop()?.split("?")[0] ?? "";
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTS.includes(ext);
+}
+
 function mediaLabel(url: string): string {
   const filename = url.split("/").pop()?.split("?")[0] ?? "file";
-  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  const imageExts = ["png", "jpg", "jpeg", "gif", "webp"];
-  const type = imageExts.includes(ext) ? "image" : "file";
-  return `[${type}: ${filename}]`;
+  const type = isImageUrl(url) ? "image" : "file";
+  return `[${type}: ${filename}](${url})`;
 }
 
 function flattenComponents(components: readonly AnyComponent[]): string[] {
@@ -80,7 +86,7 @@ function flattenMessageFields(msg: MessageLike): string[] {
   for (const attachment of msg.attachments.values()) {
     const label = attachment.name ?? "file";
     const type = attachment.contentType?.split("/")[0] ?? "attachment";
-    parts.push(`[${type}: ${label}]`);
+    parts.push(`[${type}: ${label}](${attachment.url})`);
   }
   parts.push(...flattenEmbeds(msg));
   parts.push(...flattenComponents(msg.components as AnyComponent[]));
