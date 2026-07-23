@@ -408,22 +408,22 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
 
     case "get_user_cross_server_bans": {
       const bans = result.data;
+      const userId = input.user_id as string;
       if (bans.length === 0) {
-        return "(no cross-server bans found)";
+        return `Cross-server bans for u:${userId}: (none found)`;
       }
-      return bans
-        .map((b) => {
-          const name = b.lookupDetailsOptIn ? (b.guildName ?? "unknown") : "[redacted]";
-          const parts = [`guild:${b.guildId} ${name} (${b.guildMembers} members) optIn:${b.lookupDetailsOptIn}`];
-          if (b.actionTime) {
-            parts.push(`  banned: t:${b.actionTime}`);
-          }
-          if (b.reason) {
-            parts.push(`  reason: ${b.reason}`);
-          }
-          return parts.join("\n");
-        })
-        .join("\n");
+      const lines = bans.map((b) => {
+        const name = b.lookupDetailsOptIn ? (b.guildName ?? "unknown") : "[redacted]";
+        const parts = [`  guild:${b.guildId} ${name} (${b.guildMembers} members) optIn:${b.lookupDetailsOptIn}`];
+        if (b.actionTime) {
+          parts.push(`    banned: t:${b.actionTime}`);
+        }
+        if (b.reason) {
+          parts.push(`    reason: ${b.reason}`);
+        }
+        return parts.join("\n");
+      });
+      return [`Cross-server bans for u:${userId}:`, ...lines].join("\n");
     }
 
     case "timeout_member": {
