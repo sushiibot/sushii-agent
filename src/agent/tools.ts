@@ -569,19 +569,19 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "send_alert_message",
       description:
-        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. The alert is rendered as separate sections, so keep findings and action separate rather than blending them into one paragraph. Both fields should be skimmable, not dense prose — a mod reading this in Discord should get the gist in a few seconds.",
+        "Post a summary to the configured mod alerts channel with a mod-role ping. Call this at the end of every auto-mod run — whether action was taken or not. This is a skim-read for a mod on their phone, not a report. Never write either field as a flowing paragraph — that includes sentences joined with 'and'/'because' to smuggle multiple facts onto one line. Each fact gets its own short line.",
       parameters: {
         type: "object",
         properties: {
           findings: {
             type: "string",
             description:
-              "What you found during investigation, as a short bullet list (one `- ` bullet per fact/event, in chronological order if it's a timeline) — not a paragraph. Cover: who did it, join date, prior history, the pattern observed, each relevant message/reaction. Include msg: citations and t: timestamps inline on the bullet they support.",
+              "A bullet list, max 4-5 bullets total — this is a skim-read, not a case file. One short clause per bullet. Do NOT give each message/reaction its own bullet; group the repeated pattern into one bullet (e.g. '- Posted 5 inflammatory messages baiting the group, incl. msg:...' not five separate bullets, one per message). Cover only: who did it, join date (if relevant to the case), prior history (only if there is any — omit the bullet entirely if none), and the pattern observed. Include at most one or two msg: citations total, on whichever bullet needs evidence — not one per fact. Example:\n- New member, joined t:...\n- Posted 5 messages baiting the group with false accusations, incl. msg:...\n- No prior history in this server",
           },
           action: {
             type: "string",
             description:
-              "Structured, labeled summary of the outcome — use bold labels on their own line, not a paragraph, e.g.:\n**Action:** <what was done, or \"none — flagged for manual review\">\n**Why:** <the specific trigger/evidence that justified it>\n**Background:** <relevant context — account age, history, prior warnings>\n**Recommendation:** <only if follow-up is needed, e.g. manual pfp review>\nOmit a label if there's nothing to say for it. Keep each line to 1 sentence.",
+              "Labeled lines, each its own line, each one short clause — never combine two labels' worth of info into one sentence:\n**Action:** <what was done, or \"none — flagged for manual review\">\n**Why:** <the one-clause trigger/evidence that justified it>\n**Background:** <one clause of relevant context, if any — account age, history, prior warnings>\n**Recommendation:** <only if follow-up is needed, e.g. manual pfp review>\nOmit a label entirely if there's nothing to say for it rather than padding it. Anti-example (too dense, do NOT do this): '**Why:** brand-new member who joined July 24 2026 12:21 PM and immediately started baiting with false accusations against the group, unambiguously trolling in a dedicated fan server.' Instead: '**Why:** New member, baited group with false accusations within minutes of joining.'",
           },
         },
         required: ["findings", "action"],
