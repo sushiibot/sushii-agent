@@ -325,8 +325,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
   if (!isAllowedChannel) return;
 
   // Only strip the bot's own mention, preserve other user/channel mentions for the agent
-  const rawQuery = message.content.replace(new RegExp(`<@!?${client.user!.id}>`, "g"), "").trim();
-  if (!rawQuery) return;
+  const botMentionRe = new RegExp(`<@!?${client.user!.id}>`, "g");
+  const rawQuery = message.content.replace(botMentionRe, "").trim();
+  // A ping with no text is a request to look at what's going on, not a no-op
+  const isBarePing = rawQuery.length === 0;
 
   // dump-chat: upload the stored conversation as an OpenAI-compatible JSON payload
   if (rawQuery.toLowerCase() === "dump-chat") {
@@ -408,7 +410,16 @@ client.on(Events.MessageCreate, async (message: Message) => {
   }
 
   // Include author identity so the agent knows who "me" refers to
-  const query = `${replyContext}[Message from ${message.author.username} (<@${message.author.id}>)]\n${normalizedQuery}`;
+  let body: string;
+  if (!isBarePing) {
+    body = normalizedQuery;
+  } else {
+    // A text-less ping can still carry attachments, embeds or a forwarded message
+    const flattened = buildMessageContent(message).replace(botMentionRe, "").trim();
+    const attached = flattened && flattened !== "[empty message]" ? `${flattened}\n` : "";
+    body = `${attached}[No message text — review the recent activity shown in your context, investigate anything unclear or needing moderator attention, and summarize what's going on. If nothing needs attention, say so briefly.]`;
+  }
+  const query = `${replyContext}[Message from ${message.author.username} (<@${message.author.id}>)]\n${body}`;
 
   // Collect triggering user's roles for agent context
   const memberRoles = message.member
@@ -478,6 +489,26 @@ client.on(Events.MessageCreate, async (message: Message) => {
         threadContext = await fetchThreadContext(thread, client.user!.id);
       }
 
+      // threadContext is frozen after the first turn for prompt-cache stability, so new
+      // thread activity is appended to the query instead — keeps the prefix byte-identical.
+      // Skipped when the context was just re-fetched live (pre-existing threads with no stored
+      // snapshot), since that already covers the same messages.
+      let turnQuery = query;
+      if (existingHistory.length > 0 && initialThreadContext != null) {
+        const excludeIds = new Set<string>([message.id]);
+        for (const queued of threadMidLoopQueues.get(thread.id) ?? []) {
+          excludeIds.add(queued.discordMessage.id);
+        }
+        const interstitial = await fetchInterstitialMessages(thread, client.user!.id, excludeIds);
+        if (interstitial) {
+          turnQuery = `[Thread activity since your last response]\n${interstitial}\n\n${query}`;
+          logger.child({ threadId: thread.id }).debug(
+            { lineCount: interstitial.split("\n").length, interstitial },
+            "injected thread activity since last response",
+          );
+        }
+      }
+
       const guildId = message.guildId!;
       const serverContext = getServerContext(guildId);
 
@@ -506,7 +537,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
       let agentResult: Awaited<ReturnType<typeof runAgentLoop>> | undefined;
       try {
         agentResult = await runAgentLoop(
-          query,
+          turnQuery,
           existingHistory,
           guildId,
           client as Client<true>,
@@ -525,7 +556,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
       }
 
       if (!agentResult) return;
-      await handleAgentResult(thread, guildId, thread.id, agentResult, threadContext || null, message.author.id);
+      await handleAgentResult(thread, guildId, thread.id, agentResult, threadContext, message.author.id);
 
       // Rename thread when there's enough context:
       // - 3+ tool uses on first turn (rich investigation), OR
@@ -707,7 +738,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           }),
         );
 
-        await handleAgentResult(threadChannel, guildId, pending.threadId, agentResult, pending.threadContext || null, pending.triggeringUser?.id ?? interaction.user.id);
+        await handleAgentResult(threadChannel, guildId, pending.threadId, agentResult, pending.threadContext, pending.triggeringUser?.id ?? interaction.user.id);
       } finally {
         await cleanupAgentRun(pending.threadId, typingInterval, toolTracker, agentResult);
       }
@@ -1214,7 +1245,7 @@ async function handleAutoModTrigger(
       }
 
       if (!agentResult) return;
-      await handleAgentResult(thread, guildId, thread.id, agentResult, threadContext || null, client.user!.id);
+      await handleAgentResult(thread, guildId, thread.id, agentResult, threadContext, client.user!.id);
     });
   } catch (err) {
     logger.error({ err, guildId, channelId: message.channelId }, "Error in handleAutoModTrigger");
@@ -1643,6 +1674,70 @@ async function fetchThreadContext(
     .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
   return messages.map(formatMessageLine).join("\n");
+}
+
+// Budget for the injected thread-activity block, in characters
+const INTERSTITIAL_MAX_CHARS = 8000;
+
+/**
+ * Thread messages posted after the bot's most recent message — conversation between
+ * moderators that happened between agent turns and so isn't in the stored history.
+ *
+ * Anchoring on the bot's last message instead of a stored watermark means messages
+ * already injected mid-loop are excluded for free: the loop's reply lands after them.
+ */
+async function fetchInterstitialMessages(
+  thread: ThreadChannel,
+  botId: string,
+  excludeIds: Set<string>,
+  limit = 100,
+): Promise<string> {
+  const fetched = await thread.messages.fetch({ limit });
+  const ordered = [...fetched.values()].sort(
+    (a, b) => a.createdTimestamp - b.createdTimestamp,
+  );
+
+  let lastBotIdx = -1;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    if (ordered[i].author.id === botId) {
+      lastBotIdx = i;
+      break;
+    }
+  }
+  if (lastBotIdx === -1) {
+    // Bot silent for the whole window, so nothing in it can already be in history —
+    // take it all rather than degrading to no context in the busiest threads.
+    logger.warn(
+      { threadId: thread.id, limit },
+      "no bot message within interstitial window, using full window",
+    );
+  }
+
+  const since = ordered
+    .slice(lastBotIdx + 1)
+    .filter((m) => m.author.id !== botId && !excludeIds.has(m.id));
+
+  // Keep the most recent lines within budget — a single burst of long messages
+  // would otherwise dwarf the actual conversation history
+  const lines = since.map(formatMessageLine);
+  let used = 0;
+  let startIdx = lines.length;
+  while (startIdx > 0 && used + lines[startIdx - 1].length + 1 <= INTERSTITIAL_MAX_CHARS) {
+    startIdx--;
+    used += lines[startIdx].length + 1;
+  }
+  // A single over-budget message would otherwise leave nothing at all
+  if (startIdx === lines.length && lines.length > 0) {
+    startIdx = lines.length - 1;
+    lines[startIdx] = lines[startIdx].slice(0, INTERSTITIAL_MAX_CHARS);
+  }
+
+  const kept = lines.slice(startIdx);
+  if (startIdx > 0) {
+    kept.unshift(`[${startIdx} older message(s) omitted]`);
+  }
+
+  return kept.join("\n");
 }
 
 async function fetchParentChannelContext(
