@@ -3,7 +3,9 @@ import type { ModelMessage } from "ai";
 import {
   buildBudgetWarning,
   buildLimitNote,
+  buildReasoningSalvage,
   buildToolSummaryFallback,
+  extractSubmittedAnswer,
   pushAssistantTurn,
   usableText,
 } from "./wrapup.ts";
@@ -71,6 +73,87 @@ describe("buildToolSummaryFallback", () => {
   test("names the same cause as the limit note", () => {
     expect(buildToolSummaryFallback([], "context")).toContain("ran out of room");
     expect(buildToolSummaryFallback([], "iterations")).toContain("step limit");
+  });
+});
+
+describe("extractSubmittedAnswer", () => {
+  test("reads text from a well-formed object input", () => {
+    const text = extractSubmittedAnswer([{ toolName: "submit_final_answer", input: { text: "the finding" } }]);
+    expect(text).toBe("the finding");
+  });
+
+  test("parses a JSON string input and reads .text", () => {
+    const text = extractSubmittedAnswer([
+      { toolName: "submit_final_answer", input: JSON.stringify({ text: "the finding" }) },
+    ]);
+    expect(text).toBe("the finding");
+  });
+
+  test("recovers prose from a truncated argument instead of showing JSON scaffolding", () => {
+    const raw = '{"text": "Ban case summary\\n\\nWho: zeph, confirmed alt of';
+    const text = extractSubmittedAnswer([{ toolName: "submit_final_answer", input: raw }]);
+    expect(text).toBe("Ban case summary\n\nWho: zeph, confirmed alt of");
+  });
+
+  test("drops a dangling escape left by the cut so it can't swallow the next character", () => {
+    const text = extractSubmittedAnswer([
+      { toolName: "submit_final_answer", input: '{"text": "line one\\nline two\\' },
+    ]);
+    expect(text).toBe("line one\nline two");
+  });
+
+  test("passes through a raw string that was never JSON", () => {
+    const text = extractSubmittedAnswer([{ toolName: "submit_final_answer", input: "just prose" }]);
+    expect(text).toBe("just prose");
+  });
+
+  test("ignores calls with a different tool name but still checks the rest", () => {
+    const text = extractSubmittedAnswer([
+      { toolName: "search_messages", input: { query: "foo" } },
+      { toolName: "submit_final_answer", input: { text: "the finding" } },
+    ]);
+    expect(text).toBe("the finding");
+  });
+
+  test("returns empty for an object input with no usable text", () => {
+    const text = extractSubmittedAnswer([{ toolName: "submit_final_answer", input: { reason: "no text field" } }]);
+    expect(text).toBe("");
+  });
+
+  test("returns empty when there are no tool calls", () => {
+    expect(extractSubmittedAnswer(undefined)).toBe("");
+    expect(extractSubmittedAnswer([])).toBe("");
+  });
+
+  test("returns empty for a JSON string input that parses to something without text", () => {
+    const text = extractSubmittedAnswer([
+      { toolName: "submit_final_answer", input: JSON.stringify({ reason: "no text field" }) },
+    ]);
+    expect(text).toBe("");
+  });
+});
+
+describe("buildReasoningSalvage", () => {
+  test("wraps reasoning text with a disclaimer prefix", () => {
+    const text = buildReasoningSalvage("looked at u:123's messages, seems fine actually");
+    expect(text).toContain("raw, unreviewed investigation notes");
+    expect(text).toContain("looked at u:123's messages, seems fine actually");
+  });
+
+  test("never emits a Recommended action line", () => {
+    const text = buildReasoningSalvage("some notes about the case");
+    expect(text).not.toContain("Recommended action");
+  });
+
+  test("returns empty for blank reasoning", () => {
+    expect(buildReasoningSalvage("")).toBe("");
+    expect(buildReasoningSalvage("   \n ")).toBe("");
+  });
+
+  test("caps combined output length", () => {
+    const long = "x".repeat(10000);
+    const text = buildReasoningSalvage(long, 3500);
+    expect(text.length).toBeLessThanOrEqual(3500);
   });
 });
 

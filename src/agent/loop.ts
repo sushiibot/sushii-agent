@@ -12,11 +12,14 @@ import {
   WRAP_UP_PROMPT,
   WRAP_UP_RETRY_PROMPT,
   WRAP_UP_EMPTY_HISTORY,
+  SUBMIT_FINAL_ANSWER_TOOL_NAME,
   buildLimitNote,
   buildBudgetWarning,
+  buildReasoningSalvage,
   usableText,
   pushAssistantTurn,
   buildToolSummaryFallback,
+  extractSubmittedAnswer,
   type StopReason,
 } from "./wrapup.ts";
 
@@ -711,18 +714,37 @@ export async function runAgentLoop(
         return { response: "", updatedHistory: historyOut(), cancelled: true };
       }
 
-      // Out of budget — inject a wrap-up prompt and generate a final answer with tools suppressed.
+      // Out of budget — inject a wrap-up prompt and funnel the model into a single forced tool
+      // call instead of fighting its bias toward tool calls. After ~30 tool-call/tool-result
+      // turns the model copies that pattern regardless of what's in `tools`, so suppressing tools
+      // entirely just produced empty `tool-calls` finishes with no text and no result. Give it one
+      // tool it can't miss.
       log.warn({ iterations, stopReason }, "agent loop out of budget, forcing final response");
       let finalText = "";
+      let lastReasoningText = "";
+      let wrapupTier: "funnel" | "reasoning" | "toolSummary" = "toolSummary";
       for (let attempt = 0; attempt < 2 && !finalText; attempt++) {
         pushEphemeral({ role: "system", content: attempt === 0 ? WRAP_UP_PROMPT : WRAP_UP_RETRY_PROMPT });
         const finalResult = await generateText({
           model: openaiProvider(config.openaiModel),
           messages,
-          // No tools at all — `tool_choice: "none"` is unreliable on OpenRouter (providers may keep
-          // the definitions in the prompt and call anyway), and dropping them costs nothing here
-          // since none of this model's endpoints support implicit caching.
-          maxOutputTokens: 4096,
+          tools: {
+            [SUBMIT_FINAL_ANSWER_TOOL_NAME]: {
+              description: "Deliver your final written answer to the moderator. This is the only way to respond — call it exactly once with your complete write-up.",
+              inputSchema: jsonSchema({
+                type: "object",
+                properties: {
+                  text: {
+                    type: "string",
+                    description: "The complete answer for the moderator, following the same evidence/analysis/recommendation format as a normal response.",
+                  },
+                },
+                required: ["text"],
+              }),
+            },
+          },
+          toolChoice: { type: "tool", toolName: SUBMIT_FINAL_ANSWER_TOOL_NAME },
+          maxOutputTokens: 8192,
           experimental_telemetry: {
             isEnabled: true,
             functionId: "agent-loop",
@@ -731,19 +753,28 @@ export async function runAgentLoop(
           ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
         });
         accumulateUsage(finalResult.usage);
-        finalText = usableText(finalResult.text);
+        lastReasoningText = finalResult.reasoningText ?? "";
+        // The AI SDK never throws on a malformed submit_final_answer call — parseToolCall catches
+        // JSON/schema failures and returns the call with invalid:true and input set to the raw
+        // string instead. extractSubmittedAnswer handles that shape directly.
+        finalText = usableText(finalResult.text) || extractSubmittedAnswer(finalResult.toolCalls);
+        const toolNames = finalResult.toolCalls?.map((t) => t.toolName) ?? [];
+        const anyInvalid = finalResult.toolCalls?.some((t) => (t as { invalid?: boolean }).invalid) ?? false;
         log.info(
           {
             attempt,
             finishReason: finalResult.finishReason,
             textLength: finalText.length,
             rawTextLength: finalResult.text.length,
-            toolCalls: finalResult.toolCalls?.length ?? 0,
+            toolNames,
+            invalid: anyInvalid,
+            submittedLength: finalText.length,
             reasoningLength: finalResult.reasoningText?.length ?? 0,
           },
           "forced final response",
         );
         if (finalText) {
+          wrapupTier = "funnel";
           pushAssistantTurn(messages, {
             text: finalText,
             toolCalls: finalResult.toolCalls,
@@ -755,11 +786,20 @@ export async function runAgentLoop(
           pushEphemeral({ role: "assistant", content: WRAP_UP_EMPTY_HISTORY });
         }
       }
+      if (!finalText && lastReasoningText) {
+        finalText = buildReasoningSalvage(lastReasoningText);
+        if (finalText) {
+          wrapupTier = "reasoning";
+          messages.push({ role: "assistant", content: finalText });
+          log.warn({ iterations }, "forced final response salvaged from reasoning text");
+        }
+      }
       if (!finalText) {
         finalText = buildToolSummaryFallback(usedTools, stopReason);
         messages.push({ role: "assistant", content: finalText });
         log.warn({ iterations }, "forced final response produced no text, using tool summary fallback");
       }
+      log.info({ iterations, wrapupTier }, "wrap-up tier resolved");
       const forcedContent = `${renderModelText(finalText, { guildId, emojiMap: opts.emojiMap })}\n\n${buildLimitNote(stopReason)}`;
       const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
       return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: historyOut(), cancelled: false };
