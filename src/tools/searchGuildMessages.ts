@@ -61,7 +61,8 @@ export async function searchGuildMessages(
     if (args.author_id) query.author_id = args.author_id;
     if (args.channel_id) query.channel_id = args.channel_id;
     if (args.has) query.has = args.has;
-    if (args.limit) query.limit = args.limit;
+    // Discord's message search endpoint rejects any limit above 25.
+    if (args.limit) query.limit = Math.min(25, Math.max(1, Math.round(args.limit)));
     if (args.offset) query.offset = args.offset;
     if (args.sort_by) query.sort_by = args.sort_by;
     if (args.sort_order) query.sort_order = args.sort_order;
@@ -93,6 +94,8 @@ export async function searchGuildMessages(
 
     return { total_results: data.total_results, messages };
   } catch (err) {
-    return { error: `Search failed: ${err}` };
+    return {
+      error: `search_guild_messages failed: ${err}. This endpoint returns at most 25 results per call; use offset to paginate for more.`,
+    };
   }
 }
