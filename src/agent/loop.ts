@@ -8,6 +8,17 @@ import { getLogger } from "../logger.ts";
 import { TOOL_DEFINITIONS } from "./tools.ts";
 import { runTools, type UserNames, type PendingQuestion, type PendingAutomodApproval, type PendingAutomodDeletion } from "./runner.ts";
 import { renderModelText } from "../utils/discordText.ts";
+import {
+  WRAP_UP_PROMPT,
+  WRAP_UP_RETRY_PROMPT,
+  WRAP_UP_EMPTY_HISTORY,
+  buildLimitNote,
+  buildBudgetWarning,
+  usableText,
+  pushAssistantTurn,
+  buildToolSummaryFallback,
+  type StopReason,
+} from "./wrapup.ts";
 
 const logger = getLogger("agent");
 
@@ -135,7 +146,10 @@ Only when the moderator explicitly asks to add a keyword (e.g. "add that", "add 
 **When to call \`delete_automod_keyword\`:**
 Only when the moderator explicitly asks to remove a keyword (e.g. "remove that", "delete \`*word*\` from the filter"). The tool returns an error immediately if the keyword is not found — use \`list_automod_rules\` first to confirm the exact keyword string. When you do call it, do NOT use \`ask_question\` first — the tool triggers an approval gate automatically.`;
 
-const MAX_ITERATIONS = 20;
+const MAX_ITERATIONS = 30;
+const BUDGET_WARNING_AT = 5;
+const FINAL_WARNING_AT = 2;
+const CONTEXT_BUDGET_RATIO = 0.85;
 const MAX_ZERO_RETRIES = 2;
 const MAX_NETWORK_RETRIES = 3;
 
@@ -416,7 +430,24 @@ export async function runAgentLoop(
     let totalCacheWriteTokens = 0;
     let lastInputTokens = 0;
     let cancelled = false;
+    let stopReason: StopReason = "iterations";
     const usedTools: { name: string; input: Record<string, unknown> }[] = [];
+    // Step-budget nudges steer this run only — persisting them would make the next turn
+    // believe it is already out of steps and must not use tools.
+    const ephemeral = new Set<ModelMessage>();
+    const pushEphemeral = (msg: ModelMessage) => {
+      messages.push(msg);
+      ephemeral.add(msg);
+    };
+    const historyOut = () => messages.slice(1).filter((m) => !ephemeral.has(m));
+    const accumulateUsage = (u: Awaited<ReturnType<typeof generateText>>["usage"] | undefined) => {
+      if (!u) return;
+      totalInputTokens += u.inputTokens ?? 0;
+      totalOutputTokens += u.outputTokens ?? 0;
+      totalCacheReadTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
+      totalCacheWriteTokens += u.inputTokenDetails?.cacheWriteTokens ?? 0;
+      lastInputTokens = u.inputTokens ?? 0;
+    };
     log.info({ historyLength: existingHistory.length, knownUsers: knownUsers.size }, "starting loop");
 
     try {
@@ -446,6 +477,20 @@ export async function runAgentLoop(
           }
         }
 
+        // Stop before the provider rejects the request outright — an overflow throws out of the
+        // loop and the caller discards the whole run, so degrade into the wrap-up instead.
+        if (lastInputTokens > config.openaiContextLimit * CONTEXT_BUDGET_RATIO) {
+          stopReason = "context";
+          log.warn({ iteration: iterations, lastInputTokens, limit: config.openaiContextLimit }, "context budget exhausted, forcing final response");
+          break;
+        }
+
+        const stepsLeft = MAX_ITERATIONS - iterations + 1;
+        if (stepsLeft === BUDGET_WARNING_AT || stepsLeft === FINAL_WARNING_AT) {
+          pushEphemeral({ role: "system", content: buildBudgetWarning(stepsLeft) });
+          log.info({ iteration: iterations, stepsLeft }, "injected step budget warning");
+        }
+
         const generateParams: Parameters<typeof generateText>[0] = {
           model: openaiProvider(config.openaiModel),
           messages,
@@ -462,15 +507,6 @@ export async function runAgentLoop(
         // Retry on zero-content stop responses (OpenRouter cold-start / scaling events).
         // These return finishReason "stop" with no text, no tool calls, and 0 output tokens.
         // The SDK can't detect them as errors since they're valid 200 OK responses.
-        const accumulateUsage = (u: typeof result.usage) => {
-          if (!u) return;
-          totalInputTokens += u.inputTokens ?? 0;
-          totalOutputTokens += u.outputTokens ?? 0;
-          totalCacheReadTokens += u.inputTokenDetails?.cacheReadTokens ?? 0;
-          totalCacheWriteTokens += u.inputTokenDetails?.cacheWriteTokens ?? 0;
-          lastInputTokens = u.inputTokens ?? 0;
-        };
-
         // Handle two failure modes the SDK marks as non-retryable (AI_APICallError on 200 OK):
         // 1. Model doesn't support vision: images in context → strip them and continue
         // 2. Genuine transient socket drop: retry with exponential backoff
@@ -485,16 +521,24 @@ export async function runAgentLoop(
                 err.message.includes("socket connection was closed");
               if (!isSocketError) throw err;
 
-              // Check if the last user message is pure image content — indicates vision is unsupported
-              const lastMsg = messages[messages.length - 1];
-              const isImageMsg =
-                lastMsg?.role === "user" &&
-                Array.isArray(lastMsg.content) &&
-                lastMsg.content.every((c: { type: string }) => c.type === "image");
+              // Pure-image user message in context indicates vision is unsupported. Scan backward
+              // rather than checking the tail — steering notes are appended after image injection.
+              let imageIdx = -1;
+              for (let i = messages.length - 1; i >= 0 && imageIdx === -1; i--) {
+                const m = messages[i];
+                if (
+                  m.role === "user" &&
+                  Array.isArray(m.content) &&
+                  m.content.length > 0 &&
+                  m.content.every((c: { type: string }) => c.type === "image")
+                ) {
+                  imageIdx = i;
+                }
+              }
 
-              if (isImageMsg) {
+              if (imageIdx !== -1) {
                 // Strip the unsupported image message and substitute a plain-text fallback
-                messages.pop();
+                messages.splice(imageIdx, 1);
                 messages.push({
                   role: "system",
                   content: "The image(s) attached to this message could not be processed — this model does not support vision. Proceed without the image content and note this limitation to the moderator.",
@@ -553,14 +597,20 @@ export async function runAgentLoop(
           break;
         }
 
-        if (finishReason === "stop" || !toolCalls?.length) {
+        // Dispatch on the presence of tool calls, not on finishReason. This provider has been seen
+        // returning "stop" alongside real tool calls; keying off finishReason silently dropped them
+        // and left the user with whatever text came back, usually nothing.
+        if (!toolCalls?.length) {
+          if (finishReason !== "stop") {
+            log.warn({ finishReason }, "unexpected finish_reason with no tool calls, treating as final");
+          }
           if (zeroContent) {
             messages.push({
               role: "assistant",
               content: ZERO_CONTENT_HISTORY,
             });
           } else {
-            messages.push(...result.response.messages);
+            pushAssistantTurn(messages, result);
           }
           const displayText = text
             || (zeroContent
@@ -570,12 +620,12 @@ export async function runAgentLoop(
           const footerTools = opts.onToolsDispatched ? [] : usedTools;
           const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, footerTools);
           log.info({ iterations, responseLength: content.length }, "done");
-          return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
+          return { response: `${content}\n\n---\n${footer}`, updatedHistory: historyOut(), cancelled: false };
         }
 
-        if (finishReason === "tool-calls" && toolCalls.length > 0) {
+        {
           const names = toolCalls.map((t) => t.toolName).join(", ");
-          log.debug({ tools: names }, "tool calls");
+          log.debug({ tools: names, finishReason }, "tool calls");
           // Some providers occasionally emit tool-call arguments as an unparsed JSON string
           // instead of an object; normalize here so it isn't spread into a char-indexed object downstream.
           for (const tc of toolCalls) {
@@ -621,21 +671,21 @@ export async function runAgentLoop(
           if (pendingQuestion) {
             log.info({ question: pendingQuestion.question }, "pausing loop for ask_question");
             span.setAttribute("agent.paused_for_question", true);
-            return { response: "", updatedHistory: messages.slice(1), pendingQuestion, cancelled: false };
+            return { response: "", updatedHistory: historyOut(), pendingQuestion, cancelled: false };
           }
 
           // add_automod_keyword — pause loop and return to let the bot send approval buttons
           if (pendingAutomodApproval) {
             log.info({ ruleId: pendingAutomodApproval.ruleId, keyword: pendingAutomodApproval.keyword }, "pausing loop for automod keyword approval");
             span.setAttribute("agent.paused_for_automod_approval", true);
-            return { response: "", updatedHistory: messages.slice(1), pendingAutomodApproval, cancelled: false };
+            return { response: "", updatedHistory: historyOut(), pendingAutomodApproval, cancelled: false };
           }
 
           // delete_automod_keyword — pause loop and return to let the bot send deletion approval buttons
           if (pendingAutomodDeletion) {
             log.info({ ruleId: pendingAutomodDeletion.ruleId, keyword: pendingAutomodDeletion.keyword }, "pausing loop for automod keyword deletion approval");
             span.setAttribute("agent.paused_for_automod_deletion", true);
-            return { response: "", updatedHistory: messages.slice(1), pendingAutomodDeletion, cancelled: false };
+            return { response: "", updatedHistory: historyOut(), pendingAutomodDeletion, cancelled: false };
           }
 
           if (pendingImages.length > 0) {
@@ -655,44 +705,64 @@ export async function runAgentLoop(
 
           continue;
         }
-
-        // Unexpected finish reason
-        log.warn({ finishReason }, "unexpected finish_reason, treating as final");
-        messages.push(...result.response.messages);
-        const content = renderModelText(text || "(no response)", { guildId, emojiMap: opts.emojiMap });
-        const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
-        return { response: `${content}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
       }
 
       if (cancelled) {
-        return { response: "", updatedHistory: messages.slice(1), cancelled: true };
+        return { response: "", updatedHistory: historyOut(), cancelled: true };
       }
 
-      // Hit iteration limit — inject a wrap-up prompt and do one final generation with no tools
-      log.warn({ iterations }, "agent loop hit iteration limit, forcing final response");
-      messages.push({ role: "system", content: "[System: You have reached the maximum number of steps. Stop using tools and give your best final response to the user now based on what you have gathered so far.]" });
-      const finalResult = await generateText({
-        model: openaiProvider(config.openaiModel),
-        messages,
-        maxOutputTokens: 4096,
-        experimental_telemetry: {
-          isEnabled: true,
-          functionId: "agent-loop",
-          metadata: { guildId, iteration: iterations, forced: true },
-        },
-        ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
-      });
-      if (finalResult.usage) {
-        totalInputTokens += finalResult.usage.inputTokens ?? 0;
-        totalOutputTokens += finalResult.usage.outputTokens ?? 0;
-        totalCacheReadTokens += finalResult.usage.inputTokenDetails?.cacheReadTokens ?? 0;
-        totalCacheWriteTokens += finalResult.usage.inputTokenDetails?.cacheWriteTokens ?? 0;
-        lastInputTokens = finalResult.usage.inputTokens ?? 0;
+      // Out of budget — inject a wrap-up prompt and generate a final answer with tools suppressed.
+      log.warn({ iterations, stopReason }, "agent loop out of budget, forcing final response");
+      let finalText = "";
+      for (let attempt = 0; attempt < 2 && !finalText; attempt++) {
+        pushEphemeral({ role: "system", content: attempt === 0 ? WRAP_UP_PROMPT : WRAP_UP_RETRY_PROMPT });
+        const finalResult = await generateText({
+          model: openaiProvider(config.openaiModel),
+          messages,
+          // No tools at all — `tool_choice: "none"` is unreliable on OpenRouter (providers may keep
+          // the definitions in the prompt and call anyway), and dropping them costs nothing here
+          // since none of this model's endpoints support implicit caching.
+          maxOutputTokens: 4096,
+          experimental_telemetry: {
+            isEnabled: true,
+            functionId: "agent-loop",
+            metadata: { guildId, iteration: iterations, forced: true, retry: attempt },
+          },
+          ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
+        });
+        accumulateUsage(finalResult.usage);
+        finalText = usableText(finalResult.text);
+        log.info(
+          {
+            attempt,
+            finishReason: finalResult.finishReason,
+            textLength: finalText.length,
+            rawTextLength: finalResult.text.length,
+            toolCalls: finalResult.toolCalls?.length ?? 0,
+            reasoningLength: finalResult.reasoningText?.length ?? 0,
+          },
+          "forced final response",
+        );
+        if (finalText) {
+          pushAssistantTurn(messages, {
+            text: finalText,
+            toolCalls: finalResult.toolCalls,
+            response: finalResult.response,
+          });
+        } else {
+          // Give the retry prompt a referent — without this the model sees two consecutive
+          // system messages complaining about a reply that isn't in its context.
+          pushEphemeral({ role: "assistant", content: WRAP_UP_EMPTY_HISTORY });
+        }
       }
-      messages.push(...finalResult.response.messages);
-      const forcedContent = renderModelText(finalResult.text || "(no response)", { guildId, emojiMap: opts.emojiMap });
+      if (!finalText) {
+        finalText = buildToolSummaryFallback(usedTools, stopReason);
+        messages.push({ role: "assistant", content: finalText });
+        log.warn({ iterations }, "forced final response produced no text, using tool summary fallback");
+      }
+      const forcedContent = `${renderModelText(finalText, { guildId, emojiMap: opts.emojiMap })}\n\n${buildLimitNote(stopReason)}`;
       const footer = buildFooter(config.openaiModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, lastInputTokens, config.openaiContextLimit, opts.onToolsDispatched ? [] : usedTools);
-      return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: messages.slice(1), cancelled: false };
+      return { response: `${forcedContent}\n\n---\n${footer}`, updatedHistory: historyOut(), cancelled: false };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       span.recordException(err instanceof Error ? err : errMsg);
