@@ -160,6 +160,58 @@ function extractUsers(result: ToolResult): Map<string, UserNames> {
   return users;
 }
 
+type ToolInput = Record<string, unknown>;
+
+function describeMessageQuery(tool: string, input: ToolInput): string {
+  switch (tool) {
+    case "search_messages": {
+      const filters: string[] = [];
+      if (input.query) filters.push(`query "${input.query as string}"`);
+      if (input.user_ids) filters.push(`users [${(input.user_ids as string[]).join(", ")}]`);
+      if (input.channel_id) filters.push(`c:${input.channel_id as string}`);
+      if (input.since) filters.push(`since t:${Math.floor(Number(input.since) / 1000)}:R`);
+      if (input.until) filters.push(`until t:${Math.floor(Number(input.until) / 1000)}:R`);
+      return filters.length > 0 ? filters.join(", ") : "an unfiltered browse of recent messages";
+    }
+    case "get_conversation_context":
+      return `context around msg:${input.message_id as string}`;
+    case "get_recent_activity":
+      return `u:${input.user_id as string}'s recent activity`;
+    case "fetch_channel_messages":
+      return `c:${input.channel_id as string}`;
+    default:
+      return "the given filters";
+  }
+}
+
+function describeGuildMessageQuery(input: ToolInput): string {
+  const filters: string[] = [];
+  if (input.content) filters.push(`content "${input.content as string}"`);
+  if (input.author_id) filters.push(`u:${input.author_id as string}`);
+  if (input.channel_id) filters.push(`c:${input.channel_id as string}`);
+  if (input.has) filters.push(`has:${input.has as string}`);
+  return filters.length > 0 ? filters.join(", ") : "the given filters";
+}
+
+function describeAuditLogQuery(input: ToolInput): string {
+  const filters: string[] = [];
+  if (input.action_type) filters.push(`action:${input.action_type as string}`);
+  if (input.executor_id) filters.push(`executor u:${input.executor_id as string}`);
+  if (input.target_id) filters.push(`target u:${input.target_id as string}`);
+  return filters.length > 0 ? filters.join(", ") : "the given filters";
+}
+
+function formatModCaseLine(c: ModCase): string {
+  const parts = [`case:${c.caseId} [${c.action}] subject: u:${c.userId} (${c.userTag}) t:${c.actionTime}`];
+  if (c.executorId) {
+    parts.push(`  executor: u:${c.executorId}`);
+  }
+  if (c.reason) {
+    parts.push(`  reason: ${c.reason}`);
+  }
+  return parts.join("\n");
+}
+
 function formatToolResult(result: ToolResult, input: Record<string, unknown>, log: Logger): string {
   switch (result.tool) {
     case "error":
@@ -169,12 +221,14 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
     case "get_conversation_context":
     case "get_recent_activity":
     case "fetch_channel_messages": {
-      if (result.data.length === 0) return "(no results)";
+      if (result.data.length === 0) return `(no results for ${describeMessageQuery(result.tool, input)} — nothing matches these filters; only different filters will change this, not a different limit)`;
       return result.data.map(formatMessageRow).join("\n");
     }
 
     case "search_guild_messages": {
-      if (result.data.messages.length === 0) return `(no results — total: ${result.data.total_results})`;
+      if (result.data.messages.length === 0) {
+        return `(no results for ${describeGuildMessageQuery(input)} — nothing matches these filters; only different filters will change this, not a different limit or offset)`;
+      }
       return (
         `total: ${result.data.total_results}, showing ${result.data.messages.length}\n` +
         result.data.messages.map(formatMessageRow).join("\n")
@@ -182,7 +236,7 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
     }
 
     case "search_audit_log": {
-      if (result.data.length === 0) return "(no results)";
+      if (result.data.length === 0) return `(no results for ${describeAuditLogQuery(input)} — nothing matches these filters; only different filters will change this, not a different limit)`;
       return result.data
         .map((e) => {
           const seconds = Math.floor(e.createdAt / 1000);
@@ -386,24 +440,24 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
         .join("\n\n");
     }
 
-    case "get_user_mod_history":
+    case "get_user_mod_history": {
+      const userId = input.user_id as string;
+      const cases = result.data;
+      if (cases.length === 0) {
+        return `Mod history for u:${userId}: (no cases found — this user has no recorded cases)`;
+      }
+      return [`Mod history for u:${userId}:`, ...cases.map(formatModCaseLine)].join("\n");
+    }
+
     case "get_guild_recent_cases": {
       const cases = result.data;
       if (cases.length === 0) {
-        return "(no cases found)";
+        return "(no recent cases found for this guild)";
       }
-      return cases
-        .map((c) => {
-          const parts = [`case:${c.caseId} [${c.action}] u:${c.userId} (${c.userTag}) t:${c.actionTime}`];
-          if (c.executorId) {
-            parts.push(`  executor: u:${c.executorId}`);
-          }
-          if (c.reason) {
-            parts.push(`  reason: ${c.reason}`);
-          }
-          return parts.join("\n");
-        })
-        .join("\n");
+      return [
+        "Guild's most recent cases — general server activity, not evidence about the user under investigation. Follow one up only if it connects to them (e.g. a linked alt account); otherwise don't pivot to these users:",
+        ...cases.map(formatModCaseLine),
+      ].join("\n");
     }
 
     case "get_user_cross_server_bans": {
