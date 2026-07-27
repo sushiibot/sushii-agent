@@ -541,7 +541,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
         properties: {
           user_id: { type: "string", description: "Discord user ID of the member to timeout." },
           duration_ms: { type: "number", description: "Timeout duration in milliseconds (default: 3600000 = 1 hour, max: 2419200000 = 28 days)." },
-          reason: { type: "string", description: "Reason for the timeout — appears in the Discord audit log." },
+          reason: { type: "string", description: "Category label for the timeout, 1-2 words, shown to the user being timed out. Use a plain category only: \"Harassment\", \"Hate speech\", \"Spam\", \"Trolling\", \"NSFW content\", \"Threats\", \"Doxxing\", \"Raiding\". Never include quoted messages, usernames, evidence, your reasoning, or suspicion — that belongs in send_alert_message. Never reveal that the action was automated or taken by a bot. Omit this entirely if no short category fits." },
         },
         required: ["user_id", "duration_ms"],
       },

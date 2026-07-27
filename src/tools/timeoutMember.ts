@@ -20,6 +20,18 @@ export interface TimeoutMemberResult {
 
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
 
+// The reason is shown to the timed-out user, so a rambling model-written one is
+// truncated rather than passed through — it should only ever be a short category.
+const MAX_REASON_LENGTH = 48;
+
+function sanitizeReason(reason: string | undefined): string | undefined {
+  const collapsed = reason?.replace(/\s+/g, " ").trim();
+  if (!collapsed) return undefined;
+  return collapsed.length > MAX_REASON_LENGTH
+    ? `${collapsed.slice(0, MAX_REASON_LENGTH - 1).trimEnd()}…`
+    : collapsed;
+}
+
 export async function timeoutMember(
   args: TimeoutMemberArgs,
 ): Promise<TimeoutMemberResult | { error: string }> {
@@ -47,7 +59,7 @@ export async function timeoutMember(
 
   if (!args.dryRun) {
     try {
-      await member.timeout(durationMs, args.reason ?? "Auto-mod action");
+      await member.timeout(durationMs, sanitizeReason(args.reason));
     } catch (err) {
       return { error: `Discord API error applying timeout: ${err}` };
     }
