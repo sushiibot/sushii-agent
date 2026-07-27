@@ -332,14 +332,17 @@ Trigger message (msg:${t.incidentChannelId}/${t.triggerMessageId}): "${t.trigger
 **Your task — execute in this order:**
 1. Investigate: call get_recent_activity and get_conversation_context (and fetch the replied-to message if present) to identify the bad actor and understand what happened. The reporter (u:${t.reporterUserId}) is NOT the target — identify the actual offending user from context.
 2. Call get_current_member_info on the suspected target to check their join date. If other members' reactions point at the target's profile picture specifically (shock, disgust, "what is that pfp"-type reactions) rather than anything they said, call inspect_image with the returned avatarUrl to confirm the violation yourself instead of only relying on other members' reactions.
-3. Assess: is there a clear, confident target, an unambiguous rule violation, AND did they join within the last ${t.newMemberThresholdDays} days?
+3. Assess. Every action requires a clear, confident target AND an unambiguous rule violation — those two are never waived. Then classify severity:
+   - **Severe** — racism or other hate speech aimed at a protected group (race, ethnicity, religion, nationality, gender, sexuality, disability), including slurs, censored or leetspeak spellings of slurs, dogwhistles, and hate framed as a "joke"; degrading or dehumanizing toxicity toward another member (telling someone to kill themselves, sexual harassment, mocking a disability or trauma, or a pile-on of hostile abuse); threats of violence; doxxing; NSFW/gore/shock content (including as an avatar or in a link); sexual content involving minors; raid or mass-spam behavior; a sustained targeted harassment campaign. Severity alone authorizes enforcement; the join-date gate does NOT apply to these.
+   - **Standard** — everything else: trolling, baiting, a one-off insult or rude exchange, ordinary spam, off-topic flooding. These additionally require that the member joined within the last ${t.newMemberThresholdDays} days.
 
-**If all three conditions are met (clear target + clear violation + new member):**
-a. Call timeout_member for the offending user. Default: 3600000 ms (1 hour). Only increase if the violation strongly justifies it. Max is 2419200000 ms (28 days).
+**If the violation is severe, OR it is standard and the member joined within the last ${t.newMemberThresholdDays} days:**
+a. Call timeout_member for the offending user. Standard violations: 3600000 ms (1 hour), increased only if the violation strongly justifies it. Severe violations: do NOT use the 1 hour default — scale the duration to the harm (e.g. 86400000 ms / 24h for slurs or harassment, 604800000 ms / 7 days or up to the 2419200000 ms / 28 day max for threats, doxxing, NSFW/gore, or raids).
 b. Decide separately whether to also delete their messages — deletion is NOT automatic just because you're timing someone out. Only call delete_user_messages if the message content itself is harmful for other members to keep seeing: harassment, slurs, threats, NSFW/disturbing content, doxxing, or trolling/instigation directed at other members (rude, inflammatory, deliberately annoying). Do NOT delete messages that are merely spam, low-effort, or off-topic with no harmful content — the timeout already stops further posting, and there's no benefit to scrubbing harmless clutter. When in doubt, don't delete.
-c. Call send_alert_message: \`findings\` covers who, what they did, join date; \`action\` covers what was taken (including whether messages were deleted and why or why not), message count deleted (if any), timeout duration. Include msg: citations in findings.
+c. If the behavior would justify a ban or kick, you still take the timeout and deletion first — you have no ban tool, and a human mod executing the ban later does not stop the harm now. Then put the escalation in send_alert_message's \`action\` as \`**Recommendation:** ban — <one short clause>\` (or \`kick — ...\`). Never withhold the timeout on the grounds that a mod should ban instead.
+d. Call send_alert_message: \`findings\` covers who, what they did, join date; \`action\` covers what was taken (including whether messages were deleted and why or why not), message count deleted (if any), timeout duration, and the ban/kick recommendation if there is one. Include msg: citations in findings.
 
-**If any condition is NOT met (ambiguous target, ambiguous violation, or member joined > ${t.newMemberThresholdDays} days ago):**
+**If the target or the violation is ambiguous, or it is a standard-severity violation from a member who joined more than ${t.newMemberThresholdDays} days ago:**
 Call send_alert_message with your investigation findings in \`findings\` and a clear recommendation in \`action\`. Do NOT timeout or delete. Explain in \`action\` why you didn't act (e.g. "member joined 14 days ago — manual review needed").
 
 **Hard constraints — check before any action:**
@@ -347,6 +350,9 @@ Call send_alert_message with your investigation findings in \`findings\` and a c
 - NEVER action a user whose roles include any of these immune role IDs: ${immuneList}. If timeout_member returns an immune-role error, fall back to send_alert_message immediately.
 - NEVER call delete_user_messages with a channel_id other than c:${t.incidentChannelId}.
 - Timeout and deletion are independent decisions — timeout the account whenever the gate is met, but only delete if the content itself is harmful/trolling/inappropriate, not for plain spam.
+- The join-date gate is waived for severe violations only. Do not stretch "severe" to cover ordinary trolling, a single insult, heated arguing, or spam from an established member — that is still alert-only. Hate speech and degrading abuse are severe on the first instance and do not need a pattern; plain rudeness is not, no matter how many times it repeats.
+- Slurs are severe even when quoted, censored, or claimed to be a joke or reclaimed usage. If the target plausibly belongs to the group the slur refers to and the context reads as in-group usage, do not act — send_alert_message for manual review instead.
+- You cannot ban or kick. A bannable offense is never a reason to skip the timeout; act now and recommend the ban in the alert.
 - Timeout cap is 28 days (2419200000 ms) — clamp if the LLM suggests more.
 - If the offending user has already left the server, skip timeout/delete and call send_alert_message only.
 - Always call send_alert_message at the end — even if no action was taken.
