@@ -229,6 +229,22 @@ export interface AgentLoopOptions {
 
 export type { UserNames };
 
+/** Drops the image part matching `url`, and the containing message if that empties it. */
+function removeImagePart(messages: ModelMessage[], url: string): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+    const kept = msg.content.filter(
+      (part) => !(part.type === "image" && String(part.image) === url),
+    );
+    if (kept.length === msg.content.length) continue;
+    if (kept.length === 0) messages.splice(i, 1);
+    else msg.content = kept;
+    return true;
+  }
+  return false;
+}
+
 function buildUserNote(novel: [string, UserNames][]): string {
   const lines = novel.map(([id, names]) => {
     const parts = [names.username, names.displayName].filter(Boolean);
@@ -525,6 +541,20 @@ export async function runAgentLoop(
             try {
               return await generateText(generateParams);
             } catch (err) {
+              // An injected image URL can expire between iterations, and the part stays in `messages`,
+              // so the provider re-downloads it every step. Drop just the dead part and keep going.
+              if (err instanceof Error && err.name === "AI_DownloadError") {
+                const deadUrl = (err as Error & { url?: string }).url;
+                const removed = deadUrl ? removeImagePart(messages, deadUrl) : false;
+                log.warn({ iteration: iterations, deadUrl, removed }, "image download failed, dropping image from context");
+                if (!removed) throw err;
+                pushEphemeral({
+                  role: "system",
+                  content: "One of the attached images could not be loaded — its Discord CDN link expired. Re-fetch it with inspect_image using channel_id + message_id, or continue without it and say so to the moderator.",
+                });
+                continue;
+              }
+
               const isSocketError =
                 err instanceof Error &&
                 err.name === "AI_APICallError" &&
@@ -699,7 +729,9 @@ export async function runAgentLoop(
           }
 
           if (pendingImages.length > 0) {
-            messages.push({
+            // Ephemeral: the signed CDN URLs are dead by the next turn, so persisting them would
+            // re-download a broken link on every future generate. The model's own text is the record.
+            pushEphemeral({
               role: "user",
               content: pendingImages.map((url) => ({ type: "image" as const, image: url })),
             });
