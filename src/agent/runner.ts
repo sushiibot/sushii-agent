@@ -1,5 +1,5 @@
 import type { ToolModelMessage } from "ai";
-import type { Client } from "discord.js";
+import type { Client, Message } from "discord.js";
 import { searchMessages } from "../tools/searchMessages.ts";
 import { getConversationContext } from "../tools/getConversationContext.ts";
 import { getUserProfile } from "../tools/getUserProfile.ts";
@@ -84,7 +84,7 @@ type MemoryData = { ok: true } | MemoryRow | MemoryRow[];
 type ToolResult =
   | { tool: "error"; message: string }
   | { tool: "ask_question"; question: string; choices: string[] }
-  | { tool: "inspect_image"; imageUrls: string[] }
+  | { tool: "inspect_image"; imageUrls: string[]; deadUrls: string[] }
   | { tool: "search_messages"; data: MessageRowLike[] }
   | { tool: "search_guild_messages"; data: SearchGuildMessagesResult }
   | { tool: "get_conversation_context"; data: MessageRowLike[] }
@@ -124,6 +124,114 @@ function isDiscordCdnUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+const IMAGE_FETCH_TIMEOUT_MS = 10_000;
+const IMAGE_CONTENT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+type MessageSource = { channel_id: string; message_id: string };
+type ImageCandidate = { url: string; source?: MessageSource };
+
+/**
+ * Bypasses the discord.js message cache — a cached message carries the signed CDN URL from whenever
+ * it was cached, which is the usual reason an attachment URL is already expired by the time it is used.
+ */
+async function fetchMessageFresh(client: Client, guildId: string, { channel_id, message_id }: MessageSource) {
+  const channel = await client.channels.fetch(channel_id);
+  if (!channel || !channel.isTextBased()) throw new Error(`Channel ${channel_id} is not a text channel`);
+  if (channel.isDMBased() || channel.guildId !== guildId) throw new Error(`Channel ${channel_id} does not belong to this guild`);
+  try {
+    return await channel.messages.fetch({ message: message_id, force: true });
+  } catch (err) {
+    throw new Error(`Failed to fetch message ${channel_id}/${message_id}: ${err}`);
+  }
+}
+
+function messageImageUrls(msg: Message): string[] {
+  const attachmentUrls = [...msg.attachments.values()]
+    .filter((a) => a.contentType && IMAGE_CONTENT_TYPES.some((t) => a.contentType!.startsWith(t)))
+    .map((a) => a.url);
+  return [...attachmentUrls, ...collectComponentImageUrls(msg.components as Parameters<typeof collectComponentImageUrls>[0])];
+}
+
+/**
+ * Only Discord's own CDN is verified: component media items may reference arbitrary external URLs,
+ * and fetching those from here would turn inspect_image into an SSRF primitive. Those pass through
+ * unverified to the provider, which is where they were always downloaded from anyway.
+ */
+async function isUsableImageUrl(url: string): Promise<boolean> {
+  if (!isDiscordCdnUrl(url)) return true;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
+    await res.body?.cancel();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** The signature query params change on every refresh, but the path identifies the attachment. */
+function urlPath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Verifies each URL is actually downloadable, and heals the ones that aren't by re-fetching their
+ * source message for a freshly signed URL. Without this a stale or model-mistyped URL reaches the
+ * provider, whose download failure aborts the entire agent run.
+ */
+async function resolveImageCandidates(
+  candidates: ImageCandidate[],
+  client: Client,
+  guildId: string,
+): Promise<{ live: string[]; dead: string[] }> {
+  // The model often passes the same attachment via both image_urls and messages; without this it
+  // gets fetched twice and shown the image twice.
+  const unique = new Map<string, ImageCandidate>();
+  for (const c of candidates) {
+    const existing = unique.get(c.url);
+    if (!existing || (!existing.source && c.source)) unique.set(c.url, c);
+  }
+
+  const checked = await Promise.all([...unique.values()].map(async (c) => ({ ...c, ok: await isUsableImageUrl(c.url) })));
+  const live = checked.filter((c) => c.ok).map((c) => c.url);
+  const stale = checked.filter((c) => !c.ok);
+  if (stale.length === 0) return { live, dead: [] };
+
+  const dead: string[] = [];
+  const bySource = new Map<string, { source: MessageSource; urls: string[] }>();
+  for (const c of stale) {
+    if (!c.source) {
+      dead.push(c.url);
+      continue;
+    }
+    const key = `${c.source.channel_id}/${c.source.message_id}`;
+    const group = bySource.get(key) ?? { source: c.source, urls: [] };
+    group.urls.push(c.url);
+    bySource.set(key, group);
+  }
+
+  for (const { source, urls } of bySource.values()) {
+    let refreshed: Map<string, string>;
+    try {
+      const msg = await fetchMessageFresh(client, guildId, source);
+      refreshed = new Map(messageImageUrls(msg).map((u) => [urlPath(u), u]));
+    } catch {
+      dead.push(...urls);
+      continue;
+    }
+    for (const url of urls) {
+      const fresh = refreshed.get(urlPath(url));
+      if (fresh && fresh !== url && (await isUsableImageUrl(fresh))) live.push(fresh);
+      else dead.push(url);
+    }
+  }
+
+  return { live: [...new Set(live)], dead };
 }
 
 function extractUsers(result: ToolResult): Map<string, UserNames> {
@@ -678,37 +786,24 @@ export async function runTools(
             break;
           }
 
-          const urls: string[] = [];
+          const candidates: ImageCandidate[] = [];
           if (image_urls && image_urls.length > 0) {
             const invalid = image_urls.filter((u) => !isDiscordCdnUrl(u));
             if (invalid.length > 0) {
               result = { tool: "error", message: `image_urls must be discordapp.com or discordapp.net CDN URLs. Rejected: ${invalid.join(", ")}` };
               break;
             }
-            urls.push(...image_urls);
+            candidates.push(...image_urls.map((url) => ({ url })));
           }
 
           if (messages && messages.length > 0) {
-            const imageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
             let messagesError: ToolResult | null = null;
-            for (const { channel_id, message_id } of messages) {
+            for (const source of messages) {
               try {
-                const channel = await client.channels.fetch(channel_id);
-                if (!channel || !channel.isTextBased()) {
-                  messagesError = { tool: "error", message: `Channel ${channel_id} is not a text channel` };
-                  break;
-                }
-                if (channel.isDMBased() || channel.guildId !== guildId) {
-                  messagesError = { tool: "error", message: `Channel ${channel_id} does not belong to this guild` };
-                  break;
-                }
-                const msg = await channel.messages.fetch(message_id);
-                const attachmentUrls = [...msg.attachments.values()]
-                  .filter((a) => a.contentType && imageTypes.some((t) => a.contentType!.startsWith(t)))
-                  .map((a) => a.url);
-                urls.push(...attachmentUrls, ...collectComponentImageUrls(msg.components as Parameters<typeof collectComponentImageUrls>[0]));
+                const msg = await fetchMessageFresh(client, guildId, source);
+                candidates.push(...messageImageUrls(msg).map((url) => ({ url, source })));
               } catch (err) {
-                messagesError = { tool: "error", message: `Failed to fetch message ${channel_id}/${message_id}: ${err}` };
+                messagesError = { tool: "error", message: err instanceof Error ? err.message : String(err) };
                 break;
               }
             }
@@ -718,7 +813,8 @@ export async function runTools(
             }
           }
 
-          result = { tool: "inspect_image", imageUrls: urls };
+          const { live, dead } = await resolveImageCandidates(candidates, client, guildId);
+          result = { tool: "inspect_image", imageUrls: live, deadUrls: dead };
           break;
         }
         case "get_current_member_info":
@@ -973,12 +1069,22 @@ export async function runTools(
     }
 
     if (result.tool === "inspect_image") {
-      if (result.imageUrls.length === 0) {
-        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: "No image attachments found on that message." } });
-      } else {
+      const lines: string[] = [];
+      if (result.imageUrls.length > 0) {
         pendingImages.push(...result.imageUrls);
-        toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: `${result.imageUrls.length} image(s) queued — they will appear in the next message for your analysis.` } });
+        lines.push(
+          `${result.imageUrls.length} image(s) attached directly below this tool result — read them from there. They are already in front of you; do not call inspect_image again for them.`,
+        );
       }
+      if (result.deadUrls.length > 0) {
+        lines.push(
+          `${result.deadUrls.length} image URL(s) could not be loaded — the signature is expired or the URL is mistyped, and refreshing it failed. Do not retype or guess these URLs. Call inspect_image again with the channel_id + message_id they came from via \`messages\`, which re-fetches live:\n${result.deadUrls.map((u) => `- ${u}`).join("\n")}`,
+        );
+      }
+      if (lines.length === 0) {
+        lines.push("No image attachments found on that message.");
+      }
+      toolResultParts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: lines.join("\n\n") } });
       continue;
     }
 
