@@ -321,9 +321,6 @@ client.on(Events.MessageCreate, async (message: Message) => {
   // Whitelist checks
   if (!message.member?.roles.cache.hasAny(...guildConfig.allowedRoles)) return;
 
-  const isAllowedChannel = isChannelAllowed(message, guildConfig.allowedChannels);
-  if (!isAllowedChannel) return;
-
   // Only strip the bot's own mention, preserve other user/channel mentions for the agent
   const botMentionRe = new RegExp(`<@!?${client.user!.id}>`, "g");
   const rawQuery = message.content.replace(botMentionRe, "").trim();
@@ -1641,18 +1638,6 @@ function getChannelContext(message: Message): ChannelContext {
   const categoryName = parent && "type" in parent && parent.type === ChannelType.GuildCategory ? parent.name : undefined;
 
   return { id: ch.id, name, type, isPrivate, topic, categoryName };
-}
-
-function isChannelAllowed(message: Message, allowedChannels: string[]): boolean {
-  if (allowedChannels.includes(message.channelId)) return true;
-
-  // Allow threads whose parent channel is whitelisted
-  if (message.channel.isThread()) {
-    const parentId = message.channel.parentId;
-    return !!parentId && allowedChannels.includes(parentId);
-  }
-
-  return false;
 }
 
 function formatMessageLine(m: Message): string {

@@ -47,12 +47,10 @@ OPENAI_API_KEY=your_api_key_here
 OPENAI_BASE_URL=https://api.anthropic.com/v1   # or OpenRouter, Ollama, etc.
 OPENAI_MODEL=claude-opus-4-6
 DATABASE_PATH=./data/sushii-agent.db
-GUILD_CONFIG={"YOUR_GUILD_ID": {"allowedRoles": ["MOD_ROLE_ID"], "allowedChannels": ["MOD_CHANNEL_ID"]}}
+GUILD_CONFIG={"YOUR_GUILD_ID": {"allowedRoles": ["MOD_ROLE_ID"]}}
 ```
 
 **Finding IDs:** Enable Developer Mode (Settings → Advanced), then right-click any server/user/channel to copy its ID.
-
-`allowedChannels` also matches threads whose parent channel is listed.
 
 ```bash
 bun src/index.ts          # run

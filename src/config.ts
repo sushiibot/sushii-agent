@@ -1,6 +1,5 @@
 export interface GuildConfig {
   allowedRoles: string[];
-  allowedChannels: string[];
   /** Discord emoji strings, e.g. ["<:blobheart:123>", "<a:wave:456>"] */
   emojis?: string[];
   /** Role ID whose ping auto-triggers an investigation. Enables the auto-mod flow. */

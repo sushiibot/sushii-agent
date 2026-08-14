@@ -1,17 +1,9 @@
 {
   "167058919611564043": {
-    "allowedRoles": ["960926821275275284"],
-    "allowedChannels": ["749822555019280434"]
+    "allowedRoles": ["960926821275275284"]
   },
   "187450744427773963": {
     "allowedRoles": ["314495867123924992"],
-    "allowedChannels": [
-      "1356443720240730182",
-      "546248590666760215",
-      "1356443720240730182",
-      "969393641569284127",
-      "197523291789983745"
-    ],
     "emojiMap": {
       "<:JennieLmao2:799030229229109299>": "😂",
       "<:JennieThink:729878231943217162>": "🤔",
@@ -34,12 +26,6 @@
   },
   "138194444645040128": {
     "allowedRoles": ["960926821275275284"],
-    "allowedChannels": [
-      "159593156143218688",
-      "318893006444822528",
-      "1377867209287798834",
-      "969672257683214346"
-    ],
     "rules": [
       "1. Be respectful. No harassment, slurs, threats, doxxing, or discrimination. Don't escalate conflict; ping mods instead. Rule 1 applies to both members AND discussions of artists/idols — constructive criticism of music or performances is fine, but dismissive insults (e.g. \"the music is shit\", \"the beat is ass\", \"horrible\") are not allowed. Dismissive or hostile language directed at someone (e.g. \"stfu\", \"shut up\", telling someone off) is also a Rule 1 violation, not Rule 2.",
       "2. Keep it appropriate. No NSFW content, sexual remarks, or disturbing/shock content. Rule 2 is specifically for sexual/disturbing content, not general rudeness.",
