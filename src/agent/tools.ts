@@ -362,7 +362,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
         properties: {
           content: {
             type: "string",
-            description: "Full markdown content for the server context. Use sections like ## Channels, ## Roles, ## Mod Team, ## Notes.",
+            description: "Full markdown content for the server context. Use sections like ## Channels, ## Roles, ## Mod Team, ## Notes, ## Rules Channel. For rules, store only a pointer (e.g. \"c:CHANNEL_ID\") — never the rule text itself, since it can change without this context being refreshed. Always fetch the live channel content via fetch_channel_messages when the actual rule text is needed.",
           },
         },
         required: ["content"],
@@ -374,7 +374,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: "memory",
       description:
-        "Manage persistent agent memory across conversations. Use read (no title) to list all memories, read (with title) to fetch one, write to save/update, delete to remove stale entries. Prefer updating existing entries over creating near-duplicates.",
+        "Manage persistent agent memory across conversations. Use write for ANY durable fact worth recalling later: a stated preference, a correction someone gave you, a recurring question, established server norms/culture, or context from past incidents. Do NOT write live/mutable facts that are already tracked elsewhere and could go stale — moderator roster, role permissions, automod config, ban/timeout status; always re-fetch those live instead. Use read with an exact title (from the memory index) to fetch one entry, read with a query for a ranked keyword search over titles and content when you don't know the exact title, read with neither to list everything, write to save/update, delete to remove stale entries. Prefer updating existing entries over creating near-duplicates.",
       parameters: {
         type: "object",
         properties: {
@@ -385,7 +385,11 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           },
           title: {
             type: "string",
-            description: "Memory title (unique key). Required for write and delete; omit for read-all.",
+            description: "Memory title (unique key). Required for write and delete; for read, use when you know the exact title from the memory index.",
+          },
+          query: {
+            type: "string",
+            description: "For read: keyword search over memory titles and content, ranked by relevance. Use when you don't know the exact title. Ignored if title is set.",
           },
           content: {
             type: "string",

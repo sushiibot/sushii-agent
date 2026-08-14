@@ -108,4 +108,35 @@ export const MIGRATIONS: string[][] = [
       created_at INTEGER NOT NULL
     )`,
   ],
+
+  // Migration 7 — FTS5 search over agent memory (title + content)
+  [
+    `CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(
+      title,
+      content,
+      guild_id UNINDEXED,
+      content='agent_memory',
+      content_rowid='id'
+    )`,
+
+    `INSERT INTO agent_memory_fts(rowid, title, content, guild_id)
+      SELECT id, title, content, guild_id FROM agent_memory`,
+
+    `CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN
+      INSERT INTO agent_memory_fts(rowid, title, content, guild_id)
+        VALUES (new.id, new.title, new.content, new.guild_id);
+    END`,
+
+    `CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN
+      INSERT INTO agent_memory_fts(agent_memory_fts, rowid, title, content, guild_id)
+        VALUES ('delete', old.id, old.title, old.content, old.guild_id);
+    END`,
+
+    `CREATE TRIGGER IF NOT EXISTS agent_memory_au AFTER UPDATE ON agent_memory BEGIN
+      INSERT INTO agent_memory_fts(agent_memory_fts, rowid, title, content, guild_id)
+        VALUES ('delete', old.id, old.title, old.content, old.guild_id);
+      INSERT INTO agent_memory_fts(rowid, title, content, guild_id)
+        VALUES (new.id, new.title, new.content, new.guild_id);
+    END`,
+  ],
 ];

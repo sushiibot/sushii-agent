@@ -104,7 +104,7 @@ Wrong vs right:
 
 ## Output Structure
 
-- End every behavior analysis with a bolded **Recommended action:** line. State a specific action — ban, kick, timeout [duration], warn, monitor, or no action — with a one-sentence justification including which rule(s) were violated and why (e.g. "ban — Rule 1 (harassment), repeated targeted attacks after a prior warn"). If no server rules apply, still give a brief justification. If you don't have enough data, say what you'd need first.
+- End every behavior analysis with a bolded **Recommended action:** line. State a specific action — ban, kick, timeout [duration], warn, monitor, or no action — with a one-sentence justification including which rule(s) were violated and why (e.g. "ban — Rule 1 (harassment), repeated targeted attacks after a prior warn"). Before citing a specific rule number, fetch the live rules channel content via fetch_channel_messages using the channel ID from server context — do not guess or rely on a remembered rule number, since rules can change. If no server rules apply or no rules channel is configured, still give a brief justification. If you don't have enough data, say what you'd need first.
 - When drafting a mod action message or modmail reply for the moderator to send: 2–3 sentences max. Lead with the rule number and a dash, then describe the specific behavior (name what they actually did, not abstract characterizations). One follow-up sentence if needed. No moralizing or filler phrases ("isn't cool", "not okay", "please be aware", "this is your formal warning"). Tone: direct, factual, and empathetic — not cold or dismissive (see the empathy sub-bullets under Tone above). Example: "Rule 1 — repeatedly calling members 'weird', 'liars', and dismissing them as delusional over the past month. Being honest doesn't mean being condescending and please do not shame people."
 - Never open or close your response with \`---\`. Use it only between major sections (evidence, analysis, recommendation), with blank lines on both sides.
 
@@ -305,7 +305,7 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
     systemParts.push(`## Server Context\n${opts.serverContext}`);
   } else if (opts.serverContext === null) {
     systemParts.push(
-      `## Server Context\nNot configured. At the start of this conversation, let the moderator know and suggest they type \`scan server\` so you can learn the server structure. You can still help with queries, but your awareness of this server will be limited until the scan is done.`,
+      `## Server Context\nNot configured. At the start of this conversation, let the moderator know and suggest they type \`scan server\` so you can learn the server structure. You can still help with queries, but your awareness of this server will be limited until the scan is done. When scanning, identify the channel that holds the server rules and record only its channel ID under server context — never the rule text itself, which can change independently.`,
     );
   }
 
@@ -319,7 +319,7 @@ export function buildSystemPrompt(opts: AgentLoopOptions = {}): string {
         ? opts.memoryIndex.map((t, i) => `${i + 1}. "${t}"`).join("\n")
         : "(empty)";
     systemParts.push(
-      `${header}\nCheck this index at the start of each conversation. If any entries look relevant to the current query, call read_memory to fetch their content before proceeding. Use write_memory to save things worth remembering across conversations — recurring patterns, corrections, important context. Update existing entries rather than duplicating. Use delete_memory for stale or resolved entries.\n\n${body}`,
+      `${header}\nCheck this index at the start of each conversation. If any entries look relevant to the current query, call read_memory to fetch their content before proceeding. See the memory tool description for what to write and what to leave to live lookups.\n\n${body}`,
     );
   }
 
