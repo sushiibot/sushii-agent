@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Client } from "discord.js";
 import { config } from "../../config.ts";
 import { buildMcpHttpApp } from "./http.ts";
@@ -38,6 +38,22 @@ async function registerClient(app: ReturnType<typeof buildMcpHttpApp>, redirectU
 }
 
 describe("/mcp bearer auth", () => {
+  // permittedGuildIds is now re-derived from live config on every request (not trusted from
+  // what was baked into the session at mint time), so tests that expect a minted session to
+  // still be authorized need a matching live whitelist entry.
+  let originalGuildConfig: typeof config.guildConfig;
+  beforeEach(() => {
+    originalGuildConfig = config.guildConfig;
+    config.guildConfig = {
+      ...originalGuildConfig,
+      guildA: { allowedRoles: [], mcpBridgeAllowedUserIds: ["u1"] },
+      guildB: { allowedRoles: [], mcpBridgeAllowedUserIds: ["u2"] },
+    };
+  });
+  afterEach(() => {
+    config.guildConfig = originalGuildConfig;
+  });
+
   test("rejects a request with no Authorization header", async () => {
     const { app } = makeApp();
     const res = await app.request("/mcp", { method: "POST" });
@@ -92,6 +108,44 @@ describe("/mcp bearer auth", () => {
     });
     expect(res.status).not.toBe(401);
     expect(res.status).toBeLessThan(500);
+  });
+
+  test("rejects a token whose identity is no longer whitelisted in any guild, even though it was at mint time", async () => {
+    const sessionStore = new SessionStore();
+    const token = sessionStore.mint({
+      identity: { id: "revoked-user", username: "eve", avatar: null },
+      permittedGuildIds: ["guildA"], // stale — not backed by any live config.guildConfig entry
+    });
+    const { app } = makeApp(sessionStore);
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test("picks up a guild grant added after the token was minted, without needing a new token", async () => {
+    const sessionStore = new SessionStore();
+    // Not one of the beforeEach-whitelisted identities — starts with no live access at all.
+    const token = sessionStore.mint({ identity: { id: "not-yet-granted", username: "alice", avatar: null }, permittedGuildIds: [] });
+    const { app } = makeApp(sessionStore);
+
+    const beforeGrant = await app.request("/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(beforeGrant.status).toBe(401);
+
+    config.guildConfig = { ...config.guildConfig, guildC: { allowedRoles: [], mcpBridgeAllowedUserIds: ["not-yet-granted"] } };
+
+    const afterGrant = await app.request("/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(afterGrant.status).not.toBe(401);
   });
 });
 

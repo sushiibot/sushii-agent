@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Client } from "discord.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { config, getPermittedGuildIds } from "../../config.ts";
 import { getDb } from "../../db/index.ts";
 import { publicOrigin } from "./httpUtil.ts";
 import { type OAuthDeps, registerOAuthRoutes } from "./oauthRoutes.ts";
@@ -52,11 +53,20 @@ export function buildMcpHttpApp(
       return c.json({ error: "unauthorized" }, 401);
     }
 
+    // Re-derived from the live guild config on every request rather than trusting what was
+    // baked in at login: a whitelist edit should take effect immediately in both directions —
+    // newly-granted access without waiting out the token's TTL, and revoked access without
+    // an already-issued token continuing to work until it expires.
+    const permittedGuildIds = getPermittedGuildIds(config.guildConfig, session.identity.id);
+    if (permittedGuildIds.length === 0) {
+      return c.json({ error: "unauthorized", error_description: "No longer whitelisted for the MCP bridge" }, 401);
+    }
+
     const authInfo: AuthInfo = {
       token,
       clientId: session.identity.id,
       scopes: ["identify"],
-      extra: { session },
+      extra: { session: { ...session, permittedGuildIds } },
     };
 
     const mcpServer = buildMcpServer(client, webhookCache);
