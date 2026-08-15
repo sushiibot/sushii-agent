@@ -32,6 +32,17 @@ function oauthConfig(): { clientId: string; clientSecret: string; redirectUri: s
   return { clientId: discordOAuthClientId, clientSecret: discordOAuthClientSecret, redirectUri: discordOAuthRedirectUri };
 }
 
+/**
+ * The externally-visible origin (scheme + host) this server is reached at. Derived from
+ * DISCORD_OAUTH_REDIRECT_URI rather than the request URL, since Traefik terminates TLS and
+ * forwards plain HTTP internally — the request's own URL would report "http" even when the
+ * client connected over https.
+ */
+function publicOrigin(requestUrl: string): string {
+  const oauth = oauthConfig();
+  return oauth ? new URL(oauth.redirectUri).origin : new URL(requestUrl).origin;
+}
+
 export function buildMcpHttpApp(client: Client<true>, sessionStore: SessionStore = new SessionStore()): Hono {
   const app = new Hono();
   const stateStore = new StateStore();
@@ -82,7 +93,7 @@ export function buildMcpHttpApp(client: Client<true>, sessionStore: SessionStore
   });
 
   app.get(RESOURCE_METADATA_PATH, (c) => {
-    const origin = new URL(c.req.url).origin;
+    const origin = publicOrigin(c.req.url);
     return c.json({
       resource: `${origin}/mcp`,
       authorization_servers: [origin],
@@ -98,7 +109,7 @@ export function buildMcpHttpApp(client: Client<true>, sessionStore: SessionStore
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : undefined;
     const session = token ? sessionStore.verify(token) : null;
     if (!token || !session) {
-      c.header("WWW-Authenticate", `Bearer resource_metadata="${new URL(c.req.url).origin}${RESOURCE_METADATA_PATH}"`);
+      c.header("WWW-Authenticate", `Bearer resource_metadata="${publicOrigin(c.req.url)}${RESOURCE_METADATA_PATH}"`);
       return c.json({ error: "unauthorized" }, 401);
     }
 
