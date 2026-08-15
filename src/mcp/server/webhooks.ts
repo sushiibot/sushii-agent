@@ -86,6 +86,22 @@ export class WebhookCache {
     return this.cache.get(channel.id) ?? this.refresh(client, channel);
   }
 
+  /**
+   * The OAuth `identify` scope only ever returns the caller's account-wide avatar, not a
+   * per-server one — so this looks up their actual guild member profile instead, which resolves
+   * (guild avatar -> global avatar -> default avatar) the same way Discord's own UI does. Falls
+   * back to the OAuth-provided global avatar only if the member lookup itself fails.
+   */
+  private async resolveAvatarUrl(client: Client<true>, guildId: string, identity: DiscordIdentity): Promise<string | undefined> {
+    try {
+      const guild = client.guilds.cache.get(guildId) ?? (await client.guilds.fetch(guildId));
+      const member = await guild.members.fetch(identity.id);
+      return member.displayAvatarURL({ extension: "png", size: 128 });
+    } catch {
+      return identity.avatar ? `https://cdn.discordapp.com/avatars/${identity.id}/${identity.avatar}.png` : undefined;
+    }
+  }
+
   /** Posts `content` under `identity`'s name/avatar, self-healing once if the cached webhook was deleted. */
   async send(
     client: Client<true>,
@@ -96,13 +112,15 @@ export class WebhookCache {
     const target = resolveWebhookTarget(channel);
     if ("error" in target) throw new Error(target.error);
 
+    const avatarURL = await this.resolveAvatarUrl(client, channel.guildId, identity);
+
     const webhook = await this.cached(client, target.channel);
     try {
-      await this.execute(webhook, content, identity, target.threadId);
+      await this.execute(webhook, content, identity, avatarURL, target.threadId);
     } catch (err) {
       if (err instanceof DiscordAPIError && err.code === RESTJSONErrorCodes.UnknownWebhook) {
         const fresh = await this.refresh(client, target.channel);
-        await this.execute(fresh, content, identity, target.threadId);
+        await this.execute(fresh, content, identity, avatarURL, target.threadId);
         return;
       }
       throw err;
@@ -113,11 +131,9 @@ export class WebhookCache {
     webhook: IncomingWebhook,
     content: string,
     identity: DiscordIdentity,
+    avatarURL: string | undefined,
     threadId: string | undefined,
   ): Promise<void> {
-    const avatarURL = identity.avatar
-      ? `https://cdn.discordapp.com/avatars/${identity.id}/${identity.avatar}.png`
-      : undefined;
     await webhook.send({
       content,
       username: identity.username,

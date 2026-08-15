@@ -28,11 +28,13 @@ function fakeChannel(opts: {
   createdId?: string;
   onFetchWebhooks?: () => void;
   onCreateWebhook?: () => void;
+  onSend?: (options: { avatarURL?: string }) => void;
   fetchWebhooksGate?: Promise<void>;
   sendImpls?: Record<string, () => Promise<void>>;
 }) {
   let created = 0;
-  const send = (id: string) => async () => {
+  const send = (id: string) => async (options: { avatarURL?: string }) => {
+    opts.onSend?.(options);
     const impl = opts.sendImpls?.[id];
     if (impl) return impl();
   };
@@ -54,8 +56,16 @@ function fakeChannel(opts: {
   } as unknown as GuildTextBasedChannel;
 }
 
-function fakeClient(): Client<true> {
-  return { user: { id: "bot1" } } as unknown as Client<true>;
+function fakeClient(guild?: { members?: { fetch: (id: string) => Promise<unknown> } }): Client<true> {
+  return {
+    user: { id: "bot1" },
+    guilds: { cache: new Map(guild ? [["guild1", guild]] : []), fetch: async () => guild },
+  } as unknown as Client<true>;
+}
+
+function fakeChannelInGuild(opts: Parameters<typeof fakeChannel>[0]) {
+  const channel = fakeChannel(opts);
+  return { ...channel, guildId: "guild1" } as unknown as GuildTextBasedChannel;
 }
 
 describe("WebhookCache", () => {
@@ -178,5 +188,65 @@ describe("WebhookCache", () => {
 
     expect(fetchCalls).toBe(1);
     expect(createCalls).toBe(1);
+  });
+
+  test("uses the guild member's display avatar (guild-specific, falling back to global) over the OAuth-provided global avatar", async () => {
+    let capturedAvatarURL: string | undefined;
+    const channel = fakeChannelInGuild({
+      existingWebhooks: [],
+      onSend: (options) => {
+        capturedAvatarURL = options.avatarURL;
+      },
+      sendImpls: { "created-1": async () => {} },
+    });
+    const guild = {
+      members: {
+        fetch: async () => ({ displayAvatarURL: () => "https://cdn.discordapp.com/guilds/guild1/users/u1/avatars/guildhash.png" }),
+      },
+    };
+    const cache = new WebhookCache();
+
+    await cache.send(fakeClient(guild), channel, "hi", { id: "u1", username: "alice", avatar: "globalhash" });
+
+    expect(capturedAvatarURL).toBe("https://cdn.discordapp.com/guilds/guild1/users/u1/avatars/guildhash.png");
+  });
+
+  test("falls back to the OAuth-provided global avatar if the guild member lookup fails", async () => {
+    let capturedAvatarURL: string | undefined;
+    const channel = fakeChannelInGuild({
+      existingWebhooks: [],
+      onSend: (options) => {
+        capturedAvatarURL = options.avatarURL;
+      },
+      sendImpls: { "created-1": async () => {} },
+    });
+    const guild = {
+      members: {
+        fetch: async () => {
+          throw new Error("member not found");
+        },
+      },
+    };
+    const cache = new WebhookCache();
+
+    await cache.send(fakeClient(guild), channel, "hi", { id: "u1", username: "alice", avatar: "globalhash" });
+
+    expect(capturedAvatarURL).toBe("https://cdn.discordapp.com/avatars/u1/globalhash.png");
+  });
+
+  test("has no avatarURL at all when both the guild lookup and the OAuth avatar are unavailable", async () => {
+    let capturedAvatarURL: string | undefined = "unset";
+    const channel = fakeChannelInGuild({
+      existingWebhooks: [],
+      onSend: (options) => {
+        capturedAvatarURL = options.avatarURL;
+      },
+      sendImpls: { "created-1": async () => {} },
+    });
+    const cache = new WebhookCache();
+
+    await cache.send(fakeClient(), channel, "hi", identity); // no guild passed to fakeClient, identity.avatar is null
+
+    expect(capturedAvatarURL).toBeUndefined();
   });
 });
