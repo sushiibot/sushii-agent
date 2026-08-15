@@ -535,10 +535,17 @@ export async function runAgentLoop(
           maxOutputTokens: 4096,
           experimental_telemetry: {
             isEnabled: true,
+            recordInputs: false,
+            recordOutputs: false,
             functionId: "agent-loop",
             metadata: { guildId, iteration: iterations, retry: 0 },
           },
-          ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
+          providerOptions: {
+            openrouter: {
+              provider: { data_collection: "deny" },
+              ...(opts.currentChannelId ? { session_id: opts.currentChannelId } : {}),
+            },
+          },
         };
 
         // Retry on zero-content stop responses (OpenRouter cold-start / scaling events).
@@ -627,6 +634,8 @@ export async function runAgentLoop(
             ...generateParams,
             experimental_telemetry: {
               isEnabled: true,
+              recordInputs: false,
+              recordOutputs: false,
               functionId: "agent-loop",
               metadata: { guildId, iteration: iterations, retry: attempt + 1 },
             },
@@ -797,10 +806,17 @@ export async function runAgentLoop(
           maxOutputTokens: 8192,
           experimental_telemetry: {
             isEnabled: true,
+            recordInputs: false,
+            recordOutputs: false,
             functionId: "agent-loop",
             metadata: { guildId, iteration: iterations, forced: true, retry: attempt },
           },
-          ...(opts.currentChannelId ? { providerOptions: { openrouter: { session_id: opts.currentChannelId } } } : {}),
+          providerOptions: {
+            openrouter: {
+              provider: { data_collection: "deny" },
+              ...(opts.currentChannelId ? { session_id: opts.currentChannelId } : {}),
+            },
+          },
         });
         accumulateUsage(finalResult.usage);
         lastReasoningText = finalResult.reasoningText ?? "";
