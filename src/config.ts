@@ -1,32 +1,5 @@
-export interface GuildConfig {
-  allowedRoles: string[];
-  /** Discord emoji strings, e.g. ["<:blobheart:123>", "<a:wave:456>"] */
-  emojis?: string[];
-  /** Role ID whose ping auto-triggers an investigation. Enables the auto-mod flow. */
-  modRoleId?: string;
-  /** Channel ID where the bot posts the alert anchor and opens the investigation thread. */
-  alertsChannelId?: string;
-  /** Role IDs the agent will never action (union with allowedRoles at runtime). */
-  modImmuneRoleIds?: string[];
-  /** How many days after joining a member is considered "new" for auto-action. Defaults to 3. */
-  newMemberThresholdDays?: number;
-  /** When true, timeout_member and delete_user_messages no-op instead of hitting the Discord API. send_alert_message still sends, tagged as a dry run. */
-  autoModDryRun?: boolean;
-  /** Role IDs allowed to trigger the auto-mod flow by pinging modRoleId. If unset, anyone can trigger it. */
-  autoModTriggerRoleIds?: string[];
-  /** Minimum seconds between auto-mod triggers in the same channel. Defaults to 60. */
-  autoModCooldownSeconds?: number;
-}
-
-/** Build a name → Discord syntax map from an emojis array. */
-export function buildEmojiMap(emojis: string[]): Record<string, string> {
-  const map: Record<string, string> = {};
-  for (const emoji of emojis) {
-    const match = emoji.match(/^<a?:(\w+):\d+>$/);
-    if (match) map[match[1]] = emoji;
-  }
-  return map;
-}
+export { type GuildConfig, getPermittedGuildIds, buildEmojiMap } from "./guildConfig.ts";
+import type { GuildConfig } from "./guildConfig.ts";
 
 export interface Config {
   discordBotToken: string;
@@ -40,6 +13,10 @@ export interface Config {
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
   exaApiKey: string | undefined;
+  discordOAuthClientId: string | undefined;
+  discordOAuthClientSecret: string | undefined;
+  discordOAuthRedirectUri: string | undefined;
+  mcpBridgePort: number;
 }
 
 function required(name: string): string {
@@ -50,6 +27,16 @@ function required(name: string): string {
 
 function optional(name: string, defaultValue: string): string {
   return process.env[name] ?? defaultValue;
+}
+
+function optionalPort(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const port = parseInt(raw, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid port in env var ${name}: ${raw}`);
+  }
+  return port;
 }
 
 import { readFileSync } from "fs";
@@ -77,4 +64,8 @@ export const config: Config = {
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   exaApiKey: process.env["EXA_API_KEY"],
+  discordOAuthClientId: process.env["DISCORD_OAUTH_CLIENT_ID"],
+  discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
+  discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],
+  mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
 };
