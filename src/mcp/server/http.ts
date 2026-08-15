@@ -2,94 +2,32 @@ import { Hono } from "hono";
 import type { Client } from "discord.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { config, getPermittedGuildIds } from "../../config.ts";
-import { getLogger } from "../../logger.ts";
-import { buildAuthorizeUrl, resolveIdentityFromCode } from "./discordOAuth.ts";
-import { SessionStore, StateStore } from "./session.ts";
+import { publicOrigin } from "./httpUtil.ts";
+import { type OAuthDeps, registerOAuthRoutes } from "./oauthRoutes.ts";
+import { AuthorizationCodeStore, ClientStore, PendingAuthorizationStore, PendingConsentStore } from "./oauthServer.ts";
+import { SessionStore } from "./session.ts";
 import { WebhookCache } from "./webhooks.ts";
 import { buildMcpServer } from "./mcpServer.ts";
 
-const logger = getLogger("mcp-bridge");
-
 const RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp";
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function htmlPage(title: string, body: string): string {
-  return `<!doctype html><html><head><title>${escapeHtml(title)}</title></head><body>${body}</body></html>`;
-}
-
-/** Returns the Discord OAuth app credentials, or null if any are unconfigured. */
-function oauthConfig(): { clientId: string; clientSecret: string; redirectUri: string } | null {
-  const { discordOAuthClientId, discordOAuthClientSecret, discordOAuthRedirectUri } = config;
-  if (!discordOAuthClientId || !discordOAuthClientSecret || !discordOAuthRedirectUri) return null;
-  return { clientId: discordOAuthClientId, clientSecret: discordOAuthClientSecret, redirectUri: discordOAuthRedirectUri };
-}
-
-/**
- * The externally-visible origin (scheme + host) this server is reached at. Derived from
- * DISCORD_OAUTH_REDIRECT_URI rather than the request URL, since Traefik terminates TLS and
- * forwards plain HTTP internally — the request's own URL would report "http" even when the
- * client connected over https.
- */
-function publicOrigin(requestUrl: string): string {
-  const oauth = oauthConfig();
-  return oauth ? new URL(oauth.redirectUri).origin : new URL(requestUrl).origin;
-}
-
-export function buildMcpHttpApp(client: Client<true>, sessionStore: SessionStore = new SessionStore()): Hono {
+export function buildMcpHttpApp(
+  client: Client<true>,
+  sessionStore: SessionStore = new SessionStore(),
+  extraStores: Partial<Omit<OAuthDeps, "sessionStore" | "client">> = {},
+): Hono {
   const app = new Hono();
-  const stateStore = new StateStore();
   const webhookCache = new WebhookCache();
 
-  app.get("/oauth/authorize", (c) => {
-    const oauth = oauthConfig();
-    if (!oauth) return c.text("MCP bridge OAuth is not configured", 500);
-    const state = stateStore.issue();
-    const url = buildAuthorizeUrl(oauth.clientId, oauth.redirectUri, state);
-    return c.redirect(url);
-  });
+  app.notFound((c) => c.json({ error: "not_found" }, 404));
 
-  app.get("/oauth/callback", async (c) => {
-    const oauth = oauthConfig();
-    if (!oauth) return c.text("MCP bridge OAuth is not configured", 500);
-
-    const code = c.req.query("code");
-    const state = c.req.query("state");
-    if (!code || !state || !stateStore.consume(state)) {
-      return c.html(htmlPage("Login failed", "<p>Invalid or expired login attempt. Please try again.</p>"), 400);
-    }
-
-    let identity;
-    try {
-      identity = await resolveIdentityFromCode(oauth.clientId, oauth.clientSecret, oauth.redirectUri, code);
-    } catch (err) {
-      logger.error({ err }, "Discord OAuth code exchange failed");
-      return c.html(htmlPage("Login failed", "<p>Could not verify your Discord identity. Please try again.</p>"), 502);
-    }
-
-    const permittedGuildIds = getPermittedGuildIds(config.guildConfig, identity.id);
-    if (permittedGuildIds.length === 0) {
-      logger.warn({ discordUserId: identity.id }, "MCP bridge login rejected: not whitelisted in any guild");
-      return c.html(htmlPage("Access denied", "<p>Your Discord account isn't whitelisted for the MCP bridge.</p>"), 403);
-    }
-
-    const token = sessionStore.mint({ identity, permittedGuildIds });
-    logger.info({ discordUserId: identity.id, guildCount: permittedGuildIds.length }, "MCP bridge session issued");
-
-    c.header("Cache-Control", "no-store");
-    return c.html(
-      htmlPage(
-        "MCP bridge login",
-        `<p>Logged in as ${escapeHtml(identity.username)}. Use this token as your MCP client's bearer token:</p><pre>${escapeHtml(token)}</pre><p>It expires in about an hour.</p>`,
-      ),
-    );
+  registerOAuthRoutes(app, {
+    client,
+    sessionStore,
+    clientStore: extraStores.clientStore ?? new ClientStore(),
+    pendingAuthStore: extraStores.pendingAuthStore ?? new PendingAuthorizationStore(),
+    pendingConsentStore: extraStores.pendingConsentStore ?? new PendingConsentStore(),
+    codeStore: extraStores.codeStore ?? new AuthorizationCodeStore(),
   });
 
   app.get(RESOURCE_METADATA_PATH, (c) => {
