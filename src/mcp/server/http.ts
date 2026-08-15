@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Client } from "discord.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { getDb } from "../../db/index.ts";
 import { publicOrigin } from "./httpUtil.ts";
 import { type OAuthDeps, registerOAuthRoutes } from "./oauthRoutes.ts";
 import { AuthorizationCodeStore, ClientStore, PendingAuthorizationStore, PendingConsentStore } from "./oauthServer.ts";
@@ -13,7 +14,7 @@ const RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp";
 
 export function buildMcpHttpApp(
   client: Client<true>,
-  sessionStore: SessionStore = new SessionStore(),
+  sessionStore: SessionStore = new SessionStore(undefined, getDb()),
   extraStores: Partial<Omit<OAuthDeps, "sessionStore" | "client">> = {},
 ): Hono {
   const app = new Hono();
@@ -24,7 +25,7 @@ export function buildMcpHttpApp(
   registerOAuthRoutes(app, {
     client,
     sessionStore,
-    clientStore: extraStores.clientStore ?? new ClientStore(),
+    clientStore: extraStores.clientStore ?? new ClientStore(undefined, getDb()),
     pendingAuthStore: extraStores.pendingAuthStore ?? new PendingAuthorizationStore(),
     pendingConsentStore: extraStores.pendingConsentStore ?? new PendingConsentStore(),
     codeStore: extraStores.codeStore ?? new AuthorizationCodeStore(),

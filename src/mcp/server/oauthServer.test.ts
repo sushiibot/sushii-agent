@@ -1,4 +1,6 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { MIGRATIONS } from "../../db/schema.ts";
 import {
   AuthorizationCodeStore,
   ClientStore,
@@ -8,6 +10,14 @@ import {
   PendingConsentStore,
   verifyPkce,
 } from "./oauthServer.ts";
+
+function testDb(): Database {
+  const db = new Database(":memory:");
+  for (const migration of MIGRATIONS) {
+    for (const sql of migration) db.exec(sql);
+  }
+  return db;
+}
 
 describe("isAllowedRedirectUri", () => {
   test("accepts https URLs", () => {
@@ -67,6 +77,26 @@ describe("ClientStore", () => {
   test("returns null for an unknown client id", () => {
     const store = new ClientStore();
     expect(store.get("bogus")).toBeNull();
+  });
+
+  describe("with a Database", () => {
+    test("a client registered before a restart is still known after rehydrating from the DB", () => {
+      const db = testDb();
+      const before = new ClientStore(undefined, db);
+      const registered = before.register(["http://localhost:1234/callback"]);
+
+      const after = new ClientStore(undefined, db);
+      expect(after.get(registered.clientId)).toEqual(registered);
+    });
+
+    test("an expired client isn't rehydrated on restart", () => {
+      const db = testDb();
+      const before = new ClientStore(-1, db); // already-expired TTL
+      const registered = before.register(["http://localhost:1234/callback"]);
+
+      const after = new ClientStore(undefined, db);
+      expect(after.get(registered.clientId)).toBeNull();
+    });
   });
 });
 

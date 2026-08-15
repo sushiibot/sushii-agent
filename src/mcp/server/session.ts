@@ -1,3 +1,5 @@
+import type { Database } from "bun:sqlite";
+import { deleteExpiredOAuthSessions, deleteOAuthSession, loadOAuthSessions, saveOAuthSession } from "../../db/mcpOauth.ts";
 import { randomId, TtlMap } from "./ttlStore.ts";
 
 export interface DiscordIdentity {
@@ -13,12 +15,26 @@ export interface McpSession {
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
-/** In-memory token -> session map. Nothing here needs to survive a process restart. */
+/**
+ * Token -> session map, persisted to SQLite when a Database is provided (production) so a
+ * deploy doesn't log every MCP bridge user out — falls back to in-memory-only otherwise (tests,
+ * or before the DB is initialized).
+ */
 export class SessionStore {
   private readonly sessions: TtlMap<McpSession>;
 
-  constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {
-    this.sessions = new TtlMap(ttlMs);
+  constructor(
+    private readonly ttlMs: number = DEFAULT_TTL_MS,
+    private readonly db?: Database,
+  ) {
+    this.sessions = new TtlMap(ttlMs, undefined, db ? (token, session, expiresAt) => saveOAuthSession(db, token, session, expiresAt) : undefined);
+    if (db) {
+      const now = Date.now();
+      deleteExpiredOAuthSessions(db, now);
+      for (const { key, value, expiresAt } of loadOAuthSessions(db, now)) {
+        this.sessions.restore(key, value, expiresAt);
+      }
+    }
   }
 
   get ttlSeconds(): number {
@@ -40,5 +56,6 @@ export class SessionStore {
   // immediately (rather than waiting out the TTL) by dropping the affected token(s) here.
   revoke(token: string): void {
     this.sessions.delete(token);
+    if (this.db) deleteOAuthSession(this.db, token);
   }
 }

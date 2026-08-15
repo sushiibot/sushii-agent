@@ -1,3 +1,5 @@
+import type { Database } from "bun:sqlite";
+import { deleteExpiredOAuthClients, loadOAuthClients, saveOAuthClient } from "../../db/mcpOauth.ts";
 import type { DiscordIdentity } from "./session.ts";
 import { randomId, TtlMap } from "./ttlStore.ts";
 
@@ -30,12 +32,26 @@ export interface RegisteredClient {
 
 const CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** In-memory dynamic client registry (RFC 7591). Registrations don't need to survive a restart. */
+/**
+ * Dynamic client registry (RFC 7591), persisted to SQLite when a Database is provided
+ * (production) — without this, every deploy would wipe every MCP client's registration,
+ * forcing it to re-register (and its user to re-consent) on the next login attempt.
+ */
 export class ClientStore {
   private readonly clients: TtlMap<RegisteredClient>;
 
-  constructor(ttlMs: number = CLIENT_TTL_MS) {
-    this.clients = new TtlMap(ttlMs);
+  constructor(
+    ttlMs: number = CLIENT_TTL_MS,
+    db?: Database,
+  ) {
+    this.clients = new TtlMap(ttlMs, undefined, db ? (_key, client, expiresAt) => saveOAuthClient(db, client, expiresAt) : undefined);
+    if (db) {
+      const now = Date.now();
+      deleteExpiredOAuthClients(db, now);
+      for (const { key, value, expiresAt } of loadOAuthClients(db, now)) {
+        this.clients.restore(key, value, expiresAt);
+      }
+    }
   }
 
   register(redirectUris: string[]): RegisteredClient {

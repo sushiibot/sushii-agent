@@ -8,8 +8,9 @@ const MIN_SWEEP_INTERVAL_MS = 1_000;
 
 /**
  * In-memory key -> value map with per-entry TTL and a max-entries cap (FIFO eviction via
- * Map's insertion order). Backs every short-lived server-side record in the MCP bridge
- * (sessions, registered clients, OAuth nonces/codes) — none of it needs to survive a restart.
+ * Map's insertion order). Backs every short-lived server-side record in the MCP bridge —
+ * by default none of it survives a restart, but an optional onWrite hook lets a caller
+ * write through to durable storage (see ClientStore/SessionStore) for entries that should.
  */
 export class TtlMap<T> {
   private readonly entries = new Map<string, Entry<T>>();
@@ -18,6 +19,7 @@ export class TtlMap<T> {
   constructor(
     private readonly ttlMs: number,
     private readonly maxEntries: number = DEFAULT_MAX_ENTRIES,
+    private readonly onWrite?: (key: string, value: T, expiresAt: number) => void,
   ) {}
 
   set(key: string, value: T): void {
@@ -31,7 +33,14 @@ export class TtlMap<T> {
       const oldest = this.entries.keys().next().value;
       if (oldest !== undefined) this.entries.delete(oldest);
     }
-    this.entries.set(key, { value, expiresAt: now + this.ttlMs });
+    const expiresAt = now + this.ttlMs;
+    this.entries.set(key, { value, expiresAt });
+    this.onWrite?.(key, value, expiresAt);
+  }
+
+  /** Seeds an entry with an already-computed expiry, bypassing onWrite — for hydrating from durable storage. */
+  restore(key: string, value: T, expiresAt: number): void {
+    this.entries.set(key, { value, expiresAt });
   }
 
   /** Returns the value for a valid, unexpired key without removing it; evicts if expired. */

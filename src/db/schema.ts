@@ -139,4 +139,23 @@ export const MIGRATIONS: string[][] = [
         VALUES (new.id, new.title, new.content, new.guild_id);
     END`,
   ],
+
+  // Migration 8 — persist MCP bridge OAuth clients and sessions across restarts. Every deploy
+  // previously wiped these (in-memory only), forcing every MCP client to re-register and every
+  // user to re-login. Pending auth/consent/authorization-code state stays in-memory — those are
+  // all short-TTL mid-flow artifacts where losing them on a restart just means retrying a login.
+  [
+    `CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+      client_id TEXT PRIMARY KEY,
+      redirect_uris TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS mcp_oauth_sessions (
+      token TEXT PRIMARY KEY,
+      identity TEXT NOT NULL,
+      permitted_guild_ids TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`,
+  ],
 ];
