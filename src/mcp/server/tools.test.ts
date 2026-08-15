@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { ChannelType, Collection } from "discord.js";
 import type { Client } from "discord.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { mcpFetch, mcpSearch, mcpSend } from "./tools.ts";
+import { mcpFetch, mcpListChannels, mcpSearch, mcpSend } from "./tools.ts";
 import type { McpSession } from "./session.ts";
 import type { WebhookCache } from "./webhooks.ts";
 
@@ -151,5 +152,55 @@ describe("mcpSend", () => {
 
     expect(result.isError).toBeUndefined();
     expect(sentIdentity).toEqual(session.identity);
+  });
+});
+
+function fakeGuildsClient(guilds: Record<string, { name: string; channels: { id: string; name: string; type: ChannelType }[] }>) {
+  const guildCache = new Collection(
+    Object.entries(guilds).map(([guildId, guild]) => [
+      guildId,
+      {
+        id: guildId,
+        name: guild.name,
+        channels: { cache: new Collection(guild.channels.map((c) => [c.id, c])) },
+      },
+    ]),
+  );
+  return { guilds: { cache: guildCache } } as unknown as Client<true>;
+}
+
+describe("mcpListChannels", () => {
+  test("rejects a guild_id outside the caller's permitted guilds", () => {
+    const client = fakeGuildsClient({});
+    const result = mcpListChannels(client, session, { guild_id: "guildB" });
+    expect(result.isError).toBe(true);
+  });
+
+  test("lists text-capable channels for a permitted guild, excluding non-text channel types", () => {
+    const client = fakeGuildsClient({
+      guildA: {
+        name: "My Server",
+        channels: [
+          { id: "c1", name: "general", type: ChannelType.GuildText },
+          { id: "c2", name: "Category", type: ChannelType.GuildCategory },
+        ],
+      },
+    });
+    const result = mcpListChannels(client, session, {});
+    const parsed = JSON.parse(textOf(result)) as { guild_id: string; name: string; channels: { channel_id: string }[] }[];
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.name).toBe("My Server");
+    expect(parsed[0]!.channels.map((c) => c.channel_id)).toEqual(["c1"]);
+  });
+
+  test("defaults to all of the caller's permitted guilds when guild_id is omitted", () => {
+    const multiGuildSession: McpSession = { ...session, permittedGuildIds: ["guildA", "guildB"] };
+    const client = fakeGuildsClient({
+      guildA: { name: "Server A", channels: [] },
+      guildB: { name: "Server B", channels: [] },
+    });
+    const result = mcpListChannels(client, multiGuildSession, {});
+    const parsed = JSON.parse(textOf(result)) as { guild_id: string }[];
+    expect(parsed.map((g) => g.guild_id).sort()).toEqual(["guildA", "guildB"]);
   });
 });

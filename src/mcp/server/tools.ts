@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ChannelType } from "discord.js";
 import type { Client, GuildTextBasedChannel } from "discord.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { fetchChannelMessages } from "../../tools/fetchChannelMessages.ts";
@@ -33,6 +34,39 @@ async function resolveGuildChannel(
     return { error: `Channel ${channelId} is not in a guild you're authorized for` };
   }
   return { channel };
+}
+
+const TEXT_CHANNEL_TYPES = new Set<ChannelType>([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+  ChannelType.GuildVoice,
+  ChannelType.GuildStageVoice,
+  ChannelType.GuildForum,
+  ChannelType.GuildMedia,
+]);
+
+export const LIST_CHANNELS_INPUT = z.object({
+  guild_id: z.string().optional(),
+});
+export type McpListChannelsArgs = z.infer<typeof LIST_CHANNELS_INPUT>;
+
+/** Lists the caller's permitted guilds and their text-capable channels — doesn't include threads. */
+export function mcpListChannels(client: Client<true>, session: McpSession, args: McpListChannelsArgs): CallToolResult {
+  if (args.guild_id && !session.permittedGuildIds.includes(args.guild_id)) {
+    return errorResult(`Guild ${args.guild_id} is not one you're authorized for`);
+  }
+  const guildIds = args.guild_id ? [args.guild_id] : session.permittedGuildIds;
+
+  const guilds = guildIds.map((guildId) => {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return { guild_id: guildId, name: null, channels: [] };
+    const channels = guild.channels.cache
+      .filter((channel) => TEXT_CHANNEL_TYPES.has(channel.type))
+      .map((channel) => ({ channel_id: channel.id, name: channel.name, type: ChannelType[channel.type] }));
+    return { guild_id: guild.id, name: guild.name, channels };
+  });
+
+  return textResult(guilds);
 }
 
 export const FETCH_INPUT = z.object({

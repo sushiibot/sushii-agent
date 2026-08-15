@@ -15,7 +15,10 @@ async function main() {
   await startBot();
 
   const mcpApp = buildMcpHttpApp(client as Client<true>);
-  const mcpServer = Bun.serve({ port: config.mcpBridgePort, fetch: mcpApp.fetch });
+  // MCP clients hold a GET open for server-initiated notifications that this stateless,
+  // per-request transport never sends — the default 10s idle timeout logs a warning on every
+  // one of those. 60s just quiets that noise; nothing here relies on the connection outliving it.
+  const mcpServer = Bun.serve({ port: config.mcpBridgePort, fetch: mcpApp.fetch, idleTimeout: 60 });
   logger.info({ port: mcpServer.port }, "MCP bridge HTTP server listening");
 
   let shuttingDown = false;

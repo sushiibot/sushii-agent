@@ -2,7 +2,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Client } from "discord.js";
 import type { McpSession } from "./session.ts";
 import type { WebhookCache } from "./webhooks.ts";
-import { mcpFetch, mcpSearch, mcpSend, FETCH_INPUT, SEARCH_INPUT, SEND_INPUT } from "./tools.ts";
+import {
+  mcpFetch,
+  mcpListChannels,
+  mcpSearch,
+  mcpSend,
+  FETCH_INPUT,
+  LIST_CHANNELS_INPUT,
+  SEARCH_INPUT,
+  SEND_INPUT,
+} from "./tools.ts";
 
 export { SEND_INPUT } from "./tools.ts";
 
@@ -15,6 +24,17 @@ function sessionFromExtra(extra: { authInfo?: { extra?: Record<string, unknown> 
 
 export function buildMcpServer(client: Client<true>, webhookCache: WebhookCache): McpServer {
   const server = new McpServer({ name: "sushii-agent-bridge", version: "1.0.0" });
+
+  server.registerTool(
+    "list_channels",
+    {
+      description:
+        "List the Discord servers you're authorized for and their text-capable channels (name and ID). Call this " +
+        "first if you don't already know a channel_id or guild_id to use with the other tools.",
+      inputSchema: LIST_CHANNELS_INPUT.shape,
+    },
+    async (args, extra) => mcpListChannels(client, sessionFromExtra(extra), args),
+  );
 
   server.registerTool(
     "fetch",
