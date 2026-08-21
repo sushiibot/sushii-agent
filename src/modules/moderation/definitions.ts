@@ -1,9 +1,11 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 
-// MCP tool definitions are fetched from the sushii-mcp server at startup via
-// SushiiMcpClient.getTools() and pushed into TOOL_DEFINITIONS in bot.ts startBot().
+// Moderation module's own tool definitions — zipped with executeModerationTool
+// (src/modules/moderation/tools.ts) into ToolEntry[] so declaration and execution
+// can never drift apart. MCP tool definitions are a separate synthetic module
+// (src/modules/mcp/index.ts), fetched at startup via SushiiMcpClient.getTools().
 
-export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
+export const MODERATION_TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {

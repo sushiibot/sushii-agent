@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getPermittedGuildIds, type GuildConfig } from "./guildConfig.ts";
+import { getPermittedGuildIds, resolvedModules, type GuildConfig } from "./guildConfig.ts";
 
 function cfg(mcpBridgeAllowedUserIds?: string[]): GuildConfig {
   return { allowedRoles: [], mcpBridgeAllowedUserIds };
@@ -24,5 +24,25 @@ describe("getPermittedGuildIds", () => {
   test("guild with no whitelist field is never permitted", () => {
     const guildConfig = { a: cfg(undefined) };
     expect(getPermittedGuildIds(guildConfig, "u1")).toEqual([]);
+  });
+});
+
+// Regression guard for the modular-architecture refactor: every guild configured before
+// enabledModules existed must keep exactly today's (moderation-only) behavior on deploy,
+// with zero changes to guild-config.json required.
+describe("resolvedModules", () => {
+  test("guild config with no enabledModules field defaults to moderation-only", () => {
+    expect(resolvedModules({ allowedRoles: [] })).toEqual(["moderation"]);
+  });
+
+  test("explicit enabledModules is honored as-is", () => {
+    expect(resolvedModules({ allowedRoles: [], enabledModules: ["moderation", "wiki-sync"] })).toEqual([
+      "moderation",
+      "wiki-sync",
+    ]);
+  });
+
+  test("explicit empty enabledModules array is honored, not defaulted (?? only fires on undefined)", () => {
+    expect(resolvedModules({ allowedRoles: [], enabledModules: [] })).toEqual([]);
   });
 });

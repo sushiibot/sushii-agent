@@ -1,4 +1,4 @@
-export { type GuildConfig, getPermittedGuildIds, buildEmojiMap } from "./guildConfig.ts";
+export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
 
 export interface Config {

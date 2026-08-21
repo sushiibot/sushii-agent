@@ -1,3 +1,5 @@
+import type { ModuleId } from "./modules/registry.ts";
+
 export interface GuildConfig {
   allowedRoles: string[];
   /** Discord emoji strings, e.g. ["<:blobheart:123>", "<a:wave:456>"] */
@@ -18,6 +20,13 @@ export interface GuildConfig {
   autoModCooldownSeconds?: number;
   /** Discord user ids allowed to reach this guild through the MCP bridge. Unset/empty = unreachable. */
   mcpBridgeAllowedUserIds?: string[];
+  /** Which agent modules are active for this guild. Unset defaults to ["moderation"] — see resolvedModules(). */
+  enabledModules?: ModuleId[];
+}
+
+/** Modules active for this guild — defaults to moderation-only, so configs written before this field existed keep exactly today's behavior. */
+export function resolvedModules(cfg: GuildConfig): ModuleId[] {
+  return cfg.enabledModules ?? ["moderation"];
 }
 
 /** Every guild id whose mcpBridgeAllowedUserIds includes the given Discord user id. */
