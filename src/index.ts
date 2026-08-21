@@ -1,7 +1,8 @@
 import type { Client } from "discord.js";
 import { otelSDK } from "./telemetry.ts";
 import { initDb, closeDb } from "./db/index.ts";
-import { client, startBot } from "./bot.ts";
+import { startBot } from "./bot.ts";
+import { client } from "./discordClient.ts";
 import { config } from "./config.ts";
 import { buildMcpHttpApp } from "./mcp/server/http.ts";
 import logger from "./logger.ts";
