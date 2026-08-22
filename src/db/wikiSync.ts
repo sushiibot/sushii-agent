@@ -33,12 +33,21 @@ export function setWikiSyncWatermark(db: Database, guildId: string, timestamp: n
 const REPLY_SNIPPET_LENGTH = 120;
 
 /**
- * Messages newer than `since`, oldest first, capped at `limit`. Excludes bot messages and
- * soft-deleted messages — a user who deleted a message should not have it land in a public wiki.
- * Left-joins each message's reply target (by discord_id) so reply context isn't dropped even
- * though it's already stored on every row — the target may be outside the query's own window.
+ * Messages newer than `since` and no newer than `until`, oldest first, capped at `limit` as a
+ * safety backstop (not the primary boundary — see sweep.ts, which sizes a sweep by calendar
+ * span so a quiet day isn't artificially truncated, and only falls back to `limit` to bound an
+ * unusually busy span). Excludes bot messages and soft-deleted messages — a user who deleted a
+ * message should not have it land in a public wiki. Left-joins each message's reply target (by
+ * discord_id) so reply context isn't dropped even though it's already stored on every row — the
+ * target may be outside the query's own window.
  */
-export function getUnprocessedMessages(db: Database, guildId: string, since: number, limit: number): WikiSyncMessage[] {
+export function getUnprocessedMessages(
+  db: Database,
+  guildId: string,
+  since: number,
+  until: number,
+  limit: number,
+): WikiSyncMessage[] {
   const rows = db
     .query(
       `SELECT
@@ -48,11 +57,11 @@ export function getUnprocessedMessages(db: Database, guildId: string, since: num
          r.content AS reply_content
        FROM messages m
        LEFT JOIN messages r ON r.discord_id = m.reply_to_id
-       WHERE m.guild_id = ? AND m.created_at > ? AND m.deleted_at IS NULL AND m.is_bot = 0
+       WHERE m.guild_id = ? AND m.created_at > ? AND m.created_at <= ? AND m.deleted_at IS NULL AND m.is_bot = 0
        ORDER BY m.created_at ASC
        LIMIT ?`,
     )
-    .all(guildId, since, limit) as Array<{
+    .all(guildId, since, until, limit) as Array<{
     discord_id: string;
     channel_id: string;
     parent_channel_id: string | null;

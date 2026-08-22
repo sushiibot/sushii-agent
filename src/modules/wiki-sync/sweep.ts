@@ -19,6 +19,13 @@ const inFlight = new Set<string>();
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
+// Primary sweep-size boundary: one calendar day of backlog, not an arbitrary message count. A
+// count-only cap either truncates a normal day's chatter for no reason, or (backlog catch-up,
+// a raid, an unusually busy day) lets a single sweep's input balloon to whatever volume happened
+// to land in an unbounded window -- the exact axis that risked a stuck/overlong sweep before.
+// maxMessagesPerSweep still applies underneath this as a backstop for an abnormally busy day.
+const MAX_SWEEP_SPAN_MS = 24 * 60 * 60 * 1000;
+
 export interface SweepResult {
   ran: boolean;
   reason?: string;
@@ -53,11 +60,17 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
       // long-dead bot) can't try to scan further back than the DB actually has.
       const floor = Date.now() - RETENTION_MS;
       const watermark = Math.max(getWikiSyncWatermark(db, guildId), floor);
+      // Never past "now" -- a fresh/caught-up watermark shouldn't produce a window into the
+      // future. During backlog catch-up this instead lands one day past the watermark, well
+      // short of "now", so subsequent sweeps keep walking forward day by day.
+      const until = Math.min(watermark + MAX_SWEEP_SPAN_MS, Date.now());
 
-      const messages = getUnprocessedMessages(db, guildId, watermark, config.wikiSync.maxMessagesPerSweep);
+      const messages = getUnprocessedMessages(db, guildId, watermark, until, config.wikiSync.maxMessagesPerSweep);
       span.setAttribute("wiki_sync.message_count", messages.length);
       if (messages.length === 0) {
-        setWikiSyncWatermark(db, guildId, Date.now());
+        // Advance to the window's end, not Date.now() -- jumping straight to "now" would skip
+        // over any days between `until` and now that do have messages still waiting.
+        setWikiSyncWatermark(db, guildId, until);
         span.setAttribute("wiki_sync.reason", "no new messages");
         return { ran: true, reason: "no new messages" };
       }
