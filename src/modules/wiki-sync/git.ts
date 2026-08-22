@@ -7,7 +7,7 @@ import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("wiki-sync:git");
 
-const COMMITTER_NAME = "sushii-wiki-sync";
+export const COMMITTER_NAME = "sushii-wiki-sync";
 const COMMITTER_EMAIL = "wiki-sync@sushii.bot";
 
 export interface WikiRepo {

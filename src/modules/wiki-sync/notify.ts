@@ -55,6 +55,21 @@ async function findTouchedRecapFiles(repo: WikiRepo, sha: string): Promise<strin
     .sort();
 }
 
+/**
+ * Builds the status message body, truncating only the recap portion so `commitLine` (the
+ * "View commit" link) always survives -- naively truncating the whole concatenated body would
+ * silently drop that link exactly when a reader needs it most: when the recap itself is too
+ * long to show in full.
+ */
+export function buildStatusContent(recap: string | null, commitLine: string): string {
+  if (!recap) return commitLine;
+
+  const separator = "\n\n";
+  const budget = Math.max(0, MAX_CONTENT_LENGTH - commitLine.length - separator.length - 1);
+  const recapBody = recap.length > budget ? `${recap.slice(0, budget)}…` : recap;
+  return `${recapBody}${separator}${commitLine}`;
+}
+
 async function buildRecapBody(repo: WikiRepo, commitSha: string): Promise<string | null> {
   const recapFiles = await findTouchedRecapFiles(repo, commitSha).catch(() => []);
   if (recapFiles.length === 0) return null;
@@ -90,8 +105,7 @@ export async function postSyncStatus(opts: { client: Client; guildId: string; re
       ? `[View commit](${webUrl}/commit/${opts.commitSha})`
       : `Commit \`${opts.commitSha.slice(0, 7)}\``;
 
-    const body = recap ? `${recap.trim()}\n\n${commitLine}` : commitLine;
-    const content = body.length > MAX_CONTENT_LENGTH ? `${body.slice(0, MAX_CONTENT_LENGTH)}…` : body;
+    const content = buildStatusContent(recap ? recap.trim() : null, commitLine);
 
     await channel.send({
       components: [buildTextDisplayContainer(content)],
@@ -99,6 +113,6 @@ export async function postSyncStatus(opts: { client: Client; guildId: string; re
       allowedMentions: { parse: [] },
     });
   } catch (err) {
-    logger.error({ guildId: opts.guildId, channelId, err }, "failed to post wiki-sync status update");
+    logger.error({ guildId: opts.guildId, channelId, err }, "failed to post status update");
   }
 }

@@ -6,7 +6,7 @@ import { getDb } from "../../db/index.ts";
 import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "../../db/wikiSync.ts";
-import { openWikiRepo } from "./git.ts";
+import { COMMITTER_NAME, openWikiRepo } from "./git.ts";
 import { writeMessageInbox } from "./inbox.ts";
 import { postSyncStatus } from "./notify.ts";
 import { runWikiSyncSession } from "./piSession.ts";
@@ -50,9 +50,19 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
   }
   inFlight.add(guildId);
 
+  // Span name/attributes follow the OTel GenAI semantic conventions' "invoke_agent" span
+  // (gen-ai-agent-spans.md): one whole agent run, of which each model turn below is a nested
+  // "chat" span. wiki_sync.* attributes stay custom -- no standard slot for guild/run identity.
   return tracer.startActiveSpan(
-    "wiki-sync.sweep",
-    { attributes: { "wiki_sync.guild_id": guildId, "wiki_sync.run_id": runId } },
+    `invoke_agent ${COMMITTER_NAME}`,
+    {
+      attributes: {
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.agent.name": COMMITTER_NAME,
+        "wiki_sync.guild_id": guildId,
+        "wiki_sync.run_id": runId,
+      },
+    },
     async (span) => {
     const db = getDb();
     const log = logger.child({ guildId, runId });
@@ -81,7 +91,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
       const inboxDir = join(config.wikiSync.inboxDir, guildId);
       const { files } = await writeMessageInbox(inboxDir, client, messages);
       const prompt = buildSweepTriggerPrompt(files);
-      const result = await runWikiSyncSession({ repo, prompt, guildId });
+      const result = await runWikiSyncSession({ repo, prompt, guildId, runId });
       span.setAttribute("wiki_sync.commit_sha", result.commitSha ?? "");
 
       // Advance past exactly the messages this sweep saw. A crash before this point leaves the
@@ -93,7 +103,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
         await postSyncStatus({ client, guildId, repo, commitSha: result.commitSha });
       }
 
-      log.info({ messageCount: messages.length, commitSha: result.commitSha }, "wiki-sync sweep complete");
+      log.info({ messageCount: messages.length, commitSha: result.commitSha }, "sweep complete");
       return { ran: true, commitSha: result.commitSha };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

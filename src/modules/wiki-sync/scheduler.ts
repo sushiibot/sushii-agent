@@ -11,13 +11,13 @@ export function startWikiSyncScheduler(client: Client): void {
   const guildIds = getWikiSyncEnabledGuildIds();
   if (guildIds.length === 0) return;
 
-  logger.info({ guildIds, cronSchedule: config.wikiSync.cronSchedule }, "starting wiki-sync scheduler");
+  logger.info({ guildIds, cronSchedule: config.wikiSync.cronSchedule }, "starting scheduler");
 
   Bun.cron(config.wikiSync.cronSchedule, () => {
     for (const guildId of guildIds) {
-      logger.info({ guildId }, "scheduled wiki-sync sweep starting");
+      logger.info({ guildId }, "scheduled sweep starting");
       runWikiSyncSweep(guildId, client).catch((err) => {
-        logger.error({ guildId, err }, "scheduled wiki-sync sweep failed");
+        logger.error({ guildId, err }, "scheduled sweep failed");
       });
     }
   });
