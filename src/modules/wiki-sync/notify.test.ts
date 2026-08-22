@@ -18,8 +18,20 @@ describe("deriveWebUrl", () => {
     );
   });
 
-  test("returns null for a non-ssh URL", () => {
-    expect(deriveWebUrl("https://git.dreamcatcher.inc/dreamcatcher/wiki.git")).toBeNull();
+  test("converts an https URL, stripping .git", () => {
+    expect(deriveWebUrl("https://git.dreamcatcher.inc/dreamcatcher/wiki.git")).toBe(
+      "https://git.dreamcatcher.inc/dreamcatcher/wiki",
+    );
+  });
+
+  test("strips embedded credentials from an https URL", () => {
+    expect(deriveWebUrl("https://oauth2:secret-token@git.dreamcatcher.inc/dreamcatcher/wiki.git")).toBe(
+      "https://git.dreamcatcher.inc/dreamcatcher/wiki",
+    );
+  });
+
+  test("returns null for an unsupported scheme", () => {
+    expect(deriveWebUrl("git://git.dreamcatcher.inc/dreamcatcher/wiki.git")).toBeNull();
   });
 
   test("returns null for an empty string", () => {

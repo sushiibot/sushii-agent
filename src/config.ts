@@ -18,6 +18,8 @@ export interface Config {
   discordOAuthRedirectUri: string | undefined;
   mcpBridgePort: number;
   wikiSyncRepoUrl: string | undefined;
+  /** Access token for an https:// wikiSyncRepoUrl. Unused for ssh:// (ssh-agent handles auth instead). */
+  wikiSyncHttpsToken: string | undefined;
   wikiSyncCloneDir: string;
   wikiSyncInboxDir: string;
   wikiSyncAgentDir: string;
@@ -78,6 +80,7 @@ export const config: Config = {
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
   wikiSyncRepoUrl: process.env["WIKI_SYNC_REPO_URL"],
+  wikiSyncHttpsToken: process.env["WIKI_SYNC_HTTPS_TOKEN"],
   wikiSyncCloneDir: optional("WIKI_SYNC_CLONE_DIR", "./data/wiki-sync/repo"),
   wikiSyncInboxDir: optional("WIKI_SYNC_INBOX_DIR", "./data/wiki-sync/inbox"),
   wikiSyncAgentDir: optional("WIKI_SYNC_AGENT_DIR", "./data/wiki-sync/agent"),

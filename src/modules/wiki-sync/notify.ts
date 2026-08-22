@@ -10,12 +10,26 @@ const logger = getLogger("wiki-sync:notify");
 
 const MAX_CONTENT_LENGTH = 3800;
 
-/** ssh://git@host:port/path.git -> https://host/path -- Forgejo and GitHub both serve /commit/<sha> at this shape. */
+/**
+ * Web URL for linking to a commit -- Forgejo and GitHub both serve /commit/<sha> at
+ * https://host/path, regardless of which transport wiki-sync itself pushes over.
+ *   ssh://git@host:port/path.git -> https://host/path
+ *   https://host/path.git        -> https://host/path (strip .git, drop any embedded credentials)
+ */
 export function deriveWebUrl(repoUrl: string): string | null {
-  const match = repoUrl.match(/^ssh:\/\/git@([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?$/);
-  if (!match) return null;
-  const [, host, path] = match;
-  return `https://${host}/${path}`;
+  const sshMatch = repoUrl.match(/^ssh:\/\/git@([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const [, host, path] = sshMatch;
+    return `https://${host}/${path}`;
+  }
+
+  const httpsMatch = repoUrl.match(/^https?:\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?$/);
+  if (httpsMatch) {
+    const [, host, path] = httpsMatch;
+    return `https://${host}/${path}`;
+  }
+
+  return null;
 }
 
 /**
