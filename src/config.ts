@@ -23,6 +23,9 @@ export interface Config {
   wikiSyncAgentDir: string;
   wikiSyncIntervalMinutes: number;
   wikiSyncMaxMessagesPerSweep: number;
+  /** Independent of openaiModel -- wiki-sync only edits text files, never images, so it can run a cheaper text-only model. */
+  wikiSyncModel: string;
+  wikiSyncContextLimit: number;
 }
 
 function required(name: string): string {
@@ -80,4 +83,9 @@ export const config: Config = {
   wikiSyncAgentDir: optional("WIKI_SYNC_AGENT_DIR", "./data/wiki-sync/agent"),
   wikiSyncIntervalMinutes: parseInt(optional("WIKI_SYNC_INTERVAL_MINUTES", "60"), 10),
   wikiSyncMaxMessagesPerSweep: parseInt(optional("WIKI_SYNC_MAX_MESSAGES_PER_SWEEP", "500"), 10),
+  // deepseek/deepseek-v4-flash-0731: text-only, no vision, checked against OpenRouter's current
+  // catalog rather than assumed -- pin a dated slug here, not deepseek-v4-flash-latest, which
+  // floats to whatever's newest and could silently change behavior underneath a fixed price/config.
+  wikiSyncModel: optional("WIKI_SYNC_MODEL", "deepseek/deepseek-v4-flash-0731"),
+  wikiSyncContextLimit: parseInt(optional("WIKI_SYNC_CONTEXT_LIMIT", "1310720"), 10),
 };

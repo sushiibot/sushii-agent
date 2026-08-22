@@ -75,6 +75,8 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // ToS requires opting message content out of model training, and Pi's typed provider config
   // has no dedicated field for it (verified against pi-ai's request builder), but samplingParams
   // is merged into the request body as-is for openai-completions providers.
+  // Independent of the main agent's model: wiki-sync only ever edits text files, never
+  // images, so it can run a cheaper text-only model instead of reusing openaiModel.
   modelRuntime.registerProvider(PROVIDER_ID, {
     name: "sushii OpenRouter",
     baseUrl: config.openaiBaseUrl,
@@ -82,20 +84,20 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     api: "openai-completions",
     models: [
       {
-        id: config.openaiModel,
-        name: config.openaiModel,
-        reasoning: true,
+        id: config.wikiSyncModel,
+        name: config.wikiSyncModel,
+        reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: config.openaiContextLimit,
+        contextWindow: config.wikiSyncContextLimit,
         maxTokens: 8192,
         samplingParams: { provider: { data_collection: "deny" } },
       },
     ],
   });
 
-  const model = modelRuntime.getModel(PROVIDER_ID, config.openaiModel);
-  if (!model) throw new Error(`wiki-sync model ${PROVIDER_ID}/${config.openaiModel} failed to register`);
+  const model = modelRuntime.getModel(PROVIDER_ID, config.wikiSyncModel);
+  if (!model) throw new Error(`wiki-sync model ${PROVIDER_ID}/${config.wikiSyncModel} failed to register`);
 
   // AGENTS.md at the wiki repo's root, if the maintainer added one, is picked up automatically
   // here — DefaultResourceLoader walks up from cwd (the repo checkout) discovering context
