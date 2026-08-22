@@ -10,11 +10,13 @@ function msg(overrides: Partial<WikiSyncMessage> = {}): WikiSyncMessage {
   return {
     discordId: "1",
     channelId: "chan1",
+    parentChannelId: null,
     authorId: "u1",
     authorUsername: "someuser",
     authorDisplayName: null,
     content: "hello",
     createdAt: Date.parse("2026-01-01T00:00:00Z"),
+    replyTo: null,
     ...overrides,
   };
 }
@@ -84,5 +86,48 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
     expect(files).toEqual([join(dir, "general-c1.md")]);
     expect(existsSync(join(dir, "stale-chan.md"))).toBe(false);
+  });
+
+  test("a thread's file name and header reference its parent channel", async () => {
+    const client = fakeClient({ "thread-1": "bug: login broken", "general": "general" });
+    const { files } = await writeMessageInbox(
+      dir,
+      client,
+      [msg({ channelId: "thread-1", parentChannelId: "general" })],
+    );
+    expect(files[0]).toBe(join(dir, "general--bug-login-broken-thread-1.md"));
+    const content = await readFile(files[0]!, "utf8");
+    expect(content).toContain('Thread "bug: login broken" in #general');
+  });
+
+  test("a thread with an unresolvable parent still labels it by id", async () => {
+    const client = fakeClient({ "thread-1": "some thread" });
+    const { files } = await writeMessageInbox(
+      dir,
+      client,
+      [msg({ channelId: "thread-1", parentChannelId: "unknown-parent" })],
+    );
+    const content = await readFile(files[0]!, "utf8");
+    expect(content).toContain("channel unknown-parent");
+  });
+
+  test("a non-thread channel gets a plain channel header, no thread language", async () => {
+    const client = fakeClient({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
+    const content = await readFile(files[0]!, "utf8");
+    expect(content).toContain("# #general");
+    expect(content).not.toContain("Thread");
+  });
+
+  test("a reply is annotated inline with who and what it replied to", async () => {
+    const client = fakeClient({ c1: "general" });
+    const { files } = await writeMessageInbox(
+      dir,
+      client,
+      [msg({ channelId: "c1", content: "totally agree", replyTo: { author: "pham", content: "is this still broken?" } })],
+    );
+    const content = await readFile(files[0]!, "utf8");
+    expect(content).toContain('replying to pham ("is this still broken?")');
+    expect(content).toContain("totally agree");
   });
 });

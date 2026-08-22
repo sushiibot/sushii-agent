@@ -168,4 +168,11 @@ export const MIGRATIONS: string[][] = [
       last_processed_at INTEGER NOT NULL
     )`,
   ],
+
+  // Migration 10 — thread parentage. A message's channel_id is the thread's own snowflake
+  // when posted inside a thread, not the parent channel's — without this, wiki-sync (and
+  // anything else grouping by channel) has no way to know a thread even belongs to a channel.
+  [
+    `ALTER TABLE messages ADD COLUMN parent_channel_id TEXT`,
+  ],
 ];

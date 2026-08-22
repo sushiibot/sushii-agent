@@ -13,13 +13,37 @@ function testDb(): Database {
 
 function insertMessage(
   db: Database,
-  opts: { discordId: string; guildId: string; createdAt: number; isBot?: boolean; deletedAt?: number | null },
+  opts: {
+    discordId: string;
+    guildId: string;
+    createdAt: number;
+    isBot?: boolean;
+    deletedAt?: number | null;
+    channelId?: string;
+    parentChannelId?: string | null;
+    replyToId?: string | null;
+    authorUsername?: string;
+    authorDisplayName?: string | null;
+    content?: string;
+  },
 ): void {
   db.run(
-    `INSERT INTO messages (discord_id, guild_id, channel_id, author_id, content, created_at,
-       author_username, is_bot, deleted_at)
-     VALUES (?, ?, 'chan', 'author', 'hello', ?, 'author', ?, ?)`,
-    [opts.discordId, opts.guildId, opts.createdAt, opts.isBot ? 1 : 0, opts.deletedAt ?? null],
+    `INSERT INTO messages (discord_id, guild_id, channel_id, parent_channel_id, author_id, content,
+       reply_to_id, created_at, author_username, author_display_name, is_bot, deleted_at)
+     VALUES (?, ?, ?, ?, 'author', ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      opts.discordId,
+      opts.guildId,
+      opts.channelId ?? "chan",
+      opts.parentChannelId ?? null,
+      opts.content ?? "hello",
+      opts.replyToId ?? null,
+      opts.createdAt,
+      opts.authorUsername ?? "author",
+      opts.authorDisplayName ?? null,
+      opts.isBot ? 1 : 0,
+      opts.deletedAt ?? null,
+    ],
   );
 }
 
@@ -96,5 +120,55 @@ describe("getUnprocessedMessages", () => {
     }
     const result = getUnprocessedMessages(db, "g1", -1, 2);
     expect(result.length).toBe(2);
+  });
+
+  test("carries parentChannelId through for thread messages", () => {
+    const db = testDb();
+    insertMessage(db, { discordId: "1", guildId: "g1", createdAt: 100, channelId: "thread-1", parentChannelId: "general" });
+    const result = getUnprocessedMessages(db, "g1", 0, 100);
+    expect(result[0]!.parentChannelId).toBe("general");
+  });
+
+  test("parentChannelId is null for an ordinary (non-thread) message", () => {
+    const db = testDb();
+    insertMessage(db, { discordId: "1", guildId: "g1", createdAt: 100 });
+    const result = getUnprocessedMessages(db, "g1", 0, 100);
+    expect(result[0]!.parentChannelId).toBeNull();
+  });
+
+  test("resolves replyTo from the target message, preferring display name", () => {
+    const db = testDb();
+    insertMessage(db, {
+      discordId: "1",
+      guildId: "g1",
+      createdAt: 100,
+      authorUsername: "pham_real",
+      authorDisplayName: "pham",
+      content: "is this still broken?",
+    });
+    insertMessage(db, { discordId: "2", guildId: "g1", createdAt: 200, replyToId: "1", content: "yes, still broken" });
+
+    const result = getUnprocessedMessages(db, "g1", 0, 100);
+    const reply = result.find((m) => m.discordId === "2")!;
+    expect(reply.replyTo).toEqual({ author: "pham", content: "is this still broken?" });
+  });
+
+  test("replyTo is null when the message doesn't reply to anything", () => {
+    const db = testDb();
+    insertMessage(db, { discordId: "1", guildId: "g1", createdAt: 100 });
+    const result = getUnprocessedMessages(db, "g1", 0, 100);
+    expect(result[0]!.replyTo).toBeNull();
+  });
+
+  test("truncates a long reply target to a snippet", () => {
+    const db = testDb();
+    const longContent = "x".repeat(200);
+    insertMessage(db, { discordId: "1", guildId: "g1", createdAt: 100, content: longContent });
+    insertMessage(db, { discordId: "2", guildId: "g1", createdAt: 200, replyToId: "1" });
+
+    const result = getUnprocessedMessages(db, "g1", 0, 100);
+    const reply = result.find((m) => m.discordId === "2")!;
+    expect(reply.replyTo!.content.length).toBe(121); // 120 chars + ellipsis
+    expect(reply.replyTo!.content.endsWith("…")).toBe(true);
   });
 });

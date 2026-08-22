@@ -12,16 +12,20 @@ export function insertMessage(message: Message): void {
   const displayName = message.member?.displayName ?? message.author.displayName;
 
   const content = buildMessageContent(message);
+  // channel_id is the thread's own snowflake for a message posted inside a thread, distinct
+  // from the channel it lives under — parent_channel_id is the only place that link survives.
+  const parentChannelId = message.channel.isThread() ? message.channel.parentId : null;
 
   db.run(
     `INSERT OR IGNORE INTO messages
-      (discord_id, guild_id, channel_id, author_id, content, reply_to_id, created_at,
-       author_username, author_display_name, is_automod, is_bot)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (discord_id, guild_id, channel_id, parent_channel_id, author_id, content, reply_to_id,
+       created_at, author_username, author_display_name, is_automod, is_bot)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       message.id,
       message.guildId,
       message.channelId,
+      parentChannelId,
       message.author.id,
       content,
       message.reference?.messageId ?? null,
