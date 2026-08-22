@@ -24,6 +24,7 @@ import {
   deleteOldMessages,
 } from "./db/messages.ts";
 import { loadConversation, saveConversation, deleteStaleConversations } from "./db/conversations.ts";
+import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME, startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { runAgentLoop, buildSystemPrompt, type UserNames, type ChannelContext, type TriggeringUser, type AgentLoopResult } from "./agent/loop.ts";
 import {
   ToolProgressTracker,
@@ -417,15 +418,23 @@ client.on(Events.MessageDelete, (message) => {
   softDeleteMessage(message.id);
 });
 
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   logger.info({ tag: c.user.tag }, "Logged in");
   logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
+
+  await registerWikiSyncCommands(c).catch((err) => logger.error({ err }, "failed to register wiki-sync commands"));
+  startWikiSyncScheduler(c);
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   // Handle feedback modal submissions
   if (interaction.isModalSubmit() && interaction.customId.startsWith(FEEDBACK_MODAL_PREFIX)) {
     await handleFeedbackModal(interaction as ModalSubmitInteraction);
+    return;
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === WIKI_SYNC_COMMAND_NAME) {
+    await handleWikiSyncCommand(interaction);
     return;
   }
 

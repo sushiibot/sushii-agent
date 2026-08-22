@@ -2,6 +2,7 @@ import type { Client } from "discord.js";
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { MODERATION_DISPATCH, type ToolResult, type ModerationToolContext } from "./moderation/executor.ts";
 import { MODERATION_TOOL_ENTRIES } from "./moderation/tools.ts";
+import { wikiSyncModule } from "./wiki-sync/index.ts";
 
 export type ModuleId = "moderation" | "wiki-sync" | "mcp";
 
@@ -55,16 +56,6 @@ const mcpModule: LoopModuleDefinition = {
   kind: "loop",
   id: "mcp",
   toolEntries: [],
-};
-
-// Real wiki-sync implementation lands separately — this stub keeps the ModuleId union
-// and enabledModules typing complete without any real functionality yet.
-const wikiSyncModule: StandaloneModuleDefinition = {
-  kind: "standalone",
-  id: "wiki-sync",
-  run: async () => {
-    throw new Error("wiki-sync module is not implemented yet");
-  },
 };
 
 export const MODULES: Record<ModuleId, ModuleDefinition> = {

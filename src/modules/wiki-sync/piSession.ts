@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import type { WikiRepo } from "./git.ts";
@@ -97,10 +97,24 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   const model = modelRuntime.getModel(PROVIDER_ID, config.openaiModel);
   if (!model) throw new Error(`wiki-sync model ${PROVIDER_ID}/${config.openaiModel} failed to register`);
 
+  // AGENTS.md at the wiki repo's root, if the maintainer added one, is picked up automatically
+  // here — DefaultResourceLoader walks up from cwd (the repo checkout) discovering context
+  // files, letting wiki maintainers tune tone/scope/conventions by editing their own repo, no
+  // sushii-agent redeploy needed. It doesn't compete with systemPromptOverride below; Pi injects
+  // discovered context files as their own section alongside the custom system prompt.
+  //
+  // The walk itself doesn't stop at the repo boundary (verified against Pi's own source) — it
+  // continues up the real filesystem to /, so without this filter an AGENTS.md placed anywhere
+  // above the clone (e.g. accidentally added to this app's own image) would silently join the
+  // context too. Filtering to paths under the repo keeps only what the wiki maintainer controls.
+  const repoRoot = resolve(opts.repo.dir);
   const loader = new DefaultResourceLoader({
     cwd: opts.repo.dir,
     agentDir: config.wikiSyncAgentDir,
     systemPromptOverride: () => WIKI_SYNC_SYSTEM_PROMPT,
+    agentsFilesOverride: (base) => ({
+      agentsFiles: base.agentsFiles.filter((f) => resolve(f.path) === repoRoot || resolve(f.path).startsWith(repoRoot + sep)),
+    }),
   });
   await loader.reload();
 

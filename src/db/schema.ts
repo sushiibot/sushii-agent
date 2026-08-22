@@ -158,4 +158,14 @@ export const MIGRATIONS: string[][] = [
       expires_at INTEGER NOT NULL
     )`,
   ],
+
+  // Migration 9 — wiki-sync watermark. A per-guild cursor (not a rolling time window) so a
+  // sweep that dies mid-run or a bot restart can't double-process or silently skip messages —
+  // the cursor only advances after a sweep's commit+push succeeds.
+  [
+    `CREATE TABLE IF NOT EXISTS wiki_sync_state (
+      guild_id TEXT PRIMARY KEY,
+      last_processed_at INTEGER NOT NULL
+    )`,
+  ],
 ];

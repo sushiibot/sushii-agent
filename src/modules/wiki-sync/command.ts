@@ -41,7 +41,7 @@ export async function handleWikiSyncCommand(interaction: ChatInputCommandInterac
 
   await interaction.deferReply({ ephemeral: true });
   try {
-    const result = await runWikiSyncSweep(interaction.guildId);
+    const result = await runWikiSyncSweep(interaction.guildId, interaction.client);
     if (!result.ran) {
       await interaction.editReply(`Sweep not started: ${result.reason}`);
     } else if (result.reason === "no new messages") {

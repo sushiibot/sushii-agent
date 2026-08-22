@@ -1,3 +1,4 @@
+import type { Client } from "discord.js";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { getWikiSyncEnabledGuildIds } from "./guilds.ts";
@@ -6,7 +7,7 @@ import { runWikiSyncSweep } from "./sweep.ts";
 const logger = getLogger("wiki-sync:scheduler");
 
 /** Starts the cron-equivalent sweep loop for every guild with wiki-sync enabled. */
-export function startWikiSyncScheduler(): void {
+export function startWikiSyncScheduler(client: Client): void {
   const guildIds = getWikiSyncEnabledGuildIds();
   if (guildIds.length === 0) return;
 
@@ -15,7 +16,7 @@ export function startWikiSyncScheduler(): void {
 
   setInterval(() => {
     for (const guildId of guildIds) {
-      runWikiSyncSweep(guildId).catch((err) => {
+      runWikiSyncSweep(guildId, client).catch((err) => {
         logger.error({ guildId, err }, "scheduled wiki-sync sweep failed");
       });
     }
