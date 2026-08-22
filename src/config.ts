@@ -91,7 +91,7 @@ export const config: Config = {
     inboxDir: optional("WIKI_SYNC_INBOX_DIR", "./data/wiki-sync/inbox"),
     agentDir: optional("WIKI_SYNC_AGENT_DIR", "./data/wiki-sync/agent"),
     cronSchedule: optional("WIKI_SYNC_CRON_SCHEDULE", "0 9 * * *"),
-    maxMessagesPerSweep: parseInt(optional("WIKI_SYNC_MAX_MESSAGES_PER_SWEEP", "500"), 10),
+    maxMessagesPerSweep: parseInt(optional("WIKI_SYNC_MAX_MESSAGES_PER_SWEEP", "5000"), 10),
     // deepseek/deepseek-v4-flash-0731: text-only, no vision, checked against OpenRouter's
     // current catalog rather than assumed -- pin a dated slug, not deepseek-v4-flash-latest,
     // which floats to whatever's newest and could silently change behavior underneath a

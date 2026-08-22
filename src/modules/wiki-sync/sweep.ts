@@ -19,12 +19,13 @@ const inFlight = new Set<string>();
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-// Primary sweep-size boundary: one calendar day of backlog, not an arbitrary message count. A
-// count-only cap either truncates a normal day's chatter for no reason, or (backlog catch-up,
+// Primary sweep-size boundary: a few calendar days of backlog, not an arbitrary message count.
+// A count-only cap either truncates a normal day's chatter for no reason, or (backlog catch-up,
 // a raid, an unusually busy day) lets a single sweep's input balloon to whatever volume happened
 // to land in an unbounded window -- the exact axis that risked a stuck/overlong sweep before.
-// maxMessagesPerSweep still applies underneath this as a backstop for an abnormally busy day.
-const MAX_SWEEP_SPAN_MS = 24 * 60 * 60 * 1000;
+// 3 days gives headroom over the daily cron's actual cadence so this boundary basically never
+// triggers in steady state; maxMessagesPerSweep is the real backstop for an abnormally busy span.
+const MAX_SWEEP_SPAN_MS = 3 * 24 * 60 * 60 * 1000;
 
 export interface SweepResult {
   ran: boolean;
