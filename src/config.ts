@@ -24,7 +24,8 @@ export interface Config {
     cloneDir: string;
     inboxDir: string;
     agentDir: string;
-    intervalMinutes: number;
+    /** Bun.cron expression, e.g. "0 9 * * *" for daily at 9am UTC (Bun.cron schedules are always UTC). */
+    cronSchedule: string;
     maxMessagesPerSweep: number;
     /** Independent of openaiModel -- wiki-sync only edits text files, never images, so it can run a cheaper text-only model. */
     model: string;
@@ -89,7 +90,7 @@ export const config: Config = {
     cloneDir: optional("WIKI_SYNC_CLONE_DIR", "./data/wiki-sync/repo"),
     inboxDir: optional("WIKI_SYNC_INBOX_DIR", "./data/wiki-sync/inbox"),
     agentDir: optional("WIKI_SYNC_AGENT_DIR", "./data/wiki-sync/agent"),
-    intervalMinutes: parseInt(optional("WIKI_SYNC_INTERVAL_MINUTES", "60"), 10),
+    cronSchedule: optional("WIKI_SYNC_CRON_SCHEDULE", "0 9 * * *"),
     maxMessagesPerSweep: parseInt(optional("WIKI_SYNC_MAX_MESSAGES_PER_SWEEP", "500"), 10),
     // deepseek/deepseek-v4-flash-0731: text-only, no vision, checked against OpenRouter's
     // current catalog rather than assumed -- pin a dated slug, not deepseek-v4-flash-latest,

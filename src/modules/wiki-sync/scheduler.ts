@@ -6,20 +6,19 @@ import { runWikiSyncSweep } from "./sweep.ts";
 
 const logger = getLogger("wiki-sync:scheduler");
 
-/** Starts the cron-equivalent sweep loop for every guild with wiki-sync enabled. */
+/** Starts the cron-driven sweep for every guild with wiki-sync enabled. */
 export function startWikiSyncScheduler(client: Client): void {
   const guildIds = getWikiSyncEnabledGuildIds();
   if (guildIds.length === 0) return;
 
-  const intervalMs = config.wikiSync.intervalMinutes * 60 * 1000;
-  logger.info({ guildIds, intervalMinutes: config.wikiSync.intervalMinutes }, "starting wiki-sync scheduler");
+  logger.info({ guildIds, cronSchedule: config.wikiSync.cronSchedule }, "starting wiki-sync scheduler");
 
-  setInterval(() => {
+  Bun.cron(config.wikiSync.cronSchedule, () => {
     for (const guildId of guildIds) {
       logger.info({ guildId }, "scheduled wiki-sync sweep starting");
       runWikiSyncSweep(guildId, client).catch((err) => {
         logger.error({ guildId, err }, "scheduled wiki-sync sweep failed");
       });
     }
-  }, intervalMs);
+  });
 }
