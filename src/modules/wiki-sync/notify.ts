@@ -19,16 +19,17 @@ export function deriveWebUrl(repoUrl: string): string | null {
 }
 
 /**
- * Which daily/<date>.md or weekly/<range>.md files this commit actually touched, oldest
- * first. Not just "today" -- a backlog-catchup sweep can span several calendar days in one
- * commit and files under weekly/ instead (see the wiki's own AGENTS.md "Recap" section).
+ * Which recaps/<span>.md files this commit actually touched, oldest first. Not just
+ * "today" -- a backlog-catchup sweep can span several calendar days in one commit, filed
+ * under a range-named file instead of a single date (see the wiki's own AGENTS.md "Recap"
+ * section).
  */
 async function findTouchedRecapFiles(repo: WikiRepo, sha: string): Promise<string[]> {
   const output = await repo.git.raw(["diff-tree", "--no-commit-id", "--name-only", "-r", sha]);
   return output
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => (line.startsWith("daily/") || line.startsWith("weekly/")) && line.endsWith(".md"))
+    .filter((line) => line.startsWith("recaps/") && line.endsWith(".md"))
     .sort();
 }
 
@@ -41,9 +42,7 @@ async function buildRecapBody(repo: WikiRepo, commitSha: string): Promise<string
       const content = await readFile(join(repo.dir, relativePath), "utf8").catch(() => null);
       if (!content) return null;
       // One file: just its content. Multiple (a backfill sweep spanning days): label each.
-      return recapFiles.length === 1
-        ? content.trim()
-        : `**${relativePath.replace(/^(daily|weekly)\/|\.md$/g, "")}**\n${content.trim()}`;
+      return recapFiles.length === 1 ? content.trim() : `**${relativePath.replace(/^recaps\/|\.md$/g, "")}**\n${content.trim()}`;
     }),
   );
   const nonEmpty = sections.filter((s): s is string => s !== null);
