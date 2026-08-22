@@ -22,6 +22,11 @@ export interface GuildConfig {
   mcpBridgeAllowedUserIds?: string[];
   /** Which agent modules are active for this guild. Unset defaults to ["moderation"] — see resolvedModules(). */
   enabledModules?: ModuleId[];
+  /** wiki-sync module settings for this guild. */
+  wiki?: {
+    /** Channel ID where wiki-sync posts a status update after each sweep that pushes a commit. Unset = no notification. */
+    statusChannelId?: string;
+  };
 }
 
 /** Modules active for this guild — defaults to moderation-only, so configs written before this field existed keep exactly today's behavior. */

@@ -6,6 +6,7 @@ import { getLogger } from "../../logger.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "../../db/wikiSync.ts";
 import { openWikiRepo } from "./git.ts";
 import { writeMessageInbox } from "./inbox.ts";
+import { postSyncStatus } from "./notify.ts";
 import { runWikiSyncSession } from "./piSession.ts";
 import { buildSweepTriggerPrompt } from "./prompt.ts";
 
@@ -52,6 +53,10 @@ export async function runWikiSyncSweep(guildId: string, client: Client): Promise
     // watermark untouched, so the same batch is retried rather than silently skipped.
     const latest = messages[messages.length - 1];
     if (latest) setWikiSyncWatermark(db, guildId, latest.createdAt);
+
+    if (result.commitSha) {
+      await postSyncStatus({ client, guildId, repo, commitSha: result.commitSha });
+    }
 
     logger.info({ guildId, messageCount: messages.length, commitSha: result.commitSha }, "wiki-sync sweep complete");
     return { ran: true, commitSha: result.commitSha };
