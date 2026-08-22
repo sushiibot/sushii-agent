@@ -54,10 +54,10 @@ export function resolveGitAuth(repoUrl: string): GitAuth {
   }
 
   if (scheme === "https:" || scheme === "http:") {
-    if (!config.wikiSyncHttpsToken) {
+    if (!config.wikiSync.httpsToken) {
       throw new Error("wiki-sync repo URL is http(s):// but WIKI_SYNC_HTTPS_TOKEN is not set");
     }
-    const authHeader = `Authorization: Basic ${Buffer.from(`oauth2:${config.wikiSyncHttpsToken}`).toString("base64")}`;
+    const authHeader = `Authorization: Basic ${Buffer.from(`oauth2:${config.wikiSync.httpsToken}`).toString("base64")}`;
     return { env: {}, configPairs: [["http.extraHeader", authHeader]] };
   }
 
@@ -65,16 +65,16 @@ export function resolveGitAuth(repoUrl: string): GitAuth {
 }
 
 function requireRepoUrl(): string {
-  const { wikiSyncRepoUrl } = config;
-  if (!wikiSyncRepoUrl) throw new Error("wiki-sync is not configured: set WIKI_SYNC_REPO_URL");
-  return wikiSyncRepoUrl;
+  const { repoUrl } = config.wikiSync;
+  if (!repoUrl) throw new Error("wiki-sync is not configured: set WIKI_SYNC_REPO_URL");
+  return repoUrl;
 }
 
 /** Clones the wiki repo for this guild if it doesn't exist locally yet, then pulls latest. */
 export async function openWikiRepo(guildId: string): Promise<WikiRepo> {
   const repoUrl = requireRepoUrl();
   const auth = resolveGitAuth(repoUrl);
-  const dir = join(config.wikiSyncCloneDir, guildId);
+  const dir = join(config.wikiSync.cloneDir, guildId);
   await mkdir(dirname(dir), { recursive: true });
 
   const alreadyCloned = existsSync(join(dir, ".git"));

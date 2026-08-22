@@ -77,7 +77,7 @@ export async function postSyncStatus(opts: { client: Client; guildId: string; re
 
     const recap = await buildRecapBody(opts.repo, opts.commitSha);
 
-    const webUrl = deriveWebUrl(config.wikiSyncRepoUrl ?? "");
+    const webUrl = deriveWebUrl(config.wikiSync.repoUrl ?? "");
     const commitLine = webUrl
       ? `[View commit](${webUrl}/commit/${opts.commitSha})`
       : `Commit \`${opts.commitSha.slice(0, 7)}\``;

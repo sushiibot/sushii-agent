@@ -11,8 +11,8 @@ export function startWikiSyncScheduler(client: Client): void {
   const guildIds = getWikiSyncEnabledGuildIds();
   if (guildIds.length === 0) return;
 
-  const intervalMs = config.wikiSyncIntervalMinutes * 60 * 1000;
-  logger.info({ guildIds, intervalMinutes: config.wikiSyncIntervalMinutes }, "starting wiki-sync scheduler");
+  const intervalMs = config.wikiSync.intervalMinutes * 60 * 1000;
+  logger.info({ guildIds, intervalMinutes: config.wikiSync.intervalMinutes }, "starting wiki-sync scheduler");
 
   setInterval(() => {
     for (const guildId of guildIds) {

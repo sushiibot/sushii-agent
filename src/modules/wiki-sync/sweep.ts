@@ -36,7 +36,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client): Promise
     const floor = Date.now() - RETENTION_MS;
     const watermark = Math.max(getWikiSyncWatermark(db, guildId), floor);
 
-    const messages = getUnprocessedMessages(db, guildId, watermark, config.wikiSyncMaxMessagesPerSweep);
+    const messages = getUnprocessedMessages(db, guildId, watermark, config.wikiSync.maxMessagesPerSweep);
     if (messages.length === 0) {
       setWikiSyncWatermark(db, guildId, Date.now());
       return { ran: true, reason: "no new messages" };
@@ -44,7 +44,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client): Promise
 
     const repo = await openWikiRepo(guildId);
     // Sibling of the repo checkout, outside its git working tree entirely — see inbox.ts.
-    const inboxDir = join(config.wikiSyncInboxDir, guildId);
+    const inboxDir = join(config.wikiSync.inboxDir, guildId);
     const { files } = await writeMessageInbox(inboxDir, client, messages);
     const prompt = buildSweepTriggerPrompt(files);
     const result = await runWikiSyncSession({ repo, prompt, guildId });

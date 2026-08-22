@@ -62,8 +62,8 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   });
 
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(config.wikiSyncAgentDir, "auth.json"),
-    modelsPath: join(config.wikiSyncAgentDir, "models.json"),
+    authPath: join(config.wikiSync.agentDir, "auth.json"),
+    modelsPath: join(config.wikiSync.agentDir, "models.json"),
   });
 
   // Registered directly on the runtime (not via an extension factory): extensions loaded
@@ -84,20 +84,20 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     api: "openai-completions",
     models: [
       {
-        id: config.wikiSyncModel,
-        name: config.wikiSyncModel,
+        id: config.wikiSync.model,
+        name: config.wikiSync.model,
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: config.wikiSyncContextLimit,
+        contextWindow: config.wikiSync.contextLimit,
         maxTokens: 8192,
         samplingParams: { provider: { data_collection: "deny" } },
       },
     ],
   });
 
-  const model = modelRuntime.getModel(PROVIDER_ID, config.wikiSyncModel);
-  if (!model) throw new Error(`wiki-sync model ${PROVIDER_ID}/${config.wikiSyncModel} failed to register`);
+  const model = modelRuntime.getModel(PROVIDER_ID, config.wikiSync.model);
+  if (!model) throw new Error(`wiki-sync model ${PROVIDER_ID}/${config.wikiSync.model} failed to register`);
 
   // AGENTS.md at the wiki repo's root, if the maintainer added one, is picked up automatically
   // here — DefaultResourceLoader walks up from cwd (the repo checkout) discovering context
@@ -112,7 +112,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   const repoRoot = resolve(opts.repo.dir);
   const loader = new DefaultResourceLoader({
     cwd: opts.repo.dir,
-    agentDir: config.wikiSyncAgentDir,
+    agentDir: config.wikiSync.agentDir,
     systemPromptOverride: () => WIKI_SYNC_SYSTEM_PROMPT,
     agentsFilesOverride: (base) => ({
       agentsFiles: base.agentsFiles.filter((f) => resolve(f.path) === repoRoot || resolve(f.path).startsWith(repoRoot + sep)),
@@ -122,14 +122,14 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
 
   const { session } = await createAgentSession({
     cwd: opts.repo.dir,
-    agentDir: config.wikiSyncAgentDir,
+    agentDir: config.wikiSync.agentDir,
     model,
     modelRuntime,
     resourceLoader: loader,
     tools: ["read", "edit", "write", "grep", "find", "ls", "commit_and_push"],
     excludeTools: ["bash", "ask_question"],
     customTools: [commitAndPushTool],
-    sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSyncAgentDir, "sessions")),
+    sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSync.agentDir, "sessions")),
   });
 
   let finalText = "";
