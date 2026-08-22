@@ -16,6 +16,7 @@ export function startWikiSyncScheduler(client: Client): void {
 
   setInterval(() => {
     for (const guildId of guildIds) {
+      logger.info({ guildId }, "scheduled wiki-sync sweep starting");
       runWikiSyncSweep(guildId, client).catch((err) => {
         logger.error({ guildId, err }, "scheduled wiki-sync sweep failed");
       });
