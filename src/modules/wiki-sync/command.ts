@@ -54,7 +54,7 @@ export async function handleWikiSyncCommand(interaction: ChatInputCommandInterac
   const followUp = statusChannelId
     ? `I'll post an update in <#${statusChannelId}> when it's done.`
     : "No status channel is configured for this server, so check the logs for the result.";
-  await interaction.reply({ content: `Sweep started (run \`${runId}\`) — ${followUp}`, ephemeral: true });
+  await interaction.reply({ content: `Sweep started (run \`${runId}\`) — ${followUp}` });
 
   runWikiSyncSweep(interaction.guildId, interaction.client, runId).catch((err) => {
     logger.error({ guildId: interaction.guildId, runId, err }, "wiki-sync command-triggered sweep failed");
