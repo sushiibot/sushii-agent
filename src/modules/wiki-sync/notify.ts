@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MessageFlags, type Client } from "discord.js";
-import { buildTextDisplayContainer } from "../../agent/delivery.ts";
+import { ContainerBuilder, MessageFlags, TextDisplayBuilder, type Client } from "discord.js";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import type { WikiRepo } from "./git.ts";
@@ -9,6 +8,15 @@ import type { WikiRepo } from "./git.ts";
 const logger = getLogger("wiki-sync:notify");
 
 const MAX_CONTENT_LENGTH = 3800;
+
+// Inlined rather than importing agent/delivery.ts's buildTextDisplayContainer: delivery.ts
+// pulls in agent/loop.ts, which imports modules/registry.ts, which imports this module's own
+// package (wiki-sync/index.ts) -- that closed a real circular-import chain that crash-looped
+// the whole process in production (ReferenceError: Cannot access 'wikiSyncModule' before
+// initialization). This two-line helper isn't worth reintroducing that dependency for.
+function buildTextDisplayContainer(content: string): ContainerBuilder {
+  return new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder({ content }));
+}
 
 /**
  * Web URL for linking to a commit -- Forgejo and GitHub both serve /commit/<sha> at
