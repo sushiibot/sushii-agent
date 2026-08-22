@@ -7,7 +7,7 @@ import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "../../db/wikiSync.ts";
 import { COMMITTER_NAME, openWikiRepo } from "./git.ts";
-import { writeMessageInbox } from "./inbox.ts";
+import { writeMessageInbox, type InboxFile } from "./inbox.ts";
 import { postSyncStatus } from "./notify.ts";
 import { runWikiSyncSession } from "./piSession.ts";
 import { buildSweepTriggerPrompt } from "./prompt.ts";
@@ -89,22 +89,17 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
       const repo = await openWikiRepo(guildId);
       // Sibling of the repo checkout, outside its git working tree entirely — see inbox.ts.
       const inboxDir = join(config.wikiSync.inboxDir, guildId);
+      const { files: allFiles } = await writeMessageInbox(inboxDir, client, messages);
 
       // The status channel (and any thread on a message wiki-sync posted there, e.g. the
       // per-sweep "discuss this sync" thread from notify.ts) isn't community content to build
       // wiki pages from -- it's where people talk about wiki-sync's own output. Routed to
       // buildSweepTriggerPrompt's separate feedback section instead of the regular content list.
       const statusChannelId = config.guildConfig[guildId]?.wiki?.statusChannelId;
-      const contentMessages = statusChannelId
-        ? messages.filter((m) => m.channelId !== statusChannelId && m.parentChannelId !== statusChannelId)
-        : messages;
-      const feedbackMessages = statusChannelId
-        ? messages.filter((m) => m.channelId === statusChannelId || m.parentChannelId === statusChannelId)
-        : [];
+      const isFeedback = (f: InboxFile) => f.channelId === statusChannelId || f.parentChannelId === statusChannelId;
+      const files = statusChannelId ? allFiles.filter((f) => !isFeedback(f)).map((f) => f.path) : allFiles.map((f) => f.path);
+      const feedbackFiles = statusChannelId ? allFiles.filter(isFeedback).map((f) => f.path) : [];
 
-      const { files } = await writeMessageInbox(inboxDir, client, contentMessages);
-      const feedbackFiles =
-        feedbackMessages.length > 0 ? (await writeMessageInbox(inboxDir, client, feedbackMessages, { clear: false })).files : [];
       const prompt = buildSweepTriggerPrompt(files, feedbackFiles);
       const result = await runWikiSyncSession({ repo, prompt, guildId, runId });
       span.setAttribute("wiki_sync.commit_sha", result.commitSha ?? "");

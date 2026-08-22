@@ -51,20 +51,20 @@ describe("writeMessageInbox", () => {
     );
     expect(files.length).toBe(2);
     for (const f of files) {
-      expect(existsSync(f)).toBe(true);
+      expect(existsSync(f.path)).toBe(true);
     }
   });
 
   test("uses a slugified channel name plus id when the channel resolves", async () => {
     const client = fakeClient({ c1: "General Chat!" });
     const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
-    expect(files[0]).toBe(join(dir, "general-chat-c1.md"));
+    expect(files[0]!.path).toBe(join(dir, "general-chat-c1.md"));
   });
 
   test("falls back to the raw channel id when the channel doesn't resolve", async () => {
     const client = fakeClient({});
     const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "unknown-chan" })]);
-    expect(files[0]).toBe(join(dir, "unknown-chan.md"));
+    expect(files[0]!.path).toBe(join(dir, "unknown-chan.md"));
   });
 
   test("file content includes timestamp, author, and message text", async () => {
@@ -74,7 +74,7 @@ describe("writeMessageInbox", () => {
       client,
       [msg({ channelId: "c1", authorUsername: "alice", content: "hello world" })],
     );
-    const content = await readFile(files[0]!, "utf8");
+    const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("alice");
     expect(content).toContain("hello world");
     expect(content).toContain("2026-01-01");
@@ -83,7 +83,7 @@ describe("writeMessageInbox", () => {
   test("includes the author's Discord id, the only stable cross-reference since the inbox is wiped every sweep", async () => {
     const client = fakeClient({ c1: "general" });
     const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1", authorId: "429779375072870400" })]);
-    const content = await readFile(files[0]!, "utf8");
+    const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("(id 429779375072870400)");
   });
 
@@ -91,18 +91,20 @@ describe("writeMessageInbox", () => {
     const client = fakeClient({ c1: "general" });
     await writeMessageInbox(dir, client, [msg({ channelId: "c1" }), msg({ channelId: "stale-chan" })]);
     const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
-    expect(files).toEqual([join(dir, "general-c1.md")]);
+    expect(files.map((f) => f.path)).toEqual([join(dir, "general-c1.md")]);
     expect(existsSync(join(dir, "stale-chan.md"))).toBe(false);
   });
 
-  test("clear: false adds to the existing batch instead of wiping it", async () => {
-    const client = fakeClient({ c1: "general", c2: "wiki-status" });
-    const { files: firstBatch } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
-    const { files: secondBatch } = await writeMessageInbox(dir, client, [msg({ channelId: "c2" })], { clear: false });
-    expect(firstBatch).toEqual([join(dir, "general-c1.md")]);
-    expect(secondBatch).toEqual([join(dir, "wiki-status-c2.md")]);
-    expect(existsSync(join(dir, "general-c1.md"))).toBe(true);
-    expect(existsSync(join(dir, "wiki-status-c2.md"))).toBe(true);
+  test("returns each file's channelId and parentChannelId so a caller can classify files without re-deriving the filename scheme", async () => {
+    const client = fakeClient({ c1: "general", "thread-1": "bug: login broken" });
+    const { files } = await writeMessageInbox(
+      dir,
+      client,
+      [msg({ channelId: "c1" }), msg({ channelId: "thread-1", parentChannelId: "c1" })],
+    );
+    const byChannel = new Map(files.map((f) => [f.channelId, f]));
+    expect(byChannel.get("c1")).toMatchObject({ channelId: "c1", parentChannelId: null });
+    expect(byChannel.get("thread-1")).toMatchObject({ channelId: "thread-1", parentChannelId: "c1" });
   });
 
   test("a thread's file name and header reference its parent channel", async () => {
@@ -112,8 +114,8 @@ describe("writeMessageInbox", () => {
       client,
       [msg({ channelId: "thread-1", parentChannelId: "general" })],
     );
-    expect(files[0]).toBe(join(dir, "general--bug-login-broken-thread-1.md"));
-    const content = await readFile(files[0]!, "utf8");
+    expect(files[0]!.path).toBe(join(dir, "general--bug-login-broken-thread-1.md"));
+    const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain('Thread "bug: login broken" in #general');
   });
 
@@ -124,14 +126,14 @@ describe("writeMessageInbox", () => {
       client,
       [msg({ channelId: "thread-1", parentChannelId: "unknown-parent" })],
     );
-    const content = await readFile(files[0]!, "utf8");
+    const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("channel unknown-parent");
   });
 
   test("a non-thread channel gets a plain channel header, no thread language", async () => {
     const client = fakeClient({ c1: "general" });
     const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
-    const content = await readFile(files[0]!, "utf8");
+    const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("# #general");
     expect(content).not.toContain("Thread");
   });
@@ -143,7 +145,7 @@ describe("writeMessageInbox", () => {
       client,
       [msg({ channelId: "c1", content: "totally agree", replyTo: { author: "pham", content: "is this still broken?" } })],
     );
-    const content = await readFile(files[0]!, "utf8");
+    const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain('replying to pham ("is this still broken?")');
     expect(content).toContain("totally agree");
   });

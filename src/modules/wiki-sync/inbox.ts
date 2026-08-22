@@ -58,27 +58,27 @@ function formatMessageLine(m: WikiSyncMessage): string {
   return `[${timestamp}] ${replyPrefix}${author} (id ${m.authorId}): ${m.content}`;
 }
 
+export interface InboxFile {
+  path: string;
+  channelId: string;
+  parentChannelId: string | null;
+}
+
 /**
- * Writes one markdown file per channel (or per thread) into `inboxDir`, so the model can
- * read/grep a per-channel file instead of a single flat blob — gives it channel grouping and a
- * legible name instead of a bare snowflake id. Clears any previous batch first unless
- * `opts.clear` is false -- sweep.ts calls this twice per sweep (once for wiki content, once for
- * status-channel feedback) and needs the second call to not wipe the first's output.
+ * Writes one markdown file per channel (or per thread) into `inboxDir`, replacing any previous
+ * batch, so the model can read/grep a per-channel file instead of a single flat blob — gives it
+ * channel grouping and a legible name instead of a bare snowflake id. Returns each file's own
+ * channel identity alongside its path so a caller can classify files (e.g. sweep.ts splitting
+ * status-channel feedback out from regular wiki content) without re-deriving the filename
+ * scheme itself.
  *
  * `inboxDir` is expected to sit outside the wiki repo's git working tree entirely (see
  * sweep.ts) — Pi's filesystem tools aren't cwd-sandboxed, so it can still read an absolute
  * path here even though the session's cwd is the repo checkout. That keeps raw Discord content
  * physically incapable of being swept up by `git add -A`, rather than merely excluded from it.
  */
-export async function writeMessageInbox(
-  inboxDir: string,
-  client: Client,
-  messages: WikiSyncMessage[],
-  opts: { clear?: boolean } = {},
-): Promise<{ files: string[] }> {
-  if (opts.clear ?? true) {
-    await rm(inboxDir, { recursive: true, force: true });
-  }
+export async function writeMessageInbox(inboxDir: string, client: Client, messages: WikiSyncMessage[]): Promise<{ files: InboxFile[] }> {
+  await rm(inboxDir, { recursive: true, force: true });
   await mkdir(inboxDir, { recursive: true });
 
   const groups = new Map<string, ChannelGroup>();
@@ -97,13 +97,13 @@ export async function writeMessageInbox(
     group.messages.push(message);
   }
 
-  const files: string[] = [];
+  const files: InboxFile[] = [];
   for (const group of groups.values()) {
     const fileName = `${fileStem(group)}.md`;
     const body = group.messages.map(formatMessageLine).join("\n");
     const filePath = join(inboxDir, fileName);
     await writeFile(filePath, `${fileHeader(group)}${body}\n`, "utf8");
-    files.push(filePath);
+    files.push({ path: filePath, channelId: group.channelId, parentChannelId: group.parentChannelId });
   }
 
   return { files };
