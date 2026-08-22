@@ -2,7 +2,7 @@ import { REST, Routes, SlashCommandBuilder, type ChatInputCommandInteraction, ty
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { getWikiSyncEnabledGuildIds } from "./guilds.ts";
-import { runWikiSyncSweep } from "./sweep.ts";
+import { isSweepInFlight, runWikiSyncSweep } from "./sweep.ts";
 
 const logger = getLogger("wiki-sync:command");
 
@@ -39,20 +39,24 @@ export async function handleWikiSyncCommand(interaction: ChatInputCommandInterac
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
-  try {
-    const result = await runWikiSyncSweep(interaction.guildId, interaction.client);
-    if (!result.ran) {
-      await interaction.editReply(`Sweep not started: ${result.reason}`);
-    } else if (result.reason === "no new messages") {
-      await interaction.editReply("Sweep complete — no new messages to review.");
-    } else if (result.commitSha) {
-      await interaction.editReply(`Sweep complete — pushed commit \`${result.commitSha.slice(0, 7)}\`.`);
-    } else {
-      await interaction.editReply("Sweep complete — no wiki changes were needed.");
-    }
-  } catch (err) {
-    logger.error({ guildId: interaction.guildId, err }, "wiki-sync command failed");
-    await interaction.editReply("Sweep failed — check logs.");
+  if (isSweepInFlight(interaction.guildId)) {
+    await interaction.reply({ content: "A sweep is already running for this server — hang tight.", ephemeral: true });
+    return;
   }
+
+  // Replies immediately rather than deferReply()+wait — a sweep (a full Pi session plus git
+  // clone/push) can plausibly run past Discord's 15-minute interaction-token window, which
+  // would leave a deferred reply stuck on "thinking..." forever with no way to resolve it. The
+  // sweep runs detached; its actual result reaches the status channel via postSyncStatus
+  // (sweep.ts), not this interaction, once it's done.
+  const runId = crypto.randomUUID().slice(0, 8);
+  const statusChannelId = guildConfig?.wiki?.statusChannelId;
+  const followUp = statusChannelId
+    ? `I'll post an update in <#${statusChannelId}> when it's done.`
+    : "No status channel is configured for this server, so check the logs for the result.";
+  await interaction.reply({ content: `Sweep started (run \`${runId}\`) — ${followUp}`, ephemeral: true });
+
+  runWikiSyncSweep(interaction.guildId, interaction.client, runId).catch((err) => {
+    logger.error({ guildId: interaction.guildId, runId, err }, "wiki-sync command-triggered sweep failed");
+  });
 }
