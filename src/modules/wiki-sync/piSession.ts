@@ -1,13 +1,126 @@
 import { join, resolve, sep } from "node:path";
+import { type Span, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
+import { tracer } from "../../telemetry.ts";
 import type { WikiRepo } from "./git.ts";
 import { commitAndPush } from "./git.ts";
 import { WIKI_SYNC_SYSTEM_PROMPT } from "./prompt.ts";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 const logger = getLogger("wiki-sync:pi");
+const sessionLogger = getLogger("wiki-sync:pi:session");
 
 const PROVIDER_ID = "sushii-openrouter";
+
+/** Keeps log lines (and Loki structured-metadata fields, which silently drop oversized values) from ballooning on large tool payloads. */
+function preview(value: unknown, max = 400): string {
+  const str = typeof value === "string" ? value : JSON.stringify(value);
+  return str.length > max ? `${str.slice(0, max)}… (${str.length} chars total)` : str;
+}
+
+/**
+ * Everything the Pi session actually does — every tool call, every turn, whether a turn was
+ * cut off by the provider's token cap — previously lived only in the on-disk session transcript,
+ * invisible to Grafana/Loki. Wired to a dedicated child logger so it's filterable independently
+ * of the sparse start/end lines sweep.ts and this file already log.
+ */
+function logSessionEvent(log: ReturnType<typeof getLogger>, event: AgentSessionEvent): void {
+  switch (event.type) {
+    case "turn_start":
+      log.info("wiki-sync turn started");
+      break;
+    case "tool_execution_start":
+      log.info({ toolCallId: event.toolCallId, toolName: event.toolName, args: preview(event.args) }, "wiki-sync tool call started");
+      break;
+    case "tool_execution_end":
+      log.info(
+        { toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError, result: preview(event.result) },
+        "wiki-sync tool call finished",
+      );
+      break;
+    case "message_update":
+      switch (event.assistantMessageEvent.type) {
+        case "thinking_end":
+          log.info({ content: preview(event.assistantMessageEvent.content) }, "wiki-sync thinking");
+          break;
+        case "text_end":
+          log.info({ content: preview(event.assistantMessageEvent.content) }, "wiki-sync text");
+          break;
+        // "length" here is the tell for a response getting cut off by the provider's max_tokens
+        // cap (see WIKI_SYNC_MAX_OUTPUT_TOKENS) -- previously indistinguishable from a clean
+        // "nothing to commit" finish since neither logged anything on their own.
+        case "done":
+          log.info({ reason: event.assistantMessageEvent.reason }, "wiki-sync turn done");
+          break;
+        case "error":
+          log.error({ reason: event.assistantMessageEvent.reason }, "wiki-sync turn errored");
+          break;
+      }
+      break;
+  }
+}
+
+/**
+ * Mirrors session events into OTel child spans nested under the caller's active span (the
+ * "wiki-sync.sweep" span from sweep.ts, via ambient AsyncLocalStorage context -- no context
+ * threading needed here). A span only exports once it *ends*, so the still-open parent sweep
+ * span alone gives no in-flight visibility; per-turn and per-tool-call spans do, since each
+ * closes and exports within seconds even while the sweep as a whole is still running.
+ *
+ * Deliberately excludes prompt/completion/tool-argument content from span attributes (sizes
+ * only) -- traces are lower-friction to query/aggregate across than logs, so anything sensitive
+ * belongs in the logs (already truncated there) rather than duplicated here.
+ */
+function createSessionSpans() {
+  const toolSpans = new Map<string, Span>();
+  let turnSpan: Span | null = null;
+
+  return {
+    handle(event: AgentSessionEvent): void {
+      switch (event.type) {
+        case "turn_start":
+          turnSpan = tracer.startSpan("wiki-sync.turn");
+          break;
+        case "turn_end":
+          turnSpan?.end();
+          turnSpan = null;
+          break;
+        case "tool_execution_start":
+          toolSpans.set(
+            event.toolCallId,
+            tracer.startSpan("wiki-sync.tool_call", { attributes: { "wiki_sync.tool_name": event.toolName } }),
+          );
+          break;
+        case "tool_execution_end": {
+          const span = toolSpans.get(event.toolCallId);
+          if (span) {
+            if (event.isError) span.setStatus({ code: SpanStatusCode.ERROR });
+            span.end();
+            toolSpans.delete(event.toolCallId);
+          }
+          break;
+        }
+        case "message_update":
+          // "length" is the max_tokens-truncation tell -- see WIKI_SYNC_MAX_OUTPUT_TOKENS.
+          if (event.assistantMessageEvent.type === "done") {
+            turnSpan?.setAttribute("wiki_sync.stop_reason", event.assistantMessageEvent.reason);
+          } else if (event.assistantMessageEvent.type === "error") {
+            turnSpan?.setAttribute("wiki_sync.stop_reason", event.assistantMessageEvent.reason);
+            turnSpan?.setStatus({ code: SpanStatusCode.ERROR });
+          }
+          break;
+      }
+    },
+    /** Safety net: closes any span left open by an error path that skips its matching *_end event. */
+    endAll(): void {
+      turnSpan?.end();
+      turnSpan = null;
+      for (const span of toolSpans.values()) span.end();
+      toolSpans.clear();
+    },
+  };
+}
 
 export interface WikiSyncRunResult {
   finalText: string;
@@ -132,14 +245,22 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSync.agentDir, "sessions")),
   });
 
+  const eventLog = sessionLogger.child({ guildId: opts.guildId });
+  const spans = createSessionSpans();
   let finalText = "";
-  session.subscribe((event: { type: string; assistantMessageEvent?: { type: string; delta?: string } }) => {
-    if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+  session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       finalText += event.assistantMessageEvent.delta ?? "";
     }
+    logSessionEvent(eventLog, event);
+    spans.handle(event);
   });
 
-  await session.prompt(opts.prompt);
+  try {
+    await session.prompt(opts.prompt);
+  } finally {
+    spans.endAll();
+  }
   session.dispose();
 
   logger.info({ guildId: opts.guildId, commitSha, finalText: finalText.slice(0, 2000) }, "wiki-sync session finished");
