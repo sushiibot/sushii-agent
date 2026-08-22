@@ -89,7 +89,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
       const repo = await openWikiRepo(guildId);
       // Sibling of the repo checkout, outside its git working tree entirely — see inbox.ts.
       const inboxDir = join(config.wikiSync.inboxDir, guildId);
-      const { files: allFiles } = await writeMessageInbox(inboxDir, client, messages);
+      const { files: allFiles } = await writeMessageInbox(inboxDir, client, guildId, messages);
 
       // The status channel (and any thread on a message wiki-sync posted there, e.g. the
       // per-sweep "discuss this sync" thread from notify.ts) isn't community content to build

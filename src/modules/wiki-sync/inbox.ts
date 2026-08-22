@@ -46,16 +46,47 @@ function fileHeader(group: ChannelGroup): string {
   return group.channelName ? `# #${group.channelName}\n\n` : "";
 }
 
+// Consecutive messages from the same author, sent back to back with nothing in between, are one
+// train of thought split across Discord's send box rather than distinct topics — repeating the
+// full "[timestamp] (url) author (id ...)" header on every one is pure overhead for that case.
+// A reply always starts (and stays) its own group of one: it's calling out a specific earlier
+// message, which is exactly the context a merged block would bury.
+function groupConsecutive(messages: WikiSyncMessage[]): WikiSyncMessage[][] {
+  const groups: WikiSyncMessage[][] = [];
+  for (const m of messages) {
+    const last = groups[groups.length - 1];
+    if (last && !m.replyTo && last[0]!.authorId === m.authorId) {
+      last.push(m);
+    } else {
+      groups.push([m]);
+    }
+  }
+  return groups;
+}
+
 // The Discord id is the only thing about a person that's actually stable — username, display
 // name, and server nickname can all independently change or differ, and the inbox itself is
 // wiped every sweep (no history to cross-reference against), so the id is what lets the model
 // recognize "same person" across a name change instead of accidentally creating a duplicate
 // people/ page. See AGENTS.md's "People pages" section for how it's expected to use this.
-function formatMessageLine(m: WikiSyncMessage): string {
-  const author = m.authorDisplayName ?? m.authorUsername;
-  const timestamp = new Date(m.createdAt).toISOString();
-  const replyPrefix = m.replyTo ? `↳ replying to ${m.replyTo.author} ("${m.replyTo.content}") — ` : "";
-  return `[${timestamp}] ${replyPrefix}${author} (id ${m.authorId}): ${m.content}`;
+//
+// Header line, then each message's own content on its own line below — never inlined after the
+// header, even for a single message, so a header is always immediately followed by exactly the
+// text someone sent and nothing else to parse out of one line. A merged run's URL points at its
+// first message, not each individual one — precise enough for a citation into a train-of-thought
+// burst, and worth the imprecision for not repeating the header per line. A run mixing a reply
+// back in never happens: groupConsecutive never extends a group with a reply, so every group
+// here is either size 1 or reply-free.
+function formatMessageGroup(guildId: string, group: WikiSyncMessage[]): string {
+  const first = group[0]!;
+  const author = first.authorDisplayName ?? first.authorUsername;
+  const timestamp = new Date(first.createdAt).toISOString();
+  const url = `https://discord.com/channels/${guildId}/${first.channelId}/${first.discordId}`;
+  const replyPrefix = first.replyTo ? `↳ replying to ${first.replyTo.author} ("${first.replyTo.content}") — ` : "";
+  const runSuffix = group.length > 1 ? ` sent ${group.length} messages in a row` : "";
+  const header = `[${timestamp}] (${url}) ${replyPrefix}${author} (id ${first.authorId})${runSuffix}`;
+  const lines = group.map((m) => m.content);
+  return `${header}\n${lines.join("\n")}`;
 }
 
 export interface InboxFile {
@@ -77,7 +108,12 @@ export interface InboxFile {
  * path here even though the session's cwd is the repo checkout. That keeps raw Discord content
  * physically incapable of being swept up by `git add -A`, rather than merely excluded from it.
  */
-export async function writeMessageInbox(inboxDir: string, client: Client, messages: WikiSyncMessage[]): Promise<{ files: InboxFile[] }> {
+export async function writeMessageInbox(
+  inboxDir: string,
+  client: Client,
+  guildId: string,
+  messages: WikiSyncMessage[],
+): Promise<{ files: InboxFile[] }> {
   await rm(inboxDir, { recursive: true, force: true });
   await mkdir(inboxDir, { recursive: true });
 
@@ -100,7 +136,9 @@ export async function writeMessageInbox(inboxDir: string, client: Client, messag
   const files: InboxFile[] = [];
   for (const group of groups.values()) {
     const fileName = `${fileStem(group)}.md`;
-    const body = group.messages.map(formatMessageLine).join("\n");
+    const body = groupConsecutive(group.messages)
+      .map((g) => formatMessageGroup(guildId, g))
+      .join("\n");
     const filePath = join(inboxDir, fileName);
     await writeFile(filePath, `${fileHeader(group)}${body}\n`, "utf8");
     files.push({ path: filePath, channelId: group.channelId, parentChannelId: group.parentChannelId });

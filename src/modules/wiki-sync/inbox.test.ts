@@ -47,6 +47,7 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(
       dir,
       client,
+      "g1",
       [msg({ channelId: "c1" }), msg({ channelId: "c2" }), msg({ channelId: "c1" })],
     );
     expect(files.length).toBe(2);
@@ -57,13 +58,13 @@ describe("writeMessageInbox", () => {
 
   test("uses a slugified channel name plus id when the channel resolves", async () => {
     const client = fakeClient({ c1: "General Chat!" });
-    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
+    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" })]);
     expect(files[0]!.path).toBe(join(dir, "general-chat-c1.md"));
   });
 
   test("falls back to the raw channel id when the channel doesn't resolve", async () => {
     const client = fakeClient({});
-    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "unknown-chan" })]);
+    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "unknown-chan" })]);
     expect(files[0]!.path).toBe(join(dir, "unknown-chan.md"));
   });
 
@@ -72,6 +73,7 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(
       dir,
       client,
+      "g1",
       [msg({ channelId: "c1", authorUsername: "alice", content: "hello world" })],
     );
     const content = await readFile(files[0]!.path, "utf8");
@@ -80,17 +82,24 @@ describe("writeMessageInbox", () => {
     expect(content).toContain("2026-01-01");
   });
 
+  test("includes the message's Discord URL so the model can cite a source page back to it", async () => {
+    const client = fakeClient({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1", discordId: "42" })]);
+    const content = await readFile(files[0]!.path, "utf8");
+    expect(content).toContain("(https://discord.com/channels/g1/c1/42)");
+  });
+
   test("includes the author's Discord id, the only stable cross-reference since the inbox is wiped every sweep", async () => {
     const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1", authorId: "429779375072870400" })]);
+    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1", authorId: "429779375072870400" })]);
     const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("(id 429779375072870400)");
   });
 
   test("clears a previous batch before writing the new one", async () => {
     const client = fakeClient({ c1: "general" });
-    await writeMessageInbox(dir, client, [msg({ channelId: "c1" }), msg({ channelId: "stale-chan" })]);
-    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
+    await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" }), msg({ channelId: "stale-chan" })]);
+    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" })]);
     expect(files.map((f) => f.path)).toEqual([join(dir, "general-c1.md")]);
     expect(existsSync(join(dir, "stale-chan.md"))).toBe(false);
   });
@@ -100,6 +109,7 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(
       dir,
       client,
+      "g1",
       [msg({ channelId: "c1" }), msg({ channelId: "thread-1", parentChannelId: "c1" })],
     );
     const byChannel = new Map(files.map((f) => [f.channelId, f]));
@@ -112,6 +122,7 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(
       dir,
       client,
+      "g1",
       [msg({ channelId: "thread-1", parentChannelId: "general" })],
     );
     expect(files[0]!.path).toBe(join(dir, "general--bug-login-broken-thread-1.md"));
@@ -124,6 +135,7 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(
       dir,
       client,
+      "g1",
       [msg({ channelId: "thread-1", parentChannelId: "unknown-parent" })],
     );
     const content = await readFile(files[0]!.path, "utf8");
@@ -132,7 +144,7 @@ describe("writeMessageInbox", () => {
 
   test("a non-thread channel gets a plain channel header, no thread language", async () => {
     const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
+    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" })]);
     const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("# #general");
     expect(content).not.toContain("Thread");
@@ -143,10 +155,48 @@ describe("writeMessageInbox", () => {
     const { files } = await writeMessageInbox(
       dir,
       client,
+      "g1",
       [msg({ channelId: "c1", content: "totally agree", replyTo: { author: "pham", content: "is this still broken?" } })],
     );
     const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain('replying to pham ("is this still broken?")');
     expect(content).toContain("totally agree");
+  });
+
+  test("consecutive messages from the same author collapse into one header with plain content lines", async () => {
+    const client = fakeClient({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, client, "g1", [
+      msg({ channelId: "c1", discordId: "1", authorId: "u1", content: "first" }),
+      msg({ channelId: "c1", discordId: "2", authorId: "u1", content: "second" }),
+      msg({ channelId: "c1", discordId: "3", authorId: "u1", content: "third" }),
+    ]);
+    const content = await readFile(files[0]!.path, "utf8");
+    const lines = content.trim().split("\n");
+    expect(lines.filter((l) => l.includes("someuser"))).toHaveLength(1);
+    expect(content).toContain("sent 3 messages in a row");
+    expect(content).toContain("(https://discord.com/channels/g1/c1/1)");
+    expect(lines).toContain("first");
+    expect(lines).toContain("second");
+    expect(lines).toContain("third");
+  });
+
+  test("a message from a different author, or a reply, breaks the run instead of merging", async () => {
+    const client = fakeClient({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, client, "g1", [
+      msg({ channelId: "c1", discordId: "1", authorId: "u1", content: "hi" }),
+      msg({ channelId: "c1", discordId: "2", authorId: "u2", content: "hey" }),
+      msg({
+        channelId: "c1",
+        discordId: "3",
+        authorId: "u2",
+        content: "reply here",
+        replyTo: { author: "someuser", content: "hi" },
+      }),
+    ]);
+    const content = await readFile(files[0]!.path, "utf8");
+    expect(content).not.toContain("in a row");
+    expect(content).toContain("(https://discord.com/channels/g1/c1/1)");
+    expect(content).toContain("(https://discord.com/channels/g1/c1/2)");
+    expect(content).toContain("(https://discord.com/channels/g1/c1/3)");
   });
 });
