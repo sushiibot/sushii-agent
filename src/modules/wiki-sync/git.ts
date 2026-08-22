@@ -34,7 +34,15 @@ export async function openWikiRepo(guildId: string): Promise<WikiRepo> {
   await mkdir(dirname(dir), { recursive: true });
 
   // No -i <path>: auth comes from ssh-agent via SSH_AUTH_SOCK (inherited from process.env below).
-  const sshCommand = `ssh -o StrictHostKeyChecking=accept-new`;
+  //
+  // Wrapped in `timeout` rather than relying on ssh's own ConnectTimeout: verified directly
+  // (against this exact host) that ConnectTimeout does NOT bound this failure mode -- it only
+  // covers the TCP handshake, but a Cloudflare-fronted host can accept the TCP connection and
+  // then hang forever on the SSH protocol banner exchange, which ConnectTimeout never sees.
+  // Without a hard outer timeout, an unreachable git host hangs indefinitely, and since
+  // sweep.ts's inFlight guard only releases when this call resolves, a single hung push
+  // silently blocks every future sweep for that guild.
+  const sshCommand = `timeout 30 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15`;
   const alreadyCloned = existsSync(join(dir, ".git"));
 
   if (!alreadyCloned) {
