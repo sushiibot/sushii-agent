@@ -80,6 +80,13 @@ describe("writeMessageInbox", () => {
     expect(content).toContain("2026-01-01");
   });
 
+  test("includes the author's Discord id, the only stable cross-reference since the inbox is wiped every sweep", async () => {
+    const client = fakeClient({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, client, [msg({ channelId: "c1", authorId: "429779375072870400" })]);
+    const content = await readFile(files[0]!, "utf8");
+    expect(content).toContain("(id 429779375072870400)");
+  });
+
   test("clears a previous batch before writing the new one", async () => {
     const client = fakeClient({ c1: "general" });
     await writeMessageInbox(dir, client, [msg({ channelId: "c1" }), msg({ channelId: "stale-chan" })]);

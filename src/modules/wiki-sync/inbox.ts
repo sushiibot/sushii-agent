@@ -46,11 +46,16 @@ function fileHeader(group: ChannelGroup): string {
   return group.channelName ? `# #${group.channelName}\n\n` : "";
 }
 
+// The Discord id is the only thing about a person that's actually stable — username, display
+// name, and server nickname can all independently change or differ, and the inbox itself is
+// wiped every sweep (no history to cross-reference against), so the id is what lets the model
+// recognize "same person" across a name change instead of accidentally creating a duplicate
+// people/ page. See AGENTS.md's "People pages" section for how it's expected to use this.
 function formatMessageLine(m: WikiSyncMessage): string {
   const author = m.authorDisplayName ?? m.authorUsername;
   const timestamp = new Date(m.createdAt).toISOString();
   const replyPrefix = m.replyTo ? `↳ replying to ${m.replyTo.author} ("${m.replyTo.content}") — ` : "";
-  return `[${timestamp}] ${replyPrefix}${author}: ${m.content}`;
+  return `[${timestamp}] ${replyPrefix}${author} (id ${m.authorId}): ${m.content}`;
 }
 
 /**
