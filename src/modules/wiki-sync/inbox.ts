@@ -59,9 +59,11 @@ function formatMessageLine(m: WikiSyncMessage): string {
 }
 
 /**
- * Writes one markdown file per channel (or per thread) into `inboxDir`, replacing any previous
- * batch, so the model can read/grep a per-channel file instead of a single flat blob — gives it
- * channel grouping and a legible name instead of a bare snowflake id.
+ * Writes one markdown file per channel (or per thread) into `inboxDir`, so the model can
+ * read/grep a per-channel file instead of a single flat blob — gives it channel grouping and a
+ * legible name instead of a bare snowflake id. Clears any previous batch first unless
+ * `opts.clear` is false -- sweep.ts calls this twice per sweep (once for wiki content, once for
+ * status-channel feedback) and needs the second call to not wipe the first's output.
  *
  * `inboxDir` is expected to sit outside the wiki repo's git working tree entirely (see
  * sweep.ts) — Pi's filesystem tools aren't cwd-sandboxed, so it can still read an absolute
@@ -72,8 +74,11 @@ export async function writeMessageInbox(
   inboxDir: string,
   client: Client,
   messages: WikiSyncMessage[],
+  opts: { clear?: boolean } = {},
 ): Promise<{ files: string[] }> {
-  await rm(inboxDir, { recursive: true, force: true });
+  if (opts.clear ?? true) {
+    await rm(inboxDir, { recursive: true, force: true });
+  }
   await mkdir(inboxDir, { recursive: true });
 
   const groups = new Map<string, ChannelGroup>();

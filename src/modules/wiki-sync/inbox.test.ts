@@ -95,6 +95,16 @@ describe("writeMessageInbox", () => {
     expect(existsSync(join(dir, "stale-chan.md"))).toBe(false);
   });
 
+  test("clear: false adds to the existing batch instead of wiping it", async () => {
+    const client = fakeClient({ c1: "general", c2: "wiki-status" });
+    const { files: firstBatch } = await writeMessageInbox(dir, client, [msg({ channelId: "c1" })]);
+    const { files: secondBatch } = await writeMessageInbox(dir, client, [msg({ channelId: "c2" })], { clear: false });
+    expect(firstBatch).toEqual([join(dir, "general-c1.md")]);
+    expect(secondBatch).toEqual([join(dir, "wiki-status-c2.md")]);
+    expect(existsSync(join(dir, "general-c1.md"))).toBe(true);
+    expect(existsSync(join(dir, "wiki-status-c2.md"))).toBe(true);
+  });
+
   test("a thread's file name and header reference its parent channel", async () => {
     const client = fakeClient({ "thread-1": "bug: login broken", "general": "general" });
     const { files } = await writeMessageInbox(

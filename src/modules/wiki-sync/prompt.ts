@@ -37,13 +37,41 @@ Rules:
 - When you're done, call commit_and_push exactly once with a concise, specific commit message
   describing what changed and why — that message is the audit trail for this sweep, so make it
   count instead of a generic "update wiki". If nothing in the message batch warranted a wiki
-  change, skip the tool call entirely.`;
+  change, skip the tool call entirely.
 
-export function buildSweepTriggerPrompt(files: string[]): string {
-  return [
+Feedback about your own output: a separate batch of files, from the configured status channel
+(where you post after every sync) and any thread on one of your own status messages, may be
+included below labeled as feedback. This is not community content to build wiki pages from —
+it's people discussing what you've been doing. A reply in the thread on one of your own status
+messages is unambiguous, clearly-scoped feedback about that specific sync. A message elsewhere
+in the status channel only counts as feedback when it's unmistakably about the wiki's behavior
+or content — not merely posted in the same channel.
+
+Be conservative acting on it. Most chat is not a directive: jokes, sarcasm, hypotheticals, and
+offhand complaints are not instructions, and the default is to do nothing rather than guess
+someone meant something literally. Only treat something as a genuine correction when it reads
+as a clear, direct statement of what should change — a higher bar than for any other page,
+since this changes your own future behavior, not just one page's content. When you do find a
+real, durable correction, apply it by editing this AGENTS.md file directly (not by writing a
+wiki page about it), and say so plainly in your commit message so it's auditable, e.g.
+"Adjusted people-page scope per feedback in #wiki-status: stop creating pages for reaction-only
+members." Never edit AGENTS.md speculatively "just in case" — leave an unclear signal alone
+rather than half-applying it.`;
+
+export function buildSweepTriggerPrompt(files: string[], feedbackFiles: string[] = []): string {
+  const lines = [
     `New Discord activity since the last sync has been written to these files, one per channel:`,
     ...files.map((f) => `- ${f}`),
-    ``,
-    `Read them and update the wiki as appropriate per your instructions.`,
-  ].join("\n");
+  ];
+
+  if (feedbackFiles.length > 0) {
+    lines.push(
+      ``,
+      `Feedback about your own output since the last sync (see your instructions on how to treat this):`,
+      ...feedbackFiles.map((f) => `- ${f}`),
+    );
+  }
+
+  lines.push(``, `Read them and update the wiki as appropriate per your instructions.`);
+  return lines.join("\n");
 }

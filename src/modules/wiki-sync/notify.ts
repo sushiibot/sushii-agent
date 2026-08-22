@@ -107,11 +107,20 @@ export async function postSyncStatus(opts: { client: Client; guildId: string; re
 
     const content = buildStatusContent(recap ? recap.trim() : null, commitLine);
 
-    await channel.send({
+    const sent = await channel.send({
       components: [buildTextDisplayContainer(content)],
       flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressEmbeds,
       allowedMentions: { parse: [] },
     });
+
+    // A thread scoped to this specific sweep for discussing its output -- the next sweep reads
+    // it back as feedback (see sweep.ts/prompt.ts). Non-fatal: a missing thread just means no
+    // feedback surface for this one sync, not a failed notification.
+    try {
+      await sent.startThread({ name: "discuss this sync" });
+    } catch (err) {
+      logger.warn({ guildId: opts.guildId, channelId, err }, "failed to open feedback thread on status message");
+    }
   } catch (err) {
     logger.error({ guildId: opts.guildId, channelId, err }, "failed to post status update");
   }
