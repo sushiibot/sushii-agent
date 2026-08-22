@@ -29,6 +29,8 @@ export interface Config {
     /** Independent of openaiModel -- wiki-sync only edits text files, never images, so it can run a cheaper text-only model. */
     model: string;
     contextLimit: number;
+    /** Per-turn output cap passed to the provider as max_tokens. Required by Pi's registerProvider API (no "unbounded" option). */
+    maxOutputTokens: number;
   };
 }
 
@@ -95,5 +97,9 @@ export const config: Config = {
     // fixed price/config.
     model: optional("WIKI_SYNC_MODEL", "deepseek/deepseek-v4-flash-0731"),
     contextLimit: parseInt(optional("WIKI_SYNC_CONTEXT_LIMIT", "1310720"), 10),
+    // DeepSeek V4 Flash supports up to 1,048,576 completion tokens -- 131072 leaves generous
+    // headroom for a single turn's reasoning plus several file writes (a large backfill sweep's
+    // planning pass alone ran ~8k tokens) without approaching the model's real ceiling.
+    maxOutputTokens: parseInt(optional("WIKI_SYNC_MAX_OUTPUT_TOKENS", "131072"), 10),
   },
 };
