@@ -18,6 +18,36 @@ export function deriveWebUrl(repoUrl: string): string | null {
   return `https://${host}/${path}`;
 }
 
+/**
+ * Which daily/<date>.md files this commit actually touched, oldest first. Not just "today" --
+ * a backlog-catchup sweep can span several calendar days in one commit (see AGENTS.md's "Daily
+ * recap": entries are filed under the date the message happened, not the date the sweep ran).
+ */
+async function findTouchedDailyFiles(repo: WikiRepo, sha: string): Promise<string[]> {
+  const output = await repo.git.raw(["diff-tree", "--no-commit-id", "--name-only", "-r", sha]);
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("daily/") && line.endsWith(".md"))
+    .sort();
+}
+
+async function buildRecapBody(repo: WikiRepo, commitSha: string): Promise<string | null> {
+  const dailyFiles = await findTouchedDailyFiles(repo, commitSha).catch(() => []);
+  if (dailyFiles.length === 0) return null;
+
+  const sections = await Promise.all(
+    dailyFiles.map(async (relativePath) => {
+      const content = await readFile(join(repo.dir, relativePath), "utf8").catch(() => null);
+      if (!content) return null;
+      // One file: just its content. Multiple (a backfill sweep spanning days): label each.
+      return dailyFiles.length === 1 ? content.trim() : `**${relativePath.replace(/^daily\/|\.md$/g, "")}**\n${content.trim()}`;
+    }),
+  );
+  const nonEmpty = sections.filter((s): s is string => s !== null);
+  return nonEmpty.length > 0 ? nonEmpty.join("\n\n") : null;
+}
+
 /** Posts a status update to this guild's configured channel after a sweep pushes a commit. Never throws -- a failed notification shouldn't fail the sweep. */
 export async function postSyncStatus(opts: { client: Client; guildId: string; repo: WikiRepo; commitSha: string }): Promise<void> {
   const channelId = config.guildConfig[opts.guildId]?.wiki?.statusChannelId;
@@ -30,8 +60,7 @@ export async function postSyncStatus(opts: { client: Client; guildId: string; re
       return;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
-    const recap = await readFile(join(opts.repo.dir, "daily", `${today}.md`), "utf8").catch(() => null);
+    const recap = await buildRecapBody(opts.repo, opts.commitSha);
 
     const webUrl = deriveWebUrl(config.wikiSyncRepoUrl ?? "");
     const commitLine = webUrl
