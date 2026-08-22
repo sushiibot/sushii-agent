@@ -1,0 +1,10 @@
+.git
+node_modules/
+.env
+data/
+feedback-export/
+*.bak
+.claude/
+.kanban/
+.playwright-mcp/
+test-results/

@@ -17,6 +17,12 @@ export interface Config {
   discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
   mcpBridgePort: number;
+  wikiSyncRepoUrl: string | undefined;
+  wikiSyncCloneDir: string;
+  wikiSyncInboxDir: string;
+  wikiSyncAgentDir: string;
+  wikiSyncIntervalMinutes: number;
+  wikiSyncMaxMessagesPerSweep: number;
 }
 
 function required(name: string): string {
@@ -68,4 +74,10 @@ export const config: Config = {
   discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
+  wikiSyncRepoUrl: process.env["WIKI_SYNC_REPO_URL"],
+  wikiSyncCloneDir: optional("WIKI_SYNC_CLONE_DIR", "./data/wiki-sync/repo"),
+  wikiSyncInboxDir: optional("WIKI_SYNC_INBOX_DIR", "./data/wiki-sync/inbox"),
+  wikiSyncAgentDir: optional("WIKI_SYNC_AGENT_DIR", "./data/wiki-sync/agent"),
+  wikiSyncIntervalMinutes: parseInt(optional("WIKI_SYNC_INTERVAL_MINUTES", "60"), 10),
+  wikiSyncMaxMessagesPerSweep: parseInt(optional("WIKI_SYNC_MAX_MESSAGES_PER_SWEEP", "500"), 10),
 };

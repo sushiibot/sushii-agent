@@ -15,23 +15,26 @@ export interface WikiRepo {
   git: SimpleGit;
 }
 
-function requireGitConfig(): { repoUrl: string; deployKeyPath: string } {
-  const { wikiSyncRepoUrl: repoUrl, wikiSyncDeployKeyPath: deployKeyPath } = config;
-  if (!repoUrl || !deployKeyPath) {
-    throw new Error(
-      "wiki-sync is not configured: set WIKI_SYNC_REPO_URL and WIKI_SYNC_DEPLOY_KEY_PATH",
-    );
+function requireGitConfig(): { repoUrl: string } {
+  const { wikiSyncRepoUrl: repoUrl } = config;
+  // The push credential is never read by this process — it's loaded into ssh-agent by the
+  // container entrypoint before this process starts (see docker-entrypoint.sh), specifically
+  // so the private key never exists as a file this process's own filesystem tools could open
+  // (Pi's read/grep/find tools have no sandbox — see piSession.ts). We only need the agent socket.
+  if (!repoUrl || !process.env["SSH_AUTH_SOCK"]) {
+    throw new Error("wiki-sync is not configured: set WIKI_SYNC_REPO_URL and load a push key into ssh-agent (SSH_AUTH_SOCK not set)");
   }
-  return { repoUrl, deployKeyPath };
+  return { repoUrl };
 }
 
 /** Clones the wiki repo for this guild if it doesn't exist locally yet, then pulls latest. */
 export async function openWikiRepo(guildId: string): Promise<WikiRepo> {
-  const { repoUrl, deployKeyPath } = requireGitConfig();
+  const { repoUrl } = requireGitConfig();
   const dir = join(config.wikiSyncCloneDir, guildId);
   await mkdir(dirname(dir), { recursive: true });
 
-  const sshCommand = `ssh -i ${deployKeyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`;
+  // No -i <path>: auth comes from ssh-agent via SSH_AUTH_SOCK (inherited from process.env below).
+  const sshCommand = `ssh -o StrictHostKeyChecking=accept-new`;
   const alreadyCloned = existsSync(join(dir, ".git"));
 
   if (!alreadyCloned) {
