@@ -21,7 +21,24 @@ jobs:
       - run: bun install
       - run: bunx tsc --noEmit
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # Matches the Dockerfile's lychee install (same version, amd64 since GitHub-hosted runners
+      # are always x86_64) -- without it, wiki-sync's findBrokenLinks tests skip rather than run.
+      - name: Install lychee
+        run: |
+          curl -fsSL "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin --strip-components=1 "lychee-x86_64-unknown-linux-gnu/lychee"
+      - run: bun install
+      - run: bun test
+
   docker-build:
+    needs: [typecheck, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: sushiibot/sushii-workflows/.github/workflows/docker-build.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
     with:
