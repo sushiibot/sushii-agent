@@ -173,7 +173,7 @@ export interface WikiSyncRunResult {
  * ~14MB of transitive deps only load for guilds that actually have wiki-sync enabled.
  */
 export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string; guildId: string; runId: string }): Promise<WikiSyncRunResult> {
-  const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, defineTool } = await import(
+  const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, defineTool } = await import(
     "@earendil-works/pi-coding-agent"
   );
   const { Type } = await import("typebox");
@@ -233,6 +233,10 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // ToS requires opting message content out of model training, and Pi's typed provider config
   // has no dedicated field for it (verified against pi-ai's request builder), but samplingParams
   // is merged into the request body as-is for openai-completions providers.
+  // sendSessionAffinityHeaders opts into pi-ai's session-affinity support (off by default): it
+  // sends the AgentSession's own sessionId as `x-session-id` on every request, auto-detected as
+  // the OpenRouter header format from baseUrl. That's what shows up as the request's session in
+  // OpenRouter's dashboard/activity view -- no manual id plumbing needed here.
   // Independent of the main agent's model: wiki-sync only ever edits text files, never
   // images, so it can run a cheaper text-only model instead of reusing openaiModel.
   modelRuntime.registerProvider(PROVIDER_ID, {
@@ -250,6 +254,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
         contextWindow: config.wikiSync.contextLimit,
         maxTokens: config.wikiSync.maxOutputTokens,
         samplingParams: { provider: { data_collection: "deny" } },
+        compat: { sendSessionAffinityHeaders: true },
       },
     ],
   });
@@ -278,12 +283,23 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   });
   await loader.reload();
 
+  // In-memory only (no settings.json written) -- pi's compaction defaults to a 16384-token
+  // reserve, sized for a normal reply. maxOutputTokens now lets a single turn emit up to the
+  // model's real ceiling, so the reserve has to scale with it: otherwise compaction's own
+  // "is there room left" check can pass right before a turn tries to use its full output
+  // budget, blows past contextWindow, and the request fails outright instead of ever getting
+  // proactively compacted.
+  const settingsManager = SettingsManager.inMemory({
+    compaction: { reserveTokens: config.wikiSync.maxOutputTokens },
+  });
+
   const { session } = await createAgentSession({
     cwd: opts.repo.dir,
     agentDir: config.wikiSync.agentDir,
     model,
     modelRuntime,
     resourceLoader: loader,
+    settingsManager,
     tools: ["read", "edit", "write", "grep", "find", "ls", "commit_and_push"],
     excludeTools: ["bash", "ask_question"],
     customTools: [commitAndPushTool],

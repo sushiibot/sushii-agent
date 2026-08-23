@@ -98,9 +98,10 @@ export const config: Config = {
     // fixed price/config.
     model: optional("WIKI_SYNC_MODEL", "deepseek/deepseek-v4-flash-0731"),
     contextLimit: parseInt(optional("WIKI_SYNC_CONTEXT_LIMIT", "1310720"), 10),
-    // DeepSeek V4 Flash supports up to 1,048,576 completion tokens -- 131072 leaves generous
-    // headroom for a single turn's reasoning plus several file writes (a large backfill sweep's
-    // planning pass alone ran ~8k tokens) without approaching the model's real ceiling.
-    maxOutputTokens: parseInt(optional("WIKI_SYNC_MAX_OUTPUT_TOKENS", "131072"), 10),
+    // Set to DeepSeek V4 Flash's actual completion-token ceiling rather than an arbitrary
+    // fraction of it -- pi-ai falls back to this value as the request's max_tokens whenever a
+    // call doesn't set its own (see clampMaxTokensToContext), so anything lower is an artificial
+    // cutoff that can truncate a turn mid-write instead of letting the model finish naturally.
+    maxOutputTokens: parseInt(optional("WIKI_SYNC_MAX_OUTPUT_TOKENS", "1048576"), 10),
   },
 };
