@@ -36,6 +36,11 @@ jobs:
             | tar -xz -C /usr/local/bin --strip-components=1 "lychee-x86_64-unknown-linux-gnu/lychee"
       - run: bun install
       - run: bun test
+        env:
+          # config.ts requires these at import time; no test actually calls Discord/OpenAI, so
+          # dummy values are enough to get past the module-load check.
+          DISCORD_BOT_TOKEN: test-token
+          OPENAI_API_KEY: test-key
 
   docker-build:
     needs: [typecheck, test]
