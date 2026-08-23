@@ -5,6 +5,7 @@ import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
 import type { WikiRepo } from "./git.ts";
 import { commitAndPush } from "./git.ts";
+import { findBrokenLinks } from "./linkCheck.ts";
 import { WIKI_SYNC_SYSTEM_PROMPT } from "./prompt.ts";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
@@ -193,6 +194,37 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
       message: Type.String({ description: "Commit message describing what changed and why." }),
     }),
     execute: async (_toolCallId, params) => {
+      // Deterministic check, not a prompted "double check your relative links" instruction --
+      // there's no human review before this pushes, so a model that forgets (or checks the
+      // wrong path) would otherwise ship a dead link straight to the wiki. Blocks the commit
+      // outright rather than warning, since the model can still fix it in the same turn.
+      // Fails closed: if the checker itself can't run (e.g. lychee missing from the image),
+      // that's treated the same as finding broken links rather than silently skipping the gate.
+      try {
+        const broken = await findBrokenLinks(opts.repo.dir);
+        if (broken.length > 0) {
+          const list = broken.map((b) => `- ${b.file}: [${b.target}] -- ${b.reason}`).join("\n");
+          return {
+            content: [{ type: "text" as const, text: `Commit blocked: broken link(s):\n${list}` }],
+            details: { sha: null },
+            isError: true,
+          };
+        }
+      } catch (err) {
+        // Unlike broken links themselves (a wiki-content problem the model can fix and retry),
+        // the checker failing to run at all is an infra problem -- e.g. lychee missing from the
+        // image. Treated the same as a push failure so the session throws and sweep.ts leaves
+        // the watermark untouched, retrying this batch once the checker works again, rather than
+        // silently skipping it.
+        commitError = err instanceof Error ? err : new Error(String(err));
+        logger.error({ guildId: opts.guildId, runId: opts.runId, err: commitError }, "link check failed to run");
+        return {
+          content: [{ type: "text" as const, text: `Commit blocked: link check failed to run: ${commitError.message}` }],
+          details: { sha: null },
+          isError: true,
+        };
+      }
+
       // Appended in code, not asked of the model -- guarantees every commit is traceable to the
       // session that produced it (Grafana logs/traces, and the on-disk transcript on the host)
       // regardless of whether the model remembers to include it or formats it consistently.
