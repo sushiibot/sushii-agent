@@ -14,6 +14,14 @@ const sessionLogger = getLogger("wiki-sync:pi:session");
 
 const PROVIDER_ID = "sushii-openrouter";
 
+// How many times to re-prompt a session that comes back with no text, no thinking, and no tool
+// calls at all -- distinct from pi-coding-agent's own auto_retry (which only covers transient
+// provider errors like rate limits/overloads). A stop-with-nothing completion isn't retryable by
+// that logic since it isn't an error, so left alone the session just ends with nothing done.
+const MAX_EMPTY_TURN_RETRIES = 2;
+const CONTINUE_NUDGE_PROMPT =
+  "Your last response had no text and made no tool calls. If you're not finished, continue working. If you are finished, call commit_and_push (or explain in text why there's nothing to change).";
+
 /** Keeps log lines (and Loki structured-metadata fields, which silently drop oversized values) from ballooning on large tool payloads. */
 function preview(value: unknown, max = 400): string {
   const str = typeof value === "string" ? value : JSON.stringify(value);
@@ -341,9 +349,19 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   const eventLog = sessionLogger.child({ guildId: opts.guildId });
   const spans = createSessionSpans();
   let finalText = "";
+  // Reset before each session.prompt() call below (initial + continue-nudge retries) so a prior
+  // attempt's activity doesn't mask the next attempt coming back empty too.
+  let turnHadActivity = false;
   session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       finalText += event.assistantMessageEvent.delta ?? "";
+    }
+    if (
+      event.type === "tool_execution_start" ||
+      (event.type === "message_update" &&
+        (event.assistantMessageEvent.type === "text_delta" || event.assistantMessageEvent.type === "thinking_delta"))
+    ) {
+      turnHadActivity = true;
     }
     logSessionEvent(eventLog, event);
     spans.handle(event);
@@ -351,12 +369,23 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
 
   try {
     await session.prompt(opts.prompt);
+
+    // pi-coding-agent's own auto_retry only covers transient provider errors (rate limits,
+    // overloads) -- a completion that stops with literally nothing (no text, no thinking, no
+    // tool call) isn't an error from its point of view, so it ends the session as if the turn
+    // were legitimately finished. Left alone this looks identical to "nothing needed syncing"
+    // and sweep.ts advances its watermark past messages that were never actually looked at.
+    for (let attempt = 0; attempt < MAX_EMPTY_TURN_RETRIES && !turnHadActivity && !commitError; attempt++) {
+      logger.warn({ guildId: opts.guildId, runId: opts.runId, attempt: attempt + 1 }, "empty turn from provider, nudging session to continue");
+      turnHadActivity = false;
+      await session.prompt(CONTINUE_NUDGE_PROMPT);
+    }
   } finally {
     spans.endAll();
   }
   session.dispose();
 
-  logger.info({ guildId: opts.guildId, commitSha, finalText: finalText.slice(0, 2000) }, "session finished");
+  logger.info({ guildId: opts.guildId, commitSha, finalText: finalText.slice(0, 2000), hadActivity: turnHadActivity }, "session finished");
 
   // Surface a failed push as a thrown error rather than a successful-looking result — tool
   // execution errors are reported back to the model as a turn result, not rethrown out of
@@ -364,6 +393,13 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // nothing to commit" and the caller would advance its watermark past messages that were
   // never actually synced.
   if (commitError) throw commitError;
+
+  // Still empty after every nudge -- treat like the commit-error path above: throw instead of
+  // returning a quiet no-op, so sweep.ts's watermark stays put and this batch is retried on the
+  // next sweep rather than silently marked processed.
+  if (!turnHadActivity) {
+    throw new Error(`wiki-sync session for guild ${opts.guildId} produced no output after ${MAX_EMPTY_TURN_RETRIES} continue-nudges`);
+  }
 
   return { finalText, commitSha };
 }
