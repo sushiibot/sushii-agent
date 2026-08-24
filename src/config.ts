@@ -97,11 +97,19 @@ export const config: Config = {
     // which floats to whatever's newest and could silently change behavior underneath a
     // fixed price/config.
     model: optional("WIKI_SYNC_MODEL", "deepseek/deepseek-v4-flash-0731"),
-    contextLimit: parseInt(optional("WIKI_SYNC_CONTEXT_LIMIT", "1310720"), 10),
-    // Set to DeepSeek V4 Flash's actual completion-token ceiling rather than an arbitrary
-    // fraction of it -- pi-ai falls back to this value as the request's max_tokens whenever a
-    // call doesn't set its own (see clampMaxTokensToContext), so anything lower is an artificial
-    // cutoff that can truncate a turn mid-write instead of letting the model finish naturally.
-    maxOutputTokens: parseInt(optional("WIKI_SYNC_MAX_OUTPUT_TOKENS", "1048576"), 10),
+    // DeepSeek V4 Flash 0731's real context window is 1,048,576 tokens (checked against
+    // OpenRouter's endpoint listing). Kept a buffer under that rather than pinned to the exact
+    // ceiling -- reserveTokens below (maxOutputTokens) is carved out of this budget, and any
+    // request whose prompt + max_tokens exceeds the model's actual window is rejected outright
+    // before it reaches a provider, regardless of what pi's own compaction thinks the budget is.
+    contextLimit: parseInt(optional("WIKI_SYNC_CONTEXT_LIMIT", "800000"), 10),
+    // A real per-turn output cap, not the model's full completion ceiling -- pi-ai falls back to
+    // this value as the request's max_tokens whenever a call doesn't set its own (see
+    // clampMaxTokensToContext), and it also becomes compaction's reserveTokens. Setting it to the
+    // model's entire max_completion_tokens made every request's max_tokens alone equal the whole
+    // context window, so any non-empty prompt pushed prompt_tokens + max_tokens past the model's
+    // real ceiling and got rejected before generating anything. 64k is generous for a wiki-edit
+    // turn (markdown file writes) while leaving most of contextLimit for actual input.
+    maxOutputTokens: parseInt(optional("WIKI_SYNC_MAX_OUTPUT_TOKENS", "65536"), 10),
   },
 };
