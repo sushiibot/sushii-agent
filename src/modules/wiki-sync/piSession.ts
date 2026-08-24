@@ -22,6 +22,31 @@ const MAX_EMPTY_TURN_RETRIES = 2;
 const CONTINUE_NUDGE_PROMPT =
   "Your last response had no text and made no tool calls. If you're not finished, continue working. If you are finished, call commit_and_push (or explain in text why there's nothing to change).";
 
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+const MODEL_METADATA_TIMEOUT_MS = 5000;
+
+/**
+ * Looks up the model's real context window from OpenRouter's catalog so wiki-sync tracks
+ * the provider's actual limit instead of a hand-checked constant that silently drifts out of
+ * sync with it -- which is exactly how the previous hardcoded value ended up above the model's
+ * real ceiling. Falls back to config.wikiSync.contextLimit on any fetch/parse failure or if the
+ * model isn't listed -- a sweep shouldn't hard-fail just because the catalog endpoint is slow
+ * or down.
+ */
+async function resolveContextWindow(modelId: string): Promise<number> {
+  try {
+    const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
+    const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number }> };
+    const entry = payload.data?.find((m) => m.id === modelId);
+    if (!entry?.context_length || entry.context_length <= 0) throw new Error(`model ${modelId} missing context_length in catalog`);
+    return entry.context_length;
+  } catch (err) {
+    logger.warn({ modelId, err, fallback: config.wikiSync.contextLimit }, "failed to resolve context window from OpenRouter catalog, using configured fallback");
+    return config.wikiSync.contextLimit;
+  }
+}
+
 /** Keeps log lines (and Loki structured-metadata fields, which silently drop oversized values) from ballooning on large tool payloads. */
 function preview(value: unknown, max = 400): string {
   const str = typeof value === "string" ? value : JSON.stringify(value);
@@ -279,6 +304,12 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // OpenRouter's dashboard/activity view -- no manual id plumbing needed here.
   // Independent of the main agent's model: wiki-sync only ever edits text files, never
   // images, so it can run a cheaper text-only model instead of reusing openaiModel.
+  const contextWindow = await resolveContextWindow(config.wikiSync.model);
+  // Capped against the resolved contextWindow, not used as-is -- config.wikiSync.maxOutputTokens
+  // is a per-turn output budget we control, not the model's own max_completion_tokens (which
+  // OpenRouter reports as equal to its context window for this model; sending that directly as
+  // max_tokens is what made every prompt + max_tokens combination overflow the real ceiling).
+  const maxTokens = Math.min(config.wikiSync.maxOutputTokens, contextWindow);
   modelRuntime.registerProvider(PROVIDER_ID, {
     name: "sushii OpenRouter",
     baseUrl: config.openaiBaseUrl,
@@ -291,8 +322,8 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: config.wikiSync.contextLimit,
-        maxTokens: config.wikiSync.maxOutputTokens,
+        contextWindow,
+        maxTokens,
         samplingParams: { provider: { data_collection: "deny" } },
         compat: { sendSessionAffinityHeaders: true },
       },

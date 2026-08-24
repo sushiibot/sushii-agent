@@ -97,11 +97,10 @@ export const config: Config = {
     // which floats to whatever's newest and could silently change behavior underneath a
     // fixed price/config.
     model: optional("WIKI_SYNC_MODEL", "deepseek/deepseek-v4-flash-0731"),
-    // DeepSeek V4 Flash 0731's real context window is 1,048,576 tokens (checked against
-    // OpenRouter's endpoint listing). Kept a buffer under that rather than pinned to the exact
-    // ceiling -- reserveTokens below (maxOutputTokens) is carved out of this budget, and any
-    // request whose prompt + max_tokens exceeds the model's actual window is rejected outright
-    // before it reaches a provider, regardless of what pi's own compaction thinks the budget is.
+    // piSession.ts resolves the model's real context window from OpenRouter's catalog at
+    // session start, so this only takes effect if that lookup fails (catalog down/slow, or the
+    // model isn't listed) -- a sweep shouldn't hard-fail just because of that. 800k is a safe
+    // buffer under DeepSeek V4 Flash 0731's real ~1,048,576-token window at time of writing.
     contextLimit: parseInt(optional("WIKI_SYNC_CONTEXT_LIMIT", "800000"), 10),
     // A real per-turn output cap, not the model's full completion ceiling -- pi-ai falls back to
     // this value as the request's max_tokens whenever a call doesn't set its own (see
