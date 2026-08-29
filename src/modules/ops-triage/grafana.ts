@@ -105,3 +105,116 @@ export async function queryTempo(service: string | undefined, startMs: number, e
     })
     .join("\n");
 }
+
+interface OtlpAttributeValue {
+  stringValue?: string;
+  intValue?: string;
+  doubleValue?: number;
+  boolValue?: boolean;
+  arrayValue?: { values?: OtlpAttributeValue[] };
+}
+
+interface OtlpAttribute {
+  key: string;
+  value?: OtlpAttributeValue;
+}
+
+interface OtlpEvent {
+  name: string;
+  timeUnixNano?: string;
+  attributes?: OtlpAttribute[];
+}
+
+interface OtlpSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  startTimeUnixNano: string;
+  endTimeUnixNano: string;
+  attributes?: OtlpAttribute[];
+  status?: { code?: number; message?: string };
+  events?: OtlpEvent[];
+}
+
+interface OtlpTrace {
+  resourceSpans?: {
+    resource?: { attributes?: OtlpAttribute[] };
+    scopeSpans?: { spans?: OtlpSpan[] }[];
+  }[];
+}
+
+function formatAttrValue(v: OtlpAttributeValue | undefined): string {
+  if (!v) return "";
+  if (v.stringValue !== undefined) return v.stringValue;
+  if (v.intValue !== undefined) return v.intValue;
+  if (v.doubleValue !== undefined) return String(v.doubleValue);
+  if (v.boolValue !== undefined) return String(v.boolValue);
+  if (v.arrayValue) return `[${(v.arrayValue.values ?? []).map(formatAttrValue).join(", ")}]`;
+  return "";
+}
+
+function formatAttrs(attrs: OtlpAttribute[] | undefined): string {
+  if (!attrs?.length) return "";
+  return attrs.map((a) => `${a.key}=${formatAttrValue(a.value)}`).join(" ");
+}
+
+// OTel status codes: 0 = unset, 1 = ok, 2 = error.
+const STATUS_ERROR = 2;
+
+/**
+ * Fetches a single trace by ID and flattens its span tree into plain text — depth-indented,
+ * ordered depth-first by start time, with duration/attributes/error status/events per span.
+ * NOTE: same endpoint-routing caveat as queryTempo — assumes /api/traces/{id} is reachable
+ * directly at tempoBaseUrl/grafanaBaseUrl.
+ */
+export async function getTraceById(traceId: string): Promise<string> {
+  const base = config.tempoBaseUrl ?? config.grafanaBaseUrl;
+  if (!base) throw new Error("TEMPO_BASE_URL or GRAFANA_BASE_URL is not configured.");
+
+  const url = new URL(`/api/traces/${traceId}`, base);
+  const res = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      ...(config.grafanaApiToken ? { Authorization: `Bearer ${config.grafanaApiToken}` } : {}),
+    },
+  });
+  if (res.status === 404) return `No trace found with ID ${traceId}.`;
+  if (!res.ok) throw new Error(`Tempo trace lookup failed: ${res.status} ${await res.text()}`);
+
+  const body = (await res.json()) as OtlpTrace;
+  const spans = (body.resourceSpans ?? []).flatMap((rs) =>
+    (rs.scopeSpans ?? []).flatMap((ss) => (ss.spans ?? []).map((span) => ({ span, resourceAttrs: rs.resource?.attributes }))),
+  );
+  if (spans.length === 0) return `No trace found with ID ${traceId}.`;
+
+  const spanIds = new Set(spans.map((e) => e.span.spanId));
+  const byParent = new Map<string, typeof spans>();
+  for (const entry of spans) {
+    // A parentSpanId that isn't among this trace's own spans (remote parent, cross-service
+    // root) is treated as a root too, rather than silently dropping the span.
+    const key = entry.span.parentSpanId && spanIds.has(entry.span.parentSpanId) ? entry.span.parentSpanId : "";
+    byParent.set(key, [...(byParent.get(key) ?? []), entry]);
+  }
+
+  const lines: string[] = [];
+  const render = (parentId: string, depth: number) => {
+    const children = (byParent.get(parentId) ?? []).sort((a, b) => Number(BigInt(a.span.startTimeUnixNano) - BigInt(b.span.startTimeUnixNano)));
+    for (const { span } of children) {
+      const durationMs = Number((BigInt(span.endTimeUnixNano) - BigInt(span.startTimeUnixNano)) / 1_000_000n);
+      const indent = "  ".repeat(depth);
+      const statusFlag = span.status?.code === STATUS_ERROR ? " [ERROR]" : "";
+      const statusMsg = span.status?.message ? ` "${span.status.message}"` : "";
+      lines.push(`${indent}${span.name} (${durationMs}ms)${statusFlag}${statusMsg}`);
+      const attrs = formatAttrs(span.attributes);
+      if (attrs) lines.push(`${indent}  ${attrs}`);
+      for (const event of span.events ?? []) {
+        lines.push(`${indent}  event: ${event.name} ${formatAttrs(event.attributes)}`.trimEnd());
+      }
+      render(span.spanId, depth + 1);
+    }
+  };
+  render("", 0);
+
+  return lines.join("\n");
+}

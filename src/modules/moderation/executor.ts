@@ -112,6 +112,7 @@ export type ToolResult =
   | { tool: "web_search"; data: WebSearchResultItem[] }
   | { tool: "fetch_url_content"; data: UrlContentResult }
   | { tool: "search_logs"; data: { summary: string } }
+  | { tool: "get_trace"; data: { summary: string } }
   | { tool: "file_linear_issue"; data: { summary: string } }
   | { tool: "get_issue_status"; data: { summary: string } }
   | { tool: "list_triaged_issues"; data: { summary: string } };
@@ -636,6 +637,7 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
     }
 
     case "search_logs":
+    case "get_trace":
     case "file_linear_issue":
     case "get_issue_status":
     case "list_triaged_issues":

@@ -39,6 +39,21 @@ export const OPS_TRIAGE_TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "get_trace",
+      description:
+        "Fetch the full span tree for one trace by ID (from search_logs's trace list) — span names, durations, error status, and attributes/events, depth-indented. Use this to see exactly what happened inside a request, not just that a trace exists. Owner-only.",
+      parameters: {
+        type: "object",
+        properties: {
+          trace_id: { type: "string", description: "The Tempo trace ID, e.g. from a search_logs result line like \"trace:<id> [...]\"." },
+        },
+        required: ["trace_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "file_linear_issue",
       description:
         "File a Linear issue for a diagnosed bug or improvement, so it can be picked up by an implementation agent later. Owner-only.",

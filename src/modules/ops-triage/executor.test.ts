@@ -35,6 +35,7 @@ afterEach(() => {
 describe("ops-triage owner gate", () => {
   const cases: [string, Record<string, unknown>][] = [
     ["search_logs", { since: "2026-01-01T00:00:00Z", until: "2026-01-01T00:05:00Z" }],
+    ["get_trace", { trace_id: "abc123" }],
     ["file_linear_issue", { title: "t", description: "d", repo_label: "sushii-bot" }],
     ["get_issue_status", { issue_id: "ENG-1" }],
     ["list_triaged_issues", {}],
@@ -72,6 +73,15 @@ describe("search_logs input validation", () => {
     await expect(
       OPS_TRIAGE_DISPATCH.search_logs({ since: "2026-01-01T00:00:00Z", until: "2026-01-01T00:05:00Z" }, ctx("owner-id")),
     ).rejects.toThrow("GRAFANA_BASE_URL is not configured.");
+  });
+});
+
+describe("get_trace config validation", () => {
+  test("surfaces the missing Tempo/Grafana config once past the owner gate", async () => {
+    config.ownerDiscordId = "owner-id";
+    await expect(OPS_TRIAGE_DISPATCH.get_trace({ trace_id: "abc123" }, ctx("owner-id"))).rejects.toThrow(
+      "TEMPO_BASE_URL or GRAFANA_BASE_URL is not configured.",
+    );
   });
 });
 

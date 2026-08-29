@@ -1,7 +1,7 @@
 import { config } from "../../config.ts";
 import type { ToolContext } from "../registry.ts";
 import type { ToolResult } from "../moderation/executor.ts";
-import { queryLoki, queryTempo } from "./grafana.ts";
+import { queryLoki, queryTempo, getTraceById } from "./grafana.ts";
 import { createTriageIssue, fetchIssueStatus, listTriageIssues } from "./linear.ts";
 
 function requireOwner(ctx: ToolContext): { tool: "error"; message: string } | undefined {
@@ -35,6 +35,15 @@ export const OPS_TRIAGE_DISPATCH: Record<string, (input: Record<string, unknown>
     }
 
     return { tool: "search_logs", data: { summary: parts.join("\n") } };
+  },
+
+  get_trace: async (input, ctx) => {
+    const denied = requireOwner(ctx);
+    if (denied) return denied;
+
+    const traceId = input.trace_id as string;
+    const spans = await getTraceById(traceId);
+    return { tool: "get_trace", data: { summary: `Trace ${traceId}:\n${spans}` } };
   },
 
   file_linear_issue: async (input, ctx) => {
