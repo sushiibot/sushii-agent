@@ -9,14 +9,27 @@ export function getLinearClient(): LinearClient {
   return client;
 }
 
-function requireTeamId(): string {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+let resolvedTeamId: string | undefined;
+
+/** LINEAR_TEAM_ID may be either the team's UUID or its short key (e.g. "SUSHI", from linear.app/<org>/team/<key>/...) — resolved once and cached. */
+async function requireTeamId(): Promise<string> {
   if (!config.linearTeamId) throw new Error("LINEAR_TEAM_ID is not configured.");
-  return config.linearTeamId;
+  if (UUID_RE.test(config.linearTeamId)) return config.linearTeamId;
+  if (resolvedTeamId) return resolvedTeamId;
+
+  const linear = getLinearClient();
+  const result = await linear.teams({ filter: { key: { eq: config.linearTeamId } }, first: 1 });
+  const team = result.nodes[0];
+  if (!team) throw new Error(`No Linear team found with key "${config.linearTeamId}".`);
+  resolvedTeamId = team.id;
+  return team.id;
 }
 
 /** Finds a team-scoped label by name, creating it if it doesn't exist yet. */
 async function resolveLabelId(name: string): Promise<string> {
-  const teamId = requireTeamId();
+  const teamId = await requireTeamId();
   const linear = getLinearClient();
   const existing = await linear.issueLabels({
     filter: { name: { eq: name }, team: { id: { eq: teamId } } },
@@ -37,7 +50,7 @@ function extractIssueId(raw: string): string {
 }
 
 export async function createTriageIssue(title: string, description: string, repoLabel: string): Promise<Issue> {
-  const teamId = requireTeamId();
+  const teamId = await requireTeamId();
   const linear = getLinearClient();
   const labelId = await resolveLabelId(repoLabel);
   const payload = await linear.createIssue({ teamId, title, description, labelIds: [labelId] });
@@ -61,7 +74,7 @@ export async function fetchIssueStatus(rawId: string) {
 }
 
 export async function listTriageIssues(repoLabel: string | undefined, state: string | undefined) {
-  const teamId = requireTeamId();
+  const teamId = await requireTeamId();
   const linear = getLinearClient();
   const filter: LinearDocument.IssueFilter = { team: { id: { eq: teamId } } };
   if (repoLabel) filter.labels = { every: { name: { eq: repoLabel } } };
