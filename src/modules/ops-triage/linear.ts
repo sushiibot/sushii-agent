@@ -77,7 +77,9 @@ export async function listTriageIssues(repoLabel: string | undefined, state: str
   const teamId = await requireTeamId();
   const linear = getLinearClient();
   const filter: LinearDocument.IssueFilter = { team: { id: { eq: teamId } } };
-  if (repoLabel) filter.labels = { every: { name: { eq: repoLabel } } };
+  // `some`, not `every` -- an issue with more than one label (any teammate adding a priority
+  // tag, "bug", etc. after filing is ordinary Linear usage) must still match on repoLabel alone.
+  if (repoLabel) filter.labels = { some: { name: { eq: repoLabel } } };
   if (state) filter.state = { name: { eq: state } };
 
   const result = await linear.issues({ filter, first: 25, orderBy: LinearDocument.PaginationOrderBy.UpdatedAt });

@@ -414,6 +414,14 @@ export async function handleScanButton(
     return;
   }
 
+  if (interaction.user.id !== pending.triggeringUser?.id) {
+    await interaction.reply({
+      content: pending.triggeringUser ? `Only <@${pending.triggeringUser.id}> can respond to this approval.` : "This approval can't be confirmed.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   pendingScans.delete(guildId);
   await interaction.deferUpdate();
   await disableScanButtons(interaction, choice === "yes" ? "Scan server" : "Skip");

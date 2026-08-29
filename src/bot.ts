@@ -50,7 +50,7 @@ import {
 } from "./agent/delivery.ts";
 import { saveFeedback } from "./feedback.ts";
 import { getServerContext, listMemoryTitles, getMemoryCount } from "./db/memory.ts";
-import { buildToolsForGuild, populateMcpToolEntries } from "./modules/registry.ts";
+import { populateMcpToolEntries } from "./modules/registry.ts";
 import { mcpClient } from "./modules/moderation/executor.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { pendingScans, pendingAutomodApprovals, pendingAutomodDeletions } from "./modules/moderation/state.ts";
@@ -143,39 +143,6 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const rawQuery = message.content.replace(botMentionRe, "").trim();
   // A ping with no text is a request to look at what's going on, not a no-op
   const isBarePing = rawQuery.length === 0;
-
-  // dump-chat: upload the stored conversation as an OpenAI-compatible JSON payload
-  if (rawQuery.toLowerCase() === "dump-chat") {
-    try {
-      const { thread, isNew } = await resolveOrCreateThread(message);
-      const { messages: history, initialThreadContext } = loadConversation(thread.id);
-      const threadContext = initialThreadContext ?? (isNew ? "" : await fetchThreadContext(thread, client.user!.id));
-      const systemPrompt = buildSystemPrompt(BEHAVIOR_INSTRUCTIONS, {
-        threadContext: threadContext || undefined,
-        currentChannelId: thread.id,
-        emojiMap: emojiMap,
-      });
-      const payload = {
-        model: config.openaiModel,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...history,
-        ],
-        tools: buildToolsForGuild(resolvedModules(guildConfig)).map((entry) => entry.definition),
-        max_tokens: 4096,
-      };
-      const json = JSON.stringify(payload, null, 2);
-      const buf = Buffer.from(json, "utf-8");
-      await thread.send({
-        content: `Conversation dump (${history.length} stored messages)`,
-        files: [{ attachment: buf, name: `conversation-${thread.id}.json` }],
-      });
-    } catch (err) {
-      logger.error({ err }, "Error handling dump-chat");
-      await message.reply("Failed to dump conversation.").catch(() => {});
-    }
-    return;
-  }
 
   // Replace custom Discord emojis in query using the emoji map
   const emojiQuery = rawQuery.replace(/<a?:(\w+):\d+>/g, (match, name) => emojiMap[name] ?? match);

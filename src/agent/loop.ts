@@ -124,7 +124,7 @@ export interface AgentLoopOptions {
   /** Called each iteration with the current batch of tool calls being dispatched. When provided, tool lines are omitted from the final footer. */
   onToolsDispatched?: (tools: { name: string; input: Record<string, unknown> }[]) => Promise<void>;
   /** Called before each generateText call to drain messages queued mid-loop by the user. */
-  dequeueMessages?: () => { query: string; mentionedUsers?: Map<string, UserNames> }[];
+  dequeueMessages?: () => { query: string; mentionedUsers?: Map<string, UserNames>; authorId: string }[];
   /** Called before each iteration; return true to abort the loop early. */
   isCancelled?: () => boolean;
   /** When set, switches the agent into autonomous auto-mod enforcement mode. */
@@ -334,6 +334,14 @@ export async function runAgentLoop(
     let cancelled = false;
     let stopReason: StopReason = "iterations";
     const usedTools: { name: string; input: Record<string, unknown> }[] = [];
+
+    // The turn's owner-gate identity for runTools/ToolContext. Starts as the loop's original
+    // triggeringUser, but a running loop can have OTHER users' messages injected into it
+    // mid-flight (see the dequeueMessages block below) -- once that happens, this loop's
+    // context is no longer purely the original sender's, so it's permanently downgraded to
+    // undefined for the rest of this loop's lifetime rather than trusting the stale original
+    // ID for owner-gated (ops-triage) tool calls made afterward.
+    let effectiveTriggeringUserId = opts.triggeringUser?.id;
     // Step-budget nudges steer this run only — persisting them would make the next turn
     // believe it is already out of steps and must not use tools.
     const ephemeral = new Set<ModelMessage>();
@@ -371,7 +379,11 @@ export async function runAgentLoop(
         // Inject any messages queued by the user while the previous iteration was running
         if (opts.dequeueMessages) {
           const pending = opts.dequeueMessages();
-          for (const { query: pendingQuery, mentionedUsers: pendingUsers } of pending) {
+          for (const { query: pendingQuery, mentionedUsers: pendingUsers, authorId: pendingAuthorId } of pending) {
+            if (pendingAuthorId !== opts.triggeringUser?.id) {
+              effectiveTriggeringUserId = undefined;
+              log.warn({ pendingAuthorId, originalTriggeringUserId: opts.triggeringUser?.id }, "mid-loop message from a different author injected -- downgrading owner-gate identity for the rest of this loop");
+            }
             if (pendingUsers?.size) {
               const novel = [...pendingUsers.entries()].filter(([id]) => !knownUsers.has(id));
               if (novel.length > 0) {
@@ -588,7 +600,7 @@ export async function runAgentLoop(
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
               try {
-                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, toolEntries, opts.autoModTrigger, log, opts.triggeringUser?.id);
+                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, toolEntries, opts.autoModTrigger, log, effectiveTriggeringUserId);
               } finally {
                 toolSpan.end();
               }

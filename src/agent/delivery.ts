@@ -203,7 +203,7 @@ export async function cleanupAgentRun(
   threadMidLoopQueues.delete(threadId);
 }
 
-export function makeDequeueMessages(threadId: string): () => { query: string; mentionedUsers?: Map<string, UserNames> }[] {
+export function makeDequeueMessages(threadId: string): () => { query: string; mentionedUsers?: Map<string, UserNames>; authorId: string }[] {
   return () => {
     const q = threadMidLoopQueues.get(threadId) ?? [];
     if (q.length === 0) return [];
@@ -213,7 +213,9 @@ export function makeDequeueMessages(threadId: string): () => { query: string; me
       m.discordMessage.reactions.cache.get("⏳")?.users.remove(client.user!.id).catch(() => {});
       m.discordMessage.react("✅").catch(() => {});
     }
-    return q;
+    // authorId lets the loop detect when a message from someone other than the turn's original
+    // triggeringUser got injected mid-loop -- see loop.ts's effectiveTriggeringUserId tainting.
+    return q.map((m) => ({ query: m.query, mentionedUsers: m.mentionedUsers, authorId: m.discordMessage.author.id }));
   };
 }
 
