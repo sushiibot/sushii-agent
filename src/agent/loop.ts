@@ -8,6 +8,7 @@ import { getLogger } from "../logger.ts";
 import { buildToolsForGuild, type ModuleId, type ToolEntry } from "../modules/registry.ts";
 import { runTools, type UserNames, type PendingAutomodApproval, type PendingAutomodDeletion } from "../modules/moderation/executor.ts";
 import { AUTO_MOD_ONLY_TOOLS, EXA_TOOLS } from "../modules/moderation/tools.ts";
+import { GRAFANA_TOOLS, LINEAR_TOOLS } from "../modules/ops-triage/tools.ts";
 import { renderModelText } from "../utils/discordText.ts";
 import {
   WRAP_UP_PROMPT,
@@ -31,7 +32,10 @@ const tracer = trace.getTracer("sushii-agent");
 export function resolveToolEntries(enabledModules: ModuleId[], autoModMode = false): ToolEntry[] {
   return buildToolsForGuild(enabledModules)
     .filter((entry) => autoModMode || !AUTO_MOD_ONLY_TOOLS.has(entry.name))
-    .filter((entry) => config.exaApiKey || !EXA_TOOLS.has(entry.name));
+    .filter((entry) => config.exaApiKey || !EXA_TOOLS.has(entry.name))
+    .filter((entry) => config.ownerDiscordId || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
+    .filter((entry) => config.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
+    .filter((entry) => (config.linearApiKey && config.linearTeamId) || !LINEAR_TOOLS.has(entry.name));
 }
 
 function buildAiTools(toolEntries: ToolEntry[]): Parameters<typeof generateText>[0]["tools"] {

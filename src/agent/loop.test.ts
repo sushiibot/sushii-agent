@@ -1,8 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { buildSystemPrompt, resolveToolEntries } from "./loop.ts";
 import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection } from "../modules/moderation/prompt.ts";
 import { AUTO_MOD_ONLY_TOOLS } from "../modules/moderation/tools.ts";
+import { GRAFANA_TOOLS, LINEAR_TOOLS } from "../modules/ops-triage/tools.ts";
 import { runTools } from "../modules/moderation/executor.ts";
+import { config } from "../config.ts";
 import type { AutoModTriggerContext } from "./loop.ts";
 import type { Client } from "discord.js";
 
@@ -114,6 +116,67 @@ describe("resolveToolEntries", () => {
       expect(part.output.value).toBe("Guild not configured");
     } else {
       throw new Error("expected a text tool-result part");
+    }
+  });
+});
+
+// Regression guard mirroring the EXA_TOOLS pattern above it: ops-triage's Grafana/Linear tools
+// shouldn't be advertised to the model at all when their required credentials aren't configured
+// (or when there's no owner to gate them for), rather than being shown and failing at call time.
+describe("resolveToolEntries — ops-triage credential gating", () => {
+  const ORIGINAL = {
+    ownerDiscordId: config.ownerDiscordId,
+    grafanaBaseUrl: config.grafanaBaseUrl,
+    linearApiKey: config.linearApiKey,
+    linearTeamId: config.linearTeamId,
+  };
+
+  beforeEach(() => {
+    config.ownerDiscordId = undefined;
+    config.grafanaBaseUrl = undefined;
+    config.linearApiKey = undefined;
+    config.linearTeamId = undefined;
+  });
+
+  afterEach(() => {
+    Object.assign(config, ORIGINAL);
+  });
+
+  test("ops-triage tools are excluded entirely when OWNER_DISCORD_ID is unset, even with credentials present", () => {
+    config.grafanaBaseUrl = "http://grafana.example";
+    config.linearApiKey = "key";
+    config.linearTeamId = "team";
+    const names = new Set(resolveToolEntries(["ops-triage"], false).map((e) => e.name));
+    for (const toolName of [...GRAFANA_TOOLS, ...LINEAR_TOOLS]) {
+      expect(names.has(toolName)).toBe(false);
+    }
+  });
+
+  test("Grafana tools are excluded when GRAFANA_BASE_URL is unset, independent of Linear config", () => {
+    config.ownerDiscordId = "owner-id";
+    config.linearApiKey = "key";
+    config.linearTeamId = "team";
+    const names = new Set(resolveToolEntries(["ops-triage"], false).map((e) => e.name));
+    for (const toolName of GRAFANA_TOOLS) expect(names.has(toolName)).toBe(false);
+    for (const toolName of LINEAR_TOOLS) expect(names.has(toolName)).toBe(true);
+  });
+
+  test("Linear tools are excluded when LINEAR_API_KEY/LINEAR_TEAM_ID are unset, independent of Grafana config", () => {
+    config.ownerDiscordId = "owner-id";
+    config.grafanaBaseUrl = "http://grafana.example";
+    const names = new Set(resolveToolEntries(["ops-triage"], false).map((e) => e.name));
+    for (const toolName of LINEAR_TOOLS) expect(names.has(toolName)).toBe(false);
+    for (const toolName of GRAFANA_TOOLS) expect(names.has(toolName)).toBe(true);
+  });
+
+  test("all ops-triage tools are included once owner + both credential sets are configured", () => {
+    config.ownerDiscordId = "owner-id";
+    config.grafanaBaseUrl = "http://grafana.example";
+    config.linearApiKey = "key";
+    config.linearTeamId = "team";
+    const names = new Set(resolveToolEntries(["ops-triage"], false).map((e) => e.name));
+    for (const toolName of [...GRAFANA_TOOLS, ...LINEAR_TOOLS]) {
+      expect(names.has(toolName)).toBe(true);
     }
   });
 });
