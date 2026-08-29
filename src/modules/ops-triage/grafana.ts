@@ -1,5 +1,21 @@
 import { config } from "../../config.ts";
 
+/**
+ * Loki and Tempo aren't reachable directly from sushii-agent's deploy host — Loki has no
+ * exposed port at all (Grafana reaches it over localhost inside the same LGTM container),
+ * and Tempo's port is bound Tailscale-only. Grafana itself is the one thing with a routable
+ * address (grafana.infra.sushii.bot, gated by Tailscale but reachable that way), so every
+ * query goes through its datasource-proxy API instead of hitting Loki/Tempo ports directly.
+ */
+function datasourceProxyUrl(datasourceUid: string, path: string): URL {
+  if (!config.grafanaBaseUrl) throw new Error("GRAFANA_BASE_URL is not configured.");
+  return new URL(`/api/datasources/proxy/uid/${datasourceUid}${path}`, config.grafanaBaseUrl);
+}
+
+function grafanaHeaders(extra?: Record<string, string>): Record<string, string> {
+  return { ...(config.grafanaApiToken ? { Authorization: `Bearer ${config.grafanaApiToken}` } : {}), ...extra };
+}
+
 const REPO_TO_CONTAINER: Record<string, string> = {
   "sushii-bot": "sushii_bot",
   "sushii-agent": "sushii_agent",
@@ -22,25 +38,21 @@ export interface LogSearchParams {
   endMs: number;
 }
 
-/** Queries Loki for log lines matching the given service/text filter over an explicit [startMs, endMs) range. */
+/** Queries Loki (via Grafana's datasource-proxy) for log lines matching the given service/text filter over an explicit [startMs, endMs) range. */
 export async function queryLoki({ service, query, startMs, endMs }: LogSearchParams): Promise<string> {
-  if (!config.grafanaBaseUrl) throw new Error("GRAFANA_BASE_URL is not configured.");
-
   const container = service ? (REPO_TO_CONTAINER[service] ?? service) : undefined;
   const streamSelector = container ? `{container="${container}"}` : `{container=~".+"}`;
   const selector = query ? `${streamSelector} |= ${JSON.stringify(query)}` : streamSelector;
   const startNs = BigInt(startMs) * 1_000_000n;
   const endNs = BigInt(endMs) * 1_000_000n;
 
-  const url = new URL("/loki/api/v1/query_range", config.grafanaBaseUrl);
+  const url = datasourceProxyUrl("loki", "/loki/api/v1/query_range");
   url.searchParams.set("query", selector);
   url.searchParams.set("start", startNs.toString());
   url.searchParams.set("end", endNs.toString());
   url.searchParams.set("limit", "200");
 
-  const res = await fetch(url, {
-    headers: config.grafanaApiToken ? { Authorization: `Bearer ${config.grafanaApiToken}` } : {},
-  });
+  const res = await fetch(url, { headers: grafanaHeaders() });
   if (!res.ok) throw new Error(`Loki query failed: ${res.status} ${await res.text()}`);
 
   const body = (await res.json()) as LokiQueryResult;
@@ -66,16 +78,8 @@ interface TempoSearchResult {
   }[];
 }
 
-/**
- * Searches Tempo via TraceQL for traces from `service` over an explicit [startMs, endMs) range.
- * NOTE: assumes Tempo's query API is reachable directly at tempoBaseUrl/grafanaBaseUrl —
- * if this LGTM deployment instead requires going through Grafana's datasource-proxy path
- * (/api/datasources/proxy/uid/<uid>/api/search), this needs updating to that shape.
- */
+/** Searches Tempo (via Grafana's datasource-proxy) via TraceQL for traces from `service` over an explicit [startMs, endMs) range. */
 export async function queryTempo(service: string | undefined, startMs: number, endMs: number): Promise<string | undefined> {
-  const base = config.tempoBaseUrl ?? config.grafanaBaseUrl;
-  if (!base) throw new Error("TEMPO_BASE_URL or GRAFANA_BASE_URL is not configured.");
-
   const serviceName = service ? TEMPO_SERVICE_NAME[service] : undefined;
   if (service && !serviceName) return undefined; // no tracing for this service — don't bother querying
 
@@ -83,15 +87,13 @@ export async function queryTempo(service: string | undefined, startMs: number, e
   const startSec = Math.floor(startMs / 1000);
   const endSec = Math.ceil(endMs / 1000);
 
-  const url = new URL("/api/search", base);
+  const url = datasourceProxyUrl("tempo", "/api/search");
   url.searchParams.set("q", traceql);
   url.searchParams.set("start", startSec.toString());
   url.searchParams.set("end", endSec.toString());
   url.searchParams.set("limit", "20");
 
-  const res = await fetch(url, {
-    headers: config.grafanaApiToken ? { Authorization: `Bearer ${config.grafanaApiToken}` } : {},
-  });
+  const res = await fetch(url, { headers: grafanaHeaders() });
   if (!res.ok) throw new Error(`Tempo search failed: ${res.status} ${await res.text()}`);
 
   const body = (await res.json()) as TempoSearchResult;
@@ -163,22 +165,13 @@ function formatAttrs(attrs: OtlpAttribute[] | undefined): string {
 const STATUS_ERROR = 2;
 
 /**
- * Fetches a single trace by ID and flattens its span tree into plain text — depth-indented,
- * ordered depth-first by start time, with duration/attributes/error status/events per span.
- * NOTE: same endpoint-routing caveat as queryTempo — assumes /api/traces/{id} is reachable
- * directly at tempoBaseUrl/grafanaBaseUrl.
+ * Fetches a single trace by ID (via Grafana's datasource-proxy) and flattens its span tree into
+ * plain text — depth-indented, ordered depth-first by start time, with duration/attributes/error
+ * status/events per span.
  */
 export async function getTraceById(traceId: string): Promise<string> {
-  const base = config.tempoBaseUrl ?? config.grafanaBaseUrl;
-  if (!base) throw new Error("TEMPO_BASE_URL or GRAFANA_BASE_URL is not configured.");
-
-  const url = new URL(`/api/traces/${traceId}`, base);
-  const res = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-      ...(config.grafanaApiToken ? { Authorization: `Bearer ${config.grafanaApiToken}` } : {}),
-    },
-  });
+  const url = datasourceProxyUrl("tempo", `/api/traces/${traceId}`);
+  const res = await fetch(url, { headers: grafanaHeaders({ Accept: "application/json" }) });
   if (res.status === 404) return `No trace found with ID ${traceId}.`;
   if (!res.ok) throw new Error(`Tempo trace lookup failed: ${res.status} ${await res.text()}`);
 

@@ -17,10 +17,9 @@ export interface Config {
   ownerDiscordId: string | undefined;
   linearApiKey: string | undefined;
   linearTeamId: string | undefined;
+  /** Grafana's own HTTP API — Loki/Tempo aren't independently reachable from sushii-agent's deploy host, so every log/trace query goes through Grafana's datasource-proxy at this base URL. */
   grafanaBaseUrl: string | undefined;
   grafanaApiToken: string | undefined;
-  /** Tempo's own query API, if reachable at a different host/port than Grafana itself. Falls back to grafanaBaseUrl. */
-  tempoBaseUrl: string | undefined;
   discordOAuthClientId: string | undefined;
   discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
@@ -93,7 +92,6 @@ export const config: Config = {
   linearTeamId: process.env["LINEAR_TEAM_ID"],
   grafanaBaseUrl: process.env["GRAFANA_BASE_URL"],
   grafanaApiToken: process.env["GRAFANA_API_TOKEN"],
-  tempoBaseUrl: process.env["TEMPO_BASE_URL"],
   discordOAuthClientId: process.env["DISCORD_OAUTH_CLIENT_ID"],
   discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],

@@ -77,10 +77,10 @@ describe("search_logs input validation", () => {
 });
 
 describe("get_trace config validation", () => {
-  test("surfaces the missing Tempo/Grafana config once past the owner gate", async () => {
+  test("surfaces the missing Grafana config once past the owner gate", async () => {
     config.ownerDiscordId = "owner-id";
     await expect(OPS_TRIAGE_DISPATCH.get_trace({ trace_id: "abc123" }, ctx("owner-id"))).rejects.toThrow(
-      "TEMPO_BASE_URL or GRAFANA_BASE_URL is not configured.",
+      "GRAFANA_BASE_URL is not configured.",
     );
   });
 });
