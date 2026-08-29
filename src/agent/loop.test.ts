@@ -56,6 +56,46 @@ describe("buildSystemPrompt", () => {
   });
 });
 
+// Regression guard: without this, the ops-triage tools are in the model's tool list (for the
+// owner) but nothing in the system prompt says they exist or when to use them — easy to miss
+// given the base identity (BEHAVIOR_INSTRUCTIONS) is moderation-focused. Must also stay silent
+// for non-owners, who can't call these tools anyway (see ops-triage/executor.ts's requireOwner).
+describe("buildSystemPrompt — ops-triage section", () => {
+  const ORIGINAL = { ownerDiscordId: config.ownerDiscordId, grafanaBaseUrl: config.grafanaBaseUrl, linearApiKey: config.linearApiKey, linearTeamId: config.linearTeamId };
+  const owner = { id: "owner-id", username: "drk", roles: [], isModerator: false };
+
+  afterEach(() => {
+    Object.assign(config, ORIGINAL);
+  });
+
+  test("is present for the owner when Grafana is configured", () => {
+    config.ownerDiscordId = "owner-id";
+    config.grafanaBaseUrl = "http://grafana.example";
+    config.linearApiKey = undefined;
+    config.linearTeamId = undefined;
+    const prompt = buildSystemPrompt(BEHAVIOR_INSTRUCTIONS, { triggeringUser: owner });
+    expect(prompt).toContain("## Ops Tools (owner-only)");
+    expect(prompt).toContain("search_logs");
+    expect(prompt).not.toContain("file_linear_issue");
+  });
+
+  test("is absent when the triggering user isn't the owner", () => {
+    config.ownerDiscordId = "owner-id";
+    config.grafanaBaseUrl = "http://grafana.example";
+    const prompt = buildSystemPrompt(BEHAVIOR_INSTRUCTIONS, { triggeringUser: { ...owner, id: "someone-else" } });
+    expect(prompt).not.toContain("Ops Tools");
+  });
+
+  test("is absent when no ops-triage credentials are configured at all, even for the owner", () => {
+    config.ownerDiscordId = "owner-id";
+    config.grafanaBaseUrl = undefined;
+    config.linearApiKey = undefined;
+    config.linearTeamId = undefined;
+    const prompt = buildSystemPrompt(BEHAVIOR_INSTRUCTIONS, { triggeringUser: owner });
+    expect(prompt).not.toContain("Ops Tools");
+  });
+});
+
 // Regression guard for the auto-mod gating seam: runAgentLoop computes toolEntries once via
 // resolveToolEntries and feeds the same array to both buildAiTools (what the LLM is shown) and
 // runTools (what can execute). If a future change let runTools resolve calls through a

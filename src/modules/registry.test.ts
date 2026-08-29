@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { buildToolsForGuild } from "./registry.ts";
 import { MODERATION_TOOL_ENTRIES, AUTO_MOD_ONLY_TOOLS } from "./moderation/tools.ts";
+import { OPS_TRIAGE_TOOL_ENTRIES } from "./ops-triage/tools.ts";
 
 // Regression guard for the TOOL_DEFINITIONS -> per-module registry refactor: the set of
 // tool names a moderation-only guild sees must not silently drop or duplicate a tool.
 describe("buildToolsForGuild", () => {
-  test("moderation-only guild gets every moderation tool name exactly once", () => {
+  test("moderation-only guild gets every moderation tool name plus ops-triage's (always-included, owner-scoped not guild-scoped), each exactly once", () => {
     const names = buildToolsForGuild(["moderation"]).map((e) => e.name);
-    const expected = MODERATION_TOOL_ENTRIES.map((e) => e.name);
+    const expected = [...MODERATION_TOOL_ENTRIES, ...OPS_TRIAGE_TOOL_ENTRIES].map((e) => e.name);
     expect(new Set(names)).toEqual(new Set(expected));
     expect(names.length).toBe(new Set(names).size); // no duplicates
   });

@@ -62,10 +62,13 @@ const mcpModule: LoopModuleDefinition = {
 };
 
 /**
- * Owner-only tools (correlate a reported bug against logs/traces, file a Linear issue).
- * Advertised only in guilds that opt in via enabledModules, same as any other module —
- * the actual security boundary is the triggeringUserId check each tool does at execution
- * time (see ops-triage/executor.ts), not this list-assembly gate.
+ * Owner-only tools (log/trace search, file/track Linear issues) for triaging bugs across
+ * sushii's whole bot suite, not any one guild's moderation setup -- so unlike moderation/
+ * wiki-sync, this is always included regardless of `enabledModules` (same as mcp), rather
+ * than needing per-guild opt-in. The actual security boundary is elsewhere: resolveToolEntries
+ * (agent/loop.ts) hides these tools from the model entirely unless OWNER_DISCORD_ID and the
+ * relevant service credentials are configured, and each tool's own triggeringUserId check
+ * (ops-triage/executor.ts) enforces it again at execution time.
  */
 const opsTriageModule: LoopModuleDefinition = {
   kind: "loop",
@@ -104,12 +107,13 @@ export function populateMcpToolEntries(definitions: ChatCompletionTool[]): void 
  * Every ToolEntry contributed by this guild's enabled loop-based modules. Standalone
  * modules (wiki-sync) never contribute — they don't route through the shared loop.
  *
- * MCP tools are always included regardless of `enabledModules` — this matches the
- * pre-refactor behavior where TOOL_DEFINITIONS.push(...mcpTools) made them globally
- * available to every guild. Per-guild MCP scoping is out of scope for this refactor.
+ * MCP and ops-triage tools are always included regardless of `enabledModules` — MCP matches
+ * the pre-refactor behavior where TOOL_DEFINITIONS.push(...mcpTools) made them globally
+ * available to every guild (per-guild MCP scoping is out of scope for this refactor);
+ * ops-triage is owner-scoped rather than guild-scoped, see its comment above.
  */
 export function buildToolsForGuild(enabledModules: ModuleId[]): ToolEntry[] {
-  const ids = new Set<ModuleId>([...enabledModules, "mcp"]);
+  const ids = new Set<ModuleId>([...enabledModules, "mcp", "ops-triage"]);
   return [...ids]
     .map((id) => MODULES[id])
     .filter((m): m is LoopModuleDefinition => m.kind === "loop")

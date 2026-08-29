@@ -38,11 +38,12 @@ describe("runTools dispatch", () => {
   });
 
   test("a moderation tool name is unroutable for a guild that doesn't have moderation enabled, even though MODERATION_DISPATCH has a handler for it", async () => {
-    // No "moderation" in enabledModules — buildToolsForGuild always folds in "mcp", whose
-    // toolEntries are empty until populateMcpToolEntries() runs at startup, so this guild's
-    // real, resolved tool list is empty.
+    // No "moderation" in enabledModules — buildToolsForGuild always folds in "mcp" (empty
+    // until populateMcpToolEntries() runs at startup) and "ops-triage" (owner-scoped, not
+    // guild-scoped — always present), but neither contributes a "search_messages" entry, so
+    // that name specifically stays unroutable regardless.
     const toolEntries = buildToolsForGuild([]);
-    expect(toolEntries).toEqual([]);
+    expect(toolEntries.some((e) => e.name === "search_messages")).toBe(false);
     expect(MODERATION_DISPATCH.search_messages).toBeDefined();
 
     const result = await runTools(

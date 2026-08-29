@@ -9,6 +9,7 @@ import { buildToolsForGuild, type ModuleId, type ToolEntry } from "../modules/re
 import { runTools, type UserNames, type PendingAutomodApproval, type PendingAutomodDeletion } from "../modules/moderation/executor.ts";
 import { AUTO_MOD_ONLY_TOOLS, EXA_TOOLS } from "../modules/moderation/tools.ts";
 import { GRAFANA_TOOLS, LINEAR_TOOLS } from "../modules/ops-triage/tools.ts";
+import { buildOpsTriagePromptSection } from "../modules/ops-triage/prompt.ts";
 import { renderModelText } from "../utils/discordText.ts";
 import {
   WRAP_UP_PROMPT,
@@ -192,6 +193,11 @@ export function buildSystemPrompt(behaviorInstructions: string, opts: AgentLoopO
       `Roles: ${roleStr}`,
     ];
     systemParts.push(lines.join("\n"));
+
+    if (config.ownerDiscordId && u.id === config.ownerDiscordId) {
+      const opsSection = buildOpsTriagePromptSection();
+      if (opsSection) systemParts.push(opsSection);
+    }
   }
 
   // Server context (always injected, full content)
