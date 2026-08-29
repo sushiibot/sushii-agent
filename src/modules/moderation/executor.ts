@@ -110,7 +110,11 @@ export type ToolResult =
   | { tool: "delete_user_messages"; data: DeleteUserMessagesResult }
   | { tool: "send_alert_message"; data: SendAlertMessageResult }
   | { tool: "web_search"; data: WebSearchResultItem[] }
-  | { tool: "fetch_url_content"; data: UrlContentResult };
+  | { tool: "fetch_url_content"; data: UrlContentResult }
+  | { tool: "search_logs"; data: { summary: string } }
+  | { tool: "file_linear_issue"; data: { summary: string } }
+  | { tool: "get_issue_status"; data: { summary: string } }
+  | { tool: "list_triaged_issues"; data: { summary: string } };
 
 function isError(v: unknown): v is { error: string } {
   return typeof v === "object" && v !== null && !Array.isArray(v) && "error" in v;
@@ -631,6 +635,12 @@ function formatToolResult(result: ToolResult, input: Record<string, unknown>, lo
       return lines.join("\n");
     }
 
+    case "search_logs":
+    case "file_linear_issue":
+    case "get_issue_status":
+    case "list_triaged_issues":
+      return result.data.summary;
+
     // ask_question, inspect_image, and pending approvals are handled before formatToolResult is called
     case "ask_question":
     case "inspect_image":
@@ -961,6 +971,7 @@ export async function runTools(
   toolEntries: ToolEntry[],
   autoModTrigger?: AutoModTriggerContext,
   log: Logger = logger,
+  triggeringUserId?: string,
 ): Promise<RunToolsResult> {
   const toolEntryByName = new Map(toolEntries.map((entry) => [entry.name, entry] as const));
 
@@ -976,7 +987,7 @@ export async function runTools(
       // instead of merely absent from the tool list the LLM was shown.
       const entry = toolEntryByName.get(call.toolName);
       result = entry
-        ? await entry.execute(input, { guildId, client, autoModTrigger })
+        ? await entry.execute(input, { guildId, client, autoModTrigger, triggeringUserId })
         : { tool: "error", message: `Unknown tool: ${call.toolName}` };
     } catch (err) {
       log.error({ err, tool: call.toolName }, "tool error");

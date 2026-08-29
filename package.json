@@ -10,6 +10,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.50",
     "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@linear/sdk": "^92.0.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@openrouter/ai-sdk-provider": "^2.8.0",
     "@opentelemetry/api": "^1.9.1",

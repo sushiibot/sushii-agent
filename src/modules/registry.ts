@@ -3,13 +3,16 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { MODERATION_DISPATCH, type ToolResult, type ModerationToolContext } from "./moderation/executor.ts";
 import { MODERATION_TOOL_ENTRIES } from "./moderation/tools.ts";
 import { wikiSyncModule } from "./wiki-sync/index.ts";
+import { OPS_TRIAGE_TOOL_ENTRIES } from "./ops-triage/tools.ts";
 
-export type ModuleId = "moderation" | "wiki-sync" | "mcp";
+export type ModuleId = "moderation" | "wiki-sync" | "mcp" | "ops-triage";
 
 export interface ToolContext {
   guildId: string;
   client: Client<true>;
   autoModTrigger?: ModerationToolContext["autoModTrigger"];
+  /** Discord user ID of whoever triggered this loop turn. Owner-gated tools (ops-triage) must check this themselves at execution time — it's not enforced by list-assembly. */
+  triggeringUserId?: string;
 }
 
 export interface ToolEntry {
@@ -58,10 +61,23 @@ const mcpModule: LoopModuleDefinition = {
   toolEntries: [],
 };
 
+/**
+ * Owner-only tools (correlate a reported bug against logs/traces, file a Linear issue).
+ * Advertised only in guilds that opt in via enabledModules, same as any other module —
+ * the actual security boundary is the triggeringUserId check each tool does at execution
+ * time (see ops-triage/executor.ts), not this list-assembly gate.
+ */
+const opsTriageModule: LoopModuleDefinition = {
+  kind: "loop",
+  id: "ops-triage",
+  toolEntries: OPS_TRIAGE_TOOL_ENTRIES,
+};
+
 export const MODULES: Record<ModuleId, ModuleDefinition> = {
   moderation: moderationModule,
   "wiki-sync": wikiSyncModule,
   mcp: mcpModule,
+  "ops-triage": opsTriageModule,
 };
 
 /**

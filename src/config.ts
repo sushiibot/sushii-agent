@@ -13,6 +13,14 @@ export interface Config {
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
   exaApiKey: string | undefined;
+  /** Discord user ID allowed to invoke ops-triage tools — gate is enforced at tool-execution time, not just list-assembly. */
+  ownerDiscordId: string | undefined;
+  linearApiKey: string | undefined;
+  linearTeamId: string | undefined;
+  grafanaBaseUrl: string | undefined;
+  grafanaApiToken: string | undefined;
+  /** Tempo's own query API, if reachable at a different host/port than Grafana itself. Falls back to grafanaBaseUrl. */
+  tempoBaseUrl: string | undefined;
   discordOAuthClientId: string | undefined;
   discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
@@ -80,6 +88,12 @@ export const config: Config = {
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   exaApiKey: process.env["EXA_API_KEY"],
+  ownerDiscordId: process.env["OWNER_DISCORD_ID"],
+  linearApiKey: process.env["LINEAR_API_KEY"],
+  linearTeamId: process.env["LINEAR_TEAM_ID"],
+  grafanaBaseUrl: process.env["GRAFANA_BASE_URL"],
+  grafanaApiToken: process.env["GRAFANA_API_TOKEN"],
+  tempoBaseUrl: process.env["TEMPO_BASE_URL"],
   discordOAuthClientId: process.env["DISCORD_OAUTH_CLIENT_ID"],
   discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],

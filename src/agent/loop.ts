@@ -578,7 +578,7 @@ export async function runAgentLoop(
             { attributes: { "agent.tools": names, "agent.iteration": iterations } },
             async (toolSpan) => {
               try {
-                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, toolEntries, opts.autoModTrigger, log);
+                return await runTools(toolCalls as { toolCallId: string; toolName: string; input: Record<string, unknown> }[], guildId, client, toolEntries, opts.autoModTrigger, log, opts.triggeringUser?.id);
               } finally {
                 toolSpan.end();
               }
