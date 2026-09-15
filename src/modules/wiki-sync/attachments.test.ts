@@ -1,6 +1,6 @@
 import { describe, expect, test, afterEach, beforeEach } from "bun:test";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
@@ -23,11 +23,11 @@ const PDF_WITH_TEXT = Buffer.from(
   "%PDF-1.1\n" +
     "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
     "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
-    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
+    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 600 200]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n" +
     "4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n" +
-    "5 0 obj<</Length 58>>\n" +
+    "5 0 obj<</Length 88>>\n" +
     "stream\n" +
-    "BT /F1 12 Tf 20 100 Td (hello materialize pipeline) Tj ET\n" +
+    "BT /F1 12 Tf 20 100 Td (hello materialize pipeline twice for length verification) Tj ET\n" +
     "endstream\n" +
     "endobj\n" +
     "trailer<</Size 6/Root 1 0 R>>\n" +
@@ -216,7 +216,7 @@ describe("materializeMessageAttachments", () => {
     const localPath = match![1]!;
     expect(localPath.endsWith(".txt")).toBe(true);
     expect(localPath.startsWith("/")).toBe(true);
-    expect(await readFile(localPath, "utf8")).toContain("hello materialize pipeline");
+    expect(await readFile(localPath, "utf8")).toContain("hello materialize pipeline twice for length verification");
   });
 
   // A blank page has no extractable text, so pdftotext falls through to pdftoppm rasterization.
@@ -236,5 +236,59 @@ describe("materializeMessageAttachments", () => {
     expect(pagePath.startsWith("/")).toBe(true);
     expect(pagePath.endsWith(".png")).toBe(true);
     expect(existsSync(pagePath)).toBe(true);
+  });
+
+  test("materializes an image with a null contentType via its file extension", async () => {
+    globalThis.fetch = (async () => new Response(new Uint8Array([9, 9, 9]))) as unknown as typeof fetch;
+    const client = fakeClient(
+      textBasedChannel([
+        { id: "7777", name: "screenshot.png", url: "https://cdn.discordapp.com/attachments/9999999999/7777/screenshot.png?ex=abc", contentType: null, size: 3 },
+      ]),
+    );
+    const original = "[attachment: screenshot.png](https://cdn.discordapp.com/attachments/9999999999/7777/screenshot.png?ex=abc)";
+    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+
+    const match = content.match(/\[attachment: screenshot\.png\]\((.+)\)/);
+    expect(match).not.toBeNull();
+    const localPath = match![1]!;
+    expect(existsSync(localPath)).toBe(true);
+    expect(await readFile(localPath)).toEqual(Buffer.from([9, 9, 9]));
+  });
+
+  // Simulates `pdfinfo` missing from PATH (ENOENT on Bun.spawn) while pdftotext/pdftoppm are
+  // present, without depending on the real poppler tools being installed for this test.
+  test("degrades gracefully when pdfinfo is missing from PATH, still rasterizing via pdftoppm", async () => {
+    const binDir = await mkdtemp(join(tmpdir(), "wiki-sync-fakebin-"));
+    const pdftotextPath = join(binDir, "pdftotext");
+    const pdftoppmPath = join(binDir, "pdftoppm");
+    await writeFile(pdftotextPath, "#!/bin/sh\n: > \"$2\"\n");
+    await writeFile(
+      pdftoppmPath,
+      '#!/bin/bash\nprefix="${@: -1}"\ntouch "${prefix}-1.png"\n',
+    );
+    await chmod(pdftotextPath, 0o755);
+    await chmod(pdftoppmPath, 0o755);
+
+    const originalPath = Bun.env.PATH;
+    Bun.env.PATH = binDir;
+    try {
+      globalThis.fetch = (async () => new Response(new Uint8Array(BLANK_PDF))) as unknown as typeof fetch;
+      const client = fakeClient(
+        textBasedChannel([
+          { id: "8888", name: "doc.pdf", url: "https://cdn.discordapp.com/attachments/9999999999/8888/doc.pdf?ex=abc", contentType: "application/pdf", size: BLANK_PDF.length },
+        ]),
+      );
+      const original = "[application: doc.pdf](https://cdn.discordapp.com/attachments/9999999999/8888/doc.pdf?ex=abc)";
+      const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+
+      const match = content.match(/\[application: doc\.pdf\]\((.+?)\)/);
+      expect(match).not.toBeNull();
+      const pagePath = match![1]!;
+      expect(pagePath.endsWith(".png")).toBe(true);
+      expect(existsSync(pagePath)).toBe(true);
+    } finally {
+      Bun.env.PATH = originalPath;
+      await rm(binDir, { recursive: true, force: true });
+    }
   });
 });

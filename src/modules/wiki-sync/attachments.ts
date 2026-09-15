@@ -16,10 +16,19 @@ const PDF_PAGE_MAX_LONG_EDGE = 1568;
 const DOWNLOAD_CONCURRENCY = 4;
 export const MESSAGE_CONCURRENCY = 4;
 
-const TEXT_LIKE_EXT_RE = /\.(txt|md|csv|log|json|ya?ml|ts|tsx|js|jsx|py|rb|go|rs|java|c|cpp|h|hpp|sh|toml|ini)$/i;
+const FETCH_TIMEOUT_MS = Number(Bun.env.WIKI_SYNC_ATTACHMENT_FETCH_TIMEOUT_MS ?? 30_000);
+const PDF_TIMEOUT_MS = Number(Bun.env.WIKI_SYNC_PDF_TIMEOUT_MS ?? 60_000);
 
-function isImage(contentType: string | null): boolean {
-  return !!contentType && contentType.startsWith("image/");
+/** Minimum extracted non-whitespace chars per page before text is preferred over rasterization. */
+const PDF_MIN_TEXT_CHARS_PER_PAGE = 16;
+/** Absolute floor applied when the page count can't be determined. */
+const PDF_MIN_TEXT_CHARS_FLOOR = 32;
+
+const TEXT_LIKE_EXT_RE = /\.(txt|md|csv|log|json|ya?ml|ts|tsx|js|jsx|py|rb|go|rs|java|c|cpp|h|hpp|sh|toml|ini)$/i;
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
+
+function isImage(contentType: string | null, name: string): boolean {
+  return (!!contentType && contentType.startsWith("image/")) || IMAGE_EXT_RE.test(name);
 }
 
 function isPdf(contentType: string | null, name: string): boolean {
@@ -53,22 +62,40 @@ async function downloadBytes(attachment: Attachment): Promise<Uint8Array | null>
     logger.warn({ attachmentId: attachment.id, size: attachment.size }, "attachment exceeds max size, skipping");
     return null;
   }
-  const res = await fetch(attachment.url);
-  if (!res.ok) {
-    logger.warn({ attachmentId: attachment.id, status: res.status }, "attachment download failed");
+  try {
+    const res = await fetch(attachment.url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!res.ok) {
+      logger.warn({ attachmentId: attachment.id, status: res.status }, "attachment download failed");
+      return null;
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  } catch (err) {
+    logger.warn({ err, attachmentId: attachment.id }, "attachment download timed out or errored");
     return null;
   }
-  return new Uint8Array(await res.arrayBuffer());
 }
 
-async function runSpawn(cmd: string[]): Promise<{ ok: boolean; stderr: string }> {
+/** Catches sync ENOENT from a missing binary and kills the process on timeout, so a bad PDF can't stall the pool. */
+async function runSpawn(cmd: string[], timeoutMs = PDF_TIMEOUT_MS): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   try {
     const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "pipe" });
-    const stderr = await new Response(proc.stderr).text();
-    const exitCode = await proc.exited;
-    return { ok: exitCode === 0, stderr };
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeoutMs);
+    try {
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      return { ok: exitCode === 0 && !timedOut, stdout, stderr: timedOut ? `${stderr}\n(timed out after ${timeoutMs}ms)` : stderr };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (err) {
-    return { ok: false, stderr: String(err) };
+    return { ok: false, stdout: "", stderr: String(err) };
   }
 }
 
@@ -96,15 +123,17 @@ async function materializeText(msgDir: string, attachment: Attachment): Promise<
   return { url: resolve(filePath) };
 }
 
-/** Longest page dimension in PDF points (1/72in), from `pdfinfo`'s "Page size: W x H pts" line, or null if it can't be determined. */
-async function pdfPageLongEdgePoints(pdfPath: string): Promise<number | null> {
-  const proc = Bun.spawn({ cmd: ["pdfinfo", pdfPath], stdout: "pipe", stderr: "pipe" });
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) return null;
-  const match = stdout.match(/Page size:\s*([\d.]+)\s*x\s*([\d.]+)/);
-  if (!match) return null;
-  return Math.max(Number(match[1]), Number(match[2]));
+/** Page count and longest page dimension in PDF points (1/72in), parsed from `pdfinfo`. Degrades to nulls (never throws) if the binary is missing, fails, or times out. */
+async function pdfInfo(pdfPath: string): Promise<{ pages: number | null; longEdgePts: number | null }> {
+  const result = await runSpawn(["pdfinfo", pdfPath]);
+  if (!result.ok) return { pages: null, longEdgePts: null };
+
+  const pagesMatch = result.stdout.match(/^Pages:\s*(\d+)/m);
+  const sizeMatch = result.stdout.match(/Page size:\s*([\d.]+)\s*x\s*([\d.]+)/);
+  return {
+    pages: pagesMatch ? Number(pagesMatch[1]) : null,
+    longEdgePts: sizeMatch ? Math.max(Number(sizeMatch[1]), Number(sizeMatch[2])) : null,
+  };
 }
 
 /**
@@ -122,12 +151,16 @@ async function materializePdf(msgDir: string, attachment: Attachment): Promise<R
   const pdfPath = join(msgDir, `${attachment.id}-${safeName(attachment.name)}`);
   await writeFile(pdfPath, bytes);
 
+  const { pages: pageCount, longEdgePts } = await pdfInfo(pdfPath);
+
   const txtPath = `${pdfPath}.txt`;
   const textResult = await runSpawn(["pdftotext", pdfPath, txtPath]);
   if (textResult.ok) {
     try {
       const text = await readFile(txtPath, "utf8");
-      if (text.trim().length > 0) {
+      const nonWhitespaceLen = text.replace(/\s+/g, "").length;
+      const minChars = pageCount ? Math.max(PDF_MIN_TEXT_CHARS_PER_PAGE * pageCount, PDF_MIN_TEXT_CHARS_FLOOR) : PDF_MIN_TEXT_CHARS_FLOOR;
+      if (nonWhitespaceLen > minChars) {
         return { url: resolve(txtPath) };
       }
     } catch (err) {
@@ -138,7 +171,6 @@ async function materializePdf(msgDir: string, attachment: Attachment): Promise<R
   }
 
   let dpi = PDF_DPI;
-  const longEdgePts = await pdfPageLongEdgePoints(pdfPath);
   if (longEdgePts && longEdgePts > 0) {
     const capDpi = Math.floor((PDF_PAGE_MAX_LONG_EDGE * 72) / longEdgePts);
     if (capDpi > 0 && capDpi < dpi) dpi = capDpi;
@@ -176,7 +208,7 @@ async function materializePdf(msgDir: string, attachment: Attachment): Promise<R
 }
 
 async function materializeOne(msgDir: string, attachment: Attachment): Promise<Replacement | null> {
-  if (isImage(attachment.contentType)) return materializeImage(msgDir, attachment);
+  if (isImage(attachment.contentType, attachment.name)) return materializeImage(msgDir, attachment);
   if (isPdf(attachment.contentType, attachment.name)) return materializePdf(msgDir, attachment);
   if (isTextLike(attachment.contentType, attachment.name)) return materializeText(msgDir, attachment);
   return null;
@@ -215,6 +247,8 @@ export async function materializeMessageAttachments(
       return message.content;
     }
     const fresh = await channel.messages.fetch(message.discordId);
+    // Only `message.attachments`, not Components V2 media — fine, wiki-sync only sweeps
+    // human messages, which don't carry V2 component media.
     attachments = [...fresh.attachments.values()];
   } catch (err) {
     logger.warn({ err, channelId: message.channelId, discordId: message.discordId }, "failed to refetch message for attachments");
