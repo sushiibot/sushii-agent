@@ -157,8 +157,63 @@ describe("embed_attachment", () => {
     expect(existsSync(evilTarget)).toBe(false);
     // The planted symlink itself must survive untouched -- wx never clobbers or follows it.
     expect((await lstat(destPath)).isSymbolicLink()).toBe(true);
-    // EEXIST is treated as the dedup/already-embedded success case, not a failure.
-    expect(result.isError).toBeFalsy();
+    // A symlink occupant is NOT a valid dedup hit -- the tool must refuse, not vouch for a link
+    // that resolves to unintended/broken content.
+    expect(result.isError).toBe(true);
+  });
+
+  test("refuses when destPath is a symlink to an existing file (alias), not just a dangling one", async () => {
+    const sourcePath = join(inboxDir, "payload.png");
+    const bytes = Buffer.from([5, 5, 5, 5]);
+    await writeFile(sourcePath, bytes);
+
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const assetsDir = join(repoDir, "assets");
+    await mkdir(assetsDir, { recursive: true });
+    const aliasTarget = join(await mkdtemp(join(tmpdir(), "wiki-sync-embed-alias-")), "other");
+    await writeFile(aliasTarget, Buffer.from("UNRELATED CONTENT"));
+    const destPath = join(assetsDir, `${hash}.png`);
+    await symlink(aliasTarget, destPath);
+
+    const result = await run(tool(), sourcePath);
+
+    expect(result.isError).toBe(true);
+    // Alias target untouched, symlink survives.
+    expect((await readFile(aliasTarget)).toString()).toBe("UNRELATED CONTENT");
+    expect((await lstat(destPath)).isSymbolicLink()).toBe(true);
+  });
+
+  test("refuses when destPath already holds a regular file with different content (collision/tampering)", async () => {
+    const sourcePath = join(inboxDir, "payload.png");
+    const bytes = Buffer.from([9, 8, 7, 6]);
+    await writeFile(sourcePath, bytes);
+
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const assetsDir = join(repoDir, "assets");
+    await mkdir(assetsDir, { recursive: true });
+    const destPath = join(assetsDir, `${hash}.png`);
+    await writeFile(destPath, Buffer.from("DIFFERENT BYTES AT SAME HASH PATH"));
+
+    const result = await run(tool(), sourcePath);
+
+    expect(result.isError).toBe(true);
+    // The pre-existing file is left as-is (never overwritten).
+    expect((await readFile(destPath)).toString()).toBe("DIFFERENT BYTES AT SAME HASH PATH");
+  });
+
+  test("dedups when destPath already holds a regular file with identical content", async () => {
+    const sourcePath = join(inboxDir, "payload.png");
+    const bytes = Buffer.from([4, 4, 4, 4]);
+    await writeFile(sourcePath, bytes);
+
+    // First embed writes the asset; second identical embed must succeed as a dedup hit.
+    const first = await run(tool(), sourcePath, "index.md");
+    expect(first.isError).toBeFalsy();
+    const second = await run(tool(), sourcePath, "index.md");
+    expect(second.isError).toBeFalsy();
+    expect(second.details?.relativePath).toBe(first.details?.relativePath);
   });
 
   test("refuses when the assets directory is a symlink pointing outside the repo", async () => {

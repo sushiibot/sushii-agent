@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Type } from "typebox";
@@ -142,7 +142,28 @@ export function createEmbedAttachmentTool(
           if (code !== "EEXIST") {
             throw err;
           }
-          // Already embedded (dedup) or occupied by something else -- either way, never overwrite.
+          // destPath is occupied. Treat it as a valid dedup hit ONLY if it's a real regular file
+          // whose bytes match what we're embedding. Otherwise -- a symlink planted at the
+          // content-addressed path, or a 64-bit-hash collision holding different content -- we'd
+          // return a "success" link pointing at unintended or broken content. Refuse instead of
+          // vouching for something we didn't write.
+          const occupant = await lstat(destPath);
+          if (!occupant.isFile()) {
+            return {
+              content: [{ type: "text" as const, text: `Refused: ${ASSETS_DIR_NAME}/${hash}${ext} is occupied by a non-regular file (possible planted symlink).` }],
+              details: null,
+              isError: true,
+            };
+          }
+          const existing = await readFile(destPath);
+          if (!existing.equals(bytes)) {
+            return {
+              content: [{ type: "text" as const, text: `Refused: ${ASSETS_DIR_NAME}/${hash}${ext} already holds different content (hash collision or tampering).` }],
+              details: null,
+              isError: true,
+            };
+          }
+          // Genuine dedup: identical bytes already embedded -- fall through and return the link.
         }
 
         const link = toPosixRelative(dirname(resolvedPagePath), destPath);
