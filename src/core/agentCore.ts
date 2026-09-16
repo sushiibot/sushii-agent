@@ -1,0 +1,206 @@
+import { generateText } from "ai";
+import type {
+  AgentCore,
+  AgentCoreDeps,
+  AgentTurnResult,
+  AuthorRef,
+  CancelOutcome,
+  ConversationRef,
+  InboundMessage,
+  PendingInteraction,
+  SurfaceSession,
+  ToolContext,
+  TurnEndContext,
+  TurnResumption,
+} from "./contracts.ts";
+import { conversationKey } from "./contracts.ts";
+import { buildSystemPrompt, buildUserNote, formatInboundAsUserTurn, formatResumptionAsUserTurn } from "./prompt.ts";
+import { DEFAULT_CONTEXT_LIMIT, fireHook, runLoop } from "./loop.ts";
+
+function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
+  return a.surface === b.surface && a.userId === b.userId;
+}
+
+/** Per-conversation runtime bookkeeping — never persisted. `initiator` gates `cancel()`; `owner`
+ *  is the tool-facing identity, permanently nulled by mid-loop tainting (C-§3). Keeping the two
+ *  separate means a tainted turn is still stoppable by whoever actually started it. */
+interface ActiveTurn {
+  initiator: AuthorRef;
+  owner: AuthorRef | null;
+  knownUsers: Map<string, AuthorRef>;
+  cancelRequested: boolean;
+  queue: InboundMessage[];
+}
+
+export function createAgentCore(deps: AgentCoreDeps): AgentCore {
+  const activeTurns = new Map<string, ActiveTurn>();
+  const toModel = (model: AgentCoreDeps["model"]) => model as unknown as Parameters<typeof generateText>[0]["model"];
+  const limits = deps.limits ?? { maxIterations: 30, contextRatio: 0.85 };
+
+  function drainQueue(turn: ActiveTurn) {
+    return () => {
+      if (turn.queue.length === 0) return [];
+      const batch = turn.queue;
+      turn.queue = [];
+      return batch.map((inbound) => ({ author: inbound.author, text: formatInboundAsUserTurn(inbound.author, inbound.text) }));
+    };
+  }
+
+  async function runTurn(
+    conversation: ConversationRef,
+    turn: ActiveTurn,
+    session: SurfaceSession,
+    firstUserText: string,
+    initialMentions: AuthorRef[] | undefined,
+  ): Promise<AgentTurnResult> {
+    const data = deps.store.load(conversation);
+    const messages = [...data.messages];
+
+    for (const author of initialMentions ?? []) {
+      if (!turn.knownUsers.has(author.userId)) turn.knownUsers.set(author.userId, author);
+    }
+    if (initialMentions?.length) {
+      messages.push({ role: "system", content: buildUserNote(initialMentions) });
+    }
+    messages.push({ role: "user", content: firstUserText });
+
+    const renderCtx = { spaceId: conversation.spaceId };
+    const guidance = session.renderer.promptGuidance(renderCtx);
+    const systemPrompt = buildSystemPrompt(deps.behavior, guidance);
+
+    const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId });
+
+    const toolContextBase: Omit<ToolContext, "owner"> = {
+      space: { surface: conversation.surface, spaceId: conversation.spaceId },
+      store: deps.store,
+      memory: deps.memory,
+      log: undefined,
+      ...session.hosts,
+    };
+
+    fireHook(deps.hooks, "onTurnStart", { conversation, author: turn.initiator });
+
+    const result = await runLoop(messages, {
+      model: deps.model,
+      toModel,
+      toolEntries,
+      interceptors: deps.interceptors,
+      hooks: deps.hooks,
+      contextLimit: DEFAULT_CONTEXT_LIMIT,
+      contextRatio: limits.contextRatio,
+      maxIterations: limits.maxIterations,
+    }, {
+      conversation,
+      owner: turn.owner,
+      knownUsers: turn.knownUsers,
+      toolContextBase,
+      systemPrompt,
+      dequeue: drainQueue(turn),
+      isCancelled: () => turn.cancelRequested || !!session.isCancelled?.(),
+      onInterim: async (reply) => {
+        fireHook(deps.hooks, "onInterim", { conversation, reply });
+        await session.deliver(reply);
+      },
+      onToolsDispatched: (tools) => {
+        fireHook(deps.hooks, "onToolsDispatched", { conversation, tools });
+      },
+    });
+
+    turn.owner = result.owner;
+    deps.store.save(conversation, { messages: result.messages, initialThreadContext: data.initialThreadContext });
+
+    if (result.cancelled) {
+      fireHook(deps.hooks, "onCancelled", { conversation });
+      return { status: "cancelled" };
+    }
+
+    if (result.pending) {
+      if (session.presentInteraction) await session.presentInteraction(result.pending);
+      fireHook(deps.hooks, "onPaused", { conversation, pending: result.pending });
+      return { status: "paused", pending: result.pending };
+    }
+
+    await session.deliver(result.reply);
+
+    const turnEndCtx: TurnEndContext = {
+      conversation,
+      reply: result.reply,
+      toolUseCount: result.messages.filter((m) => m.role === "tool").length,
+      userTurnCount: result.messages.filter((m) => m.role === "user").length,
+      history: result.messages,
+    };
+    fireHook(deps.hooks, "onTurnEnd", turnEndCtx);
+
+    return { status: "completed", reply: result.reply };
+  }
+
+  return {
+    async handleInbound(inbound: InboundMessage, session: SurfaceSession): Promise<AgentTurnResult> {
+      const key = conversationKey(inbound.conversation);
+      const active = activeTurns.get(key);
+      if (active) {
+        active.queue.push(inbound);
+        fireHook(deps.hooks, "onQueued", { conversation: inbound.conversation, inbound });
+        return { status: "queued" };
+      }
+
+      const turn: ActiveTurn = {
+        initiator: inbound.author,
+        owner: inbound.author,
+        knownUsers: new Map(),
+        cancelRequested: false,
+        queue: [],
+      };
+      activeTurns.set(key, turn);
+      fireHook(deps.hooks, "onConsumed", { conversation: inbound.conversation, inbound });
+      try {
+        return await runTurn(
+          inbound.conversation,
+          turn,
+          session,
+          formatInboundAsUserTurn(inbound.author, inbound.text),
+          inbound.mentionedUsers,
+        );
+      } catch (err) {
+        return { status: "error", message: err instanceof Error ? err.message : String(err) };
+      } finally {
+        activeTurns.delete(key);
+      }
+    },
+
+    async resume(conversation: ConversationRef, resumption: TurnResumption, session: SurfaceSession): Promise<AgentTurnResult> {
+      const key = conversationKey(conversation);
+      if (activeTurns.has(key)) {
+        return { status: "error", message: "a turn is already active for this conversation" };
+      }
+
+      const turn: ActiveTurn = {
+        initiator: resumption.by,
+        owner: resumption.by,
+        knownUsers: new Map(),
+        cancelRequested: false,
+        queue: [],
+      };
+      activeTurns.set(key, turn);
+      try {
+        const detail = resumption.kind === "question-answer" ? resumption.choice : resumption.decision;
+        return await runTurn(conversation, turn, session, formatResumptionAsUserTurn(resumption.kind, detail, resumption.by), undefined);
+      } catch (err) {
+        return { status: "error", message: err instanceof Error ? err.message : String(err) };
+      } finally {
+        activeTurns.delete(key);
+      }
+    },
+
+    cancel(conversation: ConversationRef, byAuthor: AuthorRef): CancelOutcome {
+      const key = conversationKey(conversation);
+      const turn = activeTurns.get(key);
+      if (!turn) return { status: "no-active-turn" };
+      if (!sameAuthor(turn.initiator, byAuthor)) return { status: "forbidden", owner: turn.initiator };
+      turn.cancelRequested = true;
+      return { status: "cancelling" };
+    },
+  };
+}
+
+export type { PendingInteraction };
