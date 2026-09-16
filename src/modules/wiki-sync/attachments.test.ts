@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
-import { materializeMessageAttachments } from "./attachments.ts";
+import { materializeMessageAttachments, runSpawn } from "./attachments.ts";
 
 // A minimal, valid, blank-page PDF: enough for pdftotext to extract zero text and pdftoppm to
 // rasterize one page, without pulling in a fixture asset.
@@ -290,5 +290,19 @@ describe("materializeMessageAttachments", () => {
       Bun.env.PATH = originalPath;
       await rm(binDir, { recursive: true, force: true });
     }
+  });
+
+  // Regression: the timeout must SIGKILL, not SIGTERM. A single process that traps SIGTERM (like a
+  // poppler binary slow to handle it) would ignore a default kill() and run indefinitely, leaving
+  // `await proc.exited` pending and hanging a pool worker for the whole sweep. A busy-loop keeps
+  // this to one process (no grandchild inheriting the stdout pipe) so it models the real commands,
+  // which never fork; runSpawn must reap it and return ok:false well within the loop's lifetime.
+  test("runSpawn kills a SIGTERM-ignoring subprocess by its timeout instead of hanging", async () => {
+    const start = Date.now();
+    const result = await runSpawn(["sh", "-c", "trap '' TERM; while :; do :; done"], 200);
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(false);
+    // Runs forever without SIGKILL; ~200ms with it. A generous bound avoids CI flakiness.
+    expect(elapsed).toBeLessThan(2000);
   });
 });

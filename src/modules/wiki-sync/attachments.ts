@@ -76,13 +76,17 @@ async function downloadBytes(attachment: Attachment): Promise<Uint8Array | null>
 }
 
 /** Catches sync ENOENT from a missing binary and kills the process on timeout, so a bad PDF can't stall the pool. */
-async function runSpawn(cmd: string[], timeoutMs = PDF_TIMEOUT_MS): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+export async function runSpawn(cmd: string[], timeoutMs = PDF_TIMEOUT_MS): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   try {
     const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "pipe" });
     let timedOut = false;
+    // SIGKILL, not the default SIGTERM: a poppler process that traps/ignores SIGTERM (or is slow
+    // to handle it during CPU-bound work) would otherwise keep running and `await proc.exited`
+    // would never resolve, hanging one of the few pool workers for the whole sweep -- the timeout
+    // must be able to actually reap the process.
     const timer = setTimeout(() => {
       timedOut = true;
-      proc.kill();
+      proc.kill("SIGKILL");
     }, timeoutMs);
     try {
       const [stdout, stderr, exitCode] = await Promise.all([
