@@ -3,6 +3,7 @@ import { type Span, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
+import { createEmbedAttachmentTool } from "./embedTool.ts";
 import type { WikiRepo } from "./git.ts";
 import { commitAndPush } from "./git.ts";
 import { findBrokenLinks } from "./linkCheck.ts";
@@ -284,6 +285,8 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     },
   });
 
+  const embedAttachmentTool = createEmbedAttachmentTool(defineTool, Type, opts.repo.dir, join(config.wikiSync.inboxDir, opts.guildId));
+
   const modelRuntime = await ModelRuntime.create({
     authPath: join(config.wikiSync.agentDir, "auth.json"),
     modelsPath: join(config.wikiSync.agentDir, "models.json"),
@@ -371,9 +374,9 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     modelRuntime,
     resourceLoader: loader,
     settingsManager,
-    tools: ["read", "edit", "write", "grep", "find", "ls", "commit_and_push"],
+    tools: ["read", "edit", "write", "grep", "find", "ls", "commit_and_push", "embed_attachment"],
     excludeTools: ["bash", "ask_question"],
-    customTools: [commitAndPushTool],
+    customTools: [commitAndPushTool, embedAttachmentTool],
     sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSync.agentDir, "sessions")),
   });
 
