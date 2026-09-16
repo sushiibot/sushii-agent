@@ -14,7 +14,6 @@ import {
   extractSubmittedAnswer,
   type StopReason,
 } from "../agent/wrapup.ts";
-import { ToolPause } from "./pause.ts";
 import type {
   AgentReply,
   AuthorRef,
@@ -32,35 +31,39 @@ import type {
   ToolHosts,
   TurnUsage,
 } from "./contracts.ts";
+import type { ImageSink, KnownUsersSink, PendingInteractionSink } from "./tools/pendingSink.ts";
+import "./tools/pendingSink.ts";
+import { buildUserNote } from "./prompt.ts";
 
-/**
- * The concrete HookBus (built outside src/core) is expected to also expose this — §6 deliberately
- * keeps `emit` off the frozen interface so only the dispatcher calls it. If the wired instance
- * doesn't implement it, hooks are silently skipped rather than throwing.
- */
-interface HookEmitter extends HookBus {
-  emit?<E extends HookName>(event: E, ctx: Parameters<HookEvents[E]>[0]): void;
-}
-
-export function fireHook<E extends HookName>(hooks: HookBus, event: E, ctx: Parameters<HookEvents[E]>[0]): void {
-  try {
-    (hooks as HookEmitter).emit?.(event, ctx);
-  } catch {
-    // Observational tier — a throwing hook must never break the turn.
-  }
+export function fireHook<E extends HookName>(hooks: HookBus, event: E, ...args: Parameters<HookEvents[E]>): void {
+  hooks.emit(event, ...args);
 }
 
 const MAX_ITERATIONS = 30;
 const BUDGET_WARNING_AT = 5;
 const FINAL_WARNING_AT = 2;
 const DEFAULT_CONTEXT_RATIO = 0.85;
-/** No member of AgentCoreDeps carries the model's absolute context window size (U0 §9 doesn't
- *  expose one on LanguageModelProvider) — falls back to the old config default until a later
- *  unit threads the real value through. */
-export const DEFAULT_CONTEXT_LIMIT = 200_000;
+const MAX_ZERO_RETRIES = 2;
+const MAX_NETWORK_RETRIES = 3;
 
 function isZeroContentResult(r: { finishReason: string; text: string; toolCalls?: unknown[]; usage?: { outputTokens?: number } }): boolean {
   return r.finishReason === "stop" && !r.text && (r.toolCalls?.length ?? 0) === 0 && (r.usage?.outputTokens ?? 0) === 0;
+}
+
+/** Drops the image part matching `url`, and the containing message if that empties it. Ported
+ *  from src/agent/loop.ts — an injected image URL can expire between iterations, and the part
+ *  stays in `messages` otherwise, so the provider re-downloads it every step. */
+function removeImagePart(messages: ModelMessage[], url: string): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
+    const kept = msg.content.filter((part) => !(part.type === "image" && String(part.image) === url));
+    if (kept.length === msg.content.length) continue;
+    if (kept.length === 0) messages.splice(i, 1);
+    else msg.content = kept;
+    return true;
+  }
+  return false;
 }
 
 export interface LoopDeps {
@@ -69,7 +72,6 @@ export interface LoopDeps {
   toolEntries: ToolEntry<keyof ToolHosts>[];
   interceptors?: Interceptors;
   hooks: HookBus;
-  contextLimit: number;
   contextRatio?: number;
   maxIterations?: number;
 }
@@ -122,8 +124,8 @@ function buildAiTools(entries: ToolEntry<keyof ToolHosts>[]): Parameters<typeof 
 /**
  * Runs one turn to completion, pause, or cancellation. Ports `runAgentLoop` (src/agent/loop.ts)
  * onto surface-neutral tools: dispatch goes through `ToolEntry.execute`, output is a structured
- * `AgentReply` instead of a rendered string, and a paused tool signals via `ToolPause` (see
- * pause.ts) instead of a `{tool:"ask_question"}` sentinel result.
+ * `AgentReply` instead of a rendered string, and a paused tool signals by pushing to `ctx.pending`
+ * (pendingSink.ts) instead of a `{tool:"ask_question"}` sentinel result.
  */
 export async function runLoop(
   messages: ModelMessage[],
@@ -169,21 +171,32 @@ export async function runLoop(
     cacheReadTokens: totalCacheReadTokens,
     cacheWriteTokens: totalCacheWriteTokens,
     contextTokens: lastInputTokens,
-    contextLimit: deps.contextLimit,
+    contextLimit: deps.model.contextLimit,
   });
+
+  // Shared sinks for the whole turn (contracts.ts §7 augmentation, pendingSink.ts). `pending`
+  // itself is captured per-call below so a batch-level pause can be traced back to the one tool
+  // call that requested it — everything else is pooled across the batch.
+  const imageUrls: string[] = [];
+  const imagesSink: ImageSink = { push: (urls) => imageUrls.push(...urls) };
+  const novelUsers: AuthorRef[] = [];
+  const knownUsersSink: KnownUsersSink = {
+    add: (userId, names) => {
+      if (ctx.knownUsers.has(userId)) return;
+      const author: AuthorRef = { surface: ctx.conversation.surface, userId, username: names.username, displayName: names.displayName };
+      ctx.knownUsers.set(userId, author);
+      novelUsers.push(author);
+    },
+  };
 
   const dispatchTools = async (
     toolCalls: { toolCallId: string; toolName: string; input: Record<string, unknown> }[],
   ): Promise<{ toolMessage: ModelMessage; pending?: PendingInteraction }> => {
-    const parts: { type: "tool-result"; toolCallId: string; toolName: string; output: { type: "text"; value: string } }[] = [];
     const paused: { call: (typeof toolCalls)[number]; pending: PendingInteraction }[] = [];
 
-    for (const call of toolCalls) {
+    const runOne = async (call: (typeof toolCalls)[number]): Promise<{ call: (typeof toolCalls)[number]; value: string }> => {
       const entry = toolByName.get(call.toolName);
-      if (!entry) {
-        parts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: `Unknown tool: ${call.toolName}` } });
-        continue;
-      }
+      if (!entry) return { call, value: `Unknown tool: ${call.toolName}` };
 
       let input = call.input;
       if (deps.interceptors?.interceptTool) {
@@ -193,34 +206,55 @@ export async function runLoop(
           tool: call.toolName,
           input,
         });
-        if (verdict.block) {
-          parts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: verdict.reason ?? "Blocked by policy." } });
-          continue;
-        }
+        if (verdict.block) return { call, value: verdict.reason ?? "Blocked by policy." };
         if (verdict.input) input = verdict.input;
       }
 
+      // Per-call sink so a batch-level pause is attributable to this exact call — see the
+      // enforceCalledAlone rule below, ported from src/modules/moderation/executor.ts.
+      let callPending: PendingInteraction | undefined;
+      const pendingSink: PendingInteractionSink = { push: (p) => { if (!callPending) callPending = p; } };
+
       try {
-        const toolCtx = { ...ctx.toolContextBase, owner } as ToolContext & Required<ToolHosts>;
+        const toolCtx = { ...ctx.toolContextBase, owner, pending: pendingSink, images: imagesSink, knownUsers: knownUsersSink } as ToolContext & Required<ToolHosts>;
         const result = await entry.execute(input, toolCtx);
-        parts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: result.content } });
-      } catch (err) {
-        if (err instanceof ToolPause) {
-          paused.push({ call, pending: err.pending });
-          continue;
+        if (callPending) {
+          paused.push({ call, pending: callPending });
+          return { call, value: "Awaiting a response before continuing." };
         }
-        parts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: `Tool error: ${err instanceof Error ? err.message : String(err)}` } });
+        return { call, value: result.content };
+      } catch (err) {
+        return { call, value: `Tool error: ${err instanceof Error ? err.message : String(err)}` };
       }
-    }
+    };
+
+    // timeout_member must land before delete_user_messages — otherwise the offending user can
+    // keep posting new messages while deletion is still in flight. Ported from executor.ts.
+    const timeoutCalls = toolCalls.filter((c) => c.toolName === "timeout_member");
+    const otherCalls = toolCalls.filter((c) => c.toolName !== "timeout_member");
+    const timeoutResults = await Promise.all(timeoutCalls.map(runOne));
+    const otherResults = await Promise.all(otherCalls.map(runOne));
+    const resultByCallId = new Map([...timeoutResults, ...otherResults].map((r) => [r.call.toolCallId, r] as const));
+
+    const parts: { type: "tool-result"; toolCallId: string; toolName: string; output: { type: "text"; value: string } }[] = toolCalls.map((call) => ({
+      type: "tool-result",
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
+      output: { type: "text", value: resultByCallId.get(call.toolCallId)!.value },
+    }));
 
     // A pausing tool must be called alone — mirrors the old ask_question/automod-approval rule.
     if (paused.length > 0 && toolCalls.length === 1) {
-      const { call, pending } = paused[0];
-      parts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: "Awaiting a response before continuing." } });
-      return { toolMessage: { role: "tool", content: parts }, pending };
+      return { toolMessage: { role: "tool", content: parts }, pending: paused[0].pending };
     }
     for (const { call } of paused) {
-      parts.push({ type: "tool-result", toolCallId: call.toolCallId, toolName: call.toolName, output: { type: "text", value: `${call.toolName} must be called alone — do not combine it with other tool calls in the same turn. Try again with only ${call.toolName}.` } });
+      const idx = parts.findIndex((p) => p.toolCallId === call.toolCallId);
+      parts[idx] = {
+        type: "tool-result",
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        output: { type: "text", value: `${call.toolName} must be called alone — do not combine it with other tool calls in the same turn. Try again with only ${call.toolName}.` },
+      };
     }
 
     return { toolMessage: { role: "tool", content: parts } };
@@ -243,7 +277,7 @@ export async function runLoop(
       messages.push({ role: "user", content: queued.text });
     }
 
-    if (lastInputTokens > deps.contextLimit * contextRatio) {
+    if (lastInputTokens > deps.model.contextLimit * contextRatio) {
       stopReason = "context";
       break;
     }
@@ -253,13 +287,83 @@ export async function runLoop(
       pushEphemeral({ role: "system", content: buildBudgetWarning(stepsLeft) });
     }
 
-    const result = await generateText({
+    const generateParams = (): Parameters<typeof generateText>[0] => ({
       model,
       messages: [{ role: "system", content: ctx.systemPrompt, providerOptions: { openrouter: { cacheControl: { type: "ephemeral" } } } }, ...messages],
       tools: aiTools,
       maxOutputTokens: 4096,
     });
-    const zeroContent = isZeroContentResult(result);
+
+    // Network-retry / vision-fallback resilience, ported from src/agent/loop.ts. Mutates
+    // `messages` in place (image-part removal, vision fallback) so a retried generateParams()
+    // call picks up the fix.
+    let result = await (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await generateText(generateParams());
+        } catch (err) {
+          // An injected image URL can expire between iterations; drop just the dead part.
+          if (err instanceof Error && err.name === "AI_DownloadError") {
+            const deadUrl = (err as Error & { url?: string }).url;
+            const removed = deadUrl ? removeImagePart(messages, deadUrl) : false;
+            if (!removed) throw err;
+            pushEphemeral({
+              role: "system",
+              content: "One of the attached images could not be loaded — its Discord CDN link expired. Re-fetch it with inspect_image using channel_id + message_id, or continue without it and say so to the moderator.",
+            });
+            continue;
+          }
+
+          const isSocketError = err instanceof Error && err.name === "AI_APICallError" && err.message.includes("socket connection was closed");
+          if (!isSocketError) throw err;
+
+          // Pure-image user message in context indicates vision is unsupported. Scan backward
+          // rather than checking the tail — steering notes are appended after image injection.
+          let imageIdx = -1;
+          for (let i = messages.length - 1; i >= 0 && imageIdx === -1; i--) {
+            const m = messages[i];
+            if (m.role === "user" && Array.isArray(m.content) && m.content.length > 0 && m.content.every((c: { type: string }) => c.type === "image")) {
+              imageIdx = i;
+            }
+          }
+
+          if (imageIdx !== -1) {
+            messages.splice(imageIdx, 1);
+            messages.push({
+              role: "system",
+              content: "The image(s) attached to this message could not be processed — this model does not support vision. Proceed without the image content and note this limitation to the moderator.",
+            });
+            return await generateText(generateParams());
+          }
+
+          if (attempt < MAX_NETWORK_RETRIES) {
+            if (ctx.isCancelled()) throw err;
+            await new Promise<void>((r) => setTimeout(r, 1000 * 2 ** attempt));
+            if (ctx.isCancelled()) throw err;
+            continue;
+          }
+          throw err;
+        }
+      }
+    })();
+
+    let zeroContent = isZeroContentResult(result);
+    for (let attempt = 0; attempt < MAX_ZERO_RETRIES && zeroContent; attempt++) {
+      // Accumulate tokens from the discarded retry attempt before overwriting result.
+      accumulateUsage(result.usage);
+      if (ctx.isCancelled()) {
+        cancelled = true;
+        break;
+      }
+      await new Promise<void>((r) => setTimeout(r, 500 * 2 ** attempt));
+      if (ctx.isCancelled()) {
+        cancelled = true;
+        break;
+      }
+      result = await generateText(generateParams());
+      zeroContent = isZeroContentResult(result);
+    }
+    if (cancelled) break;
     accumulateUsage(result.usage);
 
     if (ctx.isCancelled()) {
@@ -316,6 +420,16 @@ export async function runLoop(
         pending,
         cancelled: false,
       };
+    }
+
+    if (imageUrls.length > 0) {
+      // Ephemeral: the signed CDN URLs are dead by the next turn, so persisting them would
+      // re-download a broken link on every future generate. The model's own text is the record.
+      pushEphemeral({ role: "user", content: imageUrls.splice(0).map((url) => ({ type: "image" as const, image: url })) });
+    }
+
+    if (novelUsers.length > 0) {
+      messages.push({ role: "system", content: buildUserNote(novelUsers.splice(0)) });
     }
 
     void finishReason;

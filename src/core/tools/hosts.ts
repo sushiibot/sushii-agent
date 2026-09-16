@@ -135,8 +135,9 @@ export interface DiscordModerationConfig {
   autoModDryRun?: boolean;
 }
 
-/** Threading fields for an auto-mod-triggered alert; absent for a manually-invoked run.
- *  U0's AutoModTrigger (contracts.ts §2) doesn't carry these — see registry.ts deviation note. */
+/** Threading fields for an auto-mod-triggered alert; absent for a manually-invoked run. Mirrors
+ *  the same fields on AutoModTrigger (contracts.ts §2) — the surface (U4) carries them from
+ *  `inbound.platform.autoModTrigger` into this anchor when wiring send_alert_message's ctx. */
 export interface DiscordAutoModAnchor {
   anchorMessageId?: string;
   incidentChannelId?: string;

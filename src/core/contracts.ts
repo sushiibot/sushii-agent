@@ -75,6 +75,10 @@ export interface AutoModTrigger {
   keyword: string;
   channelId: string;
   content: string;
+  /** ID of the silent anchor message send_alert_message edits in place to deliver the final ping. */
+  anchorMessageId?: string;
+  incidentChannelId?: string;
+  triggerMessageId?: string;
 }
 
 export interface InboundMessage {
@@ -279,6 +283,7 @@ export type HookName = keyof HookEvents;
 
 export interface HookBus {
   on<E extends HookName>(event: E, handler: HookEvents[E]): void;
+  emit<E extends HookName>(event: E, ...args: Parameters<HookEvents[E]>): void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,11 +306,12 @@ export interface ToolContext {
   log: unknown; // Logger; typed loosely to avoid coupling U0 to the logger module
 }
 
-// Host interfaces are declared here to pin the SHAPE; U2 populates their members as it converts
-// the concrete tools. A tool that reaches for a host it doesn't require won't type-check.
-export interface DiscordToolHost { readonly _discord: unique symbol; }
-export interface MessageCacheHost { readonly _messageCache: unique symbol; }
-export interface SushiMcpHost { readonly _mcp: unique symbol; }
+// Host interfaces are declared here to pin the SHAPE; U2 populates their members via module
+// augmentation (tools/hosts.ts) as it converts the concrete tools. A tool that reaches for a
+// host it doesn't require won't type-check.
+export interface DiscordToolHost {}
+export interface MessageCacheHost {}
+export interface SushiMcpHost {}
 
 export interface ToolHosts {
   discord?: DiscordToolHost;
@@ -331,8 +337,10 @@ export interface ToolEntry<H extends keyof ToolHosts = never> {
 }
 
 export interface ToolRegistry {
-  /** Assemble the per-turn tool set given the session's hosts + capabilities + enabled modules. */
-  resolve(session: SurfaceSession, space: { surface: SurfaceId; spaceId: string }): ToolEntry<keyof ToolHosts>[];
+  /** Assemble the per-turn tool set given the session's hosts + capabilities + config/mode gates.
+   *  `autoMod` mirrors the old resolveToolEntries(enabledModules, autoModMode) signal — restricts
+   *  timeout_member/delete_user_messages/send_alert_message to the autonomous auto-mod driver. */
+  resolve(session: SurfaceSession, space: { surface: SurfaceId; spaceId: string; autoMod?: boolean }): ToolEntry<keyof ToolHosts>[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -398,6 +406,8 @@ export interface AgentCore {
 /** Provider-neutral language model handle; U1 binds the concrete AI-SDK provider. */
 export interface LanguageModelProvider {
   readonly modelId: string;
+  /** The model's absolute context window size, in tokens (e.g. config.openaiContextLimit at wiring). */
+  readonly contextLimit: number;
 }
 
 export interface LoopLimits {

@@ -15,7 +15,7 @@ import type {
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
 import { buildSystemPrompt, buildUserNote, formatInboundAsUserTurn, formatResumptionAsUserTurn } from "./prompt.ts";
-import { DEFAULT_CONTEXT_LIMIT, fireHook, runLoop } from "./loop.ts";
+import { fireHook, runLoop } from "./loop.ts";
 
 function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
   return a.surface === b.surface && a.userId === b.userId;
@@ -52,6 +52,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     session: SurfaceSession,
     firstUserText: string,
     initialMentions: AuthorRef[] | undefined,
+    autoMod: boolean,
   ): Promise<AgentTurnResult> {
     const data = deps.store.load(conversation);
     const messages = [...data.messages];
@@ -68,7 +69,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     const guidance = session.renderer.promptGuidance(renderCtx);
     const systemPrompt = buildSystemPrompt(deps.behavior, guidance);
 
-    const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId });
+    const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId, autoMod });
 
     const toolContextBase: Omit<ToolContext, "owner"> = {
       space: { surface: conversation.surface, spaceId: conversation.spaceId },
@@ -86,7 +87,6 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       toolEntries,
       interceptors: deps.interceptors,
       hooks: deps.hooks,
-      contextLimit: DEFAULT_CONTEXT_LIMIT,
       contextRatio: limits.contextRatio,
       maxIterations: limits.maxIterations,
     }, {
@@ -154,12 +154,14 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       activeTurns.set(key, turn);
       fireHook(deps.hooks, "onConsumed", { conversation: inbound.conversation, inbound });
       try {
+        const autoMod = inbound.platform?.surface === "discord" && !!inbound.platform.autoModTrigger;
         return await runTurn(
           inbound.conversation,
           turn,
           session,
           formatInboundAsUserTurn(inbound.author, inbound.text),
           inbound.mentionedUsers,
+          autoMod,
         );
       } catch (err) {
         return { status: "error", message: err instanceof Error ? err.message : String(err) };
@@ -184,7 +186,10 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       activeTurns.set(key, turn);
       try {
         const detail = resumption.kind === "question-answer" ? resumption.choice : resumption.decision;
-        return await runTurn(conversation, turn, session, formatResumptionAsUserTurn(resumption.kind, detail, resumption.by), undefined);
+        // A resumed turn is always a human-driven continuation (button click), never the
+        // autonomous auto-mod driver itself — pausing tools (ask_question, keyword approvals)
+        // aren't in AUTO_MOD_ONLY_TOOLS, so this can't strand a paused auto-mod turn.
+        return await runTurn(conversation, turn, session, formatResumptionAsUserTurn(resumption.kind, detail, resumption.by), undefined, false);
       } catch (err) {
         return { status: "error", message: err instanceof Error ? err.message : String(err) };
       } finally {
