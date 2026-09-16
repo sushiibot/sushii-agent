@@ -782,7 +782,7 @@ function modelPricing(model: string): [number, number] | null {
   return null;
 }
 
-function buildFooter(
+export function buildFooter(
   model: string,
   totalInputTokens: number,
   totalOutputTokens: number,
