@@ -1,19 +1,35 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
-import { extname, join, resolve, sep } from "node:path";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Type } from "typebox";
 
 const ASSETS_DIR_NAME = "assets";
 const HASH_LENGTH = 16;
+const FALLBACK_EXTENSION = ".bin";
+
+function isInside(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(root + sep);
+}
+
+function resolveExtension(sourcePath: string): string {
+  const ext = extname(sourcePath).toLowerCase();
+  if (ext === "" || ext === ".") {
+    return FALLBACK_EXTENSION;
+  }
+  return ext;
+}
+
+function toPosixRelative(from: string, to: string): string {
+  return relative(from, to).split(sep).join("/");
+}
 
 /**
  * The materialized inbox tree lives outside the wiki repo and is wiped each sweep, so a path
  * copied verbatim into a page would be a dead link by the time lychee checks it (and outside the
  * repo entirely, so it'd never even be committed). This tool is how the agent promotes one
  * specific attachment it has decided is worth keeping into the repo, where it becomes a normal
- * committed file with a stable, repo-relative link.
+ * committed file with a stable link relative to the page that embeds it.
  *
  * Takes `defineTool`/`Type` as parameters rather than importing them statically -- piSession.ts
  * only loads pi-coding-agent's ~14MB of transitive deps via a lazy dynamic import, and a
@@ -26,25 +42,27 @@ export function createEmbedAttachmentTool(
   allowedSourceRoot: string,
 ) {
   const resolvedRoot = resolve(allowedSourceRoot);
+  const resolvedRepoDir = resolve(repoDir);
 
   return defineToolFn({
     name: "embed_attachment",
     label: "Embed Attachment",
     description:
       "Copy an already-materialized Discord attachment (its absolute local path, as shown in an inbox " +
-      "file's [image: ...]/[application: ...] label) into the wiki repo so it can be committed. Returns " +
-      "a repo-relative path to use in markdown: an image with ![alt](assets/<hash>.<ext>), any other " +
-      "file with [name](assets/<hash>.<ext>). Only call this for attachments actually worth embedding " +
-      "or linking, not every attachment mentioned in the batch.",
+      "file's [image: ...]/[application: ...] label) into the wiki repo so it can be committed. Pass the " +
+      "repo-relative path of the page you are embedding into as pagePath; the tool returns a link already " +
+      "resolved relative to that page -- use it verbatim, don't hand-write an assets/... path. An image " +
+      "uses ![alt](<link>), any other file uses [name](<link>). Only call this for attachments actually " +
+      "worth embedding or linking, not every attachment mentioned in the batch.",
     parameters: TypeNs.Object({
       sourcePath: TypeNs.String({ description: "Absolute local path to the materialized attachment, copied from an inbox file's label." }),
-      alt: TypeNs.Optional(TypeNs.String({ description: "Short alt text / caption for the agent's own reference when writing the markdown link." })),
+      pagePath: TypeNs.String({ description: "Repo-relative path of the wiki page being edited, e.g. \"people/tzushi.md\". The returned link is resolved relative to this page's directory." }),
+      alt: TypeNs.Optional(TypeNs.String({ description: "Short alt text / caption to use in the markdown link." })),
     }),
     execute: async (_toolCallId, params) => {
       try {
         const resolvedSource = resolve(params.sourcePath as string);
-        const isInsideRoot = resolvedSource === resolvedRoot || resolvedSource.startsWith(resolvedRoot + sep);
-        if (!isInsideRoot) {
+        if (!isInside(resolvedSource, resolvedRoot)) {
           return {
             content: [{ type: "text" as const, text: `Refused: ${params.sourcePath} is not inside the allowed inbox attachment root.` }],
             details: null,
@@ -70,28 +88,76 @@ export function createEmbedAttachmentTool(
           };
         }
 
+        // Defense-in-depth against a symlink planted inside the inbox tree that would resolve
+        // outside allowedSourceRoot even though the lexical path above looked contained.
+        const realSource = await realpath(resolvedSource);
+        const realRoot = await realpath(resolvedRoot);
+        if (!isInside(realSource, realRoot)) {
+          return {
+            content: [{ type: "text" as const, text: `Refused: ${params.sourcePath} resolves outside the allowed inbox attachment root.` }],
+            details: null,
+            isError: true,
+          };
+        }
+
+        const resolvedPagePath = resolve(resolvedRepoDir, params.pagePath as string);
+        // Strictly inside (not === resolvedRepoDir): a pagePath of "" or "." would otherwise
+        // resolve to the repo root itself, putting dirname() one level above the repo and
+        // producing a link with a bogus leading "<repoName>/" segment.
+        if (!resolvedPagePath.startsWith(resolvedRepoDir + sep)) {
+          return {
+            content: [{ type: "text" as const, text: `Refused: pagePath ${params.pagePath} is not inside the wiki repo.` }],
+            details: null,
+            isError: true,
+          };
+        }
+
         const bytes = await readFile(resolvedSource);
         const hash = createHash("sha256").update(bytes).digest("hex").slice(0, HASH_LENGTH);
-        const ext = extname(resolvedSource).toLowerCase();
-        const assetsDir = join(repoDir, ASSETS_DIR_NAME);
-        const destPath = join(assetsDir, `${hash}${ext}`);
-        const relativePath = `${ASSETS_DIR_NAME}/${hash}${ext}`;
+        const ext = resolveExtension(resolvedSource);
+        const assetsDir = join(resolvedRepoDir, ASSETS_DIR_NAME);
+        await mkdir(assetsDir, { recursive: true });
 
-        if (!existsSync(destPath)) {
-          await mkdir(assetsDir, { recursive: true });
-          await copyFile(resolvedSource, destPath);
+        // Guard against a committed `assets -> /elsewhere` symlink redirecting writes outside the repo.
+        const realAssetsDir = await realpath(assetsDir);
+        const realRepoDir = await realpath(resolvedRepoDir);
+        if (!isInside(realAssetsDir, realRepoDir)) {
+          return {
+            content: [{ type: "text" as const, text: `Refused: assets directory resolves outside the wiki repo.` }],
+            details: null,
+            isError: true,
+          };
         }
+
+        const destPath = join(assetsDir, `${hash}${ext}`);
+
+        try {
+          // Exclusive create: fails with EEXIST if anything -- real file OR symlink, dangling or
+          // not -- already occupies destPath, so a symlink planted there can never be written
+          // through. Writes the already-hashed bytes directly rather than re-reading the source,
+          // which also avoids a TOCTOU between what was hashed and what lands on disk.
+          await writeFile(destPath, bytes, { flag: "wx" });
+        } catch (err) {
+          const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+          if (code !== "EEXIST") {
+            throw err;
+          }
+          // Already embedded (dedup) or occupied by something else -- either way, never overwrite.
+        }
+
+        const link = toPosixRelative(dirname(resolvedPagePath), destPath);
+        const displayAlt = (params.alt as string | undefined) ?? "description";
 
         return {
           content: [
             {
               type: "text" as const,
               text:
-                `Embedded at ${relativePath}. Use ![alt](${relativePath}) for an image, or [name](${relativePath}) ` +
+                `Embedded at ${link}. Use ![${displayAlt}](${link}) for an image, or [${displayAlt}](${link}) ` +
                 `for any other file type.`,
             },
           ],
-          details: { relativePath },
+          details: { relativePath: link },
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

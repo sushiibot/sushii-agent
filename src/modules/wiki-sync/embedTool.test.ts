@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,20 +25,26 @@ beforeEach(async () => {
   inboxDir = await mkdtemp(join(tmpdir(), "wiki-sync-embed-inbox-"));
 });
 
-function tool(root = inboxDir) {
-  return createEmbedAttachmentTool(identityDefineTool, Type, repoDir, root);
+function tool(root = inboxDir, repo = repoDir) {
+  return createEmbedAttachmentTool(identityDefineTool, Type, repo, root);
 }
 
-async function run(t: ReturnType<typeof tool>, sourcePath: string, toolCallId = "call1"): Promise<ExecuteResult> {
-  return (await t.execute(toolCallId, { sourcePath }, undefined, undefined, {} as never)) as unknown as ExecuteResult;
+async function run(
+  t: ReturnType<typeof tool>,
+  sourcePath: string,
+  pagePath = "index.md",
+  alt?: string,
+  toolCallId = "call1",
+): Promise<ExecuteResult> {
+  return (await t.execute(toolCallId, { sourcePath, pagePath, alt }, undefined, undefined, {} as never)) as unknown as ExecuteResult;
 }
 
 describe("embed_attachment", () => {
-  test("copies a materialized attachment into the repo and returns its repo-relative path", async () => {
+  test("copies a materialized attachment into the repo and returns a page-relative path", async () => {
     const sourcePath = join(inboxDir, "foo.png");
     await writeFile(sourcePath, Buffer.from([1, 2, 3, 4]));
 
-    const result = await run(tool(), sourcePath);
+    const result = await run(tool(), sourcePath, "index.md");
 
     expect(result.isError).toBeFalsy();
     const relativePath = result.details!.relativePath;
@@ -54,11 +60,11 @@ describe("embed_attachment", () => {
     await writeFile(sourceB, Buffer.from([9, 9, 9]));
 
     const t = tool();
-    const resultA = await run(t, sourceA, "call1");
-    const destPath = join(repoDir, resultA.details!.relativePath);
+    const resultA = await run(t, sourceA, "index.md", undefined, "call1");
+    const destPath = join(repoDir, "assets", resultA.details!.relativePath.split("/").pop()!);
     const statBefore = await Bun.file(destPath).stat();
 
-    const resultB = await run(t, sourceB, "call2");
+    const resultB = await run(t, sourceB, "index.md", undefined, "call2");
 
     expect(resultB.details!.relativePath).toBe(resultA.details!.relativePath);
     // Same content hash -> same destination file; reused rather than rewritten.
@@ -105,5 +111,119 @@ describe("embed_attachment", () => {
   test("never throws out of execute even for a garbage path", async () => {
     const result = await run(tool(), "");
     expect(result.isError).toBe(true);
+  });
+
+  test("never throws out of execute when the source is a directory", async () => {
+    const dirPath = join(inboxDir, "a-directory");
+    await mkdir(dirPath);
+
+    const result = await run(tool(), dirPath);
+
+    expect(result.isError).toBe(true);
+  });
+
+  test("never throws out of execute when the source file is unreadable", async () => {
+    const sourcePath = join(inboxDir, "no-read.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+    await chmod(sourcePath, 0o000);
+
+    try {
+      const result = await run(tool(), sourcePath);
+      expect(result.isError).toBe(true);
+    } finally {
+      await chmod(sourcePath, 0o644);
+    }
+  });
+
+  test("does not write through a dangling symlink planted at the destination path", async () => {
+    const sourcePath = join(inboxDir, "payload.png");
+    const bytes = Buffer.from([7, 7, 7, 7]);
+    await writeFile(sourcePath, bytes);
+
+    // Compute the destination hash the tool will use, then pre-plant a dangling symlink there
+    // pointing at a file outside the repo -- simulating a symlink committed to the wiki and
+    // recreated by `git reset --hard` each sweep.
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const assetsDir = join(repoDir, "assets");
+    await mkdir(assetsDir, { recursive: true });
+    const evilTarget = join(await mkdtemp(join(tmpdir(), "wiki-sync-embed-evil-")), "pwned");
+    const destPath = join(assetsDir, `${hash}.png`);
+    await symlink(evilTarget, destPath);
+
+    const result = await run(tool(), sourcePath);
+
+    // The call must not write the attachment bytes through the symlink to evilTarget.
+    expect(existsSync(evilTarget)).toBe(false);
+    // The planted symlink itself must survive untouched -- wx never clobbers or follows it.
+    expect((await lstat(destPath)).isSymbolicLink()).toBe(true);
+    // EEXIST is treated as the dedup/already-embedded success case, not a failure.
+    expect(result.isError).toBeFalsy();
+  });
+
+  test("refuses when the assets directory is a symlink pointing outside the repo", async () => {
+    const sourcePath = join(inboxDir, "foo.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+
+    const outsideDir = await mkdtemp(join(tmpdir(), "wiki-sync-embed-outside-assets-"));
+    await symlink(outsideDir, join(repoDir, "assets"));
+
+    const result = await run(tool(), sourcePath);
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(join(outsideDir))).toBe(true);
+    const outsideEntries = await import("node:fs/promises").then((m) => m.readdir(outsideDir));
+    expect(outsideEntries.length).toBe(0);
+  });
+
+  test("returns a page-relative link with ../ for a page in a subdirectory", async () => {
+    const sourcePath = join(inboxDir, "foo.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+    await mkdir(join(repoDir, "people"), { recursive: true });
+
+    const result = await run(tool(), sourcePath, "people/tzushi.md");
+
+    expect(result.isError).toBeFalsy();
+    expect(result.details!.relativePath).toMatch(/^\.\.\/assets\/[0-9a-f]{16}\.png$/);
+  });
+
+  test("returns a root-relative link for a root-level page", async () => {
+    const sourcePath = join(inboxDir, "foo.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+
+    const result = await run(tool(), sourcePath, "index.md");
+
+    expect(result.isError).toBeFalsy();
+    expect(result.details!.relativePath).toMatch(/^assets\/[0-9a-f]{16}\.png$/);
+  });
+
+  test("rejects a pagePath that resolves outside the repo", async () => {
+    const sourcePath = join(inboxDir, "foo.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+
+    const result = await run(tool(), sourcePath, "../../etc/passwd");
+
+    expect(result.isError).toBe(true);
+  });
+
+  test("rejects a pagePath of the repo root itself (empty or dot)", async () => {
+    const sourcePath = join(inboxDir, "foo.png");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+
+    const resultEmpty = await run(tool(), sourcePath, "", undefined, "call1");
+    const resultDot = await run(tool(), sourcePath, ".", undefined, "call2");
+
+    expect(resultEmpty.isError).toBe(true);
+    expect(resultDot.isError).toBe(true);
+  });
+
+  test("falls back to .bin for a source file with no usable extension", async () => {
+    const sourcePath = join(inboxDir, "noextension");
+    await writeFile(sourcePath, Buffer.from([1, 2, 3]));
+
+    const result = await run(tool(), sourcePath);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.details!.relativePath).toMatch(/^assets\/[0-9a-f]{16}\.bin$/);
   });
 });

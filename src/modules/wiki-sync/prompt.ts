@@ -32,10 +32,13 @@ worth breaking the run apart over.
 
 When an inbox file's attachment label (e.g. "[image: foo.png](/abs/path)") points at something
 genuinely relevant to a page, don't just describe it in words — include it. Call embed_attachment
-with that absolute local path; it copies the file into the repo and returns a repo-relative
-"assets/..." path to use in markdown.
-- Images, diagrams, screenshots, photos: embed inline with "![short description](assets/...)".
-- PDFs: link the file itself with "[name](assets/...)". If it's scanned or diagram-heavy (the
+with that absolute local path and pagePath set to the repo-relative path of the page you are
+editing; it copies the file into the repo and returns a link already resolved relative to that
+page — use the returned link string verbatim, don't hand-write an "assets/..." path yourself
+(pages live in nested directories, so a hand-written root-relative path will be wrong except at
+the repo root).
+- Images, diagrams, screenshots, photos: embed inline with "![short description](<link>)".
+- PDFs: link the file itself with "[name](<link>)". If it's scanned or diagram-heavy (the
   inbox provides page images for these), also embed the relevant page image(s) inline. For a
   text-heavy PDF, extract the useful information into the page text and link the source file.
 - Only embed what's actually useful as reference, not every attachment in the batch — a summary
