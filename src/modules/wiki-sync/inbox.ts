@@ -1,6 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Client } from "discord.js";
+import { MESSAGE_CONCURRENCY, materializeMessageAttachments, runPool } from "./attachments.ts";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
 
 function slugifyChannelName(name: string): string {
@@ -117,8 +118,18 @@ export async function writeMessageInbox(
   await rm(inboxDir, { recursive: true, force: true });
   await mkdir(inboxDir, { recursive: true });
 
+  const attachmentsDir = join(inboxDir, "attachments");
+  const materialized: WikiSyncMessage[] = new Array(messages.length);
+  await runPool(
+    messages.map((message, i) => ({ message, i })),
+    MESSAGE_CONCURRENCY,
+    async ({ message, i }) => {
+      materialized[i] = { ...message, content: await materializeMessageAttachments(client, attachmentsDir, message) };
+    },
+  );
+
   const groups = new Map<string, ChannelGroup>();
-  for (const message of messages) {
+  for (const message of materialized) {
     let group = groups.get(message.channelId);
     if (!group) {
       group = {
