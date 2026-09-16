@@ -255,41 +255,14 @@ describe("materializeMessageAttachments", () => {
     expect(await readFile(localPath)).toEqual(Buffer.from([9, 9, 9]));
   });
 
-  // Simulates `pdfinfo` missing from PATH (ENOENT on Bun.spawn) while pdftotext/pdftoppm are
-  // present, without depending on the real poppler tools being installed for this test.
-  test("degrades gracefully when pdfinfo is missing from PATH, still rasterizing via pdftoppm", async () => {
-    const binDir = await mkdtemp(join(tmpdir(), "wiki-sync-fakebin-"));
-    const pdftotextPath = join(binDir, "pdftotext");
-    const pdftoppmPath = join(binDir, "pdftoppm");
-    await writeFile(pdftotextPath, "#!/bin/sh\n: > \"$2\"\n");
-    await writeFile(
-      pdftoppmPath,
-      '#!/bin/bash\nprefix="${@: -1}"\ntouch "${prefix}-1.png"\n',
-    );
-    await chmod(pdftotextPath, 0o755);
-    await chmod(pdftoppmPath, 0o755);
-
-    const originalPath = Bun.env.PATH;
-    Bun.env.PATH = binDir;
-    try {
-      globalThis.fetch = (async () => new Response(new Uint8Array(BLANK_PDF))) as unknown as typeof fetch;
-      const client = fakeClient(
-        textBasedChannel([
-          { id: "8888", name: "doc.pdf", url: "https://cdn.discordapp.com/attachments/9999999999/8888/doc.pdf?ex=abc", contentType: "application/pdf", size: BLANK_PDF.length },
-        ]),
-      );
-      const original = "[application: doc.pdf](https://cdn.discordapp.com/attachments/9999999999/8888/doc.pdf?ex=abc)";
-      const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
-
-      const match = content.match(/\[application: doc\.pdf\]\((.+?)\)/);
-      expect(match).not.toBeNull();
-      const pagePath = match![1]!;
-      expect(pagePath.endsWith(".png")).toBe(true);
-      expect(existsSync(pagePath)).toBe(true);
-    } finally {
-      Bun.env.PATH = originalPath;
-      await rm(binDir, { recursive: true, force: true });
-    }
+  // A missing poppler binary (pdfinfo/pdftotext/pdftoppm) must degrade, not crash the sweep:
+  // runSpawn resolves to { ok: false } rather than throwing on ENOENT, which is what lets
+  // materializePdf fall back (skip clamp, or leave the label). Tested directly against runSpawn
+  // because it is portable and needs no real poppler -- a fake-PATH approach does NOT work here,
+  // since Bun.spawn resolves the command against the real process PATH, not a mutated Bun.env.PATH.
+  test("runSpawn degrades to ok:false when the binary is missing, without throwing", async () => {
+    const result = await runSpawn(["sushii-nonexistent-binary-zzz", "--version"], 2000);
+    expect(result.ok).toBe(false);
   });
 
   // Regression: the timeout must SIGKILL, not SIGTERM. A single process that traps SIGTERM (like a
