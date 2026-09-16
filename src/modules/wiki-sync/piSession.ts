@@ -302,8 +302,8 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // sends the AgentSession's own sessionId as `x-session-id` on every request, auto-detected as
   // the OpenRouter header format from baseUrl. That's what shows up as the request's session in
   // OpenRouter's dashboard/activity view -- no manual id plumbing needed here.
-  // Independent of the main agent's model: wiki-sync only ever edits text files, never
-  // images, so it can run a cheaper text-only model instead of reusing openaiModel.
+  // Independent of the main agent's model: wiki-sync now reads image/PDF attachments
+  // materialized into the inbox, so its model must accept image input.
   const contextWindow = await resolveContextWindow(config.wikiSync.model);
   // Capped against the resolved contextWindow, not used as-is -- config.wikiSync.maxOutputTokens
   // is a per-turn output budget we control, not the model's own max_completion_tokens (which
@@ -320,7 +320,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
         id: config.wikiSync.model,
         name: config.wikiSync.model,
         reasoning: false,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,
