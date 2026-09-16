@@ -1,0 +1,417 @@
+// U0 — the frozen multi-surface contract. Types/interfaces only, no logic.
+// Every other unit imports from here. Changing a type after units start requires a re-sync.
+// Source of truth: claude-notes/tasks/multi-surface/PLAN.md (C1–C17) + planning/01–04.
+//
+// Structure: identity (§1) · inbound (§2) · turn state (§3) · outbound (§4) · interactive
+// pause/resume (§5) · surface extension tiers — capabilities/interceptors/hooks (§6) · tools (§7) ·
+// stores (§8) · AgentCore (§9).
+
+import type { ModelMessage } from "ai";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1 Identity
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Discriminated tag, open for new surfaces. */
+export type SurfaceId = "discord" | "buzz" | (string & {});
+
+/** Replaces the bare Discord `threadId`. THE re-keying primitive. `spaceId` (guildId on Discord)
+ *  is deliberately separate from `surface`: a buzz conversation can be scoped to a Discord guild. */
+export interface ConversationRef {
+  surface: SurfaceId;
+  spaceId: string;
+  conversationId: string;
+}
+
+/** Stable key for in-memory maps. Unique within a surface; space is a scoping attribute, not identity. */
+export function conversationKey(ref: ConversationRef): string {
+  return `${ref.surface}:${ref.conversationId}`;
+}
+
+/** Replaces `UserNames` + `TriggeringUser`. Platform-neutral author identity. */
+export interface AuthorRef {
+  surface: SurfaceId;
+  userId: string;
+  username: string | null;
+  displayName?: string | null;
+  /** Neutral permission signal the brain reasons about. Surface computes it (roles → this flag). */
+  isModerator?: boolean;
+  /** Neutral role list for prompt context; ids opaque to the core. Surface-resolved. */
+  roles?: { id: string; name: string }[];
+}
+
+/** Where a message lives, for prompt context. Neutral shape (ports ChannelContext). */
+export interface ChannelRef {
+  id: string;
+  name: string;
+  type: string; // "thread (private)", "text", … — neutral string
+  isPrivate: boolean;
+  topic?: string | null;
+  categoryName?: string | null;
+  parentChannelId?: string | null;
+  parentChannelName?: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §2 Inbound
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface InboundAttachment {
+  kind: "image" | "file";
+  url: string; // Discord CDN URL; inspect_image resolves it
+  contentType?: string | null;
+  /** For re-fetching a fresh signed URL. */
+  source?: { conversationId: string; messageId: string };
+}
+
+/** Discriminated on `surface`. The typed escape hatch the core forwards but never interprets. */
+export type PlatformInbound =
+  | { surface: "discord"; autoModTrigger?: AutoModTrigger }
+  | { surface: "buzz" };
+
+/** Ports AutoModTriggerContext — present only for the autonomous auto-mod driver. */
+export interface AutoModTrigger {
+  ruleName: string;
+  keyword: string;
+  channelId: string;
+  content: string;
+}
+
+export interface InboundMessage {
+  conversation: ConversationRef;
+  author: AuthorRef;
+  /** Normalized text, bot-mention already stripped by the surface. */
+  text: string;
+  mentionedUsers?: AuthorRef[];
+  replyTo?: { author: AuthorRef; text: string } | null;
+  attachments?: InboundAttachment[];
+  channel?: ChannelRef;
+  platform?: PlatformInbound;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3 Turn state (internal; carries invariants a naive restructure drops)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TurnState {
+  conversation: ConversationRef;
+  /** Owner-gate identity for owner-scoped tools. NULLED permanently the moment a mid-loop message
+   *  from a different author is injected. Tools read this via ToolContext.owner, NOT inbound.author. */
+  owner: AuthorRef | null;
+  /** Seeded + grown; drives the identity note de-dup. */
+  knownUsers: Map<string, AuthorRef>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4 Outbound (structured — NO pre-rendered platform string)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ReplySegment =
+  | { kind: "text"; text: string } // still carries u:/c:/t:/e:/msg: tokens; surface expands
+  | { kind: "separator" }; // was `\n---\n`
+
+export type StopReason = "iterations" | "context";
+
+export interface TurnUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  contextTokens: number;
+  contextLimit: number;
+  costUsd?: number; // null when model pricing unknown
+}
+
+export interface ToolActivity {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface AgentReply {
+  segments: ReplySegment[];
+  usage: TurnUsage;
+  toolTrace: ToolActivity[];
+  stoppedEarly?: StopReason;
+  cancelled: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5 Interactive pause/resume (data-addressed, restart-survivable — never a Promise/closure)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AskQuestion {
+  question: string; // tokenized; surface renders
+  choices: string[];
+  /** Only this author may answer (ports triggeredByUserId). */
+  authorizedResponder: AuthorRef;
+}
+
+/** Discord-specific payload the surface needs to apply an approved change. */
+export type PlatformApproval = {
+  surface: "discord";
+  ruleId?: string;
+  ruleName?: string;
+  keyword?: string;
+};
+
+export interface ApprovalRequest {
+  action: "automod-keyword-add" | "automod-keyword-delete";
+  summary: string;
+  authorizedResponder: AuthorRef;
+  platform: PlatformApproval;
+}
+
+export type PendingInteraction =
+  | { kind: "question"; payload: AskQuestion }
+  | { kind: "approval"; payload: ApprovalRequest };
+
+/** Neutral resumption payload for a paused turn. */
+export type TurnResumption =
+  | { kind: "question-answer"; choice: string; by: AuthorRef }
+  | { kind: "approval"; decision: "approved" | "rejected"; by: AuthorRef };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6 Surface extension tiers (C9): capabilities (required) · interceptors · hooks (observational)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type PromptSlot =
+  | "behavior" | "identity" | "channel" | "triggeringUser"
+  | "serverContext" | "memoryIndex" | "emoji" | "threadContext" | "moduleExtras";
+
+export interface RenderContext {
+  spaceId: string;
+  emojiMap?: Record<string, string>;
+}
+
+export interface PromptGuidance {
+  /** Slot → content. The CORE owns slot ORDER (cache stability); surfaces only fill. */
+  sections: Partial<Record<PromptSlot, string>>;
+}
+
+/** Required capability: expands neutral tokens to a surface's native syntax + prompt guidance. */
+export interface PlatformRenderer {
+  renderText(text: string, ctx: RenderContext): string;
+  promptGuidance(ctx: RenderContext): PromptGuidance;
+  describeUser(author: AuthorRef): string;
+}
+
+/** Static flags — readable at prompt-build time (gate slots) AND delivery time (degradation). */
+export interface SurfaceCapabilities {
+  richComponents: boolean;
+  customEmoji: boolean;
+  nativeTimestamps: boolean;
+  threads: boolean;
+  reactions: boolean;
+  progress: boolean;
+  interactiveChoices: boolean;
+  typing: boolean;
+  replyTo: boolean;
+}
+
+/**
+ * TIER 1 — Capabilities (required, result-bearing). What the core calls and depends on the return
+ * of. Passed per-call so one core instance serves many surfaces concurrently and a process boundary
+ * is a matter of stubbing this, not the core.
+ */
+export interface SurfaceSession {
+  readonly capabilities: SurfaceCapabilities;
+  readonly renderer: PlatformRenderer;
+  readonly selfId: string;
+  readonly selfName: string;
+  /** The actual answer must land. Returns the delivered message id where the surface has one. */
+  deliver(reply: AgentReply): Promise<{ messageId?: string }>;
+  /** Present a paused interaction. Does NOT return the answer; a resume() re-enters as a fresh turn.
+   *  Required whenever `capabilities.interactiveChoices` is true (else the turn deadlocks). */
+  presentInteraction?(pending: PendingInteraction): Promise<void>;
+  /** Cooperative cancel flag the running loop polls. Absent → never cancelled. */
+  isCancelled?(): boolean;
+  /** Tool hosts this session provides (C6). Gates which tools are constructable this turn. */
+  readonly hosts: ToolHosts;
+}
+
+/**
+ * TIER 2 — Interceptors (result-bearing, pre-operation, abortive). Run BEFORE an operation and may
+ * mutate its input or veto it; the core acts on the return. Only `interceptTool` is wired now
+ * (C9/D5); other points are defined-not-built. Distinct NAME from the observe hook (pi discipline).
+ */
+export interface ToolCallIntercept {
+  conversation: ConversationRef;
+  owner: AuthorRef | null;
+  tool: string;
+  input: Record<string, unknown>;
+}
+
+export type InterceptResult =
+  | { block: true; reason?: string }
+  | { block?: false; input?: Record<string, unknown> }; // optionally patched args
+
+export interface Interceptors {
+  /** First `block` wins and short-circuits (pi semantics). */
+  interceptTool?(call: ToolCallIntercept): InterceptResult | Promise<InterceptResult>;
+}
+
+/**
+ * TIER 3 — Hooks (observational, fire-and-forget). No return the core acts on; the dispatcher
+ * try/catches each so a throwing hook can't break the turn. Reactions ⏳/✅, typing, live progress,
+ * and thread-title generation (an onTurnEnd hook) all live here.
+ */
+export interface TurnEndContext {
+  conversation: ConversationRef;
+  reply: AgentReply;
+  toolUseCount: number;
+  userTurnCount: number;
+  history: readonly ModelMessage[];
+}
+
+export interface HookEvents {
+  onTurnStart(ctx: { conversation: ConversationRef; author: AuthorRef }): void;
+  onToolsDispatched(ctx: { conversation: ConversationRef; tools: ToolActivity[] }): void;
+  onInterim(ctx: { conversation: ConversationRef; reply: AgentReply }): void;
+  onQueued(ctx: { conversation: ConversationRef; inbound: InboundMessage }): void;
+  onConsumed(ctx: { conversation: ConversationRef; inbound: InboundMessage }): void;
+  onPaused(ctx: { conversation: ConversationRef; pending: PendingInteraction }): void;
+  onTurnEnd(ctx: TurnEndContext): void;
+  onCancelled(ctx: { conversation: ConversationRef }): void;
+}
+
+export type HookName = keyof HookEvents;
+
+export interface HookBus {
+  on<E extends HookName>(event: E, handler: HookEvents[E]): void;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7 Tools (C6): host-typed — a tool needing a host is unconstructable without it
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Provider-neutral tool definition; U2 maps this to the AI SDK's tool shape. */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** Base context every tool gets. NO discord.js here. */
+export interface ToolContext {
+  space: { surface: SurfaceId; spaceId: string };
+  owner: AuthorRef | null; // tainted owner-gate identity, NOT inbound.author
+  store: ConversationStore;
+  memory: SpaceMemoryStore;
+  log: unknown; // Logger; typed loosely to avoid coupling U0 to the logger module
+}
+
+// Host interfaces are declared here to pin the SHAPE; U2 populates their members as it converts
+// the concrete tools. A tool that reaches for a host it doesn't require won't type-check.
+export interface DiscordToolHost { readonly _discord: unique symbol; }
+export interface MessageCacheHost { readonly _messageCache: unique symbol; }
+export interface SushiMcpHost { readonly _mcp: unique symbol; }
+
+export interface ToolHosts {
+  discord?: DiscordToolHost;
+  messageCache?: MessageCacheHost;
+  mcp?: SushiMcpHost;
+}
+
+export interface ToolResult {
+  content: string;
+}
+
+export interface ToolEntry<H extends keyof ToolHosts = never> {
+  name: string;
+  definition: ToolDefinition;
+  /** Hosts this tool needs; if any is absent for the session, the tool is not registered. */
+  requiresHosts: readonly H[];
+  /** Surface capabilities this tool needs (e.g. ask_question needs `interactiveChoices`). */
+  requiresCapabilities?: readonly (keyof SurfaceCapabilities)[];
+  execute(
+    input: Record<string, unknown>,
+    ctx: ToolContext & Required<Pick<ToolHosts, H>>,
+  ): Promise<ToolResult>;
+}
+
+export interface ToolRegistry {
+  /** Assemble the per-turn tool set given the session's hosts + capabilities + enabled modules. */
+  resolve(session: SurfaceSession, space: { surface: SurfaceId; spaceId: string }): ToolEntry<keyof ToolHosts>[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §8 Stores (re-keyed by ConversationRef / spaceId)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ConversationData {
+  messages: ModelMessage[];
+  initialThreadContext: string | null;
+}
+
+export interface ConversationStore {
+  load(ref: ConversationRef): ConversationData;
+  save(ref: ConversationRef, data: ConversationData): void;
+  deleteStale(maxAgeMs: number): void;
+}
+
+export interface MemoryEntry {
+  id: number;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SpaceMemoryStore {
+  getServerContext(spaceId: string): string | null;
+  setServerContext(spaceId: string, content: string): void;
+  listTitles(spaceId: string): string[];
+  count(spaceId: string): number;
+  read(spaceId: string, title: string): MemoryEntry | null;
+  search(spaceId: string, query: string, limit?: number): MemoryEntry[];
+  upsert(spaceId: string, title: string, content: string): { ok: true } | { error: string };
+  delete(spaceId: string, title: string): boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §9 AgentCore — the in-process door a surface (or a headless driver) calls
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CancelOutcome =
+  | { status: "cancelling" }
+  | { status: "no-active-turn" }
+  | { status: "forbidden"; owner: AuthorRef };
+
+export type AgentTurnResult =
+  | { status: "completed"; reply: AgentReply }
+  | { status: "queued" } // mid-loop injection accepted
+  | { status: "paused"; pending: PendingInteraction }
+  | { status: "cancelled" }
+  | { status: "error"; message: string };
+
+export interface AgentCore {
+  /** Primary entry. The core decides queue-or-run internally; delivery happens through `session`,
+   *  the returned result is for the surface's own lifecycle/persistence decisions (no second render). */
+  handleInbound(inbound: InboundMessage, session: SurfaceSession): Promise<AgentTurnResult>;
+  /** Resume a turn paused on ask_question / approval. */
+  resume(conversation: ConversationRef, resumption: TurnResumption, session: SurfaceSession): Promise<AgentTurnResult>;
+  /** Cooperative cancel; only the triggering author may stop a turn. */
+  cancel(conversation: ConversationRef, byAuthor: AuthorRef): CancelOutcome;
+}
+
+/** Provider-neutral language model handle; U1 binds the concrete AI-SDK provider. */
+export interface LanguageModelProvider {
+  readonly modelId: string;
+}
+
+export interface LoopLimits {
+  maxIterations: number;
+  contextRatio: number;
+}
+
+export interface AgentCoreDeps {
+  model: LanguageModelProvider;
+  store: ConversationStore;
+  memory: SpaceMemoryStore;
+  tools: ToolRegistry;
+  interceptors?: Interceptors;
+  hooks: HookBus;
+  behavior: string;
+  limits?: LoopLimits;
+}
