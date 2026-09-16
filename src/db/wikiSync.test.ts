@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { MIGRATIONS } from "./schema.ts";
+import { applySchema } from "./index.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "./wikiSync.ts";
 
 /** Effectively unbounded `until` for tests that don't care about the upper window edge. */
@@ -8,9 +8,7 @@ const UNTIL_MAX = Number.MAX_SAFE_INTEGER;
 
 function testDb(): Database {
   const db = new Database(":memory:");
-  for (const migration of MIGRATIONS) {
-    for (const sql of migration) db.exec(sql);
-  }
+  applySchema(db);
   return db;
 }
 

@@ -1,4 +1,6 @@
-import { getDb } from "./index.ts";
+import { eq, lt } from "drizzle-orm";
+import { getOrm } from "./index.ts";
+import { pendingQuestions } from "./schema.ts";
 
 export interface PendingQuestionRecord {
   threadId: string;
@@ -8,60 +10,50 @@ export interface PendingQuestionRecord {
   createdAt: number;
 }
 
-interface PendingQuestionRow {
-  thread_id: string;
-  question: string;
-  choices: string;
-  triggered_by_user_id: string;
-  created_at: number;
-}
-
-function rowToRecord(row: PendingQuestionRow): PendingQuestionRecord {
+function rowToRecord(row: typeof pendingQuestions.$inferSelect): PendingQuestionRecord {
   return {
-    threadId: row.thread_id,
+    threadId: row.threadId,
     question: row.question,
     choices: JSON.parse(row.choices) as string[],
-    triggeredByUserId: row.triggered_by_user_id,
-    createdAt: row.created_at,
+    triggeredByUserId: row.triggeredByUserId,
+    createdAt: row.createdAt,
   };
 }
 
 export function savePendingQuestion(record: PendingQuestionRecord): void {
-  const db = getDb();
-  db.run(
-    `INSERT OR REPLACE INTO pending_questions (thread_id, question, choices, triggered_by_user_id, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    [record.threadId, record.question, JSON.stringify(record.choices), record.triggeredByUserId, record.createdAt],
-  );
+  const orm = getOrm();
+  const values = {
+    threadId: record.threadId,
+    question: record.question,
+    choices: JSON.stringify(record.choices),
+    triggeredByUserId: record.triggeredByUserId,
+    createdAt: record.createdAt,
+  };
+  orm
+    .insert(pendingQuestions)
+    .values(values)
+    .onConflictDoUpdate({ target: pendingQuestions.threadId, set: values })
+    .run();
 }
 
 export function loadPendingQuestion(threadId: string): PendingQuestionRecord | null {
-  const db = getDb();
-  const row = db
-    .query<PendingQuestionRow, [string]>(
-      "SELECT * FROM pending_questions WHERE thread_id = ?",
-    )
-    .get(threadId);
-
+  const orm = getOrm();
+  const row = orm.select().from(pendingQuestions).where(eq(pendingQuestions.threadId, threadId)).get();
   return row ? rowToRecord(row) : null;
 }
 
 export function deletePendingQuestion(threadId: string): void {
-  const db = getDb();
-  db.run("DELETE FROM pending_questions WHERE thread_id = ?", [threadId]);
+  const orm = getOrm();
+  orm.delete(pendingQuestions).where(eq(pendingQuestions.threadId, threadId)).run();
 }
 
 export function loadAllPendingQuestions(): PendingQuestionRecord[] {
-  const db = getDb();
-  const rows = db
-    .query<PendingQuestionRow, []>("SELECT * FROM pending_questions")
-    .all();
-
-  return rows.map(rowToRecord);
+  const orm = getOrm();
+  return orm.select().from(pendingQuestions).all().map(rowToRecord);
 }
 
 export function deleteStalePendingQuestions(maxAgeMs: number): void {
-  const db = getDb();
+  const orm = getOrm();
   const cutoff = Date.now() - maxAgeMs;
-  db.run("DELETE FROM pending_questions WHERE created_at < ?", [cutoff]);
+  orm.delete(pendingQuestions).where(lt(pendingQuestions.createdAt, cutoff)).run();
 }

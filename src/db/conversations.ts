@@ -1,16 +1,9 @@
+import { eq, lt } from "drizzle-orm";
 import type { ModelMessage } from "ai";
-import { getDb } from "./index.ts";
+import { getOrm } from "./index.ts";
+import { conversations } from "./schema.ts";
 
 const MAX_HISTORY_MESSAGES = 200;
-
-interface ConversationRow {
-  thread_id: string;
-  guild_id: string;
-  messages: string;
-  initial_thread_context: string | null;
-  created_at: number;
-  updated_at: number;
-}
 
 export interface ConversationData {
   messages: ModelMessage[];
@@ -18,17 +11,13 @@ export interface ConversationData {
 }
 
 export function loadConversation(threadId: string): ConversationData {
-  const db = getDb();
-  const row = db
-    .query<ConversationRow, [string]>(
-      "SELECT * FROM conversations WHERE thread_id = ?",
-    )
-    .get(threadId);
+  const orm = getOrm();
+  const row = orm.select().from(conversations).where(eq(conversations.threadId, threadId)).get();
 
   if (!row) return { messages: [], initialThreadContext: null };
   return {
     messages: JSON.parse(row.messages) as ModelMessage[],
-    initialThreadContext: row.initial_thread_context,
+    initialThreadContext: row.initialThreadContext,
   };
 }
 
@@ -38,7 +27,7 @@ export function saveConversation(
   messages: ModelMessage[],
   initialThreadContext: string | null,
 ): void {
-  const db = getDb();
+  const orm = getOrm();
   const now = Date.now();
 
   const messagesToSave = messages.length > MAX_HISTORY_MESSAGES
@@ -59,18 +48,25 @@ export function saveConversation(
     ? messagesToSave.slice(startIdx)
     : messagesToSave;
 
-  db.run(
-    `INSERT INTO conversations (thread_id, guild_id, messages, initial_thread_context, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(thread_id) DO UPDATE SET
-       messages = excluded.messages,
-       updated_at = excluded.updated_at`,
-    [threadId, guildId, JSON.stringify(safeMsgs), initialThreadContext, now, now],
-  );
+  orm
+    .insert(conversations)
+    .values({
+      threadId,
+      guildId,
+      messages: JSON.stringify(safeMsgs),
+      initialThreadContext,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: conversations.threadId,
+      set: { messages: JSON.stringify(safeMsgs), updatedAt: now },
+    })
+    .run();
 }
 
 export function deleteStaleConversations(maxAgeMs: number): void {
-  const db = getDb();
+  const orm = getOrm();
   const cutoff = Date.now() - maxAgeMs;
-  db.run("DELETE FROM conversations WHERE updated_at < ?", [cutoff]);
+  orm.delete(conversations).where(lt(conversations.updatedAt, cutoff)).run();
 }

@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { wikiSyncState } from "./schema.ts";
 
 export interface WikiSyncMessage {
   discordId: string;
@@ -16,18 +19,18 @@ export interface WikiSyncMessage {
 
 /** Cursor for this guild's next sweep. 0 (never synced) means "everything currently retained". */
 export function getWikiSyncWatermark(db: Database, guildId: string): number {
-  const row = db.query(`SELECT last_processed_at FROM wiki_sync_state WHERE guild_id = ?`).get(guildId) as
-    | { last_processed_at: number }
-    | null;
-  return row?.last_processed_at ?? 0;
+  const orm = drizzle({ client: db, schema: { wikiSyncState } });
+  const row = orm.select().from(wikiSyncState).where(eq(wikiSyncState.guildId, guildId)).get();
+  return row?.lastProcessedAt ?? 0;
 }
 
 export function setWikiSyncWatermark(db: Database, guildId: string, timestamp: number): void {
-  db.run(
-    `INSERT INTO wiki_sync_state (guild_id, last_processed_at) VALUES (?, ?)
-     ON CONFLICT(guild_id) DO UPDATE SET last_processed_at = excluded.last_processed_at`,
-    [guildId, timestamp],
-  );
+  const orm = drizzle({ client: db, schema: { wikiSyncState } });
+  orm
+    .insert(wikiSyncState)
+    .values({ guildId, lastProcessedAt: timestamp })
+    .onConflictDoUpdate({ target: wikiSyncState.guildId, set: { lastProcessedAt: timestamp } })
+    .run();
 }
 
 const REPLY_SNIPPET_LENGTH = 120;
