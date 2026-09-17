@@ -36,7 +36,7 @@ export function deriveWebUrl(repoUrl: string): string | null {
  * permalink semantics. GitHub and Forgejo/Gitea (git.dreamcatcher.inc) use different path
  * shapes for this, unlike /commit/<sha> which both happen to share.
  */
-function buildFilePermalink(webUrl: string, ref: string, path: string): string {
+export function buildFilePermalink(webUrl: string, ref: string, path: string): string {
   const host = new URL(webUrl).hostname;
   const segment = host === "github.com" ? "blob" : "src/commit";
   return `${webUrl}/${segment}/${ref}/${path}`;

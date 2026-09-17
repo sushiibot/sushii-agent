@@ -253,6 +253,13 @@ declare module "../contracts.ts" {
     findDeletableMessages(args: { userId: string; channelId: string; limit: number }): Promise<{ discord_id: string; content: string; created_at: number }[]>;
   }
 
+  interface WikiHost {
+    /** Search the space's synced wiki pages; hits carry a tappable page URL where derivable. */
+    search(query: string, limit?: number): Promise<{ path: string; title: string; snippet: string; url?: string }[]>;
+    /** Full markdown of one page by repo-relative path, or null if missing. */
+    read(path: string): Promise<{ content: string; url?: string } | null>;
+  }
+
   interface SushiMcpHost {
     getUserModHistory(args: { userId: string; limit?: number; beforeCaseId?: string }): Promise<
       { caseId: string; action: string; userId: string; userTag: string; actionTime: number; executorId?: string; reason?: string }[]

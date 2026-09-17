@@ -331,11 +331,14 @@ export interface ToolContext {
 export interface DiscordToolHost {}
 export interface MessageCacheHost {}
 export interface SushiMcpHost {}
+export interface WikiHost {}
 
 export interface ToolHosts {
   discord?: DiscordToolHost;
   messageCache?: MessageCacheHost;
   mcp?: SushiMcpHost;
+  /** Searchable wiki-sync knowledge base — provided only for spaces with the wiki-sync module on. */
+  wiki?: WikiHost;
 }
 
 export interface ToolResult {

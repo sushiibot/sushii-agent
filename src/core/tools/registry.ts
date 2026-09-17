@@ -10,6 +10,7 @@ import { MCP_TOOL_ENTRIES } from "./mcp/tools.ts";
 import { OPS_TRIAGE_TOOL_ENTRIES } from "./opsTriage/tools.ts";
 import { DISCORD_TOOL_ENTRIES } from "./discord/tools.ts";
 import { deleteUserMessagesEntry } from "./discord/deleteUserMessages.ts";
+import { WIKI_TOOL_ENTRIES } from "./wiki/tools.ts";
 
 export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...MESSAGE_CACHE_TOOL_ENTRIES,
@@ -17,6 +18,7 @@ export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...MCP_TOOL_ENTRIES,
   ...OPS_TRIAGE_TOOL_ENTRIES,
   ...DISCORD_TOOL_ENTRIES,
+  ...WIKI_TOOL_ENTRIES,
   deleteUserMessagesEntry,
 ];
 
