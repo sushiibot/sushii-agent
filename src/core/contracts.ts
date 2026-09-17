@@ -213,6 +213,20 @@ export interface SurfaceCapabilities {
   replyTo: boolean;
 }
 
+/** Per-turn prompt inputs the surface supplies; the core folds them into slot assembly at the fixed
+ *  slot order (C8). The core supplies the rest itself: identity (selfId/selfName), the triggering
+ *  user (turn initiator), server context and the memory index. `ownerSection` (ops-triage) and
+ *  `moduleExtras` (auto-mod block) are opaque module-authored strings the core only positions. */
+export interface TurnPromptContext {
+  channel?: ChannelRef;
+  emojiMap?: Record<string, string>;
+  /** Frozen-or-fetched thread context; also persisted as `initialThreadContext` on the first turn. */
+  threadContext?: string;
+  threadChannelId?: string;
+  ownerSection?: string;
+  moduleExtras?: string[];
+}
+
 /**
  * TIER 1 — Capabilities (required, result-bearing). What the core calls and depends on the return
  * of. Passed per-call so one core instance serves many surfaces concurrently and a process boundary
@@ -223,6 +237,8 @@ export interface SurfaceSession {
   readonly renderer: PlatformRenderer;
   readonly selfId: string;
   readonly selfName: string;
+  /** Per-turn prompt inputs (C8). Optional — a surface with none (or a headless driver) omits it. */
+  promptContext?(): TurnPromptContext;
   /** The actual answer must land. Returns the delivered message id where the surface has one. */
   deliver(reply: AgentReply): Promise<{ messageId?: string }>;
   /** Present a paused interaction. Does NOT return the answer; a resume() re-enters as a fresh turn.

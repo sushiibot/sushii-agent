@@ -52,19 +52,11 @@ export class DiscordPlatformRenderer implements PlatformRenderer {
     return renderDiscordText(text, ctx.spaceId, ctx.emojiMap);
   }
 
-  promptGuidance(ctx: RenderContext): PromptGuidance {
-    const emojiNames = ctx.emojiMap ? Object.keys(ctx.emojiMap) : [];
-    const emojiSection = emojiNames.length > 0
-      ? `Server emoji available via e:name — ${emojiNames.join(", ")}.`
-      : undefined;
-
-    return {
-      sections: {
-        emoji: emojiSection,
-        channel: "Use c:CHANNEL_ID for channel references and msg:CHANNEL_ID/MESSAGE_ID to cite a specific message.",
-        threadContext: "Use t:SECONDS[:FLAG] for Discord timestamp formatting (FLAG defaults to f) instead of writing out dates.",
-      },
-    };
+  // Per-turn slot content is supplied via SurfaceSession.promptContext() and assembled by the core
+  // (systemPrompt.ts); the c:/t:/e: token instructions already live in BEHAVIOR_INSTRUCTIONS, so
+  // this extension point contributes nothing for Discord.
+  promptGuidance(_ctx: RenderContext): PromptGuidance {
+    return { sections: {} };
   }
 
   describeUser(author: AuthorRef): string {

@@ -14,7 +14,9 @@ import type {
   TurnResumption,
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
-import { buildSystemPrompt, buildUserNote, formatInboundAsUserTurn, formatResumptionAsUserTurn } from "./prompt.ts";
+import { buildUserNote, formatInboundAsUserTurn, formatResumptionAsUserTurn } from "./prompt.ts";
+import { assembleSystemPrompt } from "./systemPrompt.ts";
+import { MEMORY_LIMIT } from "./stores/index.ts";
 import { fireHook, runLoop } from "./loop.ts";
 
 function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
@@ -65,9 +67,26 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     }
     messages.push({ role: "user", content: firstUserText });
 
-    const renderCtx = { spaceId: conversation.spaceId };
-    const guidance = session.renderer.promptGuidance(renderCtx);
-    const systemPrompt = buildSystemPrompt(deps.behavior, guidance);
+    // C8: core owns slot ORDER; the surface fills per-turn content via promptContext(). The
+    // triggering-user section is suppressed for the autonomous auto-mod driver — it has no
+    // requesting user, matching the old dispatch.ts path that passed no triggeringUser.
+    const pc = session.promptContext?.() ?? {};
+    const systemPrompt = assembleSystemPrompt({
+      behavior: deps.behavior,
+      selfId: session.selfId,
+      selfName: session.selfName,
+      channel: pc.channel,
+      author: autoMod ? undefined : turn.initiator,
+      ownerSection: pc.ownerSection,
+      serverContext: deps.memory.getServerContext(conversation.spaceId),
+      memoryIndex: deps.memory.listTitles(conversation.spaceId),
+      memoryCount: deps.memory.count(conversation.spaceId),
+      memoryLimit: MEMORY_LIMIT,
+      emojiMap: pc.emojiMap,
+      threadContext: pc.threadContext,
+      threadChannelId: pc.threadChannelId,
+      moduleExtras: pc.moduleExtras,
+    });
 
     const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId, autoMod });
 
@@ -107,7 +126,12 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     });
 
     turn.owner = result.owner;
-    deps.store.save(conversation, { messages: result.messages, initialThreadContext: data.initialThreadContext });
+    // Freeze the surface's first-turn fetched context: once stored it's reused verbatim (stable
+    // prompt prefix, C11). Ports the old saveConversation, which persisted the turn's threadContext.
+    deps.store.save(conversation, {
+      messages: result.messages,
+      initialThreadContext: data.initialThreadContext ?? pc.threadContext ?? null,
+    });
 
     if (result.cancelled) {
       fireHook(deps.hooks, "onCancelled", { conversation });
