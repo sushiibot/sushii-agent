@@ -1,4 +1,5 @@
-import type { ModuleId } from "./modules/registry.ts";
+/** Agent modules a guild can enable. */
+export type ModuleId = "moderation" | "wiki-sync" | "mcp" | "ops-triage";
 
 export interface GuildConfig {
   allowedRoles: string[];
