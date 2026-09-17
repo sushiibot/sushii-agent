@@ -20,10 +20,9 @@ import { insertMessage, updateMessageContent, softDeleteMessage, deleteOldMessag
 import { savePendingQuestion, loadPendingQuestion, deletePendingQuestion, deleteStalePendingQuestions } from "../../db/pendingQuestions.ts";
 import { buildMessageContent } from "../../utils/flattenMessage.ts";
 import { isPrivateChannel } from "../../tools/channelUtils.ts";
-import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection } from "../../modules/moderation/prompt.ts";
-import type { AutoModTriggerContext } from "../../agent/loop.ts";
+import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerContext } from "../../modules/moderation/prompt.ts";
 import { buildOpsTriagePromptSection } from "../../modules/ops-triage/prompt.ts";
-import { isAutoModEligible, checkAndSetAutoModCooldown } from "../../modules/moderation/dispatch.ts";
+import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME, startWikiSyncScheduler } from "../../modules/wiki-sync/index.ts";
 import { DiscordHost } from "./hosts/discordHost.ts";
 import { DiscordMessageCacheHost } from "./hosts/messageCacheHost.ts";
@@ -34,6 +33,7 @@ import { ToolProgressTracker, buildTextDisplayContainer } from "./delivery.ts";
 import { renderDiscordText } from "./render.ts";
 import { handleFeedbackButton, handleFeedbackModal } from "./feedback.ts";
 import { SCAN_QUERY, sendScanApprovalMessage, disableScanButtons, applyAutomodDecision } from "./approvals.ts";
+import { buildTriggerText } from "./inbound.ts";
 import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, SCAN_BTN_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
@@ -318,11 +318,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     if (!message.member?.roles.cache.hasAny(...guildConfig.allowedRoles)) return;
 
     const guildId = message.guildId;
-    const botMentionRe = new RegExp(`<@!?${client.user.id}>`, "g");
-    const rawQuery = message.content.replace(botMentionRe, "").trim();
-    const isBarePing = rawQuery.length === 0;
-    const emojiQuery = rawQuery.replace(/<a?:(\w+):\d+>/g, (match, name) => emojiMap[name] ?? match);
-    const normalizedQuery = emojiQuery.replace(/https:\/\/discord\.com\/channels\/\d+\/(\d+)\/(\d+)/g, "msg:$1/$2");
 
     const mentioned = new Map<string, AuthorRef>();
     for (const [userId, user] of message.mentions.users) {
@@ -347,15 +342,15 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       }
     }
 
-    let body: string;
-    if (!isBarePing) {
-      body = normalizedQuery;
-    } else {
-      const flattened = buildMessageContent(message).replace(botMentionRe, "").trim();
-      const attached = flattened && flattened !== "[empty message]" ? `${flattened}\n` : "";
-      body = `${attached}[No message text — review the recent activity shown in your context, investigate anything unclear or needing moderator attention, and summarize what's going on. If nothing needs attention, say so briefly.]`;
-    }
-    const baseText = `${replyContext}[Message from ${message.author.username} (<@${message.author.id}>)]\n${body}`;
+    const baseText = buildTriggerText({
+      botId: client.user.id,
+      rawContent: message.content,
+      emojiMap,
+      authorUsername: message.author.username,
+      authorId: message.author.id,
+      replyContext,
+      barePingFlattened: buildMessageContent(message),
+    });
 
     const author = triggeringAuthor(message, guildConfig.allowedRoles);
     const channel = getChannelRef(message);
