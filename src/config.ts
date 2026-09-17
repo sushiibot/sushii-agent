@@ -24,6 +24,16 @@ export interface Config {
   discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
   mcpBridgePort: number;
+  buzz: {
+    /** Nostr private key (hex or nsec). Unset → the buzz surface is disabled entirely. */
+    privateKey: string | undefined;
+    /** Relay base URL; unset lets the `buzz` CLI use its own default (http://localhost:3000). */
+    relayUrl: string | undefined;
+    /** NIP-OA owner-attestation tag JSON (optional). */
+    authTag: string | undefined;
+    /** How often to poll `buzz feed get` for new mentions. */
+    pollIntervalMs: number;
+  };
   wikiSync: {
     repoUrl: string | undefined;
     /** Access token for an https:// repoUrl. Unused for ssh:// (ssh-agent handles auth instead). */
@@ -96,6 +106,12 @@ export const config: Config = {
   discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
+  buzz: {
+    privateKey: process.env["BUZZ_PRIVATE_KEY"],
+    relayUrl: process.env["BUZZ_RELAY_URL"],
+    authTag: process.env["BUZZ_AUTH_TAG"],
+    pollIntervalMs: parseInt(optional("BUZZ_POLL_INTERVAL_MS", "5000"), 10),
+  },
   wikiSync: {
     repoUrl: process.env["WIKI_SYNC_REPO_URL"],
     httpsToken: process.env["WIKI_SYNC_HTTPS_TOKEN"],

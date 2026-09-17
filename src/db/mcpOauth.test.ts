@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { MIGRATIONS } from "./schema.ts";
+import { applySchema } from "./index.ts";
 import {
   deleteExpiredOAuthClients,
   deleteExpiredOAuthSessions,
@@ -13,9 +13,7 @@ import {
 
 function testDb(): Database {
   const db = new Database(":memory:");
-  for (const migration of MIGRATIONS) {
-    for (const sql of migration) db.exec(sql);
-  }
+  applySchema(db);
   return db;
 }
 

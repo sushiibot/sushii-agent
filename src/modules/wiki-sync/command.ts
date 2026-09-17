@@ -2,6 +2,7 @@ import { REST, Routes, SlashCommandBuilder, type ChatInputCommandInteraction, ty
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { getWikiSyncEnabledGuildIds } from "./guilds.ts";
+import type { WikiSyncContext } from "./context.ts";
 import { isSweepInFlight, runWikiSyncSweep } from "./sweep.ts";
 
 const logger = getLogger("wiki-sync:command");
@@ -29,7 +30,10 @@ export async function registerWikiSyncCommands(client: Client<true>): Promise<vo
   }
 }
 
-export async function handleWikiSyncCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+export async function handleWikiSyncCommand(
+  interaction: ChatInputCommandInteraction,
+  makeContext: (guildId: string) => WikiSyncContext,
+): Promise<void> {
   if (!interaction.inCachedGuild()) return;
 
   const guildConfig = config.guildConfig[interaction.guildId];
@@ -47,8 +51,8 @@ export async function handleWikiSyncCommand(interaction: ChatInputCommandInterac
   // Replies immediately rather than deferReply()+wait — a sweep (a full Pi session plus git
   // clone/push) can plausibly run past Discord's 15-minute interaction-token window, which
   // would leave a deferred reply stuck on "thinking..." forever with no way to resolve it. The
-  // sweep runs detached; its actual result reaches the status channel via postSyncStatus
-  // (sweep.ts), not this interaction, once it's done.
+  // sweep runs detached; its actual result reaches the status channel via the sweep's SyncNotifier,
+  // not this interaction, once it's done.
   const runId = crypto.randomUUID().slice(0, 8);
   const statusChannelId = guildConfig?.wiki?.statusChannelId;
   const followUp = statusChannelId
@@ -58,7 +62,7 @@ export async function handleWikiSyncCommand(interaction: ChatInputCommandInterac
 
   logger.info({ guildId: interaction.guildId, runId, triggeredBy: interaction.user.id }, "command triggered");
 
-  runWikiSyncSweep(interaction.guildId, interaction.client, runId).catch((err) => {
+  runWikiSyncSweep(interaction.guildId, makeContext(interaction.guildId), runId).catch((err) => {
     logger.error({ guildId: interaction.guildId, runId, err }, "command-triggered sweep failed");
   });
 }

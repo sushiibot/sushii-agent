@@ -21,14 +21,11 @@ function msg(overrides: Partial<WikiSyncMessage> = {}): WikiSyncMessage {
   };
 }
 
-function fakeClient(names: Record<string, string>) {
+function fakeDeps(names: Record<string, string>) {
   return {
-    channels: {
-      cache: {
-        get: (id: string) => (names[id] ? { name: names[id] } : undefined),
-      },
-    },
-  } as unknown as import("discord.js").Client;
+    channelNames: { resolve: (id: string) => names[id] ?? null },
+    attachments: { fetchMessageAttachments: async () => [] },
+  };
 }
 
 let dir: string;
@@ -43,10 +40,10 @@ afterEach(async () => {
 
 describe("writeMessageInbox", () => {
   test("writes one file per channel directly into the given directory", async () => {
-    const client = fakeClient({ c1: "general", c2: "support" });
+    const deps = fakeDeps({ c1: "general", c2: "support" });
     const { files } = await writeMessageInbox(
       dir,
-      client,
+      deps,
       "g1",
       [msg({ channelId: "c1" }), msg({ channelId: "c2" }), msg({ channelId: "c1" })],
     );
@@ -57,22 +54,22 @@ describe("writeMessageInbox", () => {
   });
 
   test("uses a slugified channel name plus id when the channel resolves", async () => {
-    const client = fakeClient({ c1: "General Chat!" });
-    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" })]);
+    const deps = fakeDeps({ c1: "General Chat!" });
+    const { files } = await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "c1" })]);
     expect(files[0]!.path).toBe(join(dir, "general-chat-c1.md"));
   });
 
   test("falls back to the raw channel id when the channel doesn't resolve", async () => {
-    const client = fakeClient({});
-    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "unknown-chan" })]);
+    const deps = fakeDeps({});
+    const { files } = await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "unknown-chan" })]);
     expect(files[0]!.path).toBe(join(dir, "unknown-chan.md"));
   });
 
   test("file content includes timestamp, author, and message text", async () => {
-    const client = fakeClient({ c1: "general" });
+    const deps = fakeDeps({ c1: "general" });
     const { files } = await writeMessageInbox(
       dir,
-      client,
+      deps,
       "g1",
       [msg({ channelId: "c1", authorUsername: "alice", content: "hello world" })],
     );
@@ -83,32 +80,32 @@ describe("writeMessageInbox", () => {
   });
 
   test("includes the message's Discord URL so the model can cite a source page back to it", async () => {
-    const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1", discordId: "42" })]);
+    const deps = fakeDeps({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "c1", discordId: "42" })]);
     const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("(https://discord.com/channels/g1/c1/42)");
   });
 
   test("includes the author's Discord id, the only stable cross-reference since the inbox is wiped every sweep", async () => {
-    const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1", authorId: "429779375072870400" })]);
+    const deps = fakeDeps({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "c1", authorId: "429779375072870400" })]);
     const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("(id 429779375072870400)");
   });
 
   test("clears a previous batch before writing the new one", async () => {
-    const client = fakeClient({ c1: "general" });
-    await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" }), msg({ channelId: "stale-chan" })]);
-    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" })]);
+    const deps = fakeDeps({ c1: "general" });
+    await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "c1" }), msg({ channelId: "stale-chan" })]);
+    const { files } = await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "c1" })]);
     expect(files.map((f) => f.path)).toEqual([join(dir, "general-c1.md")]);
     expect(existsSync(join(dir, "stale-chan.md"))).toBe(false);
   });
 
   test("returns each file's channelId and parentChannelId so a caller can classify files without re-deriving the filename scheme", async () => {
-    const client = fakeClient({ c1: "general", "thread-1": "bug: login broken" });
+    const deps = fakeDeps({ c1: "general", "thread-1": "bug: login broken" });
     const { files } = await writeMessageInbox(
       dir,
-      client,
+      deps,
       "g1",
       [msg({ channelId: "c1" }), msg({ channelId: "thread-1", parentChannelId: "c1" })],
     );
@@ -118,10 +115,10 @@ describe("writeMessageInbox", () => {
   });
 
   test("a thread's file name and header reference its parent channel", async () => {
-    const client = fakeClient({ "thread-1": "bug: login broken", "general": "general" });
+    const deps = fakeDeps({ "thread-1": "bug: login broken", "general": "general" });
     const { files } = await writeMessageInbox(
       dir,
-      client,
+      deps,
       "g1",
       [msg({ channelId: "thread-1", parentChannelId: "general" })],
     );
@@ -131,10 +128,10 @@ describe("writeMessageInbox", () => {
   });
 
   test("a thread with an unresolvable parent still labels it by id", async () => {
-    const client = fakeClient({ "thread-1": "some thread" });
+    const deps = fakeDeps({ "thread-1": "some thread" });
     const { files } = await writeMessageInbox(
       dir,
-      client,
+      deps,
       "g1",
       [msg({ channelId: "thread-1", parentChannelId: "unknown-parent" })],
     );
@@ -143,18 +140,18 @@ describe("writeMessageInbox", () => {
   });
 
   test("a non-thread channel gets a plain channel header, no thread language", async () => {
-    const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, "g1", [msg({ channelId: "c1" })]);
+    const deps = fakeDeps({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, deps, "g1", [msg({ channelId: "c1" })]);
     const content = await readFile(files[0]!.path, "utf8");
     expect(content).toContain("# #general");
     expect(content).not.toContain("Thread");
   });
 
   test("a reply is annotated inline with who and what it replied to", async () => {
-    const client = fakeClient({ c1: "general" });
+    const deps = fakeDeps({ c1: "general" });
     const { files } = await writeMessageInbox(
       dir,
-      client,
+      deps,
       "g1",
       [msg({ channelId: "c1", content: "totally agree", replyTo: { author: "pham", content: "is this still broken?" } })],
     );
@@ -164,8 +161,8 @@ describe("writeMessageInbox", () => {
   });
 
   test("consecutive messages from the same author collapse into one header with plain content lines", async () => {
-    const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, "g1", [
+    const deps = fakeDeps({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, deps, "g1", [
       msg({ channelId: "c1", discordId: "1", authorId: "u1", content: "first" }),
       msg({ channelId: "c1", discordId: "2", authorId: "u1", content: "second" }),
       msg({ channelId: "c1", discordId: "3", authorId: "u1", content: "third" }),
@@ -181,8 +178,8 @@ describe("writeMessageInbox", () => {
   });
 
   test("a message from a different author, or a reply, breaks the run instead of merging", async () => {
-    const client = fakeClient({ c1: "general" });
-    const { files } = await writeMessageInbox(dir, client, "g1", [
+    const deps = fakeDeps({ c1: "general" });
+    const { files } = await writeMessageInbox(dir, deps, "g1", [
       msg({ channelId: "c1", discordId: "1", authorId: "u1", content: "hi" }),
       msg({ channelId: "c1", discordId: "2", authorId: "u2", content: "hey" }),
       msg({

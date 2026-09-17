@@ -1,11 +1,25 @@
 import type { Client } from "discord.js";
 import { otelSDK } from "./telemetry.ts";
-import { initDb, closeDb } from "./db/index.ts";
-import { startBot } from "./bot.ts";
+import { initDb, closeDb, getDb } from "./db/index.ts";
 import { client } from "./discordClient.ts";
 import { config } from "./config.ts";
 import { buildMcpHttpApp } from "./mcp/server/http.ts";
 import logger from "./logger.ts";
+import { openaiProvider } from "./agent/client.ts";
+import { createAgentCore } from "./core/agentCore.ts";
+import { createHookBus } from "./core/hooks.ts";
+import { createToolRegistry } from "./core/tools/registry.ts";
+import { SqliteConversationStore } from "./core/stores/conversationStore.ts";
+import { DiscordSpaceMemoryStore } from "./core/stores/memoryStore.ts";
+import type { LanguageModelProvider } from "./core/contracts.ts";
+import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
+import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
+import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
+import { createDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
+import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
+import { CliBuzzClient } from "./surfaces/buzz/buzzClient.ts";
+import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
+import { getBuzzCursor, setBuzzCursor } from "./db/buzzState.ts";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -13,7 +27,42 @@ async function main() {
   await initDb();
   logger.info("Database initialized");
 
-  await startBot();
+  const db = getDb();
+  const store = new SqliteConversationStore(db);
+  const memory = new DiscordSpaceMemoryStore(db);
+  const hookBus = createHookBus();
+  // deps.model is passed straight to the AI SDK's generateText (the core casts it back); it must BE
+  // the provider model AND carry contextLimit for the loop's context-ratio budget + the footer.
+  const model = Object.assign(openaiProvider(config.openaiModel), { contextLimit: config.openaiContextLimit }) as unknown as LanguageModelProvider;
+  // One tool registry (stateless), shared by every surface's core.
+  const tools = createToolRegistry();
+  const core = createAgentCore({
+    model,
+    store,
+    memory,
+    tools,
+    hooks: hookBus,
+    behavior: BEHAVIOR_INSTRUCTIONS,
+  });
+
+  startDiscordSurface({ client: client as Client<true>, core, store, memory, hookBus });
+  await client.login(config.discordBotToken);
+
+  // Non-conversational drivers bootstrap here, not inside a surface, so they don't depend on the
+  // Discord gateway lifecycle (C14). The capability bag is still Discord-backed for now — a headless
+  // impl (buzz/U6) swaps only the factory.
+  startWikiSyncScheduler((guildId) => createDiscordWikiSyncContext(client as Client<true>, guildId));
+
+  // Second surface: buzz. A separate AgentCore instance sharing the same store/memory/tools/model,
+  // but with a plain buzz behavior (no Discord tokens) and a hookless bus — the Discord-host tools
+  // gate off (hosts:{}), so it runs the portable toolset. Disabled unless BUZZ_PRIVATE_KEY is set.
+  if (config.buzz.privateKey) {
+    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: createHookBus(), behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
+    const buzzClient = new CliBuzzClient({ privateKey: config.buzz.privateKey, relayUrl: config.buzz.relayUrl, authTag: config.buzz.authTag });
+    await startBuzzSurface({ core: buzzCore, client: buzzClient, cursor: { get: getBuzzCursor, set: setBuzzCursor }, pollIntervalMs: config.buzz.pollIntervalMs });
+  } else {
+    logger.info("BUZZ_PRIVATE_KEY not set — buzz surface disabled");
+  }
 
   const mcpApp = buildMcpHttpApp(client as Client<true>);
   // MCP clients hold a GET open for server-initiated notifications that this stateless,

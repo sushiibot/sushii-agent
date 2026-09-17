@@ -1,4 +1,20 @@
-import type { AutoModTriggerContext } from "../../agent/loop.ts";
+/** Context for one autonomous auto-mod investigation. Defined here (the surviving home for the
+ *  auto-mod prompt) so the Discord surface no longer imports the pre-cutover agent/loop.ts. */
+export interface AutoModTriggerContext {
+  reporterUserId: string;
+  reporterUsername: string;
+  incidentChannelId: string;
+  incidentChannelName: string;
+  triggerMessageContent: string;
+  triggerMessageId: string;
+  repliedToUserId?: string;
+  repliedToMessageId?: string;
+  modRoleId: string;
+  modImmuneRoleIds: string[];
+  newMemberThresholdDays: number;
+  /** ID of the silent anchor message send_alert_message edits in place to deliver the final ping. */
+  anchorMessageId: string;
+}
 
 export const BEHAVIOR_INSTRUCTIONS = `You are a moderation intelligence assistant for Discord servers. You help moderators investigate user behavior, understand context around incidents, and make informed decisions. You investigate and recommend — you do not execute moderation actions directly.
 

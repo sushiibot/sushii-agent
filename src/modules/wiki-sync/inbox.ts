@@ -1,16 +1,11 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Client } from "discord.js";
 import { MESSAGE_CONCURRENCY, materializeMessageAttachments, runPool } from "./attachments.ts";
+import type { AttachmentSource, ChannelNameResolver } from "./context.ts";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
 
 function slugifyChannelName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-}
-
-function resolveChannelName(client: Client, channelId: string): string | null {
-  const channel = client.channels.cache.get(channelId);
-  return channel && "name" in channel && typeof channel.name === "string" ? channel.name : null;
 }
 
 /**
@@ -111,7 +106,7 @@ export interface InboxFile {
  */
 export async function writeMessageInbox(
   inboxDir: string,
-  client: Client,
+  deps: { channelNames: ChannelNameResolver; attachments: AttachmentSource },
   guildId: string,
   messages: WikiSyncMessage[],
 ): Promise<{ files: InboxFile[] }> {
@@ -124,7 +119,7 @@ export async function writeMessageInbox(
     messages.map((message, i) => ({ message, i })),
     MESSAGE_CONCURRENCY,
     async ({ message, i }) => {
-      materialized[i] = { ...message, content: await materializeMessageAttachments(client, attachmentsDir, message) };
+      materialized[i] = { ...message, content: await materializeMessageAttachments(deps.attachments, attachmentsDir, message) };
     },
   );
 
@@ -134,9 +129,9 @@ export async function writeMessageInbox(
     if (!group) {
       group = {
         channelId: message.channelId,
-        channelName: resolveChannelName(client, message.channelId),
+        channelName: deps.channelNames.resolve(message.channelId),
         parentChannelId: message.parentChannelId,
-        parentChannelName: message.parentChannelId ? resolveChannelName(client, message.parentChannelId) : null,
+        parentChannelName: message.parentChannelId ? deps.channelNames.resolve(message.parentChannelId) : null,
         messages: [],
       };
       groups.set(message.channelId, group);
