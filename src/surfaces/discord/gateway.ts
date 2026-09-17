@@ -23,7 +23,8 @@ import { isPrivateChannel } from "../../tools/channelUtils.ts";
 import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerContext } from "../../modules/moderation/prompt.ts";
 import { buildOpsTriagePromptSection } from "../../modules/ops-triage/prompt.ts";
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
-import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME, startWikiSyncScheduler } from "../../modules/wiki-sync/index.ts";
+import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
+import { createDiscordWikiSyncContext } from "./wikiSync.ts";
 import { DiscordHost } from "./hosts/discordHost.ts";
 import { DiscordMessageCacheHost } from "./hosts/messageCacheHost.ts";
 import { SushiMcpHost } from "./hosts/sushiMcpHost.ts";
@@ -547,7 +548,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
     if (interaction.isChatInputCommand() && interaction.commandName === WIKI_SYNC_COMMAND_NAME) {
-      await handleWikiSyncCommand(interaction);
+      await handleWikiSyncCommand(interaction, (gid) => createDiscordWikiSyncContext(client, gid));
       return;
     }
     if (!interaction.isButton()) return;
@@ -752,7 +753,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     logger.info({ tag: c.user.tag }, "Logged in");
     logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
     await registerWikiSyncCommands(c).catch((err) => logger.error({ err }, "failed to register wiki-sync commands"));
-    startWikiSyncScheduler(c);
   });
 
   // Startup cleanup schedules (ported from the old startBot()).

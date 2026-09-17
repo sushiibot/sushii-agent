@@ -57,32 +57,20 @@ function msg(overrides: Partial<WikiSyncMessage> = {}): WikiSyncMessage {
   };
 }
 
-interface FakeAttachment {
-  id: string;
-  name: string;
-  url: string;
-  contentType: string | null;
-  size: number;
+import type { AttachmentSource, FetchedAttachment } from "./context.ts";
+
+/** An AttachmentSource returning a fixed list — the Discord impl (channel/message fetch → map) lives
+ *  in the surface now; the engine only sees this interface. */
+function source(attachments: FetchedAttachment[]): AttachmentSource {
+  return { fetchMessageAttachments: async () => attachments };
 }
 
-function fakeClient(channel: unknown) {
-  return {
-    channels: {
-      fetch: async () => channel,
-    },
-  } as unknown as import("discord.js").Client;
-}
-
-function textBasedChannel(attachments: FakeAttachment[]) {
-  return {
-    isTextBased: () => true,
-    messages: {
-      fetch: async () => ({
-        attachments: new Map(attachments.map((a) => [a.id, a])),
-      }),
-    },
-  };
-}
+/** Models a channel that can't be refetched (fetchMessageAttachments throws → content unchanged). */
+const throwingSource: AttachmentSource = {
+  fetchMessageAttachments: async () => {
+    throw new Error("unknown channel");
+  },
+};
 
 let dir: string;
 let originalFetch: typeof fetch;
@@ -99,42 +87,34 @@ afterEach(async () => {
 
 describe("materializeMessageAttachments", () => {
   test("returns content unchanged when it has no Discord CDN attachment urls", async () => {
-    const client = fakeClient(null);
-    const content = await materializeMessageAttachments(client, dir, msg({ content: "just text, no urls" }));
+    const src = source([]);
+    const content = await materializeMessageAttachments(src, dir, msg({ content: "just text, no urls" }));
     expect(content).toBe("just text, no urls");
   });
 
   test("returns content unchanged when the channel can't be refetched", async () => {
-    const client = {
-      channels: {
-        fetch: async () => {
-          throw new Error("unknown channel");
-        },
-      },
-    } as unknown as import("discord.js").Client;
+    const src = throwingSource;
     const original =
       "[image: foo.png](https://cdn.discordapp.com/attachments/9999999999/1111/foo.png?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
     expect(content).toBe(original);
   });
 
   test("returns content unchanged when the channel isn't text-based", async () => {
-    const client = fakeClient({ isTextBased: () => false });
+    const src = source([]);
     const original =
       "[image: foo.png](https://cdn.discordapp.com/attachments/9999999999/1111/foo.png?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
     expect(content).toBe(original);
   });
 
   test("downloads an image attachment and rewrites its label to the absolute local path", async () => {
     globalThis.fetch = (async () => new Response(new Uint8Array([1, 2, 3, 4]))) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         { id: "1111", name: "foo.png", url: "https://cdn.discordapp.com/attachments/9999999999/1111/foo.png?ex=abc", contentType: "image/png", size: 4 },
-      ]),
-    );
+      ]);
     const original = "[image: foo.png](https://cdn.discordapp.com/attachments/9999999999/1111/foo.png?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     const match = content.match(/\[image: foo\.png\]\((.+)\)/);
     expect(match).not.toBeNull();
@@ -146,13 +126,11 @@ describe("materializeMessageAttachments", () => {
 
   test("downloads a text attachment and rewrites its label", async () => {
     globalThis.fetch = (async () => new Response("hello from a text file")) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         { id: "2222", name: "notes.txt", url: "https://cdn.discordapp.com/attachments/9999999999/2222/notes.txt?ex=abc", contentType: "text/plain", size: 20 },
-      ]),
-    );
+      ]);
     const original = "[text: notes.txt](https://cdn.discordapp.com/attachments/9999999999/2222/notes.txt?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     const match = content.match(/\[text: notes\.txt\]\((.+)\)/);
     const localPath = match![1]!;
@@ -165,13 +143,11 @@ describe("materializeMessageAttachments", () => {
       fetchCalled = true;
       return new Response(new Uint8Array([0]));
     }) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         { id: "3333", name: "clip.mp4", url: "https://cdn.discordapp.com/attachments/9999999999/3333/clip.mp4?ex=abc", contentType: "video/mp4", size: 1000 },
-      ]),
-    );
+      ]);
     const original = "[video: clip.mp4](https://cdn.discordapp.com/attachments/9999999999/3333/clip.mp4?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     expect(content).toBe(original);
     expect(fetchCalled).toBe(false);
@@ -183,8 +159,7 @@ describe("materializeMessageAttachments", () => {
       fetchCalled = true;
       return new Response(new Uint8Array([1]));
     }) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         {
           id: "4444",
           name: "huge.png",
@@ -192,10 +167,9 @@ describe("materializeMessageAttachments", () => {
           contentType: "image/png",
           size: 100 * 1024 * 1024,
         },
-      ]),
-    );
+      ]);
     const original = "[image: huge.png](https://cdn.discordapp.com/attachments/9999999999/4444/huge.png?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     expect(content).toBe(original);
     expect(fetchCalled).toBe(false);
@@ -203,13 +177,11 @@ describe("materializeMessageAttachments", () => {
 
   itIfPoppler("extracts PDF text and points the label at the .txt file", async () => {
     globalThis.fetch = (async () => new Response(new Uint8Array(PDF_WITH_TEXT))) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         { id: "6666", name: "doc.pdf", url: "https://cdn.discordapp.com/attachments/9999999999/6666/doc.pdf?ex=abc", contentType: "application/pdf", size: PDF_WITH_TEXT.length },
-      ]),
-    );
+      ]);
     const original = "[application: doc.pdf](https://cdn.discordapp.com/attachments/9999999999/6666/doc.pdf?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     const match = content.match(/\[application: doc\.pdf\]\((.+?)\)/);
     expect(match).not.toBeNull();
@@ -222,13 +194,11 @@ describe("materializeMessageAttachments", () => {
   // A blank page has no extractable text, so pdftotext falls through to pdftoppm rasterization.
   itIfPoppler("rasterizes a text-free PDF into page images", async () => {
     globalThis.fetch = (async () => new Response(new Uint8Array(BLANK_PDF))) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         { id: "5555", name: "doc.pdf", url: "https://cdn.discordapp.com/attachments/9999999999/5555/doc.pdf?ex=abc", contentType: "application/pdf", size: BLANK_PDF.length },
-      ]),
-    );
+      ]);
     const original = "[application: doc.pdf](https://cdn.discordapp.com/attachments/9999999999/5555/doc.pdf?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     const match = content.match(/\[application: doc\.pdf\]\((.+?)\)/);
     expect(match).not.toBeNull();
@@ -240,13 +210,11 @@ describe("materializeMessageAttachments", () => {
 
   test("materializes an image with a null contentType via its file extension", async () => {
     globalThis.fetch = (async () => new Response(new Uint8Array([9, 9, 9]))) as unknown as typeof fetch;
-    const client = fakeClient(
-      textBasedChannel([
+    const src = source([
         { id: "7777", name: "screenshot.png", url: "https://cdn.discordapp.com/attachments/9999999999/7777/screenshot.png?ex=abc", contentType: null, size: 3 },
-      ]),
-    );
+      ]);
     const original = "[attachment: screenshot.png](https://cdn.discordapp.com/attachments/9999999999/7777/screenshot.png?ex=abc)";
-    const content = await materializeMessageAttachments(client, dir, msg({ content: original }));
+    const content = await materializeMessageAttachments(src, dir, msg({ content: original }));
 
     const match = content.match(/\[attachment: screenshot\.png\]\((.+)\)/);
     expect(match).not.toBeNull();

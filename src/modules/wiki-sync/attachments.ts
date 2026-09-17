@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Attachment, Client } from "discord.js";
+import type { AttachmentSource, FetchedAttachment } from "./context.ts";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
 import { getLogger } from "../../logger.ts";
 
@@ -57,7 +57,7 @@ export async function runPool<T>(items: T[], concurrency: number, fn: (item: T) 
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
 }
 
-async function downloadBytes(attachment: Attachment): Promise<Uint8Array | null> {
+async function downloadBytes(attachment: FetchedAttachment): Promise<Uint8Array | null> {
   if (attachment.size > MAX_BYTES) {
     logger.warn({ attachmentId: attachment.id, size: attachment.size }, "attachment exceeds max size, skipping");
     return null;
@@ -109,7 +109,7 @@ interface Replacement {
   extra?: string;
 }
 
-async function materializeImage(msgDir: string, attachment: Attachment): Promise<Replacement | null> {
+async function materializeImage(msgDir: string, attachment: FetchedAttachment): Promise<Replacement | null> {
   const bytes = await downloadBytes(attachment);
   if (!bytes) return null;
   await mkdir(msgDir, { recursive: true });
@@ -118,7 +118,7 @@ async function materializeImage(msgDir: string, attachment: Attachment): Promise
   return { url: resolve(filePath) };
 }
 
-async function materializeText(msgDir: string, attachment: Attachment): Promise<Replacement | null> {
+async function materializeText(msgDir: string, attachment: FetchedAttachment): Promise<Replacement | null> {
   const bytes = await downloadBytes(attachment);
   if (!bytes) return null;
   await mkdir(msgDir, { recursive: true });
@@ -147,7 +147,7 @@ async function pdfInfo(pdfPath: string): Promise<{ pages: number | null; longEdg
  * including ones already under the cap, into an exact target box (both up- and down-scaling),
  * which isn't the "only downscale if it's actually too big" behavior wanted here.
  */
-async function materializePdf(msgDir: string, attachment: Attachment): Promise<Replacement | null> {
+async function materializePdf(msgDir: string, attachment: FetchedAttachment): Promise<Replacement | null> {
   const bytes = await downloadBytes(attachment);
   if (!bytes) return null;
   await mkdir(msgDir, { recursive: true });
@@ -211,7 +211,7 @@ async function materializePdf(msgDir: string, attachment: Attachment): Promise<R
   return { url: pages[0]!, extra: pages.length > 1 ? ` pages: ${pages.join(", ")}` : undefined };
 }
 
-async function materializeOne(msgDir: string, attachment: Attachment): Promise<Replacement | null> {
+async function materializeOne(msgDir: string, attachment: FetchedAttachment): Promise<Replacement | null> {
   if (isImage(attachment.contentType, attachment.name)) return materializeImage(msgDir, attachment);
   if (isPdf(attachment.contentType, attachment.name)) return materializePdf(msgDir, attachment);
   if (isTextLike(attachment.contentType, attachment.name)) return materializeText(msgDir, attachment);
@@ -235,7 +235,7 @@ function rewriteContent(content: string, replacements: Map<string, Replacement>)
  * than failing the whole sweep.
  */
 export async function materializeMessageAttachments(
-  client: Client,
+  source: AttachmentSource,
   attachmentsDir: string,
   message: WikiSyncMessage,
 ): Promise<string> {
@@ -243,17 +243,9 @@ export async function materializeMessageAttachments(
     return message.content;
   }
 
-  let attachments: Attachment[];
+  let attachments: FetchedAttachment[];
   try {
-    const channel = await client.channels.fetch(message.channelId);
-    if (!channel || !channel.isTextBased()) {
-      logger.debug({ channelId: message.channelId }, "channel not text-based, skipping attachment materialize");
-      return message.content;
-    }
-    const fresh = await channel.messages.fetch(message.discordId);
-    // Only `message.attachments`, not Components V2 media — fine, wiki-sync only sweeps
-    // human messages, which don't carry V2 component media.
-    attachments = [...fresh.attachments.values()];
+    attachments = await source.fetchMessageAttachments(message.channelId, message.discordId);
   } catch (err) {
     logger.warn({ err, channelId: message.channelId, discordId: message.discordId }, "failed to refetch message for attachments");
     return message.content;

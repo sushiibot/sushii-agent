@@ -1,22 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { ContainerBuilder, MessageFlags, TextDisplayBuilder, type Client } from "discord.js";
-import { config } from "../../config.ts";
-import { getLogger } from "../../logger.ts";
 import type { WikiRepo } from "./git.ts";
 
-const logger = getLogger("wiki-sync:notify");
+// Discord-free content builders for the post-sweep status message. Posting itself (fetch + send +
+// feedback thread) is the Discord SyncNotifier impl in src/surfaces/discord/wikiSync.ts, which calls
+// these — the engine stays discord.js-free (C13).
 
-const MAX_CONTENT_LENGTH = 3800;
-
-// Inlined rather than importing agent/delivery.ts's buildTextDisplayContainer: delivery.ts
-// pulls in agent/loop.ts, which imports modules/registry.ts, which imports this module's own
-// package (wiki-sync/index.ts) -- that closed a real circular-import chain that crash-looped
-// the whole process in production (ReferenceError: Cannot access 'wikiSyncModule' before
-// initialization). This two-line helper isn't worth reintroducing that dependency for.
-function buildTextDisplayContainer(content: string): ContainerBuilder {
-  return new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder({ content }));
-}
+export const MAX_CONTENT_LENGTH = 3800;
 
 /**
  * Web URL for linking to a commit -- Forgejo and GitHub both serve /commit/<sha> at
@@ -150,46 +140,3 @@ export async function buildRecapBody(repo: WikiRepo, commitSha: string, webUrl: 
   return nonEmpty.length > 0 ? nonEmpty.join("\n\n") : null;
 }
 
-/** Posts a status update to this guild's configured channel after a sweep pushes a commit. Never throws -- a failed notification shouldn't fail the sweep. */
-export async function postSyncStatus(opts: { client: Client; guildId: string; repo: WikiRepo; commitSha: string }): Promise<void> {
-  const channelId = config.guildConfig[opts.guildId]?.wiki?.statusChannelId;
-  if (!channelId) return;
-
-  try {
-    const channel = await opts.client.channels.fetch(channelId);
-    if (!channel?.isTextBased() || channel.isDMBased() || channel.guildId !== opts.guildId) {
-      logger.error({ guildId: opts.guildId, channelId }, "wikiSyncStatusChannelId is not a guild text channel");
-      return;
-    }
-
-    const webUrl = deriveWebUrl(config.wikiSync.repoUrl ?? "");
-    const recap = await buildRecapBody(opts.repo, opts.commitSha, webUrl);
-
-    const commitLine = webUrl
-      ? `[View commit](${webUrl}/commit/${opts.commitSha})`
-      : `Commit \`${opts.commitSha.slice(0, 7)}\``;
-
-    const content = buildStatusContent(recap ? recap.trim() : null, commitLine);
-
-    const sent = await channel.send({
-      components: [buildTextDisplayContainer(content)],
-      flags: MessageFlags.IsComponentsV2 | MessageFlags.SuppressEmbeds,
-      allowedMentions: { parse: [] },
-    });
-
-    // A thread scoped to this specific sweep for discussing its output -- the next sweep reads
-    // it back as feedback (see sweep.ts/prompt.ts). Non-fatal: a missing thread just means no
-    // feedback surface for this one sync, not a failed notification.
-    try {
-      // Content spans whatever the sweep happened to touch, not one topic -- a generated
-      // per-sync title would be noise, not a useful label. The date is what actually
-      // distinguishes one thread from the next in the channel's thread list.
-      const date = new Date().toISOString().slice(0, 10);
-      await sent.startThread({ name: `${date} discuss this sync` });
-    } catch (err) {
-      logger.warn({ guildId: opts.guildId, channelId, err }, "failed to open feedback thread on status message");
-    }
-  } catch (err) {
-    logger.error({ guildId: opts.guildId, channelId, err }, "failed to post status update");
-  }
-}

@@ -1,5 +1,4 @@
 import { SpanStatusCode } from "@opentelemetry/api";
-import type { Client } from "discord.js";
 import { join } from "node:path";
 import { config } from "../../config.ts";
 import { getDb } from "../../db/index.ts";
@@ -8,7 +7,7 @@ import { tracer } from "../../telemetry.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "../../db/wikiSync.ts";
 import { COMMITTER_NAME, openWikiRepo } from "./git.ts";
 import { writeMessageInbox, type InboxFile } from "./inbox.ts";
-import { postSyncStatus } from "./notify.ts";
+import type { WikiSyncContext } from "./context.ts";
 import { runWikiSyncSession } from "./piSession.ts";
 import { buildSweepTriggerPrompt } from "./prompt.ts";
 
@@ -44,7 +43,7 @@ export function isSweepInFlight(guildId: string): boolean {
  * when the caller isn't going to wait for this promise to resolve. Defaults to a fresh one for
  * callers that don't care (the scheduler).
  */
-export async function runWikiSyncSweep(guildId: string, client: Client, runId: string = crypto.randomUUID().slice(0, 8)): Promise<SweepResult> {
+export async function runWikiSyncSweep(guildId: string, ctx: WikiSyncContext, runId: string = crypto.randomUUID().slice(0, 8)): Promise<SweepResult> {
   if (inFlight.has(guildId)) {
     return { ran: false, reason: "a sweep is already running for this guild" };
   }
@@ -89,7 +88,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
       const repo = await openWikiRepo(guildId);
       // Sibling of the repo checkout, outside its git working tree entirely — see inbox.ts.
       const inboxDir = join(config.wikiSync.inboxDir, guildId);
-      const { files: allFiles } = await writeMessageInbox(inboxDir, client, guildId, messages);
+      const { files: allFiles } = await writeMessageInbox(inboxDir, ctx, guildId, messages);
 
       // The status channel (and any thread on a message wiki-sync posted there, e.g. the
       // per-sweep "discuss this sync" thread from notify.ts) isn't community content to build
@@ -110,7 +109,7 @@ export async function runWikiSyncSweep(guildId: string, client: Client, runId: s
       if (latest) setWikiSyncWatermark(db, guildId, latest.createdAt);
 
       if (result.commitSha) {
-        await postSyncStatus({ client, guildId, repo, commitSha: result.commitSha });
+        await ctx.notify.postStatus({ repo, commitSha: result.commitSha });
       }
 
       log.info({ messageCount: messages.length, commitSha: result.commitSha }, "sweep complete");
