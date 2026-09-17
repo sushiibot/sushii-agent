@@ -22,7 +22,7 @@ export const deleteUserMessagesEntry: ToolEntry<"discord" | "messageCache"> = {
   requiresHosts: ["discord", "messageCache"],
   async execute(input, ctx) {
     const limit = Math.min((input.limit as number | undefined) ?? 50, 100);
-    const candidates = ctx.messageCache.findDeletableMessages({
+    const candidates = await ctx.messageCache.findDeletableMessages({
       userId: input.user_id as string,
       channelId: input.channel_id as string,
       limit,

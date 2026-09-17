@@ -281,27 +281,26 @@ export class DiscordMessageCacheHost {
       .all(this.guildId, since, pattern, pattern, limit);
   }
 
-  /**
-   * Selects deletion candidates from the cache. NOTE: contracts.ts's MessageCacheHost.
-   * findDeletableMessages is synchronous, so the old deleteUserMessages.ts's live-API
-   * supplement (fetch the channel's last 100 messages when the cache has <5 hits) can't run
-   * here without a signature change — that fallback needs `await channel.messages.fetch(...)`.
-   * `prefetchLiveCandidates` below does the live fetch; the tool entry that constructs this host
-   * must call it once (awaited) before dispatching the turn's tools if it wants the fallback —
-   * flagging this rather than papering over it, since the two-host split in
-   * core/tools/discord/deleteUserMessages.ts currently has no async hook point for it.
-   */
-  findDeletableMessages(args: { userId: string; channelId: string; limit: number }): { discord_id: string; content: string; created_at: number }[] {
+  /** Deletion candidates for a user in a channel, most-recent first. Reads the cache, then — when
+   *  the cache is thin (<5 hits, common for a spammer with no history) — supplements with a live
+   *  channel fetch, ported from src/tools/deleteUserMessages.ts. */
+  async findDeletableMessages(args: { userId: string; channelId: string; limit: number }): Promise<{ discord_id: string; content: string; created_at: number }[]> {
     const cached = this.searchMessages({ userIds: [args.userId], channelId: args.channelId, limit: args.limit });
     const rows: { discord_id: string; content: string; created_at: number }[] = Array.isArray(cached)
       ? cached.map((r) => ({ discord_id: r.discordId, content: r.content, created_at: r.createdAt }))
       : [];
+
+    if (rows.length < 5 && this.client) {
+      const seen = new Set(rows.map((r) => r.discord_id));
+      for (const r of await this.fetchLiveCandidates(args.userId, args.channelId)) {
+        if (!seen.has(r.discord_id)) { rows.push(r); seen.add(r.discord_id); }
+      }
+    }
+    rows.sort((a, b) => b.created_at - a.created_at);
     return rows.slice(0, args.limit);
   }
 
-  /** The live-API fallback restored from src/tools/deleteUserMessages.ts, callable ahead of a
-   *  synchronous findDeletableMessages lookup once cache thinness is known (<5 hits). */
-  async prefetchLiveCandidates(userId: string, channelId: string): Promise<{ discord_id: string; content: string; created_at: number }[]> {
+  private async fetchLiveCandidates(userId: string, channelId: string): Promise<{ discord_id: string; content: string; created_at: number }[]> {
     if (!this.client) return [];
     try {
       const channel = await this.client.channels.fetch(channelId);

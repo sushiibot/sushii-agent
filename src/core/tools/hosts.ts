@@ -250,7 +250,7 @@ declare module "../contracts.ts" {
     }[];
 
     /** For `delete_user_messages`, which selects candidates from the cache before deleting live. */
-    findDeletableMessages(args: { userId: string; channelId: string; limit: number }): { discord_id: string; content: string; created_at: number }[];
+    findDeletableMessages(args: { userId: string; channelId: string; limit: number }): Promise<{ discord_id: string; content: string; created_at: number }[]>;
   }
 
   interface SushiMcpHost {
