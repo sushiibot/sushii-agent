@@ -26,9 +26,15 @@ function fakeCore(inbounds: { inbound: InboundMessage; session: SurfaceSession }
   };
 }
 
-function fakeClient(events: BuzzEvent[], sends: { channelId: string; content: string; replyToId?: string }[], ownPubkey = "me"): BuzzClient {
+function fakeClient(
+  events: BuzzEvent[],
+  sends: { channelId: string; content: string; replyToId?: string }[],
+  ownPubkey = "me",
+  profiles?: string[],
+): BuzzClient {
   return {
     async ownPubkey() { return ownPubkey; },
+    async setProfile(name) { profiles?.push(name); },
     async feedMentions() { return events; },
     async send(channelId, content, replyToId): Promise<BuzzSendResult> {
       sends.push({ channelId, content, replyToId });
@@ -89,6 +95,24 @@ describe("startBuzzSurface poll loop", () => {
     surface.stop();
     expect(inbounds).toHaveLength(0);
     expect(cursor.value).toBe(1000);
+  });
+
+  test("publishes its display name on startup when one is configured", async () => {
+    const profiles: string[] = [];
+    const cursor = memCursor(500);
+    const surface = await startBuzzSurface({ core: fakeCore([]), client: fakeClient([], [], "me", profiles), cursor, pollIntervalMs: 10_000, displayName: "sushii-agent" });
+    await tick();
+    surface.stop();
+    expect(profiles).toEqual(["sushii-agent"]);
+  });
+
+  test("routes conversations into a per-relay space when spaceId is given", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const cursor = memCursor(500);
+    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], []), cursor, pollIntervalMs: 10_000, spaceId: "buzz:wss://a" });
+    await tick();
+    surface.stop();
+    expect(inbounds[0].inbound.conversation.spaceId).toBe("buzz:wss://a");
   });
 
   test("a fresh cursor (0) is initialized to ~now, skipping history", async () => {

@@ -5,9 +5,10 @@ import { BuzzSurfaceSession } from "./session.ts";
 
 const logger = getLogger("surfaces/buzz/gateway");
 
-// Single-community: the relay URL is the community, so every buzz conversation shares one spaceId
-// (memory + server context are scoped to it, analogous to a Discord guild).
-const BUZZ_SPACE_ID = "buzz";
+// The relay URL is the community, so a surface's conversations share one spaceId (memory + server
+// context are scoped to it, analogous to a Discord guild). With multiple relays each gets its own
+// spaceId so memory/context never bleed across communities.
+const DEFAULT_SPACE_ID = "buzz";
 const SURFACE = "buzz" as const;
 
 /** Stable per-thread conversation key: the NIP-10 root event id, or the event's own id for a
@@ -32,13 +33,26 @@ export interface BuzzSurfaceDeps {
   client: BuzzClient;
   cursor: CursorStore;
   pollIntervalMs: number;
+  /** Memory/server-context scope for this relay's community; defaults to "buzz" (single-relay). */
+  spaceId?: string;
+  /** If set, publish this as the bot's kind:0 display name on boot (best-effort — a relay write). */
+  displayName?: string;
+  /** Which relay this loop serves, for log correlation across multiple surfaces. */
+  relayLabel?: string;
 }
 
 /** Starts the buzz mention poll loop. Returns a stop() to clear the interval (for tests/shutdown). */
-export async function startBuzzSurface(deps: BuzzSurfaceDeps): Promise<{ stop: () => void }> {
-  const { core, client, cursor: cursorStore, pollIntervalMs } = deps;
-  const ownPubkey = await client.ownPubkey();
-  logger.info({ ownPubkey, pollIntervalMs }, "buzz surface starting");
+export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
+  const { core, client, cursor: cursorStore, pollIntervalMs, displayName, relayLabel } = deps;
+  const spaceId = deps.spaceId ?? DEFAULT_SPACE_ID;
+  logger.info({ pollIntervalMs, relay: relayLabel }, "buzz surface starting");
+
+  // Resolved lazily on the first successful tick (both need a reachable, admitting relay), so a relay
+  // that's unreachable or hasn't admitted the bot yet retries each interval and self-heals once added,
+  // instead of dying at boot with no recovery. Keeping startup non-blocking also frees the MCP bridge
+  // to start listening immediately.
+  let ownPubkey: string | null = null;
+  let profilePublished = false;
 
   let cursor = cursorStore.get();
   if (cursor === 0) {
@@ -53,6 +67,22 @@ export async function startBuzzSurface(deps: BuzzSurfaceDeps): Promise<{ stop: (
     if (polling) return; // never overlap a slow poll with the next tick
     polling = true;
     try {
+      if (ownPubkey === null) {
+        ownPubkey = await client.ownPubkey();
+        logger.info({ ownPubkey, relay: relayLabel }, "buzz identity resolved");
+      }
+      if (displayName && !profilePublished) {
+        // Idempotent (kind:0 replaceable); best-effort and independent of polling so a failed profile
+        // write (relay hiccup / pre-admission) doesn't stall mentions — it just retries next tick.
+        try {
+          await client.setProfile(displayName);
+          profilePublished = true;
+          logger.info({ displayName, relay: relayLabel }, "buzz profile published");
+        } catch (err) {
+          logger.warn({ err, relay: relayLabel, displayName }, "buzz set-profile failed (will retry)");
+        }
+      }
+      const self = ownPubkey;
       // Drain a full (possibly truncated) page immediately instead of waiting a whole interval, so a
       // burst larger than LIMIT can't sit half-processed. Assumes `feed get` returns oldest-first
       // within the since-window (we sort oldest-first regardless); the `cursor === before` guard stops
@@ -61,14 +91,14 @@ export async function startBuzzSurface(deps: BuzzSurfaceDeps): Promise<{ stop: (
       const before = cursor;
       const events = await client.feedMentions(cursor, LIMIT);
       const fresh = events
-        .filter((e) => e.createdAt > cursor && e.pubkey !== ownPubkey)
+        .filter((e) => e.createdAt > cursor && e.pubkey !== self)
         .sort((a, b) => a.createdAt - b.createdAt);
 
       for (const event of fresh) {
         const channelId = channelIdOf(event);
         if (channelId) {
-          const conversation: ConversationRef = { surface: SURFACE, spaceId: BUZZ_SPACE_ID, conversationId: threadRootOf(event) };
-          const session = new BuzzSurfaceSession({ client, ownPubkey, channelId, replyToId: event.id });
+          const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRootOf(event) };
+          const session = new BuzzSurfaceSession({ client, ownPubkey: self, channelId, replyToId: event.id });
           const inbound: InboundMessage = {
             conversation,
             author: { surface: SURFACE, userId: event.pubkey, username: null },
@@ -92,7 +122,7 @@ export async function startBuzzSurface(deps: BuzzSurfaceDeps): Promise<{ stop: (
       }
     } catch (err) {
       const category = err instanceof BuzzCliError ? err.category : "other";
-      logger.error({ err, category }, "buzz poll failed");
+      logger.error({ err, category, relay: relayLabel }, "buzz poll failed");
     } finally {
       polling = false;
     }

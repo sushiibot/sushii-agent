@@ -1,19 +1,23 @@
+import type { Database } from "bun:sqlite";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 import { eq } from "drizzle-orm";
-import { getOrm } from "./index.ts";
 import { buzzState } from "./schema.ts";
 
-const CURSOR_ID = "cursor";
+function ormFor(db: Database) {
+  return drizzle({ client: db, schema: { buzzState } });
+}
 
-/** Last-processed mention `created_at` (unix seconds); 0 when the surface has never run. */
-export function getBuzzCursor(): number {
-  const row = getOrm().select().from(buzzState).where(eq(buzzState.id, CURSOR_ID)).get();
+/** Last-processed mention `created_at` (unix seconds) for one relay/community; 0 when never run.
+ *  `key` is the relay URL — each community has its own cursor since mentions are host-scoped. */
+export function getBuzzCursor(db: Database, key: string): number {
+  const row = ormFor(db).select().from(buzzState).where(eq(buzzState.id, key)).get();
   return row?.lastCursor ?? 0;
 }
 
-export function setBuzzCursor(cursor: number): void {
-  getOrm()
+export function setBuzzCursor(db: Database, key: string, cursor: number): void {
+  ormFor(db)
     .insert(buzzState)
-    .values({ id: CURSOR_ID, lastCursor: cursor })
+    .values({ id: key, lastCursor: cursor })
     .onConflictDoUpdate({ target: buzzState.id, set: { lastCursor: cursor } })
     .run();
 }
