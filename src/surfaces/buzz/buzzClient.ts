@@ -1,3 +1,5 @@
+import { getPublicKey } from "nostr-tools/pure";
+import * as nip19 from "nostr-tools/nip19";
 import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("surfaces/buzz/client");
@@ -82,12 +84,23 @@ export class CliBuzzClient implements BuzzClient {
     return JSON.parse(stdout);
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await -- async to satisfy the BuzzClient contract
   async ownPubkey(): Promise<string> {
-    const result = await this.run(["--format", "compact", "users", "get"]);
-    const profile = Array.isArray(result) ? result[0] : result;
-    const pubkey = (profile as { pubkey?: unknown } | null)?.pubkey;
-    if (typeof pubkey !== "string" || !pubkey) throw new BuzzCliError("buzz users get returned no pubkey", "other", 0);
-    return pubkey;
+    // Derived offline from the configured key — the pubkey is the keypair's x-only public key, so it
+    // needs no relay. (`buzz users get` queries the relay and returns nothing until the bot has a
+    // profile there, which would deadlock: no pubkey -> no profile -> no pubkey.)
+    const raw = this.env.privateKey.trim();
+    let sk: Uint8Array;
+    if (raw.startsWith("nsec")) {
+      const decoded = nip19.decode(raw);
+      if (decoded.type !== "nsec") throw new BuzzCliError("BUZZ_PRIVATE_KEY is not a valid nsec", "auth", 0);
+      sk = decoded.data;
+    } else if (/^[0-9a-fA-F]{64}$/.test(raw)) {
+      sk = Uint8Array.from(Buffer.from(raw, "hex"));
+    } else {
+      throw new BuzzCliError("BUZZ_PRIVATE_KEY must be 64-char hex or an nsec", "auth", 0);
+    }
+    return getPublicKey(sk);
   }
 
   async setProfile(displayName: string): Promise<void> {
