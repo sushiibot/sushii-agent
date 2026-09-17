@@ -22,6 +22,8 @@ export interface BuzzSendResult {
 export interface BuzzClient {
   /** The agent's own hex pubkey (derived from BUZZ_PRIVATE_KEY). */
   ownPubkey(): Promise<string>;
+  /** Publish the bot's own kind:0 profile display name (per-community, replaceable). */
+  setProfile(displayName: string): Promise<void>;
   /** Mentions of the agent with created_at strictly after `sinceTs` (unix seconds), oldest first. */
   feedMentions(sinceTs: number, limit?: number): Promise<BuzzEvent[]>;
   /** Post a reply into `channelId`, threaded under `replyToId` (the mentioned event). */
@@ -43,16 +45,20 @@ export class CliBuzzClient implements BuzzClient {
   ) {}
 
   private async run(args: string[], stdin?: string): Promise<unknown> {
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      BUZZ_PRIVATE_KEY: this.env.privateKey,
+    };
+    // Set the relay explicitly, or drop it entirely so an inherited empty BUZZ_RELAY_URL="" (what the
+    // ansible default renders) can't override the CLI's own default with a blank value.
+    if (this.env.relayUrl) env.BUZZ_RELAY_URL = this.env.relayUrl;
+    else delete env.BUZZ_RELAY_URL;
+    if (this.env.authTag) env.BUZZ_AUTH_TAG = this.env.authTag;
     const proc = Bun.spawn([this.bin, ...args], {
       stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
       stdout: "pipe",
       stderr: "pipe",
-      env: {
-        ...process.env,
-        BUZZ_PRIVATE_KEY: this.env.privateKey,
-        ...(this.env.relayUrl ? { BUZZ_RELAY_URL: this.env.relayUrl } : {}),
-        ...(this.env.authTag ? { BUZZ_AUTH_TAG: this.env.authTag } : {}),
-      },
+      env,
     });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -82,6 +88,12 @@ export class CliBuzzClient implements BuzzClient {
     const pubkey = (profile as { pubkey?: unknown } | null)?.pubkey;
     if (typeof pubkey !== "string" || !pubkey) throw new BuzzCliError("buzz users get returned no pubkey", "other", 0);
     return pubkey;
+  }
+
+  async setProfile(displayName: string): Promise<void> {
+    // Explicit --format json like the sibling calls, so run()'s JSON.parse doesn't choke on a
+    // human-readable confirmation line and log a successful publish as a failure.
+    await this.run(["--format", "json", "users", "set-profile", "--name", displayName]);
   }
 
   async feedMentions(sinceTs: number, limit = 50): Promise<BuzzEvent[]> {

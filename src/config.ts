@@ -1,5 +1,6 @@
 export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
+import { parseRelayUrls } from "./surfaces/buzz/relayUrl.ts";
 
 export interface Config {
   discordBotToken: string;
@@ -27,10 +28,13 @@ export interface Config {
   buzz: {
     /** Nostr private key (hex or nsec). Unset → the buzz surface is disabled entirely. */
     privateKey: string | undefined;
-    /** Relay base URL; unset lets the `buzz` CLI use its own default (http://localhost:3000). */
-    relayUrl: string | undefined;
+    /** Relay base URLs (one community per relay). Comma-separated in BUZZ_RELAY_URL; empty lets the
+     *  `buzz` CLI use its own default (http://localhost:3000). Each becomes its own poll loop. */
+    relayUrls: string[];
     /** NIP-OA owner-attestation tag JSON (optional). */
     authTag: string | undefined;
+    /** Display name the bot publishes for itself (kind:0 profile) on each relay. */
+    displayName: string;
     /** How often to poll `buzz feed get` for new mentions. */
     pollIntervalMs: number;
   };
@@ -108,8 +112,9 @@ export const config: Config = {
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
   buzz: {
     privateKey: process.env["BUZZ_PRIVATE_KEY"],
-    relayUrl: process.env["BUZZ_RELAY_URL"],
+    relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),
     authTag: process.env["BUZZ_AUTH_TAG"],
+    displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
     pollIntervalMs: parseInt(optional("BUZZ_POLL_INTERVAL_MS", "5000"), 10),
   },
   wikiSync: {

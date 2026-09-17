@@ -56,10 +56,31 @@ async function main() {
   // Second surface: buzz. A separate AgentCore instance sharing the same store/memory/tools/model,
   // but with a plain buzz behavior (no Discord tokens) and a hookless bus — the Discord-host tools
   // gate off (hosts:{}), so it runs the portable toolset. Disabled unless BUZZ_PRIVATE_KEY is set.
+  // One key can serve multiple communities: one poll loop per relay URL, each with its own cursor
+  // and memory space (communities are host-scoped and isolated), all sharing the one buzzCore.
   if (config.buzz.privateKey) {
+    const privateKey = config.buzz.privateKey;
     const buzzCore = createAgentCore({ model, store, memory, tools, hooks: createHookBus(), behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
-    const buzzClient = new CliBuzzClient({ privateKey: config.buzz.privateKey, relayUrl: config.buzz.relayUrl, authTag: config.buzz.authTag });
-    await startBuzzSurface({ core: buzzCore, client: buzzClient, cursor: { get: getBuzzCursor, set: setBuzzCursor }, pollIntervalMs: config.buzz.pollIntervalMs });
+    // Empty list → one loop on the CLI's default relay (dev localhost), keyed "default".
+    const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
+    for (const relayUrl of relays) {
+      const key = relayUrl ?? "default";
+      const buzzClient = new CliBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag });
+      try {
+        await startBuzzSurface({
+          core: buzzCore,
+          client: buzzClient,
+          cursor: { get: () => getBuzzCursor(db, key), set: (c) => setBuzzCursor(db, key, c) },
+          pollIntervalMs: config.buzz.pollIntervalMs,
+          spaceId: relayUrl ? `buzz:${key}` : "buzz",
+          displayName: config.buzz.displayName,
+          relayLabel: key,
+        });
+      } catch (err) {
+        // A single unreachable / not-yet-admitted relay must not take down the bot or its siblings.
+        logger.error({ err, relay: key }, "buzz surface failed to start for this relay");
+      }
+    }
   } else {
     logger.info("BUZZ_PRIVATE_KEY not set — buzz surface disabled");
   }
