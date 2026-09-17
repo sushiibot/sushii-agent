@@ -1,10 +1,13 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { getLogger } from "../../logger.ts";
 
-// Dependency-free search over a wiki repo's markdown pages (the local clone wiki-sync keeps updated).
-// No ripgrep/FTS: a wiki is a few dozen–hundred pages, and the agent searches only occasionally, so
-// reading + scoring on demand is simple and needs nothing installed in the container.
+// Targeted search over a wiki repo's markdown pages (the local clone wiki-sync keeps updated).
+// ripgrep does the O(wiki) scan in C and returns only matching files; we then read just the top few
+// hits to format a title + snippet. Reflects the last sweep — no per-search network pull.
+
+const logger = getLogger("wiki-sync:search");
 
 export interface WikiHit {
   /** Repo-relative path, e.g. "people/alice.md". */
@@ -44,24 +47,46 @@ function snippetFor(content: string, terms: string[]): string {
   return `${start > 0 ? "…" : ""}${body}${end < content.length ? "…" : ""}`;
 }
 
-async function markdownFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  async function walk(current: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.name === ".git") continue;
-      const full = join(current, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) out.push(full);
-    }
+interface FileMatch {
+  count: number;
+  terms: Set<string>;
+}
+
+/** Runs ripgrep over the repo's markdown, returning per-file total-hit count + distinct terms hit.
+ *  ripgrep skips the hidden .git dir by default. Missing `rg` / a scan error degrades to no results. */
+async function ripgrepMatches(dir: string, pattern: string): Promise<Map<string, FileMatch>> {
+  const map = new Map<string, FileMatch>();
+  let out: string;
+  try {
+    const proc = Bun.spawn(["rg", "--json", "-i", "--glob", "*.md", "-e", pattern, dir], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, , code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    if (code === 2) logger.warn({ dir }, "ripgrep reported an error scanning the wiki");
+    out = stdout;
+  } catch (err) {
+    logger.warn({ err }, "ripgrep unavailable — wiki search returned nothing");
+    return map;
   }
-  await walk(dir);
-  return out;
+
+  for (const line of out.split("\n")) {
+    if (!line) continue;
+    let ev: { type?: string; data?: { path?: { text?: string }; submatches?: { match?: { text?: string } }[] } };
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (ev.type !== "match" || !ev.data?.path?.text) continue;
+    const relPath = relative(dir, ev.data.path.text).split(sep).join("/");
+    const entry = map.get(relPath) ?? { count: 0, terms: new Set<string>() };
+    for (const sm of ev.data.submatches ?? []) {
+      if (sm.match?.text) {
+        entry.count++;
+        entry.terms.add(sm.match.text.toLowerCase());
+      }
+    }
+    map.set(relPath, entry);
+  }
+  return map;
 }
 
 export async function searchWikiPages(dir: string, query: string, limit = 5): Promise<WikiHit[]> {
@@ -69,41 +94,25 @@ export async function searchWikiPages(dir: string, query: string, limit = 5): Pr
   const terms = [...new Set(tokenize(query))];
   if (terms.length === 0) return [];
 
-  const files = await markdownFiles(dir);
+  const matches = await ripgrepMatches(dir, terms.join("|"));
+  const ranked = [...matches.entries()]
+    // Multi-term queries require every term to appear in the page (AND); single-term passes on any hit.
+    .filter(([, m]) => terms.length === 1 || m.terms.size === terms.length)
+    // A page that hits more distinct terms wins; ties break on total hit count (mentioned more = more relevant).
+    .sort(([, a], [, b]) => b.terms.size - a.terms.size || b.count - a.count)
+    .slice(0, limit);
+
   const hits: WikiHit[] = [];
-
-  for (const file of files) {
-    let content: string;
+  for (const [relPath, m] of ranked) {
     try {
-      const buf = await readFile(file);
-      if (buf.length > MAX_FILE_BYTES) continue;
-      content = buf.toString("utf8");
+      const buf = await readFile(join(dir, relPath));
+      const content = buf.length > MAX_FILE_BYTES ? buf.toString("utf8").slice(0, MAX_FILE_BYTES) : buf.toString("utf8");
+      hits.push({ path: relPath, title: titleOf(relPath, content), snippet: snippetFor(content, terms), score: m.terms.size * 1000 + m.count });
     } catch {
-      continue;
+      // A file that matched but can't be read (race with a sweep reset) — skip it.
     }
-    const relPath = relative(dir, file).split(sep).join("/");
-    const title = titleOf(relPath, content);
-    const haystack = `${relPath}\n${title}\n${content}`.toLowerCase();
-    const titlePathHay = `${relPath}\n${title}`.toLowerCase();
-
-    let score = 0;
-    let matched = 0;
-    for (const term of terms) {
-      const inBody = haystack.split(term).length - 1;
-      if (inBody > 0) matched++;
-      // Title/path matches weigh more — a page named for the term is likely the best answer.
-      const inTitlePath = titlePathHay.split(term).length - 1;
-      score += inBody + inTitlePath * 4;
-    }
-    if (score === 0) continue;
-    // Require every multi-term query term to appear somewhere, so "alice ban history" doesn't match
-    // a page that only mentions "history"; single-term queries pass on any hit.
-    if (terms.length > 1 && matched < terms.length) continue;
-
-    hits.push({ path: relPath, title, snippet: snippetFor(content, terms), score });
   }
-
-  return hits.sort((a, b) => b.score - a.score).slice(0, limit);
+  return hits;
 }
 
 /** Full content of a repo-relative wiki page, or null if missing / path escapes the repo. */

@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readWikiPage, searchWikiPages } from "./search.ts";
 
+// searchWikiPages shells out to ripgrep (installed in the container; see Dockerfile). Skip the
+// search cases on a dev box without it, like the poppler-gated attachment tests.
+const RG_AVAILABLE = Bun.which("rg") !== null;
+const itIfRg = test.skipIf(!RG_AVAILABLE);
+if (!RG_AVAILABLE) console.warn("ripgrep not found on PATH — skipping wiki search tests");
+
 let dir: string;
 
 beforeEach(async () => {
@@ -21,25 +27,25 @@ afterEach(async () => {
 });
 
 describe("searchWikiPages", () => {
-  test("finds a page by a content term and returns a snippet", async () => {
+  itIfRg("finds a page by a content term and returns a snippet", async () => {
     const hits = await searchWikiPages(dir, "raid");
     expect(hits.map((h) => h.path)).toContain("topics/raids.md");
     expect(hits.find((h) => h.path === "topics/raids.md")!.snippet.toLowerCase()).toContain("raid");
   });
 
-  test("ranks a title/path match above an incidental body mention", async () => {
+  itIfRg("ranks a title/path match above an incidental body mention", async () => {
     await writeFile(join(dir, "misc.md"), "Alice was mentioned here once, otherwise about gardening.");
     const hits = await searchWikiPages(dir, "alice");
     expect(hits[0].path).toBe("people/alice.md"); // titled/pathed for alice, outranks misc.md
   });
 
-  test("a multi-term query requires every term to appear somewhere", async () => {
+  itIfRg("a multi-term query requires every term to appear somewhere", async () => {
     // "raid" is in raids.md but "gardening" is not — so no page should match both.
     const hits = await searchWikiPages(dir, "raid gardening");
     expect(hits).toHaveLength(0);
   });
 
-  test("ignores files under .git and returns empty for an unresolvable dir", async () => {
+  itIfRg("ignores files under .git and returns empty for an unresolvable dir", async () => {
     const all = await searchWikiPages(dir, "ignored");
     expect(all.every((h) => !h.path.startsWith(".git"))).toBe(true);
     expect(await searchWikiPages(join(dir, "does-not-exist"), "anything")).toEqual([]);
