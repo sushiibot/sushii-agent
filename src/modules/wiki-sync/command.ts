@@ -51,8 +51,8 @@ export async function handleWikiSyncCommand(
   // Replies immediately rather than deferReply()+wait — a sweep (a full Pi session plus git
   // clone/push) can plausibly run past Discord's 15-minute interaction-token window, which
   // would leave a deferred reply stuck on "thinking..." forever with no way to resolve it. The
-  // sweep runs detached; its actual result reaches the status channel via postSyncStatus
-  // (sweep.ts), not this interaction, once it's done.
+  // sweep runs detached; its actual result reaches the status channel via the sweep's SyncNotifier,
+  // not this interaction, once it's done.
   const runId = crypto.randomUUID().slice(0, 8);
   const statusChannelId = guildConfig?.wiki?.statusChannelId;
   const followUp = statusChannelId

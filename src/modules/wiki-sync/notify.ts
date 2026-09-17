@@ -6,7 +6,7 @@ import type { WikiRepo } from "./git.ts";
 // feedback thread) is the Discord SyncNotifier impl in src/surfaces/discord/wikiSync.ts, which calls
 // these — the engine stays discord.js-free (C13).
 
-export const MAX_CONTENT_LENGTH = 3800;
+const MAX_CONTENT_LENGTH = 3800;
 
 /**
  * Web URL for linking to a commit -- Forgejo and GitHub both serve /commit/<sha> at
@@ -114,8 +114,8 @@ export function buildStatusContent(recap: string | null, commitLine: string): st
  * commit merely touched again (a continued backfill span, or a feedback-driven reformat/fix) is
  * just named, not reproduced -- its content was already posted when it was new, and reposting
  * the whole file on every subsequent edit would repeat what a prior sweep's status message
- * already showed. The commit link already in the status message (see postSyncStatus) is where a
- * reader goes to see exactly what changed on a revisit.
+ * already showed. The commit link already in the posted status message is where a reader goes to
+ * see exactly what changed on a revisit.
  */
 export async function buildRecapBody(repo: WikiRepo, commitSha: string, webUrl: string | null): Promise<string | null> {
   const recapFiles = await findTouchedRecapFiles(repo, commitSha).catch(() => []);
