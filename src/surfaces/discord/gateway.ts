@@ -12,6 +12,7 @@ import { trace, SpanStatusCode, type Span } from "@opentelemetry/api";
 import type { AgentCore, AuthorRef, ChannelRef, ConversationRef, HookBus, InboundMessage, ToolHosts } from "../../core/contracts.ts";
 import { conversationKey } from "../../core/contracts.ts";
 import { DiscordConversationStore } from "../../core/stores/conversationStore.ts";
+import { DiscordSpaceMemoryStore } from "../../core/stores/memoryStore.ts";
 import { config, buildEmojiMap, resolvedModules } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { getDb } from "../../db/index.ts";
@@ -32,6 +33,7 @@ import { attachDiscordMessage, registerDiscordHooks } from "./hooks.ts";
 import { ToolProgressTracker, buildTextDisplayContainer } from "./delivery.ts";
 import { renderDiscordText } from "./render.ts";
 import { handleFeedbackButton, handleFeedbackModal } from "./feedback.ts";
+import { SCAN_QUERY, sendScanApprovalMessage, disableScanButtons, applyAutomodDecision } from "./approvals.ts";
 import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, SCAN_BTN_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
@@ -184,15 +186,38 @@ export interface DiscordSurfaceDeps {
   client: Client<true>;
   core: AgentCore;
   store: DiscordConversationStore;
+  memory: DiscordSpaceMemoryStore;
   hookBus: HookBus;
 }
 
+/** A deferred first-run turn, held until the moderator approves/skips the server scan. */
+interface PendingScan {
+  threadId: string;
+  text: string;
+  author: AuthorRef;
+  channel: ChannelRef;
+  threadContext: string;
+  mentionedUsers?: AuthorRef[];
+}
+
+/** A paused automod approval, recovered when the amka:/amkd: button is clicked. In-memory only,
+ *  matching the pre-cutover behavior (approvals did not survive a restart). */
+interface PendingApproval {
+  action: "automod-keyword-add" | "automod-keyword-delete";
+  ruleId: string;
+  ruleName: string;
+  keyword: string;
+  triggeredByUserId: string;
+}
+
 export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
-  const { client, core, store, hookBus } = deps;
+  const { client, core, store, memory, hookBus } = deps;
   // One ToolProgressTracker per active conversation. The onToolsDispatched hook and the session
   // that renders the reply share the same instance; the gateway finalizes + removes it when the
   // turn that owns it (not a queued mid-loop message) finishes.
   const trackers = new Map<string, ToolProgressTracker>();
+  const pendingScans = new Map<string, PendingScan>();
+  const pendingApprovals = new Map<string, PendingApproval>();
 
   registerDiscordHooks(hookBus, {
     resolveThread: async (conversation) => {
@@ -208,9 +233,17 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const { question, choices, authorizedResponder } = res.pending.payload;
       savePendingQuestion({ threadId: conversation.conversationId, question, choices, triggeredByUserId: authorizedResponder.userId, createdAt: Date.now() });
     } else {
-      // Auto-mod keyword approval buttons are sent by the core via session.presentInteraction, but
-      // the amka:/amkd: handlers that apply the change land in U4-cutover phase 2b.
-      await thread.send({ content: "-# *(approval handling is being updated — please retry shortly)*", allowedMentions: { parse: [] } }).catch(() => {});
+      // The rich approve/reject buttons were already sent by the core via session.presentInteraction;
+      // hold the change details in memory so the amka:/amkd: handler can apply them (parity: this
+      // state did not survive a restart before, and still does not).
+      const p = res.pending.payload;
+      pendingApprovals.set(conversation.conversationId, {
+        action: p.action,
+        ruleId: p.platform.ruleId ?? "",
+        ruleName: p.platform.ruleName ?? "",
+        keyword: p.platform.keyword ?? "",
+        triggeredByUserId: p.authorizedResponder.userId,
+      });
     }
   }
 
@@ -355,6 +388,18 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
         if (existingHistory.length > 0 && initialThreadContext != null) {
           const interstitial = await fetchInterstitialMessages(thread, client.user.id, new Set([message.id]));
           if (interstitial) turnText = `[Thread activity since your last response]\n${interstitial}\n\n${baseText}`;
+        }
+
+        // First-run guild: no server context yet. Defer this turn behind a scan-approval prompt
+        // rather than running the agent with empty awareness (surface pre-turn decision).
+        if (memory.getServerContext(guildId) === null) {
+          if (pendingScans.has(guildId)) {
+            await thread.send("A server scan is pending approval. Please re-ask after it completes.");
+            return;
+          }
+          pendingScans.set(guildId, { threadId: thread.id, text: turnText, author, channel, threadContext, mentionedUsers: mentioned.size ? [...mentioned.values()] : undefined });
+          await sendScanApprovalMessage(thread, guildId);
+          return;
         }
 
         const ownerSection = config.ownerDiscordId && author.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
@@ -521,9 +566,12 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleFeedbackButton(btn);
       return;
     }
-    if (btn.customId.startsWith(SCAN_BTN_PREFIX) || btn.customId.startsWith(AUTOMOD_BTN_PREFIX) || btn.customId.startsWith(AUTOMOD_DEL_BTN_PREFIX)) {
-      // Scan-approval + auto-mod-approval handlers land in U4-cutover phase 2b.
-      await btn.reply({ content: "This action is being updated — please try again shortly.", flags: MessageFlags.Ephemeral }).catch(() => {});
+    if (btn.customId.startsWith(SCAN_BTN_PREFIX)) {
+      await handleScanButton(btn);
+      return;
+    }
+    if (btn.customId.startsWith(AUTOMOD_BTN_PREFIX) || btn.customId.startsWith(AUTOMOD_DEL_BTN_PREFIX)) {
+      await handleApprovalButton(btn);
       return;
     }
     if (btn.customId.startsWith(ASK_BTN_PREFIX)) {
@@ -595,6 +643,103 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
         ownerSection,
       });
       await runThroughCore(conversation, thread, tracker, span, () => core.resume(conversation, { kind: "question-answer", choice, by }, session));
+    });
+  }
+
+  async function handleScanButton(interaction: ButtonInteraction): Promise<void> {
+    const rest = interaction.customId.slice(SCAN_BTN_PREFIX.length);
+    const colonIdx = rest.indexOf(":");
+    if (colonIdx === -1) return;
+    const guildId = rest.slice(0, colonIdx);
+    const choice = rest.slice(colonIdx + 1); // "yes" | "no"
+    const pending = pendingScans.get(guildId);
+    if (!pending) {
+      await interaction.reply({ content: "Scan approval expired — please re-trigger the bot.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (interaction.user.id !== pending.author.userId) {
+      await interaction.reply({ content: `Only <@${pending.author.userId}> can respond to this approval.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    pendingScans.delete(guildId);
+    await interaction.deferUpdate();
+    await disableScanButtons(interaction, choice === "yes" ? "Scan server" : "Skip");
+
+    const guildConfig = config.guildConfig[guildId];
+    if (!guildConfig) return;
+    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+    const thread = await client.channels.fetch(pending.threadId).catch(() => null);
+    if (!thread?.isThread()) return;
+    const conversation: ConversationRef = { surface: SURFACE, spaceId: guildId, conversationId: pending.threadId };
+
+    await withInteractionSpan("discord.interaction", { "discord.thread_id": pending.threadId, "discord.guild_id": guildId, "discord.user_id": interaction.user.id, "discord.trigger": "scan_approval" }, async (span) => {
+      if (choice === "yes") {
+        // Background scan on a THROWAWAY conversation: the scan turn's history + frozen threadContext
+        // must never land on the real conversation, or the user's first query inherits them.
+        const scanConv: ConversationRef = { surface: SURFACE, spaceId: guildId, conversationId: `__scan__${pending.threadId}` };
+        const scanTracker = new ToolProgressTracker(thread);
+        const scanSession = new DiscordSurfaceSession({
+          client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: scanTracker,
+          attachFeedback: false, channel: pending.channel,
+        });
+        const scanInbound: InboundMessage = { conversation: scanConv, author: pending.author, text: SCAN_QUERY, channel: pending.channel };
+        await runThroughCore(scanConv, thread, scanTracker, span, () => core.handleInbound(scanInbound, scanSession));
+      }
+
+      // Original deferred turn on the real conversation, now with populated server context.
+      const ownerSection = config.ownerDiscordId && pending.author.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
+      const tracker = new ToolProgressTracker(thread);
+      const session = new DiscordSurfaceSession({
+        client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: tracker,
+        channel: pending.channel, threadContext: pending.threadContext || undefined, threadChannelId: thread.id, ownerSection,
+      });
+      const inbound: InboundMessage = { conversation, author: pending.author, text: pending.text, mentionedUsers: pending.mentionedUsers, channel: pending.channel };
+      await runThroughCore(conversation, thread, tracker, span, () => core.handleInbound(inbound, session));
+    });
+  }
+
+  async function handleApprovalButton(interaction: ButtonInteraction): Promise<void> {
+    const isAdd = interaction.customId.startsWith(AUTOMOD_BTN_PREFIX);
+    const prefix = isAdd ? AUTOMOD_BTN_PREFIX : AUTOMOD_DEL_BTN_PREFIX;
+    const rest = interaction.customId.slice(prefix.length);
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon === -1) return;
+    const threadId = rest.slice(0, lastColon);
+    const decision = rest.slice(lastColon + 1); // "approve" | "reject"
+
+    const pending = pendingApprovals.get(threadId);
+    if (!pending) {
+      await interaction.reply({ content: `This approval has expired — the bot was restarted. Please re-ask the agent to ${isAdd ? "add" : "remove"} the keyword.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (interaction.user.id !== pending.triggeredByUserId) {
+      await interaction.reply({ content: `Only <@${pending.triggeredByUserId}> can respond to this approval.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    pendingApprovals.delete(threadId);
+    await interaction.deferUpdate();
+
+    const { systemMessage } = await applyAutomodDecision(interaction, client, pending.action, pending.ruleId, pending.ruleName, pending.keyword, decision === "approve" ? "approve" : "reject");
+
+    const thread = await client.channels.fetch(threadId).catch(() => null);
+    if (!thread?.isThread()) return;
+    const guildId = thread.guildId;
+    const guildConfig = config.guildConfig[guildId];
+    if (!guildConfig) return;
+    const conversation: ConversationRef = { surface: SURFACE, spaceId: guildId, conversationId: threadId };
+
+    await withInteractionSpan("discord.interaction", { "discord.thread_id": threadId, "discord.guild_id": guildId, "discord.user_id": interaction.user.id, "discord.trigger": "approval_resume" }, async (span) => {
+      const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
+      const { initialThreadContext } = store.load(conversation);
+      const by = await memberAuthor(thread, interaction.user.id, guildConfig.allowedRoles);
+      const channel = threadChannelRef(thread);
+      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
+      const tracker = new ToolProgressTracker(thread);
+      const session = new DiscordSurfaceSession({
+        client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: tracker,
+        channel, threadContext: initialThreadContext ?? undefined, threadChannelId: thread.id, ownerSection,
+      });
+      await runThroughCore(conversation, thread, tracker, span, () => core.resume(conversation, { kind: "approval", decision: decision === "approve" ? "approved" : "rejected", by, systemMessage }, session));
     });
   }
 

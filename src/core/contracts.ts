@@ -151,12 +151,15 @@ export interface AskQuestion {
   authorizedResponder: AuthorRef;
 }
 
-/** Discord-specific payload the surface needs to apply an approved change. */
+/** Discord-specific payload the surface needs to render + apply an approved change. */
 export type PlatformApproval = {
   surface: "discord";
   ruleId?: string;
   ruleName?: string;
   keyword?: string;
+  /** The rule's keyword_filter AFTER the change (post-add or post-remove) — lets the surface render
+   *  the counts + alphabetical neighbor diff at approval time. The apply path re-fetches live. */
+  keywordFilterAfter?: string[];
 };
 
 export interface ApprovalRequest {

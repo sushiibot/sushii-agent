@@ -37,7 +37,7 @@ async function main() {
     behavior: BEHAVIOR_INSTRUCTIONS,
   });
 
-  startDiscordSurface({ client: client as Client<true>, core, store, hookBus });
+  startDiscordSurface({ client: client as Client<true>, core, store, memory, hookBus });
   await client.login(config.discordBotToken);
 
   const mcpApp = buildMcpHttpApp(client as Client<true>);

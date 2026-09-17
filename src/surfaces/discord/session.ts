@@ -20,8 +20,9 @@ import type {
   ToolHosts,
   TurnPromptContext,
 } from "../../core/contracts.ts";
-import { ASK_BTN_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX, FEEDBACK_BTN_PREFIX } from "./buttonIds.ts";
+import { ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX } from "./buttonIds.ts";
 import { appendFeedbackButtons, buildComponentMessages, buildTextDisplayContainer, ToolProgressTracker } from "./delivery.ts";
+import { buildApprovalContainer } from "./approvals.ts";
 import { renderFooter } from "./footer.ts";
 import { DiscordPlatformRenderer } from "./render.ts";
 
@@ -138,20 +139,7 @@ export class DiscordSurfaceSession implements SurfaceSession {
       return;
     }
 
-    const { action, summary, platform } = pending.payload;
-    const btnPrefix = action === "automod-keyword-add" ? AUTOMOD_BTN_PREFIX : AUTOMOD_DEL_BTN_PREFIX;
-    const title = action === "automod-keyword-add"
-      ? "🔒 **Automod keyword addition — awaiting approval**"
-      : "🔒 **Automod keyword removal — awaiting approval**";
-    const ruleLine = platform.ruleName ? `**Rule:** ${platform.ruleName}${platform.ruleId ? ` (\`${platform.ruleId}\`)` : ""}\n` : "";
-
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId(`${btnPrefix}${this.thread.id}:approve`).setLabel("✅ Approve").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${btnPrefix}${this.thread.id}:reject`).setLabel("❌ Reject").setStyle(ButtonStyle.Danger),
-    );
-    const container = new ContainerBuilder()
-      .addTextDisplayComponents(new TextDisplayBuilder({ content: `${title}\n\n${ruleLine}${summary}` }))
-      .addActionRowComponents(row);
+    const container = buildApprovalContainer(this.thread.id, pending.payload);
     await this.thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
   }
 

@@ -331,7 +331,7 @@ export const addAutomodKeywordEntry: ToolEntry<"discord"> = {
         action: "automod-keyword-add",
         summary: `Add keyword "${raw.keyword}" to rule "${raw.ruleName}"`,
         authorizedResponder: ctx.owner,
-        platform: { surface: "discord", ruleId: raw.ruleId, ruleName: raw.ruleName, keyword: raw.keyword },
+        platform: { surface: "discord", ruleId: raw.ruleId, ruleName: raw.ruleName, keyword: raw.keyword, keywordFilterAfter: raw.newKeywordFilter },
       },
     });
     return { content: `Keyword addition queued for moderator approval. The moderator will see a confirmation prompt showing the change to rule "${raw.ruleName}".` };
@@ -364,7 +364,7 @@ export const deleteAutomodKeywordEntry: ToolEntry<"discord"> = {
         action: "automod-keyword-delete",
         summary: `Remove keyword "${raw.keyword}" from rule "${raw.ruleName}"`,
         authorizedResponder: ctx.owner,
-        platform: { surface: "discord", ruleId: raw.ruleId, ruleName: raw.ruleName, keyword: raw.keyword },
+        platform: { surface: "discord", ruleId: raw.ruleId, ruleName: raw.ruleName, keyword: raw.keyword, keywordFilterAfter: raw.newKeywordFilter },
       },
     });
     return { content: `Keyword deletion queued for moderator approval. The moderator will see a confirmation prompt showing the removal from rule "${raw.ruleName}".` };
