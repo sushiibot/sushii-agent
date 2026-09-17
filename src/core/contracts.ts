@@ -331,14 +331,15 @@ export interface ToolContext {
 export interface DiscordToolHost {}
 export interface MessageCacheHost {}
 export interface SushiMcpHost {}
-export interface WikiHost {}
+export interface FsHost {}
 
 export interface ToolHosts {
   discord?: DiscordToolHost;
   messageCache?: MessageCacheHost;
   mcp?: SushiMcpHost;
-  /** Searchable wiki-sync knowledge base — provided only for spaces with the wiki-sync module on. */
-  wiki?: WikiHost;
+  /** A read-only, root-scoped filesystem the agent can browse (list/search/read). Provided per space
+   *  when there's reference material to expose — currently the wiki-sync knowledge base. */
+  fs?: FsHost;
 }
 
 export interface ToolResult {

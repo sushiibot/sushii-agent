@@ -253,10 +253,14 @@ declare module "../contracts.ts" {
     findDeletableMessages(args: { userId: string; channelId: string; limit: number }): Promise<{ discord_id: string; content: string; created_at: number }[]>;
   }
 
-  interface WikiHost {
-    /** Search the space's synced wiki pages; hits carry a tappable page URL where derivable. */
-    search(query: string, limit?: number): Promise<{ path: string; title: string; snippet: string; url?: string }[]>;
-    /** Full markdown of one page by repo-relative path, or null if missing. */
+  interface FsHost {
+    /** Human label for what this filesystem holds (e.g. "this server's wiki") — for tool output. */
+    label: string;
+    /** One directory level (default: the root). Directories in the result end with "/". */
+    list(dir?: string): Promise<{ path: string; isDir: boolean }[] | null>;
+    /** ripgrep matches under the root; each carries a tappable URL where the root can derive one. */
+    grep(pattern: string, limit?: number): Promise<{ path: string; line: number; text: string; url?: string }[]>;
+    /** Full content of one file by root-relative path, or null if missing / out of the root. */
     read(path: string): Promise<{ content: string; url?: string } | null>;
   }
 

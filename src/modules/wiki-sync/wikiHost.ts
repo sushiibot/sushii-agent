@@ -3,17 +3,16 @@ import { join } from "node:path";
 import simpleGit from "simple-git";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
-import type { WikiHost } from "../../core/contracts.ts";
-import "../../core/tools/hosts.ts";
+import type { FsHost } from "../../core/contracts.ts";
+import { createFsHost } from "../../core/tools/fs/host.ts";
 import { buildFilePermalink, deriveWebUrl } from "./notify.ts";
-import { readWikiPage, searchWikiPages } from "./search.ts";
 
 const logger = getLogger("wiki-sync:host");
 
-/** A WikiHost over a guild's local wiki clone (the checkout wiki-sync keeps updated). Search reflects
- *  the last sweep — no per-search network pull. Citations are commit-pinned permalinks (like the
- *  post-sweep recap), resolved once per host instance. */
-export function createWikiHost(guildId: string): WikiHost {
+/** Wires a guild's local wiki clone (the checkout wiki-sync keeps updated) as an `fs` root for the
+ *  generic read/search/list tools. Reads reflect the last sweep — no per-search network pull.
+ *  Citations are commit-pinned git permalinks (like the recap), resolved once per host instance. */
+export function createWikiFsHost(guildId: string): FsHost {
   const dir = join(config.wikiSync.cloneDir, guildId);
   const webUrl = config.wikiSync.repoUrl ? deriveWebUrl(config.wikiSync.repoUrl) : null;
 
@@ -31,21 +30,12 @@ export function createWikiHost(guildId: string): WikiHost {
     return refPromise;
   };
 
-  const urlFor = async (path: string): Promise<string | undefined> => {
-    if (!webUrl) return undefined;
-    const ref = await headSha();
-    return ref ? buildFilePermalink(webUrl, ref, path) : undefined;
-  };
-
-  return {
-    async search(query, limit) {
-      const hits = await searchWikiPages(dir, query, limit);
-      return Promise.all(hits.map(async (h) => ({ path: h.path, title: h.title, snippet: h.snippet, url: await urlFor(h.path) })));
+  return createFsHost(dir, {
+    label: "this server's wiki",
+    urlFor: async (path) => {
+      if (!webUrl) return undefined;
+      const ref = await headSha();
+      return ref ? buildFilePermalink(webUrl, ref, path) : undefined;
     },
-    async read(path) {
-      const content = await readWikiPage(dir, path);
-      if (content === null) return null;
-      return { content, url: await urlFor(path) };
-    },
-  };
+  });
 }

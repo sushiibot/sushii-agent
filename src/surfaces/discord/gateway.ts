@@ -25,7 +25,7 @@ import { buildOpsTriagePromptSection } from "../../modules/ops-triage/prompt.ts"
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
 import { createDiscordWikiSyncContext } from "./wikiSync.ts";
-import { createWikiHost } from "../../modules/wiki-sync/wikiHost.ts";
+import { createWikiFsHost } from "../../modules/wiki-sync/wikiHost.ts";
 import { DiscordHost } from "./hosts/discordHost.ts";
 import { DiscordMessageCacheHost } from "./hosts/messageCacheHost.ts";
 import { SushiMcpHost } from "./hosts/sushiMcpHost.ts";
@@ -175,14 +175,14 @@ async function resolveOrCreateThread(message: Message): Promise<{ thread: Thread
 function buildHosts(client: Client<true>, guildId: string): ToolHosts {
   const guildConfig = config.guildConfig[guildId];
   const mcp = config.sushiiMcpUrl && config.sushiiMcpToken ? new SushiMcpHost(config.sushiiMcpUrl, config.sushiiMcpToken, guildId) : undefined;
-  // The wiki search/read tools are host-gated: provide the host (and thus expose the tools) only
-  // for guilds with wiki-sync enabled — the wiki *is* their synced knowledge base.
-  const wiki = guildConfig && resolvedModules(guildConfig).includes("wiki-sync") ? createWikiHost(guildId) : undefined;
+  // The read/search/list_files tools are host-gated on `fs`: expose them only for guilds with
+  // wiki-sync enabled, rooted at their synced wiki. (Any future FS source wires the same way.)
+  const fs = guildConfig && resolvedModules(guildConfig).includes("wiki-sync") ? createWikiFsHost(guildId) : undefined;
   return {
     discord: new DiscordHost(client, guildId, guildConfig),
     messageCache: new DiscordMessageCacheHost(getDb(), guildId, client),
     mcp,
-    wiki,
+    fs,
   };
 }
 
