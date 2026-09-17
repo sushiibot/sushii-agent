@@ -11,7 +11,7 @@ import {
 import { trace, SpanStatusCode, type Span } from "@opentelemetry/api";
 import type { AgentCore, AuthorRef, ChannelRef, ConversationRef, HookBus, InboundMessage, ToolHosts } from "../../core/contracts.ts";
 import { conversationKey } from "../../core/contracts.ts";
-import { DiscordConversationStore } from "../../core/stores/conversationStore.ts";
+import { SqliteConversationStore } from "../../core/stores/conversationStore.ts";
 import { DiscordSpaceMemoryStore } from "../../core/stores/memoryStore.ts";
 import { config, buildEmojiMap, resolvedModules } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
@@ -186,7 +186,7 @@ function buildHosts(client: Client<true>, guildId: string): ToolHosts {
 export interface DiscordSurfaceDeps {
   client: Client<true>;
   core: AgentCore;
-  store: DiscordConversationStore;
+  store: SqliteConversationStore;
   memory: DiscordSpaceMemoryStore;
   hookBus: HookBus;
 }

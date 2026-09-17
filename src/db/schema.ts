@@ -82,3 +82,9 @@ export const wikiSyncState = sqliteTable("wiki_sync_state", {
   guildId: text("guild_id").primaryKey(),
   lastProcessedAt: integer("last_processed_at").notNull(),
 });
+
+/** Poll cursor for the buzz surface — last-processed mention `created_at` (unix seconds). Single row. */
+export const buzzState = sqliteTable("buzz_state", {
+  id: text("id").primaryKey(),
+  lastCursor: integer("last_cursor").notNull(),
+});

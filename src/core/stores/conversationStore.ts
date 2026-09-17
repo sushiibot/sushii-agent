@@ -11,9 +11,11 @@ function ormFor(db: Database) {
   return drizzle({ client: db, schema: { conversations } });
 }
 
-/** Phase A: `surface` is always "discord" — `spaceId`/`conversationId` key the existing
- *  guild_id/thread_id columns directly, no schema change. */
-export class DiscordConversationStore implements ConversationStore {
+/** Surface-agnostic conversation store over the `conversations` table. Keyed by `conversationId`
+ *  (the `thread_id` column) — safe across surfaces because conversation ids are globally unique per
+ *  surface (Nostr event ids vs Discord snowflakes never collide), so no `surface` column is needed
+ *  (see U6 FINDINGS: the re-key migration is deferred). `spaceId` writes the `guild_id` column. */
+export class SqliteConversationStore implements ConversationStore {
   constructor(private readonly db: Database) {}
 
   load(ref: ConversationRef): ConversationData {

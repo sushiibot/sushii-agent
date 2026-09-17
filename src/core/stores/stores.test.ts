@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "ai";
 import { applySchema } from "../../db/index.ts";
 import type { ConversationRef } from "../contracts.ts";
-import { DiscordConversationStore } from "./conversationStore.ts";
+import { SqliteConversationStore } from "./conversationStore.ts";
 import { DiscordSpaceMemoryStore, MEMORY_LIMIT } from "./memoryStore.ts";
 
 function testDb(): Database {
@@ -14,9 +14,9 @@ function testDb(): Database {
 
 const ref: ConversationRef = { surface: "discord", spaceId: "guild1", conversationId: "thread1" };
 
-describe("DiscordConversationStore", () => {
+describe("SqliteConversationStore", () => {
   test("round-trips messages and initialThreadContext", () => {
-    const store = new DiscordConversationStore(testDb());
+    const store = new SqliteConversationStore(testDb());
     expect(store.load(ref)).toEqual({ messages: [], initialThreadContext: null });
 
     const messages: ModelMessage[] = [
@@ -29,7 +29,7 @@ describe("DiscordConversationStore", () => {
   });
 
   test("caps history at 200 messages", () => {
-    const store = new DiscordConversationStore(testDb());
+    const store = new SqliteConversationStore(testDb());
     const messages: ModelMessage[] = Array.from({ length: 250 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "assistant",
       content: `msg ${i}`,
@@ -42,7 +42,7 @@ describe("DiscordConversationStore", () => {
   });
 
   test("trims leading non-user messages left by the cap", () => {
-    const store = new DiscordConversationStore(testDb());
+    const store = new SqliteConversationStore(testDb());
     const messages: ModelMessage[] = [
       { role: "assistant", content: "orphaned tool-call artifact" },
       { role: "tool", content: [] } as unknown as ModelMessage,
@@ -57,7 +57,7 @@ describe("DiscordConversationStore", () => {
   });
 
   test("upsert on save keeps guildId/threadId keyed by ref", () => {
-    const store = new DiscordConversationStore(testDb());
+    const store = new SqliteConversationStore(testDb());
     store.save(ref, { messages: [{ role: "user", content: "a" }], initialThreadContext: null });
     store.save(ref, { messages: [{ role: "user", content: "b" }], initialThreadContext: null });
 
@@ -66,7 +66,7 @@ describe("DiscordConversationStore", () => {
 
   test("deleteStale removes conversations older than maxAgeMs", () => {
     const db = testDb();
-    const store = new DiscordConversationStore(db);
+    const store = new SqliteConversationStore(db);
     store.save(ref, { messages: [{ role: "user", content: "a" }], initialThreadContext: null });
 
     store.deleteStale(-1); // negative maxAge => cutoff in the future, everything is "stale"
