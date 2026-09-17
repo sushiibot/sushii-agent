@@ -9,8 +9,8 @@ const BARE =
   "[No message text — review the recent activity shown in your context, investigate anything unclear or needing moderator attention, and summarize what's going on. If nothing needs attention, say so briefly.]";
 
 describe("buildTriggerText golden parity", () => {
-  test("plain mention", () => {
-    expect(buildTriggerText({ botId: "BOT", rawContent: "<@BOT> hello world", emojiMap: {}, authorUsername: "alice", authorId: "U1", replyContext: "" }))
+  test("plain mention (resolveBarePing is never invoked)", () => {
+    expect(buildTriggerText({ botId: "BOT", rawContent: "<@BOT> hello world", emojiMap: {}, authorUsername: "alice", authorId: "U1", replyContext: "", resolveBarePing: () => { throw new Error("should not flatten a non-bare ping"); } }))
       .toBe("[Message from alice (<@U1>)]\nhello world");
   });
 
@@ -20,12 +20,12 @@ describe("buildTriggerText golden parity", () => {
   });
 
   test("bare ping, no attachments", () => {
-    expect(buildTriggerText({ botId: "BOT", rawContent: "<@BOT>", emojiMap: {}, authorUsername: "bob", authorId: "U2", replyContext: "", barePingFlattened: "<@BOT>" }))
+    expect(buildTriggerText({ botId: "BOT", rawContent: "<@BOT>", emojiMap: {}, authorUsername: "bob", authorId: "U2", replyContext: "", resolveBarePing: () => "<@BOT>" }))
       .toBe(`[Message from bob (<@U2>)]\n${BARE}`);
   });
 
   test("bare ping with an attachment carried in the flattened content", () => {
-    expect(buildTriggerText({ botId: "BOT", rawContent: "<@BOT>", emojiMap: {}, authorUsername: "bob", authorId: "U2", replyContext: "", barePingFlattened: "[image: cat.png](https://cdn/x)" }))
+    expect(buildTriggerText({ botId: "BOT", rawContent: "<@BOT>", emojiMap: {}, authorUsername: "bob", authorId: "U2", replyContext: "", resolveBarePing: () => "[image: cat.png](https://cdn/x)" }))
       .toBe(`[Message from bob (<@U2>)]\n[image: cat.png](https://cdn/x)\n${BARE}`);
   });
 

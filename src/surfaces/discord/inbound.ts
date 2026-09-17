@@ -15,8 +15,9 @@ export interface TriggerTextInput {
   authorId: string;
   /** Reply-to-a-non-bot context, already formatted ("" when none). Prepended before the wrapper. */
   replyContext: string;
-  /** buildMessageContent(message) — only consulted for a bare ping (text-less trigger). */
-  barePingFlattened?: string;
+  /** Lazily resolves buildMessageContent(message) — only invoked for a bare ping (text-less
+   *  trigger), so a normal mention never pays the flatten cost. */
+  resolveBarePing?: () => string;
 }
 
 export function buildTriggerText(input: TriggerTextInput): string {
@@ -30,7 +31,7 @@ export function buildTriggerText(input: TriggerTextInput): string {
   if (!isBarePing) {
     body = normalizedQuery;
   } else {
-    const flattened = (input.barePingFlattened ?? "").replace(botMentionRe, "").trim();
+    const flattened = (input.resolveBarePing?.() ?? "").replace(botMentionRe, "").trim();
     const attached = flattened && flattened !== "[empty message]" ? `${flattened}\n` : "";
     body = `${attached}${BARE_PING_FALLBACK}`;
   }

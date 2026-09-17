@@ -349,7 +349,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       authorUsername: message.author.username,
       authorId: message.author.id,
       replyContext,
-      barePingFlattened: buildMessageContent(message),
+      resolveBarePing: () => buildMessageContent(message),
     });
 
     const author = triggeringAuthor(message, guildConfig.allowedRoles);
