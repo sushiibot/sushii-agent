@@ -238,7 +238,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       } else if (res.status === "paused") {
         await persistPending(conversation, res, thread);
       }
-      span.setStatus({ code: SpanStatusCode.OK });
+      // The core swallows in-turn failures into { status: "error" } (delivery included), so label the
+      // span from the returned status rather than assuming success just because run() didn't throw.
+      if (res.status === "error") span.setStatus({ code: SpanStatusCode.ERROR, message: res.message });
+      else span.setStatus({ code: SpanStatusCode.OK });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       span.recordException(err instanceof Error ? err : errMsg);
