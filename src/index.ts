@@ -1,11 +1,19 @@
 import type { Client } from "discord.js";
 import { otelSDK } from "./telemetry.ts";
-import { initDb, closeDb } from "./db/index.ts";
-import { startBot } from "./bot.ts";
+import { initDb, closeDb, getDb } from "./db/index.ts";
 import { client } from "./discordClient.ts";
 import { config } from "./config.ts";
 import { buildMcpHttpApp } from "./mcp/server/http.ts";
 import logger from "./logger.ts";
+import { openaiProvider } from "./agent/client.ts";
+import { createAgentCore } from "./core/agentCore.ts";
+import { createHookBus } from "./core/hooks.ts";
+import { createToolRegistry } from "./core/tools/registry.ts";
+import { DiscordConversationStore } from "./core/stores/conversationStore.ts";
+import { DiscordSpaceMemoryStore } from "./core/stores/memoryStore.ts";
+import type { LanguageModelProvider } from "./core/contracts.ts";
+import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
+import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -13,7 +21,24 @@ async function main() {
   await initDb();
   logger.info("Database initialized");
 
-  await startBot();
+  const db = getDb();
+  const store = new DiscordConversationStore(db);
+  const memory = new DiscordSpaceMemoryStore(db);
+  const hookBus = createHookBus();
+  // deps.model is passed straight to the AI SDK's generateText (the core casts it back); it must BE
+  // the provider model AND carry contextLimit for the loop's context-ratio budget + the footer.
+  const model = Object.assign(openaiProvider(config.openaiModel), { contextLimit: config.openaiContextLimit }) as unknown as LanguageModelProvider;
+  const core = createAgentCore({
+    model,
+    store,
+    memory,
+    tools: createToolRegistry(),
+    hooks: hookBus,
+    behavior: BEHAVIOR_INSTRUCTIONS,
+  });
+
+  startDiscordSurface({ client: client as Client<true>, core, store, hookBus });
+  await client.login(config.discordBotToken);
 
   const mcpApp = buildMcpHttpApp(client as Client<true>);
   // MCP clients hold a GET open for server-initiated notifications that this stateless,

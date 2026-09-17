@@ -1,4 +1,4 @@
-import type { AuthorRef, PromptGuidance, PromptSlot } from "./contracts.ts";
+import type { AuthorRef, PromptGuidance, PromptSlot, TurnResumption } from "./contracts.ts";
 
 /** Fixed slot order — this is what keeps the system prompt byte-stable for the ephemeral
  *  provider cache across turns. Surfaces only fill slot content; they never reorder it. */
@@ -38,13 +38,13 @@ export function buildUserNote(novel: AuthorRef[]): string {
   return `[Internal: user identity mappings for resolving names — do not quote or surface this to the user]\n${lines.join("\n")}`;
 }
 
-/** Ports the old bot-mention-stripped triggering-message framing built at the surface boundary. */
-export function formatInboundAsUserTurn(author: AuthorRef, text: string): string {
-  const name = author.username ?? author.userId;
-  return `[Message from ${name} (u:${author.userId})]\n${text}`;
-}
-
-export function formatResumptionAsUserTurn(kind: "question-answer" | "approval", detail: string, by: AuthorRef): string {
-  const name = by.username ?? by.userId;
-  return `[${kind === "question-answer" ? "Answer" : "Decision"} from ${name} (u:${by.userId})]\n${detail}`;
+/** The surface owns the full user-turn framing (the `[Message from ...]` wrapper, reply context, and
+ *  the auto-mod query shape) and passes it as `InboundMessage.text`; the core relays it verbatim.
+ *  This resumption framing is the one exception — a button click carries only a neutral choice/
+ *  decision, so the core frames it. Ports the old `[Selected: "${choice}"]` (bot.ts). */
+export function formatResumptionAsUserTurn(resumption: TurnResumption): string {
+  if (resumption.kind === "question-answer") return `[Selected: "${resumption.choice}"]`;
+  // approval resume: the surface supplies the exact post-apply system message when the approval
+  // path is wired (U4-cutover phase 2b); this neutral fallback is unused until then.
+  return resumption.systemMessage ?? `[System: Moderator ${resumption.decision === "approved" ? "approved" : "rejected"} the request.]`;
 }

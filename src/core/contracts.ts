@@ -173,7 +173,7 @@ export type PendingInteraction =
 /** Neutral resumption payload for a paused turn. */
 export type TurnResumption =
   | { kind: "question-answer"; choice: string; by: AuthorRef }
-  | { kind: "approval"; decision: "approved" | "rejected"; by: AuthorRef };
+  | { kind: "approval"; decision: "approved" | "rejected"; by: AuthorRef; systemMessage?: string };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6 Surface extension tiers (C9): capabilities (required) · interceptors · hooks (observational)

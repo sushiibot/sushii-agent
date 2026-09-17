@@ -11,12 +11,14 @@ import {
 } from "discord.js";
 import type {
   AgentReply,
+  ChannelRef,
   ConversationRef,
   PendingInteraction,
   ReplySegment,
   SurfaceCapabilities,
   SurfaceSession,
   ToolHosts,
+  TurnPromptContext,
 } from "../../core/contracts.ts";
 import { ASK_BTN_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX, FEEDBACK_BTN_PREFIX } from "./buttonIds.ts";
 import { appendFeedbackButtons, buildComponentMessages, buildTextDisplayContainer, ToolProgressTracker } from "./delivery.ts";
@@ -50,6 +52,12 @@ export interface DiscordSurfaceSessionOptions {
   toolTracker?: ToolProgressTracker;
   /** Attach feedback thumbs to the final message of a completed (non-interim) turn. */
   attachFeedback?: boolean;
+  /** Per-turn prompt inputs the core folds into slot assembly (contracts.ts §6, C8). */
+  channel?: ChannelRef;
+  threadContext?: string;
+  threadChannelId?: string;
+  ownerSection?: string;
+  moduleExtras?: string[];
 }
 
 export class DiscordSurfaceSession implements SurfaceSession {
@@ -65,6 +73,7 @@ export class DiscordSurfaceSession implements SurfaceSession {
   private readonly emojiMap?: Record<string, string>;
   private readonly toolTracker?: ToolProgressTracker;
   private readonly attachFeedback: boolean;
+  private readonly promptInputs: TurnPromptContext;
 
   constructor(opts: DiscordSurfaceSessionOptions) {
     this.selfId = opts.client.user.id;
@@ -75,6 +84,18 @@ export class DiscordSurfaceSession implements SurfaceSession {
     this.hosts = opts.hosts;
     this.toolTracker = opts.toolTracker;
     this.attachFeedback = opts.attachFeedback ?? true;
+    this.promptInputs = {
+      channel: opts.channel,
+      emojiMap: opts.emojiMap,
+      threadContext: opts.threadContext,
+      threadChannelId: opts.threadChannelId,
+      ownerSection: opts.ownerSection,
+      moduleExtras: opts.moduleExtras,
+    };
+  }
+
+  promptContext(): TurnPromptContext {
+    return this.promptInputs;
   }
 
   async deliver(reply: AgentReply): Promise<{ messageId?: string }> {

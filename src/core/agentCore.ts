@@ -14,7 +14,7 @@ import type {
   TurnResumption,
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
-import { buildUserNote, formatInboundAsUserTurn, formatResumptionAsUserTurn } from "./prompt.ts";
+import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
 import { MEMORY_LIMIT } from "./stores/index.ts";
 import { fireHook, runLoop } from "./loop.ts";
@@ -44,7 +44,13 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       if (turn.queue.length === 0) return [];
       const batch = turn.queue;
       turn.queue = [];
-      return batch.map((inbound) => ({ author: inbound.author, text: formatInboundAsUserTurn(inbound.author, inbound.text) }));
+      // onConsumed fires as each queued (mid-loop) message is actually injected — this is what
+      // clears its ⏳ and adds ✅ on the Discord surface. The first message of a turn is NOT a
+      // consume event (it was never queued), so it gets no reaction, matching the old path.
+      return batch.map((inbound) => {
+        fireHook(deps.hooks, "onConsumed", { conversation: inbound.conversation, inbound });
+        return { author: inbound.author, text: inbound.text };
+      });
     };
   }
 
@@ -176,14 +182,13 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
         queue: [],
       };
       activeTurns.set(key, turn);
-      fireHook(deps.hooks, "onConsumed", { conversation: inbound.conversation, inbound });
       try {
         const autoMod = inbound.platform?.surface === "discord" && !!inbound.platform.autoModTrigger;
         return await runTurn(
           inbound.conversation,
           turn,
           session,
-          formatInboundAsUserTurn(inbound.author, inbound.text),
+          inbound.text,
           inbound.mentionedUsers,
           autoMod,
         );
@@ -209,11 +214,10 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       };
       activeTurns.set(key, turn);
       try {
-        const detail = resumption.kind === "question-answer" ? resumption.choice : resumption.decision;
         // A resumed turn is always a human-driven continuation (button click), never the
         // autonomous auto-mod driver itself — pausing tools (ask_question, keyword approvals)
         // aren't in AUTO_MOD_ONLY_TOOLS, so this can't strand a paused auto-mod turn.
-        return await runTurn(conversation, turn, session, formatResumptionAsUserTurn(resumption.kind, detail, resumption.by), undefined, false);
+        return await runTurn(conversation, turn, session, formatResumptionAsUserTurn(resumption), undefined, false);
       } catch (err) {
         return { status: "error", message: err instanceof Error ? err.message : String(err) };
       } finally {
