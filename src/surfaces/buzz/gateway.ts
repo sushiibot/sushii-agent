@@ -47,12 +47,19 @@ export async function startBuzzSurface(deps: BuzzSurfaceDeps): Promise<{ stop: (
     cursorStore.set(cursor);
   }
 
+  const LIMIT = 50;
   let polling = false;
   const poll = async (): Promise<void> => {
     if (polling) return; // never overlap a slow poll with the next tick
     polling = true;
     try {
-      const events = await client.feedMentions(cursor);
+      // Drain a full (possibly truncated) page immediately instead of waiting a whole interval, so a
+      // burst larger than LIMIT can't sit half-processed. Assumes `feed get` returns oldest-first
+      // within the since-window (we sort oldest-first regardless); the `cursor === before` guard stops
+      // an infinite loop when a full page yields no fresh events.
+      for (;;) {
+      const before = cursor;
+      const events = await client.feedMentions(cursor, LIMIT);
       const fresh = events
         .filter((e) => e.createdAt > cursor && e.pubkey !== ownPubkey)
         .sort((a, b) => a.createdAt - b.createdAt);
@@ -80,6 +87,8 @@ export async function startBuzzSurface(deps: BuzzSurfaceDeps): Promise<{ stop: (
         // Advance per-event so a crash mid-batch never re-replies to already-handled mentions.
         cursor = event.createdAt;
         cursorStore.set(cursor);
+      }
+      if (events.length < LIMIT || cursor === before) break;
       }
     } catch (err) {
       const category = err instanceof BuzzCliError ? err.category : "other";
