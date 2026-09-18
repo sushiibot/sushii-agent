@@ -17,7 +17,7 @@ import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
-import { CliBuzzClient } from "./surfaces/buzz/buzzClient.ts";
+import { NostrBuzzClient } from "./surfaces/buzz/buzzClient.ts";
 import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
 import { getBuzzCursor, setBuzzCursor } from "./db/buzzState.ts";
 
@@ -61,19 +61,18 @@ async function main() {
   if (config.buzz.privateKey) {
     const privateKey = config.buzz.privateKey;
     const buzzCore = createAgentCore({ model, store, memory, tools, hooks: createHookBus(), behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
-    // Empty list → one loop on the CLI's default relay (dev localhost), keyed "default".
+    // Empty list → one connection on the default relay (dev localhost), keyed "default".
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
     for (const relayUrl of relays) {
       const key = relayUrl ?? "default";
       const spaceId = relayUrl ? `buzz:${key}` : "buzz";
-      const buzzClient = new CliBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag });
+      const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag }, key);
       try {
-        await startBuzzSurface({
+        startBuzzSurface({
           core: buzzCore,
           client: buzzClient,
           cursor: { get: () => getBuzzCursor(db, key), set: (c) => setBuzzCursor(db, key, c) },
           serverContext: { get: () => memory.getServerContext(spaceId), set: (content) => memory.setServerContext(spaceId, content) },
-          pollIntervalMs: config.buzz.pollIntervalMs,
           spaceId,
           displayName: config.buzz.displayName,
           relayLabel: key,

@@ -1,10 +1,11 @@
 import { getPublicKey } from "nostr-tools/pure";
 import * as nip19 from "nostr-tools/nip19";
 import { getLogger } from "../../logger.ts";
+import { NostrRelayConnection, toWsUrl, type NostrEvent } from "./nostrClient.ts";
 
 const logger = getLogger("surfaces/buzz/client");
 
-/** A message/feed event as the `buzz` CLI emits it (normalized JSON). */
+/** A channel message event as the surface consumes it. */
 export interface BuzzEvent {
   id: string;
   pubkey: string;
@@ -19,7 +20,7 @@ export interface BuzzSendResult {
   accepted: boolean;
 }
 
-/** A community channel as `buzz channels list` emits it. Only `id` is guaranteed. */
+/** A community channel (kind:41 metadata). Only `id` is guaranteed. */
 export interface BuzzChannel {
   id: string;
   name: string;
@@ -29,16 +30,28 @@ export interface BuzzChannel {
   visibility?: string;
 }
 
-/** The buzz operations the surface needs. Injected so the gateway/session can be tested without
- *  spawning the real CLI or reaching a relay. */
+export type PresenceStatus = "online" | "away" | "offline";
+
+// Buzz Nostr event kinds (from buzz-core/src/kind.rs + buzz-sdk builders).
+const KIND_PROFILE = 0;
+const KIND_REACTION = 7;
+const KIND_CHANNEL_MESSAGE = 9;
+const KIND_CHANNEL_METADATA = 41;
+const KIND_PRESENCE = 20001;
+
+/** The buzz operations the surface needs. Reads are push (a live subscription); writes are signed
+ *  event publishes. Injected so the gateway/session can be tested without a relay. */
 export interface BuzzClient {
-  /** The agent's own hex pubkey (derived from BUZZ_PRIVATE_KEY). */
+  /** The agent's own hex pubkey (derived offline from the key). */
   ownPubkey(): Promise<string>;
-  /** Publish the bot's own kind:0 profile display name (per-community, replaceable). */
+  /** Publish the bot's kind:0 profile display name. */
   setProfile(displayName: string): Promise<void>;
-  /** Mentions of the agent with created_at strictly after `sinceTs` (unix seconds), oldest first. */
-  feedMentions(sinceTs: number, limit?: number): Promise<BuzzEvent[]>;
-  /** Post a reply into `channelId`, threaded under `replyToId` (the mentioned event). */
+  /** Publish a presence update (kind:20001). TTL on the relay is 180s — refresh faster than that. */
+  setPresence(status: PresenceStatus): Promise<void>;
+  /** Subscribe to mentions (events p-tagging us) with created_at ≥ sinceTs. `onEvent` fires for each
+   *  new mention, oldest first, live. Returns a stop() to tear the subscription down. */
+  subscribeMentions(sinceTs: number, onEvent: (e: BuzzEvent) => void | Promise<void>): { stop: () => void };
+  /** Post a reply into `channelId`, threaded under `replyToId` (the thread root). */
   send(channelId: string, content: string, replyToId?: string): Promise<BuzzSendResult>;
   /** Add an emoji reaction to an event (NIP-25). Used as a lightweight "seen" ack. */
   react(eventId: string, emoji: string): Promise<void>;
@@ -46,148 +59,126 @@ export interface BuzzClient {
   channelsList(limit?: number): Promise<BuzzChannel[]>;
 }
 
-export class BuzzCliError extends Error {
-  constructor(message: string, readonly category: string, readonly exitCode: number) {
-    super(message);
-    this.name = "BuzzCliError";
+/** Decodes an nsec/hex private key into raw bytes. */
+function decodeSecretKey(raw: string): Uint8Array {
+  const key = raw.trim();
+  if (key.startsWith("nsec")) {
+    const decoded = nip19.decode(key);
+    if (decoded.type !== "nsec") throw new Error("BUZZ_PRIVATE_KEY is not a valid nsec");
+    return decoded.data;
   }
+  if (/^[0-9a-fA-F]{64}$/.test(key)) return Uint8Array.from(Buffer.from(key, "hex"));
+  throw new Error("BUZZ_PRIVATE_KEY must be 64-char hex or an nsec");
 }
 
-/** Spawns the `buzz` CLI (must be on PATH). Config comes from env vars the CLI reads itself. */
-export class CliBuzzClient implements BuzzClient {
-  constructor(
-    private readonly env: { privateKey: string; relayUrl?: string; authTag?: string },
-    private readonly bin = "buzz",
-  ) {}
+/** Native buzz client over a persistent NIP-42 Nostr WebSocket — no CLI. */
+export class NostrBuzzClient implements BuzzClient {
+  private readonly sk: Uint8Array;
+  private readonly pubkey: string;
+  private conn: NostrRelayConnection | null = null;
+  private readonly wsUrl: string;
+  private readonly authTag: string[] | null;
+  private latestSeen = 0;
 
-  private async run(args: string[], stdin?: string): Promise<unknown> {
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      BUZZ_PRIVATE_KEY: this.env.privateKey,
-    };
-    // Set the relay explicitly, or drop it entirely so an inherited empty BUZZ_RELAY_URL="" (what the
-    // ansible default renders) can't override the CLI's own default with a blank value.
-    if (this.env.relayUrl) env.BUZZ_RELAY_URL = this.env.relayUrl;
-    else delete env.BUZZ_RELAY_URL;
-    if (this.env.authTag) env.BUZZ_AUTH_TAG = this.env.authTag;
-    const proc = Bun.spawn([this.bin, ...args], {
-      stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
-      stdout: "pipe",
-      stderr: "pipe",
-      env,
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (exitCode !== 0) {
-      // The CLI documents errors as JSON on stderr: {"error": "<category>", "message": "<detail>"}.
-      let category = "other";
-      let message = stderr.trim() || `buzz exited ${exitCode}`;
-      try {
-        const parsed = JSON.parse(stderr) as { error?: string; message?: string };
-        if (parsed.error) category = parsed.error;
-        if (parsed.message) message = parsed.message;
-      } catch {
-        // Non-JSON stderr — keep the raw text.
-      }
-      throw new BuzzCliError(message, category, exitCode);
-    }
-    if (!stdout.trim()) return null;
-    return JSON.parse(stdout);
+  constructor(
+    env: { privateKey: string; relayUrl?: string; authTag?: string },
+    private readonly relayLabel?: string,
+  ) {
+    this.sk = decodeSecretKey(env.privateKey);
+    this.pubkey = getPublicKey(this.sk);
+    this.wsUrl = toWsUrl(env.relayUrl?.trim() || "http://localhost:3000");
+    this.authTag = env.authTag ? (JSON.parse(env.authTag) as string[]) : null;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- async to satisfy the BuzzClient contract
-  async ownPubkey(): Promise<string> {
-    // Derived offline from the configured key — the pubkey is the keypair's x-only public key, so it
-    // needs no relay. (`buzz users get` queries the relay and returns nothing until the bot has a
-    // profile there, which would deadlock: no pubkey -> no profile -> no pubkey.)
-    const raw = this.env.privateKey.trim();
-    let sk: Uint8Array;
-    if (raw.startsWith("nsec")) {
-      const decoded = nip19.decode(raw);
-      if (decoded.type !== "nsec") throw new BuzzCliError("BUZZ_PRIVATE_KEY is not a valid nsec", "auth", 0);
-      sk = decoded.data;
-    } else if (/^[0-9a-fA-F]{64}$/.test(raw)) {
-      sk = Uint8Array.from(Buffer.from(raw, "hex"));
-    } else {
-      throw new BuzzCliError("BUZZ_PRIVATE_KEY must be 64-char hex or an nsec", "auth", 0);
+  private connection(): NostrRelayConnection {
+    if (!this.conn) {
+      this.conn = new NostrRelayConnection(this.wsUrl, this.sk, this.authTag, this.relayLabel);
+      this.conn.setSelfPubkey(this.pubkey);
+      this.conn.start();
     }
-    return getPublicKey(sk);
+    return this.conn;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await -- offline derivation; async for the contract
+  async ownPubkey(): Promise<string> {
+    return this.pubkey;
   }
 
   async setProfile(displayName: string): Promise<void> {
-    // Explicit --format json like the sibling calls, so run()'s JSON.parse doesn't choke on a
-    // human-readable confirmation line and log a successful publish as a failure.
-    await this.run(["--format", "json", "users", "set-profile", "--name", displayName]);
+    await this.connection().publish({ kind: KIND_PROFILE, content: JSON.stringify({ name: displayName }), tags: [] });
   }
 
-  async feedMentions(sinceTs: number, limit = 50): Promise<BuzzEvent[]> {
-    const result = await this.run(["--format", "json", "feed", "get", "--types", "mentions", "--since", String(sinceTs), "--limit", String(limit)]);
-    const rows = Array.isArray(result) ? result : ((result as { items?: unknown[] } | null)?.items ?? []);
-    return rows.map(normalizeEvent).filter((e): e is BuzzEvent => e !== null);
+  async setPresence(status: PresenceStatus): Promise<void> {
+    await this.connection().publish({ kind: KIND_PRESENCE, content: status, tags: [["status", status]] });
+  }
+
+  subscribeMentions(sinceTs: number, onEvent: (e: BuzzEvent) => void | Promise<void>): { stop: () => void } {
+    this.latestSeen = Math.max(this.latestSeen, sinceTs);
+    const conn = this.connection();
+    const seen = new Set<string>();
+    conn.subscribeMentions("mentions", () => this.latestSeen, (raw: NostrEvent) => {
+      // The relay replays historical events on every (re)connect; dedup by id and skip our own.
+      if (raw.pubkey === this.pubkey) return;
+      if (seen.has(raw.id)) return;
+      seen.add(raw.id);
+      if (seen.size > 5000) seen.clear(); // bound memory; the since-cursor keeps correctness
+      // Advance the reconnect-backfill cursor on emit so a reconnect re-REQs from here, not the start.
+      this.latestSeen = Math.max(this.latestSeen, raw.created_at);
+      void onEvent(toBuzzEvent(raw));
+    });
+    return { stop: () => conn.close() };
   }
 
   async send(channelId: string, content: string, replyToId?: string): Promise<BuzzSendResult> {
-    const args = ["messages", "send", "--channel", channelId, "--content", "-"];
-    if (replyToId) args.push("--reply-to", replyToId);
-    const result = (await this.run(args, content)) as { event_id?: string; eventId?: string; accepted?: boolean } | null;
-    return { eventId: result?.event_id ?? result?.eventId ?? "", accepted: result?.accepted ?? false };
+    const tags: string[][] = [["h", channelId]];
+    if (replyToId) tags.push(["e", replyToId, "", "reply"]);
+    const eventId = await this.connection().publish({ kind: KIND_CHANNEL_MESSAGE, content, tags });
+    return { eventId, accepted: true };
   }
 
   async react(eventId: string, emoji: string): Promise<void> {
-    await this.run(["--format", "json", "reactions", "add", "--event", eventId, "--emoji", emoji]);
+    await this.connection().publish({ kind: KIND_REACTION, content: emoji, tags: [["e", eventId]] });
   }
 
   async channelsList(limit = 500): Promise<BuzzChannel[]> {
-    const result = await this.run(["--format", "json", "channels", "list", "--limit", String(limit)]);
-    const rows = Array.isArray(result) ? result : ((result as { items?: unknown[] } | null)?.items ?? []);
-    return rows.map(normalizeChannel).filter((c): c is BuzzChannel => c !== null);
+    const events = await this.connection().query({ kinds: [KIND_CHANNEL_METADATA], limit });
+    return events.map(normalizeChannel).filter((c): c is BuzzChannel => c !== null);
   }
 }
 
-/** Tolerates snake_case/camelCase and missing optional fields; returns null for a malformed row. */
-function normalizeChannel(raw: unknown): BuzzChannel | null {
-  const r = raw as Record<string, unknown> | null;
-  if (!r || typeof r.id !== "string") {
-    logger.warn({ raw }, "skipping malformed buzz channel");
-    return null;
-  }
-  const str = (...keys: string[]): string | undefined => {
-    for (const k of keys) if (typeof r[k] === "string") return r[k] as string;
-    return undefined;
-  };
-  return {
-    id: r.id,
-    name: str("name", "display_name", "displayName") ?? r.id,
-    topic: str("topic"),
-    purpose: str("purpose"),
-    description: str("description"),
-    visibility: str("visibility"),
-  };
-}
-
-/** Tolerates snake_case (`created_at`) or camelCase from the CLI. Returns null for a malformed row. */
-function normalizeEvent(raw: unknown): BuzzEvent | null {
-  const r = raw as Record<string, unknown> | null;
-  if (!r || typeof r.id !== "string" || typeof r.pubkey !== "string") {
-    logger.warn({ raw }, "skipping malformed buzz event");
-    return null;
-  }
-  const createdAt = typeof r.created_at === "number" ? r.created_at : typeof r.createdAt === "number" ? r.createdAt : 0;
-  return {
-    id: r.id,
-    pubkey: r.pubkey,
-    kind: typeof r.kind === "number" ? r.kind : 0,
-    content: typeof r.content === "string" ? r.content : "",
-    createdAt,
-    tags: Array.isArray(r.tags) ? (r.tags as string[][]) : [],
-  };
+function toBuzzEvent(e: NostrEvent): BuzzEvent {
+  return { id: e.id, pubkey: e.pubkey, kind: e.kind, content: e.content, createdAt: e.created_at, tags: Array.isArray(e.tags) ? e.tags : [] };
 }
 
 /** Channel UUID from a message's `h` tag; null if absent. */
 export function channelIdOf(event: BuzzEvent): string | null {
   const tag = event.tags.find((t) => t[0] === "h");
   return tag?.[1] ?? null;
+}
+
+/** kind:41 metadata → BuzzChannel. Content is JSON ({name, about, ...}); the channel id is the `d` tag.
+ *  Tolerant: unknown/missing fields are dropped, malformed rows return null. */
+function normalizeChannel(e: NostrEvent): BuzzChannel | null {
+  const dTag = e.tags.find((t) => t[0] === "d")?.[1];
+  const id = dTag ?? e.tags.find((t) => t[0] === "h")?.[1];
+  if (!id) return null;
+  let meta: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(e.content) as unknown;
+    if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
+  } catch {
+    // non-JSON content — treat as nameless
+  }
+  const str = (...keys: string[]): string | undefined => {
+    for (const k of keys) if (typeof meta[k] === "string") return meta[k] as string;
+    return undefined;
+  };
+  return {
+    id,
+    name: str("name", "display_name") ?? id,
+    topic: str("topic", "about"),
+    purpose: str("purpose"),
+    description: str("description", "about"),
+    visibility: str("visibility"),
+  };
 }

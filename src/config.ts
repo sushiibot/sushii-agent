@@ -35,8 +35,6 @@ export interface Config {
     authTag: string | undefined;
     /** Display name the bot publishes for itself (kind:0 profile) on each relay. */
     displayName: string;
-    /** How often to poll `buzz feed get` for new mentions. */
-    pollIntervalMs: number;
   };
   wikiSync: {
     repoUrl: string | undefined;
@@ -115,7 +113,6 @@ export const config: Config = {
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),
     authTag: process.env["BUZZ_AUTH_TAG"],
     displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
-    pollIntervalMs: parseInt(optional("BUZZ_POLL_INTERVAL_MS", "5000"), 10),
   },
   wikiSync: {
     repoUrl: process.env["WIKI_SYNC_REPO_URL"],

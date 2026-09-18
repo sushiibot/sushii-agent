@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentCore, AgentReply, AgentTurnResult, InboundMessage, SurfaceSession } from "../../core/contracts.ts";
+import type { AgentReply, AgentTurnResult, InboundMessage, SurfaceSession } from "../../core/contracts.ts";
 import { startBuzzSurface, type CursorStore, type ServerContextStore } from "./gateway.ts";
-import type { BuzzChannel, BuzzClient, BuzzEvent, BuzzSendResult } from "./buzzClient.ts";
+import type { BuzzChannel, BuzzClient, BuzzEvent, BuzzSendResult, PresenceStatus } from "./buzzClient.ts";
+import type { AgentCore } from "../../core/contracts.ts";
 
-const tick = () => new Promise((r) => setTimeout(r, 15));
+const tick = () => new Promise((r) => setTimeout(r, 20));
 
 function event(overrides: Partial<BuzzEvent> = {}): BuzzEvent {
   return { id: "evt1", pubkey: "user1", kind: 9, content: "hey @sushii", createdAt: 1000, tags: [["h", "chan-uuid"]], ...overrides };
@@ -13,7 +14,7 @@ function fakeReply(): AgentReply {
   return { segments: [{ kind: "text", text: "hi there" }], usage: { model: "m", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, contextTokens: 0, contextLimit: 1 }, toolTrace: [], cancelled: false };
 }
 
-/** Records inbounds and drives session.deliver so the full poll→core→session→send path is exercised. */
+/** Records inbounds and drives session.deliver so the full subscribe→core→session→send path runs. */
 function fakeCore(inbounds: { inbound: InboundMessage; session: SurfaceSession }[]): AgentCore {
   return {
     async handleInbound(inbound, session): Promise<AgentTurnResult> {
@@ -29,10 +30,12 @@ function fakeCore(inbounds: { inbound: InboundMessage; session: SurfaceSession }
 interface FakeClientOpts {
   ownPubkey?: string;
   profiles?: string[];
+  presence?: PresenceStatus[];
   reactions?: { eventId: string; emoji: string }[];
   channels?: BuzzChannel[];
   channelsThrow?: boolean;
   channelsCalls?: { n: number };
+  subscribedSince?: { value: number };
 }
 
 function fakeClient(
@@ -40,10 +43,17 @@ function fakeClient(
   sends: { channelId: string; content: string; replyToId?: string }[],
   opts: FakeClientOpts = {},
 ): BuzzClient {
+  const self = opts.ownPubkey ?? "me";
   return {
-    async ownPubkey() { return opts.ownPubkey ?? "me"; },
+    async ownPubkey() { return self; },
     async setProfile(name) { opts.profiles?.push(name); },
-    async feedMentions() { return events; },
+    async setPresence(status) { opts.presence?.push(status); },
+    subscribeMentions(sinceTs, onEvent) {
+      if (opts.subscribedSince) opts.subscribedSince.value = sinceTs;
+      // Mirror the real client: skip our own events, deliver the rest.
+      for (const e of events) if (e.pubkey !== self) void onEvent(e);
+      return { stop: () => {} };
+    },
     async send(channelId, content, replyToId): Promise<BuzzSendResult> {
       sends.push({ channelId, content, replyToId });
       return { eventId: "reply-evt", accepted: true };
@@ -68,12 +78,12 @@ function memServerContext(initial: string | null = null): ServerContextStore & {
   return store;
 }
 
-describe("startBuzzSurface poll loop", () => {
+describe("startBuzzSurface subscription", () => {
   test("builds an InboundMessage from a mention and replies via the client", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const sends: { channelId: string; content: string; replyToId?: string }[] = [];
     const cursor = memCursor(500);
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], sends), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], sends), cursor, serverContext: memServerContext() });
     await tick();
     surface.stop();
 
@@ -82,14 +92,13 @@ describe("startBuzzSurface poll loop", () => {
     expect(inbounds[0].inbound.author).toMatchObject({ surface: "buzz", userId: "user1" });
     expect(inbounds[0].inbound.text).toBe("hey @sushii");
     expect(sends).toEqual([{ channelId: "chan-uuid", content: "hi there", replyToId: "evt1" }]);
-    expect(cursor.value).toBe(1000); // advanced
+    expect(cursor.value).toBe(1000); // advanced after handling
   });
 
   test("ignores the agent's own messages (self-mention loop guard)", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const sends: { channelId: string; content: string; replyToId?: string }[] = [];
-    const cursor = memCursor(500);
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ pubkey: "me", createdAt: 1000 })], sends), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ pubkey: "me" })], sends), cursor: memCursor(500), serverContext: memServerContext() });
     await tick();
     surface.stop();
     expect(inbounds).toHaveLength(0);
@@ -98,109 +107,99 @@ describe("startBuzzSurface poll loop", () => {
 
   test("uses the NIP-10 root event id as the conversation key inside a thread", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
-    const cursor = memCursor(500);
-    const threaded = event({ id: "reply-in-thread", createdAt: 1000, tags: [["h", "chan-uuid"], ["e", "thread-root", "", "root"]] });
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([threaded], []), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const threaded = event({ id: "reply-in-thread", tags: [["h", "chan-uuid"], ["e", "thread-root", "", "root"]] });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([threaded], []), cursor: memCursor(500), serverContext: memServerContext() });
     await tick();
     surface.stop();
     expect(inbounds[0].inbound.conversation.conversationId).toBe("thread-root");
   });
 
   test("replies to the thread root, not the mention, so nesting stays one level deep", async () => {
-    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const sends: { channelId: string; content: string; replyToId?: string }[] = [];
-    const cursor = memCursor(500);
-    const threaded = event({ id: "reply-in-thread", createdAt: 1000, tags: [["h", "chan-uuid"], ["e", "thread-root", "", "root"]] });
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([threaded], sends), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const threaded = event({ id: "reply-in-thread", tags: [["h", "chan-uuid"], ["e", "thread-root", "", "root"]] });
+    const surface = startBuzzSurface({ core: fakeCore([]), client: fakeClient([threaded], sends), cursor: memCursor(500), serverContext: memServerContext() });
     await tick();
     surface.stop();
     expect(sends[0].replyToId).toBe("thread-root");
   });
 
   test("reacts with the sushi ack on the mention it picked up", async () => {
-    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const reactions: { eventId: string; emoji: string }[] = [];
-    const cursor = memCursor(500);
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], [], { reactions }), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore([]), client: fakeClient([event()], [], { reactions }), cursor: memCursor(500), serverContext: memServerContext() });
     await tick();
     surface.stop();
     expect(reactions).toEqual([{ eventId: "evt1", emoji: "🍣" }]);
   });
 
-  test("skips a mention with no channel tag but still advances the cursor", async () => {
+  test("skips a mention with no channel tag", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
-    const cursor = memCursor(500);
-    const noChannel = event({ createdAt: 1000, tags: [["e", "x"]] });
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([noChannel], []), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const noChannel = event({ tags: [["e", "x"]] });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([noChannel], []), cursor: memCursor(500), serverContext: memServerContext() });
     await tick();
     surface.stop();
     expect(inbounds).toHaveLength(0);
-    expect(cursor.value).toBe(1000);
   });
 
-  test("publishes its display name on startup when one is configured", async () => {
+  test("publishes display name and goes online on startup", async () => {
     const profiles: string[] = [];
-    const cursor = memCursor(500);
-    const surface = await startBuzzSurface({ core: fakeCore([]), client: fakeClient([], [], { profiles }), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000, displayName: "sushii-agent" });
+    const presence: PresenceStatus[] = [];
+    const surface = startBuzzSurface({ core: fakeCore([]), client: fakeClient([], [], { profiles, presence }), cursor: memCursor(500), serverContext: memServerContext(), displayName: "sushii-agent" });
     await tick();
     surface.stop();
     expect(profiles).toEqual(["sushii-agent"]);
+    expect(presence[0]).toBe("online");
   });
 
   test("routes conversations into a per-relay space when spaceId is given", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
-    const cursor = memCursor(500);
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], []), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000, spaceId: "buzz:wss://a" });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], []), cursor: memCursor(500), serverContext: memServerContext(), spaceId: "buzz:wss://a" });
     await tick();
     surface.stop();
     expect(inbounds[0].inbound.conversation.spaceId).toBe("buzz:wss://a");
   });
 
-  test("a fresh cursor (0) is initialized to ~now, skipping history", async () => {
+  test("a fresh cursor (0) is initialized to ~now and used as the subscription since", async () => {
     const cursor = memCursor(0);
+    const subscribedSince = { value: -1 };
     const before = Math.floor(Date.now() / 1000);
-    const surface = await startBuzzSurface({ core: fakeCore([]), client: fakeClient([], []), cursor, serverContext: memServerContext(), pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore([]), client: fakeClient([], [], { subscribedSince }), cursor, serverContext: memServerContext() });
     await tick();
     surface.stop();
     expect(cursor.value).toBeGreaterThanOrEqual(before);
+    expect(subscribedSince.value).toBeGreaterThanOrEqual(before);
   });
 
   test("scans the community into server context on first contact, before answering", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
-    const cursor = memCursor(500);
     const ctx = memServerContext(null);
     const channels: BuzzChannel[] = [
       { id: "c1", name: "general", topic: "chit-chat" },
       { id: "c2", name: "dev" },
     ];
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], [], { channels }), cursor, serverContext: ctx, pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], [], { channels }), cursor: memCursor(500), serverContext: ctx });
     await tick();
     surface.stop();
     expect(ctx.value).toContain("#general (`c1`): chit-chat");
     expect(ctx.value).toContain("#dev (`c2`)");
-    // Context was populated before the turn was handled.
     expect(inbounds).toHaveLength(1);
   });
 
   test("does not rescan when server context already exists", async () => {
-    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
-    const cursor = memCursor(500);
     const ctx = memServerContext("already scanned");
     const channelsCalls = { n: 0 };
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], [], { channelsCalls }), cursor, serverContext: ctx, pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore([]), client: fakeClient([event()], [], { channelsCalls }), cursor: memCursor(500), serverContext: ctx });
     await tick();
     surface.stop();
     expect(channelsCalls.n).toBe(0);
     expect(ctx.value).toBe("already scanned");
   });
 
-  test("a failed scan does not block the turn and is not retried", async () => {
+  test("a failed scan does not block the turn and is not retried per-mention", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
-    const cursor = memCursor(500);
     const ctx = memServerContext(null);
     const channelsCalls = { n: 0 };
     const events = [event({ id: "evt1", createdAt: 1000 }), event({ id: "evt2", createdAt: 1001 })];
-    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient(events, [], { channelsThrow: true, channelsCalls }), cursor, serverContext: ctx, pollIntervalMs: 10_000 });
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient(events, [], { channelsThrow: true, channelsCalls }), cursor: memCursor(500), serverContext: ctx });
     await tick();
     surface.stop();
     expect(ctx.value).toBeNull();
