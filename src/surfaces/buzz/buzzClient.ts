@@ -38,6 +38,8 @@ const KIND_REACTION = 7;
 const KIND_CHANNEL_MESSAGE = 9;
 const KIND_CHANNEL_METADATA = 39000; // NIP-29 channel metadata; id in `d` tag, name/about in tags
 const KIND_PRESENCE = 20001;
+const KIND_MEMBER_ADDED_NOTIFICATION = 44100; // "you were added to a channel" — global, p-tagged
+const KIND_DM_CREATED = 41001; // a new DM channel was opened with us — global, p-tagged
 
 /** The buzz operations the surface needs. Reads are push (a live subscription); writes are signed
  *  event publishes. Injected so the gateway/session can be tested without a relay. */
@@ -83,6 +85,8 @@ export class NostrBuzzClient implements BuzzClient {
   private lastProfile: string | null = null;
   private mentionHandler: ((e: BuzzEvent) => void | Promise<void>) | null = null;
   private readonly seen = new Set<string>();
+  private readonly subscribedChannels = new Set<string>();
+  private resyncTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     env: { privateKey: string; relayUrl?: string; authTag?: string },
@@ -109,30 +113,56 @@ export class NostrBuzzClient implements BuzzClient {
     return this.conn;
   }
 
-  /** (Re)subscribe to mentions. Channel messages are only fanned out to channel-scoped subs, so we
-   *  subscribe per channel the bot is in (`#h`+`#p`). Runs on every connect via the onReady hook. */
+  /** Routes an incoming mention event to the surface handler (dedup + skip own + advance cursor). */
+  private readonly handleRaw = (raw: NostrEvent): void => {
+    if (raw.pubkey === this.pubkey) return; // never react to our own posts
+    if (this.seen.has(raw.id)) return; // dedup across channels + reconnect replays
+    this.seen.add(raw.id);
+    if (this.seen.size > 5000) this.seen.clear();
+    this.latestSeen = Math.max(this.latestSeen, raw.created_at);
+    void this.mentionHandler?.(toBuzzEvent(raw));
+  };
+
+  /** (Re)subscribe on connect: a global sub for "added to a channel/DM" notifications (live channel
+   *  discovery, no polling), plus one per-channel mention sub for every channel the bot is in.
+   *  Channel messages are only fanned out to channel-scoped (`#h`) subs, never global ones. */
   private async resubscribe(): Promise<void> {
     const conn = this.conn;
     if (!conn || !this.mentionHandler) return;
-    const handler = this.mentionHandler;
-    const wrapped = (raw: NostrEvent) => {
-      if (raw.pubkey === this.pubkey) return; // never react to our own posts
-      if (this.seen.has(raw.id)) return; // dedup across channels + reconnect replays
-      this.seen.add(raw.id);
-      if (this.seen.size > 5000) this.seen.clear();
-      this.latestSeen = Math.max(this.latestSeen, raw.created_at);
-      void handler(toBuzzEvent(raw));
-    };
+    this.subscribedChannels.clear(); // the socket reset cleared all subs; re-arm from scratch
+    // Notifications p-tagging us ARE delivered to a global sub; new-channel/DM events trigger a resync.
+    conn.subscribe(
+      "membership",
+      { kinds: [KIND_MEMBER_ADDED_NOTIFICATION, KIND_DM_CREATED], "#p": [this.pubkey], since: this.latestSeen },
+      () => this.scheduleChannelResync(),
+    );
+    await this.syncChannels();
+  }
+
+  /** Adds a per-channel mention subscription for any channel we're not already subscribed to. */
+  private async syncChannels(): Promise<void> {
+    const conn = this.conn;
+    if (!conn || !this.mentionHandler) return;
     try {
       const channels = await this.channelsList();
       const since = this.latestSeen;
+      let added = 0;
       for (const ch of channels) {
-        conn.subscribe(`m:${ch.id}`, { "#h": [ch.id], "#p": [this.pubkey], since }, wrapped);
+        if (this.subscribedChannels.has(ch.id)) continue;
+        conn.subscribe(`m:${ch.id}`, { "#h": [ch.id], "#p": [this.pubkey], since }, this.handleRaw);
+        this.subscribedChannels.add(ch.id);
+        added++;
       }
-      logger.info({ channelCount: channels.length, relay: this.relayLabel }, "buzz mention subscriptions armed");
+      if (added) logger.info({ added, total: this.subscribedChannels.size, relay: this.relayLabel }, "buzz mention subscriptions armed");
     } catch (err) {
       logger.error({ err, relay: this.relayLabel }, "buzz failed to arm mention subscriptions");
     }
+  }
+
+  /** Debounce channel resyncs so a burst of membership events triggers a single re-scan. */
+  private scheduleChannelResync(): void {
+    if (this.resyncTimer) return;
+    this.resyncTimer = setTimeout(() => { this.resyncTimer = null; void this.syncChannels(); }, 2_000);
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await -- offline derivation; async for the contract
