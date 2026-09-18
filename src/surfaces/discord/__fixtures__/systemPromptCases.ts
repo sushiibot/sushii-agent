@@ -26,7 +26,7 @@ export const PROMPT_CASES: Record<string, SystemPromptInputs> = {
     threadContext: "t:1 u:U9: hi",
     threadChannelId: "C1",
   },
-  // First-run guild: serverContext === null (scan-suggest section), empty memory, no emoji/thread.
+  // First-run guild: serverContext === null (neutral not-yet-available section), empty memory, no emoji/thread.
   mention_null_ctx: {
     behavior: BEHAVIOR_SENTINEL,
     selfId: "BOT",

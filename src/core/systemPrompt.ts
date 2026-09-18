@@ -81,7 +81,7 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
     systemParts.push(`## Server Context\n${inputs.serverContext}`);
   } else if (inputs.serverContext === null) {
     systemParts.push(
-      `## Server Context\nNot configured. At the start of this conversation, let the moderator know and suggest they type \`scan server\` so you can learn the server structure. You can still help with queries, but your awareness of this server will be limited until the scan is done. When scanning, identify the channel that holds the server rules and record only its channel ID under server context — never the rule text itself, which can change independently.`,
+      `## Server Context\nNot yet available for this space. Answer normally; your awareness of this space's structure is limited until it has been learned.`,
     );
   }
 

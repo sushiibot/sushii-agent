@@ -17,7 +17,7 @@ import { AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX, SCAN_BTN_PREFIX } from "./b
 const logger = getLogger("surfaces/discord/approvals");
 
 export const SCAN_QUERY =
-  "[System: Perform initial server scan. Use listGuildChannels, listGuildRoles, and getRecentActivity to gather information about this server's structure and recent activity. Then call updateServerContext with a concise summary covering channels, roles, and any notable patterns. This is a background initialization task — do not address the user directly.]";
+  "[System: Perform initial server scan. Use listGuildChannels, listGuildRoles, and getRecentActivity to gather information about this server's structure and recent activity. Then call updateServerContext with a concise summary covering channels, roles, and any notable patterns. Identify the channel that holds the server rules and record only its channel ID — never the rule text itself, which can change independently. This is a background initialization task — do not address the user directly.]";
 
 /** Alphabetical neighbor context for an automod keyword. Ported verbatim from the old
  *  moderation/interactions.ts. `existingKeywords` is the pre-add list (mode "add") or the
