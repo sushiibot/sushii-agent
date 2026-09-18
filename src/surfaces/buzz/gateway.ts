@@ -15,8 +15,10 @@ const SURFACE = "buzz" as const;
 const SEEN_EMOJI = "🍣";
 // server_context column cap; keep the scanned blob under it.
 const MAX_CONTEXT = 4000;
-// Presence TTL on the relay is 180s; refresh well inside that so the bot never flips to offline.
-const PRESENCE_HEARTBEAT_MS = 120_000;
+// Presence TTL on the relay is 180s, sized as 3x a 60s heartbeat so a single missed/late beat still
+// refreshes in time. Match that 60s cadence — at 120s one missed beat (e.g. across a reconnect)
+// lands past the TTL and flips the bot offline.
+const PRESENCE_HEARTBEAT_MS = 60_000;
 
 /** Renders the community's channels as a server-context blob (body only — the core wraps it). */
 function formatCommunityContext(channels: BuzzChannel[]): string {
