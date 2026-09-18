@@ -34,25 +34,29 @@ const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const PUBLISH_TIMEOUT_MS = 15_000;
 const QUERY_TIMEOUT_MS = 15_000;
+// Buzz relays always send a NIP-42 AUTH challenge; this fallback only fires for a relay that never
+// challenges, so it proceeds unauthenticated rather than never subscribing.
+const AUTH_FALLBACK_MS = 2_000;
 
 /**
- * A single persistent, NIP-42-authenticated connection to a buzz (Nostr) relay. Owns the socket,
- * the auth handshake, one long-lived mention subscription (re-armed on every reconnect), and
+ * A single persistent, NIP-42-authenticated connection to a buzz (Nostr) relay. Owns the socket, the
+ * auth handshake, one long-lived mention subscription (re-armed on every reconnect), and
  * request/response helpers for publishing events and one-shot queries. All buzz reads and writes go
  * through here — no CLI.
  */
 export class NostrRelayConnection {
   private ws: WebSocket | null = null;
-  private authed = false;
+  private ready = false;
+  private challengeSeen = false;
+  private authEventId: string | null = null;
   private closed = false;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private authFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private selfPubkey: string | null = null;
 
-  // Pending one-shot queries keyed by sub id.
-  private readonly queries = new Map<string, { events: NostrEvent[]; resolve: (e: NostrEvent[]) => void; timer: ReturnType<typeof setTimeout> }>();
-  // Pending publishes keyed by event id, resolved on the relay's OK.
-  private readonly publishes = new Map<string, { resolve: (accepted: boolean) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
-  // The live mention subscription, re-sent after every (re)auth.
+  private readonly queries = new Map<string, { events: NostrEvent[]; resolve: (e: NostrEvent[]) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly publishes = new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private mention: { subId: string; getSince: () => number; onEvent: (e: NostrEvent) => void } | null = null;
 
   constructor(
@@ -61,9 +65,10 @@ export class NostrRelayConnection {
     /** Optional NIP-OA owner-attestation tag appended to the AUTH event. */
     private readonly authTag: string[] | null,
     private readonly relayLabel?: string,
+    /** Fired every time the connection becomes ready (initial + each reconnect) — used to re-announce presence. */
+    private readonly onReady?: () => void,
   ) {}
 
-  /** Opens the connection and keeps it open (auto-reconnecting) until close(). Idempotent-ish: call once. */
   start(): void {
     this.closed = false;
     this.connect();
@@ -72,6 +77,7 @@ export class NostrRelayConnection {
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.authFallbackTimer) clearTimeout(this.authFallbackTimer);
     try {
       this.ws?.close();
     } catch {
@@ -79,26 +85,36 @@ export class NostrRelayConnection {
     }
   }
 
+  /** True once the socket is open and authenticated (safe to publish/query). */
+  isReady(): boolean {
+    return this.ready && this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  setSelfPubkey(hex: string): void { this.selfPubkey = hex; }
+
   /** Registers the mention subscription. `getSince` is read on each (re)connect so a reconnect
    *  backfills only what was missed. Safe to call before the socket is up. */
   subscribeMentions(subId: string, getSince: () => number, onEvent: (e: NostrEvent) => void): void {
     this.mention = { subId, getSince, onEvent };
-    if (this.authed) this.sendMentionReq();
+    if (this.ready) this.sendMentionReq();
   }
 
   private connect(): void {
     if (this.closed) return;
-    this.authed = false;
+    this.ready = false;
+    this.challengeSeen = false;
+    this.authEventId = null;
     const ws = new WebSocket(this.wsUrl);
     this.ws = ws;
 
     ws.addEventListener("open", () => {
       logger.debug({ relay: this.relayLabel }, "buzz ws open");
-      // Buzz always sends an AUTH challenge; if one hasn't arrived shortly, proceed unauthenticated
-      // (the mention REQ will be CLOSED with auth-required and we'll learn from that).
-      setTimeout(() => {
-        if (!this.authed && this.ws === ws && ws.readyState === WebSocket.OPEN) this.onReady();
-      }, 300);
+      // If the relay never challenges (non-buzz), proceed unauthenticated after a grace period.
+      this.authFallbackTimer = setTimeout(() => {
+        if (!this.challengeSeen && !this.ready && this.ws === ws && ws.readyState === WebSocket.OPEN) {
+          this.markReady();
+        }
+      }, AUTH_FALLBACK_MS);
     });
     ws.addEventListener("message", (ev) => this.onMessage(String((ev as MessageEvent).data)));
     ws.addEventListener("error", () => logger.warn({ relay: this.relayLabel }, "buzz ws error"));
@@ -109,11 +125,11 @@ export class NostrRelayConnection {
 
   private onDisconnect(): void {
     this.ws = null;
-    this.authed = false;
-    // Fail in-flight publishes so callers don't hang; queries resolve with what they have.
+    this.ready = false;
+    if (this.authFallbackTimer) clearTimeout(this.authFallbackTimer);
     for (const [, p] of this.publishes) { clearTimeout(p.timer); p.reject(new Error("relay disconnected")); }
     this.publishes.clear();
-    for (const [, q] of this.queries) { clearTimeout(q.timer); q.resolve(q.events); }
+    for (const [, q] of this.queries) { clearTimeout(q.timer); q.reject(new Error("relay disconnected")); }
     this.queries.clear();
     if (this.closed) return;
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
@@ -122,20 +138,29 @@ export class NostrRelayConnection {
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
-  /** Called once the connection is usable (post-auth, or post-open if the relay didn't challenge). */
-  private onReady(): void {
-    if (this.authed) return;
-    this.authed = true;
+  /** Connection is authenticated (or the relay doesn't challenge) — arm the subscription and signal ready. */
+  private markReady(): void {
+    if (this.ready) return;
+    this.ready = true;
     this.reconnectAttempts = 0;
+    if (this.authFallbackTimer) clearTimeout(this.authFallbackTimer);
     if (this.mention) this.sendMentionReq();
+    try { this.onReady?.(); } catch { /* callback must not break the connection */ }
   }
 
   private sendMentionReq(): void {
-    if (!this.mention) return;
+    if (!this.mention || !this.selfPubkey) return;
     const since = this.mention.getSince();
-    const filter: Filter = { "#p": [this.selfPubkeyHex()], since };
-    this.sendRaw(["REQ", this.mention.subId, filter]);
+    this.sendRaw(["REQ", this.mention.subId, { "#p": [this.selfPubkey], since }]);
     logger.debug({ relay: this.relayLabel, since }, "buzz mention REQ sent");
+  }
+
+  private respondAuth(challenge: string): void {
+    const template = makeAuthEvent(this.wsUrl, challenge) as EventTemplate;
+    const tags = this.authTag ? [...template.tags, this.authTag] : template.tags;
+    const signed = finalizeEvent({ kind: template.kind, created_at: template.created_at ?? Math.floor(Date.now() / 1000), tags, content: template.content }, this.sk);
+    this.authEventId = signed.id;
+    this.sendRaw(["AUTH", signed]);
   }
 
   private onMessage(raw: string): void {
@@ -149,21 +174,26 @@ export class NostrRelayConnection {
     const [type] = msg;
 
     if (type === "AUTH" && typeof msg[1] === "string") {
+      this.challengeSeen = true;
+      if (this.authFallbackTimer) clearTimeout(this.authFallbackTimer);
       this.respondAuth(msg[1]);
       return;
     }
     if (type === "OK") {
       const id = msg[1] as string;
       const accepted = msg[2] === true;
+      if (id === this.authEventId) {
+        if (accepted) this.markReady();
+        else logger.error({ relay: this.relayLabel, reason: msg[3] }, "buzz relay rejected AUTH");
+        return;
+      }
       const pending = this.publishes.get(id);
       if (pending) {
         clearTimeout(pending.timer);
         this.publishes.delete(id);
-        if (accepted) pending.resolve(true);
+        if (accepted) pending.resolve();
         else pending.reject(new Error(typeof msg[3] === "string" ? msg[3] : "relay rejected event"));
       }
-      // An OK for our auth event id marks the connection ready.
-      if (id === this.authEventId) this.onReady();
       return;
     }
     if (type === "EVENT") {
@@ -189,9 +219,12 @@ export class NostrRelayConnection {
       const subId = msg[1] as string;
       const reason = typeof msg[2] === "string" ? msg[2] : "";
       const q = this.queries.get(subId);
-      if (q) { clearTimeout(q.timer); this.queries.delete(subId); q.resolve(q.events); }
+      if (q) { clearTimeout(q.timer); this.queries.delete(subId); q.reject(new Error(reason || "subscription closed")); }
       if (this.mention && subId === this.mention.subId) {
-        logger.warn({ relay: this.relayLabel, reason }, "buzz mention subscription closed by relay");
+        // The live subscription was dropped by the relay — reconnect (re-auth + re-REQ) rather than
+        // sit silently deaf.
+        logger.warn({ relay: this.relayLabel, reason }, "buzz mention subscription closed, reconnecting");
+        try { this.ws?.close(); } catch { /* triggers onDisconnect → reconnect */ }
       }
       return;
     }
@@ -200,51 +233,30 @@ export class NostrRelayConnection {
     }
   }
 
-  private authEventId: string | null = null;
-
-  private respondAuth(challenge: string): void {
-    const template = makeAuthEvent(this.wsUrl, challenge) as EventTemplate;
-    if (this.authTag) template.tags = [...template.tags, this.authTag];
-    const signed = finalizeEvent({ kind: template.kind, created_at: template.created_at ?? Math.floor(Date.now() / 1000), tags: template.tags, content: template.content }, this.sk);
-    this.authEventId = signed.id;
-    this.sendRaw(["AUTH", signed]);
-  }
-
   /** Signs and publishes an event, resolving with its id once the relay ACKs it. */
   publish(template: EventTemplate): Promise<string> {
     const signed = finalizeEvent({ kind: template.kind, created_at: template.created_at ?? Math.floor(Date.now() / 1000), tags: template.tags, content: template.content }, this.sk);
     return new Promise<string>((resolve, reject) => {
-      const ws = this.ws;
-      if (!ws || ws.readyState !== WebSocket.OPEN) { reject(new Error("relay not connected")); return; }
+      if (!this.isReady()) { reject(new Error("relay not ready")); return; }
       const timer = setTimeout(() => { this.publishes.delete(signed.id); reject(new Error("publish timed out")); }, PUBLISH_TIMEOUT_MS);
       this.publishes.set(signed.id, { resolve: () => resolve(signed.id), reject, timer });
       this.sendRaw(["EVENT", signed]);
     });
   }
 
-  /** One-shot query: REQ, collect EVENTs until EOSE, then CLOSE. Resolves with the collected events. */
+  /** One-shot query: REQ, collect EVENTs until EOSE, then CLOSE. Rejects if not connected. */
   query(filter: Filter): Promise<NostrEvent[]> {
-    return new Promise<NostrEvent[]>((resolve) => {
-      const ws = this.ws;
-      if (!ws || ws.readyState !== WebSocket.OPEN) { resolve([]); return; }
+    return new Promise<NostrEvent[]>((resolve, reject) => {
+      if (!this.isReady()) { reject(new Error("relay not ready")); return; }
       const subId = `q-${Math.random().toString(36).slice(2, 10)}`;
       const timer = setTimeout(() => {
         const q = this.queries.get(subId);
         if (q) { this.queries.delete(subId); this.sendRaw(["CLOSE", subId]); resolve(q.events); }
       }, QUERY_TIMEOUT_MS);
-      this.queries.set(subId, { events: [], resolve, timer });
+      this.queries.set(subId, { events: [], resolve, reject, timer });
       this.sendRaw(["REQ", subId, filter]);
     });
   }
-
-  private selfPubkeyHex(): string {
-    // Derived once from the auth event we build; simplest is to import getPublicKey, but the caller
-    // already knows it — set via setSelfPubkey to avoid a second derivation.
-    if (!this._selfPubkey) throw new Error("self pubkey not set");
-    return this._selfPubkey;
-  }
-  private _selfPubkey: string | null = null;
-  setSelfPubkey(hex: string): void { this._selfPubkey = hex; }
 
   private sendRaw(msg: unknown[]): void {
     try {

@@ -32,11 +32,11 @@ export interface BuzzChannel {
 
 export type PresenceStatus = "online" | "away" | "offline";
 
-// Buzz Nostr event kinds (from buzz-core/src/kind.rs + buzz-sdk builders).
+// Buzz Nostr event kinds (from buzz-core/src/kind.rs + buzz-sdk builders / buzz-cli channels list).
 const KIND_PROFILE = 0;
 const KIND_REACTION = 7;
 const KIND_CHANNEL_MESSAGE = 9;
-const KIND_CHANNEL_METADATA = 41;
+const KIND_CHANNEL_METADATA = 39000; // NIP-29 channel metadata; id in `d` tag, name/about in tags
 const KIND_PRESENCE = 20001;
 
 /** The buzz operations the surface needs. Reads are push (a live subscription); writes are signed
@@ -79,6 +79,7 @@ export class NostrBuzzClient implements BuzzClient {
   private readonly wsUrl: string;
   private readonly authTag: string[] | null;
   private latestSeen = 0;
+  private lastPresence: PresenceStatus | null = null;
 
   constructor(
     env: { privateKey: string; relayUrl?: string; authTag?: string },
@@ -92,7 +93,11 @@ export class NostrBuzzClient implements BuzzClient {
 
   private connection(): NostrRelayConnection {
     if (!this.conn) {
-      this.conn = new NostrRelayConnection(this.wsUrl, this.sk, this.authTag, this.relayLabel);
+      // Re-announce presence on every (re)connect so a reconnect gap can't silently flip us offline.
+      const onReady = () => {
+        if (this.lastPresence) void this.conn?.publish({ kind: KIND_PRESENCE, content: this.lastPresence, tags: [["status", this.lastPresence]] }).catch(() => {});
+      };
+      this.conn = new NostrRelayConnection(this.wsUrl, this.sk, this.authTag, this.relayLabel, onReady);
       this.conn.setSelfPubkey(this.pubkey);
       this.conn.start();
     }
@@ -109,6 +114,7 @@ export class NostrBuzzClient implements BuzzClient {
   }
 
   async setPresence(status: PresenceStatus): Promise<void> {
+    this.lastPresence = status;
     await this.connection().publish({ kind: KIND_PRESENCE, content: status, tags: [["status", status]] });
   }
 
@@ -156,29 +162,20 @@ export function channelIdOf(event: BuzzEvent): string | null {
   return tag?.[1] ?? null;
 }
 
-/** kind:41 metadata → BuzzChannel. Content is JSON ({name, about, ...}); the channel id is the `d` tag.
- *  Tolerant: unknown/missing fields are dropped, malformed rows return null. */
+/** kind:39000 channel metadata → BuzzChannel. The channel id is the `d` tag; name/about live in
+ *  their own tags (`["name", …]`, `["about", …]`), not the content. Tolerant: missing fields drop,
+ *  a row with no id returns null. */
 function normalizeChannel(e: NostrEvent): BuzzChannel | null {
-  const dTag = e.tags.find((t) => t[0] === "d")?.[1];
-  const id = dTag ?? e.tags.find((t) => t[0] === "h")?.[1];
+  const tag = (key: string): string | undefined => e.tags.find((t) => t[0] === key)?.[1];
+  const id = tag("d") ?? tag("h");
   if (!id) return null;
-  let meta: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(e.content) as unknown;
-    if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>;
-  } catch {
-    // non-JSON content — treat as nameless
-  }
-  const str = (...keys: string[]): string | undefined => {
-    for (const k of keys) if (typeof meta[k] === "string") return meta[k] as string;
-    return undefined;
-  };
+  const about = tag("about") ?? tag("topic");
   return {
     id,
-    name: str("name", "display_name") ?? id,
-    topic: str("topic", "about"),
-    purpose: str("purpose"),
-    description: str("description", "about"),
-    visibility: str("visibility"),
+    name: tag("name") ?? id,
+    topic: about,
+    purpose: tag("purpose"),
+    description: about,
+    visibility: e.tags.some((t) => t[0] === "private") ? "private" : e.tags.some((t) => t[0] === "public") ? "open" : undefined,
   };
 }
