@@ -53,11 +53,12 @@ export class NostrRelayConnection {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private authFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  private selfPubkey: string | null = null;
 
   private readonly queries = new Map<string, { events: NostrEvent[]; resolve: (e: NostrEvent[]) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly publishes = new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
-  private mention: { subId: string; getSince: () => number; onEvent: (e: NostrEvent) => void } | null = null;
+  // Live subscriptions keyed by sub id → handler. Cleared on disconnect; the owner re-subscribes on
+  // the onReady hook (channel membership may have changed).
+  private readonly subs = new Map<string, (e: NostrEvent) => void>();
 
   constructor(
     private readonly wsUrl: string,
@@ -90,13 +91,15 @@ export class NostrRelayConnection {
     return this.ready && this.ws?.readyState === WebSocket.OPEN;
   }
 
-  setSelfPubkey(hex: string): void { this.selfPubkey = hex; }
+  /** Opens a live subscription: routes matching EVENTs to `onEvent` until unsubscribe/disconnect.
+   *  Must be called when ready (do it from the onReady hook). */
+  subscribe(subId: string, filter: Filter, onEvent: (e: NostrEvent) => void): void {
+    this.subs.set(subId, onEvent);
+    if (this.isReady()) this.sendRaw(["REQ", subId, filter]);
+  }
 
-  /** Registers the mention subscription. `getSince` is read on each (re)connect so a reconnect
-   *  backfills only what was missed. Safe to call before the socket is up. */
-  subscribeMentions(subId: string, getSince: () => number, onEvent: (e: NostrEvent) => void): void {
-    this.mention = { subId, getSince, onEvent };
-    if (this.ready) this.sendMentionReq();
+  unsubscribe(subId: string): void {
+    if (this.subs.delete(subId)) this.sendRaw(["CLOSE", subId]);
   }
 
   private connect(): void {
@@ -131,6 +134,7 @@ export class NostrRelayConnection {
     this.publishes.clear();
     for (const [, q] of this.queries) { clearTimeout(q.timer); q.reject(new Error("relay disconnected")); }
     this.queries.clear();
+    this.subs.clear(); // the owner re-subscribes on the next onReady
     if (this.closed) return;
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
     this.reconnectAttempts++;
@@ -138,21 +142,14 @@ export class NostrRelayConnection {
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
-  /** Connection is authenticated (or the relay doesn't challenge) — arm the subscription and signal ready. */
+  /** Connection is authenticated (or the relay doesn't challenge) — signal ready so the owner can
+   *  (re)subscribe and (re)announce presence. */
   private markReady(): void {
     if (this.ready) return;
     this.ready = true;
     this.reconnectAttempts = 0;
     if (this.authFallbackTimer) clearTimeout(this.authFallbackTimer);
-    if (this.mention) this.sendMentionReq();
     try { this.onReady?.(); } catch { /* callback must not break the connection */ }
-  }
-
-  private sendMentionReq(): void {
-    if (!this.mention || !this.selfPubkey) return;
-    const since = this.mention.getSince();
-    this.sendRaw(["REQ", this.mention.subId, { "#p": [this.selfPubkey], since }]);
-    logger.debug({ relay: this.relayLabel, since }, "buzz mention REQ sent");
   }
 
   private respondAuth(challenge: string): void {
@@ -201,7 +198,7 @@ export class NostrRelayConnection {
       const event = msg[2] as NostrEvent;
       const q = this.queries.get(subId);
       if (q) { q.events.push(event); return; }
-      if (this.mention && subId === this.mention.subId) this.mention.onEvent(event);
+      this.subs.get(subId)?.(event);
       return;
     }
     if (type === "EOSE") {
@@ -220,10 +217,10 @@ export class NostrRelayConnection {
       const reason = typeof msg[2] === "string" ? msg[2] : "";
       const q = this.queries.get(subId);
       if (q) { clearTimeout(q.timer); this.queries.delete(subId); q.reject(new Error(reason || "subscription closed")); }
-      if (this.mention && subId === this.mention.subId) {
-        // The live subscription was dropped by the relay — reconnect (re-auth + re-REQ) rather than
-        // sit silently deaf.
-        logger.warn({ relay: this.relayLabel, reason }, "buzz mention subscription closed, reconnecting");
+      if (this.subs.has(subId)) {
+        // A live subscription was dropped by the relay — reconnect (re-auth + re-subscribe) rather
+        // than sit silently deaf.
+        logger.warn({ relay: this.relayLabel, subId, reason }, "buzz subscription closed, reconnecting");
         try { this.ws?.close(); } catch { /* triggers onDisconnect → reconnect */ }
       }
       return;

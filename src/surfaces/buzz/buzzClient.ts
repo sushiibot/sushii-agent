@@ -81,6 +81,8 @@ export class NostrBuzzClient implements BuzzClient {
   private latestSeen = 0;
   private lastPresence: PresenceStatus | null = null;
   private lastProfile: string | null = null;
+  private mentionHandler: ((e: BuzzEvent) => void | Promise<void>) | null = null;
+  private readonly seen = new Set<string>();
 
   constructor(
     env: { privateKey: string; relayUrl?: string; authTag?: string },
@@ -94,17 +96,43 @@ export class NostrBuzzClient implements BuzzClient {
 
   private connection(): NostrRelayConnection {
     if (!this.conn) {
-      // (Re)publish profile + presence on every connect — so the initial announce lands once the
-      // socket is authenticated (not before), and a reconnect gap can't silently flip us offline.
+      // On every (re)connect: (re)announce profile + presence, and (re)subscribe to mentions. Both
+      // must happen after auth, and channel membership may have changed, so it re-runs each connect.
       const onReady = () => {
         if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile)).catch(() => {});
         if (this.lastPresence) void this.conn?.publish(presenceEvent(this.lastPresence)).catch(() => {});
+        void this.resubscribe();
       };
       this.conn = new NostrRelayConnection(this.wsUrl, this.sk, this.authTag, this.relayLabel, onReady);
-      this.conn.setSelfPubkey(this.pubkey);
       this.conn.start();
     }
     return this.conn;
+  }
+
+  /** (Re)subscribe to mentions. Channel messages are only fanned out to channel-scoped subs, so we
+   *  subscribe per channel the bot is in (`#h`+`#p`). Runs on every connect via the onReady hook. */
+  private async resubscribe(): Promise<void> {
+    const conn = this.conn;
+    if (!conn || !this.mentionHandler) return;
+    const handler = this.mentionHandler;
+    const wrapped = (raw: NostrEvent) => {
+      if (raw.pubkey === this.pubkey) return; // never react to our own posts
+      if (this.seen.has(raw.id)) return; // dedup across channels + reconnect replays
+      this.seen.add(raw.id);
+      if (this.seen.size > 5000) this.seen.clear();
+      this.latestSeen = Math.max(this.latestSeen, raw.created_at);
+      void handler(toBuzzEvent(raw));
+    };
+    try {
+      const channels = await this.channelsList();
+      const since = this.latestSeen;
+      for (const ch of channels) {
+        conn.subscribe(`m:${ch.id}`, { "#h": [ch.id], "#p": [this.pubkey], since }, wrapped);
+      }
+      logger.info({ channelCount: channels.length, relay: this.relayLabel }, "buzz mention subscriptions armed");
+    } catch (err) {
+      logger.error({ err, relay: this.relayLabel }, "buzz failed to arm mention subscriptions");
+    }
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await -- offline derivation; async for the contract
@@ -127,18 +155,8 @@ export class NostrBuzzClient implements BuzzClient {
 
   subscribeMentions(sinceTs: number, onEvent: (e: BuzzEvent) => void | Promise<void>): { stop: () => void } {
     this.latestSeen = Math.max(this.latestSeen, sinceTs);
-    const conn = this.connection();
-    const seen = new Set<string>();
-    conn.subscribeMentions("mentions", () => this.latestSeen, (raw: NostrEvent) => {
-      // The relay replays historical events on every (re)connect; dedup by id and skip our own.
-      if (raw.pubkey === this.pubkey) return;
-      if (seen.has(raw.id)) return;
-      seen.add(raw.id);
-      if (seen.size > 5000) seen.clear(); // bound memory; the since-cursor keeps correctness
-      // Advance the reconnect-backfill cursor on emit so a reconnect re-REQs from here, not the start.
-      this.latestSeen = Math.max(this.latestSeen, raw.created_at);
-      void onEvent(toBuzzEvent(raw));
-    });
+    this.mentionHandler = onEvent;
+    const conn = this.connection(); // starts the socket; resubscribe() runs from the onReady hook
     return { stop: () => conn.close() };
   }
 

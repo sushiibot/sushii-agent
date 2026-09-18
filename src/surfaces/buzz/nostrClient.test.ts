@@ -27,37 +27,35 @@ beforeEach(() => { MockWebSocket.instances = []; (globalThis as { WebSocket: unk
 afterEach(() => { (globalThis as { WebSocket: unknown }).WebSocket = realWs; });
 
 describe("NostrRelayConnection auth + subscribe handshake", () => {
-  test("does not REQ before auth, then REQs with #p+since after AUTH OK", () => {
-    const conn = new NostrRelayConnection("wss://relay.test", sk, null, "test");
-    conn.setSelfPubkey("PUBKEY");
-    conn.subscribeMentions("mentions", () => 1234, () => {});
+  test("does not REQ before auth, then subscribes (via onReady) after AUTH OK", () => {
+    let conn: NostrRelayConnection;
+    conn = new NostrRelayConnection("wss://relay.test", sk, null, "test", () => {
+      conn.subscribe("m:ch1", { "#h": ["ch1"], "#p": ["PUBKEY"], since: 1234 }, () => {});
+    });
     conn.start();
     const ws = MockWebSocket.instances[0];
     ws.fireOpen();
 
-    // No REQ before the relay challenges — the bug was sending an unauthenticated REQ here.
+    // No REQ before auth — the bug was sending an unauthenticated REQ here.
     expect(ws.frames("REQ")).toHaveLength(0);
 
     ws.recv(["AUTH", "challenge-xyz"]);
-    const authFrame = ws.frames("AUTH")[0];
-    expect(authFrame).toBeDefined();
-    const authEvent = authFrame[1] as { id: string };
-
-    // Still no REQ until the relay OKs our auth.
-    expect(ws.frames("REQ")).toHaveLength(0);
+    const authEvent = ws.frames("AUTH")[0][1] as { id: string };
+    expect(ws.frames("REQ")).toHaveLength(0); // still nothing until AUTH is OK'd
 
     ws.recv(["OK", authEvent.id, true]);
     const reqFrame = ws.frames("REQ")[0];
     expect(reqFrame).toBeDefined();
-    expect(reqFrame[1]).toBe("mentions");
-    expect(reqFrame[2]).toEqual({ "#p": ["PUBKEY"], since: 1234 });
+    expect(reqFrame[1]).toBe("m:ch1");
+    expect(reqFrame[2]).toEqual({ "#h": ["ch1"], "#p": ["PUBKEY"], since: 1234 });
   });
 
-  test("delivers live EVENTs on the mention sub to the handler", () => {
-    const seen: NostrEvent[] = [];
-    const conn = new NostrRelayConnection("wss://relay.test", sk, null, "test");
-    conn.setSelfPubkey("PUBKEY");
-    conn.subscribeMentions("mentions", () => 0, (e) => seen.push(e));
+  test("routes live EVENTs on a sub to its handler", () => {
+    const got: NostrEvent[] = [];
+    let conn: NostrRelayConnection;
+    conn = new NostrRelayConnection("wss://relay.test", sk, null, "test", () => {
+      conn.subscribe("m:ch1", { "#h": ["ch1"] }, (e) => got.push(e));
+    });
     conn.start();
     const ws = MockWebSocket.instances[0];
     ws.fireOpen();
@@ -65,13 +63,12 @@ describe("NostrRelayConnection auth + subscribe handshake", () => {
     ws.recv(["OK", (ws.frames("AUTH")[0][1] as { id: string }).id, true]);
 
     const evt = { id: "e1", pubkey: "someone", kind: 9, content: "hi", created_at: 5, tags: [], sig: "s" };
-    ws.recv(["EVENT", "mentions", evt]);
-    expect(seen).toEqual([evt]);
+    ws.recv(["EVENT", "m:ch1", evt]);
+    expect(got).toEqual([evt]);
   });
 
   test("publish and query reject before the connection is ready", async () => {
     const conn = new NostrRelayConnection("wss://relay.test", sk, null, "test");
-    conn.setSelfPubkey("PUBKEY");
     conn.start();
     MockWebSocket.instances[0].fireOpen(); // open but not yet authenticated
     await expect(conn.publish({ kind: 9, content: "x", tags: [] })).rejects.toThrow();
@@ -81,7 +78,6 @@ describe("NostrRelayConnection auth + subscribe handshake", () => {
   test("appends the NIP-OA auth tag to the AUTH event when configured", () => {
     const authTag = ["n", "ownerpk", "", "sig"];
     const conn = new NostrRelayConnection("wss://relay.test", sk, authTag, "test");
-    conn.setSelfPubkey("PUBKEY");
     conn.start();
     const ws = MockWebSocket.instances[0];
     ws.fireOpen();
