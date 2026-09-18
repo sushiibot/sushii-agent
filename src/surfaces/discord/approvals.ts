@@ -7,12 +7,11 @@ import {
   TextDisplayBuilder,
   type ButtonInteraction,
   type Client,
-  type ThreadChannel,
 } from "discord.js";
 import type { ApprovalRequest } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { buildTextDisplayContainer } from "./delivery.ts";
-import { AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX, SCAN_BTN_PREFIX } from "./buttonIds.ts";
+import { AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
 
 const logger = getLogger("surfaces/discord/approvals");
 
@@ -154,23 +153,3 @@ export async function applyAutomodDecision(
   }
 }
 
-// ── Server scan approval ───────────────────────────────────────────────────────
-
-export async function sendScanApprovalMessage(thread: ThreadChannel, guildId: string): Promise<void> {
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`${SCAN_BTN_PREFIX}${guildId}:yes`).setLabel("Scan server").setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`${SCAN_BTN_PREFIX}${guildId}:no`).setLabel("Skip").setStyle(ButtonStyle.Secondary),
-  );
-  const container = new ContainerBuilder()
-    .addTextDisplayComponents(new TextDisplayBuilder({ content: "No server context found. Would you like me to scan the server first (channels, roles, recent activity) before handling your request?" }))
-    .addActionRowComponents(row);
-  await thread.send({ components: [container], flags: MessageFlags.IsComponentsV2 });
-}
-
-export async function disableScanButtons(interaction: ButtonInteraction, selectedLabel: string): Promise<void> {
-  try {
-    await interaction.editReply({ components: [buildTextDisplayContainer(`-# Selected: ${selectedLabel}`)], flags: MessageFlags.IsComponentsV2 });
-  } catch {
-    // Non-critical.
-  }
-}

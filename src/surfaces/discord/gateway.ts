@@ -34,9 +34,9 @@ import { attachDiscordMessage, registerDiscordHooks } from "./hooks.ts";
 import { ToolProgressTracker, buildTextDisplayContainer } from "./delivery.ts";
 import { renderDiscordText } from "./render.ts";
 import { handleFeedbackButton, handleFeedbackModal } from "./feedback.ts";
-import { SCAN_QUERY, sendScanApprovalMessage, disableScanButtons, applyAutomodDecision } from "./approvals.ts";
+import { SCAN_QUERY, applyAutomodDecision } from "./approvals.ts";
 import { buildTriggerText } from "./inbound.ts";
-import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, SCAN_BTN_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
+import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
 const tracer = trace.getTracer("sushii-agent");
@@ -196,16 +196,6 @@ export interface DiscordSurfaceDeps {
   hookBus: HookBus;
 }
 
-/** A deferred first-run turn, held until the moderator approves/skips the server scan. */
-interface PendingScan {
-  threadId: string;
-  text: string;
-  author: AuthorRef;
-  channel: ChannelRef;
-  threadContext: string;
-  mentionedUsers?: AuthorRef[];
-}
-
 /** A paused automod approval, recovered when the amka:/amkd: button is clicked. In-memory only,
  *  matching the pre-cutover behavior (approvals did not survive a restart). */
 interface PendingApproval {
@@ -222,7 +212,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   // that renders the reply share the same instance; the gateway finalizes + removes it when the
   // turn that owns it (not a queued mid-loop message) finishes.
   const trackers = new Map<string, ToolProgressTracker>();
-  const pendingScans = new Map<string, PendingScan>();
+  // Guilds whose first-run auto-scan has been attempted this process (success or failure), so a
+  // failing scan is not retried on every mention.
+  const scannedGuilds = new Set<string>();
   const pendingApprovals = new Map<string, PendingApproval>();
 
   registerDiscordHooks(hookBus, {
@@ -391,16 +383,14 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
           if (interstitial) turnText = `[Thread activity since your last response]\n${interstitial}\n\n${baseText}`;
         }
 
-        // First-run guild: no server context yet. Defer this turn behind a scan-approval prompt
-        // rather than running the agent with empty awareness (surface pre-turn decision).
-        if (memory.getServerContext(guildId) === null) {
-          if (pendingScans.has(guildId)) {
-            await thread.send("A server scan is pending approval. Please re-ask after it completes.");
-            return;
-          }
-          pendingScans.set(guildId, { threadId: thread.id, text: turnText, author, channel, threadContext, mentionedUsers: mentioned.size ? [...mentioned.values()] : undefined });
-          await sendScanApprovalMessage(thread, guildId);
-          return;
+        // First-run guild: no server context yet. Scan the server automatically (in the background,
+        // on a throwaway conversation) before answering, so the first reply already has awareness —
+        // no approval prompt. Attempted at most once per guild per process, so a scan that fails
+        // (e.g. missing channel-read perms) doesn't re-fire on every mention; the turn then just
+        // runs with limited awareness.
+        if (memory.getServerContext(guildId) === null && !scannedGuilds.has(guildId)) {
+          scannedGuilds.add(guildId);
+          await runBackgroundScan(guildId, thread, author, channel, emojiMap, span);
         }
 
         const ownerSection = config.ownerDiscordId && author.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
@@ -567,10 +557,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleFeedbackButton(btn);
       return;
     }
-    if (btn.customId.startsWith(SCAN_BTN_PREFIX)) {
-      await handleScanButton(btn);
-      return;
-    }
     if (btn.customId.startsWith(AUTOMOD_BTN_PREFIX) || btn.customId.startsWith(AUTOMOD_DEL_BTN_PREFIX)) {
       await handleApprovalButton(btn);
       return;
@@ -647,56 +633,29 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     });
   }
 
-  async function handleScanButton(interaction: ButtonInteraction): Promise<void> {
-    const rest = interaction.customId.slice(SCAN_BTN_PREFIX.length);
-    const colonIdx = rest.indexOf(":");
-    if (colonIdx === -1) return;
-    const guildId = rest.slice(0, colonIdx);
-    const choice = rest.slice(colonIdx + 1); // "yes" | "no"
-    const pending = pendingScans.get(guildId);
-    if (!pending) {
-      await interaction.reply({ content: "Scan approval expired — please re-trigger the bot.", flags: MessageFlags.Ephemeral });
-      return;
-    }
-    if (interaction.user.id !== pending.author.userId) {
-      await interaction.reply({ content: `Only <@${pending.author.userId}> can respond to this approval.`, flags: MessageFlags.Ephemeral });
-      return;
-    }
-    pendingScans.delete(guildId);
-    await interaction.deferUpdate();
-    await disableScanButtons(interaction, choice === "yes" ? "Scan server" : "Skip");
-
-    const guildConfig = config.guildConfig[guildId];
-    if (!guildConfig) return;
-    const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
-    const thread = await client.channels.fetch(pending.threadId).catch(() => null);
-    if (!thread?.isThread()) return;
-    const conversation: ConversationRef = { surface: SURFACE, spaceId: guildId, conversationId: pending.threadId };
-
-    await withInteractionSpan("discord.interaction", { "discord.thread_id": pending.threadId, "discord.guild_id": guildId, "discord.user_id": interaction.user.id, "discord.trigger": "scan_approval" }, async (span) => {
-      if (choice === "yes") {
-        // Background scan on a THROWAWAY conversation: the scan turn's history + frozen threadContext
-        // must never land on the real conversation, or the user's first query inherits them.
-        const scanConv: ConversationRef = { surface: SURFACE, spaceId: guildId, conversationId: `__scan__${pending.threadId}` };
-        const scanTracker = new ToolProgressTracker(thread);
-        const scanSession = new DiscordSurfaceSession({
-          client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: scanTracker,
-          attachFeedback: false, channel: pending.channel,
-        });
-        const scanInbound: InboundMessage = { conversation: scanConv, author: pending.author, text: SCAN_QUERY, channel: pending.channel };
-        await runThroughCore(scanConv, thread, scanTracker, span, () => core.handleInbound(scanInbound, scanSession));
-      }
-
-      // Original deferred turn on the real conversation, now with populated server context.
-      const ownerSection = config.ownerDiscordId && pending.author.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
-      const tracker = new ToolProgressTracker(thread);
-      const session = new DiscordSurfaceSession({
-        client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: tracker,
-        channel: pending.channel, threadContext: pending.threadContext || undefined, threadChannelId: thread.id, ownerSection,
+  /** Background server scan on a THROWAWAY conversation (`__scan__<threadId>`) so the scan turn's
+   *  history + frozen threadContext never land on the real conversation. Best-effort: a failure is
+   *  logged and swallowed so the triggering turn still runs (with limited awareness). */
+  async function runBackgroundScan(
+    guildId: string,
+    thread: ThreadChannel,
+    author: AuthorRef,
+    channel: ChannelRef,
+    emojiMap: Record<string, string>,
+    span: Span,
+  ): Promise<void> {
+    try {
+      const scanConv: ConversationRef = { surface: SURFACE, spaceId: guildId, conversationId: `__scan__${thread.id}` };
+      const scanTracker = new ToolProgressTracker(thread);
+      const scanSession = new DiscordSurfaceSession({
+        client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: scanTracker,
+        attachFeedback: false, channel,
       });
-      const inbound: InboundMessage = { conversation, author: pending.author, text: pending.text, mentionedUsers: pending.mentionedUsers, channel: pending.channel };
-      await runThroughCore(conversation, thread, tracker, span, () => core.handleInbound(inbound, session));
-    });
+      const scanInbound: InboundMessage = { conversation: scanConv, author, text: SCAN_QUERY, channel };
+      await runThroughCore(scanConv, thread, scanTracker, span, () => core.handleInbound(scanInbound, scanSession));
+    } catch (err) {
+      logger.warn({ err, guildId }, "background server scan failed (answering with limited awareness)");
+    }
   }
 
   async function handleApprovalButton(interaction: ButtonInteraction): Promise<void> {
