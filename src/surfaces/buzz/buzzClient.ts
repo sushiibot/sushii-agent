@@ -30,6 +30,8 @@ export interface BuzzClient {
   feedMentions(sinceTs: number, limit?: number): Promise<BuzzEvent[]>;
   /** Post a reply into `channelId`, threaded under `replyToId` (the mentioned event). */
   send(channelId: string, content: string, replyToId?: string): Promise<BuzzSendResult>;
+  /** Add an emoji reaction to an event (NIP-25). Used as a lightweight "seen" ack. */
+  react(eventId: string, emoji: string): Promise<void>;
 }
 
 export class BuzzCliError extends Error {
@@ -120,6 +122,10 @@ export class CliBuzzClient implements BuzzClient {
     if (replyToId) args.push("--reply-to", replyToId);
     const result = (await this.run(args, content)) as { event_id?: string; eventId?: string; accepted?: boolean } | null;
     return { eventId: result?.event_id ?? result?.eventId ?? "", accepted: result?.accepted ?? false };
+  }
+
+  async react(eventId: string, emoji: string): Promise<void> {
+    await this.run(["--format", "json", "reactions", "add", "--event", eventId, "--emoji", emoji]);
   }
 }
 

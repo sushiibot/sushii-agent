@@ -10,6 +10,9 @@ const logger = getLogger("surfaces/buzz/gateway");
 // spaceId so memory/context never bleed across communities.
 const DEFAULT_SPACE_ID = "buzz";
 const SURFACE = "buzz" as const;
+// Sushi ack reacted onto a mention the moment it's picked up, as a "seen / working on it" signal
+// (buzz has no typing indicator).
+const SEEN_EMOJI = "🍣";
 
 /** Stable per-thread conversation key: the NIP-10 root event id, or the event's own id for a
  *  top-level mention (which becomes the thread root once we reply to it). */
@@ -97,8 +100,17 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
       for (const event of fresh) {
         const channelId = channelIdOf(event);
         if (channelId) {
-          const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRootOf(event) };
-          const session = new BuzzSurfaceSession({ client, ownPubkey: self, channelId, replyToId: event.id });
+          // React "seen" onto the actual mention (best-effort — a failed ack must never block the turn).
+          try {
+            await client.react(event.id, SEEN_EMOJI);
+          } catch (err) {
+            logger.warn({ err, eventId: event.id }, "buzz seen-reaction failed");
+          }
+          // Reply to the thread root, not the mention itself, so replies stay one level deep
+          // (Slack-style) instead of nesting deeper with every turn.
+          const threadRoot = threadRootOf(event);
+          const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRoot };
+          const session = new BuzzSurfaceSession({ client, ownPubkey: self, channelId, replyToId: threadRoot });
           const inbound: InboundMessage = {
             conversation,
             author: { surface: SURFACE, userId: event.pubkey, username: null },

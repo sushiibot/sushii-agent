@@ -31,6 +31,7 @@ function fakeClient(
   sends: { channelId: string; content: string; replyToId?: string }[],
   ownPubkey = "me",
   profiles?: string[],
+  reactions?: { eventId: string; emoji: string }[],
 ): BuzzClient {
   return {
     async ownPubkey() { return ownPubkey; },
@@ -40,6 +41,7 @@ function fakeClient(
       sends.push({ channelId, content, replyToId });
       return { eventId: "reply-evt", accepted: true };
     },
+    async react(eventId, emoji) { reactions?.push({ eventId, emoji }); },
   };
 }
 
@@ -84,6 +86,27 @@ describe("startBuzzSurface poll loop", () => {
     await tick();
     surface.stop();
     expect(inbounds[0].inbound.conversation.conversationId).toBe("thread-root");
+  });
+
+  test("replies to the thread root, not the mention, so nesting stays one level deep", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const sends: { channelId: string; content: string; replyToId?: string }[] = [];
+    const cursor = memCursor(500);
+    const threaded = event({ id: "reply-in-thread", createdAt: 1000, tags: [["h", "chan-uuid"], ["e", "thread-root", "", "root"]] });
+    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([threaded], sends), cursor, pollIntervalMs: 10_000 });
+    await tick();
+    surface.stop();
+    expect(sends[0].replyToId).toBe("thread-root");
+  });
+
+  test("reacts with the sushi ack on the mention it picked up", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const reactions: { eventId: string; emoji: string }[] = [];
+    const cursor = memCursor(500);
+    const surface = await startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event({ createdAt: 1000 })], [], "me", undefined, reactions), cursor, pollIntervalMs: 10_000 });
+    await tick();
+    surface.stop();
+    expect(reactions).toEqual([{ eventId: "evt1", emoji: "🍣" }]);
   });
 
   test("skips a mention with no channel tag but still advances the cursor", async () => {
