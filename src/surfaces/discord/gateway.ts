@@ -215,6 +215,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   // Guilds whose first-run auto-scan has been attempted this process (success or failure), so a
   // failing scan is not retried on every mention.
   const scannedGuilds = new Set<string>();
+  // In-flight scans, so mentions arriving during a scan await the same one (and get its context)
+  // instead of racing ahead with empty awareness.
+  const scanningGuilds = new Map<string, Promise<void>>();
   const pendingApprovals = new Map<string, PendingApproval>();
 
   registerDiscordHooks(hookBus, {
@@ -389,8 +392,15 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
         // (e.g. missing channel-read perms) doesn't re-fire on every mention; the turn then just
         // runs with limited awareness.
         if (memory.getServerContext(guildId) === null && !scannedGuilds.has(guildId)) {
-          scannedGuilds.add(guildId);
-          await runBackgroundScan(guildId, thread, author, channel, emojiMap, span);
+          const existing = scanningGuilds.get(guildId);
+          if (existing) {
+            await existing; // a concurrent mention already kicked off the scan — wait for its context
+          } else {
+            scannedGuilds.add(guildId);
+            const p = runBackgroundScan(guildId, thread, author, channel, emojiMap, span).finally(() => scanningGuilds.delete(guildId));
+            scanningGuilds.set(guildId, p);
+            await p;
+          }
         }
 
         const ownerSection = config.ownerDiscordId && author.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
