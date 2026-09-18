@@ -160,7 +160,9 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
       cursor = Math.floor(Date.now() / 1000);
       cursorStore.set(cursor);
     }
-    subscription = client.subscribeMentions(cursor, handleEvent);
+    // Subscribe strictly after the last handled mention (the cursor is inclusive on the relay), so a
+    // restart doesn't replay-and-re-answer the boundary mention. In-process reconnect dedups by id.
+    subscription = client.subscribeMentions(cursor + 1, handleEvent);
   })();
 
   return {

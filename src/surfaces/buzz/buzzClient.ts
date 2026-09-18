@@ -80,6 +80,7 @@ export class NostrBuzzClient implements BuzzClient {
   private readonly authTag: string[] | null;
   private latestSeen = 0;
   private lastPresence: PresenceStatus | null = null;
+  private lastProfile: string | null = null;
 
   constructor(
     env: { privateKey: string; relayUrl?: string; authTag?: string },
@@ -93,9 +94,11 @@ export class NostrBuzzClient implements BuzzClient {
 
   private connection(): NostrRelayConnection {
     if (!this.conn) {
-      // Re-announce presence on every (re)connect so a reconnect gap can't silently flip us offline.
+      // (Re)publish profile + presence on every connect — so the initial announce lands once the
+      // socket is authenticated (not before), and a reconnect gap can't silently flip us offline.
       const onReady = () => {
-        if (this.lastPresence) void this.conn?.publish({ kind: KIND_PRESENCE, content: this.lastPresence, tags: [["status", this.lastPresence]] }).catch(() => {});
+        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile)).catch(() => {});
+        if (this.lastPresence) void this.conn?.publish(presenceEvent(this.lastPresence)).catch(() => {});
       };
       this.conn = new NostrRelayConnection(this.wsUrl, this.sk, this.authTag, this.relayLabel, onReady);
       this.conn.setSelfPubkey(this.pubkey);
@@ -110,12 +113,16 @@ export class NostrBuzzClient implements BuzzClient {
   }
 
   async setProfile(displayName: string): Promise<void> {
-    await this.connection().publish({ kind: KIND_PROFILE, content: JSON.stringify({ name: displayName }), tags: [] });
+    // Record intent; publish now if connected, else the onReady hook publishes on connect.
+    this.lastProfile = displayName;
+    const conn = this.connection();
+    if (conn.isReady()) await conn.publish(profileEvent(displayName));
   }
 
   async setPresence(status: PresenceStatus): Promise<void> {
     this.lastPresence = status;
-    await this.connection().publish({ kind: KIND_PRESENCE, content: status, tags: [["status", status]] });
+    const conn = this.connection();
+    if (conn.isReady()) await conn.publish(presenceEvent(status));
   }
 
   subscribeMentions(sinceTs: number, onEvent: (e: BuzzEvent) => void | Promise<void>): { stop: () => void } {
@@ -150,6 +157,14 @@ export class NostrBuzzClient implements BuzzClient {
     const events = await this.connection().query({ kinds: [KIND_CHANNEL_METADATA], limit });
     return events.map(normalizeChannel).filter((c): c is BuzzChannel => c !== null);
   }
+}
+
+function profileEvent(displayName: string) {
+  return { kind: KIND_PROFILE, content: JSON.stringify({ name: displayName }), tags: [] as string[][] };
+}
+
+function presenceEvent(status: PresenceStatus) {
+  return { kind: KIND_PRESENCE, content: status, tags: [["status", status]] };
 }
 
 function toBuzzEvent(e: NostrEvent): BuzzEvent {
