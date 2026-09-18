@@ -103,8 +103,8 @@ export class NostrBuzzClient implements BuzzClient {
       // On every (re)connect: (re)announce profile + presence, and (re)subscribe to mentions. Both
       // must happen after auth, and channel membership may have changed, so it re-runs each connect.
       const onReady = () => {
-        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile)).catch(() => {});
-        if (this.lastPresence) void this.conn?.publish(presenceEvent(this.lastPresence)).catch(() => {});
+        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect profile re-announce failed"));
+        if (this.lastPresence) void this.conn?.publish(presenceEvent(this.lastPresence)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect presence re-announce failed"));
         void this.resubscribe();
       };
       this.conn = new NostrRelayConnection(this.wsUrl, this.sk, this.authTag, this.relayLabel, onReady);

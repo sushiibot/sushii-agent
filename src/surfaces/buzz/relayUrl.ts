@@ -20,3 +20,25 @@ export function parseRelayUrls(raw: string | undefined): string[] {
     .map(normalizeRelayUrl);
   return Array.from(new Set(seen));
 }
+
+/** Parse BUZZ_WIKI_MAP (JSON: relay URL → Discord guild id) into a normalized relay-URL → guild-id
+ *  map. Keys are normalized the same way as parseRelayUrls so they match the per-relay loop key, and
+ *  a community reads a wiki only if its relay appears here — absence means no wiki access at all. */
+export function parseWikiMap(raw: string | undefined): Record<string, string> {
+  if (!raw?.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("BUZZ_WIKI_MAP must be valid JSON: {\"<relay url>\": \"<guild id>\"}");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("BUZZ_WIKI_MAP must be a JSON object of relay URL → guild id");
+  }
+  const out: Record<string, string> = {};
+  for (const [relay, guildId] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof guildId !== "string" || !guildId.trim()) continue;
+    out[normalizeRelayUrl(relay)] = guildId.trim();
+  }
+  return out;
+}

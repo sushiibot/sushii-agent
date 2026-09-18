@@ -15,6 +15,8 @@ import type { LanguageModelProvider } from "./core/contracts.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
+import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
+import { getWikiSyncEnabledGuildIds } from "./modules/wiki-sync/guilds.ts";
 import { createDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
 import { NostrBuzzClient } from "./surfaces/buzz/buzzClient.ts";
@@ -63,10 +65,17 @@ async function main() {
     const buzzCore = createAgentCore({ model, store, memory, tools, hooks: createHookBus(), behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
     // Empty list → one connection on the default relay (dev localhost), keyed "default".
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
+    const wikiEnabledGuilds = new Set(getWikiSyncEnabledGuildIds());
     for (const relayUrl of relays) {
       const key = relayUrl ?? "default";
       const spaceId = relayUrl ? `buzz:${key}` : "buzz";
       const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag }, key);
+      // A community reads a wiki only if its relay is mapped, and only that guild's synced wiki.
+      const wikiGuildId = config.buzz.wikiMap[key];
+      if (wikiGuildId && !wikiEnabledGuilds.has(wikiGuildId)) {
+        logger.warn({ relay: key, guildId: wikiGuildId }, "buzz wiki map points at a guild without wiki-sync enabled — its clone may be empty");
+      }
+      const fsHost = wikiGuildId ? createWikiFsHost(wikiGuildId) : undefined;
       try {
         startBuzzSurface({
           core: buzzCore,
@@ -76,6 +85,7 @@ async function main() {
           spaceId,
           displayName: config.buzz.displayName,
           relayLabel: key,
+          fsHost,
         });
       } catch (err) {
         // A single unreachable / not-yet-admitted relay must not take down the bot or its siblings.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeRelayUrl, parseRelayUrls } from "./relayUrl.ts";
+import { normalizeRelayUrl, parseRelayUrls, parseWikiMap } from "./relayUrl.ts";
 
 describe("normalizeRelayUrl", () => {
   test("maps ws/wss to http/https, strips trailing slash, lowercases", () => {
@@ -21,5 +21,25 @@ describe("parseRelayUrls", () => {
   test("empty or undefined yields an empty list", () => {
     expect(parseRelayUrls("")).toEqual([]);
     expect(parseRelayUrls(undefined)).toEqual([]);
+  });
+});
+
+describe("parseWikiMap", () => {
+  test("normalizes relay-url keys so they match the per-relay loop key", () => {
+    expect(parseWikiMap('{"wss://Buzz.Example/": "guild123"}')).toEqual({ "https://buzz.example": "guild123" });
+  });
+
+  test("empty or undefined yields an empty map (no community gets wiki access)", () => {
+    expect(parseWikiMap("")).toEqual({});
+    expect(parseWikiMap(undefined)).toEqual({});
+  });
+
+  test("drops entries with a blank or non-string guild id", () => {
+    expect(parseWikiMap('{"https://a": "", "https://b": 5, "https://c": "g"}')).toEqual({ "https://c": "g" });
+  });
+
+  test("throws on invalid JSON or a non-object payload", () => {
+    expect(() => parseWikiMap("not json")).toThrow();
+    expect(() => parseWikiMap('["https://a"]')).toThrow();
   });
 });

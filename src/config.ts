@@ -1,6 +1,6 @@
 export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
-import { parseRelayUrls } from "./surfaces/buzz/relayUrl.ts";
+import { parseRelayUrls, parseWikiMap } from "./surfaces/buzz/relayUrl.ts";
 
 export interface Config {
   discordBotToken: string;
@@ -35,6 +35,9 @@ export interface Config {
     authTag: string | undefined;
     /** Display name the bot publishes for itself (kind:0 profile) on each relay. */
     displayName: string;
+    /** Relay URL → Discord guild id whose synced wiki that community may read. A relay absent here
+     *  gets no wiki tools, so each community can read only the one wiki it is explicitly mapped to. */
+    wikiMap: Record<string, string>;
   };
   wikiSync: {
     repoUrl: string | undefined;
@@ -113,6 +116,7 @@ export const config: Config = {
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),
     authTag: process.env["BUZZ_AUTH_TAG"],
     displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
+    wikiMap: parseWikiMap(process.env["BUZZ_WIKI_MAP"]),
   },
   wikiSync: {
     repoUrl: process.env["WIKI_SYNC_REPO_URL"],

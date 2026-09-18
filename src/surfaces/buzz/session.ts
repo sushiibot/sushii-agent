@@ -1,6 +1,7 @@
 import type {
   AgentReply,
   AuthorRef,
+  FsHost,
   PlatformRenderer,
   PromptGuidance,
   RenderContext,
@@ -51,6 +52,9 @@ export interface BuzzSurfaceSessionOptions {
   channelId: string;
   /** The mention event id, used as the reply-to (the CLI resolves the NIP-10 thread root). */
   replyToId: string;
+  /** This community's wiki as an `fs` root (read/search/list). Omitted → no wiki tools for the
+   *  community, so a community reads only the wiki its relay is explicitly mapped to. */
+  fsHost?: FsHost;
 }
 
 export class BuzzSurfaceSession implements SurfaceSession {
@@ -58,7 +62,7 @@ export class BuzzSurfaceSession implements SurfaceSession {
   readonly renderer = new BuzzPlatformRenderer();
   readonly selfId: string;
   readonly selfName = "sushii";
-  readonly hosts: ToolHosts = {};
+  readonly hosts: ToolHosts;
 
   private readonly client: BuzzClient;
   private readonly channelId: string;
@@ -69,6 +73,7 @@ export class BuzzSurfaceSession implements SurfaceSession {
     this.client = opts.client;
     this.channelId = opts.channelId;
     this.replyToId = opts.replyToId;
+    this.hosts = opts.fsHost ? { fs: opts.fsHost } : {};
   }
 
   async deliver(reply: AgentReply): Promise<{ messageId?: string }> {

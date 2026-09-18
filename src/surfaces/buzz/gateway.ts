@@ -1,5 +1,5 @@
 import * as nip19 from "nostr-tools/nip19";
-import type { AgentCore, ConversationRef, InboundMessage } from "../../core/contracts.ts";
+import type { AgentCore, ConversationRef, FsHost, InboundMessage } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { channelIdOf, type BuzzChannel, type BuzzClient, type BuzzEvent } from "./buzzClient.ts";
 import { BuzzSurfaceSession } from "./session.ts";
@@ -72,6 +72,9 @@ export interface BuzzSurfaceDeps {
   displayName?: string;
   /** Which relay this loop serves, for log correlation across multiple surfaces. */
   relayLabel?: string;
+  /** This community's wiki as an `fs` root, exposing read/search/list tools. Omitted → the community
+   *  has no wiki access, so wiki readability is scoped per community by whether this is provided. */
+  fsHost?: FsHost;
 }
 
 /** Starts the buzz mention subscription + presence heartbeat. Returns stop() (for tests/shutdown). */
@@ -119,7 +122,7 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
     // Reply to the thread root, not the mention itself, so replies stay one level deep (Slack-style).
     const threadRoot = threadRootOf(event);
     const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRoot };
-    const session = new BuzzSurfaceSession({ client, ownPubkey: selfPubkey, channelId, replyToId: threadRoot });
+    const session = new BuzzSurfaceSession({ client, ownPubkey: selfPubkey, channelId, replyToId: threadRoot, fsHost: deps.fsHost });
     const inbound: InboundMessage = {
       conversation,
       author: { surface: SURFACE, userId: event.pubkey, username: null },
