@@ -1,3 +1,4 @@
+import * as nip19 from "nostr-tools/nip19";
 import type { AgentCore, ConversationRef, InboundMessage } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { BuzzCliError, channelIdOf, type BuzzClient, type BuzzEvent } from "./buzzClient.ts";
@@ -22,6 +23,15 @@ function threadRootOf(event: BuzzEvent): string {
   const anyE = event.tags.find((t) => t[0] === "e");
   if (anyE?.[1]) return anyE[1];
   return event.id;
+}
+
+/** Bech32 npub for a hex pubkey; returns null if encoding fails so a bad key never crashes startup. */
+function safeNpub(hexPubkey: string): string | null {
+  try {
+    return nip19.npubEncode(hexPubkey);
+  } catch {
+    return null;
+  }
 }
 
 /** Survivable poll cursor (last-processed mention created_at). Injected so the gateway is testable
@@ -72,7 +82,9 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
     try {
       if (ownPubkey === null) {
         ownPubkey = await client.ownPubkey();
-        logger.info({ ownPubkey, relay: relayLabel }, "buzz identity resolved");
+        // Log the npub too — it's the shareable form used to find/mention the bot on a relay.
+        const npub = safeNpub(ownPubkey);
+        logger.info({ ownPubkey, npub, relay: relayLabel }, "buzz identity resolved");
       }
       if (displayName && !profilePublished) {
         // Idempotent (kind:0 replaceable); best-effort and independent of polling so a failed profile
