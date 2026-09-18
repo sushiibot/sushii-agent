@@ -1,7 +1,7 @@
 import * as nip19 from "nostr-tools/nip19";
 import type { AgentCore, ConversationRef, InboundMessage } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
-import { BuzzCliError, channelIdOf, type BuzzClient, type BuzzEvent } from "./buzzClient.ts";
+import { BuzzCliError, channelIdOf, type BuzzChannel, type BuzzClient, type BuzzEvent } from "./buzzClient.ts";
 import { BuzzSurfaceSession } from "./session.ts";
 
 const logger = getLogger("surfaces/buzz/gateway");
@@ -14,6 +14,19 @@ const SURFACE = "buzz" as const;
 // Sushi ack reacted onto a mention the moment it's picked up, as a "seen / working on it" signal
 // (buzz has no typing indicator).
 const SEEN_EMOJI = "🍣";
+// server_context column cap; keep the scanned blob under it.
+const MAX_CONTEXT = 4000;
+
+/** Renders the community's channels as a server-context blob. Returns body only — the core wraps
+ *  it under "## Server Context". */
+function formatCommunityContext(channels: BuzzChannel[]): string {
+  if (!channels.length) return "This community has no channels visible to the bot yet.";
+  const lines = channels.map((c) => {
+    const meta = [c.topic, c.purpose].filter(Boolean).join(" — ");
+    return meta ? `- #${c.name} (\`${c.id}\`): ${meta}` : `- #${c.name} (\`${c.id}\`)`;
+  });
+  return `Channels in this community:\n${lines.join("\n")}`;
+}
 
 /** Stable per-thread conversation key: the NIP-10 root event id, or the event's own id for a
  *  top-level mention (which becomes the thread root once we reply to it). */
@@ -41,10 +54,18 @@ export interface CursorStore {
   set(cursor: number): void;
 }
 
+/** Per-community server-context port (scoped to this surface's spaceId). Injected so the gateway is
+ *  testable without the global DB; index.ts backs it with the shared SpaceMemoryStore. */
+export interface ServerContextStore {
+  get(): string | null;
+  set(content: string): void;
+}
+
 export interface BuzzSurfaceDeps {
   core: AgentCore;
   client: BuzzClient;
   cursor: CursorStore;
+  serverContext: ServerContextStore;
   pollIntervalMs: number;
   /** Memory/server-context scope for this relay's community; defaults to "buzz" (single-relay). */
   spaceId?: string;
@@ -56,9 +77,25 @@ export interface BuzzSurfaceDeps {
 
 /** Starts the buzz mention poll loop. Returns a stop() to clear the interval (for tests/shutdown). */
 export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
-  const { core, client, cursor: cursorStore, pollIntervalMs, displayName, relayLabel } = deps;
+  const { core, client, cursor: cursorStore, serverContext, pollIntervalMs, displayName, relayLabel } = deps;
   const spaceId = deps.spaceId ?? DEFAULT_SPACE_ID;
   logger.info({ pollIntervalMs, relay: relayLabel }, "buzz surface starting");
+
+  // Auto-scan the community once on first contact (fresh space with no context), so the first reply
+  // already knows the channel layout. Guarded so a failed scan (e.g. relay hasn't admitted the bot)
+  // doesn't retry on every mention for the life of the process.
+  let scanAttempted = false;
+  const ensureCommunityScanned = async (): Promise<void> => {
+    if (scanAttempted || serverContext.get() !== null) return;
+    scanAttempted = true;
+    try {
+      const channels = await client.channelsList();
+      serverContext.set(formatCommunityContext(channels).slice(0, MAX_CONTEXT));
+      logger.info({ channelCount: channels.length, relay: relayLabel }, "buzz community scanned");
+    } catch (err) {
+      logger.warn({ err, relay: relayLabel }, "buzz community scan failed (awareness limited until restart)");
+    }
+  };
 
   // Resolved lazily on the first successful tick (both need a reachable, admitting relay), so a relay
   // that's unreachable or hasn't admitted the bot yet retries each interval and self-heals once added,
@@ -112,6 +149,8 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
       for (const event of fresh) {
         const channelId = channelIdOf(event);
         if (channelId) {
+          // Populate community context before the first answer (once per process, best-effort).
+          await ensureCommunityScanned();
           // React "seen" onto the actual mention (best-effort — a failed ack must never block the turn).
           try {
             await client.react(event.id, SEEN_EMOJI);

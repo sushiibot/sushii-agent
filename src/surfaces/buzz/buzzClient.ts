@@ -19,6 +19,16 @@ export interface BuzzSendResult {
   accepted: boolean;
 }
 
+/** A community channel as `buzz channels list` emits it. Only `id` is guaranteed. */
+export interface BuzzChannel {
+  id: string;
+  name: string;
+  topic?: string;
+  purpose?: string;
+  description?: string;
+  visibility?: string;
+}
+
 /** The buzz operations the surface needs. Injected so the gateway/session can be tested without
  *  spawning the real CLI or reaching a relay. */
 export interface BuzzClient {
@@ -32,6 +42,8 @@ export interface BuzzClient {
   send(channelId: string, content: string, replyToId?: string): Promise<BuzzSendResult>;
   /** Add an emoji reaction to an event (NIP-25). Used as a lightweight "seen" ack. */
   react(eventId: string, emoji: string): Promise<void>;
+  /** Channels visible to the bot in this community — the scannable structure for server context. */
+  channelsList(limit?: number): Promise<BuzzChannel[]>;
 }
 
 export class BuzzCliError extends Error {
@@ -127,6 +139,33 @@ export class CliBuzzClient implements BuzzClient {
   async react(eventId: string, emoji: string): Promise<void> {
     await this.run(["--format", "json", "reactions", "add", "--event", eventId, "--emoji", emoji]);
   }
+
+  async channelsList(limit = 500): Promise<BuzzChannel[]> {
+    const result = await this.run(["--format", "json", "channels", "list", "--limit", String(limit)]);
+    const rows = Array.isArray(result) ? result : ((result as { items?: unknown[] } | null)?.items ?? []);
+    return rows.map(normalizeChannel).filter((c): c is BuzzChannel => c !== null);
+  }
+}
+
+/** Tolerates snake_case/camelCase and missing optional fields; returns null for a malformed row. */
+function normalizeChannel(raw: unknown): BuzzChannel | null {
+  const r = raw as Record<string, unknown> | null;
+  if (!r || typeof r.id !== "string") {
+    logger.warn({ raw }, "skipping malformed buzz channel");
+    return null;
+  }
+  const str = (...keys: string[]): string | undefined => {
+    for (const k of keys) if (typeof r[k] === "string") return r[k] as string;
+    return undefined;
+  };
+  return {
+    id: r.id,
+    name: str("name", "display_name", "displayName") ?? r.id,
+    topic: str("topic"),
+    purpose: str("purpose"),
+    description: str("description"),
+    visibility: str("visibility"),
+  };
 }
 
 /** Tolerates snake_case (`created_at`) or camelCase from the CLI. Returns null for a malformed row. */

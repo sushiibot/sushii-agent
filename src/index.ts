@@ -65,14 +65,16 @@ async function main() {
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
     for (const relayUrl of relays) {
       const key = relayUrl ?? "default";
+      const spaceId = relayUrl ? `buzz:${key}` : "buzz";
       const buzzClient = new CliBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag });
       try {
         await startBuzzSurface({
           core: buzzCore,
           client: buzzClient,
           cursor: { get: () => getBuzzCursor(db, key), set: (c) => setBuzzCursor(db, key, c) },
+          serverContext: { get: () => memory.getServerContext(spaceId), set: (content) => memory.setServerContext(spaceId, content) },
           pollIntervalMs: config.buzz.pollIntervalMs,
-          spaceId: relayUrl ? `buzz:${key}` : "buzz",
+          spaceId,
           displayName: config.buzz.displayName,
           relayLabel: key,
         });
