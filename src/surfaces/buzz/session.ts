@@ -41,7 +41,7 @@ export class BuzzPlatformRenderer implements PlatformRenderer {
   }
 }
 
-function segmentsToText(segments: ReplySegment[]): string {
+export function segmentsToText(segments: ReplySegment[]): string {
   return segments.map((s) => (s.kind === "separator" ? "\n\n---\n\n" : s.text)).join("");
 }
 

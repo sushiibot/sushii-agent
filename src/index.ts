@@ -21,6 +21,7 @@ import { createDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
 import { NostrBuzzClient } from "./surfaces/buzz/buzzClient.ts";
 import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
+import { registerBuzzProgressHooks } from "./surfaces/buzz/progress.ts";
 import { getBuzzCursor, setBuzzCursor } from "./db/buzzState.ts";
 
 async function main() {
@@ -62,7 +63,11 @@ async function main() {
   // and memory space (communities are host-scoped and isolated), all sharing the one buzzCore.
   if (config.buzz.privateKey) {
     const privateKey = config.buzz.privateKey;
-    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: createHookBus(), behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
+    // One hook bus + progress registry shared by every relay's surface (all share buzzCore). Wiring
+    // the bus is what gives buzz live tool-progress + never-silent failures, parity with Discord.
+    const buzzBus = createHookBus();
+    const buzzProgress = registerBuzzProgressHooks(buzzBus);
+    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
     // Empty list → one connection on the default relay (dev localhost), keyed "default".
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
     const wikiEnabledGuilds = new Set(getWikiSyncEnabledGuildIds());
@@ -86,6 +91,7 @@ async function main() {
           displayName: config.buzz.displayName,
           relayLabel: key,
           fsHost,
+          progress: buzzProgress,
         });
       } catch (err) {
         // A single unreachable / not-yet-admitted relay must not take down the bot or its siblings.

@@ -1,10 +1,18 @@
 import * as nip19 from "nostr-tools/nip19";
+import { trace } from "@opentelemetry/api";
 import type { AgentCore, ConversationRef, FsHost, InboundMessage } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { channelIdOf, type BuzzChannel, type BuzzClient, type BuzzEvent } from "./buzzClient.ts";
-import { BuzzSurfaceSession } from "./session.ts";
+import { BuzzSurfaceSession, segmentsToText } from "./session.ts";
+import { BuzzToolProgress, type BuzzProgressRegistry } from "./progress.ts";
 
 const logger = getLogger("surfaces/buzz/gateway");
+const tracer = trace.getTracer("sushii-agent");
+
+// Shown to the user when a turn fails or produces nothing — a failure is never silent (the 🍣 ack
+// alone would leave the user unsure if the bot saw them). The trace id lets us correlate in Grafana.
+const GENERIC_ERROR = "Sorry — something went wrong handling that.";
+const EMPTY_REPLY = "I wasn't able to come up with a response to that.";
 
 // The relay URL is the community, so a surface's conversations share one spaceId (memory + server
 // context are scoped to it, analogous to a Discord guild). With multiple relays each gets its own
@@ -77,6 +85,9 @@ export interface BuzzSurfaceDeps {
   /** This community's wiki as an `fs` root, exposing read/search/list tools. Omitted → the community
    *  has no wiki access, so wiki readability is scoped per community by whether this is provided. */
   fsHost?: FsHost;
+  /** Live tool-progress registry (shared across relays on one hook bus). Omitted → no progress
+   *  display; the turn still runs and errors are still reported. */
+  progress?: BuzzProgressRegistry;
 }
 
 /** Starts the buzz mention subscription + presence heartbeat. Returns stop() (for tests/shutdown). */
@@ -131,12 +142,29 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
       text: event.content,
       platform: { surface: "buzz" },
     };
-    try {
-      const res = await core.handleInbound(inbound, session);
-      if (res.status === "error") logger.error({ eventId: event.id, message: res.message }, "buzz turn errored");
-    } catch (err) {
-      logger.error({ err, eventId: event.id }, "buzz turn threw");
-    }
+
+    await tracer.startActiveSpan("buzz.message", { attributes: { "buzz.channel_id": channelId, "buzz.relay": relayLabel ?? "" } }, async (span) => {
+      const tracker = new BuzzToolProgress(client, channelId, threadRoot);
+      deps.progress?.track(conversation, tracker);
+      let errorText: string | undefined;
+      try {
+        const res = await core.handleInbound(inbound, session);
+        if (res.status === "error") {
+          logger.error({ eventId: event.id, message: res.message }, "buzz turn errored");
+          errorText = `${GENERIC_ERROR}\n(trace: ${span.spanContext().traceId})`;
+        } else if (res.status === "completed" && !segmentsToText(res.reply.segments).trim()) {
+          // Mirror session.deliver's own drop condition, so we report exactly the replies it swallows.
+          errorText = EMPTY_REPLY;
+        }
+      } catch (err) {
+        logger.error({ err, eventId: event.id }, "buzz turn threw");
+        errorText = `${GENERIC_ERROR}\n(trace: ${span.spanContext().traceId})`;
+      } finally {
+        await tracker.finalize(errorText).catch(() => {});
+        deps.progress?.untrack(conversation);
+        span.end();
+      }
+    });
     // Persist the cursor for cross-restart backfill (the client tracks the in-process reconnect cursor).
     cursorStore.set(Math.max(cursorStore.get(), event.createdAt));
   };

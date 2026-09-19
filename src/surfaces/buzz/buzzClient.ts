@@ -36,6 +36,7 @@ export type PresenceStatus = "online" | "away" | "offline";
 const KIND_PROFILE = 0;
 const KIND_REACTION = 7;
 const KIND_CHANNEL_MESSAGE = 9;
+const KIND_CHANNEL_EDIT = 40003; // buzz-native message edit; `e`-tags the target, rendered in place
 const KIND_CHANNEL_METADATA = 39000; // NIP-29 channel metadata; id in `d` tag, name/about in tags
 const KIND_PRESENCE = 20001;
 const KIND_MEMBER_ADDED_NOTIFICATION = 44100; // "you were added to a channel" — global, p-tagged
@@ -55,6 +56,9 @@ export interface BuzzClient {
   subscribeMentions(sinceTs: number, onEvent: (e: BuzzEvent) => void | Promise<void>): { stop: () => void };
   /** Post a reply into `channelId`, threaded under `replyToId` (the thread root). */
   send(channelId: string, content: string, replyToId?: string): Promise<BuzzSendResult>;
+  /** Edit a message in place (kind:40003 targeting the original by id). The relay only accepts an
+   *  edit whose target it has already persisted, so `targetEventId` must come from a resolved send. */
+  edit(channelId: string, targetEventId: string, content: string): Promise<void>;
   /** Add an emoji reaction to an event (NIP-25). Used as a lightweight "seen" ack. */
   react(eventId: string, emoji: string): Promise<void>;
   /** Channels visible to the bot in this community — the scannable structure for server context. */
@@ -195,6 +199,10 @@ export class NostrBuzzClient implements BuzzClient {
     if (replyToId) tags.push(["e", replyToId, "", "reply"]);
     const eventId = await this.connection().publish({ kind: KIND_CHANNEL_MESSAGE, content, tags });
     return { eventId, accepted: true };
+  }
+
+  async edit(channelId: string, targetEventId: string, content: string): Promise<void> {
+    await this.connection().publish({ kind: KIND_CHANNEL_EDIT, content, tags: [["h", channelId], ["e", targetEventId]] });
   }
 
   async react(eventId: string, emoji: string): Promise<void> {

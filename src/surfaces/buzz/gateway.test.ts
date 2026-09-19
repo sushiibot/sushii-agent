@@ -36,6 +36,7 @@ interface FakeClientOpts {
   channelsThrow?: boolean;
   channelsCalls?: { n: number };
   subscribedSince?: { value: number };
+  edits?: { channelId: string; targetEventId: string; content: string }[];
 }
 
 function fakeClient(
@@ -58,6 +59,7 @@ function fakeClient(
       sends.push({ channelId, content, replyToId });
       return { eventId: "reply-evt", accepted: true };
     },
+    async edit(channelId, targetEventId, content) { opts.edits?.push({ channelId, targetEventId, content }); },
     async react(eventId, emoji) { opts.reactions?.push({ eventId, emoji }); },
     async channelsList() {
       if (opts.channelsCalls) opts.channelsCalls.n++;
@@ -192,6 +194,50 @@ describe("startBuzzSurface subscription", () => {
     surface.stop();
     expect(channelsCalls.n).toBe(0);
     expect(ctx.value).toBe("already scanned");
+  });
+
+  test("a turn error is reported to the channel, never silent", async () => {
+    const sends: { channelId: string; content: string; replyToId?: string }[] = [];
+    const core: AgentCore = {
+      async handleInbound(): Promise<AgentTurnResult> { return { status: "error", message: "boom" }; },
+      async resume() { return { status: "error", message: "n/a" }; },
+      cancel() { return { status: "no-active-turn" }; },
+    };
+    const surface = startBuzzSurface({ core, client: fakeClient([event()], sends), cursor: memCursor(500), serverContext: memServerContext("scanned") });
+    await tick();
+    surface.stop();
+    expect(sends).toHaveLength(1);
+    expect(sends[0].content).toContain("went wrong");
+    expect(sends[0].replyToId).toBe("evt1");
+  });
+
+  test("a thrown turn is reported to the channel, never silent", async () => {
+    const sends: { channelId: string; content: string; replyToId?: string }[] = [];
+    const core: AgentCore = {
+      async handleInbound(): Promise<AgentTurnResult> { throw new Error("kaboom"); },
+      async resume() { return { status: "error", message: "n/a" }; },
+      cancel() { return { status: "no-active-turn" }; },
+    };
+    const surface = startBuzzSurface({ core, client: fakeClient([event()], sends), cursor: memCursor(500), serverContext: memServerContext("scanned") });
+    await tick();
+    surface.stop();
+    expect(sends).toHaveLength(1);
+    expect(sends[0].content).toContain("went wrong");
+  });
+
+  test("an empty completed reply is reported, never silent", async () => {
+    const sends: { channelId: string; content: string; replyToId?: string }[] = [];
+    const emptyReply: AgentReply = { ...fakeReply(), segments: [{ kind: "text", text: "   " }] };
+    const core: AgentCore = {
+      async handleInbound(_inbound, session): Promise<AgentTurnResult> { await session.deliver(emptyReply); return { status: "completed", reply: emptyReply }; },
+      async resume() { return { status: "error", message: "n/a" }; },
+      cancel() { return { status: "no-active-turn" }; },
+    };
+    const surface = startBuzzSurface({ core, client: fakeClient([event()], sends), cursor: memCursor(500), serverContext: memServerContext("scanned") });
+    await tick();
+    surface.stop();
+    expect(sends).toHaveLength(1);
+    expect(sends[0].content).toContain("wasn't able");
   });
 
   test("a failed scan does not block the turn and is not retried per-mention", async () => {
