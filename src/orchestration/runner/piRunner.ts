@@ -10,6 +10,11 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const MODEL_METADATA_TIMEOUT_MS = 5000;
 const PROVIDER_ID = "sushii-runner-openrouter";
 
+// Generic coding-runner system prompt. The trailing summary instruction is what makes the handback
+// informative — without it a model that does its work purely via tools stops with no final text, so
+// the handback recap comes back empty ("Stopped."). Kept minimal + agent-agnostic (no wiki/Discord).
+const RUNNER_SYSTEM_PROMPT = `You are an autonomous coding agent working in a git repository. Carry out the requested task directly using your tools (read, edit, write, bash, etc.). Commit your work with git when the task implies it. When you finish, end your turn with a concise one- or two-sentence summary of exactly what you changed — which files, and the commit — or state plainly that nothing needed changing.`;
+
 export interface PiRunnerOptions {
   model: string;
   apiKey: string;
@@ -252,7 +257,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const sessionManager = resumeSessionFile
       ? SessionManager.open(resumeSessionFile, sessionDir, cwd)
       : SessionManager.create(cwd, sessionDir);
-    const loader = new DefaultResourceLoader({ cwd, agentDir: this.options.agentDir });
+    const loader = new DefaultResourceLoader({ cwd, agentDir: this.options.agentDir, systemPromptOverride: () => RUNNER_SYSTEM_PROMPT });
     await loader.reload();
 
     const { session } = await createAgentSession({
