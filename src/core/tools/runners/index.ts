@@ -30,12 +30,12 @@ export const dispatchToRunnerEntry: ToolEntry = {
   name: "dispatch_to_runner",
   definition: {
     name: "dispatch_to_runner",
-    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only.",
+    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only. If the user names a project ('work on sushii-sns'), call list_runners first to resolve it to the runner + absolute path — don't guess the path. cwd must be within a project the runner declared.",
     parameters: {
       type: "object",
       properties: {
-        runner_id: { type: "string", description: "Which connected runner to dispatch to." },
-        cwd: { type: "string", description: "Absolute working directory for the task." },
+        runner_id: { type: "string", description: "Which connected runner to dispatch to (from list_runners)." },
+        cwd: { type: "string", description: "Absolute working directory — a project path from list_runners, or a path nested under one." },
         prompt: { type: "string", description: "The task prompt to hand the runner." },
         project: { type: "string", description: "Logical project name, for grouping/lookup." },
       },
@@ -108,6 +108,41 @@ export const listRunningSessionsEntry: ToolEntry = {
     return {
       content: tasks
         .map((t) => `${t.id} [${t.status}] runner=${t.runnerId} project=${t.project ?? "-"} updated=${new Date(t.updatedAt * 1000).toISOString()}${t.summary ? ` — ${snippet(t.summary)}` : ""}`)
+        .join("\n"),
+    };
+  },
+};
+
+export const listRunnersEntry: ToolEntry = {
+  name: "list_runners",
+  definition: {
+    name: "list_runners",
+    description: "List connected runners and the projects (git repos) each can work on. Use this to answer 'what can you work on' and to resolve a project name (e.g. 'sushii-sns') to its runner + path before dispatch_to_runner. Owner-only, personal spaces only.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  requiresHosts: [],
+  async execute(_input, ctx) {
+    const principal = authorize(ctx, "session.read");
+    if (!principal) return { content: DENIED };
+
+    let dispatcher;
+    try {
+      dispatcher = getDispatcher();
+    } catch (err) {
+      if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+      throw err;
+    }
+
+    const runners = dispatcher.listRunners();
+    if (runners.length === 0) return { content: "(no runners connected)" };
+    return {
+      content: runners
+        .map((r) => {
+          const projects = r.projects.length
+            ? r.projects.map((p) => `  ${p.split("/").pop()} → ${p}`).join("\n")
+            : "  (no projects declared — any cwd allowed)";
+          return `${r.runnerId} [${r.kind}]\n${projects}`;
+        })
         .join("\n"),
     };
   },
@@ -192,4 +227,4 @@ export const resumeSessionEntry: ToolEntry = {
   },
 };
 
-export const RUNNER_TOOL_ENTRIES: ToolEntry[] = [dispatchToRunnerEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry];
+export const RUNNER_TOOL_ENTRIES: ToolEntry[] = [dispatchToRunnerEntry, listRunnersEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry];

@@ -41,6 +41,39 @@ describe("Dispatcher", () => {
     }
   });
 
+  test("dispatch rejects a cwd outside the runner's declared projects; allows nested paths", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "scoped-runner",
+      kind: "mock",
+      projects: ["/home/drk/sushii/sushii-sns"],
+      adapter: new MockRunnerAdapter(),
+    });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("scoped-runner"));
+
+      const base = {
+        principal: "owner-1",
+        runnerId: "scoped-runner",
+        project: null,
+        prompt: "go",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      };
+      await expect(dispatcher.dispatch({ ...base, cwd: "/home/drk/sushii/sushii-agent" })).rejects.toThrow(/not within any project/);
+      // exact match and a nested path are both in scope
+      const nested = await dispatcher.dispatch({ ...base, cwd: "/home/drk/sushii/sushii-sns/src" });
+      expect(nested.status).toBe("running");
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
   test("e2e dispatch via the mock runner: registry row goes running -> done, summary persisted", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => true);
     dispatcher.listen();

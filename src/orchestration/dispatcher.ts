@@ -101,6 +101,20 @@ export class Dispatcher {
     return this.liveRunners.has(runnerId) && this.server.isConnected(runnerId);
   }
 
+  /** Live runners + the git repos each declared, for a "what can you work on" listing and for the
+   *  agent to resolve a project name → cwd. */
+  listRunners(): { runnerId: string; kind: string; projects: string[] }[] {
+    return [...this.liveRunners.entries()].map(([runnerId, r]) => ({ runnerId, kind: r.kind, projects: r.projects }));
+  }
+
+  /** Scope fence: a dispatch cwd must be one of the runner's declared projects, or nested under
+   *  one. A runner that declared none is unconfigured → permissive (back-compat). */
+  private cwdInScope(runnerId: string, cwd: string): boolean {
+    const projects = this.liveRunners.get(runnerId)?.projects ?? [];
+    if (projects.length === 0) return true;
+    return projects.some((p) => cwd === p || cwd.startsWith(`${p}/`));
+  }
+
   /** Authz-gates first (throws AuthzError if denied), then creates the task row and starts it.
    *  Returns once the task is created + started — events stream in asynchronously via onEvent. */
   async dispatch(input: DispatchInput): Promise<TaskRow> {
@@ -113,6 +127,10 @@ export class Dispatcher {
     if (!allowed) throw new AuthzError("runner.dispatch denied");
 
     this.ensureListening();
+
+    if (!this.cwdInScope(input.runnerId, input.cwd)) {
+      throw new Error(`cwd "${input.cwd}" is not within any project the runner "${input.runnerId}" declared`);
+    }
 
     const row = this.registry.create({
       createdBy: input.principal,

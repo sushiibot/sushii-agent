@@ -203,7 +203,7 @@ describe("runner tools: registry-level availability gate (mirrors ops-triage)", 
   });
 
   test("offered in a personal/DM space with an owner configured", () => {
-    expect(names(true, "dm")).toEqual(["dispatch_to_runner", "list_running_sessions", "read_session", "resume_session"]);
+    expect(names(true, "dm")).toEqual(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session"]);
   });
 
   test("hidden in a personal/DM space when no owner is configured", () => {
