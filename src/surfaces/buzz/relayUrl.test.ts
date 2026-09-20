@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeRelayUrl, parseRelayUrls, parseWikiMap } from "./relayUrl.ts";
+import { normalizeRelayUrl, parseRelayUrls, parseWikiMap, parseAvatarMap } from "./relayUrl.ts";
 
 describe("normalizeRelayUrl", () => {
   test("maps ws/wss to http/https, strips trailing slash, lowercases", () => {
@@ -41,5 +41,27 @@ describe("parseWikiMap", () => {
   test("throws on invalid JSON or a non-object payload", () => {
     expect(() => parseWikiMap("not json")).toThrow();
     expect(() => parseWikiMap('["https://a"]')).toThrow();
+  });
+});
+
+describe("parseAvatarMap", () => {
+  test("normalizes relay-url keys so they match the per-relay loop key", () => {
+    expect(parseAvatarMap('{"wss://Buzz.Example/": "https://buzz.example/media/a.png"}')).toEqual({
+      "https://buzz.example": "https://buzz.example/media/a.png",
+    });
+  });
+
+  test("empty or undefined yields an empty map (falls back to BUZZ_AVATAR_URL)", () => {
+    expect(parseAvatarMap("")).toEqual({});
+    expect(parseAvatarMap(undefined)).toEqual({});
+  });
+
+  test("drops entries with a blank or non-string url", () => {
+    expect(parseAvatarMap('{"https://a": "", "https://b": 5, "https://c": "https://c/x.png"}')).toEqual({ "https://c": "https://c/x.png" });
+  });
+
+  test("throws on invalid JSON or a non-object payload", () => {
+    expect(() => parseAvatarMap("not json")).toThrow();
+    expect(() => parseAvatarMap('["https://a"]')).toThrow();
   });
 });

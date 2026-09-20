@@ -74,7 +74,9 @@ async function main() {
     for (const relayUrl of relays) {
       const key = relayUrl ?? "default";
       const spaceId = relayUrl ? `buzz:${key}` : "buzz";
-      const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag, avatarUrl: config.buzz.avatarUrl }, key);
+      // buzz media is auth-gated per relay, so each relay's profile points at its own avatar copy.
+      const avatarUrl = config.buzz.avatarMap[key] ?? config.buzz.avatarUrl;
+      const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag, avatarUrl }, key);
       // A community reads a wiki only if its relay is mapped, and only that guild's synced wiki.
       const wikiGuildId = config.buzz.wikiMap[key];
       if (wikiGuildId && !wikiEnabledGuilds.has(wikiGuildId)) {

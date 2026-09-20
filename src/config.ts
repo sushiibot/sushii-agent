@@ -1,6 +1,6 @@
 export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
-import { parseRelayUrls, parseWikiMap } from "./surfaces/buzz/relayUrl.ts";
+import { parseRelayUrls, parseWikiMap, parseAvatarMap } from "./surfaces/buzz/relayUrl.ts";
 
 export interface Config {
   discordBotToken: string;
@@ -35,8 +35,11 @@ export interface Config {
     authTag: string | undefined;
     /** Display name the bot publishes for itself (kind:0 profile) on each relay. */
     displayName: string;
-    /** Avatar for the kind:0 profile (hosted URL or data: URL). Unset → no picture published. */
+    /** Fallback avatar URL for the kind:0 profile, used for any relay not in avatarMap. */
     avatarUrl: string | undefined;
+    /** Per-relay avatar URL (relay → image URL). buzz media is auth-gated per relay, so each relay's
+     *  profile must point at the avatar copy hosted on that relay. Falls back to avatarUrl. */
+    avatarMap: Record<string, string>;
     /** Relay URL → Discord guild id whose synced wiki that community may read. A relay absent here
      *  gets no wiki tools, so each community can read only the one wiki it is explicitly mapped to. */
     wikiMap: Record<string, string>;
@@ -119,6 +122,7 @@ export const config: Config = {
     authTag: process.env["BUZZ_AUTH_TAG"],
     displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
     avatarUrl: process.env["BUZZ_AVATAR_URL"],
+    avatarMap: parseAvatarMap(process.env["BUZZ_AVATAR_MAP"]),
     wikiMap: parseWikiMap(process.env["BUZZ_WIKI_MAP"]),
   },
   wikiSync: {

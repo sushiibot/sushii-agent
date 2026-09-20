@@ -21,6 +21,29 @@ export function parseRelayUrls(raw: string | undefined): string[] {
   return Array.from(new Set(seen));
 }
 
+/** Parse BUZZ_AVATAR_MAP (JSON: relay URL → avatar image URL) into a normalized relay-URL → URL map.
+ *  buzz media is auth-gated per relay, so a viewer can only load the copy on their own relay — each
+ *  community needs the avatar hosted on, and its profile pointed at, its own relay. Keys are
+ *  normalized to match the per-relay loop key; a relay absent here falls back to BUZZ_AVATAR_URL. */
+export function parseAvatarMap(raw: string | undefined): Record<string, string> {
+  if (!raw?.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("BUZZ_AVATAR_MAP must be valid JSON: {\"<relay url>\": \"<avatar url>\"}");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("BUZZ_AVATAR_MAP must be a JSON object of relay URL → avatar url");
+  }
+  const out: Record<string, string> = {};
+  for (const [relay, url] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof url !== "string" || !url.trim()) continue;
+    out[normalizeRelayUrl(relay)] = url.trim();
+  }
+  return out;
+}
+
 /** Parse BUZZ_WIKI_MAP (JSON: relay URL → Discord guild id) into a normalized relay-URL → guild-id
  *  map. Keys are normalized the same way as parseRelayUrls so they match the per-relay loop key, and
  *  a community reads a wiki only if its relay appears here — absence means no wiki access at all. */
