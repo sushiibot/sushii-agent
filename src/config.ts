@@ -35,6 +35,8 @@ export interface Config {
     authTag: string | undefined;
     /** Display name the bot publishes for itself (kind:0 profile) on each relay. */
     displayName: string;
+    /** Avatar for the kind:0 profile (hosted URL or data: URL). Unset → no picture published. */
+    avatarUrl: string | undefined;
     /** Relay URL → Discord guild id whose synced wiki that community may read. A relay absent here
      *  gets no wiki tools, so each community can read only the one wiki it is explicitly mapped to. */
     wikiMap: Record<string, string>;
@@ -116,6 +118,7 @@ export const config: Config = {
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),
     authTag: process.env["BUZZ_AUTH_TAG"],
     displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
+    avatarUrl: process.env["BUZZ_AVATAR_URL"],
     wikiMap: parseWikiMap(process.env["BUZZ_WIKI_MAP"]),
   },
   wikiSync: {

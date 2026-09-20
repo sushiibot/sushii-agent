@@ -84,6 +84,7 @@ export class NostrBuzzClient implements BuzzClient {
   private conn: NostrRelayConnection | null = null;
   private readonly wsUrl: string;
   private readonly authTag: string[] | null;
+  private readonly avatarUrl: string | null;
   private latestSeen = 0;
   private lastPresence: PresenceStatus | null = null;
   private lastProfile: string | null = null;
@@ -93,13 +94,14 @@ export class NostrBuzzClient implements BuzzClient {
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
-    env: { privateKey: string; relayUrl?: string; authTag?: string },
+    env: { privateKey: string; relayUrl?: string; authTag?: string; avatarUrl?: string },
     private readonly relayLabel?: string,
   ) {
     this.sk = decodeSecretKey(env.privateKey);
     this.pubkey = getPublicKey(this.sk);
     this.wsUrl = toWsUrl(env.relayUrl?.trim() || "http://localhost:3000");
     this.authTag = env.authTag ? (JSON.parse(env.authTag) as string[]) : null;
+    this.avatarUrl = env.avatarUrl?.trim() || null;
   }
 
   private connection(): NostrRelayConnection {
@@ -107,7 +109,7 @@ export class NostrBuzzClient implements BuzzClient {
       // On every (re)connect: (re)announce profile + presence, and (re)subscribe to mentions. Both
       // must happen after auth, and channel membership may have changed, so it re-runs each connect.
       const onReady = () => {
-        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile, this.authTag)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect profile re-announce failed"));
+        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile, this.authTag, this.avatarUrl)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect profile re-announce failed"));
         if (this.lastPresence) void this.conn?.publish(presenceEvent(this.lastPresence)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect presence re-announce failed"));
         void this.resubscribe();
       };
@@ -178,7 +180,7 @@ export class NostrBuzzClient implements BuzzClient {
     // Record intent; publish now if connected, else the onReady hook publishes on connect.
     this.lastProfile = displayName;
     const conn = this.connection();
-    if (conn.isReady()) await conn.publish(profileEvent(displayName, this.authTag));
+    if (conn.isReady()) await conn.publish(profileEvent(displayName, this.authTag, this.avatarUrl));
   }
 
   async setPresence(status: PresenceStatus): Promise<void> {
@@ -215,10 +217,12 @@ export class NostrBuzzClient implements BuzzClient {
   }
 }
 
-export function profileEvent(displayName: string, authTag: string[] | null) {
+export function profileEvent(displayName: string, authTag: string[] | null, avatarUrl: string | null) {
   // The NIP-OA owner tag on the kind:0 is what makes buzz clients render this key as an owned agent
   // rather than a plain user; without it the profile is indistinguishable from a human's.
-  return { kind: KIND_PROFILE, content: JSON.stringify({ name: displayName }), tags: authTag ? [authTag] : [] };
+  const profile: { name: string; picture?: string } = { name: displayName };
+  if (avatarUrl) profile.picture = avatarUrl; // hosted URL or data: URL — buzz stores it verbatim
+  return { kind: KIND_PROFILE, content: JSON.stringify(profile), tags: authTag ? [authTag] : [] };
 }
 
 function presenceEvent(status: PresenceStatus) {

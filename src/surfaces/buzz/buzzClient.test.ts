@@ -25,14 +25,23 @@ describe("profileEvent", () => {
   const authTag = ["auth", "a".repeat(64), "", "b".repeat(128)];
 
   test("carries the NIP-OA owner tag on the kind:0 profile when configured", () => {
-    const ev = profileEvent("sushii-agent", authTag);
+    const ev = profileEvent("sushii-agent", authTag, null);
     expect(ev.kind).toBe(0);
     expect(JSON.parse(ev.content)).toEqual({ name: "sushii-agent" });
     expect(ev.tags).toEqual([authTag]);
   });
 
   test("publishes a bare profile when no auth tag is set", () => {
-    expect(profileEvent("sushii-agent", null).tags).toEqual([]);
+    expect(profileEvent("sushii-agent", null, null).tags).toEqual([]);
+  });
+
+  test("includes the avatar as the profile picture when set", () => {
+    const ev = profileEvent("sushii-agent", null, "https://example.com/a.png");
+    expect(JSON.parse(ev.content)).toEqual({ name: "sushii-agent", picture: "https://example.com/a.png" });
+  });
+
+  test("omits picture when no avatar is set", () => {
+    expect(JSON.parse(profileEvent("sushii-agent", null, null).content)).toEqual({ name: "sushii-agent" });
   });
 });
 
