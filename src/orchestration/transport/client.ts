@@ -213,7 +213,7 @@ export class OrchestrationClient {
         this.respond(ws, id, result);
         this.beginStream(ws, input.taskId);
       } else if (method === RPC_METHODS.resume) {
-        const input = params as { taskId: string; nativeSessionId: string; prompt: string };
+        const input = params as { taskId: string; nativeSessionId: string; cwd: string; prompt: string };
         await adapter.resume(input);
         this.respond(ws, id, { ok: true });
         this.beginStream(ws, input.taskId, { resubscribe: true });

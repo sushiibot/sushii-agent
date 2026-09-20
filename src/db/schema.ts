@@ -98,6 +98,7 @@ export const tasks = sqliteTable(
     createdBy: text("created_by").notNull(),
     runnerId: text("runner_id").notNull(),
     project: text("project"),
+    cwd: text("cwd"), // the task's working directory — needed to resume in the right place
     nativeSessionId: text("native_session_id"),
     resumeCursor: text("resume_cursor"),
     status: text("status", { enum: TASK_STATUSES }).notNull(),

@@ -104,9 +104,10 @@ export const listRunningSessionsEntry: ToolEntry = {
 
     const tasks = dispatcher.listRunning(principal);
     if (tasks.length === 0) return { content: "(no running sessions)" };
+    const snippet = (s: string | null) => (s && s.length > 100 ? `${s.slice(0, 99)}…` : (s ?? ""));
     return {
       content: tasks
-        .map((t) => `${t.id} [${t.status}] runner=${t.runnerId} project=${t.project ?? "-"} updated=${new Date(t.updatedAt * 1000).toISOString()}`)
+        .map((t) => `${t.id} [${t.status}] runner=${t.runnerId} project=${t.project ?? "-"} updated=${new Date(t.updatedAt * 1000).toISOString()}${t.summary ? ` — ${snippet(t.summary)}` : ""}`)
         .join("\n"),
     };
   },
@@ -151,11 +152,11 @@ export const resumeSessionEntry: ToolEntry = {
   name: "resume_session",
   definition: {
     name: "resume_session",
-    description: "Resume one of your background runner tasks with a follow-up prompt. Owner-only, personal spaces only.",
+    description: "Resume one of your background runner tasks with a follow-up prompt. Owner-only, personal spaces only. If the user refers to a task by description, project, or recency ('the smoke-test one', 'the last task', 'continue') instead of an id, call list_running_sessions first and pick the matching task id — don't ask the user for the raw id.",
     parameters: {
       type: "object",
       properties: {
-        task_id: { type: "string", description: "The task id returned by dispatch_to_runner." },
+        task_id: { type: "string", description: "The task id (from dispatch_to_runner or list_running_sessions). Resolve it via list_running_sessions when the user gives a description rather than the id." },
         prompt: { type: "string", description: "Follow-up instructions for the runner." },
       },
       required: ["task_id", "prompt"],

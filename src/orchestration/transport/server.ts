@@ -209,7 +209,7 @@ export class OrchestrationServer {
 
   resume(
     runnerId: string,
-    input: { taskId: string; nativeSessionId: string; prompt: string },
+    input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string },
   ): Promise<unknown> {
     return this.call(runnerId, RPC_METHODS.resume, input);
   }

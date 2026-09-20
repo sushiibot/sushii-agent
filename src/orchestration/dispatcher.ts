@@ -54,6 +54,13 @@ export class Dispatcher {
       port: options.port,
       onRegister: (runnerId, kind, projects) => {
         this.liveRunners.set(runnerId, { kind, projects });
+        // A fresh connection means we can't observe any turn that was mid-flight on this runner
+        // before (e.g. across an orchestrator restart), so clear stale "running" phantoms.
+        const reconciled = this.registry.failRunningForRunner(
+          runnerId,
+          "runner reconnected; prior turn's result was not observed (no resume-catchup yet)",
+        );
+        if (reconciled > 0) logger.info({ runnerId, reconciled }, "reconciled stale running tasks on runner register");
       },
       onEvent: (runnerId, event) => this.onEvent(runnerId, event),
     });
@@ -105,6 +112,7 @@ export class Dispatcher {
       createdBy: input.principal,
       runnerId: input.runnerId,
       project: input.project,
+      cwd: input.cwd,
       nativeSessionId: null,
       resumeCursor: null,
       status: "running",
@@ -158,6 +166,7 @@ export class Dispatcher {
       await this.server.resume(task.runnerId, {
         taskId: task.id,
         nativeSessionId: task.nativeSessionId,
+        cwd: task.cwd ?? "", // empty → runner falls back (legacy rows predate the cwd column)
         prompt: input.prompt,
       });
     } catch (err) {

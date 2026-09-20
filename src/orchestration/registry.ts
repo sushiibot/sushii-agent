@@ -1,6 +1,6 @@
 import type { Changes, Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { tasks } from "../db/schema.ts";
 import type { TaskRow, TaskStatus } from "./contracts.ts";
 
@@ -87,6 +87,19 @@ export class TaskRegistry {
       .where(eq(tasks.id, id))
       .run() as unknown as Changes;
     assertChanged(result, id);
+  }
+
+  /** Reconciliation for the no-catch-up gap (until U1.2): when a runner (re)registers, the
+   *  orchestrator has no live stream to any task it thought was still running on that runner — a
+   *  fresh connection can't observe an in-flight turn's result. Mark those `running` rows `failed`
+   *  so the roster stays honest instead of showing phantoms. Returns how many were reconciled. */
+  failRunningForRunner(runnerId: string, reason: string): number {
+    const result = ormFor(this.db)
+      .update(tasks)
+      .set({ status: "failed", statusReason: reason, updatedAt: Math.floor(Date.now() / 1000) })
+      .where(and(eq(tasks.runnerId, runnerId), eq(tasks.status, "running")))
+      .run() as unknown as Changes;
+    return result.changes ?? 0;
   }
 
   setNativeSession(id: string, nativeSessionId: string): void {

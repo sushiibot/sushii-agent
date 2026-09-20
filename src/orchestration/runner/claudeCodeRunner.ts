@@ -326,7 +326,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     return { nativeSessionId: sessionId };
   }
 
-  async resume(input: { taskId: string; nativeSessionId: string; prompt: string }): Promise<void> {
+  async resume(input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string }): Promise<void> {
     const existing = this.tasks.get(input.taskId);
     if (existing) {
       // A still-running prior process for this task must not be silently
@@ -337,7 +337,9 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
       existing.proc.kill();
       await existing.proc.exited;
     }
-    const cwd = existing?.cwd ?? process.cwd();
+    // Registry-provided cwd wins (survives task settle + orchestrator restart); fall back to the
+    // in-memory entry, then process.cwd() only as a last resort. Empty string = legacy row, no cwd.
+    const cwd = input.cwd || existing?.cwd || process.cwd();
     const args = [
       this.claudeBin,
       "--resume",

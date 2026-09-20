@@ -215,7 +215,7 @@ describe("ClaudeCodeRunnerAdapter.resume (real process kill/exit, fixture binary
       // Let the original process actually reach its sleep before superseding it.
       await new Promise((r) => setTimeout(r, 100));
 
-      await adapter.resume({ taskId, nativeSessionId: "sess-original", prompt: "continue" });
+      await adapter.resume({ taskId, nativeSessionId: "sess-original", cwd: "", prompt: "continue" });
       await oldStreamDone;
 
       expect(oldEvents.some((e) => e.kind === "status" && e.status === "failed")).toBe(false);

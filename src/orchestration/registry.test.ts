@@ -15,6 +15,7 @@ function baseRow(): Omit<TaskRow, "id" | "createdAt" | "updatedAt"> {
     createdBy: "user-1",
     runnerId: "runner-1",
     project: "sushii-agent",
+    cwd: null,
     nativeSessionId: null,
     resumeCursor: null,
     status: "running",

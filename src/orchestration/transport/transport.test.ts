@@ -108,6 +108,7 @@ describe("orchestration transport round-trip", () => {
       await server.resume("mock-runner-2", {
         taskId: "task-2",
         nativeSessionId: "mock-task-2",
+        cwd: "/tmp",
         prompt: "continue",
       });
 

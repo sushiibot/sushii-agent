@@ -13,6 +13,7 @@ export interface TaskRow {
   createdBy: string; // principal id (P0: the owner)
   runnerId: string;
   project: string | null;
+  cwd: string | null; // task working directory — persisted so resume() runs in the right place
   nativeSessionId: string | null; // runner's own session id (e.g. Claude Code UUID)
   resumeCursor: string | null;
   status: TaskStatus;
@@ -45,7 +46,7 @@ export interface HandbackMeta {
 // ── Runner adapter interface (uniform across kinds; P0 = Claude Code only). ──
 export interface RunnerAdapter {
   start(input: { taskId: string; cwd: string; prompt: string }): Promise<{ nativeSessionId: string }>;
-  resume(input: { taskId: string; nativeSessionId: string; prompt: string }): Promise<void>;
+  resume(input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string }): Promise<void>;
   interrupt(taskId: string): Promise<void>;
   // Emits RunnerEvents for the task; implementation streams via the callback.
   stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void>;
