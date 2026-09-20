@@ -15,6 +15,13 @@
       "when": 1789600000000,
       "tag": "0001_buzz_state",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789885833415,
+      "tag": "0002_tasks_registry",
+      "breakpoints": true
     }
   ]
 }
