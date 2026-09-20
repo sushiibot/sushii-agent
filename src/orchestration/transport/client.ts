@@ -6,6 +6,14 @@ import {
   type RunnerAdapter,
   type RunnerEvent,
 } from "../contracts.ts";
+import { getLogger } from "../../logger.ts";
+
+const logger = getLogger("orchestration:client");
+
+interface PendingCall {
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+}
 
 export interface OrchestrationClientOptions {
   url: string;
@@ -22,6 +30,10 @@ export class OrchestrationClient {
   private readonly options: OrchestrationClientOptions;
   private ws: WebSocket | null = null;
   private nextId = 1;
+  private readonly pending = new Map<string | number, PendingCall>();
+  // Guards against resume() re-subscribing a task whose stream() is
+  // already running from an earlier start().
+  private readonly streamingTasks = new Set<string>();
 
   constructor(options: OrchestrationClientOptions) {
     this.options = options;
@@ -32,8 +44,14 @@ export class OrchestrationClient {
       const ws = new WebSocket(this.options.url);
       this.ws = ws;
 
+      ws.addEventListener("close", () => {
+        this.rejectAllPending(new Error("connection closed"));
+        this.ws = null;
+      });
+
       ws.addEventListener("open", () => {
         const id = this.nextId++;
+        this.pending.set(id, { resolve: () => resolve(), reject });
         ws.send(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -49,10 +67,13 @@ export class OrchestrationClient {
 
         const onRegisterAck = (event: MessageEvent) => {
           const parsed = jsonRpcResponse.safeParse(JSON.parse(event.data.toString()));
-          if (!parsed.success || parsed.data.id !== id) return;
+          if (!parsed.success) return;
+          const call = this.pending.get(parsed.data.id);
+          if (!call) return;
+          this.pending.delete(parsed.data.id);
           ws.removeEventListener("message", onRegisterAck);
-          if (parsed.data.error) reject(new Error(parsed.data.error.message));
-          else resolve();
+          if (parsed.data.error) call.reject(new Error(parsed.data.error.message));
+          else call.resolve(undefined);
         };
         ws.addEventListener("message", onRegisterAck);
       });
@@ -71,7 +92,35 @@ export class OrchestrationClient {
   }
 
   close(): void {
+    this.rejectAllPending(new Error("connection closed"));
     this.ws?.close();
+    this.ws = null;
+  }
+
+  private rejectAllPending(err: Error): void {
+    for (const call of this.pending.values()) call.reject(err);
+    this.pending.clear();
+  }
+
+  // Starts adapter.stream() for a task at most once; resume() must not
+  // re-subscribe a stream already running from an earlier start().
+  private beginStream(ws: WebSocket, taskId: string): void {
+    if (this.streamingTasks.has(taskId)) return;
+    this.streamingTasks.add(taskId);
+    this.options.adapter
+      .stream(taskId, (e) => this.emit(ws, e))
+      .catch((err) => {
+        logger.error({ err, taskId }, "runner adapter stream failed");
+        this.emit(ws, {
+          kind: "status",
+          taskId,
+          status: "failed",
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
+        this.streamingTasks.delete(taskId);
+      });
   }
 
   private async handleMessage(ws: WebSocket, raw: string): Promise<void> {
@@ -93,12 +142,12 @@ export class OrchestrationClient {
         const input = params as { taskId: string; cwd: string; prompt: string };
         const result = await adapter.start(input);
         this.respond(ws, id, result);
-        void adapter.stream(input.taskId, (e) => this.emit(ws, e));
+        this.beginStream(ws, input.taskId);
       } else if (method === RPC_METHODS.resume) {
         const input = params as { taskId: string; nativeSessionId: string; prompt: string };
         await adapter.resume(input);
         this.respond(ws, id, { ok: true });
-        void adapter.stream(input.taskId, (e) => this.emit(ws, e));
+        this.beginStream(ws, input.taskId);
       } else if (method === RPC_METHODS.interrupt) {
         const input = params as { taskId: string };
         await adapter.interrupt(input.taskId);
@@ -118,8 +167,13 @@ export class OrchestrationClient {
   }
 
   private emit(ws: WebSocket, event: RunnerEvent): void {
+    if (ws.readyState !== ws.OPEN) return;
     const notification = { jsonrpc: "2.0" as const, method: RPC_METHODS.event, params: event };
-    jsonRpcNotification.parse(notification);
-    ws.send(JSON.stringify(notification));
+    const parsed = jsonRpcNotification.safeParse(notification);
+    if (!parsed.success) {
+      logger.error({ error: parsed.error }, "built an invalid session/update notification");
+      return;
+    }
+    ws.send(JSON.stringify(parsed.data));
   }
 }

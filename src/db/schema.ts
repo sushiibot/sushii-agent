@@ -1,4 +1,5 @@
 import { index, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { TASK_STATUSES } from "../orchestration/contracts.ts";
 
 export const messages = sqliteTable(
   "messages",
@@ -99,7 +100,7 @@ export const tasks = sqliteTable(
     project: text("project"),
     nativeSessionId: text("native_session_id"),
     resumeCursor: text("resume_cursor"),
-    status: text("status").notNull(),
+    status: text("status", { enum: TASK_STATUSES }).notNull(),
     statusReason: text("status_reason"),
     summary: text("summary"),
     spawnedFromSurface: text("spawned_from_surface").notNull(),

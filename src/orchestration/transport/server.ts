@@ -1,4 +1,5 @@
 import type { Server, ServerWebSocket } from "bun";
+import { z } from "zod";
 import {
   RPC_METHODS,
   jsonRpcNotification,
@@ -7,6 +8,9 @@ import {
   registerParams,
   type RunnerEvent,
 } from "../contracts.ts";
+import { getLogger } from "../../logger.ts";
+
+const logger = getLogger("orchestration:server");
 
 interface PendingCall {
   resolve: (value: unknown) => void;
@@ -17,6 +21,38 @@ interface SocketState {
   runnerId: string | null;
   pending: Map<string | number, PendingCall>;
 }
+
+// Local wire-level validator for RunnerEvent — contracts.ts stays a plain
+// type, not a schema, so session/update payloads get checked here.
+const runnerEventSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("status"),
+    taskId: z.string(),
+    status: z.enum(["running", "idle", "needs_input", "done", "failed"]),
+    reason: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal("progress"),
+    taskId: z.string(),
+    note: z.string(),
+  }),
+  z.object({
+    kind: z.literal("handback"),
+    taskId: z.string(),
+    summary: z.string(),
+    meta: z
+      .object({
+        filesChanged: z.number().optional(),
+        commits: z.number().optional(),
+        testsPassed: z.boolean().optional(),
+        toolsRun: z.number().optional(),
+        tokens: z.number().optional(),
+        costUsd: z.number().optional(),
+        durationMs: z.number().optional(),
+      })
+      .optional(),
+  }),
+]);
 
 export interface OrchestrationServerOptions {
   port?: number;
@@ -49,7 +85,7 @@ export class OrchestrationServer {
       websocket: {
         open: () => {},
         close: (ws) => {
-          if (ws.data.runnerId) this.sockets.delete(ws.data.runnerId);
+          this.cleanupSocket(ws);
         },
         message: (ws, raw) => {
           this.handleMessage(ws, raw);
@@ -59,8 +95,18 @@ export class OrchestrationServer {
     return this.server;
   }
 
+  private cleanupSocket(ws: ServerWebSocket<SocketState>): void {
+    if (ws.data.runnerId && this.sockets.get(ws.data.runnerId) === ws) {
+      this.sockets.delete(ws.data.runnerId);
+    }
+    const closedErr = new Error("connection closed");
+    for (const pending of ws.data.pending.values()) pending.reject(closedErr);
+    ws.data.pending.clear();
+  }
+
   stop(): void {
     this.server?.stop(true);
+    this.sockets.clear();
   }
 
   get url(): string {
@@ -76,17 +122,56 @@ export class OrchestrationServer {
       return;
     }
 
+    try {
+      this.dispatch(ws, parsed);
+    } catch (err) {
+      const id = (parsed as { id?: string | number })?.id;
+      if (id !== undefined) {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
+          }),
+        );
+      }
+      logger.warn({ err }, "failed to handle orchestration message");
+    }
+  }
+
+  private dispatch(ws: ServerWebSocket<SocketState>, parsed: unknown): void {
     const notif = jsonRpcNotification.safeParse(parsed);
     if (notif.success && notif.data.method === RPC_METHODS.event) {
       if (ws.data.runnerId) {
-        this.options.onEvent(ws.data.runnerId, notif.data.params as RunnerEvent);
+        const event = runnerEventSchema.safeParse(notif.data.params);
+        if (event.success) {
+          this.options.onEvent(ws.data.runnerId, event.data);
+        } else {
+          logger.warn({ error: event.error, runnerId: ws.data.runnerId }, "dropping malformed session/update event");
+        }
       }
       return;
     }
 
     const req = jsonRpcRequest.safeParse(parsed);
     if (req.success && req.data.method === RPC_METHODS.register) {
-      const params = registerParams.parse(req.data.params);
+      const paramsResult = registerParams.safeParse(req.data.params);
+      if (!paramsResult.success) {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: req.data.id,
+            error: { code: -32602, message: "invalid register params" },
+          }),
+        );
+        return;
+      }
+      const params = paramsResult.data;
+      const existing = this.sockets.get(params.runnerId);
+      if (existing && existing !== ws) {
+        existing.data.runnerId = null;
+        existing.close();
+      }
       ws.data.runnerId = params.runnerId;
       this.sockets.set(params.runnerId, ws);
       this.options.onRegister?.(params.runnerId, params.kind, params.projects);

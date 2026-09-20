@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { applySchema } from "../db/index.ts";
-import { TaskRegistry } from "./registry.ts";
+import { TaskNotFoundError, TaskRegistry } from "./registry.ts";
 import type { TaskRow } from "./contracts.ts";
 
 function testDb(): Database {
@@ -55,13 +55,51 @@ describe("TaskRegistry", () => {
   });
 
   test("updateStatus sets status + reason and bumps updatedAt", () => {
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(1_000_000);
+      const registry = new TaskRegistry(testDb());
+      const created = registry.create(baseRow());
+      expect(created.updatedAt).toBe(created.createdAt);
+
+      clock.mockReturnValue(1_005_000);
+      registry.updateStatus(created.id, "failed", "runner crashed");
+
+      const fetched = registry.get(created.id);
+      expect(fetched?.status).toBe("failed");
+      expect(fetched?.statusReason).toBe("runner crashed");
+      expect(fetched?.updatedAt).toBe(1005);
+      expect(fetched?.updatedAt).toBeGreaterThanOrEqual(created.createdAt);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("updateStatus without a reason clears any prior statusReason", () => {
     const registry = new TaskRegistry(testDb());
     const created = registry.create(baseRow());
 
     registry.updateStatus(created.id, "failed", "runner crashed");
+    registry.updateStatus(created.id, "running");
+
     const fetched = registry.get(created.id);
-    expect(fetched?.status).toBe("failed");
-    expect(fetched?.statusReason).toBe("runner crashed");
+    expect(fetched?.status).toBe("running");
+    expect(fetched?.statusReason).toBeNull();
+  });
+
+  test("mutators throw TaskNotFoundError on an unknown id", () => {
+    const registry = new TaskRegistry(testDb());
+    expect(() => registry.updateStatus("nonexistent", "running")).toThrow(TaskNotFoundError);
+    expect(() => registry.setNativeSession("nonexistent", "native-abc")).toThrow(TaskNotFoundError);
+    expect(() => registry.setSummary("nonexistent", "summary")).toThrow(TaskNotFoundError);
+  });
+
+  test("threadRefs round-trips an empty array", () => {
+    const registry = new TaskRegistry(testDb());
+    const created = registry.create({ ...baseRow(), threadRefs: [] });
+
+    const fetched = registry.get(created.id);
+    expect(fetched?.threadRefs).toEqual([]);
   });
 
   test("setNativeSession and setSummary update their fields independently", () => {
