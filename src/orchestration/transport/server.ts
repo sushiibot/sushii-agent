@@ -58,6 +58,7 @@ export interface OrchestrationServerOptions {
   port?: number;
   onEvent: (runnerId: string, event: RunnerEvent) => void;
   onRegister?: (runnerId: string, kind: string, projects: string[]) => void;
+  onDisconnect?: (runnerId: string) => void;
 }
 
 // Orchestrator-side WS server. One connection per runner; requests are
@@ -98,6 +99,7 @@ export class OrchestrationServer {
   private cleanupSocket(ws: ServerWebSocket<SocketState>): void {
     if (ws.data.runnerId && this.sockets.get(ws.data.runnerId) === ws) {
       this.sockets.delete(ws.data.runnerId);
+      this.options.onDisconnect?.(ws.data.runnerId);
     }
     const closedErr = new Error("connection closed");
     for (const pending of ws.data.pending.values()) pending.reject(closedErr);

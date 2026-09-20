@@ -42,6 +42,7 @@ export class Dispatcher {
   readonly server: OrchestrationServer;
   private readonly liveRunners = new Map<string, LiveRunner>();
   private readonly settledListeners: ((task: TaskRow) => void)[] = [];
+  private readonly runnerStatusListeners: ((e: { runnerId: string; status: "connected" | "disconnected" }) => void)[] = [];
   private listening = false;
   private listenFailed = false;
 
@@ -61,6 +62,11 @@ export class Dispatcher {
           "runner reconnected; prior turn's result was not observed (no resume-catchup yet)",
         );
         if (reconciled > 0) logger.info({ runnerId, reconciled }, "reconciled stale running tasks on runner register");
+        this.emitRunnerStatus(runnerId, "connected");
+      },
+      onDisconnect: (runnerId) => {
+        this.liveRunners.delete(runnerId);
+        this.emitRunnerStatus(runnerId, "disconnected");
       },
       onEvent: (runnerId, event) => this.onEvent(runnerId, event),
     });
@@ -187,6 +193,21 @@ export class Dispatcher {
    *  so one throwing surface can't break another or wedge event handling. */
   onTaskSettled(listener: (task: TaskRow) => void): void {
     this.settledListeners.push(listener);
+  }
+
+  /** Runner connect/disconnect notifications (same discord.js-free seam as onTaskSettled). */
+  onRunnerStatus(listener: (e: { runnerId: string; status: "connected" | "disconnected" }) => void): void {
+    this.runnerStatusListeners.push(listener);
+  }
+
+  private emitRunnerStatus(runnerId: string, status: "connected" | "disconnected"): void {
+    for (const listener of this.runnerStatusListeners) {
+      try {
+        listener({ runnerId, status });
+      } catch (err) {
+        logger.error({ err, runnerId, status }, "runner-status listener threw");
+      }
+    }
   }
 
   private onEvent(reportingRunnerId: string, event: RunnerEvent): void {

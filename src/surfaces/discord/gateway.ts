@@ -354,6 +354,15 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-settled DM"));
   }
 
+  /** Owner-only ops notice (startup, runner connect/disconnect). Best-effort — a failed DM never
+   *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. */
+  async function notifyOwner(text: string): Promise<void> {
+    if (!config.ownerDiscordId) return;
+    const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
+    if (!user) return;
+    await user.send(text).catch((err) => logger.warn({ err }, "failed to send owner ops DM"));
+  }
+
   try {
     const dispatcher = getDispatcher();
     dispatcher.onTaskSettled((task) => {
@@ -363,6 +372,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     // waiting for the first dispatch to lazily bind it (which strands the runner until then).
     dispatcher.ensureListening();
     logger.info("orchestration transport listening");
+    dispatcher.onRunnerStatus(({ runnerId, status }) => {
+      const line = status === "connected" ? `🔌 runner \`${runnerId}\` connected` : `⚠️ runner \`${runnerId}\` disconnected`;
+      void notifyOwner(line);
+    });
   } catch (err) {
     if (!(err instanceof DispatcherUnavailableError)) throw err;
     logger.warn({ err }, "orchestration dispatcher unavailable; runner transport + task-settled notifications disabled");
@@ -808,6 +821,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   client.once(Events.ClientReady, async (c) => {
     logger.info({ tag: c.user.tag }, "Logged in");
     logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
+    void notifyOwner(`🟢 sushii-agent online — version \`${process.env["APP_VERSION"] ?? "unknown"}\``);
     await registerWikiSyncCommands(c).catch((err) => logger.error({ err }, "failed to register wiki-sync commands"));
   });
 
