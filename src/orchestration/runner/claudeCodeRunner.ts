@@ -338,8 +338,14 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
       await existing.proc.exited;
     }
     // Registry-provided cwd wins (survives task settle + orchestrator restart); fall back to the
-    // in-memory entry, then process.cwd() only as a last resort. Empty string = legacy row, no cwd.
-    const cwd = input.cwd || existing?.cwd || process.cwd();
+    // in-memory entry. Never silently use process.cwd() — that once committed into the wrong repo.
+    // A legacy row with no recorded cwd fails loudly so the owner re-dispatches instead.
+    const cwd = input.cwd || existing?.cwd;
+    if (!cwd) {
+      throw new Error(
+        `no working directory recorded for task ${input.taskId} (created before cwd was tracked) — re-dispatch instead of resuming`,
+      );
+    }
     const args = [
       this.claudeBin,
       "--resume",
