@@ -107,7 +107,7 @@ export class NostrBuzzClient implements BuzzClient {
       // On every (re)connect: (re)announce profile + presence, and (re)subscribe to mentions. Both
       // must happen after auth, and channel membership may have changed, so it re-runs each connect.
       const onReady = () => {
-        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect profile re-announce failed"));
+        if (this.lastProfile) void this.conn?.publish(profileEvent(this.lastProfile, this.authTag)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect profile re-announce failed"));
         if (this.lastPresence) void this.conn?.publish(presenceEvent(this.lastPresence)).catch((err) => logger.debug({ err, relay: this.relayLabel }, "buzz reconnect presence re-announce failed"));
         void this.resubscribe();
       };
@@ -178,7 +178,7 @@ export class NostrBuzzClient implements BuzzClient {
     // Record intent; publish now if connected, else the onReady hook publishes on connect.
     this.lastProfile = displayName;
     const conn = this.connection();
-    if (conn.isReady()) await conn.publish(profileEvent(displayName));
+    if (conn.isReady()) await conn.publish(profileEvent(displayName, this.authTag));
   }
 
   async setPresence(status: PresenceStatus): Promise<void> {
@@ -215,8 +215,10 @@ export class NostrBuzzClient implements BuzzClient {
   }
 }
 
-function profileEvent(displayName: string) {
-  return { kind: KIND_PROFILE, content: JSON.stringify({ name: displayName }), tags: [] as string[][] };
+export function profileEvent(displayName: string, authTag: string[] | null) {
+  // The NIP-OA owner tag on the kind:0 is what makes buzz clients render this key as an owned agent
+  // rather than a plain user; without it the profile is indistinguishable from a human's.
+  return { kind: KIND_PROFILE, content: JSON.stringify({ name: displayName }), tags: authTag ? [authTag] : [] };
 }
 
 function presenceEvent(status: PresenceStatus) {

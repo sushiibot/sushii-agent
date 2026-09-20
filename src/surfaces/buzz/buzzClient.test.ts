@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { NostrBuzzClient } from "./buzzClient.ts";
+import { NostrBuzzClient, profileEvent } from "./buzzClient.ts";
 import { toWsUrl } from "./nostrClient.ts";
 
 // Fixed keypair (generated offline with `nak key generate`); ownPubkey must derive PUB with no relay.
@@ -18,6 +18,21 @@ describe("NostrBuzzClient.ownPubkey (offline derivation)", () => {
 
   test("rejects a malformed key at construction", () => {
     expect(() => new NostrBuzzClient({ privateKey: "not-a-key" })).toThrow();
+  });
+});
+
+describe("profileEvent", () => {
+  const authTag = ["auth", "a".repeat(64), "", "b".repeat(128)];
+
+  test("carries the NIP-OA owner tag on the kind:0 profile when configured", () => {
+    const ev = profileEvent("sushii-agent", authTag);
+    expect(ev.kind).toBe(0);
+    expect(JSON.parse(ev.content)).toEqual({ name: "sushii-agent" });
+    expect(ev.tags).toEqual([authTag]);
+  });
+
+  test("publishes a bare profile when no auth tag is set", () => {
+    expect(profileEvent("sushii-agent", null).tags).toEqual([]);
   });
 });
 
