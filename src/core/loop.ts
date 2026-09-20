@@ -14,22 +14,23 @@ import {
   extractSubmittedAnswer,
   type StopReason,
 } from "../agent/wrapup.ts";
-import type {
-  AgentReply,
-  AuthorRef,
-  ConversationRef,
-  HookBus,
-  HookEvents,
-  HookName,
-  Interceptors,
-  LanguageModelProvider,
-  PendingInteraction,
-  ReplySegment,
-  ToolActivity,
-  ToolContext,
-  ToolEntry,
-  ToolHosts,
-  TurnUsage,
+import {
+  conversationKey,
+  type AgentReply,
+  type AuthorRef,
+  type ConversationRef,
+  type HookBus,
+  type HookEvents,
+  type HookName,
+  type Interceptors,
+  type LanguageModelProvider,
+  type PendingInteraction,
+  type ReplySegment,
+  type ToolActivity,
+  type ToolContext,
+  type ToolEntry,
+  type ToolHosts,
+  type TurnUsage,
 } from "./contracts.ts";
 import type { ImageSink, KnownUsersSink, PendingInteractionSink } from "./tools/pendingSink.ts";
 import "./tools/pendingSink.ts";
@@ -292,6 +293,14 @@ export async function runLoop(
       messages: [{ role: "system", content: ctx.systemPrompt, providerOptions: { openrouter: { cacheControl: { type: "ephemeral" } } } }, ...messages],
       tools: aiTools,
       maxOutputTokens: 4096,
+      experimental_telemetry: {
+        isEnabled: Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT),
+        functionId: "agent-loop",
+        // Do not export prompt/response content (user messages) to the OTel backend — IDs only.
+        recordInputs: false,
+        recordOutputs: false,
+        metadata: { conversationKey: conversationKey(ctx.conversation), surface: ctx.conversation.surface },
+      },
     });
 
     // Network-retry / vision-fallback resilience, ported from src/agent/loop.ts. Mutates
@@ -464,6 +473,13 @@ export async function runLoop(
       },
       toolChoice: { type: "tool", toolName: SUBMIT_FINAL_ANSWER_TOOL_NAME },
       maxOutputTokens: 8192,
+      experimental_telemetry: {
+        isEnabled: Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT),
+        functionId: "agent-loop-wrapup",
+        recordInputs: false,
+        recordOutputs: false,
+        metadata: { conversationKey: conversationKey(ctx.conversation), surface: ctx.conversation.surface },
+      },
     });
     accumulateUsage(finalResult.usage);
     lastReasoningText = finalResult.reasoningText ?? "";

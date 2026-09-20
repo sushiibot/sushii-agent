@@ -1,4 +1,5 @@
 import { index, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { TASK_STATUSES } from "../orchestration/contracts.ts";
 
 export const messages = sqliteTable(
   "messages",
@@ -88,3 +89,24 @@ export const buzzState = sqliteTable("buzz_state", {
   id: text("id").primaryKey(),
   lastCursor: integer("last_cursor").notNull(),
 });
+
+/** Orchestration task registry (Phase 0). Pointers only — the runner holds the real transcript. */
+export const tasks = sqliteTable(
+  "tasks",
+  {
+    id: text("id").primaryKey(),
+    createdBy: text("created_by").notNull(),
+    runnerId: text("runner_id").notNull(),
+    project: text("project"),
+    nativeSessionId: text("native_session_id"),
+    resumeCursor: text("resume_cursor"),
+    status: text("status", { enum: TASK_STATUSES }).notNull(),
+    statusReason: text("status_reason"),
+    summary: text("summary"),
+    spawnedFromSurface: text("spawned_from_surface").notNull(),
+    threadRefs: text("thread_refs").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_tasks_created_by").on(table.createdBy)],
+);

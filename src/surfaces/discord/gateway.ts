@@ -37,6 +37,9 @@ import { handleFeedbackButton, handleFeedbackModal } from "./feedback.ts";
 import { SCAN_QUERY, applyAutomodDecision } from "./approvals.ts";
 import { buildTriggerText } from "./inbound.ts";
 import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
+import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/dispatcher.ts";
+import type { TaskRow } from "../../orchestration/contracts.ts";
+import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
 const tracer = trace.getTracer("sushii-agent");
@@ -291,9 +294,79 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     }
   }
 
+  /** Owner-only DM conductor turn: builds a personal `spaceId` ("dm") that authz.isPersonalSpace
+   *  accepts, then runs the normal core loop — runner tools (dispatch_to_runner/resume_session/...)
+   *  become available via the tool registry's isPersonalSpace gate. Never touches the guild path. */
+  async function handleOwnerDm(message: Message): Promise<void> {
+    if (!message.channel.isSendable()) return;
+    const channel = message.channel;
+
+    const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
+    const author: AuthorRef = { surface: SURFACE, userId: message.author.id, username: message.author.username };
+    const session = new DmConductorSession(channel, { id: client.user.id, username: client.user.username });
+    const inbound: InboundMessage = { conversation, author, text: message.content };
+
+    await tracer.startActiveSpan("discord.dm", {
+      attributes: { "discord.user_id": author.userId, "discord.channel_id": message.channelId },
+    }, async (span) => {
+      try {
+        const res = await core.handleInbound(inbound, session);
+        if (res.status === "error") {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: res.message });
+          await channel.send(`An error occurred while processing your request.\n-# trace: ${span.spanContext().traceId}`).catch(() => {});
+        } else {
+          span.setStatus({ code: SpanStatusCode.OK });
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        span.recordException(err instanceof Error ? err : errMsg);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
+        logger.error({ err }, "Error handling owner DM");
+        await channel.send(`An error occurred while processing your request.\n-# trace: ${span.spanContext().traceId}`).catch(() => {});
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /** Posts a deterministic (LLM-free) status line to the task's originating DM when a turn
+   *  SETTLES — {idle, done, failed} (a successful turn rests at idle, not done; see
+   *  ARCHITECTURE.md's status model). The dispatcher only invokes a callback — this is the one
+   *  place in the whole feature that imports discord.js for it. Discord DMs are 1:1 per user, so
+   *  `task.createdBy` (the owner's Discord user id, already stored — no schema change) is enough
+   *  to resolve the target: no separate notify-target field needs threading through ToolContext. */
+  async function notifyTaskSettled(task: TaskRow): Promise<void> {
+    if (task.spawnedFromSurface !== SURFACE) return;
+    const user = await client.users
+      .fetch(task.createdBy)
+      .catch((err) => {
+        logger.warn({ err, taskId: task.id, userId: task.createdBy }, "failed to fetch task-settled DM recipient");
+        return null;
+      });
+    if (!user) return;
+    const line = task.status === "failed"
+      ? `❌ #${task.id} failed — ${task.statusReason ?? "(no reason given)"}`
+      : `✅ #${task.id} — ${task.summary ?? "(no summary)"}`;
+    await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-settled DM"));
+  }
+
+  try {
+    getDispatcher().onTaskSettled((task) => {
+      void notifyTaskSettled(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task settled"));
+    });
+  } catch (err) {
+    if (!(err instanceof DispatcherUnavailableError)) throw err;
+    logger.warn({ err }, "orchestration dispatcher unavailable; task-settled DM notifications disabled");
+  }
+
   // ── MessageCreate ────────────────────────────────────────────────────────────
   client.on(Events.MessageCreate, async (message: Message) => {
-    if (!message.guildId) return;
+    if (!message.guildId) {
+      if (isOwnerDm(message, config.ownerDiscordId)) {
+        await handleOwnerDm(message).catch((err) => logger.error({ err }, "unhandled error in owner DM path"));
+      }
+      return;
+    }
     const guildConfig = config.guildConfig[message.guildId];
     if (!guildConfig) return;
     const emojiMap = buildEmojiMap(guildConfig.emojis ?? []);
