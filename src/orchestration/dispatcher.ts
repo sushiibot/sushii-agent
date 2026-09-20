@@ -41,7 +41,7 @@ export interface DispatcherOptions {
 export class Dispatcher {
   readonly server: OrchestrationServer;
   private readonly liveRunners = new Map<string, LiveRunner>();
-  private readonly terminalListeners: ((task: TaskRow) => void)[] = [];
+  private readonly settledListeners: ((task: TaskRow) => void)[] = [];
   private listening = false;
   private listenFailed = false;
 
@@ -64,7 +64,7 @@ export class Dispatcher {
     this.listening = true;
   }
 
-  /** Binds the ORCH port on first use instead of at construction, so wiring onTaskTerminal at
+  /** Binds the ORCH port on first use instead of at construction, so wiring onTaskSettled at
    *  boot (see gateway.ts) never binds a port an unused orchestration feature has no business
    *  claiming. A prior listen() failure is remembered rather than retried on every dispatch — the
    *  conflict won't resolve itself mid-process. Public (not just called from dispatch()) so a
@@ -174,12 +174,13 @@ export class Dispatcher {
     return this.registry.get(task.id) as TaskRow;
   }
 
-  /** Registers a callback invoked once per task reaching a terminal status (done/failed). The
-   *  Discord surface uses this to post a status line WITHOUT the dispatcher importing discord.js —
-   *  the callback is the only seam. Listener errors are caught so one throwing surface can't break
-   *  another or wedge event handling. */
-  onTaskTerminal(listener: (task: TaskRow) => void): void {
-    this.terminalListeners.push(listener);
+  /** Registers a callback invoked once per task turn SETTLING — {idle, done, failed} (per
+   *  ARCHITECTURE.md's status model, a successful turn rests at idle, not done; done is reserved
+   *  for explicit close). The Discord surface uses this to post a status line WITHOUT the
+   *  dispatcher importing discord.js — the callback is the only seam. Listener errors are caught
+   *  so one throwing surface can't break another or wedge event handling. */
+  onTaskSettled(listener: (task: TaskRow) => void): void {
+    this.settledListeners.push(listener);
   }
 
   private onEvent(reportingRunnerId: string, event: RunnerEvent): void {
@@ -208,14 +209,14 @@ export class Dispatcher {
       case "status": {
         if (task.status === event.status) return;
         this.registry.updateStatus(event.taskId, event.status, event.reason);
-        if (event.status === "done" || event.status === "failed") {
+        if (event.status === "idle" || event.status === "done" || event.status === "failed") {
           const updated = this.registry.get(event.taskId);
           if (updated) {
-            for (const listener of this.terminalListeners) {
+            for (const listener of this.settledListeners) {
               try {
                 listener(updated);
               } catch (err) {
-                logger.error({ err, taskId: event.taskId }, "onTaskTerminal listener threw");
+                logger.error({ err, taskId: event.taskId }, "onTaskSettled listener threw");
               }
             }
           }
@@ -252,16 +253,16 @@ let startupFailed = false;
 
 /** Process-wide dispatcher, lazily constructed on first use against the real DB/authz. Construction
  *  does NOT bind the ORCH port — that happens lazily inside dispatch() (see Dispatcher.ensureListening)
- *  on the first real dispatch, so wiring onTaskTerminal at boot (gateway.ts) never binds a port an
+ *  on the first real dispatch, so wiring onTaskSettled at boot (gateway.ts) never binds a port an
  *  unused orchestration feature has no business claiming.
- *  NOTE: ORCH_PORT defaults to 8787, the same default `mcpBridgePort` uses (config.ts) and the
- *  same port `runner/index.ts`'s ORCH_URL default dials — a deploy running both needs ORCH_PORT
- *  (and/or MCP_BRIDGE_PORT) set explicitly to avoid an EADDRINUSE on whichever binds second. */
+ *  NOTE: ORCH_PORT defaults to 8788, distinct from `mcpBridgePort`'s 8787 default (config.ts) —
+ *  `runner/index.ts`'s ORCH_URL default dials the same 8788, so the two features never collide
+ *  on a deploy that runs both without either port set explicitly. */
 export function getDispatcher(): Dispatcher {
   if (startupFailed) throw new DispatcherUnavailableError("orchestration dispatcher failed to start");
   if (!singleton) {
     try {
-      const port = Number(process.env["ORCH_PORT"] ?? "8787");
+      const port = Number(process.env["ORCH_PORT"] ?? "8788");
       singleton = new Dispatcher(new TaskRegistry(getDb()), can, { port });
     } catch (err) {
       startupFailed = true;

@@ -133,7 +133,9 @@ export class RunnerEventReducer {
               durationMs: sig.durationMs,
             },
           });
-          out.push({ kind: "status", taskId: this.taskId, status: "done" });
+          // A successful turn rests at idle (session alive, awaiting the user's reply) per
+          // ARCHITECTURE.md's status model — "done" is reserved for an explicit close.
+          out.push({ kind: "status", taskId: this.taskId, status: "idle" });
         } else {
           out.push({
             kind: "status",
@@ -399,7 +401,9 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
           } else {
             onEvent(event);
           }
-          if (event.kind === "status" && (event.status === "done" || event.status === "failed")) {
+          // `-p`/`--print` mode always exits after one turn, success or failure, so idle (the
+          // resting state for a successful turn) ends this process's stream same as done/failed.
+          if (event.kind === "status" && (event.status === "idle" || event.status === "done" || event.status === "failed")) {
             terminal = true;
           }
         }

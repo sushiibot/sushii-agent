@@ -90,7 +90,7 @@ describe("parseClaudeStreamLine", () => {
 });
 
 describe("buildRunnerEvents", () => {
-  test("maps a successful transcript to running -> progress(debounced) -> handback -> done", () => {
+  test("maps a successful transcript to running -> progress(debounced) -> handback -> idle", () => {
     const events = buildRunnerEvents("task-1", SUCCESS_LINES, { debounceMs: 1500 });
 
     // All activity lines happen in the same synchronous batch (no wall-clock
@@ -120,7 +120,7 @@ describe("buildRunnerEvents", () => {
       });
     }
 
-    expect(events[3]).toMatchObject({ kind: "status", taskId: "task-1", status: "done" });
+    expect(events[3]).toMatchObject({ kind: "status", taskId: "task-1", status: "idle" });
   });
 
   test("maps an error transcript to running -> progress -> failed", () => {
@@ -171,7 +171,7 @@ describe("buildRunnerEvents", () => {
 });
 
 describe("ClaudeCodeRunnerAdapter.resume (real process kill/exit, fixture binary in place of `claude`)", () => {
-  test("killing the superseded process on resume emits no false 'failed', and the resumed stream reports running -> handback -> done", async () => {
+  test("killing the superseded process on resume emits no false 'failed', and the resumed stream reports running -> handback -> idle", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-runner-resume-test-"));
     // A stand-in for the `claude` CLI: on its first invocation it prints init then sleeps well past
     // resume()'s kill, so it's still alive to supersede; on the second (post-kill) invocation — a
@@ -225,7 +225,7 @@ describe("ClaudeCodeRunnerAdapter.resume (real process kill/exit, fixture binary
 
       expect(newEvents.some((e) => e.kind === "status" && e.status === "running")).toBe(true);
       expect(newEvents.some((e) => e.kind === "handback" && e.summary === "resumed run complete")).toBe(true);
-      expect(newEvents.some((e) => e.kind === "status" && e.status === "done")).toBe(true);
+      expect(newEvents.some((e) => e.kind === "status" && e.status === "idle")).toBe(true);
       expect(newEvents.some((e) => e.kind === "status" && e.status === "failed")).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });

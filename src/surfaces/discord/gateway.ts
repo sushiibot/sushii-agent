@@ -329,33 +329,34 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     });
   }
 
-  /** Posts a deterministic (LLM-free) status line to the task's originating DM when it reaches a
-   *  terminal status. The dispatcher only invokes a callback — this is the one place in the whole
-   *  feature that imports discord.js for it. Discord DMs are 1:1 per user, so `task.createdBy`
-   *  (the owner's Discord user id, already stored — no schema change) is enough to resolve the
-   *  target: no separate notify-target field needs threading through ToolContext. */
-  async function notifyTaskTerminal(task: TaskRow): Promise<void> {
+  /** Posts a deterministic (LLM-free) status line to the task's originating DM when a turn
+   *  SETTLES — {idle, done, failed} (a successful turn rests at idle, not done; see
+   *  ARCHITECTURE.md's status model). The dispatcher only invokes a callback — this is the one
+   *  place in the whole feature that imports discord.js for it. Discord DMs are 1:1 per user, so
+   *  `task.createdBy` (the owner's Discord user id, already stored — no schema change) is enough
+   *  to resolve the target: no separate notify-target field needs threading through ToolContext. */
+  async function notifyTaskSettled(task: TaskRow): Promise<void> {
     if (task.spawnedFromSurface !== SURFACE) return;
     const user = await client.users
       .fetch(task.createdBy)
       .catch((err) => {
-        logger.warn({ err, taskId: task.id, userId: task.createdBy }, "failed to fetch task-terminal DM recipient");
+        logger.warn({ err, taskId: task.id, userId: task.createdBy }, "failed to fetch task-settled DM recipient");
         return null;
       });
     if (!user) return;
-    const line = task.status === "done"
-      ? `✅ #${task.id} done — ${task.summary ?? "(no summary)"}`
-      : `❌ #${task.id} failed — ${task.statusReason ?? "(no reason given)"}`;
-    await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-terminal DM"));
+    const line = task.status === "failed"
+      ? `❌ #${task.id} failed — ${task.statusReason ?? "(no reason given)"}`
+      : `✅ #${task.id} — ${task.summary ?? "(no summary)"}`;
+    await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-settled DM"));
   }
 
   try {
-    getDispatcher().onTaskTerminal((task) => {
-      void notifyTaskTerminal(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task terminal"));
+    getDispatcher().onTaskSettled((task) => {
+      void notifyTaskSettled(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task settled"));
     });
   } catch (err) {
     if (!(err instanceof DispatcherUnavailableError)) throw err;
-    logger.warn({ err }, "orchestration dispatcher unavailable; task-terminal DM notifications disabled");
+    logger.warn({ err }, "orchestration dispatcher unavailable; task-settled DM notifications disabled");
   }
 
   // ── MessageCreate ────────────────────────────────────────────────────────────

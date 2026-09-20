@@ -5,7 +5,7 @@ import { ClaudeCodeRunnerAdapter } from "./claudeCodeRunner.ts";
 const log = getLogger("orchestration.runner");
 
 async function main(): Promise<void> {
-  const url = process.env.ORCH_URL ?? "ws://localhost:8787";
+  const url = process.env.ORCH_URL ?? "ws://localhost:8788";
   const runnerId = process.env.RUNNER_ID ?? `claude-code-${process.pid}`;
   const projects = (process.env.RUNNER_PROJECTS ?? "").split(",").filter(Boolean);
 

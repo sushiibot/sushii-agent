@@ -15,6 +15,8 @@ const PERSONAL_SPACE_CAPABILITIES: ReadonlyMap<string, ReadonlySet<Capability>> 
     spaceKey("discord", "dm"),
     new Set<Capability>(["runner.dispatch", "session.read", "session.resume", "session.interrupt"]),
   ],
+  // Forward-declared for buzz DM routing, not yet wired: buzz never emits a "dm" space today
+  // (its principal is a pubkey, not an ownerDiscordId), so this entry is currently unreachable.
   [
     spaceKey("buzz", "dm"),
     new Set<Capability>(["runner.dispatch", "session.read", "session.resume", "session.interrupt"]),

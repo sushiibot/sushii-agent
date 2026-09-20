@@ -340,8 +340,8 @@ describe("Dispatcher.resume", () => {
   });
 });
 
-describe("Dispatcher.onTaskTerminal", () => {
-  test("fires once with the final row when a task goes done, and not on non-terminal transitions", () => {
+describe("Dispatcher.onTaskSettled", () => {
+  test("fires once with the final row when a task goes done, and not on non-settling transitions", () => {
     const registry = testRegistry();
     const dispatcher = new Dispatcher(registry, () => true);
     dispatcher.listen();
@@ -360,7 +360,7 @@ describe("Dispatcher.onTaskTerminal", () => {
       });
 
       const seen: unknown[] = [];
-      dispatcher.onTaskTerminal((task) => seen.push(task));
+      dispatcher.onTaskSettled((task) => seen.push(task));
 
       dispatcher.server["options"].onEvent("runner-real", { kind: "progress", taskId: row.id, note: "working" });
       expect(seen).toHaveLength(0);
@@ -370,6 +370,39 @@ describe("Dispatcher.onTaskTerminal", () => {
 
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({ id: row.id, status: "done", summary: "recap" });
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("fires on idle too — a successful turn resting (awaiting reply) settles same as done/failed", () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-real",
+        project: null,
+        nativeSessionId: null,
+        resumeCursor: null,
+        status: "running",
+        statusReason: null,
+        summary: null,
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+
+      const seen: unknown[] = [];
+      dispatcher.onTaskSettled((task) => seen.push(task));
+
+      dispatcher.server["options"].onEvent("runner-real", { kind: "handback", taskId: row.id, summary: "turn recap" });
+      dispatcher.server["options"].onEvent("runner-real", { kind: "status", taskId: row.id, status: "idle" });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ id: row.id, status: "idle", summary: "turn recap" });
+      // Still resumable — an idle-settled task must stay in listRunning, not drop out like done/failed.
+      expect(dispatcher.listRunning("owner-1").map((t) => t.id)).toEqual([row.id]);
     } finally {
       dispatcher.stop();
     }
@@ -394,8 +427,8 @@ describe("Dispatcher.onTaskTerminal", () => {
       });
 
       const seen: unknown[] = [];
-      dispatcher.onTaskTerminal(() => { throw new Error("listener boom"); });
-      dispatcher.onTaskTerminal((task) => seen.push(task));
+      dispatcher.onTaskSettled(() => { throw new Error("listener boom"); });
+      dispatcher.onTaskSettled((task) => seen.push(task));
 
       dispatcher.server["options"].onEvent("runner-real", { kind: "status", taskId: row.id, status: "failed", reason: "oops" });
 
