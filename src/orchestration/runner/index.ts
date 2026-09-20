@@ -1,10 +1,35 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getLogger } from "../../logger.ts";
+import type { RunnerAdapter } from "../contracts.ts";
 import { OrchestrationClient } from "../transport/client.ts";
 import { ClaudeCodeRunnerAdapter } from "./claudeCodeRunner.ts";
+import { PiRunnerAdapter } from "./piRunner.ts";
 
 const log = getLogger("orchestration.runner");
+
+// Kind → adapter factory. Adding a runner kind (e.g. Hermes) is a new entry here + an adapter
+// implementing RunnerAdapter — nothing else in the transport/orchestrator changes, since every
+// kind speaks the same start/resume/stream/interrupt contract.
+const ADAPTERS: Record<string, () => RunnerAdapter> = {
+  "claude-code": () =>
+    new ClaudeCodeRunnerAdapter({
+      claudeBin: process.env.CLAUDE_BIN,
+      // Default (unset) = the adapter's acceptEdits host posture. RUNNER_PERMISSION_MODE=bypass
+      // ONLY on a sandboxed runner (container/VM), where the CLI permits skipping all checks.
+      permissionArgs: process.env.RUNNER_PERMISSION_MODE === "bypass" ? ["--dangerously-skip-permissions"] : undefined,
+    }),
+  pi: () => {
+    const model = process.env.RUNNER_MODEL;
+    const apiKey = process.env.OPENAI_API_KEY;
+    const baseUrl = process.env.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1";
+    const agentDir = process.env.RUNNER_AGENT_DIR ?? `${process.env.HOME}/.pi-runner`;
+    if (!model) throw new Error("RUNNER_KIND=pi requires RUNNER_MODEL");
+    if (!apiKey) throw new Error("RUNNER_KIND=pi requires OPENAI_API_KEY");
+    return new PiRunnerAdapter({ model, apiKey, baseUrl, agentDir });
+  },
+  // hermes: reserved — add a HermesRunnerAdapter implementing RunnerAdapter and register it here.
+};
 
 // Discover the git repos this runner can work on: any explicit RUNNER_PROJECTS paths, plus a scan
 // of RUNNER_ROOTS one level deep for directories containing .git (a root that is itself a repo
@@ -31,30 +56,21 @@ function discoverProjects(): string[] {
 
 async function main(): Promise<void> {
   const url = process.env.ORCH_URL ?? "ws://localhost:8788";
-  const runnerId = process.env.RUNNER_ID ?? `claude-code-${process.pid}`;
+  const kind = process.env.RUNNER_KIND ?? "claude-code";
+  const runnerId = process.env.RUNNER_ID ?? `${kind}-${process.pid}`;
   const projects = discoverProjects();
 
-  // Default (unset) = the adapter's acceptEdits host posture. Set RUNNER_PERMISSION_MODE=bypass
-  // ONLY on a sandboxed runner (container/VM), where the CLI permits skipping all checks.
-  const adapter = new ClaudeCodeRunnerAdapter({
-    claudeBin: process.env.CLAUDE_BIN,
-    permissionArgs:
-      process.env.RUNNER_PERMISSION_MODE === "bypass" ? ["--dangerously-skip-permissions"] : undefined,
-  });
+  const factory = ADAPTERS[kind];
+  if (!factory) throw new Error(`unknown RUNNER_KIND "${kind}" (known: ${Object.keys(ADAPTERS).join(", ")})`);
+  const adapter = factory();
 
-  const client = new OrchestrationClient({
-    url,
-    runnerId,
-    kind: "claude-code",
-    projects,
-    adapter,
-  });
+  const client = new OrchestrationClient({ url, runnerId, kind, projects, adapter });
 
-  log.info({ url, runnerId, projects }, "claude-code runner starting (auto-reconnect)");
+  log.info({ url, runnerId, kind, projects }, "runner starting (auto-reconnect)");
   await client.run(); // reconnects with backoff + heartbeats until the process is stopped
 }
 
 main().catch((err) => {
-  log.error({ err }, "claude-code runner daemon failed");
+  log.error({ err }, "runner daemon failed");
   process.exit(1);
 });
