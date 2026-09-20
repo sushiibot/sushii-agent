@@ -25,9 +25,8 @@ async function main(): Promise<void> {
     adapter,
   });
 
-  await client.connect();
-  client.listen();
-  log.info({ url, runnerId, projects }, "claude-code runner connected");
+  log.info({ url, runnerId, projects }, "claude-code runner starting (auto-reconnect)");
+  await client.run(); // reconnects with backoff + heartbeats until the process is stopped
 }
 
 main().catch((err) => {

@@ -58,6 +58,7 @@ export const RPC_METHODS = {
   resume: "session/resume",
   interrupt: "session/cancel",
   event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
+  heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)
 } as const;
 
 export const jsonRpcRequest = z.object({

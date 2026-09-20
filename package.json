@@ -5,6 +5,7 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts | pino-pretty",
+    "runner": "bun src/orchestration/runner/index.ts",
     "test": "bun test"
   },
   "dependencies": {

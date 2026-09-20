@@ -21,6 +21,10 @@ export interface OrchestrationClientOptions {
   kind: string;
   projects?: string[];
   adapter: RunnerAdapter;
+  // Keep-alive interval (default 30s, under Bun.serve's 120s idle default). 0 disables.
+  heartbeatMs?: number;
+  // Cap for reconnect backoff (default 30s). Only used by run().
+  backoffCapMs?: number;
 }
 
 // Runner-side WS client. Dials out, registers, then answers inbound
@@ -37,9 +41,59 @@ export class OrchestrationClient {
   // must not be able to clobber the guard entry a newer subscription already installed.
   private readonly streamingGenerations = new Map<string, number>();
   private nextStreamGeneration = 1;
+  private shouldRun = false;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private resolveClosed: (() => void) | null = null;
 
   constructor(options: OrchestrationClientOptions) {
     this.options = options;
+  }
+
+  // Daemon entry point: connect → register → listen → heartbeat, reconnecting with capped
+  // exponential backoff whenever the socket drops. Resolves only when close() is called, so a
+  // runner started before the orchestrator is listening simply retries until the port is up.
+  async run(): Promise<void> {
+    this.shouldRun = true;
+    let backoff = 500;
+    const cap = this.options.backoffCapMs ?? 30_000;
+    while (this.shouldRun) {
+      try {
+        await this.connect();
+        this.listen();
+        this.startHeartbeat();
+        logger.info({ runnerId: this.options.runnerId }, "runner connected");
+        backoff = 500;
+        await new Promise<void>((res) => (this.resolveClosed = res));
+      } catch (err) {
+        logger.warn({ err }, "runner connection attempt failed");
+      } finally {
+        this.stopHeartbeat();
+      }
+      if (!this.shouldRun) break;
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, cap);
+    }
+  }
+
+  private startHeartbeat(): void {
+    const ms = this.options.heartbeatMs ?? 30_000;
+    if (ms <= 0) return;
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      const ws = this.ws;
+      if (ws && ws.readyState === ws.OPEN) {
+        ws.send(
+          JSON.stringify({ jsonrpc: "2.0", method: RPC_METHODS.heartbeat, params: { runnerId: this.options.runnerId } }),
+        );
+      }
+    }, ms);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   connect(): Promise<void> {
@@ -50,6 +104,8 @@ export class OrchestrationClient {
       ws.addEventListener("close", () => {
         this.rejectAllPending(new Error("connection closed"));
         this.ws = null;
+        this.resolveClosed?.();
+        this.resolveClosed = null;
       });
 
       ws.addEventListener("open", () => {
@@ -95,7 +151,11 @@ export class OrchestrationClient {
   }
 
   close(): void {
+    this.shouldRun = false;
+    this.stopHeartbeat();
     this.rejectAllPending(new Error("connection closed"));
+    this.resolveClosed?.();
+    this.resolveClosed = null;
     this.ws?.close();
     this.ws = null;
   }
