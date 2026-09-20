@@ -4,13 +4,13 @@ import type { HandbackMeta, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 
 const log = getLogger("orchestration.runner.claudeCode");
 
-// Claude Code CLI stream-json shape (assumed from `claude --output-format
-// stream-json --verbose`, unverified against a live run — see
-// claudeCodeRunner.test.ts fixtures for the exact shape the parser expects):
+// Claude Code CLI stream-json shape (`claude --output-format stream-json --verbose`):
 //   {"type":"system","subtype":"init","session_id":"..."}
 //   {"type":"assistant","message":{"content":[{"type":"text"|"tool_use",...}]}}
 //   {"type":"result","subtype":"success"|..., "is_error":bool, "result":"...",
-//    "duration_ms":n, "total_cost_usd":n, "usage":{"input_tokens":n,"output_tokens":n}}
+//    "duration_ms":n, "total_cost_usd":n, "usage":{"input_tokens":n,"output_tokens":n},
+//    "permission_denials":[...]}
+// Unknown event types (hooks, rate_limit_event, informational) are ignored.
 export type StreamLineEvent =
   | { type: "init"; sessionId: string }
   | { type: "tool_use"; name: string }
@@ -22,6 +22,7 @@ export type StreamLineEvent =
       durationMs?: number;
       costUsd?: number;
       tokens?: number;
+      denials?: number;
       errorMessage?: string;
     };
 
@@ -59,6 +60,7 @@ export function parseClaudeStreamLine(json: unknown): StreamLineEvent[] {
     const usage = obj.usage as { input_tokens?: number; output_tokens?: number } | undefined;
     const tokens = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : undefined;
     const errors = Array.isArray(obj.errors) ? obj.errors.filter((e) => typeof e === "string") : undefined;
+    const denials = Array.isArray(obj.permission_denials) ? obj.permission_denials.length : undefined;
     return [
       {
         type: "result",
@@ -67,6 +69,7 @@ export function parseClaudeStreamLine(json: unknown): StreamLineEvent[] {
         durationMs: typeof obj.duration_ms === "number" ? obj.duration_ms : undefined,
         costUsd: typeof obj.total_cost_usd === "number" ? obj.total_cost_usd : undefined,
         tokens,
+        denials,
         // Error result subtypes carry `errors: string[]`, not `result` — only
         // subtype:"success" has `result` on the SDKResultMessage union.
         errorMessage: isError
@@ -131,6 +134,7 @@ export class RunnerEventReducer {
               tokens: sig.tokens,
               costUsd: sig.costUsd,
               durationMs: sig.durationMs,
+              denials: sig.denials,
             },
           });
           // A successful turn rests at idle (session alive, awaiting the user's reply) per
@@ -262,10 +266,10 @@ export interface ClaudeCodeRunnerOptions {
   claudeBin?: string;
   progressDebounceMs?: number;
   now?: () => number;
-  // P0 default runs fully non-interactively so Claude Code never blocks on a
-  // tool-use approval (there is no needs_input path in P0). Later phases swap
-  // this for a sandboxed posture (e.g. --permission-prompts none), so it must
-  // stay an option, not a hardcoded constant.
+  // Default is the unsandboxed-host posture: acceptEdits + allow Bash, prompts
+  // denied (never blocks, no host to answer). NOT bypass/yolo — the CLI requires
+  // a container/VM for --dangerously-skip-permissions, so a sandboxed runner
+  // passes that explicitly instead. Kept an option, not a constant.
   permissionArgs?: string[];
 }
 
@@ -280,7 +284,14 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     this.claudeBin = options.claudeBin ?? "claude";
     this.progressDebounceMs = options.progressDebounceMs ?? 1500;
     this.now = options.now ?? Date.now;
-    this.permissionArgs = options.permissionArgs ?? ["--dangerously-skip-permissions"];
+    this.permissionArgs = options.permissionArgs ?? [
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Bash",
+      "--permission-prompts",
+      "none",
+    ];
   }
 
   async start(input: { taskId: string; cwd: string; prompt: string }): Promise<{ nativeSessionId: string }> {

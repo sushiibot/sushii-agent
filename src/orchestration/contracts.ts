@@ -39,6 +39,7 @@ export interface HandbackMeta {
   tokens?: number;
   costUsd?: number;
   durationMs?: number;
+  denials?: number; // tool calls the permission mode auto-denied — a "success" with denials > 0 is incomplete
 }
 
 // ── Runner adapter interface (uniform across kinds; P0 = Claude Code only). ──

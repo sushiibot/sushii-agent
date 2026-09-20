@@ -9,8 +9,12 @@ async function main(): Promise<void> {
   const runnerId = process.env.RUNNER_ID ?? `claude-code-${process.pid}`;
   const projects = (process.env.RUNNER_PROJECTS ?? "").split(",").filter(Boolean);
 
+  // Default (unset) = the adapter's acceptEdits host posture. Set RUNNER_PERMISSION_MODE=bypass
+  // ONLY on a sandboxed runner (container/VM), where the CLI permits skipping all checks.
   const adapter = new ClaudeCodeRunnerAdapter({
     claudeBin: process.env.CLAUDE_BIN,
+    permissionArgs:
+      process.env.RUNNER_PERMISSION_MODE === "bypass" ? ["--dangerously-skip-permissions"] : undefined,
   });
 
   const client = new OrchestrationClient({
