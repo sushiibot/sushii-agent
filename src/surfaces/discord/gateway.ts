@@ -301,6 +301,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     if (!message.channel.isSendable()) return;
     const channel = message.channel;
 
+    // Immediate receipt ack — the turn (and any dispatch it kicks off) can take a while, so react
+    // right away so the owner knows the DM was seen and is being worked on.
+    await message.react("👀").catch(() => {});
+
     const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
     const author: AuthorRef = { surface: SURFACE, userId: message.author.id, username: message.author.username };
     const session = new DmConductorSession(channel, { id: client.user.id, username: client.user.username });
