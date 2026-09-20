@@ -64,13 +64,10 @@ export class Dispatcher {
     this.listening = true;
   }
 
-  /** Binds the ORCH port on first use instead of at construction, so wiring onTaskSettled at
-   *  boot (see gateway.ts) never binds a port an unused orchestration feature has no business
-   *  claiming. A prior listen() failure is remembered rather than retried on every dispatch — the
-   *  conflict won't resolve itself mid-process. Public (not just called from dispatch()) so a
-   *  runner tool can bind the transport before checking isRunnerLive() — that check can only ever
-   *  be true after the port is bound, so gating it behind dispatch()'s own call alone would wedge:
-   *  dispatch_to_runner returns "not connected" without ever reaching dispatch(). */
+  /** Idempotent bind. Called at boot (gateway.ts) so a runner reconnects immediately after a
+   *  restart, and again from the runner tools as a safety net — a runner tool must bind before its
+   *  isRunnerLive() check, which can only be true after the port is bound. A prior listen() failure
+   *  is remembered rather than retried on every call — the conflict won't resolve itself mid-process. */
   ensureListening(): void {
     if (this.listening) return;
     if (this.listenFailed) throw new DispatcherUnavailableError("orchestration dispatcher failed to start");

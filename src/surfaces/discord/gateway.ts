@@ -355,12 +355,17 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   }
 
   try {
-    getDispatcher().onTaskSettled((task) => {
+    const dispatcher = getDispatcher();
+    dispatcher.onTaskSettled((task) => {
       void notifyTaskSettled(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task settled"));
     });
+    // Bind the ORCH port at boot so a runner reconnects immediately after any restart, rather than
+    // waiting for the first dispatch to lazily bind it (which strands the runner until then).
+    dispatcher.ensureListening();
+    logger.info("orchestration transport listening");
   } catch (err) {
     if (!(err instanceof DispatcherUnavailableError)) throw err;
-    logger.warn({ err }, "orchestration dispatcher unavailable; task-settled DM notifications disabled");
+    logger.warn({ err }, "orchestration dispatcher unavailable; runner transport + task-settled notifications disabled");
   }
 
   // ── MessageCreate ────────────────────────────────────────────────────────────
