@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import simpleGit from "simple-git";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { HandbackMeta, RunnerAdapter, RunnerEvent } from "../contracts.ts";
@@ -225,10 +227,15 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const { createAgentSession, ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader } = await import(
       "@earendil-works/pi-coding-agent"
     );
-    const modelRuntime = await ModelRuntime.create({
-      authPath: `${this.options.agentDir}/auth.json`,
-      modelsPath: `${this.options.agentDir}/models.json`,
-    });
+    // A fresh runner (e.g. a new container volume) has no agentDir yet; ModelRuntime.create expects
+    // the auth/models files to exist. The provider is registered inline below, so empty files are
+    // enough — create them if absent rather than requiring a provisioning step.
+    mkdirSync(this.options.agentDir, { recursive: true });
+    const authPath = join(this.options.agentDir, "auth.json");
+    const modelsPath = join(this.options.agentDir, "models.json");
+    if (!existsSync(authPath)) writeFileSync(authPath, "{}");
+    if (!existsSync(modelsPath)) writeFileSync(modelsPath, "{}");
+    const modelRuntime = await ModelRuntime.create({ authPath, modelsPath });
     const contextWindow = await resolveContextWindow(this.options.model, this.options.fallbackContextWindow ?? 800_000);
     const maxTokens = Math.min(this.options.maxOutputTokens ?? 65_536, contextWindow);
     modelRuntime.registerProvider(PROVIDER_ID, {
