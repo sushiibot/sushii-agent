@@ -11,6 +11,8 @@ import { OPS_TRIAGE_TOOL_ENTRIES } from "./opsTriage/tools.ts";
 import { DISCORD_TOOL_ENTRIES } from "./discord/tools.ts";
 import { deleteUserMessagesEntry } from "./discord/deleteUserMessages.ts";
 import { FS_TOOL_ENTRIES } from "./fs/tools.ts";
+import { RUNNER_TOOL_ENTRIES } from "./runners/index.ts";
+import { isPersonalSpace, spaceKey } from "../../orchestration/authz.ts";
 
 export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...MESSAGE_CACHE_TOOL_ENTRIES,
@@ -19,6 +21,7 @@ export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...OPS_TRIAGE_TOOL_ENTRIES,
   ...DISCORD_TOOL_ENTRIES,
   ...FS_TOOL_ENTRIES,
+  ...RUNNER_TOOL_ENTRIES,
   deleteUserMessagesEntry,
 ];
 
@@ -27,6 +30,10 @@ const AUTO_MOD_ONLY_TOOLS = new Set(["timeout_member", "delete_user_messages", "
 const EXA_TOOLS = new Set(["web_search", "fetch_url_content"]);
 const GRAFANA_TOOLS = new Set(["search_logs", "get_trace"]);
 const LINEAR_TOOLS = new Set(["file_linear_issue", "get_issue_status", "list_triaged_issues"]);
+/** Mirrors ops-triage's config.ownerDiscordId gate below, plus a space check ops-triage doesn't
+ *  need — runner tools must also stay hidden outside a personal/DM space (authz.isPersonalSpace),
+ *  not just deny-at-call. The per-call can() check in runners/index.ts remains the real gate. */
+const RUNNER_TOOLS = new Set(["dispatch_to_runner", "list_running_sessions", "read_session"]);
 
 /** Config-key gates, resolved once per `resolve()` call rather than baked into the class — lets
  *  a caller (tests, U4's wiring) supply availability directly instead of the registry reaching
@@ -70,7 +77,9 @@ export class CoreToolRegistry implements ToolRegistry {
       .filter((entry) => a.exa || !EXA_TOOLS.has(entry.name))
       .filter((entry) => a.owner || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
-      .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name));
+      .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name))
+      .filter((entry) => a.owner || !RUNNER_TOOLS.has(entry.name))
+      .filter((entry) => !RUNNER_TOOLS.has(entry.name) || isPersonalSpace(spaceKey(space.surface, space.spaceId)));
   }
 }
 

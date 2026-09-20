@@ -1,0 +1,215 @@
+import { Database } from "bun:sqlite";
+import { describe, expect, spyOn, test } from "bun:test";
+import { applySchema } from "../db/index.ts";
+import { TaskRegistry } from "./registry.ts";
+import { MockRunnerAdapter } from "./mockRunner.ts";
+import { OrchestrationClient } from "./transport/client.ts";
+import { AuthzError, Dispatcher } from "./dispatcher.ts";
+
+function testRegistry(): TaskRegistry {
+  const db = new Database(":memory:");
+  applySchema(db);
+  return new TaskRegistry(db);
+}
+
+async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+describe("Dispatcher", () => {
+  test("dispatch is authz-gated first — denied before any task row is created", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => false);
+    dispatcher.listen();
+    try {
+      await expect(
+        dispatcher.dispatch({
+          principal: "someone",
+          runnerId: "runner-x",
+          cwd: "/tmp",
+          project: null,
+          prompt: "do it",
+          space: "discord:guild-1",
+          spawnedFromSurface: "discord",
+        }),
+      ).rejects.toBeInstanceOf(AuthzError);
+      expect(dispatcher.listRunning("someone")).toEqual([]);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("e2e dispatch via the mock runner: registry row goes running -> done, summary persisted", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "mock-runner-1",
+      kind: "mock",
+      adapter: new MockRunnerAdapter(),
+    });
+
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("mock-runner-1"));
+      expect(dispatcher.isRunnerLive("mock-runner-1")).toBe(true);
+
+      const task = await dispatcher.dispatch({
+        principal: "owner-1",
+        runnerId: "mock-runner-1",
+        cwd: "/tmp",
+        project: "sushii-agent",
+        prompt: "do the thing",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      });
+
+      expect(task.status).toBe("running");
+      expect(task.nativeSessionId).toBe(`mock-${task.id}`);
+      expect(dispatcher.listRunning("owner-1").map((t) => t.id)).toEqual([task.id]);
+
+      await waitFor(() => dispatcher.readTask(task.id)?.status === "done");
+
+      const finalRow = dispatcher.readTask(task.id);
+      expect(finalRow?.status).toBe("done");
+      expect(finalRow?.summary).toBe("mock task complete");
+      expect(dispatcher.listRunning("owner-1")).toEqual([]);
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
+  test("drops an event whose reporting runner does not own the task", () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    const updateStatusSpy = spyOn(registry, "updateStatus");
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-real",
+        project: null,
+        nativeSessionId: null,
+        resumeCursor: null,
+        status: "running",
+        statusReason: null,
+        summary: null,
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+
+      // A runner other than the one dispatch() recorded on the task must not be able to move it.
+      dispatcher.server["options"].onEvent("runner-imposter", { kind: "status", taskId: row.id, status: "done" });
+
+      expect(updateStatusSpy).not.toHaveBeenCalled();
+      expect(registry.get(row.id)?.status).toBe("running");
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("dispatch failure does not clobber an already-applied terminal status", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      spyOn(dispatcher.server, "start").mockImplementation(async (_runnerId: string, params: { taskId: string }) => {
+        // Simulate an onEvent race: the runner reports "done" before start()'s own promise settles.
+        registry.updateStatus(params.taskId, "done", "finished before start resolved");
+        throw new Error("start failed after done");
+      });
+
+      await expect(
+        dispatcher.dispatch({
+          principal: "owner-1",
+          runnerId: "runner-x",
+          cwd: "/tmp",
+          project: null,
+          prompt: "do it",
+          space: "discord:dm",
+          spawnedFromSurface: "discord",
+        }),
+      ).rejects.toThrow("start failed after done");
+
+      const [task] = registry.listByPrincipal("owner-1");
+      expect(task?.status).toBe("done");
+      expect(task?.statusReason).toBe("finished before start resolved");
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("readTask scopes by principal when given, defense-in-depth symmetric with dispatch()", () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    const row = registry.create({
+      createdBy: "owner-1",
+      runnerId: "runner-x",
+      project: null,
+      nativeSessionId: null,
+      resumeCursor: null,
+      status: "running",
+      statusReason: null,
+      summary: null,
+      spawnedFromSurface: "discord",
+      threadRefs: [],
+    });
+
+    expect(dispatcher.readTask(row.id)).toEqual(row);
+    expect(dispatcher.readTask(row.id, "owner-1")).toEqual(row);
+    expect(dispatcher.readTask(row.id, "someone-else")).toBeUndefined();
+  });
+
+  test("dedupes a repeated (taskId,status) pair but still applies a legitimate revisit", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    const updateStatusSpy = spyOn(registry, "updateStatus");
+
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "mock-runner-2",
+      kind: "mock",
+      adapter: new MockRunnerAdapter(),
+    });
+
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("mock-runner-2"));
+
+      const task = await dispatcher.dispatch({
+        principal: "owner-1",
+        runnerId: "mock-runner-2",
+        cwd: "/tmp",
+        project: null,
+        prompt: "do the thing",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      });
+
+      await waitFor(() => dispatcher.readTask(task.id)?.status === "done");
+      const callsAfterFirstDone = updateStatusSpy.mock.calls.length;
+
+      // The wire path (server.options.onEvent), not a private-method reach: a duplicate "done"
+      // arriving a second time must be dropped rather than re-applied.
+      dispatcher.server["options"].onEvent("mock-runner-2", { kind: "status", taskId: task.id, status: "done" });
+      expect(updateStatusSpy.mock.calls.length).toBe(callsAfterFirstDone);
+      expect(dispatcher.readTask(task.id)?.status).toBe("done");
+
+      // A legitimate revisit of an already-seen status (e.g. a resumed task going idle ->
+      // running again) must still be applied, not silently dropped forever.
+      dispatcher.server["options"].onEvent("mock-runner-2", { kind: "status", taskId: task.id, status: "running" });
+      expect(updateStatusSpy.mock.calls.length).toBe(callsAfterFirstDone + 1);
+      expect(dispatcher.readTask(task.id)?.status).toBe("running");
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+});
