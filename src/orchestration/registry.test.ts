@@ -10,7 +10,7 @@ function testDb(): Database {
   return db;
 }
 
-function baseRow(): Omit<TaskRow, "id" | "createdAt" | "updatedAt"> {
+function baseRow(): Omit<TaskRow, "id" | "createdAt" | "updatedAt" | "archivedAt"> {
   return {
     createdBy: "user-1",
     runnerId: "runner-1",
@@ -25,6 +25,21 @@ function baseRow(): Omit<TaskRow, "id" | "createdAt" | "updatedAt"> {
     threadRefs: ["thread-1", "thread-2"],
   };
 }
+
+describe("TaskRegistry archival", () => {
+  test("archiveIdleBefore archives settled tasks, spares running; unarchive clears it", () => {
+    const registry = new TaskRegistry(testDb());
+    const idle = registry.create({ ...baseRow(), status: "idle" });
+    const running = registry.create({ ...baseRow(), status: "running" });
+    // cutoff in the future → both are "old enough", but only the settled one is eligible
+    const archived = registry.archiveIdleBefore(Math.floor(Date.now() / 1000) + 100);
+    expect(archived).toBe(1);
+    expect(registry.get(idle.id)?.archivedAt).not.toBeNull();
+    expect(registry.get(running.id)?.archivedAt).toBeNull();
+    registry.unarchive(idle.id);
+    expect(registry.get(idle.id)?.archivedAt).toBeNull();
+  });
+});
 
 describe("TaskRegistry", () => {
   test("create → get round-trips all fields, including threadRefs as string[]", () => {

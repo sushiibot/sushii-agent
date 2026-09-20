@@ -23,6 +23,7 @@ export interface TaskRow {
   threadRefs: string[]; // JSON-encoded in SQLite
   createdAt: number; // unix seconds
   updatedAt: number;
+  archivedAt: number | null; // unix seconds; set when the task ages out of the live roster (still resumable)
 }
 
 // ── Runner → orchestrator events (pushed over the WS). ──

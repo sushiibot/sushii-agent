@@ -108,6 +108,7 @@ export const tasks = sqliteTable(
     threadRefs: text("thread_refs").notNull(),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
+    archivedAt: integer("archived_at"), // set when an idle/done/failed task ages out of the live roster
   },
   (table) => [index("idx_tasks_created_by").on(table.createdBy)],
 );

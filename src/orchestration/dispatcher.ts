@@ -201,6 +201,7 @@ export class Dispatcher {
       }
       throw err;
     }
+    this.registry.unarchive(task.id); // a resumed task rejoins the live roster
     return this.registry.get(task.id) as TaskRow;
   }
 
@@ -278,7 +279,18 @@ export class Dispatcher {
   }
 
   listRunning(principal: string): TaskRow[] {
-    return this.registry.listByPrincipal(principal).filter((t) => t.status === "running" || t.status === "idle");
+    return this.registry
+      .listByPrincipal(principal)
+      .filter((t) => t.archivedAt === null && (t.status === "running" || t.status === "idle"));
+  }
+
+  /** Archive settled tasks idle longer than `ttlDays` so the roster stays legible. Called on boot
+   *  and on an interval by the surface. Archived tasks stay resumable (resume un-archives them). */
+  archiveStaleTasks(ttlDays: number): number {
+    const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400;
+    const n = this.registry.archiveIdleBefore(cutoff);
+    if (n > 0) logger.info({ archived: n, ttlDays }, "archived stale idle tasks");
+    return n;
   }
 
   /** `principal`, when given, scopes the lookup to tasks that principal created (defense-in-depth,

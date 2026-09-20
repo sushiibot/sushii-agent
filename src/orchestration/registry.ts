@@ -1,6 +1,6 @@
 import type { Changes, Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { tasks } from "../db/schema.ts";
 import type { TaskRow, TaskStatus } from "./contracts.ts";
 
@@ -54,9 +54,9 @@ function assertChanged(result: Changes, id: string): void {
 export class TaskRegistry {
   constructor(private readonly db: Database) {}
 
-  create(row: Omit<TaskRow, "id" | "createdAt" | "updatedAt">): TaskRow {
+  create(row: Omit<TaskRow, "id" | "createdAt" | "updatedAt" | "archivedAt">): TaskRow {
     const now = Math.floor(Date.now() / 1000);
-    const full: TaskRow = { ...row, id: generateTaskId(), createdAt: now, updatedAt: now };
+    const full: TaskRow = { ...row, id: generateTaskId(), createdAt: now, updatedAt: now, archivedAt: null };
     ormFor(this.db)
       .insert(tasks)
       .values({ ...full, threadRefs: JSON.stringify(full.threadRefs) })
@@ -100,6 +100,34 @@ export class TaskRegistry {
       .where(and(eq(tasks.runnerId, runnerId), eq(tasks.status, "running")))
       .run() as unknown as Changes;
     return result.changes ?? 0;
+  }
+
+  /** Archive settled (idle/done/failed) tasks whose last update is older than `cutoffUnixSec`, so
+   *  they drop out of the live roster. Never touches running tasks or already-archived rows.
+   *  Returns how many were archived. The transcript on the runner is untouched — still resumable. */
+  archiveIdleBefore(cutoffUnixSec: number): number {
+    const now = Math.floor(Date.now() / 1000);
+    const result = ormFor(this.db)
+      .update(tasks)
+      .set({ archivedAt: now })
+      .where(
+        and(
+          isNull(tasks.archivedAt),
+          lt(tasks.updatedAt, cutoffUnixSec),
+          inArray(tasks.status, ["idle", "done", "failed"]),
+        ),
+      )
+      .run() as unknown as Changes;
+    return result.changes ?? 0;
+  }
+
+  /** Clear the archived flag — called when an archived task is resumed so it rejoins the roster. */
+  unarchive(id: string): void {
+    ormFor(this.db)
+      .update(tasks)
+      .set({ archivedAt: null })
+      .where(eq(tasks.id, id))
+      .run();
   }
 
   setNativeSession(id: string, nativeSessionId: string): void {

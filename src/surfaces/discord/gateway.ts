@@ -376,6 +376,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const line = status === "connected" ? `🔌 runner \`${runnerId}\` connected` : `⚠️ runner \`${runnerId}\` disconnected`;
       void notifyOwner(line);
     });
+    // Archive settled tasks idle past the TTL so the roster stays legible (still resumable).
+    const archiveTtlDays = Number(process.env["TASK_ARCHIVE_TTL_DAYS"] ?? "14");
+    dispatcher.archiveStaleTasks(archiveTtlDays);
+    setInterval(() => dispatcher.archiveStaleTasks(archiveTtlDays), 24 * 60 * 60 * 1000);
   } catch (err) {
     if (!(err instanceof DispatcherUnavailableError)) throw err;
     logger.warn({ err }, "orchestration dispatcher unavailable; runner transport + task-settled notifications disabled");
