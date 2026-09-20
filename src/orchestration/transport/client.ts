@@ -31,9 +31,12 @@ export class OrchestrationClient {
   private ws: WebSocket | null = null;
   private nextId = 1;
   private readonly pending = new Map<string | number, PendingCall>();
-  // Guards against resume() re-subscribing a task whose stream() is
-  // already running from an earlier start().
-  private readonly streamingTasks = new Set<string>();
+  // Guards against a second start() re-subscribing a task whose stream() is already running.
+  // Keyed by generation rather than a plain Set: resume() always forces a fresh subscription (its
+  // adapter may have killed and respawned the process), and the OLD subscription's own cleanup
+  // must not be able to clobber the guard entry a newer subscription already installed.
+  private readonly streamingGenerations = new Map<string, number>();
+  private nextStreamGeneration = 1;
 
   constructor(options: OrchestrationClientOptions) {
     this.options = options;
@@ -102,11 +105,13 @@ export class OrchestrationClient {
     this.pending.clear();
   }
 
-  // Starts adapter.stream() for a task at most once; resume() must not
-  // re-subscribe a stream already running from an earlier start().
-  private beginStream(ws: WebSocket, taskId: string): void {
-    if (this.streamingTasks.has(taskId)) return;
-    this.streamingTasks.add(taskId);
+  // Starts adapter.stream() for a task. `resubscribe: true` (used by resume(), whose adapter may
+  // have killed and respawned the process) always starts a fresh subscription even if a previous
+  // one is still draining; otherwise a subscription already in flight is left alone.
+  private beginStream(ws: WebSocket, taskId: string, opts: { resubscribe?: boolean } = {}): void {
+    if (!opts.resubscribe && this.streamingGenerations.has(taskId)) return;
+    const generation = this.nextStreamGeneration++;
+    this.streamingGenerations.set(taskId, generation);
     this.options.adapter
       .stream(taskId, (e) => this.emit(ws, e))
       .catch((err) => {
@@ -119,7 +124,11 @@ export class OrchestrationClient {
         });
       })
       .finally(() => {
-        this.streamingTasks.delete(taskId);
+        // Only clear the guard if it still points at THIS subscription — a newer one (started by a
+        // resume() that raced this cleanup) must not have its guard entry deleted out from under it.
+        if (this.streamingGenerations.get(taskId) === generation) {
+          this.streamingGenerations.delete(taskId);
+        }
       });
   }
 
@@ -147,7 +156,7 @@ export class OrchestrationClient {
         const input = params as { taskId: string; nativeSessionId: string; prompt: string };
         await adapter.resume(input);
         this.respond(ws, id, { ok: true });
-        this.beginStream(ws, input.taskId);
+        this.beginStream(ws, input.taskId, { resubscribe: true });
       } else if (method === RPC_METHODS.interrupt) {
         const input = params as { taskId: string };
         await adapter.interrupt(input.taskId);

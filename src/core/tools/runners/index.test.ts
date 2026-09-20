@@ -6,6 +6,7 @@ import type { AuthorRef, SurfaceCapabilities, SurfaceSession, ToolContext, ToolH
 // authz.can() in isolation. AuthzError/DispatcherUnavailableError are re-exported unchanged so
 // `instanceof` checks in index.ts still work against the real classes.
 class FakeDispatcher {
+  ensureListening(): void {}
   isRunnerLive(): boolean {
     return true;
   }
@@ -17,6 +18,9 @@ class FakeDispatcher {
   }
   readTask(): undefined {
     return undefined;
+  }
+  async resume(input: { principal: string; taskId: string }): Promise<{ id: string; status: string }> {
+    return { id: input.taskId, status: "running" };
   }
 }
 const fakeDispatcher = new FakeDispatcher();
@@ -33,7 +37,7 @@ mock.module("../../../orchestration/dispatcher.ts", () => {
   };
 });
 
-const { dispatchToRunnerEntry, listRunningSessionsEntry, readSessionEntry, RUNNER_TOOL_ENTRIES } = await import("./index.ts");
+const { dispatchToRunnerEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry, RUNNER_TOOL_ENTRIES } = await import("./index.ts");
 const { config } = await import("../../../config.ts");
 const { createToolRegistry } = await import("../registry.ts");
 
@@ -136,6 +140,16 @@ describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -
   test("read_session: denied for a non-owner in a personal space", async () => {
     expect((await readSessionEntry.execute({ task_id: "t1" }, ctx(DM_SPACE, author("not-the-owner")))).content).toBe(DENIED);
   });
+
+  test("resume_session: denied in a guild space, allowed in a personal space", async () => {
+    expect((await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(GUILD_SPACE, author(OWNER)))).content).toBe(DENIED);
+    const result = await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(DM_SPACE, author(OWNER)));
+    expect(result.content).toContain("Resumed task t1");
+  });
+
+  test("resume_session: denied for a non-owner in a personal space", async () => {
+    expect((await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(DM_SPACE, author("not-the-owner")))).content).toBe(DENIED);
+  });
 });
 
 describe("runner tools: dispatcher unavailable (getDispatcher listen failure)", () => {
@@ -165,6 +179,11 @@ describe("runner tools: dispatcher unavailable (getDispatcher listen failure)", 
     const result = await readSessionEntry.execute({ task_id: "t1" }, ctx(DM_SPACE, author(OWNER)));
     expect(result.content).toBe("Runner orchestration is unavailable right now.");
   });
+
+  test("resume_session returns a clean 'unavailable' message instead of throwing", async () => {
+    const result = await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(DM_SPACE, author(OWNER)));
+    expect(result.content).toBe("Runner orchestration is unavailable right now.");
+  });
 });
 
 describe("runner tools: registry-level availability gate (mirrors ops-triage)", () => {
@@ -184,7 +203,7 @@ describe("runner tools: registry-level availability gate (mirrors ops-triage)", 
   });
 
   test("offered in a personal/DM space with an owner configured", () => {
-    expect(names(true, "dm")).toEqual(["dispatch_to_runner", "list_running_sessions", "read_session"]);
+    expect(names(true, "dm")).toEqual(["dispatch_to_runner", "list_running_sessions", "read_session", "resume_session"]);
   });
 
   test("hidden in a personal/DM space when no owner is configured", () => {

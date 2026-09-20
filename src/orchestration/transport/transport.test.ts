@@ -62,7 +62,13 @@ describe("orchestration transport round-trip", () => {
     }
   });
 
-  test("resume does not re-subscribe a task whose stream is already running", async () => {
+  test("resume always starts a fresh subscription, even racing an in-flight stream from start()", async () => {
+    // Contract change: resume() forces a new subscription unconditionally, because a real runner
+    // adapter's resume() may have killed and respawned the underlying process — the earlier
+    // "reuse the existing stream" policy is exactly the guard-race MAJOR finding (a resumed
+    // process's stream could be silently skipped forever). MockRunnerAdapter can't itself model a
+    // kill/respawn, so here re-subscribing just means the fixed event sequence replays twice —
+    // this test only asserts the client's subscription bookkeeping, not adapter semantics.
     let streamCalls = 0;
     // Delay before the underlying stream starts emitting, so the "already
     // streaming" flag is still set when resume() races in right behind start().
@@ -97,8 +103,8 @@ describe("orchestration transport round-trip", () => {
         prompt: "do the thing",
       });
 
-      // Race a resume against the in-flight stream() started by start();
-      // it must reuse the existing stream rather than starting a second one.
+      // Race a resume against the in-flight stream() started by start(); it must start a second,
+      // independent subscription rather than being silently dropped by the first's guard entry.
       await server.resume("mock-runner-2", {
         taskId: "task-2",
         nativeSessionId: "mock-task-2",
@@ -106,17 +112,15 @@ describe("orchestration transport round-trip", () => {
       });
 
       const deadline = Date.now() + 2000;
-      while (events.length < 5 && Date.now() < deadline) {
+      while (events.length < 10 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 10));
       }
 
-      expect(streamCalls).toBe(1);
+      expect(streamCalls).toBe(2);
+      // Both subscriptions run to completion and their events land in order.
       expect(events.map((e) => e.kind)).toEqual([
-        "status",
-        "progress",
-        "status",
-        "handback",
-        "status",
+        "status", "progress", "status", "handback", "status",
+        "status", "progress", "status", "handback", "status",
       ]);
     } finally {
       client.close();

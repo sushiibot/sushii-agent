@@ -27,6 +27,13 @@ export interface DispatchInput {
   threadRefs?: string[];
 }
 
+export interface ResumeInput {
+  principal: string;
+  taskId: string;
+  prompt: string;
+  space: string;
+}
+
 export interface DispatcherOptions {
   port?: number;
 }
@@ -34,6 +41,9 @@ export interface DispatcherOptions {
 export class Dispatcher {
   readonly server: OrchestrationServer;
   private readonly liveRunners = new Map<string, LiveRunner>();
+  private readonly terminalListeners: ((task: TaskRow) => void)[] = [];
+  private listening = false;
+  private listenFailed = false;
 
   constructor(
     private readonly registry: TaskRegistry,
@@ -51,6 +61,26 @@ export class Dispatcher {
 
   listen(): void {
     this.server.listen();
+    this.listening = true;
+  }
+
+  /** Binds the ORCH port on first use instead of at construction, so wiring onTaskTerminal at
+   *  boot (see gateway.ts) never binds a port an unused orchestration feature has no business
+   *  claiming. A prior listen() failure is remembered rather than retried on every dispatch — the
+   *  conflict won't resolve itself mid-process. Public (not just called from dispatch()) so a
+   *  runner tool can bind the transport before checking isRunnerLive() — that check can only ever
+   *  be true after the port is bound, so gating it behind dispatch()'s own call alone would wedge:
+   *  dispatch_to_runner returns "not connected" without ever reaching dispatch(). */
+  ensureListening(): void {
+    if (this.listening) return;
+    if (this.listenFailed) throw new DispatcherUnavailableError("orchestration dispatcher failed to start");
+    try {
+      this.listen();
+    } catch (err) {
+      this.listenFailed = true;
+      logger.error({ err }, "orchestration dispatcher failed to start; runner tools disabled for this process");
+      throw new DispatcherUnavailableError("orchestration dispatcher failed to start");
+    }
   }
 
   stop(): void {
@@ -71,6 +101,8 @@ export class Dispatcher {
       space: input.space,
     });
     if (!allowed) throw new AuthzError("runner.dispatch denied");
+
+    this.ensureListening();
 
     const row = this.registry.create({
       createdBy: input.principal,
@@ -106,6 +138,50 @@ export class Dispatcher {
     }
   }
 
+  /** Same authz-first shape as dispatch(); ownership (task.createdBy) is checked in addition to the
+   *  capability grant, defense-in-depth symmetric with readTask's principal filter. The
+   *  no-overlapping-session invariant (never two live processes for one task) is NOT enforced
+   *  here — it relies on the runner adapter layer (e.g. ClaudeCodeRunnerAdapter.resume()) killing
+   *  the prior process before starting the new one. */
+  async resume(input: ResumeInput): Promise<TaskRow> {
+    const allowed = this.canFn({
+      principal: input.principal,
+      capability: "session.resume",
+      resource: input.taskId,
+      space: input.space,
+    });
+    if (!allowed) throw new AuthzError("session.resume denied");
+
+    const task = this.registry.get(input.taskId);
+    if (!task || task.createdBy !== input.principal) throw new AuthzError("session.resume denied");
+    if (!task.nativeSessionId) throw new Error(`task ${input.taskId} has no native session to resume`);
+    if (!this.isRunnerLive(task.runnerId)) throw new Error(`runner "${task.runnerId}" is not connected`);
+
+    try {
+      await this.server.resume(task.runnerId, {
+        taskId: task.id,
+        nativeSessionId: task.nativeSessionId,
+        prompt: input.prompt,
+      });
+    } catch (err) {
+      logger.error({ err, taskId: task.id }, "failed to resume runner task");
+      const current = this.registry.get(task.id);
+      if (current && current.status !== "done" && current.status !== "failed") {
+        this.registry.updateStatus(task.id, "failed", err instanceof Error ? err.message : String(err));
+      }
+      throw err;
+    }
+    return this.registry.get(task.id) as TaskRow;
+  }
+
+  /** Registers a callback invoked once per task reaching a terminal status (done/failed). The
+   *  Discord surface uses this to post a status line WITHOUT the dispatcher importing discord.js —
+   *  the callback is the only seam. Listener errors are caught so one throwing surface can't break
+   *  another or wedge event handling. */
+  onTaskTerminal(listener: (task: TaskRow) => void): void {
+    this.terminalListeners.push(listener);
+  }
+
   private onEvent(reportingRunnerId: string, event: RunnerEvent): void {
     try {
       this.applyEvent(reportingRunnerId, event);
@@ -132,6 +208,18 @@ export class Dispatcher {
       case "status": {
         if (task.status === event.status) return;
         this.registry.updateStatus(event.taskId, event.status, event.reason);
+        if (event.status === "done" || event.status === "failed") {
+          const updated = this.registry.get(event.taskId);
+          if (updated) {
+            for (const listener of this.terminalListeners) {
+              try {
+                listener(updated);
+              } catch (err) {
+                logger.error({ err, taskId: event.taskId }, "onTaskTerminal listener threw");
+              }
+            }
+          }
+        }
         return;
       }
       case "progress":
@@ -162,21 +250,19 @@ export class DispatcherUnavailableError extends Error {}
 let singleton: Dispatcher | null = null;
 let startupFailed = false;
 
-/** Process-wide dispatcher, lazily constructed on first tool use against the real DB/authz.
+/** Process-wide dispatcher, lazily constructed on first use against the real DB/authz. Construction
+ *  does NOT bind the ORCH port — that happens lazily inside dispatch() (see Dispatcher.ensureListening)
+ *  on the first real dispatch, so wiring onTaskTerminal at boot (gateway.ts) never binds a port an
+ *  unused orchestration feature has no business claiming.
  *  NOTE: ORCH_PORT defaults to 8787, the same default `mcpBridgePort` uses (config.ts) and the
  *  same port `runner/index.ts`'s ORCH_URL default dials — a deploy running both needs ORCH_PORT
- *  (and/or MCP_BRIDGE_PORT) set explicitly to avoid an EADDRINUSE on whichever binds second.
- *  A listen() failure (e.g. that port clash) is remembered rather than retried on every call —
- *  the conflict won't resolve itself mid-process, so retrying would just re-throw forever and
- *  wedge every runner tool call behind a raw error instead of a clean "unavailable" response. */
+ *  (and/or MCP_BRIDGE_PORT) set explicitly to avoid an EADDRINUSE on whichever binds second. */
 export function getDispatcher(): Dispatcher {
   if (startupFailed) throw new DispatcherUnavailableError("orchestration dispatcher failed to start");
   if (!singleton) {
     try {
       const port = Number(process.env["ORCH_PORT"] ?? "8787");
-      const dispatcher = new Dispatcher(new TaskRegistry(getDb()), can, { port });
-      dispatcher.listen();
-      singleton = dispatcher;
+      singleton = new Dispatcher(new TaskRegistry(getDb()), can, { port });
     } catch (err) {
       startupFailed = true;
       logger.error({ err }, "orchestration dispatcher failed to start; runner tools disabled for this process");

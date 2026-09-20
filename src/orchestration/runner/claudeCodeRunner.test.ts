@@ -1,5 +1,9 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { buildRunnerEvents, parseClaudeStreamLine, RunnerEventReducer } from "./claudeCodeRunner.ts";
+import type { RunnerEvent } from "../contracts.ts";
+import { buildRunnerEvents, ClaudeCodeRunnerAdapter, parseClaudeStreamLine, RunnerEventReducer } from "./claudeCodeRunner.ts";
 
 // Captured/assumed shape of `claude -p <prompt> --output-format=stream-json
 // --verbose` line output. See the parser's doc comment for the assumption.
@@ -163,5 +167,68 @@ describe("buildRunnerEvents", () => {
     // Sanity check that this test module only exercises the pure parser/
     // reducer path: no Bun.spawn call anywhere in this file.
     expect(typeof buildRunnerEvents).toBe("function");
+  });
+});
+
+describe("ClaudeCodeRunnerAdapter.resume (real process kill/exit, fixture binary in place of `claude`)", () => {
+  test("killing the superseded process on resume emits no false 'failed', and the resumed stream reports running -> handback -> done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-runner-resume-test-"));
+    // A stand-in for the `claude` CLI: on its first invocation it prints init then sleeps well past
+    // resume()'s kill, so it's still alive to supersede; on the second (post-kill) invocation — a
+    // marker file next to itself distinguishes the two — it prints init + a success result right
+    // away. This is what actually exercises the kill-on-resume race; MockRunnerAdapter's resume() is
+    // a no-op and can't.
+    const fixtureBin = join(dir, "fake-claude.sh");
+    writeFileSync(
+      fixtureBin,
+      [
+        "#!/usr/bin/env bash",
+        'DIR="$(dirname "$0")"',
+        'MARKER="$DIR/.ran-once"',
+        'if [ -f "$MARKER" ]; then',
+        '  echo \'{"type":"system","subtype":"init","session_id":"sess-resumed"}\'',
+        '  echo \'{"type":"result","subtype":"success","is_error":false,"result":"resumed run complete"}\'',
+        "else",
+        '  touch "$MARKER"',
+        '  echo \'{"type":"system","subtype":"init","session_id":"sess-original"}\'',
+        // `exec` replaces bash's own process image instead of forking a child — the sleep occupies
+        // the exact PID Bun.spawn is watching, so kill() reaches it directly and its exit closes
+        // the stdout pipe immediately. A forked (non-exec'd) `sleep 5` would instead leave an
+        // orphaned grandchild holding the pipe's write end open for its full 5s even after the
+        // (killed) bash parent exits, which is what made this test hang at ~5000ms.
+        "  exec sleep 5",
+        "fi",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fixtureBin, 0o755);
+
+    try {
+      const adapter = new ClaudeCodeRunnerAdapter({ claudeBin: fixtureBin, progressDebounceMs: 10 });
+      const taskId = "task-resume-race";
+
+      await adapter.start({ taskId, cwd: dir, prompt: "go" });
+
+      const oldEvents: RunnerEvent[] = [];
+      const oldStreamDone = adapter.stream(taskId, (e) => oldEvents.push(e));
+
+      // Let the original process actually reach its sleep before superseding it.
+      await new Promise((r) => setTimeout(r, 100));
+
+      await adapter.resume({ taskId, nativeSessionId: "sess-original", prompt: "continue" });
+      await oldStreamDone;
+
+      expect(oldEvents.some((e) => e.kind === "status" && e.status === "failed")).toBe(false);
+
+      const newEvents: RunnerEvent[] = [];
+      await adapter.stream(taskId, (e) => newEvents.push(e));
+
+      expect(newEvents.some((e) => e.kind === "status" && e.status === "running")).toBe(true);
+      expect(newEvents.some((e) => e.kind === "handback" && e.summary === "resumed run complete")).toBe(true);
+      expect(newEvents.some((e) => e.kind === "status" && e.status === "done")).toBe(true);
+      expect(newEvents.some((e) => e.kind === "status" && e.status === "failed")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

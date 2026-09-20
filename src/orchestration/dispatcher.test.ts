@@ -213,3 +213,196 @@ describe("Dispatcher", () => {
     }
   });
 });
+
+describe("Dispatcher.resume", () => {
+  test("resume is authz-gated first — denied before touching the registry", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => false);
+    dispatcher.listen();
+    try {
+      await expect(
+        dispatcher.resume({ principal: "someone", taskId: "task-x", prompt: "continue", space: "discord:dm" }),
+      ).rejects.toBeInstanceOf(AuthzError);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("resume is denied for a principal that does not own the task (even though authz passed)", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-x",
+        project: null,
+        nativeSessionId: "native-1",
+        resumeCursor: null,
+        status: "done",
+        statusReason: null,
+        summary: "done",
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+      await expect(
+        dispatcher.resume({ principal: "someone-else", taskId: row.id, prompt: "continue", space: "discord:dm" }),
+      ).rejects.toBeInstanceOf(AuthzError);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("resume rejects a task with no native session to resume", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-x",
+        project: null,
+        nativeSessionId: null,
+        resumeCursor: null,
+        status: "failed",
+        statusReason: "boom",
+        summary: null,
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+      await expect(
+        dispatcher.resume({ principal: "owner-1", taskId: row.id, prompt: "continue", space: "discord:dm" }),
+      ).rejects.toThrow(/no native session/);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("resume rejects when the owning runner is not connected", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-offline",
+        project: null,
+        nativeSessionId: "native-1",
+        resumeCursor: null,
+        status: "done",
+        statusReason: null,
+        summary: "done",
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+      await expect(
+        dispatcher.resume({ principal: "owner-1", taskId: row.id, prompt: "continue", space: "discord:dm" }),
+      ).rejects.toThrow(/not connected/);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("e2e resume via the mock runner: sends session/resume and the task goes idle -> done again", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "mock-runner-resume",
+      kind: "mock",
+      adapter: new MockRunnerAdapter(),
+    });
+
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("mock-runner-resume"));
+
+      const task = await dispatcher.dispatch({
+        principal: "owner-1",
+        runnerId: "mock-runner-resume",
+        cwd: "/tmp",
+        project: null,
+        prompt: "do the thing",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      });
+      await waitFor(() => dispatcher.readTask(task.id)?.status === "done");
+
+      const resumed = await dispatcher.resume({ principal: "owner-1", taskId: task.id, prompt: "keep going", space: "discord:dm" });
+      expect(resumed.id).toBe(task.id);
+      await waitFor(() => dispatcher.readTask(task.id)?.status === "done");
+      expect(dispatcher.readTask(task.id)?.status).toBe("done");
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+});
+
+describe("Dispatcher.onTaskTerminal", () => {
+  test("fires once with the final row when a task goes done, and not on non-terminal transitions", () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-real",
+        project: null,
+        nativeSessionId: null,
+        resumeCursor: null,
+        status: "running",
+        statusReason: null,
+        summary: null,
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+
+      const seen: unknown[] = [];
+      dispatcher.onTaskTerminal((task) => seen.push(task));
+
+      dispatcher.server["options"].onEvent("runner-real", { kind: "progress", taskId: row.id, note: "working" });
+      expect(seen).toHaveLength(0);
+
+      dispatcher.server["options"].onEvent("runner-real", { kind: "handback", taskId: row.id, summary: "recap" });
+      dispatcher.server["options"].onEvent("runner-real", { kind: "status", taskId: row.id, status: "done" });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ id: row.id, status: "done", summary: "recap" });
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("fires on failed too, and a listener that throws does not break event handling", () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    try {
+      const row = registry.create({
+        createdBy: "owner-1",
+        runnerId: "runner-real",
+        project: null,
+        nativeSessionId: null,
+        resumeCursor: null,
+        status: "running",
+        statusReason: null,
+        summary: null,
+        spawnedFromSurface: "discord",
+        threadRefs: [],
+      });
+
+      const seen: unknown[] = [];
+      dispatcher.onTaskTerminal(() => { throw new Error("listener boom"); });
+      dispatcher.onTaskTerminal((task) => seen.push(task));
+
+      dispatcher.server["options"].onEvent("runner-real", { kind: "status", taskId: row.id, status: "failed", reason: "oops" });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ id: row.id, status: "failed", statusReason: "oops" });
+    } finally {
+      dispatcher.stop();
+    }
+  });
+});

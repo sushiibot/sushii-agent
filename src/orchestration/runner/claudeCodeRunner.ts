@@ -250,6 +250,10 @@ interface TaskState {
   channel: LineChannel;
   startedAt: number;
   startSha: string | null;
+  // Set by resume() right before it kills this proc, so the OLD stream()'s exit-detection branch
+  // (below) knows the kill was an intentional supersede, not a crash, and stays silent instead of
+  // emitting a false "failed".
+  superseded: boolean;
 }
 
 export interface ClaudeCodeRunnerOptions {
@@ -296,7 +300,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     void this.pumpStderr(proc);
 
     const startSha = await this.readHeadSha(input.cwd);
-    const task: TaskState = { proc, cwd: input.cwd, channel, startedAt: this.now(), startSha };
+    const task: TaskState = { proc, cwd: input.cwd, channel, startedAt: this.now(), startSha, superseded: false };
     this.tasks.set(input.taskId, task);
 
     const sessionId = await this.readSessionId(channel);
@@ -313,7 +317,10 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     const existing = this.tasks.get(input.taskId);
     if (existing) {
       // A still-running prior process for this task must not be silently
-      // orphaned when the map entry is overwritten below.
+      // orphaned when the map entry is overwritten below. Mark it superseded
+      // BEFORE killing it so its own stream() loop (see the exit-detection
+      // branch below) treats the exit as an intentional supersede, not a crash.
+      existing.superseded = true;
       existing.proc.kill();
       await existing.proc.exited;
     }
@@ -335,7 +342,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     void this.pumpStderr(proc);
 
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
-    this.tasks.set(input.taskId, { proc, cwd, channel, startedAt: this.now(), startSha });
+    this.tasks.set(input.taskId, { proc, cwd, channel, startedAt: this.now(), startSha, superseded: false });
   }
 
   async interrupt(taskId: string): Promise<void> {
@@ -355,13 +362,17 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     while (true) {
       const { value: line, done } = await task.channel.next();
       if (done) {
-        for (const event of reducer.finalize()) onEvent(event);
-        onEvent({
-          kind: "status",
-          taskId,
-          status: "failed",
-          reason: `claude process exited (code ${task.proc.exitCode ?? "unknown"})`,
-        });
+        // resume() kills this exact process on purpose and marks it superseded first — that kill's
+        // exit must not surface as a task failure; the resumed process's own stream reports status.
+        if (!task.superseded) {
+          for (const event of reducer.finalize()) onEvent(event);
+          onEvent({
+            kind: "status",
+            taskId,
+            status: "failed",
+            reason: `claude process exited (code ${task.proc.exitCode ?? "unknown"})`,
+          });
+        }
         break;
       }
 
