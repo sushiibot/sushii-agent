@@ -88,6 +88,10 @@ export const registerParams = z.object({
   runnerId: z.string(),
   kind: z.string(), // "claude-code" | "mock" | ...
   projects: z.array(z.string()).default([]),
+  // Absolute dir this runner clones on-demand repos into (clone-on-demand). Declaring it engages
+  // the dispatch scope fence even when `projects` is empty, and lets the orchestrator derive a
+  // clone cwd under it. null = runner does no clone-on-demand.
+  workspaceRoot: z.string().nullable().default(null),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
 

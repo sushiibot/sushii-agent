@@ -59,14 +59,18 @@ async function main(): Promise<void> {
   const kind = process.env.RUNNER_KIND ?? "claude-code";
   const runnerId = process.env.RUNNER_ID ?? `${kind}-${process.pid}`;
   const projects = discoverProjects();
+  // Dir this runner clones on-demand repos into. Declaring it engages the dispatch scope fence
+  // (see Dispatcher.cwdInScope) even when RUNNER_ROOTS is empty, so an unconfigured clone-runner
+  // is not silently permissive.
+  const workspaceRoot = process.env.RUNNER_WORKSPACE?.trim() || null;
 
   const factory = ADAPTERS[kind];
   if (!factory) throw new Error(`unknown RUNNER_KIND "${kind}" (known: ${Object.keys(ADAPTERS).join(", ")})`);
   const adapter = factory();
 
-  const client = new OrchestrationClient({ url, runnerId, kind, projects, adapter });
+  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, adapter });
 
-  log.info({ url, runnerId, kind, projects }, "runner starting (auto-reconnect)");
+  log.info({ url, runnerId, kind, projects, workspaceRoot }, "runner starting (auto-reconnect)");
   await client.run(); // reconnects with backoff + heartbeats until the process is stopped
 }
 

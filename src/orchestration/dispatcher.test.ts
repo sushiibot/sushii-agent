@@ -74,6 +74,42 @@ describe("Dispatcher", () => {
     }
   });
 
+  test("a runner declaring only a workspaceRoot (no projects) still engages the fence", async () => {
+    // The clone-on-demand boot case: empty RUNNER_ROOTS, nothing cloned yet — the fence must not
+    // be permissive just because no projects are declared. A cwd under the workspace passes; one
+    // outside is rejected.
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "clone-runner",
+      kind: "mock",
+      projects: [],
+      workspaceRoot: "/data/workspace",
+      adapter: new MockRunnerAdapter(),
+    });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("clone-runner"));
+
+      const base = {
+        principal: "owner-1",
+        runnerId: "clone-runner",
+        project: null,
+        prompt: "go",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      };
+      await expect(dispatcher.dispatch({ ...base, cwd: "/etc" })).rejects.toThrow(/not within any project/);
+      const inWorkspace = await dispatcher.dispatch({ ...base, cwd: "/data/workspace/owner-1/acme-widgets" });
+      expect(inWorkspace.status).toBe("running");
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
   test("e2e dispatch via the mock runner: registry row goes running -> done, summary persisted", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => true);
     dispatcher.listen();

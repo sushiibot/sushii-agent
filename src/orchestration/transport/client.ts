@@ -20,6 +20,7 @@ export interface OrchestrationClientOptions {
   runnerId: string;
   kind: string;
   projects?: string[];
+  workspaceRoot?: string | null;
   adapter: RunnerAdapter;
   // Keep-alive interval (default 30s, under Bun.serve's 120s idle default). 0 disables.
   heartbeatMs?: number;
@@ -120,6 +121,7 @@ export class OrchestrationClient {
               runnerId: this.options.runnerId,
               kind: this.options.kind,
               projects: this.options.projects ?? [],
+              workspaceRoot: this.options.workspaceRoot ?? null,
             },
           }),
         );

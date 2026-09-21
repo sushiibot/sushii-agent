@@ -14,6 +14,7 @@ export class AuthzError extends Error {}
 interface LiveRunner {
   kind: string;
   projects: string[];
+  workspaceRoot: string | null;
 }
 
 export interface DispatchInput {
@@ -53,8 +54,8 @@ export class Dispatcher {
   ) {
     this.server = new OrchestrationServer({
       port: options.port,
-      onRegister: (runnerId, kind, projects) => {
-        this.liveRunners.set(runnerId, { kind, projects });
+      onRegister: (runnerId, kind, projects, workspaceRoot) => {
+        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot });
         // A fresh connection means we can't observe any turn that was mid-flight on this runner
         // before (e.g. across an orchestrator restart), so clear stale "running" phantoms.
         const reconciled = this.registry.failRunningForRunner(
@@ -107,11 +108,17 @@ export class Dispatcher {
     return [...this.liveRunners.entries()].map(([runnerId, r]) => ({ runnerId, kind: r.kind, projects: r.projects }));
   }
 
-  /** Scope fence: a dispatch cwd must be one of the runner's declared projects, or nested under
-   *  one. A runner that declared none is unconfigured → permissive (back-compat). */
+  /** Scope fence: a dispatch cwd must be one of the runner's declared projects (or nested under
+   *  one), or nested under its declared workspace root (clone-on-demand target). A runner that
+   *  declared neither is unconfigured → permissive (back-compat). Declaring a workspaceRoot alone
+   *  is enough to engage the fence, so a clone-on-demand runner with no pre-provisioned projects
+   *  still rejects an out-of-tree cwd. */
   private cwdInScope(runnerId: string, cwd: string): boolean {
-    const projects = this.liveRunners.get(runnerId)?.projects ?? [];
-    if (projects.length === 0) return true;
+    const runner = this.liveRunners.get(runnerId);
+    const projects = runner?.projects ?? [];
+    const workspaceRoot = runner?.workspaceRoot ?? null;
+    if (projects.length === 0 && !workspaceRoot) return true;
+    if (workspaceRoot && (cwd === workspaceRoot || cwd.startsWith(`${workspaceRoot}/`))) return true;
     return projects.some((p) => cwd === p || cwd.startsWith(`${p}/`));
   }
 
