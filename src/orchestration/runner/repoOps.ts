@@ -74,7 +74,16 @@ export async function pushWorkAndOpenPr(
   deps: RepoOpsDeps,
 ): Promise<PushResult | null> {
   const git = (deps.gitFactory ?? simpleGit)(cwd);
-  await setIdentity(git, deps.bot); // resume may reach a checkout cloneIfAbsent did not configure
+
+  // Self-heal a checkout whose origin still carries a token — left by a clone that died between the
+  // tokenized clone and the scrub. Without this, such a token would sit in .git/config on the
+  // semi-durable disk, exactly what the design forbids.
+  let originUrl = (await git.remote(["get-url", "origin"]))?.trim() ?? cleanUrl(spec);
+  if (originUrl.includes("@")) {
+    originUrl = cleanUrl(spec);
+    await git.remote(["set-url", "origin", originUrl]);
+    log.warn({ cwd }, "reset a tokenized origin URL left by an interrupted clone");
+  }
 
   const status = await git.status();
   const headBefore = (await git.revparse(["HEAD"]).catch(() => null))?.trim() ?? null;
@@ -82,8 +91,9 @@ export async function pushWorkAndOpenPr(
   // A new commit relative to where the task started; falls back to "any history" when startSha is
   // unknown (a repo with no commits at dispatch).
   const hasNewCommits = task.startSha ? headBefore !== null && headBefore !== task.startSha : (await git.log()).total > 0;
-  if (!hasWorkingChanges && !hasNewCommits) return null; // agent changed nothing — no empty PR
+  if (!hasWorkingChanges && !hasNewCommits) return null; // agent changed nothing — no empty PR (nothing mutated yet)
 
+  await setIdentity(git, deps.bot); // resume may reach a checkout cloneIfAbsent did not configure
   const branch = `sushii-runner/${task.taskId}`;
   await git.checkout(["-B", branch]);
   if (hasWorkingChanges) {
@@ -92,7 +102,6 @@ export async function pushWorkAndOpenPr(
   }
 
   const { token } = await deps.provider.tokenFor(spec); // fresh token at push time (may be ~1h later)
-  const originUrl = (await git.remote(["get-url", "origin"]))?.trim() ?? cleanUrl(spec);
   await git.push([tokenizeHttps(originUrl, token), `HEAD:refs/heads/${branch}`]);
   const prUrl = await openPr(spec, branch, task, token, deps);
   log.info({ cwd, branch, prUrl }, "pushed task branch + opened PR");

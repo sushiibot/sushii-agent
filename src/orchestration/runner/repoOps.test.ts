@@ -67,6 +67,8 @@ describe("pushWorkAndOpenPr", () => {
     const result = await pushWorkAndOpenPr(cwd, { owner: "acme", repo: "widgets" }, { taskId: "task-2", summary: "noop", startSha }, deps);
     expect(result).toBeNull();
     expect(prPayloads).toHaveLength(0);
+    // A no-op must not mutate the checkout — identity is only rewritten when there is work to push.
+    expect((await simpleGit(cwd).getConfig("user.name")).value).toBe("seed");
   });
 
   test("does not persist the token into .git/config", async () => {
