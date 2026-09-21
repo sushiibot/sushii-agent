@@ -1,9 +1,28 @@
-import type { Client, Message } from "discord.js";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, type Client, type Message } from "discord.js";
 import type { TaskRow } from "../../orchestration/contracts.ts";
 import type { ActivityHub, ActivityLine, TaskMeta, TaskView } from "../../orchestration/activityHub.ts";
 import { getLogger } from "../../logger.ts";
 
 const log = getLogger("surfaces/discord/liveTask");
+
+// custom_id: `${TASK_CTL_PREFIX}<action>:<taskId>` — action ∈ stop|discard|discardyes|cancel|resume.
+export const TASK_CTL_PREFIX = "tctl:";
+
+/** Control buttons for a task's DM message, by status. Stop/Discard while running, Resume while idle,
+ *  and a Live-log link whenever there's a viewer URL. Empty → the message shows no buttons. */
+export function controlRow(taskId: string, status: string, webUrl: string | null): ActionRowBuilder<ButtonBuilder>[] {
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (status === "running" || status === "needs_input") {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}stop:${taskId}`).setLabel("Stop").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}discard:${taskId}`).setLabel("Discard").setStyle(ButtonStyle.Danger),
+    );
+  } else if (status === "idle") {
+    row.addComponents(new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}resume:${taskId}`).setLabel("Resume").setStyle(ButtonStyle.Success));
+  }
+  if (webUrl) row.addComponents(new ButtonBuilder().setLabel("Live log").setStyle(ButtonStyle.Link).setURL(webUrl));
+  return row.components.length ? [row] : [];
+}
 
 const EDIT_INTERVAL_MS = 5000; // Discord self-rate-limit: at most one in-place edit per 5s
 const MAX_LINES = 14; // recent activity lines shown in the tail
@@ -37,10 +56,12 @@ export class LiveTaskView {
   static async start(client: Client, task: TaskRow, hub: ActivityHub, webUrl: string | null, meta: TaskMeta): Promise<LiveTaskView | null> {
     const user = await client.users.fetch(task.createdBy).catch(() => null);
     if (!user) return null;
-    const msg = await user.send(headerBlock(task.id, "running", webUrl, meta)).catch((err) => {
-      log.warn({ err, taskId: task.id }, "failed to open live task message");
-      return null;
-    });
+    const msg = await user
+      .send({ content: headerBlock(task.id, "running", webUrl, meta), components: controlRow(task.id, "running", webUrl) })
+      .catch((err) => {
+        log.warn({ err, taskId: task.id }, "failed to open live task message");
+        return null;
+      });
     if (!msg) return null;
     // Read the buffer AFTER the DM round-trip and subscribe in the same synchronous tick, so lines
     // that arrived during the await are in the seed and none fall between seed and subscription.
@@ -73,7 +94,7 @@ export class LiveTaskView {
     if (this.editTimer) clearTimeout(this.editTimer);
     for (const u of this.unsubs) u();
     if (summary) this.dropDuplicateFinal(summary);
-    void this.message.edit(this.body(status, summary)).catch(() => {});
+    void this.message.edit({ content: this.body(status, summary), components: controlRow(this.taskId, status, this.webUrl) }).catch(() => {});
   }
 
   // The agent's closing message is in the tail as a (truncated) 💬 line AND arrives again as the full
@@ -93,7 +114,9 @@ export class LiveTaskView {
   private render(status: string): void {
     this.dirty = false;
     this.lastEditAt = Date.now();
-    void this.message.edit(this.body(status, null)).catch((err) => log.warn({ err, taskId: this.taskId }, "live edit failed"));
+    void this.message
+      .edit({ content: this.body(status, null), components: controlRow(this.taskId, status, this.webUrl) })
+      .catch((err) => log.warn({ err, taskId: this.taskId }, "live edit failed"));
   }
 
   private body(status: string, summary: string | null): string {

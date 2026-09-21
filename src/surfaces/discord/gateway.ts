@@ -1,4 +1,7 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Events,
   MessageFlags,
@@ -41,7 +44,7 @@ import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/d
 import type { TaskRow } from "../../orchestration/contracts.ts";
 import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts";
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
-import { LiveTaskView } from "./liveTask.ts";
+import { LiveTaskView, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
@@ -688,7 +691,57 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleAskButton(btn);
       return;
     }
+    if (btn.customId.startsWith(TASK_CTL_PREFIX)) {
+      await handleTaskControlButton(btn);
+      return;
+    }
   });
+
+  // Stop / Discard / Resume for a runner task, from the buttons on its live-task DM message. The DM is
+  // the owner's, so the presser must be the task's creator; control goes through the token path.
+  async function handleTaskControlButton(interaction: ButtonInteraction): Promise<void> {
+    const rest = interaction.customId.slice(TASK_CTL_PREFIX.length);
+    const sep = rest.indexOf(":");
+    const action = rest.slice(0, sep);
+    const taskId = rest.slice(sep + 1);
+    let dispatcher;
+    try {
+      dispatcher = getDispatcher();
+    } catch (err) {
+      if (err instanceof DispatcherUnavailableError) { await interaction.reply({ content: "Runner orchestration is unavailable.", flags: MessageFlags.Ephemeral }); return; }
+      throw err;
+    }
+    const token = getActivityHub().tokenFor(taskId);
+    if (!token) { await interaction.reply({ content: "This task's live session has expired — control it via the bot instead.", flags: MessageFlags.Ephemeral }).catch(() => {}); return; }
+
+    // Destructive discard → a confirm step (a misclick in the button row is the real risk).
+    if (action === "discard") {
+      const confirm = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}discardyes:${taskId}`).setLabel("Confirm discard").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}cancel:${taskId}`).setLabel("Cancel").setStyle(ButtonStyle.Secondary),
+      );
+      await interaction.reply({ content: "Discard this task and remove its worktree? This can't be undone.", components: [confirm], flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    if (action === "cancel") {
+      await interaction.update({ content: "Cancelled — task left as is.", components: [] }).catch(() => {});
+      return;
+    }
+
+    const op = action === "discardyes" ? "discard" : action; // stop | resume | discard
+    if (op !== "stop" && op !== "resume" && op !== "discard") return;
+    try {
+      const task = await dispatcher.controlByToken(taskId, token, op);
+      const label = op === "discard" ? "Discarded — worktree removed." : op === "stop" ? "Stopped — resumable." : `Resumed (status: ${task.status}).`;
+      // The confirm dialog (discardyes/cancel) is an ephemeral we own → update it; a first-level button reply is ephemeral too.
+      if (action === "discardyes") await interaction.update({ content: label, components: [] }).catch(() => {});
+      else await interaction.reply({ content: label, flags: MessageFlags.Ephemeral }).catch(() => {});
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "control failed";
+      if (action === "discardyes") await interaction.update({ content: `Failed: ${msg}`, components: [] }).catch(() => {});
+      else await interaction.reply({ content: `Failed: ${msg}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+  }
 
   async function handleStopButton(interaction: ButtonInteraction): Promise<void> {
     const threadId = interaction.customId.slice(STOP_BTN_PREFIX.length);
