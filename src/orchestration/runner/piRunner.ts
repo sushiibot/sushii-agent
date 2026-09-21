@@ -5,7 +5,7 @@ import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-
 import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
-import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, type RepoOpsDeps } from "./repoOps.ts";
+import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, type RepoOpsDeps } from "./repoOps.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
@@ -32,6 +32,10 @@ export interface PiRunnerOptions {
   // Clone-on-demand + runner-side push. When unset, a dispatch carrying a repo still runs (the cwd
   // must already be a checkout) but nothing is cloned or pushed.
   repoOps?: RepoOpsDeps;
+  // Task-worktree GC. workspaceRoot enables it; TTL/interval have sane defaults.
+  workspaceRoot?: string | null;
+  worktreeTtlMs?: number;
+  gcIntervalMs?: number;
 }
 
 /**
@@ -144,6 +148,23 @@ export class PiRunnerAdapter implements RunnerAdapter {
   constructor(private readonly options: PiRunnerOptions) {
     this.progressDebounceMs = options.progressDebounceMs ?? 1500;
     this.now = options.now ?? Date.now;
+    this.startWorktreeGc();
+  }
+
+  // Periodically reclaim task worktrees whose PR has merged or that have gone idle past the TTL.
+  // Active tasks are always skipped. No-op unless clone-on-demand + a workspace root are configured.
+  private startWorktreeGc(): void {
+    const { repoOps, workspaceRoot } = this.options;
+    if (!repoOps || !workspaceRoot) return;
+    const ttlMs = this.options.worktreeTtlMs ?? 24 * 3600_000;
+    const run = () =>
+      void pruneWorktrees({ workspaceRoot, ttlMs, activeTaskIds: new Set(this.tasks.keys()), deps: repoOps, now: this.now })
+        .then((removed) => {
+          if (removed.length) log.info({ count: removed.length }, "pruned task worktrees");
+        })
+        .catch((err) => log.warn({ err }, "worktree GC sweep failed"));
+    const timer = setInterval(run, this.options.gcIntervalMs ?? 3600_000);
+    timer.unref?.();
   }
 
   async start(input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<{ nativeSessionId: string }> {

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { getLogger } from "../../logger.ts";
@@ -16,6 +16,7 @@ export interface RepoOpsDeps {
   provider: GitTokenProvider;
   bot: BotIdentity;
   gitFactory?: (cwd?: string) => SimpleGit;
+  fetchImpl?: typeof fetch; // for the merged-PR check in pruneWorktrees; defaults to global fetch
 }
 
 function cleanUrl(spec: RepoSpec): string {
@@ -122,6 +123,81 @@ export async function ensureWorktree(repoHome: string, taskId: string, deps: Rep
   await git.raw(["worktree", "add", "--force", "-B", `sushii-runner/${taskId}`, worktreePath, `origin/${base}`]);
   log.info({ repoHome, worktreePath, base }, "created task worktree");
   return worktreePath;
+}
+
+function originSpecOf(git: SimpleGit): Promise<RepoSpec | null> {
+  return git
+    .remote(["get-url", "origin"])
+    .then((url) => {
+      const m = url?.trim().match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?$/);
+      return m ? { owner: m[1], repo: m[2] } : null;
+    })
+    .catch(() => null);
+}
+
+async function isPrMerged(spec: RepoSpec, branch: string, deps: RepoOpsDeps): Promise<boolean> {
+  try {
+    const { token } = await deps.provider.tokenFor(spec);
+    const res = await (deps.fetchImpl ?? fetch)(
+      `https://api.github.com/repos/${spec.owner}/${spec.repo}/pulls?head=${spec.owner}:${branch}&state=all&per_page=10`,
+      { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } },
+    );
+    if (!res.ok) return false;
+    return ((await res.json()) as Array<{ merged_at: string | null }>).some((p) => p.merged_at != null);
+  } catch {
+    return false;
+  }
+}
+
+/** GC task worktrees under `workspaceRoot`: remove one whose PR has already merged (eager), or that
+ *  has been idle past `ttlMs`. Never touches a worktree whose task is still active. Returns the paths
+ *  removed. The shared clones + object stores stay; only the per-task working trees are reclaimed. */
+export async function pruneWorktrees(opts: {
+  workspaceRoot: string;
+  ttlMs: number;
+  activeTaskIds: Set<string>;
+  deps: RepoOpsDeps;
+  now?: () => number;
+}): Promise<string[]> {
+  const { workspaceRoot, ttlMs, activeTaskIds, deps } = opts;
+  const now = opts.now ?? Date.now;
+  const removed: string[] = [];
+  if (!existsSync(workspaceRoot)) return removed;
+  const factory = deps.gitFactory ?? simpleGit;
+
+  const dirs = (base: string) => {
+    try {
+      return readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory());
+    } catch {
+      return [];
+    }
+  };
+
+  for (const principal of dirs(workspaceRoot)) {
+    const pdir = join(workspaceRoot, principal.name);
+    for (const entry of dirs(pdir)) {
+      if (!entry.name.endsWith(".wt")) continue;
+      const wtContainer = join(pdir, entry.name);
+      const repoHome = wtContainer.slice(0, -3); // strip ".wt"
+      if (!existsSync(join(repoHome, ".git"))) continue;
+      const git = factory(repoHome);
+      const spec = await originSpecOf(git);
+      let prunedAny = false;
+      for (const wt of dirs(wtContainer)) {
+        const taskId = wt.name;
+        if (activeTaskIds.has(taskId)) continue;
+        const wtPath = join(wtContainer, taskId);
+        const expired = now() - statSync(wtPath).mtimeMs > ttlMs;
+        const remove = expired || (spec ? await isPrMerged(spec, `sushii-runner/${taskId}`, deps) : false);
+        if (!remove) continue;
+        await git.raw(["worktree", "remove", "--force", wtPath]).catch(() => rmSync(wtPath, { recursive: true, force: true }));
+        removed.push(wtPath);
+        prunedAny = true;
+      }
+      if (prunedAny) await git.raw(["worktree", "prune"]).catch(() => {});
+    }
+  }
+  return removed;
 }
 
 /** (Re)write the askpass helper + pre-push guard into a checkout. Idempotent — also called on resume

@@ -28,7 +28,16 @@ const ADAPTERS: Record<string, () => RunnerAdapter> = {
     const agentDir = process.env.RUNNER_AGENT_DIR ?? `${process.env.HOME}/.pi-runner`;
     if (!model) throw new Error("RUNNER_KIND=pi requires RUNNER_MODEL");
     if (!apiKey) throw new Error("RUNNER_KIND=pi requires OPENAI_API_KEY");
-    return new PiRunnerAdapter({ model, apiKey, baseUrl, agentDir, repoOps: buildRepoOps() });
+    const ttlHours = Number(process.env.RUNNER_WORKTREE_TTL_HOURS ?? "24");
+    return new PiRunnerAdapter({
+      model,
+      apiKey,
+      baseUrl,
+      agentDir,
+      repoOps: buildRepoOps(),
+      workspaceRoot: process.env.RUNNER_WORKSPACE?.trim() || null,
+      worktreeTtlMs: (Number.isFinite(ttlHours) ? ttlHours : 24) * 3600_000,
+    });
   },
   // hermes: reserved — add a HermesRunnerAdapter implementing RunnerAdapter and register it here.
 };

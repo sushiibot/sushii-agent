@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import simpleGit from "simple-git";
-import { agentGitEnv, configureForAgent, ensureWorktree, type RepoOpsDeps } from "./repoOps.ts";
+import { agentGitEnv, configureForAgent, ensureWorktree, pruneWorktrees, type RepoOpsDeps } from "./repoOps.ts";
 
 const stubDeps: RepoOpsDeps = {
   provider: { tokenFor: async () => ({ token: "unused", expiresAt: 0 }) },
@@ -86,5 +86,50 @@ describe("configureForAgent", () => {
     await simpleGit(cwd).raw(["checkout", "-B", "sushii-runner/task-Z"]);
     const wt = await ensureWorktree(cwd, "task-Z", stubDeps); // would collide without the detach fix
     expect((await simpleGit(wt).raw(["branch", "--show-current"])).trim()).toBe("sushii-runner/task-Z");
+  });
+});
+
+describe("pruneWorktrees", () => {
+  let ws: string;
+  let repoHome: string;
+
+  beforeEach(async () => {
+    ws = mkdtempSync(join(tmpdir(), "gc-"));
+    repoHome = join(ws, "P", "acme-widgets");
+    const g = simpleGit();
+    await g.raw(["init", repoHome]);
+    const rg = simpleGit(repoHome);
+    await rg.addConfig("user.name", "seed");
+    await rg.addConfig("user.email", "seed@x");
+    await rg.raw(["commit", "--allow-empty", "-m", "seed"]);
+    await rg.raw(["remote", "add", "origin", "https://github.com/acme/widgets.git"]); // for spec parsing
+    for (const id of ["merged", "expired", "active", "fresh"]) {
+      await rg.raw(["worktree", "add", `${repoHome}.wt/${id}`, "-b", `sushii-runner/${id}`]);
+    }
+    const old = Date.now() / 1000 - 7200; // 2h ago
+    utimesSync(`${repoHome}.wt/expired`, old, old);
+  });
+
+  afterEach(() => rmSync(ws, { recursive: true, force: true }));
+
+  test("removes merged + expired worktrees, keeps active + fresh", async () => {
+    const fetchImpl = (async (url: string) => ({
+      ok: true,
+      json: async () => (String(url).includes("sushii-runner/merged") ? [{ merged_at: "2026-09-20T00:00:00Z" }] : []),
+    })) as unknown as typeof fetch;
+    const deps: RepoOpsDeps = { provider: stubDeps.provider, bot: stubDeps.bot, fetchImpl };
+
+    const removed = await pruneWorktrees({
+      workspaceRoot: ws,
+      ttlMs: 3600_000, // 1h
+      activeTaskIds: new Set(["active"]),
+      deps,
+    });
+
+    expect(removed.sort()).toEqual([`${repoHome}.wt/expired`, `${repoHome}.wt/merged`].sort());
+    expect(existsSync(`${repoHome}.wt/merged`)).toBe(false);
+    expect(existsSync(`${repoHome}.wt/expired`)).toBe(false);
+    expect(existsSync(`${repoHome}.wt/active`)).toBe(true); // active task never touched
+    expect(existsSync(`${repoHome}.wt/fresh`)).toBe(true); // recent + unmerged → kept
   });
 });
