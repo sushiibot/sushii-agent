@@ -658,7 +658,7 @@ describe("Dispatcher.onTaskSettled", () => {
       const stopped = await dispatcher.haltTask({ principal: "owner", taskId: task.id, space: "discord:dm" });
       expect(stopped.status).toBe("idle"); // resumable
       expect(stopped.statusReason).toBe("stopped by user");
-      expect(adapter.lastStop).toEqual({ taskId: task.id, discard: undefined });
+      expect(adapter.lastStop).toEqual({ taskId: task.id, discard: false });
 
       const discarded = await dispatcher.haltTask({ principal: "owner", taskId: task.id, space: "discord:dm", discard: true });
       expect(discarded.status).toBe("failed"); // terminal

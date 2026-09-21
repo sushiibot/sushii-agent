@@ -264,7 +264,12 @@ export class Dispatcher {
 
     const task = this.registry.get(input.taskId);
     if (!task || task.createdBy !== input.principal) throw new AuthzError("session.resume denied");
-    if (!task.nativeSessionId) throw new Error(`task ${input.taskId} has no native session to resume`);
+    return this.resumeInternal(task, input.prompt);
+  }
+
+  /** Resume core — no authz. Only called after the caller authorized (canFn or a verified viewer token). */
+  private async resumeInternal(task: TaskRow, prompt: string): Promise<TaskRow> {
+    if (!task.nativeSessionId) throw new Error(`task ${task.id} has no native session to resume`);
     if (!this.isRunnerLive(task.runnerId)) throw new Error(`runner "${task.runnerId}" is not connected`);
     getActivityHub().open(task.id); // re-open the live stream for the resumed turn
 
@@ -273,7 +278,7 @@ export class Dispatcher {
         taskId: task.id,
         nativeSessionId: task.nativeSessionId,
         cwd: task.cwd ?? "", // empty → runner falls back (legacy rows predate the cwd column)
-        prompt: input.prompt,
+        prompt,
       });
     } catch (err) {
       logger.error({ err, taskId: task.id }, "failed to resume runner task");
@@ -298,15 +303,18 @@ export class Dispatcher {
     if (!allowed) throw new AuthzError("session.stop denied");
     const task = this.registry.get(input.taskId);
     if (!task || task.createdBy !== input.principal) throw new AuthzError("session.stop denied");
+    return this.haltInternal(task, input.discard ?? false);
+  }
 
+  /** Halt core — no authz. Only called after the caller authorized. */
+  private async haltInternal(task: TaskRow, discard: boolean): Promise<TaskRow> {
     if (this.isRunnerLive(task.runnerId)) {
-      await this.server.stopTask(task.runnerId, { taskId: task.id, discard: input.discard }).catch((err) => {
+      await this.server.stopTask(task.runnerId, { taskId: task.id, discard }).catch((err) => {
         logger.warn({ err, taskId: task.id }, "runner stop failed; recording status anyway");
       });
     }
-    const status = input.discard ? "failed" : "idle";
-    const reason = input.discard ? "discarded by user" : "stopped by user";
-    this.registry.updateStatus(task.id, status, reason);
+    const status = discard ? "failed" : "idle";
+    this.registry.updateStatus(task.id, status, discard ? "discarded by user" : "stopped by user");
     getActivityHub().settle(task.id, status, task.summary ?? null);
     return this.registry.get(task.id) as TaskRow;
   }
@@ -315,9 +323,36 @@ export class Dispatcher {
    *  session context (this is `resume` with the steer text). The steer is recorded as an activity line
    *  so every watcher and the transcript sees the intervention. */
   async steer(input: SteerInput): Promise<TaskRow> {
-    const hub = getActivityHub();
-    if (hub.tokenFor(input.taskId)) hub.append(input.taskId, `↪ steer: ${input.text}`, Date.now(), "text");
-    return this.resume({ principal: input.principal, taskId: input.taskId, space: input.space, prompt: input.text });
+    const allowed = this.canFn({ principal: input.principal, capability: "session.resume", resource: input.taskId, space: input.space });
+    if (!allowed) throw new AuthzError("session.resume denied");
+    const task = this.registry.get(input.taskId);
+    if (!task || task.createdBy !== input.principal) throw new AuthzError("session.resume denied");
+    return this.steerInternal(task, input.text);
+  }
+
+  private async steerInternal(task: TaskRow, text: string): Promise<TaskRow> {
+    getActivityHub().append(task.id, `↪ steer: ${text}`, Date.now(), "text");
+    return this.resumeInternal(task, text);
+  }
+
+  /** Control a task from the token-gated live viewer. The unguessable per-task viewer token is the
+   *  owner-auth (it never leaves the owner's DM / dispatch reply), so this skips canFn — the token IS
+   *  the authorization — and acts as the task's owner. Verifies the token before doing anything. */
+  async controlByToken(taskId: string, token: string, action: "stop" | "discard" | "resume" | "steer", text?: string): Promise<TaskRow> {
+    if (!getActivityHub().viewWithToken(taskId, token)) throw new AuthzError("invalid task token");
+    const task = this.registry.get(taskId);
+    if (!task) throw new Error(`unknown task ${taskId}`);
+    switch (action) {
+      case "stop":
+        return this.haltInternal(task, false);
+      case "discard":
+        return this.haltInternal(task, true);
+      case "resume":
+        return this.resumeInternal(task, text && text.trim() ? text : "Continue.");
+      case "steer":
+        if (!text || !text.trim()) throw new Error("steer requires text");
+        return this.steerInternal(task, text);
+    }
   }
 
   /** Registers a callback invoked once per task turn SETTLING — {idle, done, failed} (per

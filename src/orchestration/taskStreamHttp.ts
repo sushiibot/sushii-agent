@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { getActivityHub } from "./activityHub.ts";
+import { AuthzError, DispatcherUnavailableError, getDispatcher } from "./dispatcher.ts";
 
 // marked (GFM parse) + DOMPurify (sanitize), inlined from node_modules so the viewer stays a single
 // self-contained page (no runtime CDN). Injected into the page by string concatenation — NOT inside a
@@ -62,6 +63,31 @@ export function registerTaskStreamRoutes(app: Hono): void {
         stream.onAbort(finish);
       });
     });
+  });
+
+  // Token-gated control from the live viewer: stop (resumable) / discard / resume / steer. The viewer
+  // token is the owner-auth, verified inside controlByToken; nothing here trusts the client otherwise.
+  app.post("/tasks/:id/control", async (c) => {
+    const id = c.req.param("id");
+    const key = c.req.query("key") ?? "";
+    let body: { action?: string; text?: string };
+    try {
+      body = (await c.req.json()) as { action?: string; text?: string };
+    } catch {
+      return c.json({ error: "bad_request" }, 400);
+    }
+    const action = body.action;
+    if (action !== "stop" && action !== "discard" && action !== "resume" && action !== "steer") {
+      return c.json({ error: "bad_action" }, 400);
+    }
+    try {
+      const task = await getDispatcher().controlByToken(id, key, action, body.text);
+      return c.json({ ok: true, status: task.status });
+    } catch (err) {
+      if (err instanceof AuthzError) return c.json({ error: "not_found" }, 404);
+      if (err instanceof DispatcherUnavailableError) return c.json({ error: "unavailable" }, 503);
+      return c.json({ error: err instanceof Error ? err.message : "failed" }, 400);
+    }
   });
 
   app.get("/tasks/:id", (c) => {
@@ -275,7 +301,29 @@ const VIEWER_HTML = `<!doctype html>
     .entry, .empty svg, .status.running .dot { animation:none; }
     .result, .resume summary .chev, .tool .chev { transition:none; }
   }
-  @media (max-width:560px) { .tool .ts { display:none; } .say .prose { font-size:14px; } header { gap:9px; } }
+  /* live controls */
+  .ctlgroup { display:inline-flex; gap:6px; align-items:center; }
+  .ctl { padding:5px 11px; border-radius:8px; font:inherit; font-size:12px; font-weight:700; cursor:pointer;
+    background:var(--surface0); color:var(--subtext1); border:1px solid color-mix(in srgb,var(--surface2) 60%, transparent); }
+  .ctl:hover { color:var(--text); border-color:var(--overlay0); }
+  .ctl.danger:hover { color:var(--red); border-color:var(--red); }
+  .ctl.go { color:var(--green); } .ctl.go:hover { border-color:var(--green); }
+  .ctl[hidden] { display:none; }
+  .composer { position:fixed; left:0; right:0; bottom:0; z-index:6; display:flex; gap:8px; padding:10px 16px;
+    max-width:900px; margin:0 auto; background: color-mix(in srgb, var(--mantle) 92%, transparent);
+    backdrop-filter: blur(12px) saturate(1.2); border-top:1px solid color-mix(in srgb,var(--surface0) 70%, transparent); }
+  .composer[hidden] { display:none; }
+  .composer input { flex:1 1 auto; min-width:0; padding:9px 12px; border-radius:10px; font:inherit; font-size:13px;
+    background:var(--base); color:var(--text); border:1px solid color-mix(in srgb,var(--surface0) 80%, transparent); }
+  .composer input::placeholder { color:var(--overlay1); }
+  .composer input:focus { outline:none; border-color:var(--mauve); }
+  .composer button { flex:0 0 auto; padding:0 16px; border-radius:10px; font:inherit; font-weight:800; font-size:13px; cursor:pointer;
+    background:var(--mauve); color:var(--crust); border:none; }
+  .composer button:hover { filter:brightness(1.08); }
+  .composer button:disabled { opacity:.5; cursor:default; }
+  .steerline .prose { color:var(--sky); } /* a "↪ steer:" line the owner sent */
+  @media (prefers-reduced-motion: reduce) {}
+  @media (max-width:560px) { .tool .ts { display:none; } .say .prose { font-size:14px; } header { gap:9px; } .ctl { padding:5px 8px; } }
 </style></head>
 <body>
 <div class="wrap">
@@ -294,6 +342,11 @@ const VIEWER_HTML = `<!doctype html>
       <svg id="themeicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>
     </button>
     <span class="status connecting" id="status"><span class="dot"></span><span id="statustext">connecting…</span></span>
+    <span class="ctlgroup" id="ctlgroup">
+      <button class="ctl" id="btn-stop" hidden title="Halt but keep resumable">Stop</button>
+      <button class="ctl danger" id="btn-discard" hidden title="Cancel and remove the worktree">Discard</button>
+      <button class="ctl go" id="btn-resume" hidden title="Resume this task">Resume</button>
+    </span>
   </header>
   <div class="meta" id="meta"></div>
   <details class="resume" id="resume"><summary>
@@ -307,6 +360,10 @@ const VIEWER_HTML = `<!doctype html>
     <circle cx="12" cy="17" r="1.5" fill="var(--sky)"/><circle cx="20" cy="17" r="1.5" fill="var(--sky)"/>
     <path d="M13.7 20.6c.7.6 1.9.6 2.3 0 .4.6 1.6.6 2.3 0" stroke="var(--pink)" stroke-width="1.3" stroke-linecap="round" fill="none"/>
   </svg><p>Waiting for the first step…</p><span class="sub">the agent's activity will stream in here</span></div></main>
+</div>
+<div class="composer" id="composer" hidden>
+  <input id="steer-input" type="text" autocomplete="off" placeholder="Steer the agent…"/>
+  <button id="steer-send">Send</button>
 </div>
 <script>
   const log=document.getElementById('log'), statusEl=document.getElementById('status'), statusText=document.getElementById('statustext');
@@ -415,36 +472,69 @@ const VIEWER_HTML = `<!doctype html>
     lastTextEl=null;
   }
 
-  const es=new EventSource('/tasks/__TASK_ID__/stream' + location.search);
-  es.onmessage=(e)=>{ try { add(JSON.parse(e.data)); } catch {} };
-  es.addEventListener('meta',(e)=>{
+  // Live controls: Stop (resumable) / Discard / Resume + a steer/follow-up composer. All POST to the
+  // token-gated control route; the viewer key in location.search is the auth.
+  const btnStop=document.getElementById('btn-stop'), btnDiscard=document.getElementById('btn-discard'), btnResume=document.getElementById('btn-resume');
+  const composer=document.getElementById('composer'), steerInput=document.getElementById('steer-input'), steerSend=document.getElementById('steer-send');
+  function setControls(status){
+    const running = status==='running' || status==='needs_input';
+    const idle = status==='idle';
+    btnStop.hidden=!running; btnDiscard.hidden=!running; btnResume.hidden=!idle;
+    composer.hidden=!(running||idle);
+    steerInput.placeholder = running ? 'Steer the agent…' : 'Add a follow-up, then Resume…';
+  }
+  async function control(action, text){
     try {
-      const m=JSON.parse(e.data), el=document.getElementById('meta');
-      const pill=(ico,label,val,mono)=>val?('<span class="pill">'+svg(ico)+'<span>'+label+' <b class="'+(mono?'mono':'')+'">'+esc(val)+'</b></span></span>'):'';
-      el.innerHTML=pill(I.dot,'runner',(m.runnerId||'')+(m.kind?' · '+m.kind:''))
-        +pill(I.web,'where',m.location)
-        +pill(I.git,'project',m.project)
-        +pill(I.read,'path',m.cwd?('…/'+String(m.cwd).split('/').slice(-2).join('/')):null,true);
-      if(m.resumeCommand){
-        document.getElementById('resumecmd').textContent=m.resumeCommand;
-        document.getElementById('resume').style.display='block';
-        document.getElementById('copy').onclick=()=>navigator.clipboard.writeText(m.resumeCommand).then(()=>{ const b=document.getElementById('copy'); b.textContent='Copied ✓'; setTimeout(()=>b.textContent='Copy',1200); });
-      }
-    } catch {}
-  });
-  es.addEventListener('status',(e)=>{
-    try {
-      const s=JSON.parse(e.data); statusText.textContent=s.status; statusEl.className='status '+s.status;
-      if(s.summary){
-        const was=atBottom();
-        finalMessage(s.summary, s.status==='failed');
-        stick(was);
-      }
-    } catch {}
-    es.close(); // settled — stop, and stop the browser from reconnecting
-  });
-  es.onopen=()=>{ if(statusEl.classList.contains('connecting')){ statusText.textContent='running'; statusEl.className='status running'; } };
-  es.onerror=()=>{ const s=statusEl.className; if(es.readyState===2 && !/idle|done|failed/.test(s)){ statusText.textContent='disconnected'; statusEl.className='status disconnected'; } };
+      const r = await fetch('/tasks/__TASK_ID__/control'+location.search, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ action, text }) });
+      return r.ok;
+    } catch { return false; }
+  }
+  function reconnectIfClosed(){ if(!es || es.readyState===2) connect(); }
+  btnStop.onclick=async()=>{ btnStop.disabled=true; await control('stop'); btnStop.disabled=false; };
+  btnDiscard.onclick=async()=>{ if(confirm('Discard this task and remove its worktree? This cannot be undone.')) await control('discard'); };
+  btnResume.onclick=async()=>{ const t=steerInput.value.trim(); if(await control('resume', t||undefined)){ steerInput.value=''; reconnectIfClosed(); } };
+  function sendComposer(){
+    const t=steerInput.value.trim(); if(!t) return;
+    const running=!btnStop.hidden;
+    steerSend.disabled=true;
+    control(running?'steer':'resume', t).then((ok)=>{ steerSend.disabled=false; if(ok){ steerInput.value=''; reconnectIfClosed(); } });
+  }
+  steerSend.onclick=sendComposer;
+  steerInput.addEventListener('keydown',(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendComposer(); } });
+
+  let es=null;
+  function connect(){
+    if(es){ try{ es.close(); }catch{} }
+    const base='/tasks/__TASK_ID__/stream'+location.search;
+    es=new EventSource(lastSeq>0 ? base+(location.search?'&':'?')+'lastId='+lastSeq : base);
+    es.onmessage=(e)=>{ try { add(JSON.parse(e.data)); } catch {} };
+    es.addEventListener('meta',(e)=>{
+      try {
+        const m=JSON.parse(e.data), el=document.getElementById('meta');
+        const pill=(ico,label,val,mono)=>val?('<span class="pill">'+svg(ico)+'<span>'+label+' <b class="'+(mono?'mono':'')+'">'+esc(val)+'</b></span></span>'):'';
+        el.innerHTML=pill(I.dot,'runner',(m.runnerId||'')+(m.kind?' · '+m.kind:''))
+          +pill(I.web,'where',m.location)
+          +pill(I.git,'project',m.project)
+          +pill(I.read,'path',m.cwd?('…/'+String(m.cwd).split('/').slice(-2).join('/')):null,true);
+        if(m.resumeCommand){
+          document.getElementById('resumecmd').textContent=m.resumeCommand;
+          document.getElementById('resume').style.display='block';
+          document.getElementById('copy').onclick=()=>navigator.clipboard.writeText(m.resumeCommand).then(()=>{ const b=document.getElementById('copy'); b.textContent='Copied ✓'; setTimeout(()=>b.textContent='Copy',1200); });
+        }
+      } catch {}
+    });
+    es.addEventListener('status',(e)=>{
+      try {
+        const s=JSON.parse(e.data); statusText.textContent=s.status; statusEl.className='status '+s.status;
+        if(s.summary){ const was=atBottom(); finalMessage(s.summary, s.status==='failed'); stick(was); }
+        setControls(s.status);
+      } catch {}
+      try{ es.close(); }catch{} // settled — a resume/steer reconnects
+    });
+    es.onopen=()=>{ if(statusEl.classList.contains('connecting')){ statusText.textContent='running'; statusEl.className='status running'; } setControls(statusText.textContent); };
+    es.onerror=()=>{ const s=statusEl.className; if(es.readyState===2 && !/idle|done|failed/.test(s)){ statusText.textContent='disconnected'; statusEl.className='status disconnected'; } };
+  }
+  connect();
 
   const themebtn=document.getElementById('themebtn');
   const sun='<circle cx="12" cy="12" r="4.2"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/>';
