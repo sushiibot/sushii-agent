@@ -174,6 +174,49 @@ describe("Dispatcher", () => {
     }
   });
 
+  test("selectRunner: sole eligible auto-picks; ambiguous asks; saved pref resolves", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const a = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "cloud", kind: "mock", workspaceRoot: "/w", adapter: new MockRunnerAdapter() });
+    const b = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "desktop", kind: "mock", workspaceRoot: "/w2", adapter: new MockRunnerAdapter() });
+    try {
+      await a.connect(); a.listen();
+      await b.connect(); b.listen();
+      await waitFor(() => dispatcher.isRunnerLive("cloud") && dispatcher.isRunnerLive("desktop"));
+
+      const repo = { owner: "acme", repo: "widgets" };
+      // Both declare a workspace → both eligible for a clone-on-demand repo → ambiguous.
+      const first = dispatcher.selectRunner("owner-1", "acme/widgets", { repo });
+      expect(first).toHaveProperty("ambiguous");
+      expect((first as { ambiguous: string[] }).ambiguous.sort()).toEqual(["cloud", "desktop"]);
+
+      // After recording a choice, it resolves to that runner without asking.
+      dispatcher.recordRoutingChoice("owner-1", "acme/widgets", "desktop");
+      expect(dispatcher.selectRunner("owner-1", "acme/widgets", { repo })).toEqual({ runnerId: "desktop", viaPref: true });
+
+      // A different principal has no saved pref → still ambiguous (pref is per principal).
+      expect(dispatcher.selectRunner("owner-2", "acme/widgets", { repo })).toHaveProperty("ambiguous");
+    } finally {
+      a.close(); b.close(); dispatcher.stop();
+    }
+  });
+
+  test("selectRunner: none eligible when no runner can service the request", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    // A runner with a declared project but no workspace root → cannot clone-on-demand.
+    const c = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "plain", kind: "mock", projects: ["/srv/x"], adapter: new MockRunnerAdapter() });
+    try {
+      await c.connect(); c.listen();
+      await waitFor(() => dispatcher.isRunnerLive("plain"));
+      expect(dispatcher.selectRunner("owner-1", "acme/widgets", { repo: { owner: "acme", repo: "widgets" } })).toEqual({ none: true });
+      // But it IS eligible for an in-project cwd.
+      expect(dispatcher.selectRunner("owner-1", "/srv/x", { cwd: "/srv/x/sub" })).toEqual({ runnerId: "plain", viaPref: false });
+    } finally {
+      c.close(); dispatcher.stop();
+    }
+  });
+
   test("e2e dispatch via the mock runner: registry row goes running -> done, summary persisted", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => true);
     dispatcher.listen();

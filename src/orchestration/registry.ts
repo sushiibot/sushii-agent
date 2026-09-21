@@ -1,11 +1,11 @@
 import type { Changes, Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
-import { tasks } from "../db/schema.ts";
+import { runnerRouting, tasks } from "../db/schema.ts";
 import type { TaskRow, TaskStatus } from "./contracts.ts";
 
 function ormFor(db: Database) {
-  return drizzle({ client: db, schema: { tasks } });
+  return drizzle({ client: db, schema: { tasks, runnerRouting } });
 }
 
 function parseThreadRefs(raw: string): string[] {
@@ -146,5 +146,27 @@ export class TaskRegistry {
       .where(eq(tasks.id, id))
       .run() as unknown as Changes;
     assertChanged(result, id);
+  }
+
+  /** Remembered runner for a (principal, project), or undefined. */
+  getRoutingPref(principal: string, projectKey: string): string | undefined {
+    const row = ormFor(this.db)
+      .select()
+      .from(runnerRouting)
+      .where(and(eq(runnerRouting.principal, principal), eq(runnerRouting.projectKey, projectKey)))
+      .get();
+    return row?.runnerId;
+  }
+
+  /** Persist the runner chosen for a (principal, project) so future dispatches route without asking. */
+  setRoutingPref(principal: string, projectKey: string, runnerId: string): void {
+    ormFor(this.db)
+      .insert(runnerRouting)
+      .values({ principal, projectKey, runnerId, updatedAt: Math.floor(Date.now() / 1000) })
+      .onConflictDoUpdate({
+        target: [runnerRouting.principal, runnerRouting.projectKey],
+        set: { runnerId, updatedAt: Math.floor(Date.now() / 1000) },
+      })
+      .run();
   }
 }

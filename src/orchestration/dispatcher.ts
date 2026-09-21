@@ -137,6 +137,36 @@ export class Dispatcher {
     return `${workspaceRoot}/${safe(principal)}/${safe(repo.owner)}-${safe(repo.repo)}`;
   }
 
+  /** Runners that are online AND can service this request: for a clone-on-demand `repo`, any runner
+   *  that declared a workspace root; for an existing `cwd`, any runner that declares that path. */
+  eligibleRunners(intent: { repo?: RepoSpec | null; cwd?: string }): string[] {
+    return [...this.liveRunners.keys()].filter((id) => {
+      if (!this.isRunnerLive(id)) return false;
+      if (intent.repo) return this.liveRunners.get(id)?.workspaceRoot != null;
+      return intent.cwd ? this.cwdInScope(id, intent.cwd) : false;
+    });
+  }
+
+  /** Pick a runner when the caller didn't name one: the sole eligible runner, else a saved
+   *  preference for this project, else report the ambiguous set for the caller to ask about. */
+  selectRunner(
+    principal: string,
+    projectKey: string,
+    intent: { repo?: RepoSpec | null; cwd?: string },
+  ): { runnerId: string; viaPref: boolean } | { ambiguous: string[] } | { none: true } {
+    const eligible = this.eligibleRunners(intent);
+    if (eligible.length === 0) return { none: true };
+    if (eligible.length === 1) return { runnerId: eligible[0], viaPref: false };
+    const pref = this.registry.getRoutingPref(principal, projectKey);
+    if (pref && eligible.includes(pref)) return { runnerId: pref, viaPref: true };
+    return { ambiguous: eligible };
+  }
+
+  /** Remember which runner a principal chose for a project, so it isn't asked again. */
+  recordRoutingChoice(principal: string, projectKey: string, runnerId: string): void {
+    this.registry.setRoutingPref(principal, projectKey, runnerId);
+  }
+
   /** Authz-gates first (throws AuthzError if denied), then creates the task row and starts it.
    *  Returns once the task is created + started — events stream in asynchronously via onEvent. */
   async dispatch(input: DispatchInput): Promise<TaskRow> {
@@ -297,9 +327,14 @@ export class Dispatcher {
       case "progress":
         logger.debug({ taskId: event.taskId, note: event.note }, "runner progress");
         return;
-      case "handback":
-        this.registry.setSummary(event.taskId, event.summary);
+      case "handback": {
+        // Fold the runner-opened PR into the stored summary so the settled notification surfaces it
+        // — the runner pushes + opens the PR at handback, and its URL only arrives here in the meta.
+        const pr = event.meta?.prUrl;
+        const summary = pr ? `${event.summary}\n\n🔗 PR: ${pr}` : event.summary;
+        this.registry.setSummary(event.taskId, summary);
         return;
+      }
     }
   }
 

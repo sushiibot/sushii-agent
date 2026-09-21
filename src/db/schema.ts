@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
 import { TASK_STATUSES } from "../orchestration/contracts.ts";
 
 export const messages = sqliteTable(
@@ -111,4 +111,18 @@ export const tasks = sqliteTable(
     archivedAt: integer("archived_at"), // set when an idle/done/failed task ages out of the live roster
   },
   (table) => [index("idx_tasks_created_by").on(table.createdBy)],
+);
+
+/** Remembered runner choice per (principal, project) — so dispatch only asks which runner once,
+ *  then routes automatically. A lightweight routing memory; a future general memory system can
+ *  subsume it. projectKey = "owner/repo" for clone-on-demand, else the project name / cwd. */
+export const runnerRouting = sqliteTable(
+  "runner_routing",
+  {
+    principal: text("principal").notNull(),
+    projectKey: text("project_key").notNull(),
+    runnerId: text("runner_id").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.principal, table.projectKey] })],
 );

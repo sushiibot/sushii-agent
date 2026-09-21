@@ -13,6 +13,10 @@ class FakeDispatcher {
   async dispatch(input: { principal: string; runnerId: string }): Promise<{ id: string; nativeSessionId: string }> {
     return { id: "task-1", nativeSessionId: `native-${input.principal}` };
   }
+  selectRunner(): { runnerId: string; viaPref: boolean } {
+    return { runnerId: "cloud", viaPref: false };
+  }
+  recordRoutingChoice(): void {}
   listRunning(): unknown[] {
     return [];
   }

@@ -41,11 +41,11 @@ export const dispatchToRunnerEntry: ToolEntry = {
   name: "dispatch_to_runner",
   definition: {
     name: "dispatch_to_runner",
-    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only. Two modes: (1) an existing on-disk project — call list_runners first to resolve the name to the runner + absolute path, and pass that as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it into its workspace, works, and opens a PR at handback; omit cwd in this mode. Don't guess a path.",
+    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only. Two modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it, works, and opens a PR at handback; omit cwd in this mode. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered).",
     parameters: {
       type: "object",
       properties: {
-        runner_id: { type: "string", description: "Which connected runner to dispatch to (from list_runners)." },
+        runner_id: { type: "string", description: "Which runner to dispatch to. Optional — omit to auto-select (see description)." },
         cwd: { type: "string", description: "Absolute working directory — a project path from list_runners, or a path nested under one. Omit when `repo` is given." },
         prompt: { type: "string", description: "The task prompt to hand the runner." },
         project: { type: "string", description: "Logical project name, for grouping/lookup." },
@@ -56,42 +56,62 @@ export const dispatchToRunnerEntry: ToolEntry = {
   },
   requiresHosts: [],
   async execute(input, ctx) {
-    const runnerId = input.runner_id as string;
-    const principal = authorize(ctx, "runner.dispatch", runnerId);
+    const principal = authorize(ctx, "runner.dispatch", input.runner_id as string | undefined);
     if (!principal) return { content: DENIED };
-
-    let dispatcher;
-    try {
-      dispatcher = getDispatcher();
-      // isRunnerLive() below can only ever be true once the transport is bound — bind it here
-      // rather than waiting for dispatch() to, or a fresh process's first dispatch_to_runner call
-      // would see "not connected" forever without ever reaching dispatch()'s own bind.
-      dispatcher.ensureListening();
-    } catch (err) {
-      if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
-      throw err;
-    }
-    if (!dispatcher.isRunnerLive(runnerId)) return { content: `Runner "${runnerId}" is not connected.` };
 
     let repo;
     if (input.repo) {
       repo = parseRepoSpec(input.repo as string);
       if (!repo) return { content: `Invalid repo "${input.repo}" — use 'owner/name' or a GitHub URL.` };
     }
-    if (!repo && !input.cwd) return { content: "Provide either cwd (existing project) or repo (clone-on-demand)." };
+    const cwd = (input.cwd as string | undefined) ?? "";
+    if (!repo && !cwd) return { content: "Provide either cwd (existing project) or repo (clone-on-demand)." };
+
+    let dispatcher;
+    try {
+      // Bind the transport now — isRunnerLive()/selectRunner() can only be true once it is, and a
+      // fresh process's first dispatch would otherwise never reach dispatch()'s own bind.
+      dispatcher = getDispatcher();
+      dispatcher.ensureListening();
+    } catch (err) {
+      if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+      throw err;
+    }
+
+    // Remembered per (principal, project); repo → "owner/repo", else the project name or cwd.
+    const projectKey = repo ? `${repo.owner}/${repo.repo}` : ((input.project as string | undefined) ?? cwd);
+
+    // Auto-select the runner when the caller didn't name one: sole eligible, or a saved preference,
+    // else hand the ambiguous set back so the agent asks the user (which it records for next time).
+    let runnerId = input.runner_id as string | undefined;
+    let viaPref = false;
+    if (!runnerId) {
+      const sel = dispatcher.selectRunner(principal, projectKey, { repo, cwd });
+      if ("none" in sel) {
+        return { content: "No connected runner can handle this — need one online that can clone a repo (for `repo`) or that declares this project (for `cwd`)." };
+      }
+      if ("ambiguous" in sel) {
+        return { content: `Multiple runners can do this: ${sel.ambiguous.join(", ")}. Ask the user which one with ask_question (choices = exactly those runner ids), then call dispatch_to_runner again with the chosen runner_id.` };
+      }
+      runnerId = sel.runnerId;
+      viaPref = sel.viaPref;
+    }
+    if (!dispatcher.isRunnerLive(runnerId)) return { content: `Runner "${runnerId}" is not connected.` };
 
     try {
       const task = await dispatcher.dispatch({
         principal,
         runnerId,
-        cwd: (input.cwd as string | undefined) ?? "",
+        cwd,
         project: (input.project as string | undefined) ?? null,
         prompt: input.prompt as string,
         space: spaceOf(ctx),
         spawnedFromSurface: ctx.space.surface,
         repo,
       });
-      return { content: `Dispatched task ${task.id} on runner "${runnerId}" (native session ${task.nativeSessionId}).` };
+      dispatcher.recordRoutingChoice(principal, projectKey, runnerId); // remember for next time
+      const note = viaPref ? ` (your saved runner for ${projectKey})` : "";
+      return { content: `Dispatched task ${task.id} on runner "${runnerId}"${note} (native session ${task.nativeSessionId}).` };
     } catch (err) {
       if (err instanceof AuthzError) return { content: DENIED };
       // dispatch() binds the ORCH port lazily on first use, so a listen() failure surfaces here
