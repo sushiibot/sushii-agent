@@ -32,15 +32,17 @@ function truncate(text: string, max = 160): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-// One display line per activity signal for the live views. null for signals with nothing to show.
-export function activityLine(sig: StreamLineEvent): string | null {
+// One typed display entry per activity signal for the live views. null for signals with nothing to
+// show. Results carry more text than the terse tool/text lines — they're hidden by default and only
+// shown on demand (Discord drops them; the web reveals them on click).
+export function activityEntry(sig: StreamLineEvent): { line: string; atype: "tool" | "result" | "text" } | null {
   switch (sig.type) {
     case "tool_use":
-      return `🔧 ${sig.name}${sig.detail ? ` ${truncate(sig.detail, 200)}` : ""}`;
+      return { line: `${sig.name}${sig.detail ? ` ${truncate(sig.detail, 200)}` : ""}`, atype: "tool" };
     case "tool_result":
-      return `   ↳ ${sig.isError ? "✗ " : ""}${truncate(sig.output, 200)}`;
+      return { line: `${sig.isError ? "✗ " : ""}${truncate(sig.output, 1500)}`, atype: "result" };
     case "assistant_text":
-      return `💬 ${truncate(sig.text, 300)}`;
+      return { line: truncate(sig.text, 400), atype: "text" };
     default:
       return null;
   }
@@ -127,8 +129,8 @@ export class RunnerEventReducer {
 
   onSignal(sig: StreamLineEvent): RunnerEvent[] {
     const out: RunnerEvent[] = [];
-    const activity = activityLine(sig);
-    if (activity) out.push({ kind: "activity", taskId: this.taskId, line: activity, at: this.now() });
+    const activity = activityEntry(sig);
+    if (activity) out.push({ kind: "activity", taskId: this.taskId, line: activity.line, atype: activity.atype, at: this.now() });
     switch (sig.type) {
       case "tool_use":
         this.toolsRun++;

@@ -30,9 +30,10 @@ export interface TaskRow {
 export type RunnerEvent =
   | { kind: "status"; taskId: string; status: TaskStatus; reason?: string }
   | { kind: "progress"; taskId: string; note: string } // debounced; never per-token
-  // One granular, human-readable activity line (a tool call + its args, a tool result, a chunk of
-  // assistant text). Feeds the live views (Discord tail + web stream); not debounced at the source.
-  | { kind: "activity"; taskId: string; line: string; at: number }
+  // One granular activity line, typed so surfaces can filter: "tool" (a call + its args), "result"
+  // (a tool's output — hidden by default, revealed on demand), "text" (assistant text). Feeds the
+  // live views; not debounced at the source.
+  | { kind: "activity"; taskId: string; line: string; at: number; atype: "tool" | "result" | "text" }
   | { kind: "handback"; taskId: string; summary: string; meta?: HandbackMeta };
 
 // Deterministic, LLM-free metadata the runner computes (git + result object).

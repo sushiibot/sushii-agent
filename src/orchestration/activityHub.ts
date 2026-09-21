@@ -9,6 +9,7 @@ export interface ActivityLine {
   line: string;
   at: number;
   seq: number; // monotonic per task — the SSE event id, for de-dup + Last-Event-ID resume
+  atype: "tool" | "result" | "text";
 }
 
 // Static task context for the header/panels: which runner + where, which project + path, and how to
@@ -71,10 +72,10 @@ export class ActivityHub {
     if (t) t.meta = meta;
   }
 
-  append(taskId: string, line: string, at: number): void {
+  append(taskId: string, line: string, at: number, atype: ActivityLine["atype"]): void {
     const t = this.tasks.get(taskId);
     if (!t) return;
-    const entry: ActivityLine = { line, at, seq: ++t.seq };
+    const entry: ActivityLine = { line, at, seq: ++t.seq, atype };
     t.lines.push(entry);
     if (t.lines.length > MAX_LINES) t.lines.shift();
     for (const cb of t.subscribers) {

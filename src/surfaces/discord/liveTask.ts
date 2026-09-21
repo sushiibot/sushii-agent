@@ -1,6 +1,6 @@
 import type { Client, Message } from "discord.js";
 import type { TaskRow } from "../../orchestration/contracts.ts";
-import type { ActivityHub, TaskMeta, TaskView } from "../../orchestration/activityHub.ts";
+import type { ActivityHub, ActivityLine, TaskMeta, TaskView } from "../../orchestration/activityHub.ts";
 import { getLogger } from "../../logger.ts";
 
 const log = getLogger("surfaces/discord/liveTask");
@@ -27,8 +27,10 @@ export class LiveTaskView {
     private readonly webUrl: string | null,
     private readonly meta: TaskMeta,
   ) {
-    this.lines = view.lines.map((l) => l.line); // seed from the buffer captured so far
-    this.unsubs.push(view.onLine((l) => this.onLine(l.line)));
+    // Show tool calls + assistant text only; tool results are hidden here (they're the noise) and
+    // stay available in the web viewer.
+    this.lines = view.lines.filter((l) => l.atype !== "result").map(fmtLine);
+    this.unsubs.push(view.onLine((l) => this.onLine(l)));
     this.unsubs.push(view.onStatus((status, summary) => this.onSettle(status, summary)));
   }
 
@@ -49,8 +51,9 @@ export class LiveTaskView {
     return live;
   }
 
-  private onLine(line: string): void {
-    this.lines.push(line);
+  private onLine(entry: ActivityLine): void {
+    if (entry.atype === "result") return; // results hidden in Discord
+    this.lines.push(fmtLine(entry));
     this.dirty = true;
     this.schedule();
   }
@@ -91,6 +94,10 @@ export class LiveTaskView {
     if (settled && this.meta.resumeCommand) out += `\nResume elsewhere:\n\`\`\`\n${this.meta.resumeCommand}\n\`\`\``;
     return out.slice(0, 2000);
   }
+}
+
+function fmtLine(entry: ActivityLine): string {
+  return entry.atype === "tool" ? `🔧 ${entry.line}` : `💬 ${entry.line}`;
 }
 
 function headerBlock(taskId: string, status: string, webUrl: string | null, meta: TaskMeta): string {

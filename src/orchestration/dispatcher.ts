@@ -360,7 +360,7 @@ export class Dispatcher {
         logger.debug({ taskId: event.taskId, note: event.note }, "runner progress");
         return;
       case "activity":
-        getActivityHub().append(event.taskId, event.line, event.at);
+        getActivityHub().append(event.taskId, event.line, event.at, event.atype);
         return;
       case "handback":
         // The agent opens its own PR (via gh) when the task calls for it and names the link in its

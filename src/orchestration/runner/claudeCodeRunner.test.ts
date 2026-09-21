@@ -3,7 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import type { RunnerEvent } from "../contracts.ts";
-import { buildRunnerEvents, ClaudeCodeRunnerAdapter, parseClaudeStreamLine, RunnerEventReducer } from "./claudeCodeRunner.ts";
+import { activityEntry, buildRunnerEvents, ClaudeCodeRunnerAdapter, parseClaudeStreamLine, RunnerEventReducer } from "./claudeCodeRunner.ts";
+
+describe("activityEntry typing", () => {
+  test("classifies tool calls, results, and text so surfaces can filter", () => {
+    expect(activityEntry({ type: "tool_use", name: "bash", detail: "ls" })).toEqual({ line: "bash ls", atype: "tool" });
+    expect(activityEntry({ type: "tool_result", name: "bash", output: "file.txt", isError: false })).toEqual({ line: "file.txt", atype: "result" });
+    expect(activityEntry({ type: "tool_result", name: "bash", output: "boom", isError: true })).toEqual({ line: "✗ boom", atype: "result" });
+    expect(activityEntry({ type: "assistant_text", text: "thinking" })).toEqual({ line: "thinking", atype: "text" });
+  });
+});
 
 // Captured/assumed shape of `claude -p <prompt> --output-format=stream-json
 // --verbose` line output. See the parser's doc comment for the assumption.

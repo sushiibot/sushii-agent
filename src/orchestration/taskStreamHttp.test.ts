@@ -32,7 +32,7 @@ describe("task stream routes", () => {
     const app = appWithRoutes();
     const hub = getActivityHub();
     const token = hub.open("web-sse");
-    hub.append("web-sse", "🔧 bash: ls", 1);
+    hub.append("web-sse", "bash: ls", 1, "tool");
     hub.settle("web-sse", "done", "finished");
 
     const res = await app.request(`/tasks/web-sse/stream?key=${token}`);
@@ -47,8 +47,8 @@ describe("task stream routes", () => {
     const app = appWithRoutes();
     const hub = getActivityHub();
     const token = hub.open("web-resume");
-    hub.append("web-resume", "line-A", 1); // seq 1
-    hub.append("web-resume", "line-B", 2); // seq 2
+    hub.append("web-resume", "line-A", 1, "text"); // seq 1
+    hub.append("web-resume", "line-B", 2, "text"); // seq 2
     hub.settle("web-resume", "done", null);
 
     const res = await app.request(`/tasks/web-resume/stream?key=${token}`, { headers: { "Last-Event-ID": "1" } });

@@ -89,8 +89,11 @@ const VIEWER_HTML = `<!doctype html>
   .ts { color:#586069; flex:0 0 auto; -webkit-user-select:none; user-select:none; }
   .msg { white-space:pre-wrap; word-break:break-word; min-width:0; }
   .tool { border-left-color:var(--tool); } .tool .msg { color:var(--tool); }
-  .result { } .result .msg { color:var(--dim); }
+  .tool.has { cursor:pointer; } .tool.has:hover { background:#151b24; }
+  .hint { color:var(--dim); }
   .text .msg { color:var(--text); }
+  .out { display:none; margin:1px 16px 6px 52px; padding:8px 10px; background:#0b0f14; border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; word-break:break-word; color:var(--dim); max-height:40vh; overflow:auto; }
+  .out.open { display:block; }
   .summary { margin:8px 16px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:8px; color:var(--text); white-space:pre-wrap; }
   #meta { padding:10px 16px; border-bottom:1px solid var(--border); background:#0f141b; display:none; flex-wrap:wrap; gap:6px 20px; }
   #meta.on { display:flex; }
@@ -114,14 +117,22 @@ const VIEWER_HTML = `<!doctype html>
   const atBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 60;
   const pad = (n) => String(n).padStart(2,'0');
   function ts(ms){ const d=new Date(ms); return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
-  function kindOf(line){ if(line.startsWith('🔧')) return 'tool'; if(line.trimStart().startsWith('↳')) return 'result'; if(line.startsWith('💬')) return 'text'; return 'text'; }
+  let pendingTool = null; // last tool row awaiting its result
   function add(entry){
     if(entry.seq && entry.seq<=lastSeq) return; if(entry.seq) lastSeq=entry.seq;
     const stick=atBottom();
-    const row=document.createElement('div'); row.className='row '+kindOf(entry.line);
+    // A tool result attaches to its call row (revealed on click) instead of being its own noisy row.
+    if(entry.atype==='result'){
+      const h=pendingTool; pendingTool=null;
+      if(h){ h.out.textContent=entry.line; h.row.classList.add('has'); h.hint.textContent=' ▸'; h.row.onclick=()=>{ const open=h.out.classList.toggle('open'); h.hint.textContent=open?' ▾':' ▸'; }; }
+      if(stick) window.scrollTo(0,document.body.scrollHeight); return;
+    }
+    const row=document.createElement('div'); row.className='row '+entry.atype;
     const t=document.createElement('span'); t.className='ts'; t.textContent=entry.at?ts(entry.at):'';
-    const m=document.createElement('span'); m.className='msg'; m.textContent=entry.line;
-    row.append(t,m); log.appendChild(row);
+    const m=document.createElement('span'); m.className='msg'; m.textContent=(entry.atype==='tool'?'🔧 ':'💬 ')+entry.line;
+    const hint=document.createElement('span'); hint.className='hint';
+    m.appendChild(hint); row.append(t,m); log.appendChild(row);
+    if(entry.atype==='tool'){ const out=document.createElement('div'); out.className='out'; row.after(out); pendingTool={row,out,hint}; }
     if(stick) window.scrollTo(0,document.body.scrollHeight);
   }
   es.onmessage = (e) => { try { add(JSON.parse(e.data)); } catch {} };

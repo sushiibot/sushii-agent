@@ -7,16 +7,16 @@ describe("ActivityHub", () => {
     const token = hub.open("t1");
     expect(token).toMatch(/^[0-9a-f]{32}$/);
 
-    hub.append("t1", "first", 1);
+    hub.append("t1", "first", 1, "text");
     const view = hub.view("t1")!;
     expect(view.lines.map((l) => l.line)).toEqual(["first"]);
 
     const got: string[] = [];
     const unsub = view.onLine((l) => got.push(l.line));
-    hub.append("t1", "second", 2);
+    hub.append("t1", "second", 2, "text");
     expect(got).toEqual(["second"]);
     unsub();
-    hub.append("t1", "third", 3);
+    hub.append("t1", "third", 3, "text");
     expect(got).toEqual(["second"]); // unsubscribed
 
     // Token gate: wrong token → no view, right token → view.
@@ -37,7 +37,7 @@ describe("ActivityHub", () => {
 
   test("append is a no-op for an unopened task; taskViewUrl needs a base", () => {
     const hub = new ActivityHub();
-    hub.append("ghost", "x", 1); // must not throw
+    hub.append("ghost", "x", 1, "text"); // must not throw
     expect(hub.view("ghost")).toBeNull();
     expect(taskViewUrl(undefined, "t", "k")).toBeNull();
     expect(taskViewUrl("https://h.example/", "t", "k")).toBe("https://h.example/tasks/t?key=k");
