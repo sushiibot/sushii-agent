@@ -19,34 +19,43 @@ export function registerTaskStreamRoutes(app: Hono): void {
         await stream.writeSSE({ event: "status", data: JSON.stringify({ status: view.status, summary: view.summary }) });
         return; // already settled — backlog delivered, nothing more will come
       }
-      let done = false;
-      const unsubLine = view.onLine((l) => void stream.writeSSE({ data: JSON.stringify(l) }).catch(() => {}));
-      const unsubStatus = view.onStatus((status, summary) => {
-        void stream.writeSSE({ event: "status", data: JSON.stringify({ status, summary }) }).catch(() => {});
-        done = true;
+      // Hold the stream open, forwarding lines live and closing promptly on settle or disconnect.
+      // A separate heartbeat keeps the connection alive without blocking the close.
+      await new Promise<void>((resolve) => {
+        let closed = false;
+        const heartbeat = setInterval(() => void stream.writeSSE({ event: "ping", data: "" }).catch(() => {}), 15000);
+        const unsubLine = view.onLine((l) => void stream.writeSSE({ data: JSON.stringify(l) }).catch(() => {}));
+        const unsubStatus = view.onStatus((status, summary) => {
+          void stream.writeSSE({ event: "status", data: JSON.stringify({ status, summary }) }).catch(() => {});
+          finish();
+        });
+        function finish(): void {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          unsubLine();
+          unsubStatus();
+          resolve();
+        }
+        stream.onAbort(finish);
       });
-      stream.onAbort(() => {
-        unsubLine();
-        unsubStatus();
-      });
-      // Hold the stream open with a heartbeat until the task settles or the client disconnects.
-      while (!done && !stream.aborted) {
-        await stream.sleep(15000);
-        await stream.writeSSE({ event: "ping", data: "" }).catch(() => {});
-      }
-      unsubLine();
-      unsubStatus();
     });
   });
 
   app.get("/tasks/:id", (c) => {
     const id = c.req.param("id");
     if (!getActivityHub().viewWithToken(id, c.req.query("key") ?? "")) {
-      return c.text("Not found", 404);
+      // Either a bad key or a stream that has expired (the buffer is per-process + short-lived).
+      return c.html(EXPIRED_HTML, 404);
     }
-    return c.html(VIEWER_HTML.replace("__TASK_ID__", escapeHtml(id)));
+    return c.html(VIEWER_HTML.replaceAll("__TASK_ID__", escapeHtml(id)));
   });
 }
+
+const EXPIRED_HTML = `<!doctype html><meta charset="utf-8"/><title>Stream unavailable</title>
+<body style="background:#0d1117;color:#c9d1d9;font:14px/1.6 ui-monospace,monospace;padding:40px">
+This task's live stream has expired or the link is invalid. Live streams are kept only while a task
+runs and for a short window after; the task's summary is in Discord.</body>`;
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] as string);

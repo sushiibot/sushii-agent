@@ -375,11 +375,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     dispatcher.onTaskStarted((task) => {
       if (task.spawnedFromSurface !== SURFACE) return;
       const hub = getActivityHub();
-      const view = hub.view(task.id);
       const token = hub.tokenFor(task.id);
-      if (!view) return;
       const webUrl = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
-      void LiveTaskView.start(client, task, view, webUrl).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
+      void LiveTaskView.start(client, task, hub, webUrl).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
     });
     // Bind the ORCH port at boot so a runner reconnects immediately after any restart, rather than
     // waiting for the first dispatch to lazily bind it (which strands the runner until then).

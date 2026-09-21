@@ -28,10 +28,10 @@ describe("ActivityHub", () => {
     const hub = new ActivityHub();
     hub.open("t2");
     const view = hub.view("t2")!;
-    let seen: [string, string | null] | null = null;
-    view.onStatus((status, summary) => (seen = [status, summary]));
+    const seen: Array<[string, string | null]> = [];
+    view.onStatus((status, summary) => seen.push([status, summary]));
     hub.settle("t2", "done", "all good");
-    expect(seen).toEqual(["done", "all good"]);
+    expect(seen).toEqual([["done", "all good"]]);
     expect(hub.view("t2")!.status).toBe("done");
   });
 

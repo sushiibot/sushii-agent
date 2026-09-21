@@ -18,8 +18,15 @@ describe("task stream routes", () => {
     expect((await app.request("/tasks/web-html?key=wrong")).status).toBe(404);
     const ok = await app.request(`/tasks/web-html?key=${token}`);
     expect(ok.status).toBe(200);
-    expect(await ok.text()).toContain("web-html");
+    const html = await ok.text();
+    expect(html).toContain("web-html");
+    expect(html).not.toContain("__TASK_ID__"); // every placeholder substituted (replaceAll)
   });
+
+  // The live (still-running) SSE path forwards hub.onLine/onStatus to writeSSE and closes on settle
+  // via an event callback (not a blocking poll). Its subscription mechanics are covered by the
+  // ActivityHub tests; a full over-HTTP live assertion needs a real socket (Bun's in-memory
+  // app.request doesn't drive an open SSE stream), so it's exercised in the live deploy, not here.
 
   test("SSE stream delivers backlog + final status for a settled task", async () => {
     const app = appWithRoutes();

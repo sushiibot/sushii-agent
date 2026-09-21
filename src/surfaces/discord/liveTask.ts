@@ -1,6 +1,6 @@
 import type { Client, Message } from "discord.js";
 import type { TaskRow } from "../../orchestration/contracts.ts";
-import type { TaskView } from "../../orchestration/activityHub.ts";
+import type { ActivityHub, TaskView } from "../../orchestration/activityHub.ts";
 import { getLogger } from "../../logger.ts";
 
 const log = getLogger("surfaces/discord/liveTask");
@@ -31,7 +31,7 @@ export class LiveTaskView {
     this.unsubs.push(view.onStatus((status, summary) => this.onSettle(status, summary)));
   }
 
-  static async start(client: Client, task: TaskRow, view: TaskView, webUrl: string | null): Promise<LiveTaskView | null> {
+  static async start(client: Client, task: TaskRow, hub: ActivityHub, webUrl: string | null): Promise<LiveTaskView | null> {
     const user = await client.users.fetch(task.createdBy).catch(() => null);
     if (!user) return null;
     const msg = await user.send(header(task.id, "running", webUrl)).catch((err) => {
@@ -39,6 +39,10 @@ export class LiveTaskView {
       return null;
     });
     if (!msg) return null;
+    // Read the buffer AFTER the DM round-trip and subscribe in the same synchronous tick, so lines
+    // that arrived during the await are in the seed and none fall between seed and subscription.
+    const view = hub.view(task.id);
+    if (!view) return null;
     const live = new LiveTaskView(task.id, msg, view, webUrl);
     live.render("running"); // paint whatever is already buffered
     return live;
