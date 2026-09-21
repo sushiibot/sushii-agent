@@ -344,9 +344,10 @@ export class PiRunnerAdapter implements RunnerAdapter {
       modelRuntime,
       resourceLoader: loader,
       settingsManager: SettingsManager.inMemory(),
-      // Full coding toolset; bash is supplied as a customTool so its spawns carry injected git/gh
-      // creds. Handback metadata is derived from the git diff afterward (kind-agnostic).
-      tools: ["read", "edit", "write", "grep", "find", "ls"],
+      // "bash" MUST stay in this allowlist: Pi filters customTools by the same allowlist
+      // (isAllowedTool), then a same-named custom tool overrides the built-in — so our credential-
+      // injecting bash only wins if "bash" is allowed. Drop it and the agent gets no shell at all.
+      tools: ["read", "edit", "write", "grep", "find", "ls", "bash"],
       // Cast: the factory returns a bash-specialized ToolDefinition; customTools wants the generic
       // one (TS invariance on the render generics). The runtime object is a valid tool def.
       customTools: [bashTool as unknown as ToolDefinition],
