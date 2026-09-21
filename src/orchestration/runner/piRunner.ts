@@ -58,6 +58,31 @@ async function resolveContextWindow(modelId: string, fallback: number): Promise<
   }
 }
 
+// Prefer the human-meaningful field of a tool's args for the activity line (the command, the path,
+// the pattern), else compact JSON. Truncation happens downstream in activityLine.
+function summarizeToolArgs(args: unknown): string {
+  if (args && typeof args === "object") {
+    const a = args as Record<string, unknown>;
+    for (const k of ["command", "path", "file_path", "pattern", "query"]) {
+      if (typeof a[k] === "string") return a[k] as string;
+    }
+  }
+  try {
+    return typeof args === "string" ? args : JSON.stringify(args);
+  } catch {
+    return "";
+  }
+}
+
+function stringifyResult(result: unknown): string {
+  if (typeof result === "string") return result;
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
+}
+
 // Accumulates per-turn state the reducer's terminal "result" signal needs — Pi surfaces the final
 // text as deltas and usage only on the "done" event, so we carry them until prompt() resolves.
 interface TurnAccumulator {
@@ -73,7 +98,10 @@ interface TurnAccumulator {
  */
 export function piEventToSignals(event: AgentSessionEvent, acc: TurnAccumulator): StreamLineEvent[] {
   if (event.type === "tool_execution_start") {
-    return [{ type: "tool_use", name: event.toolName }];
+    return [{ type: "tool_use", name: event.toolName, detail: summarizeToolArgs(event.args) }];
+  }
+  if (event.type === "tool_execution_end") {
+    return [{ type: "tool_result", name: event.toolName, output: stringifyResult(event.result), isError: event.isError === true }];
   }
   if (event.type === "message_update") {
     const m = event.assistantMessageEvent;

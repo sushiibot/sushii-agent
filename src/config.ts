@@ -25,6 +25,9 @@ export interface Config {
   discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
   mcpBridgePort: number;
+  /** Public base URL of the bot's HTTP app (e.g. https://agent-mcp.sushii.bot), used to build the
+   *  per-task live-stream viewer link. Unset → no web link is shown (Discord tail still works). */
+  taskStreamBaseUrl: string | undefined;
   buzz: {
     /** Nostr private key (hex or nsec). Unset → the buzz surface is disabled entirely. */
     privateKey: string | undefined;
@@ -110,6 +113,7 @@ export const config: Config = {
   ownerDiscordId: process.env["OWNER_DISCORD_ID"],
   linearApiKey: process.env["LINEAR_API_KEY"],
   linearTeamId: process.env["LINEAR_TEAM_ID"],
+  taskStreamBaseUrl: process.env["TASK_STREAM_BASE_URL"],
   grafanaBaseUrl: process.env["GRAFANA_BASE_URL"],
   grafanaApiToken: process.env["GRAFANA_API_TOKEN"],
   discordOAuthClientId: process.env["DISCORD_OAUTH_CLIENT_ID"],

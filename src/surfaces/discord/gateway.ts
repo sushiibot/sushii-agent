@@ -39,6 +39,8 @@ import { buildTriggerText } from "./inbound.ts";
 import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
 import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/dispatcher.ts";
 import type { TaskRow } from "../../orchestration/contracts.ts";
+import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts";
+import { LiveTaskView } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
@@ -367,6 +369,17 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     const dispatcher = getDispatcher();
     dispatcher.onTaskSettled((task) => {
       void notifyTaskSettled(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task settled"));
+    });
+    // A live-updating DM progress view per task (header + activity tail, in-place edits ≤5s), with a
+    // link to the full web stream. Settlement is handled by the view's own status subscription.
+    dispatcher.onTaskStarted((task) => {
+      if (task.spawnedFromSurface !== SURFACE) return;
+      const hub = getActivityHub();
+      const view = hub.view(task.id);
+      const token = hub.tokenFor(task.id);
+      if (!view) return;
+      const webUrl = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
+      void LiveTaskView.start(client, task, view, webUrl).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
     });
     // Bind the ORCH port at boot so a runner reconnects immediately after any restart, rather than
     // waiting for the first dispatch to lazily bind it (which strands the runner until then).

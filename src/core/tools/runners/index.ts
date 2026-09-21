@@ -4,7 +4,9 @@
 import type { ToolEntry, ToolContext } from "../../contracts.ts";
 import type { Capability, RepoSpec } from "../../../orchestration/contracts.ts";
 import { AuthzError, DispatcherUnavailableError, getDispatcher } from "../../../orchestration/dispatcher.ts";
+import { getActivityHub, taskViewUrl } from "../../../orchestration/activityHub.ts";
 import { can, spaceKey } from "../../../orchestration/authz.ts";
+import { config } from "../../../config.ts";
 
 // One message for every denial reason (missing identity, wrong space, wrong principal) —
 // distinguishing them would let a caller enumerate which check failed.
@@ -111,7 +113,10 @@ export const dispatchToRunnerEntry: ToolEntry = {
       });
       dispatcher.recordRoutingChoice(principal, projectKey, runnerId); // remember for next time
       const note = viaPref ? ` (your saved runner for ${projectKey})` : "";
-      return { content: `Dispatched task ${task.id} on runner "${runnerId}"${note} (native session ${task.nativeSessionId}).` };
+      const token = getActivityHub().tokenFor(task.id);
+      const url = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
+      const live = url ? ` Live: ${url}` : "";
+      return { content: `Dispatched task ${task.id} on runner "${runnerId}"${note} (native session ${task.nativeSessionId}).${live}` };
     } catch (err) {
       if (err instanceof AuthzError) return { content: DENIED };
       // dispatch() binds the ORCH port lazily on first use, so a listen() failure surfaces here

@@ -10,6 +10,7 @@ import { AuthorizationCodeStore, ClientStore, PendingAuthorizationStore, Pending
 import { SessionStore } from "./session.ts";
 import { WebhookCache } from "./webhooks.ts";
 import { buildMcpServer } from "./mcpServer.ts";
+import { registerTaskStreamRoutes } from "../../orchestration/taskStreamHttp.ts";
 
 const RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource/mcp";
 
@@ -22,6 +23,9 @@ export function buildMcpHttpApp(
   const webhookCache = new WebhookCache();
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
+
+  // Live task-activity viewer (token-gated per task) — same HTTP app/ingress as the MCP bridge.
+  registerTaskStreamRoutes(app);
 
   registerOAuthRoutes(app, {
     client,

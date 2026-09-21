@@ -10,8 +10,14 @@ const ev = (e: unknown) => e as AgentSessionEvent;
 describe("piEventToSignals", () => {
   test("tool_execution_start → a tool_use signal named for the tool", () => {
     const acc = { finalText: "", tokens: undefined as number | undefined };
-    const sigs = piEventToSignals(ev({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} }), acc);
-    expect(sigs).toEqual([{ type: "tool_use", name: "bash" }]);
+    const sigs = piEventToSignals(ev({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } }), acc);
+    expect(sigs).toEqual([{ type: "tool_use", name: "bash", detail: "ls" }]);
+  });
+
+  test("tool_execution_end → a tool_result signal with truncated output + error flag", () => {
+    const acc = { finalText: "", tokens: undefined as number | undefined };
+    const sigs = piEventToSignals(ev({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: "done", isError: false }), acc);
+    expect(sigs).toEqual([{ type: "tool_result", name: "bash", output: "done", isError: false }]);
   });
 
   test("text_end → an assistant_text signal; text_delta accumulates final text", () => {

@@ -93,14 +93,17 @@ describe("buildRunnerEvents", () => {
   test("maps a successful transcript to running -> progress(debounced) -> handback -> idle", () => {
     const events = buildRunnerEvents("task-1", SUCCESS_LINES, { debounceMs: 1500 });
 
-    // All activity lines happen in the same synchronous batch (no wall-clock
-    // gap), so debounce collapses them into exactly one progress note instead
-    // of one per tool_use/text line.
-    expect(events.map((e) => e.kind)).toEqual(["status", "progress", "handback", "status"]);
+    // Granular `activity` lines stream alongside (one per tool/text signal) — filter them out to
+    // assert the debounced status/progress/handback backbone, which collapses same-batch activity
+    // into exactly one progress note.
+    const backbone = events.filter((e) => e.kind !== "activity");
+    expect(backbone.map((e) => e.kind)).toEqual(["status", "progress", "handback", "status"]);
+    // The live stream still saw each step.
+    expect(events.some((e) => e.kind === "activity")).toBe(true);
 
-    expect(events[0]).toMatchObject({ kind: "status", taskId: "task-1", status: "running" });
+    expect(backbone[0]).toMatchObject({ kind: "status", taskId: "task-1", status: "running" });
 
-    const progress = events[1];
+    const progress = backbone[1];
     expect(progress.kind).toBe("progress");
     if (progress.kind === "progress") {
       expect(progress.note).toContain("ran Read");
@@ -108,7 +111,7 @@ describe("buildRunnerEvents", () => {
       expect(progress.note).toContain("Looking at the failing test now.");
     }
 
-    const handback = events[2];
+    const handback = backbone[2];
     expect(handback.kind).toBe("handback");
     if (handback.kind === "handback") {
       expect(handback.summary).toBe("Fixed the bug in a.ts.");
@@ -120,11 +123,11 @@ describe("buildRunnerEvents", () => {
       });
     }
 
-    expect(events[3]).toMatchObject({ kind: "status", taskId: "task-1", status: "idle" });
+    expect(backbone[3]).toMatchObject({ kind: "status", taskId: "task-1", status: "idle" });
   });
 
   test("maps an error transcript to running -> progress -> failed", () => {
-    const events = buildRunnerEvents("task-2", FAILURE_LINES);
+    const events = buildRunnerEvents("task-2", FAILURE_LINES).filter((e) => e.kind !== "activity");
 
     expect(events.map((e) => e.kind)).toEqual(["status", "progress", "status"]);
     expect(events[0]).toMatchObject({ status: "running" });

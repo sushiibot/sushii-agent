@@ -3,6 +3,7 @@
 import { getLogger } from "../logger.ts";
 import type { CanFn, RepoSpec, RunnerEvent, TaskRow } from "./contracts.ts";
 import { TaskRegistry } from "./registry.ts";
+import { getActivityHub } from "./activityHub.ts";
 import { OrchestrationServer } from "./transport/server.ts";
 import { getDb } from "../db/index.ts";
 import { can } from "./authz.ts";
@@ -46,6 +47,7 @@ export class Dispatcher {
   readonly server: OrchestrationServer;
   private readonly liveRunners = new Map<string, LiveRunner>();
   private readonly settledListeners: ((task: TaskRow) => void)[] = [];
+  private readonly startedListeners: ((task: TaskRow) => void)[] = [];
   private readonly runnerStatusListeners: ((e: { runnerId: string; status: "connected" | "disconnected" }) => void)[] = [];
   private listening = false;
   private listenFailed = false;
@@ -199,6 +201,7 @@ export class Dispatcher {
       spawnedFromSurface: input.spawnedFromSurface,
       threadRefs: input.threadRefs ?? [],
     });
+    getActivityHub().open(row.id); // begin the live activity stream + mint its viewer token
 
     try {
       const result = (await this.server.start(input.runnerId, {
@@ -208,7 +211,9 @@ export class Dispatcher {
         repo: input.repo ?? null,
       })) as { nativeSessionId: string };
       this.registry.setNativeSession(row.id, result.nativeSessionId);
-      return { ...row, nativeSessionId: result.nativeSessionId };
+      const started = { ...row, nativeSessionId: result.nativeSessionId };
+      this.emitStarted(started);
+      return started;
     } catch (err) {
       logger.error({ err, taskId: row.id }, "failed to start runner task");
       // An onEvent may have already raced this and applied a terminal status (e.g. an immediate
@@ -240,6 +245,7 @@ export class Dispatcher {
     if (!task || task.createdBy !== input.principal) throw new AuthzError("session.resume denied");
     if (!task.nativeSessionId) throw new Error(`task ${input.taskId} has no native session to resume`);
     if (!this.isRunnerLive(task.runnerId)) throw new Error(`runner "${task.runnerId}" is not connected`);
+    getActivityHub().open(task.id); // re-open the live stream for the resumed turn
 
     try {
       await this.server.resume(task.runnerId, {
@@ -257,7 +263,9 @@ export class Dispatcher {
       throw err;
     }
     this.registry.unarchive(task.id); // a resumed task rejoins the live roster
-    return this.registry.get(task.id) as TaskRow;
+    const resumed = this.registry.get(task.id) as TaskRow;
+    this.emitStarted(resumed);
+    return resumed;
   }
 
   /** Registers a callback invoked once per task turn SETTLING — {idle, done, failed} (per
@@ -267,6 +275,22 @@ export class Dispatcher {
    *  so one throwing surface can't break another or wedge event handling. */
   onTaskSettled(listener: (task: TaskRow) => void): void {
     this.settledListeners.push(listener);
+  }
+
+  /** A task began (dispatch or resume) and its live activity stream is open — the seam a surface
+   *  uses to start a live progress view. discord.js-free, same as onTaskSettled. */
+  onTaskStarted(listener: (task: TaskRow) => void): void {
+    this.startedListeners.push(listener);
+  }
+
+  private emitStarted(task: TaskRow): void {
+    for (const listener of this.startedListeners) {
+      try {
+        listener(task);
+      } catch (err) {
+        logger.error({ err, taskId: task.id }, "onTaskStarted listener threw");
+      }
+    }
   }
 
   /** Runner connect/disconnect notifications (same discord.js-free seam as onTaskSettled). */
@@ -312,6 +336,7 @@ export class Dispatcher {
         this.registry.updateStatus(event.taskId, event.status, event.reason);
         if (event.status === "idle" || event.status === "done" || event.status === "failed") {
           const updated = this.registry.get(event.taskId);
+          getActivityHub().settle(event.taskId, event.status, updated?.summary ?? null);
           if (updated) {
             for (const listener of this.settledListeners) {
               try {
@@ -326,6 +351,9 @@ export class Dispatcher {
       }
       case "progress":
         logger.debug({ taskId: event.taskId, note: event.note }, "runner progress");
+        return;
+      case "activity":
+        getActivityHub().append(event.taskId, event.line, event.at);
         return;
       case "handback":
         // The agent opens its own PR (via gh) when the task calls for it and names the link in its

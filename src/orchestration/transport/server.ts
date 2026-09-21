@@ -38,6 +38,12 @@ const runnerEventSchema = z.discriminatedUnion("kind", [
     note: z.string(),
   }),
   z.object({
+    kind: z.literal("activity"),
+    taskId: z.string(),
+    line: z.string(),
+    at: z.number(),
+  }),
+  z.object({
     kind: z.literal("handback"),
     taskId: z.string(),
     summary: z.string(),

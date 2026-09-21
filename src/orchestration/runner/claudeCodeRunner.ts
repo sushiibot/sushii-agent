@@ -13,7 +13,8 @@ const log = getLogger("orchestration.runner.claudeCode");
 // Unknown event types (hooks, rate_limit_event, informational) are ignored.
 export type StreamLineEvent =
   | { type: "init"; sessionId: string }
-  | { type: "tool_use"; name: string }
+  | { type: "tool_use"; name: string; detail?: string }
+  | { type: "tool_result"; name: string; output: string; isError: boolean }
   | { type: "assistant_text"; text: string }
   | {
       type: "result";
@@ -29,6 +30,20 @@ export type StreamLineEvent =
 function truncate(text: string, max = 160): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+// One display line per activity signal for the live views. null for signals with nothing to show.
+export function activityLine(sig: StreamLineEvent): string | null {
+  switch (sig.type) {
+    case "tool_use":
+      return `🔧 ${sig.name}${sig.detail ? ` ${truncate(sig.detail, 200)}` : ""}`;
+    case "tool_result":
+      return `   ↳ ${sig.isError ? "✗ " : ""}${truncate(sig.output, 200)}`;
+    case "assistant_text":
+      return `💬 ${truncate(sig.text, 300)}`;
+    default:
+      return null;
+  }
 }
 
 export function parseClaudeStreamLine(json: unknown): StreamLineEvent[] {
@@ -112,12 +127,16 @@ export class RunnerEventReducer {
 
   onSignal(sig: StreamLineEvent): RunnerEvent[] {
     const out: RunnerEvent[] = [];
+    const activity = activityLine(sig);
+    if (activity) out.push({ kind: "activity", taskId: this.taskId, line: activity, at: this.now() });
     switch (sig.type) {
       case "tool_use":
         this.toolsRun++;
         this.pendingActivity.push(`ran ${sig.name}`);
         this.flush(out, false);
         break;
+      case "tool_result":
+        break; // surfaced as an activity line above; not part of the debounced summary
       case "assistant_text":
         this.pendingActivity.push(truncate(sig.text));
         this.flush(out, false);
