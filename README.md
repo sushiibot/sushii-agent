@@ -22,6 +22,7 @@ Discord moderation intelligence bot. Mention it in a whitelisted channel with a 
 ## Cloud runner
 
 Dispatch coding tasks from Discord to clone a repository, make changes, and open a pull request.
+Pull requests are opened automatically.
 
 ## Agent tools
 
