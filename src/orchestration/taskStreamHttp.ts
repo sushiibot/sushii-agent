@@ -1,6 +1,21 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { getActivityHub } from "./activityHub.ts";
+
+// marked (GFM parse) + DOMPurify (sanitize), inlined from node_modules so the viewer stays a single
+// self-contained page (no runtime CDN). Injected into the page by string concatenation — NOT inside a
+// template literal — because the minified library source contains backticks and ${...}. The </script>
+// guard prevents an accidental early tag close if a lib string literal contains that sequence.
+const req = createRequire(import.meta.url);
+function loadLib(pkg: string, rel: string): string {
+  const src = readFileSync(join(dirname(req.resolve(pkg + "/package.json")), rel), "utf8");
+  return src.replace(/<\/script>/gi, "<\\/script>");
+}
+const MARKDOWN_LIB_JS =
+  "<script>" + loadLib("marked", "lib/marked.umd.js") + "\n" + loadLib("dompurify", "dist/purify.min.js") + "</script>";
 
 // Live task viewer: a per-task keyed URL that streams the activity as it happens. The key is the
 // unguessable per-task token minted by the ActivityHub; it is the whole auth (owner-only data, and
@@ -55,7 +70,9 @@ export function registerTaskStreamRoutes(app: Hono): void {
       // Either a bad key or a stream that has expired (the buffer is per-process + short-lived).
       return c.html(EXPIRED_HTML, 404);
     }
-    return c.html(VIEWER_HTML.replaceAll("__TASK_ID__", escapeHtml(id)));
+    // Function replacements: the lib source contains $&/$1/$` which a string replacement would mangle.
+    const page = VIEWER_HTML.replace("</head>", () => MARKDOWN_LIB_JS + "</head>").replaceAll("__TASK_ID__", () => escapeHtml(id));
+    return c.html(page);
   });
 }
 
@@ -192,24 +209,26 @@ const VIEWER_HTML = `<!doctype html>
     background: radial-gradient(circle at 35% 30%, var(--rosewater), var(--pink)); box-shadow:0 0 10px -1px color-mix(in srgb,var(--pink) 60%, transparent); }
   .say .prose { color:var(--text); font-size:14.5px; line-height:1.62; max-width:72ch; word-break:break-word; min-width:0; }
 
-  /* markdown (assistant text + handback summary) */
+  /* markdown (assistant text + handback summary), rendered by marked → real h1-h6/pre/blockquote/hr */
   .md > :first-child { margin-top:0; } .md > :last-child { margin-bottom:0; }
   .md p { margin:0 0 8px; }
-  .md .md-h { font-weight:800; color:var(--text); margin:12px 0 6px; line-height:1.3; }
-  .md .md-h1 { font-size:19px; } .md .md-h2 { font-size:17px; } .md .md-h3 { font-size:15px; }
-  .md .md-h4, .md .md-h5, .md .md-h6 { font-size:14px; color:var(--subtext1); }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-weight:800; color:var(--text); margin:12px 0 6px; line-height:1.3; }
+  .md h1 { font-size:19px; } .md h2 { font-size:17px; } .md h3 { font-size:15px; }
+  .md h4, .md h5, .md h6 { font-size:14px; color:var(--subtext1); }
   .md ul, .md ol { margin:4px 0 8px; padding-left:22px; } .md li { margin:2px 0; }
   .md ul { list-style:none; } .md ul > li::before { content:"•"; color:var(--mauve); font-weight:800; display:inline-block; width:1em; margin-left:-1em; }
+  .md ol { list-style:decimal; } .md ol li::marker { color:var(--overlay2); }
   .md a { color:var(--blue); text-decoration:underline; text-underline-offset:2px; text-decoration-color:color-mix(in srgb,var(--blue) 45%, transparent); }
   .md a:hover { text-decoration-color:var(--blue); }
   .md strong { color:var(--text); font-weight:800; } .md em { font-style:italic; color:var(--subtext1); }
   .md code { font-family:"JetBrains Mono",ui-monospace,monospace; font-size:.88em; padding:1.5px 5px; border-radius:5px;
     background: color-mix(in srgb, var(--surface0) 70%, transparent); color:var(--peach); }
-  .md .md-pre { margin:8px 0; padding:11px 13px; background:var(--crust); border:1px solid color-mix(in srgb,var(--surface0) 70%, transparent);
+  .md pre { margin:8px 0; padding:11px 13px; background:var(--crust); border:1px solid color-mix(in srgb,var(--surface0) 70%, transparent);
     border-radius:10px; overflow:auto; }
-  .md .md-pre code { background:none; padding:0; color:var(--sky); font-size:12px; line-height:1.55; white-space:pre; }
-  .md blockquote.md-q { margin:8px 0; padding:2px 0 2px 12px; border-left:2px solid var(--mauve); color:var(--subtext1); }
-  .md hr.md-hr { border:none; border-top:1px solid var(--surface1); margin:12px 0; }
+  .md pre code { background:none; padding:0; color:var(--sky); font-size:12px; line-height:1.55; white-space:pre; }
+  .md blockquote { margin:8px 0; padding:2px 0 2px 12px; border-left:2px solid var(--mauve); color:var(--subtext1); }
+  .md hr { border:none; border-top:1px solid var(--surface1); margin:12px 0; }
+  .md table { border-collapse:collapse; margin:8px 0; font-size:13px; } .md th, .md td { border:1px solid var(--surface1); padding:5px 9px; text-align:left; } .md th { color:var(--text); font-weight:700; background:color-mix(in srgb,var(--surface0) 40%, transparent); }
 
   .tool { padding:5px 2px; }
   .tool .call { display:flex; align-items:center; gap:10px; padding:8px 11px; border-radius:11px;
@@ -296,34 +315,18 @@ const VIEWER_HTML = `<!doctype html>
   const atBottom=()=>window.innerHeight+window.scrollY>=document.body.scrollHeight-80;
   const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
-  // Minimal, safe markdown → HTML for assistant text + handback summaries. Everything is HTML-escaped
-  // FIRST (so agent output can never inject a tag); transforms then emit only a fixed safe tag set, and
-  // link hrefs are gated to http(s)/mailto/relative — no CDN parser, no sanitizer needed.
-  function mdInline(t){
-    t=t.replace(/\`([^\`]+)\`/g,'<code>$1</code>');
-    t=t.replace(/\[([^\]]+)\]\(([^)\s"']+)\)/g,(m,txt,url)=> /^(https?:\/\/|mailto:|\/|#)/i.test(url) ? '<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+txt+'</a>' : txt);
-    t=t.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
-    t=t.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g,'$1<em>$2</em>');
-    return t;
-  }
+  // Markdown for assistant text + handback summaries: marked (GFM) → DOMPurify sanitize. The libs are
+  // inlined in <head>; if either is missing we fall back to escaped plain text.
+  if (window.DOMPurify) DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A') { node.setAttribute('target','_blank'); node.setAttribute('rel','noopener noreferrer'); }
+  });
   function md(src){
-    const lines=esc(String(src)).split('\n'); const out=[]; let i=0;
-    const fence=s=>/^\s*\`\`\`/.test(s);
-    const blockStart=/^(#{1,6})\s|^\s*[-*+]\s|^\s*\d+\.\s|^\s*&gt;/;
-    while(i<lines.length){
-      const ln=lines[i];
-      if(fence(ln)){ i++; const buf=[]; while(i<lines.length && !fence(lines[i])){ buf.push(lines[i]); i++; } i++; out.push('<pre class="md-pre"><code>'+buf.join('\n')+'</code></pre>'); continue; }
-      const h=ln.match(/^(#{1,6})\s+(.*)$/);
-      if(h){ const n=Math.min(h[1].length,6); out.push('<div class="md-h md-h'+n+'">'+mdInline(h[2])+'</div>'); i++; continue; }
-      if(/^\s*(---|\*\*\*|___)\s*$/.test(ln)){ out.push('<hr class="md-hr"/>'); i++; continue; }
-      if(/^\s*&gt;\s?/.test(ln)){ const buf=[]; while(i<lines.length && /^\s*&gt;\s?/.test(lines[i])){ buf.push(lines[i].replace(/^\s*&gt;\s?/,'')); i++; } out.push('<blockquote class="md-q">'+mdInline(buf.join(' '))+'</blockquote>'); continue; }
-      if(/^\s*[-*+]\s+/.test(ln)){ const buf=[]; while(i<lines.length && /^\s*[-*+]\s+/.test(lines[i])){ buf.push('<li>'+mdInline(lines[i].replace(/^\s*[-*+]\s+/,''))+'</li>'); i++; } out.push('<ul>'+buf.join('')+'</ul>'); continue; }
-      if(/^\s*\d+\.\s+/.test(ln)){ const buf=[]; while(i<lines.length && /^\s*\d+\.\s+/.test(lines[i])){ buf.push('<li>'+mdInline(lines[i].replace(/^\s*\d+\.\s+/,''))+'</li>'); i++; } out.push('<ol>'+buf.join('')+'</ol>'); continue; }
-      if(ln.trim()===''){ i++; continue; }
-      const buf=[]; while(i<lines.length && lines[i].trim()!=='' && !fence(lines[i]) && !blockStart.test(lines[i])){ buf.push(lines[i]); i++; }
-      out.push('<p>'+mdInline(buf.join('<br/>'))+'</p>');
-    }
-    return out.join('');
+    const s = String(src == null ? '' : src);
+    // A text transcript needs no embedded media/forms; forbidding them avoids broken images and any
+    // external request (privacy/SSRF) on top of DOMPurify's XSS stripping.
+    try { return DOMPurify.sanitize(marked.parse(s, { gfm:true, breaks:true, async:false }),
+      { FORBID_TAGS:['img','video','audio','iframe','svg','math','form','input','style'] }); }
+    catch { return esc(s); }
   }
   const svg=(inner)=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'+inner+'</svg>';
   const I={

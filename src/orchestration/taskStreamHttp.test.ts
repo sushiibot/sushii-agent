@@ -23,6 +23,27 @@ describe("task stream routes", () => {
     expect(html).not.toContain("__TASK_ID__"); // every placeholder substituted (replaceAll)
   });
 
+  test("served page inlines the markdown libs and every inline script parses", async () => {
+    // Guards two regressions the mock harness masked: (1) a template-literal escaping bug that
+    // corrupted the client regexes, (2) injecting the marked/DOMPurify source through String.replace
+    // where its $&/</script>/</body> sequences mangle the output. Parsing each <script> catches both.
+    const app = appWithRoutes();
+    const token = getActivityHub().open("web-parse");
+    const html = await (await app.request(`/tasks/web-parse?key=${token}`)).text();
+
+    // The libs must be present intact (marked global + DOMPurify sanitize surface).
+    expect(html).toContain("DOMPurify");
+    expect(html).toMatch(/marked/);
+
+    // Every inline <script> body must be syntactically valid JS. new Function compiles without
+    // executing, so a corrupted regex literal or unterminated string throws here.
+    const bodies = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+    expect(bodies.length).toBeGreaterThanOrEqual(2); // inlined libs + the viewer script
+    for (const body of bodies) {
+      expect(() => new Function(body)).not.toThrow();
+    }
+  });
+
   // The live (still-running) SSE path forwards hub.onLine/onStatus to writeSSE and closes on settle
   // via an event callback (not a blocking poll). Its subscription mechanics are covered by the
   // ActivityHub tests; a full over-HTTP live assertion needs a real socket (Bun's in-memory
