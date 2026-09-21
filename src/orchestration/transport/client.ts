@@ -3,6 +3,7 @@ import {
   jsonRpcNotification,
   jsonRpcRequest,
   jsonRpcResponse,
+  type RepoSpec,
   type RunnerAdapter,
   type RunnerEvent,
 } from "../contracts.ts";
@@ -210,7 +211,7 @@ export class OrchestrationClient {
 
     try {
       if (method === RPC_METHODS.start) {
-        const input = params as { taskId: string; cwd: string; prompt: string };
+        const input = params as { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null };
         const result = await adapter.start(input);
         this.respond(ws, id, result);
         this.beginStream(ws, input.taskId);

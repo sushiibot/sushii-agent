@@ -6,6 +6,7 @@ import {
   jsonRpcRequest,
   jsonRpcResponse,
   registerParams,
+  type RepoSpec,
   type RunnerEvent,
 } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
@@ -205,7 +206,7 @@ export class OrchestrationServer {
     });
   }
 
-  start(runnerId: string, input: { taskId: string; cwd: string; prompt: string }): Promise<unknown> {
+  start(runnerId: string, input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<unknown> {
     return this.call(runnerId, RPC_METHODS.start, input);
   }
 

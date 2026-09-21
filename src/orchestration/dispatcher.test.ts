@@ -110,6 +110,70 @@ describe("Dispatcher", () => {
     }
   });
 
+  test("clone-on-demand derives a per-principal cwd under the workspace root", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "clone-runner",
+      kind: "mock",
+      workspaceRoot: "/data/workspace",
+      adapter: new MockRunnerAdapter(),
+    });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("clone-runner"));
+
+      const task = await dispatcher.dispatch({
+        principal: "owner-1",
+        runnerId: "clone-runner",
+        cwd: "",
+        project: null,
+        prompt: "fix the bug",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+        repo: { owner: "acme", repo: "widgets" },
+      });
+      expect(task.cwd).toBe("/data/workspace/owner-1/acme-widgets");
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
+  test("clone-on-demand is rejected on a runner with no workspace root", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const client = new OrchestrationClient({
+      url: dispatcher.server.url,
+      runnerId: "plain-runner",
+      kind: "mock",
+      projects: ["/srv/repo"],
+      adapter: new MockRunnerAdapter(),
+    });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("plain-runner"));
+      await expect(
+        dispatcher.dispatch({
+          principal: "owner-1",
+          runnerId: "plain-runner",
+          cwd: "",
+          project: null,
+          prompt: "go",
+          space: "discord:dm",
+          spawnedFromSurface: "discord",
+          repo: { owner: "acme", repo: "widgets" },
+        }),
+      ).rejects.toThrow(/does not support clone-on-demand/);
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
   test("e2e dispatch via the mock runner: registry row goes running -> done, summary persisted", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => true);
     dispatcher.listen();

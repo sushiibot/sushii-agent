@@ -5,6 +5,8 @@ import type { RunnerAdapter } from "../contracts.ts";
 import { OrchestrationClient } from "../transport/client.ts";
 import { ClaudeCodeRunnerAdapter } from "./claudeCodeRunner.ts";
 import { PiRunnerAdapter } from "./piRunner.ts";
+import { tokenProviderFromEnv } from "./githubApp.ts";
+import type { RepoOpsDeps } from "./repoOps.ts";
 
 const log = getLogger("orchestration.runner");
 
@@ -26,7 +28,7 @@ const ADAPTERS: Record<string, () => RunnerAdapter> = {
     const agentDir = process.env.RUNNER_AGENT_DIR ?? `${process.env.HOME}/.pi-runner`;
     if (!model) throw new Error("RUNNER_KIND=pi requires RUNNER_MODEL");
     if (!apiKey) throw new Error("RUNNER_KIND=pi requires OPENAI_API_KEY");
-    return new PiRunnerAdapter({ model, apiKey, baseUrl, agentDir });
+    return new PiRunnerAdapter({ model, apiKey, baseUrl, agentDir, repoOps: buildRepoOps() });
   },
   // hermes: reserved — add a HermesRunnerAdapter implementing RunnerAdapter and register it here.
 };
@@ -35,6 +37,21 @@ const ADAPTERS: Record<string, () => RunnerAdapter> = {
 // of RUNNER_ROOTS one level deep for directories containing .git (a root that is itself a repo
 // counts too). Roots double as the dispatch scope fence — the orchestrator rejects a cwd that
 // isn't one of these paths. Auto-discovered, so a freshly-cloned repo shows up with no config change.
+// Clone-on-demand deps for the Pi runner: a per-repo token provider (GitHub App) + the bot commit
+// identity. undefined when the App is unconfigured — a repo dispatch is then rejected upstream
+// rather than half-cloning without a credential.
+function buildRepoOps(): RepoOpsDeps | undefined {
+  const provider = tokenProviderFromEnv();
+  if (!provider) return undefined;
+  return {
+    provider,
+    bot: {
+      name: process.env.GITHUB_BOT_NAME ?? "sushii-runner[bot]",
+      email: process.env.GITHUB_BOT_EMAIL ?? "sushii-runner@users.noreply.github.com",
+    },
+  };
+}
+
 function discoverProjects(): string[] {
   const explicit = (process.env.RUNNER_PROJECTS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const roots = (process.env.RUNNER_ROOTS ?? "").split(",").map((s) => s.trim()).filter(Boolean);

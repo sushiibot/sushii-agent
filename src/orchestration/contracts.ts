@@ -42,11 +42,22 @@ export interface HandbackMeta {
   costUsd?: number;
   durationMs?: number;
   denials?: number; // tool calls the permission mode auto-denied — a "success" with denials > 0 is incomplete
+  branch?: string; // runner-pushed task branch (clone-on-demand)
+  prUrl?: string; // PR the runner opened at handback
+}
+
+// A repo the orchestrator asks a runner to clone on-demand into its workspace before running.
+export interface RepoSpec {
+  owner: string;
+  repo: string;
 }
 
 // ── Runner adapter interface (uniform across kinds; P0 = Claude Code only). ──
 export interface RunnerAdapter {
-  start(input: { taskId: string; cwd: string; prompt: string }): Promise<{ nativeSessionId: string }>;
+  // repo (optional) = clone-on-demand: the runner clones owner/repo into `cwd` if absent before the
+  // agent runs, and pushes a branch + opens a PR at handback. Adapters without a token provider
+  // ignore it and assume `cwd` is already a checkout.
+  start(input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<{ nativeSessionId: string }>;
   resume(input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string }): Promise<void>;
   interrupt(taskId: string): Promise<void>;
   // Emits RunnerEvents for the task; implementation streams via the callback.

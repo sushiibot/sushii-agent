@@ -37,7 +37,19 @@ mock.module("../../../orchestration/dispatcher.ts", () => {
   };
 });
 
-const { dispatchToRunnerEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry, RUNNER_TOOL_ENTRIES } = await import("./index.ts");
+const { dispatchToRunnerEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry, RUNNER_TOOL_ENTRIES, parseRepoSpec } = await import("./index.ts");
+
+describe("parseRepoSpec", () => {
+  test("accepts owner/name and GitHub URLs, rejects malformed input", () => {
+    expect(parseRepoSpec("acme/widgets")).toEqual({ owner: "acme", repo: "widgets" });
+    expect(parseRepoSpec("https://github.com/acme/widgets")).toEqual({ owner: "acme", repo: "widgets" });
+    expect(parseRepoSpec("https://github.com/acme/widgets.git")).toEqual({ owner: "acme", repo: "widgets" });
+    expect(parseRepoSpec("acme")).toBeNull();
+    expect(parseRepoSpec("acme/widgets/extra")).toBeNull();
+    expect(parseRepoSpec("acme/../etc")).toBeNull();
+    expect(parseRepoSpec("")).toBeNull();
+  });
+});
 const { config } = await import("../../../config.ts");
 const { createToolRegistry } = await import("../registry.ts");
 

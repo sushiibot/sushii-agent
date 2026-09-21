@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import simpleGit from "simple-git";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import type { HandbackMeta, RunnerAdapter, RunnerEvent } from "../contracts.ts";
+import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
+import { cloneIfAbsent, pushWorkAndOpenPr, type RepoOpsDeps } from "./repoOps.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
@@ -26,6 +27,9 @@ export interface PiRunnerOptions {
   fallbackContextWindow?: number;
   progressDebounceMs?: number;
   now?: () => number;
+  // Clone-on-demand + runner-side push. When unset, a dispatch carrying a repo still runs (the cwd
+  // must already be a checkout) but nothing is cloned or pushed.
+  repoOps?: RepoOpsDeps;
 }
 
 /**
@@ -112,6 +116,7 @@ interface PiTaskState {
   startSha: string | null;
   sessionFile: string; // absolute path — the resume handle stored as nativeSessionId
   superseded: boolean;
+  repo: RepoSpec | null; // set → runner pushes a branch + opens a PR at handback (clone-on-demand)
 }
 
 /**
@@ -129,7 +134,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
     this.now = options.now ?? Date.now;
   }
 
-  async start(input: { taskId: string; cwd: string; prompt: string }): Promise<{ nativeSessionId: string }> {
+  async start(input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<{ nativeSessionId: string }> {
+    const repo = input.repo ?? null;
+    if (repo && this.options.repoOps) await cloneIfAbsent(input.cwd, repo, this.options.repoOps);
     const { session, sessionFile } = await this.createSession(input.cwd, null);
     const startSha = await this.readHeadSha(input.cwd);
     const state: PiTaskState = {
@@ -140,6 +147,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
       startSha,
       sessionFile,
       superseded: false,
+      repo,
     };
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
@@ -158,7 +166,10 @@ export class PiRunnerAdapter implements RunnerAdapter {
     // nativeSessionId is the persisted session file path; open() resumes that exact session.
     const { session, sessionFile } = await this.createSession(cwd, input.nativeSessionId);
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
-    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false };
+    // resume() carries no repo spec; recover it from the checkout's origin so a resumed
+    // clone-on-demand task still pushes at handback. Only meaningful when repoOps is configured.
+    const repo = existing?.repo ?? (this.options.repoOps ? await this.repoFromRemote(cwd) : null);
+    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo };
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
   }
@@ -189,7 +200,8 @@ export class PiRunnerAdapter implements RunnerAdapter {
       for (const event of reducer.onSignal(sig)) {
         if (event.kind === "handback") {
           const gitMeta = await this.computeGitMeta(task.cwd, task.startSha);
-          const meta: HandbackMeta = { ...event.meta, ...gitMeta, durationMs: event.meta?.durationMs ?? this.now() - task.startedAt };
+          const pushMeta = await this.pushIfCloneOnDemand(taskId, task, event.summary);
+          const meta: HandbackMeta = { ...event.meta, ...gitMeta, ...pushMeta, durationMs: event.meta?.durationMs ?? this.now() - task.startedAt };
           onEvent({ ...event, meta });
         } else {
           onEvent(event);
@@ -293,6 +305,36 @@ export class PiRunnerAdapter implements RunnerAdapter {
     } catch (err) {
       log.warn({ err, cwd }, "failed to read HEAD sha");
       return null;
+    }
+  }
+
+  // Owner/repo from the checkout's origin remote — used to recover a repo spec on resume. Handles
+  // both https and ssh remote forms.
+  private async repoFromRemote(cwd: string): Promise<RepoSpec | null> {
+    try {
+      const url = (await simpleGit(cwd).remote(["get-url", "origin"]))?.trim();
+      const m = url?.match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?$/);
+      return m ? { owner: m[1], repo: m[2] } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Runner-side push at handback: the agent never holds a git credential and never pushes; this is
+  // the only push path, and it targets a task branch, not the default. A push/PR failure must not
+  // sink the handback — the summary still goes back, minus the branch/PR fields.
+  private async pushIfCloneOnDemand(
+    taskId: string,
+    task: PiTaskState,
+    summary: string,
+  ): Promise<Pick<HandbackMeta, "branch" | "prUrl">> {
+    if (!task.repo || !this.options.repoOps) return {};
+    try {
+      const result = await pushWorkAndOpenPr(task.cwd, task.repo, { taskId, summary, startSha: task.startSha }, this.options.repoOps);
+      return result ? { branch: result.branch, prUrl: result.prUrl } : {};
+    } catch (err) {
+      log.error({ err, taskId, cwd: task.cwd }, "runner-side push/PR failed; handback continues without it");
+      return {};
     }
   }
 

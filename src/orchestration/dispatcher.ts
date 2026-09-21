@@ -1,7 +1,7 @@
 // Wires the WS transport (server.ts) + durable registry (registry.ts) + a live-runners map into
 // one seam the host-typed runner tools call through. Every dispatch is authz-gated FIRST.
 import { getLogger } from "../logger.ts";
-import type { CanFn, RunnerEvent, TaskRow } from "./contracts.ts";
+import type { CanFn, RepoSpec, RunnerEvent, TaskRow } from "./contracts.ts";
 import { TaskRegistry } from "./registry.ts";
 import { OrchestrationServer } from "./transport/server.ts";
 import { getDb } from "../db/index.ts";
@@ -26,6 +26,9 @@ export interface DispatchInput {
   space: string;
   spawnedFromSurface: string;
   threadRefs?: string[];
+  // Clone-on-demand: when set, the orchestrator derives the cwd under the runner's workspace root
+  // (per-principal) and the runner clones owner/repo there. `cwd` is then ignored.
+  repo?: RepoSpec | null;
 }
 
 export interface ResumeInput {
@@ -122,6 +125,18 @@ export class Dispatcher {
     return projects.some((p) => cwd === p || cwd.startsWith(`${p}/`));
   }
 
+  /** Clone-on-demand target: `<workspaceRoot>/<principal>/<owner>-<repo>`. The per-principal segment
+   *  is the isolation seam — a no-op for the single-principal owner today, the confidentiality
+   *  boundary once other principals dispatch. Throws if the runner declared no workspace root. */
+  private cloneCwd(runnerId: string, principal: string, repo: RepoSpec): string {
+    const workspaceRoot = this.liveRunners.get(runnerId)?.workspaceRoot;
+    if (!workspaceRoot) {
+      throw new Error(`runner "${runnerId}" does not support clone-on-demand (no workspace root declared)`);
+    }
+    const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
+    return `${workspaceRoot}/${safe(principal)}/${safe(repo.owner)}-${safe(repo.repo)}`;
+  }
+
   /** Authz-gates first (throws AuthzError if denied), then creates the task row and starts it.
    *  Returns once the task is created + started — events stream in asynchronously via onEvent. */
   async dispatch(input: DispatchInput): Promise<TaskRow> {
@@ -135,15 +150,17 @@ export class Dispatcher {
 
     this.ensureListening();
 
-    if (!this.cwdInScope(input.runnerId, input.cwd)) {
-      throw new Error(`cwd "${input.cwd}" is not within any project the runner "${input.runnerId}" declared`);
+    const cwd = input.repo ? this.cloneCwd(input.runnerId, input.principal, input.repo) : input.cwd;
+
+    if (!this.cwdInScope(input.runnerId, cwd)) {
+      throw new Error(`cwd "${cwd}" is not within any project the runner "${input.runnerId}" declared`);
     }
 
     const row = this.registry.create({
       createdBy: input.principal,
       runnerId: input.runnerId,
       project: input.project,
-      cwd: input.cwd,
+      cwd,
       nativeSessionId: null,
       resumeCursor: null,
       status: "running",
@@ -156,8 +173,9 @@ export class Dispatcher {
     try {
       const result = (await this.server.start(input.runnerId, {
         taskId: row.id,
-        cwd: input.cwd,
+        cwd,
         prompt: input.prompt,
+        repo: input.repo ?? null,
       })) as { nativeSessionId: string };
       this.registry.setNativeSession(row.id, result.nativeSessionId);
       return { ...row, nativeSessionId: result.nativeSessionId };

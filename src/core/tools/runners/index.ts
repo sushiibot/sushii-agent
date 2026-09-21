@@ -2,7 +2,7 @@
 // routes through can() with the caller's principal + originating space before touching the
 // dispatcher). No discord.js here; requiresHosts stays empty like ops-triage's owner-gated tools.
 import type { ToolEntry, ToolContext } from "../../contracts.ts";
-import type { Capability } from "../../../orchestration/contracts.ts";
+import type { Capability, RepoSpec } from "../../../orchestration/contracts.ts";
 import { AuthzError, DispatcherUnavailableError, getDispatcher } from "../../../orchestration/dispatcher.ts";
 import { can, spaceKey } from "../../../orchestration/authz.ts";
 
@@ -13,6 +13,17 @@ const UNAVAILABLE = "Runner orchestration is unavailable right now.";
 
 function principalOf(ctx: ToolContext): string | undefined {
   return ctx.owner?.userId;
+}
+
+// Accepts "owner/name" or a GitHub URL. Returns null on anything that isn't a clean single-segment
+// repo path — so a stray extra path segment or a non-github URL is rejected, not clamped.
+export function parseRepoSpec(input: string): RepoSpec | null {
+  const trimmed = input.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+  const parts = trimmed.split("/").filter(Boolean);
+  if (parts.length !== 2) return null;
+  const valid = /^[A-Za-z0-9._-]+$/;
+  if (!valid.test(parts[0]) || !valid.test(parts[1])) return null;
+  return { owner: parts[0], repo: parts[1] };
 }
 
 function spaceOf(ctx: ToolContext): string {
@@ -30,16 +41,17 @@ export const dispatchToRunnerEntry: ToolEntry = {
   name: "dispatch_to_runner",
   definition: {
     name: "dispatch_to_runner",
-    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only. If the user names a project ('work on sushii-sns'), call list_runners first to resolve it to the runner + absolute path — don't guess the path. cwd must be within a project the runner declared.",
+    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only. Two modes: (1) an existing on-disk project — call list_runners first to resolve the name to the runner + absolute path, and pass that as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it into its workspace, works, and opens a PR at handback; omit cwd in this mode. Don't guess a path.",
     parameters: {
       type: "object",
       properties: {
         runner_id: { type: "string", description: "Which connected runner to dispatch to (from list_runners)." },
-        cwd: { type: "string", description: "Absolute working directory — a project path from list_runners, or a path nested under one." },
+        cwd: { type: "string", description: "Absolute working directory — a project path from list_runners, or a path nested under one. Omit when `repo` is given." },
         prompt: { type: "string", description: "The task prompt to hand the runner." },
         project: { type: "string", description: "Logical project name, for grouping/lookup." },
+        repo: { type: "string", description: "Clone-on-demand: 'owner/name' or a GitHub URL. The runner clones it and opens a PR at handback. When set, cwd is derived and ignored." },
       },
-      required: ["runner_id", "cwd", "prompt"],
+      required: ["runner_id", "prompt"],
     },
   },
   requiresHosts: [],
@@ -61,15 +73,23 @@ export const dispatchToRunnerEntry: ToolEntry = {
     }
     if (!dispatcher.isRunnerLive(runnerId)) return { content: `Runner "${runnerId}" is not connected.` };
 
+    let repo;
+    if (input.repo) {
+      repo = parseRepoSpec(input.repo as string);
+      if (!repo) return { content: `Invalid repo "${input.repo}" — use 'owner/name' or a GitHub URL.` };
+    }
+    if (!repo && !input.cwd) return { content: "Provide either cwd (existing project) or repo (clone-on-demand)." };
+
     try {
       const task = await dispatcher.dispatch({
         principal,
         runnerId,
-        cwd: input.cwd as string,
+        cwd: (input.cwd as string | undefined) ?? "",
         project: (input.project as string | undefined) ?? null,
         prompt: input.prompt as string,
         space: spaceOf(ctx),
         spawnedFromSurface: ctx.space.surface,
+        repo,
       });
       return { content: `Dispatched task ${task.id} on runner "${runnerId}" (native session ${task.nativeSessionId}).` };
     } catch (err) {
