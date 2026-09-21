@@ -59,12 +59,14 @@ exit 0
 
 /** Env the runner injects into the agent's shell so its own git/gh authenticate as the bot, scoped
  *  to this repo. The token is readable by the agent (accepted: repo-scoped, ~1h) but the App key is
- *  never here — the agent cannot mint tokens for any other repo. */
-export function agentGitEnv(cwd: string, token: string): Record<string, string> {
+ *  never here — the agent cannot mint tokens for any other repo. `repoHome` is the shared clone (its
+ *  real .git holds the askpass helper); a worktree's own .git is a file, so the helper can't live
+ *  there. */
+export function agentGitEnv(repoHome: string, token: string): Record<string, string> {
   return {
     GH_TOKEN: token,
     GITHUB_TOKEN: token,
-    GIT_ASKPASS: join(cwd, ASKPASS_REL),
+    GIT_ASKPASS: join(repoHome, ASKPASS_REL),
     GIT_TERMINAL_PROMPT: "0",
   };
 }
@@ -89,6 +91,22 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
   configureForAgent(cwd);
   log.info({ cwd, repo: `${spec.owner}/${spec.repo}` }, "cloned repo on-demand");
   return true;
+}
+
+/** Per-task worktree off the shared clone, on a fresh `sushii-runner/<taskId>` branch cut from the
+ *  latest default. Each task is isolated — its own working tree + branch — so concurrent or repeat
+ *  tasks on one repo never share state. Reused as-is on resume. Returns the worktree path. */
+export async function ensureWorktree(repoHome: string, taskId: string, deps: RepoOpsDeps): Promise<string> {
+  const worktreePath = `${repoHome}.wt/${taskId}`;
+  if (existsSync(worktreePath)) return worktreePath; // resume — keep the task's existing worktree
+  const git = (deps.gitFactory ?? simpleGit)(repoHome);
+  await git.fetch(["origin"]);
+  const head = (await git.raw(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => "")).trim();
+  const base = head.replace(/^origin\//, "") || "main";
+  mkdirSync(dirname(worktreePath), { recursive: true });
+  await git.raw(["worktree", "add", "--force", "-B", `sushii-runner/${taskId}`, worktreePath, `origin/${base}`]);
+  log.info({ repoHome, worktreePath, base }, "created task worktree");
+  return worktreePath;
 }
 
 /** (Re)write the askpass helper + pre-push guard into a checkout. Idempotent — also called on resume

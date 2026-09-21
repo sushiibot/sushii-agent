@@ -41,7 +41,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
   name: "dispatch_to_runner",
   definition: {
     name: "dispatch_to_runner",
-    description: "Start a new background coding-agent task on a connected runner. Owner-only, personal spaces only. Two modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it, works, and opens a PR at handback; omit cwd in this mode. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered).",
+    description: "Start a NEW background coding-agent task on a connected runner. Owner-only, personal spaces only. Each dispatch is a fresh, isolated task with its own git worktree, branch, and PR — use this for any new request, INCLUDING further/separate work on a repo already worked on before. Only use resume_session (not this) when the user explicitly asks to continue one specific existing task. Two modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it, works, and opens a PR at handback; omit cwd in this mode. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered).",
     parameters: {
       type: "object",
       properties: {
@@ -227,7 +227,7 @@ export const resumeSessionEntry: ToolEntry = {
   name: "resume_session",
   definition: {
     name: "resume_session",
-    description: "Resume one of your background runner tasks with a follow-up prompt. Owner-only, personal spaces only. If the user refers to a task by description, project, or recency ('the smoke-test one', 'the last task', 'continue') instead of an id, call list_running_sessions first and pick the matching task id — don't ask the user for the raw id.",
+    description: "Continue ONE specific existing task with a follow-up prompt, in that task's SAME worktree/branch/PR. Owner-only, personal spaces only. Use this ONLY when the user explicitly refers to continuing a particular task ('continue that', 'follow up on the X task', 'the last one'). A new or separate change request — even on the same repo — is a fresh dispatch_to_runner, NOT a resume (resuming would fold unrelated work into the earlier task's PR). When the user names a task by description/recency rather than id, call list_running_sessions first to resolve the id — don't ask for the raw id.",
     parameters: {
       type: "object",
       properties: {

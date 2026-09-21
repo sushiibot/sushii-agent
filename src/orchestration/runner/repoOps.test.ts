@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import simpleGit from "simple-git";
-import { agentGitEnv, configureForAgent } from "./repoOps.ts";
+import { agentGitEnv, configureForAgent, ensureWorktree, type RepoOpsDeps } from "./repoOps.ts";
+
+const stubDeps: RepoOpsDeps = {
+  provider: { tokenFor: async () => ({ token: "unused", expiresAt: 0 }) },
+  bot: { name: "bot", email: "bot@x" },
+};
 
 describe("agentGitEnv", () => {
   test("returns the git/gh auth env pointing at the checkout's askpass helper", () => {
@@ -61,5 +66,17 @@ describe("configureForAgent", () => {
 
     expect(() => run("refs/heads/main")).toThrow(); // default branch → non-zero exit
     expect(run("refs/heads/sushii-runner/task-1").toString()).toBe(""); // task branch → allowed
+  });
+
+  test("ensureWorktree gives each task an isolated worktree on its own branch, reused on resume", async () => {
+    await simpleGit(cwd).raw(["remote", "set-head", "origin", "main"]);
+    const wtA = await ensureWorktree(cwd, "task-A", stubDeps);
+    const wtB = await ensureWorktree(cwd, "task-B", stubDeps);
+    expect(wtA).not.toBe(wtB); // isolated dirs
+    expect(statSync(wtA).isDirectory()).toBe(true);
+    expect((await simpleGit(wtA).raw(["branch", "--show-current"])).trim()).toBe("sushii-runner/task-A");
+    expect((await simpleGit(wtB).raw(["branch", "--show-current"])).trim()).toBe("sushii-runner/task-B");
+    // Resume reuses the same worktree (no error, same path).
+    expect(await ensureWorktree(cwd, "task-A", stubDeps)).toBe(wtA);
   });
 });

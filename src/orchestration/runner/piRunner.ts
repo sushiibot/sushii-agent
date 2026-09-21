@@ -5,7 +5,7 @@ import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-
 import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
-import { agentGitEnv, cloneIfAbsent, configureForAgent, type RepoOpsDeps } from "./repoOps.ts";
+import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, type RepoOpsDeps } from "./repoOps.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
@@ -18,7 +18,7 @@ const PROVIDER_ID = "sushii-runner-openrouter";
 // the handback recap comes back empty ("Stopped."). Kept minimal + agent-agnostic (no wiki/Discord).
 const RUNNER_SYSTEM_PROMPT = `You are an autonomous coding agent working in a git repository. Carry out the requested task directly using your tools (read, edit, write, bash, etc.).
 
-Git & GitHub: your shell is already authenticated for this repository (git push and the gh CLI both work). Use them yourself, and only when the task calls for it — not every task needs a branch or a PR. Typical flow when you have changes to publish: create a task branch (never commit or push to the default branch — that is blocked), commit, push it, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). If the task is exploratory, a question, or needs no code change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.`;
+Git & GitHub: your shell is already authenticated for this repository (git push and the gh CLI both work), and you are already on a fresh dedicated task branch cut from the latest default branch — do NOT create another branch, and never push to the default branch (it is blocked). Use git/gh yourself, and only when the task calls for it — not every task needs a commit or a PR. Typical flow when you have changes to publish: commit them, push the current branch with \`git push -u origin HEAD\`, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). If the task is exploratory, a question, or needs no change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.`;
 
 export interface PiRunnerOptions {
   model: string;
@@ -119,6 +119,7 @@ interface PiTaskState {
   sessionFile: string; // absolute path — the resume handle stored as nativeSessionId
   superseded: boolean;
   repo: RepoSpec | null; // clone-on-demand repo, if any
+  repoHome: string; // shared clone dir (cwd is the per-task worktree under it); == cwd for non-clone tasks
   // Live per-repo token the bash spawn hook injects into the agent's shell (git/gh auth). Held in a
   // ref so the refresh timer can update it in place without re-wiring the hook. null = no creds.
   tokenRef: { current: string | null };
@@ -147,20 +148,26 @@ export class PiRunnerAdapter implements RunnerAdapter {
 
   async start(input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<{ nativeSessionId: string }> {
     const repo = input.repo ?? null;
-    if (repo && this.options.repoOps) await cloneIfAbsent(input.cwd, repo, this.options.repoOps);
+    const repoHome = input.cwd;
+    let cwd = input.cwd;
+    if (repo && this.options.repoOps) {
+      await cloneIfAbsent(repoHome, repo, this.options.repoOps);
+      cwd = await ensureWorktree(repoHome, input.taskId, this.options.repoOps); // per-task isolation
+    }
     const tokenRef: { current: string | null } = { current: null };
-    const credsTimer = await this.provisionCreds(input.cwd, repo, tokenRef);
-    const { session, sessionFile } = await this.createSession(input.cwd, null, tokenRef);
-    const startSha = await this.readHeadSha(input.cwd);
+    const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
+    const { session, sessionFile } = await this.createSession(cwd, null, tokenRef, repoHome);
+    const startSha = await this.readHeadSha(cwd);
     const state: PiTaskState = {
       session,
       queue: new SignalQueue(),
-      cwd: input.cwd,
+      cwd,
       startedAt: this.now(),
       startSha,
       sessionFile,
       superseded: false,
       repo,
+      repoHome,
       tokenRef,
       credsTimer,
     };
@@ -172,13 +179,13 @@ export class PiRunnerAdapter implements RunnerAdapter {
   // Mint the per-repo token, keep it fresh, and (re)write the git askpass helper + pre-push guard so
   // the agent's own git/gh authenticate. Returns the refresh timer (or null when there are no creds).
   private async provisionCreds(
-    cwd: string,
+    repoHome: string,
     repo: RepoSpec | null,
     tokenRef: { current: string | null },
   ): Promise<ReturnType<typeof setInterval> | null> {
     const ops = this.options.repoOps;
     if (!repo || !ops) return null;
-    configureForAgent(cwd); // idempotent — also equips a checkout an older build cloned
+    configureForAgent(repoHome); // askpass + pre-push in the shared clone (worktrees share its .git)
     tokenRef.current = (await ops.provider.tokenFor(repo)).token;
     const timer = setInterval(() => {
       void ops.provider
@@ -199,18 +206,22 @@ export class PiRunnerAdapter implements RunnerAdapter {
       await existing.session.abort().catch(() => {});
       existing.queue.close();
     }
-    const cwd = input.cwd || existing?.cwd;
-    if (!cwd) throw new Error(`no working directory recorded for task ${input.taskId} — re-dispatch instead of resuming`);
+    // The registry stores cwd = the shared clone dir (repoHome); the runner re-derives the task's
+    // worktree from the taskId, so resume lands in the same isolated worktree.
+    const repoHome = existing?.repoHome ?? (input.cwd || existing?.cwd);
+    if (!repoHome) throw new Error(`no working directory recorded for task ${input.taskId} — re-dispatch instead of resuming`);
     if (existing?.credsTimer) clearInterval(existing.credsTimer);
-    // resume() carries no repo spec; recover it from the checkout's origin so a resumed
+    // resume() carries no repo spec; recover it from the shared clone's origin so a resumed
     // clone-on-demand task keeps working git/gh creds. Only meaningful when repoOps is configured.
-    const repo = existing?.repo ?? (this.options.repoOps ? await this.repoFromRemote(cwd) : null);
+    const repo = existing?.repo ?? (this.options.repoOps ? await this.repoFromRemote(repoHome) : null);
+    let cwd = repoHome;
+    if (repo && this.options.repoOps) cwd = await ensureWorktree(repoHome, input.taskId, this.options.repoOps);
     const tokenRef: { current: string | null } = { current: null };
-    const credsTimer = await this.provisionCreds(cwd, repo, tokenRef);
+    const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
     // nativeSessionId is the persisted session file path; open() resumes that exact session.
-    const { session, sessionFile } = await this.createSession(cwd, input.nativeSessionId, tokenRef);
+    const { session, sessionFile } = await this.createSession(cwd, input.nativeSessionId, tokenRef, repoHome);
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
-    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, tokenRef, credsTimer };
+    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer };
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
   }
@@ -283,6 +294,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     cwd: string,
     resumeSessionFile: string | null,
     tokenRef: { current: string | null },
+    repoHome: string,
   ): Promise<{ session: AgentSession; sessionFile: string }> {
     const { createAgentSession, ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createBashToolDefinition } =
       await import("@earendil-works/pi-coding-agent");
@@ -332,7 +344,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const bashTool = createBashToolDefinition(cwd, {
       spawnHook: (context) => {
         const token = tokenRef.current;
-        if (token) Object.assign(context.env, agentGitEnv(cwd, token));
+        if (token) Object.assign(context.env, agentGitEnv(repoHome, token));
         return context;
       },
     });
