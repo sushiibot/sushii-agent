@@ -27,22 +27,31 @@ export type StreamLineEvent =
       errorMessage?: string;
     };
 
+// Collapse whitespace to one line, then cap — for the terse single-line tool label.
 function truncate(text: string, max = 160): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+// Cap length but PRESERVE newlines/formatting. Truncation for a narrow surface (the Discord tail) is a
+// display concern handled there; the wire carries the full text so the web viewer renders real
+// markdown. The bound is only a memory guard against a pathological payload, well above normal output.
+function cap(text: string, max: number): string {
+  const t = text.replace(/\s+$/, "");
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
 // One typed display entry per activity signal for the live views. null for signals with nothing to
-// show. Results carry more text than the terse tool/text lines — they're hidden by default and only
-// shown on demand (Discord drops them; the web reveals them on click).
+// show. Text + results keep their formatting; each surface clips for its own width (web shows full,
+// Discord collapses to a glance line). Results are hidden by default and revealed on demand on the web.
 export function activityEntry(sig: StreamLineEvent): { line: string; atype: "tool" | "result" | "text" } | null {
   switch (sig.type) {
     case "tool_use":
       return { line: `${sig.name}${sig.detail ? ` ${truncate(sig.detail, 200)}` : ""}`, atype: "tool" };
     case "tool_result":
-      return { line: `${sig.isError ? "✗ " : ""}${truncate(sig.output, 1500)}`, atype: "result" };
+      return { line: `${sig.isError ? "✗ " : ""}${cap(sig.output, 4000)}`, atype: "result" };
     case "assistant_text":
-      return { line: truncate(sig.text, 400), atype: "text" };
+      return { line: cap(sig.text, 8000), atype: "text" };
     default:
       return null;
   }

@@ -12,6 +12,13 @@ describe("activityEntry typing", () => {
     expect(activityEntry({ type: "tool_result", name: "bash", output: "boom", isError: true })).toEqual({ line: "✗ boom", atype: "result" });
     expect(activityEntry({ type: "assistant_text", text: "thinking" })).toEqual({ line: "thinking", atype: "text" });
   });
+
+  test("preserves newlines in text + results so the web viewer renders real markdown (clipping is per-surface)", () => {
+    const md = "## Plan\n\n- step one\n- step two";
+    expect(activityEntry({ type: "assistant_text", text: md })).toEqual({ line: md, atype: "text" });
+    const out = "line 1\nline 2\nline 3";
+    expect(activityEntry({ type: "tool_result", name: "bash", output: out, isError: false })).toEqual({ line: out, atype: "result" });
+  });
 });
 
 // Captured/assumed shape of `claude -p <prompt> --output-format=stream-json

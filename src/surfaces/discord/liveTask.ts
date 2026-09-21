@@ -111,8 +111,12 @@ export class LiveTaskView {
   }
 }
 
+const TAIL_LINE_MAX = 180; // the Discord tail is a glance view — clip each line here; full text is on the web
+
 function fmtLine(entry: ActivityLine): string {
-  return entry.atype === "tool" ? `🔧 ${entry.line}` : `💬 ${entry.line}`;
+  const flat = entry.line.replace(/\s+/g, " ").trim();
+  const clipped = flat.length > TAIL_LINE_MAX ? `${flat.slice(0, TAIL_LINE_MAX - 1)}…` : flat;
+  return entry.atype === "tool" ? `🔧 ${clipped}` : `💬 ${clipped}`;
 }
 
 /** True when `text` (a possibly 400-char-truncated assistant line) is the leading head of `summary`. */
