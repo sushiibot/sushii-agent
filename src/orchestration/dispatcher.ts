@@ -327,14 +327,11 @@ export class Dispatcher {
       case "progress":
         logger.debug({ taskId: event.taskId, note: event.note }, "runner progress");
         return;
-      case "handback": {
-        // Fold the runner-opened PR into the stored summary so the settled notification surfaces it
-        // — the runner pushes + opens the PR at handback, and its URL only arrives here in the meta.
-        const pr = event.meta?.prUrl;
-        const summary = pr ? `${event.summary}\n\n🔗 PR: ${pr}` : event.summary;
-        this.registry.setSummary(event.taskId, summary);
+      case "handback":
+        // The agent opens its own PR (via gh) when the task calls for it and names the link in its
+        // summary, so the summary is stored as-authored.
+        this.registry.setSummary(event.taskId, event.summary);
         return;
-      }
     }
   }
 

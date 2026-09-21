@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { getLogger } from "../../logger.ts";
@@ -6,7 +6,6 @@ import type { RepoSpec } from "../contracts.ts";
 import type { GitTokenProvider } from "./githubApp.ts";
 
 const log = getLogger("orchestration.runner.repoOps");
-const GITHUB_API = "https://api.github.com";
 
 export interface BotIdentity {
   name: string;
@@ -16,7 +15,6 @@ export interface BotIdentity {
 export interface RepoOpsDeps {
   provider: GitTokenProvider;
   bot: BotIdentity;
-  fetchImpl?: typeof fetch;
   gitFactory?: (cwd?: string) => SimpleGit;
 }
 
@@ -24,19 +22,51 @@ function cleanUrl(spec: RepoSpec): string {
   return `https://github.com/${spec.owner}/${spec.repo}.git`;
 }
 
-// Token embedded for a single git invocation. The credential rides the URL rather than .git/config
-// or the git subprocess env (simple-git blocks env-based config injection). After clone the remote
-// is reset to the clean URL, so the token never persists in the semi-durable checkout; for push it
-// is passed inline and never written anywhere. It is transiently visible in the runner's process
-// args — acceptable on the owner-only single-tenant container, and Tier 2 isolates per principal.
+// Token embedded for the single clone invocation only. After clone the origin is reset to the clean
+// URL, so it never persists in the semi-durable checkout; the agent's later pushes authenticate via
+// GIT_ASKPASS + GH_TOKEN (see agentGitEnv), not a stored credential.
 function authUrl(spec: RepoSpec, token: string): string {
   return `https://x-access-token:${token}@github.com/${spec.owner}/${spec.repo}.git`;
 }
 
-// Inject the token into an https remote for a single push; leave any other transport (a local
-// file:// remote, as in tests) untouched so it needs no credential.
-function tokenizeHttps(url: string, token: string): string {
-  return url.startsWith("https://") ? url.replace(/^https:\/\/([^@]*@)?/, `https://x-access-token:${token}@`) : url;
+const ASKPASS_REL = ".git/sushii-askpass.sh";
+
+// A GIT_ASKPASS helper: git calls it for the username and password prompts; it answers the fixed
+// App username and the injected per-repo token. No secret is written — the token arrives via the
+// GH_TOKEN env the runner injects per shell (agentGitEnv). Same token authenticates `gh`.
+const ASKPASS_SCRIPT = `#!/bin/sh
+case "$1" in
+  Username*) echo "x-access-token" ;;
+  *) echo "\${GH_TOKEN}" ;;
+esac
+`;
+
+// pre-push guard: refuse a push whose target is the repo's default branch, resolved live from
+// origin/HEAD. This catches an agent that wanders into \`git push origin main\`. It is NOT an
+// adversarial control — \`git push --no-verify\` skips it — so the authoritative "no direct push to
+// the default branch" guarantee is GitHub branch protection on the repo. This hook guards accidents.
+const PRE_PUSH_HOOK = `#!/bin/sh
+default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+[ -z "$default" ] && default=main
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/$default" ]; then
+    echo "sushii-runner: refusing to push to the default branch ($default). Use a task branch + PR." >&2
+    exit 1
+  fi
+done
+exit 0
+`;
+
+/** Env the runner injects into the agent's shell so its own git/gh authenticate as the bot, scoped
+ *  to this repo. The token is readable by the agent (accepted: repo-scoped, ~1h) but the App key is
+ *  never here — the agent cannot mint tokens for any other repo. */
+export function agentGitEnv(cwd: string, token: string): Record<string, string> {
+  return {
+    GH_TOKEN: token,
+    GITHUB_TOKEN: token,
+    GIT_ASKPASS: join(cwd, ASKPASS_REL),
+    GIT_TERMINAL_PROMPT: "0",
+  };
 }
 
 async function setIdentity(git: SimpleGit, bot: BotIdentity): Promise<void> {
@@ -44,7 +74,9 @@ async function setIdentity(git: SimpleGit, bot: BotIdentity): Promise<void> {
   await git.addConfig("user.email", bot.email);
 }
 
-/** Clone owner/repo into `cwd` if it is not already a checkout. Returns true if a clone happened. */
+/** Clone owner/repo into `cwd` if absent, then configure it for agent-driven git: clean origin, bot
+ *  commit identity, the GIT_ASKPASS helper, and the default-branch pre-push guard. Returns true if a
+ *  clone happened. */
 export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDeps): Promise<boolean> {
   if (existsSync(join(cwd, ".git"))) return false;
   mkdirSync(dirname(cwd), { recursive: true });
@@ -54,109 +86,19 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
   const wc = factory(cwd);
   await wc.remote(["set-url", "origin", cleanUrl(spec)]); // scrub the token out of persisted config
   await setIdentity(wc, deps.bot);
+  configureForAgent(cwd);
   log.info({ cwd, repo: `${spec.owner}/${spec.repo}` }, "cloned repo on-demand");
   return true;
 }
 
-export interface PushResult {
-  branch: string;
-  prUrl: string;
-}
-
-// Runner-side handback: commit the agent's working-tree changes onto a task branch, push it, open a
-// draft PR against the repo's default branch. The agent never holds the credential and never pushes
-// directly — this is the only place a push happens, and it targets a task branch, never the default,
-// so "branch-only" is enforced by construction. Returns null when there is nothing to push.
-export async function pushWorkAndOpenPr(
-  cwd: string,
-  spec: RepoSpec,
-  task: { taskId: string; summary: string; startSha: string | null },
-  deps: RepoOpsDeps,
-): Promise<PushResult | null> {
-  const git = (deps.gitFactory ?? simpleGit)(cwd);
-
-  // Self-heal a checkout whose origin still carries a token — left by a clone that died between the
-  // tokenized clone and the scrub. Without this, such a token would sit in .git/config on the
-  // semi-durable disk, exactly what the design forbids.
-  let originUrl = (await git.remote(["get-url", "origin"]))?.trim() ?? cleanUrl(spec);
-  if (originUrl.includes("@")) {
-    originUrl = cleanUrl(spec);
-    await git.remote(["set-url", "origin", originUrl]);
-    log.warn({ cwd }, "reset a tokenized origin URL left by an interrupted clone");
-  }
-
-  const status = await git.status();
-  const headBefore = (await git.revparse(["HEAD"]).catch(() => null))?.trim() ?? null;
-  const hasWorkingChanges = status.files.length > 0;
-  // A new commit relative to where the task started; falls back to "any history" when startSha is
-  // unknown (a repo with no commits at dispatch).
-  const hasNewCommits = task.startSha ? headBefore !== null && headBefore !== task.startSha : (await git.log()).total > 0;
-  if (!hasWorkingChanges && !hasNewCommits) return null; // agent changed nothing — no empty PR (nothing mutated yet)
-
-  await setIdentity(git, deps.bot); // resume may reach a checkout cloneIfAbsent did not configure
-  const branch = `sushii-runner/${task.taskId}`;
-  await git.checkout(["-B", branch]);
-  if (hasWorkingChanges) {
-    await git.add(["-A"]);
-    await git.commit(firstLine(task.summary) || `runner task ${task.taskId}`);
-  }
-
-  const { token } = await deps.provider.tokenFor(spec); // fresh token at push time (may be ~1h later)
-  await git.push([tokenizeHttps(originUrl, token), `HEAD:refs/heads/${branch}`]);
-  const prUrl = await openPr(spec, branch, task, token, deps);
-  log.info({ cwd, branch, prUrl }, "pushed task branch + opened PR");
-  return { branch, prUrl };
-}
-
-async function openPr(
-  spec: RepoSpec,
-  branch: string,
-  task: { taskId: string; summary: string },
-  token: string,
-  deps: RepoOpsDeps,
-): Promise<string> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "Content-Type": "application/json",
-  };
-  const base = await defaultBranch(spec, token, fetchImpl);
-  const payload = {
-    title: firstLine(task.summary) || `Runner task ${task.taskId}`,
-    head: branch,
-    base,
-    body: task.summary || "",
-    draft: true,
-  };
-  let res = await fetchImpl(`${GITHUB_API}/repos/${spec.owner}/${spec.repo}/pulls`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  // Some repos/plans reject draft PRs (422) — retry non-draft rather than fail the handback.
-  if (res.status === 422) {
-    res = await fetchImpl(`${GITHUB_API}/repos/${spec.owner}/${spec.repo}/pulls`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ ...payload, draft: false }),
-    });
-  }
-  if (!res.ok) throw new Error(`open PR for ${spec.owner}/${spec.repo} failed: ${res.status} ${await res.text()}`);
-  const body = (await res.json()) as { html_url: string };
-  return body.html_url;
-}
-
-async function defaultBranch(spec: RepoSpec, token: string, fetchImpl: typeof fetch): Promise<string> {
-  const res = await fetchImpl(`${GITHUB_API}/repos/${spec.owner}/${spec.repo}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
-  });
-  if (!res.ok) throw new Error(`resolve default branch for ${spec.owner}/${spec.repo} failed: ${res.status}`);
-  return ((await res.json()) as { default_branch: string }).default_branch;
-}
-
-function firstLine(s: string): string {
-  const line = (s ?? "").split("\n")[0]?.trim() ?? "";
-  return line.length > 72 ? `${line.slice(0, 71)}…` : line;
+/** (Re)write the askpass helper + pre-push guard into a checkout. Idempotent — also called on resume
+ *  so a checkout cloned by an older build gains them. */
+export function configureForAgent(cwd: string): void {
+  const askpass = join(cwd, ASKPASS_REL);
+  writeFileSync(askpass, ASKPASS_SCRIPT);
+  chmodSync(askpass, 0o755);
+  const hook = join(cwd, ".git/hooks/pre-push");
+  mkdirSync(dirname(hook), { recursive: true });
+  writeFileSync(hook, PRE_PUSH_HOOK);
+  chmodSync(hook, 0o755);
 }

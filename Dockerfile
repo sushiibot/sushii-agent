@@ -22,6 +22,14 @@ RUN set -eu; \
     curl -fsSL "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LYCHEE_ARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin --strip-components=1 "lychee-${LYCHEE_ARCH}/lychee"
 
+# gh: the GitHub CLI, so a cloud-runner coding agent can open PRs itself (git push + gh pr create),
+# authenticated by the per-task GH_TOKEN the runner injects into its shell. Static binary, same
+# TARGETARCH fetch pattern as lychee.
+ARG GH_VERSION=2.63.2
+RUN set -eu; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh"
+
 WORKDIR /app
 
 COPY package.json bun.lock* ./
