@@ -13,8 +13,14 @@ export function registerTaskStreamRoutes(app: Hono): void {
     const view = getActivityHub().viewWithToken(id, c.req.query("key") ?? "");
     if (!view) return c.json({ error: "not_found" }, 404);
 
+    // On an EventSource reconnect the browser replays Last-Event-ID; resume after it so the backlog
+    // isn't re-sent (which duplicated the whole log when the stream closed on settle).
+    const lastId = Number(c.req.header("Last-Event-ID") ?? c.req.query("lastId") ?? "0") || 0;
+
     return streamSSE(c, async (stream) => {
-      for (const l of view.lines) await stream.writeSSE({ data: JSON.stringify(l) });
+      for (const l of view.lines) {
+        if (l.seq > lastId) await stream.writeSSE({ id: String(l.seq), data: JSON.stringify(l) });
+      }
       if (view.status !== "running") {
         await stream.writeSSE({ event: "status", data: JSON.stringify({ status: view.status, summary: view.summary }) });
         return; // already settled — backlog delivered, nothing more will come
@@ -24,7 +30,7 @@ export function registerTaskStreamRoutes(app: Hono): void {
       await new Promise<void>((resolve) => {
         let closed = false;
         const heartbeat = setInterval(() => void stream.writeSSE({ event: "ping", data: "" }).catch(() => {}), 15000);
-        const unsubLine = view.onLine((l) => void stream.writeSSE({ data: JSON.stringify(l) }).catch(() => {}));
+        const unsubLine = view.onLine((l) => void stream.writeSSE({ id: String(l.seq), data: JSON.stringify(l) }).catch(() => {}));
         const unsubStatus = view.onStatus((status, summary) => {
           void stream.writeSSE({ event: "status", data: JSON.stringify({ status, summary }) }).catch(() => {});
           finish();
@@ -61,32 +67,59 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] as string);
 }
 
-// Self-contained viewer: connects to the SSE endpoint (reusing this page's ?key=…), appends lines,
-// auto-scrolls unless the user has scrolled up, and shows the final status.
+// Self-contained log viewer: types each activity line (tool call / result / assistant text) with its
+// own style + a timestamp, de-dups by sequence id, auto-scrolls unless the reader scrolled up, and
+// shows the final status. Reconnect-safe (Last-Event-ID resume server-side + seq de-dup here).
 const VIEWER_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Task __TASK_ID__</title>
 <style>
-  :root { color-scheme: dark; }
-  body { margin:0; background:#0d1117; color:#c9d1d9; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
-  header { position:sticky; top:0; padding:10px 14px; background:#161b22; border-bottom:1px solid #30363d; display:flex; gap:10px; align-items:center; }
-  #status { padding:2px 8px; border-radius:10px; background:#21262d; font-size:12px; }
-  #status.running{color:#d29922} #status.idle,#status.done{color:#3fb950} #status.failed{color:#f85149}
-  main { padding:12px 14px; white-space:pre-wrap; word-break:break-word; }
-  .l { padding:1px 0; } .l:hover{background:#161b22}
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#c9d1d9; --dim:#8b949e; --tool:#79c0ff; --text:#e6edf3; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { position:sticky; top:0; z-index:1; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:center; }
+  header .id { font-weight:600; color:var(--text); }
+  #status { margin-left:auto; padding:2px 10px; border-radius:20px; background:#21262d; font-size:12px; text-transform:capitalize; }
+  #status.running{color:#d29922} #status.idle,#status.done{color:#3fb950} #status.failed{color:#f85149} #status.disconnected{color:var(--dim)}
+  main { padding:8px 0 40vh; }
+  .row { display:flex; gap:10px; padding:3px 16px; border-left:2px solid transparent; }
+  .row:hover { background:#11151c; }
+  .ts { color:#586069; flex:0 0 auto; -webkit-user-select:none; user-select:none; }
+  .msg { white-space:pre-wrap; word-break:break-word; min-width:0; }
+  .tool { border-left-color:var(--tool); } .tool .msg { color:var(--tool); }
+  .result { } .result .msg { color:var(--dim); }
+  .text .msg { color:var(--text); }
+  .summary { margin:8px 16px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:8px; color:var(--text); white-space:pre-wrap; }
 </style></head>
 <body>
-  <header><strong>#__TASK_ID__</strong><span id="status" class="running">connecting…</span></header>
+  <header><span class="id">#__TASK_ID__</span><span id="status" class="running">connecting…</span></header>
   <main id="log"></main>
 <script>
-  const log = document.getElementById('log'), status = document.getElementById('status');
+  const log = document.getElementById('log'), statusEl = document.getElementById('status');
+  let lastSeq = 0;
   const es = new EventSource('/tasks/__TASK_ID__/stream' + location.search);
-  const atBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
-  function add(line){ const d=document.createElement('div'); d.className='l'; d.textContent=line; const stick=atBottom(); log.appendChild(d); if(stick) window.scrollTo(0,document.body.scrollHeight); }
-  es.onmessage = (e) => { try { add(JSON.parse(e.data).line); } catch {} };
-  es.addEventListener('status', (e) => { try { const s=JSON.parse(e.data); status.textContent=s.status; status.className=s.status; if(s.summary) add('— '+s.summary); } catch {} es.close(); });
-  es.onopen = () => { if(status.textContent==='connecting…'){ status.textContent='running'; } };
-  es.onerror = () => { if(status.textContent==='connecting…') status.textContent='disconnected'; };
+  const atBottom = () => window.innerHeight + window.scrollY >= document.body.scrollHeight - 60;
+  const pad = (n) => String(n).padStart(2,'0');
+  function ts(ms){ const d=new Date(ms); return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
+  function kindOf(line){ if(line.startsWith('🔧')) return 'tool'; if(line.trimStart().startsWith('↳')) return 'result'; if(line.startsWith('💬')) return 'text'; return 'text'; }
+  function add(entry){
+    if(entry.seq && entry.seq<=lastSeq) return; if(entry.seq) lastSeq=entry.seq;
+    const stick=atBottom();
+    const row=document.createElement('div'); row.className='row '+kindOf(entry.line);
+    const t=document.createElement('span'); t.className='ts'; t.textContent=entry.at?ts(entry.at):'';
+    const m=document.createElement('span'); m.className='msg'; m.textContent=entry.line;
+    row.append(t,m); log.appendChild(row);
+    if(stick) window.scrollTo(0,document.body.scrollHeight);
+  }
+  es.onmessage = (e) => { try { add(JSON.parse(e.data)); } catch {} };
+  es.addEventListener('status', (e) => {
+    try { const s=JSON.parse(e.data); statusEl.textContent=s.status; statusEl.className=s.status;
+      if(s.summary){ const d=document.createElement('div'); d.className='summary'; d.textContent=s.summary; log.appendChild(d); if(atBottom()) window.scrollTo(0,document.body.scrollHeight); }
+    } catch {}
+    es.close(); // settled — stop, and stop the browser from reconnecting
+  });
+  es.onopen = () => { if(statusEl.textContent==='connecting…') { statusEl.textContent='running'; statusEl.className='running'; } };
+  es.onerror = () => { if(es.readyState===2 && statusEl.className!=='idle' && statusEl.className!=='done' && statusEl.className!=='failed'){ statusEl.textContent='disconnected'; statusEl.className='disconnected'; } };
 </script>
 </body></html>`;

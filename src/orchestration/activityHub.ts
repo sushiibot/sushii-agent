@@ -8,11 +8,13 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 export interface ActivityLine {
   line: string;
   at: number;
+  seq: number; // monotonic per task — the SSE event id, for de-dup + Last-Event-ID resume
 }
 
 interface TaskStream {
   token: string;
   lines: ActivityLine[];
+  seq: number;
   status: string; // "running" | "idle" | "done" | "failed"
   summary: string | null;
   subscribers: Set<(l: ActivityLine) => void>;
@@ -40,7 +42,7 @@ export class ActivityHub {
   open(taskId: string): string {
     let t = this.tasks.get(taskId);
     if (!t) {
-      t = { token: randomBytes(16).toString("hex"), lines: [], status: "running", summary: null, subscribers: new Set(), statusSubs: new Set(), gcTimer: null };
+      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, status: "running", summary: null, subscribers: new Set(), statusSubs: new Set(), gcTimer: null };
       this.tasks.set(taskId, t);
     }
     return t.token;
@@ -53,7 +55,7 @@ export class ActivityHub {
   append(taskId: string, line: string, at: number): void {
     const t = this.tasks.get(taskId);
     if (!t) return;
-    const entry: ActivityLine = { line, at };
+    const entry: ActivityLine = { line, at, seq: ++t.seq };
     t.lines.push(entry);
     if (t.lines.length > MAX_LINES) t.lines.shift();
     for (const cb of t.subscribers) {

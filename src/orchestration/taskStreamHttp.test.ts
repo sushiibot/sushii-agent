@@ -43,6 +43,20 @@ describe("task stream routes", () => {
     expect(body).toContain("done");
   });
 
+  test("SSE resume via Last-Event-ID skips already-delivered backlog (no duplication on reconnect)", async () => {
+    const app = appWithRoutes();
+    const hub = getActivityHub();
+    const token = hub.open("web-resume");
+    hub.append("web-resume", "line-A", 1); // seq 1
+    hub.append("web-resume", "line-B", 2); // seq 2
+    hub.settle("web-resume", "done", null);
+
+    const res = await app.request(`/tasks/web-resume/stream?key=${token}`, { headers: { "Last-Event-ID": "1" } });
+    const body = await res.text();
+    expect(body).not.toContain("line-A"); // already seen → not re-sent
+    expect(body).toContain("line-B");
+  });
+
   test("SSE stream 404s on a bad token", async () => {
     const app = appWithRoutes();
     getActivityHub().open("web-sse-2");

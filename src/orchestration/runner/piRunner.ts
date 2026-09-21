@@ -74,8 +74,19 @@ function summarizeToolArgs(args: unknown): string {
   }
 }
 
+// Prefer a tool result's human-readable payload (a command's stdout, a file's text) over a raw JSON
+// dump, so the activity log reads like output rather than a serialized object.
 function stringifyResult(result: unknown): string {
   if (typeof result === "string") return result;
+  if (result && typeof result === "object") {
+    const r = result as Record<string, unknown>;
+    if (typeof r.stdout === "string" || typeof r.stderr === "string") {
+      return [r.stdout, r.stderr].filter((s) => typeof s === "string" && s).join("\n");
+    }
+    for (const k of ["output", "text", "content", "message", "result"]) {
+      if (typeof r[k] === "string" && r[k]) return r[k] as string;
+    }
+  }
   try {
     return JSON.stringify(result);
   } catch {
