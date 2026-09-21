@@ -228,6 +228,10 @@ export class OrchestrationServer {
     return this.call(runnerId, RPC_METHODS.interrupt, { taskId });
   }
 
+  stopTask(runnerId: string, input: { taskId: string; discard?: boolean }): Promise<unknown> {
+    return this.call(runnerId, RPC_METHODS.stop, input);
+  }
+
   isConnected(runnerId: string): boolean {
     return this.sockets.has(runnerId);
   }

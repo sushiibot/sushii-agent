@@ -125,6 +125,17 @@ export async function ensureWorktree(repoHome: string, taskId: string, deps: Rep
   return worktreePath;
 }
 
+/** Remove a task's worktree (discard). Best-effort: `git worktree remove --force`, then rmSync the dir
+ *  and prune bookkeeping. Only ever called for clone-on-demand worktrees under `<repoHome>.wt/`. */
+export async function removeWorktree(repoHome: string, taskId: string, deps: RepoOpsDeps): Promise<void> {
+  const worktreePath = `${repoHome}.wt/${taskId}`;
+  const git = (deps.gitFactory ?? simpleGit)(repoHome);
+  await git.raw(["worktree", "remove", "--force", worktreePath]).catch(() => {});
+  if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
+  await git.raw(["worktree", "prune"]).catch(() => {});
+  log.info({ repoHome, worktreePath }, "removed task worktree (discard)");
+}
+
 function originSpecOf(git: SimpleGit): Promise<RepoSpec | null> {
   return git
     .remote(["get-url", "origin"])

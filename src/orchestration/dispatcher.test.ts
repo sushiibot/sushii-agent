@@ -622,4 +622,50 @@ describe("Dispatcher.onTaskSettled", () => {
       dispatcher.stop();
     }
   });
+
+  test("haltTask + steer are authz-gated", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => false);
+    dispatcher.listen();
+    try {
+      await expect(dispatcher.haltTask({ principal: "x", taskId: "t", space: "s" })).rejects.toBeInstanceOf(AuthzError);
+      await expect(dispatcher.steer({ principal: "x", taskId: "t", space: "s", text: "go" })).rejects.toBeInstanceOf(AuthzError);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("haltTask stops a task resumable (idle); discard marks it failed and tells the runner to discard", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    const adapter = new MockRunnerAdapter();
+    const client = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "r1", kind: "mock", projects: ["/tmp"], adapter });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("r1"));
+      const task = await dispatcher.dispatch({
+        principal: "owner",
+        runnerId: "r1",
+        cwd: "/tmp/x",
+        project: null,
+        prompt: "go",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      });
+      await waitFor(() => registry.get(task.id)?.status === "done"); // let the mock run settle first
+
+      const stopped = await dispatcher.haltTask({ principal: "owner", taskId: task.id, space: "discord:dm" });
+      expect(stopped.status).toBe("idle"); // resumable
+      expect(stopped.statusReason).toBe("stopped by user");
+      expect(adapter.lastStop).toEqual({ taskId: task.id, discard: undefined });
+
+      const discarded = await dispatcher.haltTask({ principal: "owner", taskId: task.id, space: "discord:dm", discard: true });
+      expect(discarded.status).toBe("failed"); // terminal
+      expect(adapter.lastStop).toEqual({ taskId: task.id, discard: true });
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
 });

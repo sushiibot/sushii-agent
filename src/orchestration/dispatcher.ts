@@ -40,6 +40,20 @@ export interface ResumeInput {
   space: string;
 }
 
+export interface HaltInput {
+  principal: string;
+  taskId: string;
+  space: string;
+  discard?: boolean; // true = also reclaim the worktree, terminal (not resumable)
+}
+
+export interface SteerInput {
+  principal: string;
+  taskId: string;
+  space: string;
+  text: string;
+}
+
 export interface DispatcherOptions {
   port?: number;
 }
@@ -273,6 +287,37 @@ export class Dispatcher {
     const resumed = this.registry.get(task.id) as TaskRow;
     this.emitStarted(resumed);
     return resumed;
+  }
+
+  /** Halt the active run. Default keeps the task resumable (status idle, worktree + session kept);
+   *  `discard` reclaims the worktree and marks it terminal. Idempotent — a settled/absent run just
+   *  records the status. The runner's stop() suppresses any "failed" from the abort, so the status
+   *  recorded here is authoritative. */
+  async haltTask(input: HaltInput): Promise<TaskRow> {
+    const allowed = this.canFn({ principal: input.principal, capability: "session.stop", resource: input.taskId, space: input.space });
+    if (!allowed) throw new AuthzError("session.stop denied");
+    const task = this.registry.get(input.taskId);
+    if (!task || task.createdBy !== input.principal) throw new AuthzError("session.stop denied");
+
+    if (this.isRunnerLive(task.runnerId)) {
+      await this.server.stopTask(task.runnerId, { taskId: task.id, discard: input.discard }).catch((err) => {
+        logger.warn({ err, taskId: task.id }, "runner stop failed; recording status anyway");
+      });
+    }
+    const status = input.discard ? "failed" : "idle";
+    const reason = input.discard ? "discarded by user" : "stopped by user";
+    this.registry.updateStatus(task.id, status, reason);
+    getActivityHub().settle(task.id, status, task.summary ?? null);
+    return this.registry.get(task.id) as TaskRow;
+  }
+
+  /** Steer a running task: supersede its current turn and re-prompt with the guidance, preserving
+   *  session context (this is `resume` with the steer text). The steer is recorded as an activity line
+   *  so every watcher and the transcript sees the intervention. */
+  async steer(input: SteerInput): Promise<TaskRow> {
+    const hub = getActivityHub();
+    if (hub.tokenFor(input.taskId)) hub.append(input.taskId, `↪ steer: ${input.text}`, Date.now(), "text");
+    return this.resume({ principal: input.principal, taskId: input.taskId, space: input.space, prompt: input.text });
   }
 
   /** Registers a callback invoked once per task turn SETTLING — {idle, done, failed} (per

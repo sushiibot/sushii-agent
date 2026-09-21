@@ -64,6 +64,10 @@ export interface RunnerAdapter {
   start(input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<{ nativeSessionId: string }>;
   resume(input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string }): Promise<void>;
   interrupt(taskId: string): Promise<void>;
+  // Halt the active run but leave the task resumable (session file kept). `discard` also removes a
+  // clone-on-demand worktree — never a caller-supplied project dir. Unlike interrupt, stop must NOT
+  // surface a "failed" status for the halted run (the dispatcher records idle/terminal itself).
+  stop(input: { taskId: string; discard?: boolean }): Promise<void>;
   // Emits RunnerEvents for the task; implementation streams via the callback.
   stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void>;
 }
@@ -74,6 +78,7 @@ export const RPC_METHODS = {
   start: "session/new",
   resume: "session/resume",
   interrupt: "session/cancel",
+  stop: "session/stop", // halt but keep resumable (params: { taskId, discard? })
   event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
   heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)
 } as const;
@@ -114,7 +119,7 @@ export type RegisterParams = z.infer<typeof registerParams>;
 
 // ── Authz seam (P0 stub = owner-only AND a hardcoded personal/DM-space allowlist). ──
 // Real tables land in Phase 2 (U2.1). Keep this signature stable so the swap is drop-in.
-export type Capability = "runner.dispatch" | "session.read" | "session.resume" | "session.interrupt";
+export type Capability = "runner.dispatch" | "session.read" | "session.resume" | "session.interrupt" | "session.stop";
 export interface AuthzInput {
   principal: string;
   capability: Capability;

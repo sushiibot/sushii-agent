@@ -5,7 +5,7 @@ import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-
 import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
-import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, type RepoOpsDeps } from "./repoOps.ts";
+import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
@@ -303,6 +303,27 @@ export class PiRunnerAdapter implements RunnerAdapter {
     task.queue.close();
     task.session.dispose();
     this.tasks.delete(taskId);
+  }
+
+  // Halt but stay resumable. `superseded` first (mirrors resume) so the abort's failed-result is dropped
+  // and stream() skips finalize — no "failed" reaches the dispatcher, which records idle/terminal itself.
+  async stop(input: { taskId: string; discard?: boolean }): Promise<void> {
+    const task = this.tasks.get(input.taskId);
+    if (task) {
+      task.superseded = true;
+      if (task.credsTimer) clearInterval(task.credsTimer);
+      await task.session.abort().catch(() => {});
+      task.queue.close();
+      task.session.dispose();
+      this.tasks.delete(input.taskId);
+    }
+    // Discard reclaims the clone-on-demand worktree. `repoHome` may only be known from the live task;
+    // when it's already gone (stop after settle) there's nothing to remove.
+    if (input.discard && this.options.repoOps && task?.repoHome) {
+      await removeWorktree(task.repoHome, input.taskId, this.options.repoOps).catch((err) =>
+        log.warn({ err, taskId: input.taskId }, "failed to remove worktree on discard"),
+      );
+    }
   }
 
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {

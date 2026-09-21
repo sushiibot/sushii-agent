@@ -452,6 +452,17 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     this.tasks.delete(taskId);
   }
 
+  // Halt but stay resumable: `superseded` so the killed process emits no "failed", then kill. This
+  // adapter runs in the caller's real project dir (not a throwaway worktree), so `discard` removes
+  // nothing on disk — it only tells the dispatcher to record a terminal status.
+  async stop(input: { taskId: string; discard?: boolean }): Promise<void> {
+    const task = this.tasks.get(input.taskId);
+    if (!task) return;
+    task.superseded = true;
+    task.proc.kill();
+    this.tasks.delete(input.taskId);
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task ${taskId}`);

@@ -226,6 +226,10 @@ export class OrchestrationClient {
         const input = params as { taskId: string };
         await adapter.interrupt(input.taskId);
         this.respond(ws, id, { ok: true });
+      } else if (method === RPC_METHODS.stop) {
+        const input = params as { taskId: string; discard?: boolean };
+        await adapter.stop(input);
+        this.respond(ws, id, { ok: true });
       }
     } catch (err) {
       this.respondError(ws, id, err instanceof Error ? err.message : String(err));

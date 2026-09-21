@@ -33,7 +33,7 @@ const LINEAR_TOOLS = new Set(["file_linear_issue", "get_issue_status", "list_tri
 /** Mirrors ops-triage's config.ownerDiscordId gate below, plus a space check ops-triage doesn't
  *  need — runner tools must also stay hidden outside a personal/DM space (authz.isPersonalSpace),
  *  not just deny-at-call. The per-call can() check in runners/index.ts remains the real gate. */
-const RUNNER_TOOLS = new Set(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session"]);
+const RUNNER_TOOLS = new Set(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session", "stop_task", "discard_task", "steer_task"]);
 
 /** Config-key gates, resolved once per `resolve()` call rather than baked into the class — lets
  *  a caller (tests, U4's wiring) supply availability directly instead of the registry reaching

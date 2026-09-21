@@ -11,6 +11,12 @@ export class MockRunnerAdapter implements RunnerAdapter {
 
   async interrupt(_taskId: string): Promise<void> {}
 
+  /** Records the last stop for assertions. */
+  public lastStop: { taskId: string; discard?: boolean } | null = null;
+  async stop(input: { taskId: string; discard?: boolean }): Promise<void> {
+    this.lastStop = input;
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const events: RunnerEvent[] = [
       { kind: "status", taskId, status: "running" },

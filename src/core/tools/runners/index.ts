@@ -272,4 +272,97 @@ export const resumeSessionEntry: ToolEntry = {
   },
 };
 
-export const RUNNER_TOOL_ENTRIES: ToolEntry[] = [dispatchToRunnerEntry, listRunnersEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry];
+export const stopTaskEntry: ToolEntry = {
+  name: "stop_task",
+  definition: {
+    name: "stop_task",
+    description: "Halt a running task but keep it RESUMABLE — its worktree, branch, and session are preserved, so resume_session picks it right back up. Owner-only. Use this to pause a task or stop one that's going the wrong way when you intend to steer/resume it. To throw the work away instead, use discard_task.",
+    parameters: {
+      type: "object",
+      properties: { task_id: { type: "string", description: "The task id (from dispatch_to_runner or list_running_sessions)." } },
+      required: ["task_id"],
+    },
+  },
+  requiresHosts: [],
+  async execute(input, ctx) {
+    return haltAndReport(input.task_id as string, ctx, false);
+  },
+};
+
+export const discardTaskEntry: ToolEntry = {
+  name: "discard_task",
+  definition: {
+    name: "discard_task",
+    description: "Cancel a task and DISCARD its work — stops the run and removes its clone-on-demand worktree. NOT resumable. Owner-only. Use this only when the task was wrong and its changes should be thrown away; use stop_task to pause something you'll come back to.",
+    parameters: {
+      type: "object",
+      properties: { task_id: { type: "string", description: "The task id (from dispatch_to_runner or list_running_sessions)." } },
+      required: ["task_id"],
+    },
+  },
+  requiresHosts: [],
+  async execute(input, ctx) {
+    return haltAndReport(input.task_id as string, ctx, true);
+  },
+};
+
+export const steerTaskEntry: ToolEntry = {
+  name: "steer_task",
+  definition: {
+    name: "steer_task",
+    description: "Send course-correcting guidance to a RUNNING task without waiting for it to finish. This supersedes the task's current turn and re-prompts it with your message, keeping its session context. Owner-only. Use it to redirect a task mid-run ('stop refactoring X, focus on Y') instead of letting a wrong direction finish and wasting the work.",
+    parameters: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The task id (from dispatch_to_runner or list_running_sessions)." },
+        text: { type: "string", description: "The guidance to steer the task with." },
+      },
+      required: ["task_id", "text"],
+    },
+  },
+  requiresHosts: [],
+  async execute(input, ctx) {
+    const taskId = input.task_id as string;
+    const principal = authorize(ctx, "session.resume", taskId);
+    if (!principal) return { content: DENIED };
+    let dispatcher;
+    try {
+      dispatcher = getDispatcher();
+      dispatcher.ensureListening();
+    } catch (err) {
+      if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+      throw err;
+    }
+    try {
+      const task = await dispatcher.steer({ principal, taskId, text: input.text as string, space: spaceOf(ctx) });
+      return { content: `Steered task ${task.id} (status: ${task.status}).` };
+    } catch (err) {
+      if (err instanceof AuthzError) return { content: DENIED };
+      if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+      return { content: `Failed to steer: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  },
+};
+
+async function haltAndReport(taskId: string, ctx: Parameters<typeof spaceOf>[0], discard: boolean) {
+  const principal = authorize(ctx, "session.stop", taskId);
+  if (!principal) return { content: DENIED };
+  let dispatcher;
+  try {
+    dispatcher = getDispatcher();
+    dispatcher.ensureListening();
+  } catch (err) {
+    if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+    throw err;
+  }
+  try {
+    const task = await dispatcher.haltTask({ principal, taskId, discard, space: spaceOf(ctx) });
+    return { content: discard ? `Discarded task ${task.id} (worktree removed).` : `Stopped task ${task.id} — resumable with resume_session.` };
+  } catch (err) {
+    if (err instanceof AuthzError) return { content: DENIED };
+    if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+    return { content: `Failed to ${discard ? "discard" : "stop"}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+export const RUNNER_TOOL_ENTRIES: ToolEntry[] = [dispatchToRunnerEntry, listRunnersEntry, listRunningSessionsEntry, readSessionEntry, resumeSessionEntry, stopTaskEntry, discardTaskEntry, steerTaskEntry];
