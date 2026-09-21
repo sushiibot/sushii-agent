@@ -183,6 +183,15 @@ describe("buildRunnerEvents", () => {
     expect(allProgress).toHaveLength(2);
   });
 
+  test("ask signal → needs_input status + ask event; ask_resolved → running", () => {
+    const reducer = new RunnerEventReducer("t-ask", 100, () => 0);
+    const askOut = reducer.onSignal({ type: "ask", askId: "a1", question: "Deploy to prod now?", choices: ["yes", "no"] });
+    expect(askOut.some((e) => e.kind === "status" && e.status === "needs_input" && e.reason === "Deploy to prod now?")).toBe(true);
+    expect(askOut.some((e) => e.kind === "ask" && e.askId === "a1" && e.question === "Deploy to prod now?" && e.choices?.length === 2)).toBe(true);
+    const resolved = reducer.onSignal({ type: "ask_resolved", askId: "a1" });
+    expect(resolved.some((e) => e.kind === "status" && e.status === "running")).toBe(true);
+  });
+
   test("never invokes the real claude CLI — purely parses fixture strings", () => {
     // Sanity check that this test module only exercises the pure parser/
     // reducer path: no Bun.spawn call anywhere in this file.

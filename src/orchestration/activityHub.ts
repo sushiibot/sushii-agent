@@ -24,6 +24,13 @@ export interface TaskMeta {
   resumeCommand: string | null;
 }
 
+// A blocked task's outstanding question (ask_owner). choices, when present, are offered as buttons.
+export interface PendingAsk {
+  askId: string;
+  question: string;
+  choices?: string[];
+}
+
 interface TaskStream {
   token: string;
   lines: ActivityLine[];
@@ -31,8 +38,10 @@ interface TaskStream {
   meta: TaskMeta | null;
   status: string; // "running" | "idle" | "done" | "failed"
   summary: string | null;
+  pendingAsk: PendingAsk | null;
   subscribers: Set<(l: ActivityLine) => void>;
   statusSubs: Set<(status: string, summary: string | null) => void>;
+  askSubs: Set<(ask: PendingAsk | null) => void>;
   gcTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -44,10 +53,13 @@ export interface TaskView {
   status: string;
   summary: string | null;
   meta: TaskMeta | null;
+  pendingAsk: PendingAsk | null;
   /** Subscribe to new lines; returns an unsubscribe fn. */
   onLine: (cb: (l: ActivityLine) => void) => () => void;
   /** Subscribe to status/summary changes (settle); returns an unsubscribe fn. */
   onStatus: (cb: (status: string, summary: string | null) => void) => () => void;
+  /** Subscribe to pending-ask changes (a new question, or null when answered); unsubscribe fn returned. */
+  onAsk: (cb: (ask: PendingAsk | null) => void) => () => void;
 }
 
 export class ActivityHub {
@@ -57,7 +69,7 @@ export class ActivityHub {
   open(taskId: string): string {
     let t = this.tasks.get(taskId);
     if (!t) {
-      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, meta: null, status: "running", summary: null, subscribers: new Set(), statusSubs: new Set(), gcTimer: null };
+      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, meta: null, status: "running", summary: null, pendingAsk: null, subscribers: new Set(), statusSubs: new Set(), askSubs: new Set(), gcTimer: null };
       this.tasks.set(taskId, t);
     } else if (t.gcTimer || t.status !== "running") {
       // Re-opening a settled task (a resume) — cancel its pending GC and mark it running again so late
@@ -77,6 +89,34 @@ export class ActivityHub {
   setMeta(taskId: string, meta: TaskMeta): void {
     const t = this.tasks.get(taskId);
     if (t) t.meta = meta;
+  }
+
+  /** Record a task's outstanding question (ask_owner) and notify viewers. */
+  setAsk(taskId: string, ask: PendingAsk): void {
+    const t = this.tasks.get(taskId);
+    if (!t) return;
+    t.pendingAsk = ask;
+    for (const cb of t.askSubs) {
+      try {
+        cb(ask);
+      } catch {
+        // a broken subscriber must not stall the others
+      }
+    }
+  }
+
+  /** Clear a task's outstanding question (answered/stopped) and notify viewers. */
+  clearAsk(taskId: string): void {
+    const t = this.tasks.get(taskId);
+    if (!t || !t.pendingAsk) return;
+    t.pendingAsk = null;
+    for (const cb of t.askSubs) {
+      try {
+        cb(null);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   append(taskId: string, line: string, at: number, atype: ActivityLine["atype"]): void {
@@ -131,6 +171,7 @@ export class ActivityHub {
       status: t.status,
       summary: t.summary,
       meta: t.meta,
+      pendingAsk: t.pendingAsk,
       onLine: (cb) => {
         t.subscribers.add(cb);
         return () => t.subscribers.delete(cb);
@@ -138,6 +179,10 @@ export class ActivityHub {
       onStatus: (cb) => {
         t.statusSubs.add(cb);
         return () => t.statusSubs.delete(cb);
+      },
+      onAsk: (cb) => {
+        t.askSubs.add(cb);
+        return () => t.askSubs.delete(cb);
       },
     };
   }

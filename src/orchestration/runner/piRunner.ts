@@ -1,7 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import simpleGit from "simple-git";
-import type { AgentSession, AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type AgentSession, type AgentSessionEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
@@ -12,13 +14,79 @@ const log = getLogger("orchestration.runner.pi");
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const MODEL_METADATA_TIMEOUT_MS = 5000;
 const PROVIDER_ID = "sushii-runner-openrouter";
+const ASK_TIMEOUT_MS = 30 * 60_000; // block on ask_owner at most this long, then unblock with a sentinel
+
+// Per-session bridge for the ask_owner tool. The tool's execute parks on `ask()`; an inbound answer
+// (routed via the steer channel → adapter.steer → answer()) resolves it. `emit` is wired to the task's
+// signal queue after the task state exists, so the ask/ask_resolved signals reach the reducer.
+interface AskBridge {
+  emit?: (sig: StreamLineEvent) => void;
+  readonly pending: boolean;
+  ask(question: string, choices: string[] | undefined, signal?: AbortSignal): Promise<string>;
+  answer(text: string): boolean; // resolve a pending ask; false if nothing was pending
+}
+
+function makeAskBridge(): AskBridge {
+  let pending: { askId: string; finish: (a: string) => void } | null = null;
+  const bridge: AskBridge = {
+    emit: undefined,
+    get pending() {
+      return pending !== null;
+    },
+    ask(question, choices, signal) {
+      const askId = randomBytes(8).toString("hex");
+      return new Promise<string>((resolve) => {
+        const timer = setTimeout(
+          () => finish("(No answer received within the time limit. Use your best judgment, or stop and summarize what you need from the owner.)"),
+          ASK_TIMEOUT_MS,
+        );
+        timer.unref?.();
+        function finish(answer: string): void {
+          if (!pending || pending.askId !== askId) return;
+          clearTimeout(timer);
+          pending = null;
+          bridge.emit?.({ type: "ask_resolved", askId });
+          resolve(answer);
+        }
+        pending = { askId, finish };
+        signal?.addEventListener("abort", () => finish("(The task was interrupted before you answered.)"));
+        bridge.emit?.({ type: "ask", askId, question, choices });
+      });
+    },
+    answer(text) {
+      if (!pending) return false;
+      pending.finish(text);
+      return true;
+    },
+  };
+  return bridge;
+}
+
+function createAskOwnerTool(bridge: AskBridge): ToolDefinition {
+  return defineTool({
+    name: "ask_owner",
+    label: "Ask owner",
+    description:
+      "Ask the owner a question and BLOCK until they answer. Use ONLY when genuinely blocked — a decision only the owner can make, an ambiguous requirement, or a destructive/irreversible choice — never for something you can resolve yourself. Provide `choices` when the answer is one of a few options (they are shown as buttons); omit for a free-form answer. Returns the owner's answer.",
+    parameters: Type.Object({
+      question: Type.String({ description: "The question to ask the owner." }),
+      choices: Type.Optional(Type.Array(Type.String(), { description: "Optional answer options, shown to the owner as buttons." })),
+    }),
+    execute: async (_toolCallId, params, signal) => {
+      const answer = await bridge.ask(params.question, params.choices, signal);
+      return { content: [{ type: "text", text: answer }], details: {} };
+    },
+  }) as unknown as ToolDefinition;
+}
 
 // Generic coding-runner system prompt. The trailing summary instruction is what makes the handback
 // informative — without it a model that does its work purely via tools stops with no final text, so
 // the handback recap comes back empty ("Stopped."). Kept minimal + agent-agnostic (no wiki/Discord).
 const RUNNER_SYSTEM_PROMPT = `You are an autonomous coding agent working in a git repository. Carry out the requested task directly using your tools (read, edit, write, bash, etc.).
 
-Git & GitHub: your shell is already authenticated for this repository (git push and the gh CLI both work), and you are already on a fresh dedicated task branch cut from the latest default branch — do NOT create another branch, and never push to the default branch (it is blocked). Use git/gh yourself, and only when the task calls for it — not every task needs a commit or a PR. Typical flow when you have changes to publish: commit them, push the current branch with \`git push -u origin HEAD\`, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). If the task is exploratory, a question, or needs no change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.`;
+Git & GitHub: your shell is already authenticated for this repository (git push and the gh CLI both work), and you are already on a fresh dedicated task branch cut from the latest default branch — do NOT create another branch, and never push to the default branch (it is blocked). Use git/gh yourself, and only when the task calls for it — not every task needs a commit or a PR. Typical flow when you have changes to publish: commit them, push the current branch with \`git push -u origin HEAD\`, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). If the task is exploratory, a question, or needs no change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.
+
+Asking the owner: you have an \`ask_owner\` tool that BLOCKS until the owner replies. Use it ONLY when genuinely blocked and you cannot safely proceed — a decision only the owner can make, a truly ambiguous requirement, or a destructive/irreversible choice. Do NOT use it for things you can decide yourself or to ask permission for routine work; prefer a reasonable assumption noted in your summary over stopping. Make the question specific, and pass \`choices\` when the answer is one of a few options.`;
 
 export interface PiRunnerOptions {
   model: string;
@@ -176,6 +244,7 @@ interface PiTaskState {
   // ref so the refresh timer can update it in place without re-wiring the hook. null = no creds.
   tokenRef: { current: string | null };
   credsTimer: ReturnType<typeof setInterval> | null;
+  askBridge: AskBridge; // ask_owner ↔ answer routing for this session
 }
 
 // Poll the token provider often; it serves the cached token until ~5min before expiry and re-mints
@@ -225,7 +294,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     }
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
-    const { session, sessionFile } = await this.createSession(cwd, null, tokenRef, repoHome);
+    const { session, sessionFile, askBridge } = await this.createSession(cwd, null, tokenRef, repoHome);
     const startSha = await this.readHeadSha(cwd);
     const state: PiTaskState = {
       session,
@@ -239,7 +308,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
       repoHome,
       tokenRef,
       credsTimer,
+      askBridge,
     };
+    askBridge.emit = (sig) => state.queue.push(sig); // route ask/ask_resolved into the task's signal stream
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
     return { nativeSessionId: sessionFile };
@@ -288,9 +359,10 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
     // nativeSessionId is the persisted session file path; open() resumes that exact session.
-    const { session, sessionFile } = await this.createSession(cwd, input.nativeSessionId, tokenRef, repoHome);
+    const { session, sessionFile, askBridge } = await this.createSession(cwd, input.nativeSessionId, tokenRef, repoHome);
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
-    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer };
+    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer, askBridge };
+    askBridge.emit = (sig) => state.queue.push(sig);
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
   }
@@ -332,6 +404,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
   async steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
     const task = this.tasks.get(input.taskId);
     if (!task) return { delivered: false };
+    // A pending ask_owner takes the message as its ANSWER (unblocks the parked tool). Otherwise it's a
+    // steer — injected mid-turn via Pi's native queue.
+    if (task.askBridge.answer(input.text)) return { delivered: true };
     await task.session.sendUserMessage(input.text, { deliverAs: "steer" });
     return { delivered: true };
   }
@@ -395,7 +470,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     resumeSessionFile: string | null,
     tokenRef: { current: string | null },
     repoHome: string,
-  ): Promise<{ session: AgentSession; sessionFile: string }> {
+  ): Promise<{ session: AgentSession; sessionFile: string; askBridge: AskBridge }> {
     const { createAgentSession, ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createBashToolDefinition } =
       await import("@earendil-works/pi-coding-agent");
     // A fresh runner (e.g. a new container volume) has no agentDir yet; ModelRuntime.create expects
@@ -449,6 +524,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
       },
     });
 
+    const askBridge = makeAskBridge();
+    const askTool = createAskOwnerTool(askBridge);
+
     const { session } = await createAgentSession({
       cwd,
       agentDir: this.options.agentDir,
@@ -456,20 +534,19 @@ export class PiRunnerAdapter implements RunnerAdapter {
       modelRuntime,
       resourceLoader: loader,
       settingsManager: SettingsManager.inMemory(),
-      // "bash" MUST stay in this allowlist: Pi filters customTools by the same allowlist
-      // (isAllowedTool), then a same-named custom tool overrides the built-in — so our credential-
-      // injecting bash only wins if "bash" is allowed. Drop it and the agent gets no shell at all.
-      tools: ["read", "edit", "write", "grep", "find", "ls", "bash"],
-      // Cast: the factory returns a bash-specialized ToolDefinition; customTools wants the generic
-      // one (TS invariance on the render generics). The runtime object is a valid tool def.
-      customTools: [bashTool as unknown as ToolDefinition],
+      // Custom tools MUST be in this allowlist too: Pi filters customTools by isAllowedTool(name). "bash"
+      // (a same-named override of the built-in — our credential-injecting shell) and "ask_owner" both
+      // have to be listed or they're dropped. Pi's own interactive ask_question stays excluded.
+      tools: ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_owner"],
+      // Cast: the bash factory returns a specialized ToolDefinition; customTools wants the generic one.
+      customTools: [bashTool as unknown as ToolDefinition, askTool],
       excludeTools: ["ask_question"],
       sessionManager,
     });
 
     const sessionFile = sessionManager.getSessionFile();
     if (!sessionFile) throw new Error("pi session has no persisted file — cannot resume later");
-    return { session, sessionFile };
+    return { session, sessionFile, askBridge };
   }
 
   private async readHeadSha(cwd: string): Promise<string | null> {

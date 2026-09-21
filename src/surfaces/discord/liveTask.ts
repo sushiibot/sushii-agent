@@ -15,6 +15,10 @@ export function hasLiveTaskView(taskId: string): boolean {
 
 // custom_id: `${TASK_CTL_PREFIX}<action>:<taskId>` — action ∈ stop|discard|discardyes|cancel|resume.
 export const TASK_CTL_PREFIX = "tctl:";
+// Answer buttons on a needs_input ping — custom_id `${TASK_ANS_PREFIX}<choiceIndex>`; the ping message id
+// maps (via askPings) to the task + its choices, so a click or a REPLY to the ping routes the answer.
+export const TASK_ANS_PREFIX = "tans:";
+export const askPings = new Map<string, { taskId: string; choices: string[] }>();
 
 /** Control buttons for a task's DM message, by status. Stop/Discard while running, Resume while idle,
  *  and a Live-log link whenever there's a viewer URL. Empty → the message shows no buttons. */
@@ -51,6 +55,7 @@ export class LiveTaskView {
 
   private constructor(
     private readonly taskId: string,
+    private readonly ownerId: string,
     private readonly message: Message,
     view: TaskView,
     private readonly webUrl: string | null,
@@ -61,6 +66,40 @@ export class LiveTaskView {
     this.lines = view.lines.filter((l) => l.atype !== "result").map(fmtLine);
     this.unsubs.push(view.onLine((l) => this.onLine(l)));
     this.unsubs.push(view.onStatus((status, summary) => this.onSettle(status, summary)));
+    this.unsubs.push(view.onAsk((ask) => void this.onAsk(ask)));
+  }
+
+  private askPingId: string | null = null;
+
+  // needs_input: send a NEW pinged message (a fresh message notifies; an in-place edit does not) with the
+  // question + a button per choice. A click OR a reply to it routes the answer (handled in the gateway).
+  private async onAsk(ask: { question: string; choices?: string[] } | null): Promise<void> {
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+    const ch = this.message.channel;
+    if (!ch.isSendable()) return;
+    if (!ask) {
+      if (this.askPingId) {
+        askPings.delete(this.askPingId);
+        const id = this.askPingId;
+        this.askPingId = null;
+        await ch.messages.edit(id, { components: [] }).catch(() => {}); // answered → drop buttons
+      }
+      return;
+    }
+    const choices = (ask.choices ?? []).slice(0, 5);
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    choices.forEach((c, i) => row.addComponents(new ButtonBuilder().setCustomId(`${TASK_ANS_PREFIX}${i}`).setLabel(c.slice(0, 80)).setStyle(ButtonStyle.Primary)));
+    const content = `🙋 <@${this.ownerId}> **needs your input** on \`#${this.taskId}\`\n> ${ask.question.slice(0, 1800).replace(/\n/g, "\n> ")}\n-# reply to this message to answer${choices.length ? ", or tap a choice" : ""}`;
+    const msg = await ch
+      .send({ content, components: choices.length ? [row] : [] })
+      .catch((err: unknown) => {
+        log.warn({ err, taskId: this.taskId }, "failed to send needs_input ping");
+        return null;
+      });
+    if (msg) {
+      this.askPingId = msg.id;
+      askPings.set(msg.id, { taskId: this.taskId, choices });
+    }
   }
 
   static async start(client: Client, task: TaskRow, hub: ActivityHub, webUrl: string | null, meta: TaskMeta): Promise<LiveTaskView | null> {
@@ -77,7 +116,7 @@ export class LiveTaskView {
     // that arrived during the await are in the seed and none fall between seed and subscription.
     const view = hub.view(task.id);
     if (!view) return null;
-    const live = new LiveTaskView(task.id, msg, view, webUrl, meta);
+    const live = new LiveTaskView(task.id, task.createdBy, msg, view, webUrl, meta);
     activeViews.set(task.id, live);
     live.render("running"); // paint whatever is already buffered
     return live;
@@ -121,6 +160,7 @@ export class LiveTaskView {
     this.disposed = true;
     if (this.editTimer) clearTimeout(this.editTimer);
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.askPingId) askPings.delete(this.askPingId);
     for (const u of this.unsubs) u();
     activeViews.delete(this.taskId);
   }

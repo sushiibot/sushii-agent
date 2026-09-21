@@ -34,6 +34,9 @@ export type RunnerEvent =
   // (a tool's output — hidden by default, revealed on demand), "text" (assistant text). Feeds the
   // live views; not debounced at the source.
   | { kind: "activity"; taskId: string; line: string; at: number; atype: "tool" | "result" | "text" }
+  // The agent is blocked and asking the owner (ask_owner tool). The task pauses at needs_input until an
+  // answer is routed back (via the steer channel). choices, when present, are offered as buttons.
+  | { kind: "ask"; taskId: string; askId: string; question: string; choices?: string[] }
   | { kind: "handback"; taskId: string; summary: string; meta?: HandbackMeta };
 
 // Deterministic, LLM-free metadata the runner computes (git + result object).

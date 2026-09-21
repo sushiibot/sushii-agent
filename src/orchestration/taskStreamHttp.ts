@@ -38,6 +38,7 @@ export function registerTaskStreamRoutes(app: Hono): void {
       for (const l of view.lines) {
         if (l.seq > lastId) await stream.writeSSE({ id: String(l.seq), data: JSON.stringify(l) });
       }
+      if (view.pendingAsk) await stream.writeSSE({ event: "ask", data: JSON.stringify(view.pendingAsk) });
       if (view.status !== "running") {
         await stream.writeSSE({ event: "status", data: JSON.stringify({ status: view.status, summary: view.summary }) });
         return; // already settled — backlog delivered, nothing more will come
@@ -48,6 +49,7 @@ export function registerTaskStreamRoutes(app: Hono): void {
         let closed = false;
         const heartbeat = setInterval(() => void stream.writeSSE({ event: "ping", data: "" }).catch(() => {}), 15000);
         const unsubLine = view.onLine((l) => void stream.writeSSE({ id: String(l.seq), data: JSON.stringify(l) }).catch(() => {}));
+        const unsubAsk = view.onAsk((ask) => void stream.writeSSE({ event: "ask", data: JSON.stringify(ask) }).catch(() => {}));
         const unsubStatus = view.onStatus((status, summary) => {
           void stream.writeSSE({ event: "status", data: JSON.stringify({ status, summary }) }).catch(() => {});
           finish();
@@ -57,6 +59,7 @@ export function registerTaskStreamRoutes(app: Hono): void {
           closed = true;
           clearInterval(heartbeat);
           unsubLine();
+          unsubAsk();
           unsubStatus();
           resolve();
         }
@@ -197,7 +200,20 @@ const VIEWER_HTML = `<!doctype html>
   .status.running .dot { animation: pulse 1.6s ease-out infinite; }
   .status.idle, .status.done { color:var(--green); background: color-mix(in srgb, var(--green) 15%, var(--surface0)); }
   .status.failed { color:var(--red); background: color-mix(in srgb, var(--red) 16%, var(--surface0)); }
+  .status.needs_input { color:var(--peach); background: color-mix(in srgb, var(--peach) 16%, var(--surface0)); }
+  .status.needs_input .dot { animation: pulse 1.6s ease-out infinite; }
   .status.disconnected, .status.connecting { color:var(--overlay2); }
+  .ask { margin:14px 0 4px; padding:13px 15px; border-radius:14px; border:1px solid color-mix(in srgb,var(--peach) 45%, var(--surface0));
+    background: color-mix(in srgb, var(--peach) 12%, var(--mantle)); box-shadow:var(--shadow); }
+  .ask[hidden] { display:none; }
+  .ask .q { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--peach); margin-bottom:6px; }
+  .ask .q svg { width:15px; height:15px; }
+  .ask .qtext { color:var(--text); font-size:14.5px; line-height:1.55; }
+  .ask .qtext > :first-child { margin-top:0; } .ask .qtext > :last-child { margin-bottom:0; }
+  .ask .qchoices { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
+  .ask .chip { padding:4px 10px; border-radius:999px; font-size:12.5px; font-weight:700; color:var(--peach);
+    background: color-mix(in srgb, var(--peach) 16%, transparent); border:1px solid color-mix(in srgb,var(--peach) 40%, transparent); }
+  .ask .qhint { margin-top:9px; font-size:12px; color:var(--subtext0); }
   @keyframes pulse { 0%{ box-shadow:0 0 0 0 color-mix(in srgb, currentColor 60%, transparent);} 70%{ box-shadow:0 0 0 7px transparent;} 100%{ box-shadow:0 0 0 0 transparent;} }
   .themetoggle { display:inline-grid; place-items:center; width:32px; height:32px; border-radius:9px; cursor:pointer;
     background:var(--surface0); border:1px solid color-mix(in srgb,var(--surface2) 60%, transparent); color:var(--subtext0); }
@@ -336,6 +352,7 @@ const VIEWER_HTML = `<!doctype html>
     </span>
   </header>
   <div class="meta" id="meta"></div>
+  <div class="ask" id="ask" hidden></div>
   <details class="resume" id="resume"><summary>
     <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
     Resume from a terminal
@@ -501,6 +518,23 @@ const VIEWER_HTML = `<!doctype html>
         setControls(s.status);
       } catch {}
       try{ es.close(); }catch{} // settled — a resume/steer reconnects
+    });
+    es.addEventListener('ask',(e)=>{
+      try {
+        const a=JSON.parse(e.data); const el=document.getElementById('ask');
+        if(a && a.question){
+          const choices=(a.choices||[]).map((c)=>'<span class="chip">'+esc(c)+'</span>').join('');
+          el.innerHTML='<div class="q">'+svg('<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.7"/><circle cx="12" cy="16.5" r=".4"/>')+'<span>Needs your input</span></div>'
+            +'<div class="qtext md">'+md(a.question)+'</div>'
+            +(choices?'<div class="qchoices">'+choices+'</div>':'')
+            +'<div class="qhint">Answer in Discord (reply or the buttons on the task DM), or tell the bot.</div>';
+          el.hidden=false;
+          statusText.textContent='needs input'; statusEl.className='status needs_input'; setControls('needs_input');
+        } else {
+          el.hidden=true;
+          if(statusEl.classList.contains('needs_input')){ statusText.textContent='running'; statusEl.className='status running'; setControls('running'); }
+        }
+      } catch {}
     });
     es.onopen=()=>{ if(statusEl.classList.contains('connecting')){ statusText.textContent='running'; statusEl.className='status running'; } setControls(statusText.textContent); };
     es.onerror=()=>{ const s=statusEl.className; if(es.readyState===2 && !/idle|done|failed/.test(s)){ statusText.textContent='disconnected'; statusEl.className='status disconnected'; } };

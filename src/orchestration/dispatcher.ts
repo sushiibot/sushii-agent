@@ -432,6 +432,8 @@ export class Dispatcher {
       case "status": {
         if (task.status === event.status) return;
         this.registry.updateStatus(event.taskId, event.status, event.reason);
+        // Leaving needs_input (answered → running, or stopped) clears the pending ask on all surfaces.
+        if (event.status !== "needs_input") getActivityHub().clearAsk(event.taskId);
         if (event.status === "idle" || event.status === "done" || event.status === "failed") {
           const updated = this.registry.get(event.taskId);
           getActivityHub().settle(event.taskId, event.status, updated?.summary ?? null);
@@ -452,6 +454,9 @@ export class Dispatcher {
         return;
       case "activity":
         getActivityHub().append(event.taskId, event.line, event.at, event.atype);
+        return;
+      case "ask":
+        getActivityHub().setAsk(event.taskId, { askId: event.askId, question: event.question, choices: event.choices });
         return;
       case "handback":
         // The agent opens its own PR (via gh) when the task calls for it and names the link in its

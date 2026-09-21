@@ -16,6 +16,9 @@ export type StreamLineEvent =
   | { type: "tool_use"; name: string; detail?: string }
   | { type: "tool_result"; name: string; output: string; isError: boolean }
   | { type: "assistant_text"; text: string }
+  // The agent asked the owner and is now blocked (Pi ask_owner). Reducer → needs_input + an `ask` event.
+  | { type: "ask"; askId: string; question: string; choices?: string[] }
+  | { type: "ask_resolved"; askId: string }
   | {
       type: "result";
       success: boolean;
@@ -52,6 +55,8 @@ export function activityEntry(sig: StreamLineEvent): { line: string; atype: "too
       return { line: `${sig.isError ? "✗ " : ""}${cap(sig.output, 4000)}`, atype: "result" };
     case "assistant_text":
       return { line: cap(sig.text, 8000), atype: "text" };
+    case "ask":
+      return { line: `🙋 needs input: ${sig.question}`, atype: "text" };
     default:
       return null;
   }
@@ -227,6 +232,13 @@ export class RunnerEventReducer {
             reason: sig.errorMessage ?? "claude exited with an error",
           });
         }
+        break;
+      case "ask":
+        out.push({ kind: "status", taskId: this.taskId, status: "needs_input", reason: sig.question });
+        out.push({ kind: "ask", taskId: this.taskId, askId: sig.askId, question: sig.question, choices: sig.choices });
+        break;
+      case "ask_resolved":
+        out.push({ kind: "status", taskId: this.taskId, status: "running" });
         break;
       case "init":
         break;

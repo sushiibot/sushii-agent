@@ -44,7 +44,7 @@ import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/d
 import type { TaskRow } from "../../orchestration/contracts.ts";
 import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts";
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
-import { hasLiveTaskView, LiveTaskView, TASK_CTL_PREFIX } from "./liveTask.ts";
+import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
@@ -408,6 +408,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   // ── MessageCreate ────────────────────────────────────────────────────────────
   client.on(Events.MessageCreate, async (message: Message) => {
     if (!message.guildId) {
+      if (message.author.bot) return;
+      // A reply to a needs_input ping is the ANSWER to that task's ask — route it, don't treat it as a
+      // fresh agent message.
+      if (await maybeAnswerAsk(message)) return;
       if (isOwnerDm(message, config.ownerDiscordId)) {
         await handleOwnerDm(message).catch((err) => logger.error({ err }, "unhandled error in owner DM path"));
       }
@@ -698,7 +702,46 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleTaskControlButton(btn);
       return;
     }
+    if (btn.customId.startsWith(TASK_ANS_PREFIX)) {
+      await handleAnswerButton(btn);
+      return;
+    }
   });
+
+  // Route a needs_input answer (button choice or a reply) back to the parked ask_owner via the token path.
+  async function answerAsk(taskId: string, text: string): Promise<boolean> {
+    const token = getActivityHub().tokenFor(taskId);
+    if (!token || !text) return false;
+    try {
+      await getDispatcher().controlByToken(taskId, token, "steer", text);
+      return true;
+    } catch (err) {
+      logger.warn({ err, taskId }, "failed to route ask answer");
+      return false;
+    }
+  }
+
+  async function maybeAnswerAsk(message: Message): Promise<boolean> {
+    const refId = message.reference?.messageId;
+    if (!refId || !askPings.has(refId)) return false;
+    const info = askPings.get(refId)!;
+    const ok = await answerAsk(info.taskId, message.content.trim());
+    await message.react(ok ? "✅" : "⚠️").catch(() => {});
+    return true; // it was a reply to an ask ping — consumed regardless
+  }
+
+  async function handleAnswerButton(btn: ButtonInteraction): Promise<void> {
+    const info = askPings.get(btn.message.id);
+    if (!info) {
+      await btn.reply({ content: "This question is no longer active.", flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    const idx = Number.parseInt(btn.customId.slice(TASK_ANS_PREFIX.length), 10);
+    const choice = info.choices[idx];
+    if (choice == null) return;
+    const ok = await answerAsk(info.taskId, choice);
+    await btn.reply({ content: ok ? `Answered: ${choice}` : "Couldn't deliver — the task may have ended.", flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
 
   // Stop / Discard / Resume for a runner task, from the buttons on its live-task DM message. The DM is
   // the owner's, so the presser must be the task's creator; control goes through the token path.
