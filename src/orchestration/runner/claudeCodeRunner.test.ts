@@ -74,8 +74,9 @@ describe("parseClaudeStreamLine", () => {
     expect(parseClaudeStreamLine(JSON.parse(SUCCESS_LINES[1]!))).toEqual([
       { type: "assistant_text", text: "Looking at the failing test now." },
     ]);
-    expect(parseClaudeStreamLine(JSON.parse(SUCCESS_LINES[2]!))).toEqual([{ type: "tool_use", name: "Read" }]);
-    expect(parseClaudeStreamLine(JSON.parse(SUCCESS_LINES[3]!))).toEqual([]);
+    expect(parseClaudeStreamLine(JSON.parse(SUCCESS_LINES[2]!))).toEqual([{ type: "tool_use", name: "Read", detail: "a.ts" }]);
+    // tool_result now parses (parity with Pi): a `user` message → a tool_result signal.
+    expect(parseClaudeStreamLine(JSON.parse(SUCCESS_LINES[3]!))).toEqual([{ type: "tool_result", name: "", output: "file contents", isError: false }]);
 
     const result = parseClaudeStreamLine(JSON.parse(SUCCESS_LINES[6]!));
     expect(result).toEqual([

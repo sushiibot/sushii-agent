@@ -48,6 +48,40 @@ export function activityEntry(sig: StreamLineEvent): { line: string; atype: "too
   }
 }
 
+// The meaningful field of a tool's input for the activity line (the command/path/pattern), else a
+// compact key=value — never a raw JSON dump. Shared shape with the Pi runner's summarizer.
+function summarizeArgs(input: unknown): string | undefined {
+  if (typeof input === "string") return input || undefined;
+  if (input && typeof input === "object") {
+    const a = input as Record<string, unknown>;
+    for (const k of ["command", "path", "file_path", "pattern", "query", "url"]) {
+      if (typeof a[k] === "string" && a[k]) return a[k] as string;
+    }
+    const parts = Object.entries(a)
+      .filter(([, v]) => v != null && typeof v !== "object")
+      .slice(0, 3)
+      .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`);
+    return parts.join(" ") || undefined;
+  }
+  return undefined;
+}
+
+// Claude Code tool_result content is a string or an array of text blocks.
+function claudeResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  try {
+    return JSON.stringify(content).slice(0, 1500);
+  } catch {
+    return String(content);
+  }
+}
+
 export function parseClaudeStreamLine(json: unknown): StreamLineEvent[] {
   if (!json || typeof json !== "object") return [];
   const obj = json as Record<string, unknown>;
@@ -64,9 +98,24 @@ export function parseClaudeStreamLine(json: unknown): StreamLineEvent[] {
       if (!block || typeof block !== "object") continue;
       const b = block as Record<string, unknown>;
       if (b.type === "tool_use" && typeof b.name === "string") {
-        signals.push({ type: "tool_use", name: b.name });
+        signals.push({ type: "tool_use", name: b.name, detail: summarizeArgs(b.input) });
       } else if (b.type === "text" && typeof b.text === "string") {
         signals.push({ type: "assistant_text", text: b.text });
+      }
+    }
+    return signals;
+  }
+
+  // Tool results come back as `user` messages carrying tool_result blocks.
+  if (obj.type === "user") {
+    const message = obj.message as { content?: unknown[] } | undefined;
+    const content = Array.isArray(message?.content) ? message.content : [];
+    const signals: StreamLineEvent[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === "tool_result") {
+        signals.push({ type: "tool_result", name: "", output: claudeResultText(b.content), isError: b.is_error === true });
       }
     }
     return signals;
