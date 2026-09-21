@@ -230,6 +230,9 @@ export class OrchestrationClient {
         const input = params as { taskId: string; discard?: boolean };
         await adapter.stop(input);
         this.respond(ws, id, { ok: true });
+      } else if (method === RPC_METHODS.message) {
+        const input = params as { taskId: string; text: string };
+        this.respond(ws, id, await adapter.steer(input));
       }
     } catch (err) {
       this.respondError(ws, id, err instanceof Error ? err.message : String(err));

@@ -332,6 +332,17 @@ export class Dispatcher {
 
   private async steerInternal(task: TaskRow, text: string): Promise<TaskRow> {
     getActivityHub().append(task.id, `↪ steer: ${text}`, Date.now(), "text");
+    // Prefer a live mid-run inject (Pi: sendUserMessage/steer — delivered after the current turn's
+    // tool calls, before the next LLM call, no lost work). delivered:false (task not running, or a
+    // one-shot runner like Claude Code) falls back to resume with the guidance as the prompt.
+    if (this.isRunnerLive(task.runnerId)) {
+      try {
+        const res = (await this.server.message(task.runnerId, { taskId: task.id, text })) as { delivered?: boolean };
+        if (res?.delivered) return this.registry.get(task.id) as TaskRow; // injected into the running turn; status unchanged
+      } catch (err) {
+        logger.warn({ err, taskId: task.id }, "live steer failed; falling back to resume");
+      }
+    }
     return this.resumeInternal(task, text);
   }
 

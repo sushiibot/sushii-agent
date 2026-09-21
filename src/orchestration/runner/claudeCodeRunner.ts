@@ -463,6 +463,12 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
     this.tasks.delete(input.taskId);
   }
 
+  // Claude Code runs `-p` one-shot — there's no live session to inject into, so steering always falls
+  // back to interrupt+resume (the dispatcher does that when delivered:false).
+  async steer(_input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    return { delivered: false };
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task ${taskId}`);

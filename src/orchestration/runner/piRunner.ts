@@ -326,6 +326,16 @@ export class PiRunnerAdapter implements RunnerAdapter {
     }
   }
 
+  // Live-steer: Pi injects natively. sendUserMessage(deliverAs:"steer") queues the guidance and Pi
+  // delivers it after the current turn's tool calls, before the next LLM call — no abort, no lost work.
+  // Only possible while the session is alive (task running); a stopped task has no session → resume.
+  async steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    const task = this.tasks.get(input.taskId);
+    if (!task) return { delivered: false };
+    await task.session.sendUserMessage(input.text, { deliverAs: "steer" });
+    return { delivered: true };
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task ${taskId}`);

@@ -623,6 +623,37 @@ describe("Dispatcher.onTaskSettled", () => {
     }
   });
 
+  test("steer injects live when the runner delivers — no resume, status unchanged", async () => {
+    const registry = testRegistry();
+    const dispatcher = new Dispatcher(registry, () => true);
+    dispatcher.listen();
+    const adapter = new MockRunnerAdapter();
+    adapter.steerDelivers = true; // simulate Pi's live mid-run inject
+    const client = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "r1", kind: "mock", projects: ["/tmp"], adapter });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("r1"));
+      const task = await dispatcher.dispatch({
+        principal: "owner",
+        runnerId: "r1",
+        cwd: "/tmp/x",
+        project: null,
+        prompt: "go",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      });
+      await waitFor(() => registry.get(task.id)?.status === "done");
+
+      const steered = await dispatcher.steer({ principal: "owner", taskId: task.id, text: "focus on the parser", space: "discord:dm" });
+      expect(adapter.lastSteer).toEqual({ taskId: task.id, text: "focus on the parser" });
+      expect(steered.status).toBe("done"); // delivered live → NOT resumed (a resume would flip it to running)
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
   test("haltTask + steer are authz-gated", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => false);
     dispatcher.listen();

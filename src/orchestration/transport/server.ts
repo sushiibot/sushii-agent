@@ -232,6 +232,10 @@ export class OrchestrationServer {
     return this.call(runnerId, RPC_METHODS.stop, input);
   }
 
+  message(runnerId: string, input: { taskId: string; text: string }): Promise<unknown> {
+    return this.call(runnerId, RPC_METHODS.message, input);
+  }
+
   isConnected(runnerId: string): boolean {
     return this.sockets.has(runnerId);
   }

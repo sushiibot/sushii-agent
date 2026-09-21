@@ -59,6 +59,13 @@ export class ActivityHub {
     if (!t) {
       t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, meta: null, status: "running", summary: null, subscribers: new Set(), statusSubs: new Set(), gcTimer: null };
       this.tasks.set(taskId, t);
+    } else if (t.gcTimer || t.status !== "running") {
+      // Re-opening a settled task (a resume) — cancel its pending GC and mark it running again so late
+      // viewers hold the stream open and the buffer + subscribers survive into the resumed turn.
+      if (t.gcTimer) clearTimeout(t.gcTimer);
+      t.gcTimer = null;
+      t.status = "running";
+      t.summary = null;
     }
     return t.token;
   }

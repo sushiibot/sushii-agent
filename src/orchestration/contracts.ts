@@ -68,6 +68,10 @@ export interface RunnerAdapter {
   // clone-on-demand worktree — never a caller-supplied project dir. Unlike interrupt, stop must NOT
   // surface a "failed" status for the halted run (the dispatcher records idle/terminal itself).
   stop(input: { taskId: string; discard?: boolean }): Promise<void>;
+  // Live-steer a RUNNING session (mid-turn injection, no abort). Returns delivered:false when there is
+  // no live session to inject into (task not running, or the runner kind is one-shot) — the caller then
+  // falls back to resume. Adapters that can't inject always return delivered:false.
+  steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }>;
   // Emits RunnerEvents for the task; implementation streams via the callback.
   stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void>;
 }
@@ -79,6 +83,7 @@ export const RPC_METHODS = {
   resume: "session/resume",
   interrupt: "session/cancel",
   stop: "session/stop", // halt but keep resumable (params: { taskId, discard? })
+  message: "session/message", // live steer into a running session (params: { taskId, text }) → { delivered }
   event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
   heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)
 } as const;

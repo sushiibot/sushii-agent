@@ -17,6 +17,14 @@ export class MockRunnerAdapter implements RunnerAdapter {
     this.lastStop = input;
   }
 
+  /** Records the last live steer; `steerDelivers` controls whether it reports delivered. */
+  public lastSteer: { taskId: string; text: string } | null = null;
+  public steerDelivers = false;
+  async steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    this.lastSteer = input;
+    return { delivered: this.steerDelivers };
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const events: RunnerEvent[] = [
       { kind: "status", taskId, status: "running" },

@@ -176,6 +176,9 @@ describe("orchestration transport round-trip", () => {
       async resume(): Promise<void> {}
       async interrupt(): Promise<void> {}
       async stop(): Promise<void> {}
+      async steer(): Promise<{ delivered: boolean }> {
+        return { delivered: false };
+      }
       async stream(): Promise<void> {
         throw new Error("adapter blew up");
       }

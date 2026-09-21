@@ -44,7 +44,7 @@ import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/d
 import type { TaskRow } from "../../orchestration/contracts.ts";
 import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts";
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
-import { LiveTaskView, TASK_CTL_PREFIX } from "./liveTask.ts";
+import { hasLiveTaskView, LiveTaskView, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 
 const logger = getLogger("surfaces/discord/gateway");
@@ -383,6 +383,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const webUrl = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
       const meta = buildTaskMeta(task, dispatcher.runnerInfo(task.runnerId));
       hub.setMeta(task.id, meta); // so the web viewer's meta panel + resume box populate
+      // A resume of a still-live task reuses its existing DM view (kept alive through an idle settle) —
+      // don't spawn a second message; the running activity streams into the same one.
+      if (hasLiveTaskView(task.id)) return;
       void LiveTaskView.start(client, task, hub, webUrl, meta).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
     });
     // Bind the ORCH port at boot so a runner reconnects immediately after any restart, rather than

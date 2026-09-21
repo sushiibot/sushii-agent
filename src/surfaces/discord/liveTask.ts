@@ -5,6 +5,14 @@ import { getLogger } from "../../logger.ts";
 
 const log = getLogger("surfaces/discord/liveTask");
 
+// Live views by taskId, so a resume reuses the same DM message + subscription instead of spawning a
+// new one. A view stays here through an idle (resumable) settle and is removed only on terminal.
+const activeViews = new Map<string, LiveTaskView>();
+/** True when a task already has a live DM view — the gateway skips creating a second one on resume. */
+export function hasLiveTaskView(taskId: string): boolean {
+  return activeViews.has(taskId);
+}
+
 // custom_id: `${TASK_CTL_PREFIX}<action>:<taskId>` — action ∈ stop|discard|discardyes|cancel|resume.
 export const TASK_CTL_PREFIX = "tctl:";
 
@@ -27,6 +35,7 @@ export function controlRow(taskId: string, status: string, webUrl: string | null
 const EDIT_INTERVAL_MS = 5000; // Discord self-rate-limit: at most one in-place edit per 5s
 const MAX_LINES = 14; // recent activity lines shown in the tail
 const MAX_CONTENT = 1900; // under Discord's 2000-char message limit
+const IDLE_RETAIN_MS = 10 * 60_000; // keep an idle (resumable) view this long for a resume, then tear down
 
 // A single live-updating DM message per running task: a header + a tail of the most recent activity
 // lines, edited in place (throttled to 5s) as the runner streams, and finalized on settle. The full
@@ -37,6 +46,7 @@ export class LiveTaskView {
   private editTimer: ReturnType<typeof setTimeout> | null = null;
   private lastEditAt = 0;
   private disposed = false;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly unsubs: Array<() => void> = [];
 
   private constructor(
@@ -68,12 +78,14 @@ export class LiveTaskView {
     const view = hub.view(task.id);
     if (!view) return null;
     const live = new LiveTaskView(task.id, msg, view, webUrl, meta);
+    activeViews.set(task.id, live);
     live.render("running"); // paint whatever is already buffered
     return live;
   }
 
   private onLine(entry: ActivityLine): void {
     if (entry.atype === "result") return; // results hidden in Discord
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; } // activity → the task resumed
     this.lines.push(fmtLine(entry));
     this.dirty = true;
     this.schedule();
@@ -90,11 +102,27 @@ export class LiveTaskView {
   }
 
   private onSettle(status: string, summary: string | null): void {
-    this.disposed = true;
-    if (this.editTimer) clearTimeout(this.editTimer);
-    for (const u of this.unsubs) u();
     if (summary) this.dropDuplicateFinal(summary);
     void this.message.edit({ content: this.body(status, summary), components: controlRow(this.taskId, status, this.webUrl) }).catch(() => {});
+    // idle = stopped-but-resumable: keep the subscription + this same message so a resume continues here
+    // (the hub reuses the stream on re-open). Tear down only on a terminal state, or if the idle window
+    // lapses without a resume (onLine cancels this timer).
+    if (status === "idle") {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = setTimeout(() => this.teardown(), IDLE_RETAIN_MS);
+      this.idleTimer.unref?.();
+      return;
+    }
+    this.teardown();
+  }
+
+  private teardown(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.editTimer) clearTimeout(this.editTimer);
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    for (const u of this.unsubs) u();
+    activeViews.delete(this.taskId);
   }
 
   // The agent's closing message is in the tail as a (truncated) 💬 line AND arrives again as the full
