@@ -79,4 +79,12 @@ describe("configureForAgent", () => {
     // Resume reuses the same worktree (no error, same path).
     expect(await ensureWorktree(cwd, "task-A", stubDeps)).toBe(wtA);
   });
+
+  test("ensureWorktree self-heals a shared clone left checked out on a task branch", async () => {
+    await simpleGit(cwd).raw(["remote", "set-head", "origin", "main"]);
+    // Simulate the pre-worktree layout: the shared clone itself sits on the task branch.
+    await simpleGit(cwd).raw(["checkout", "-B", "sushii-runner/task-Z"]);
+    const wt = await ensureWorktree(cwd, "task-Z", stubDeps); // would collide without the detach fix
+    expect((await simpleGit(wt).raw(["branch", "--show-current"])).trim()).toBe("sushii-runner/task-Z");
+  });
 });

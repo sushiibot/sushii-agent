@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { getLogger } from "../../logger.ts";
@@ -88,6 +88,10 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
   const wc = factory(cwd);
   await wc.remote(["set-url", "origin", cleanUrl(spec)]); // scrub the token out of persisted config
   await setIdentity(wc, deps.bot);
+  // Keep the shared clone on a DETACHED HEAD so it never holds a named branch — otherwise
+  // `worktree add -B sushii-runner/<id>` collides with a branch checked out here. Agents only ever
+  // run in worktrees; this clone is just the object store + a default-tip checkout.
+  await wc.raw(["checkout", "--detach"]);
   configureForAgent(cwd);
   log.info({ cwd, repo: `${spec.owner}/${spec.repo}` }, "cloned repo on-demand");
   return true;
@@ -98,8 +102,19 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
  *  tasks on one repo never share state. Reused as-is on resume. Returns the worktree path. */
 export async function ensureWorktree(repoHome: string, taskId: string, deps: RepoOpsDeps): Promise<string> {
   const worktreePath = `${repoHome}.wt/${taskId}`;
-  if (existsSync(worktreePath)) return worktreePath; // resume — keep the task's existing worktree
   const git = (deps.gitFactory ?? simpleGit)(repoHome);
+  // Reuse only a worktree git actually knows about — a bare directory (crashed `worktree add`,
+  // orphaned leftover) is not a valid resume target. `worktree list` is the source of truth.
+  const list = await git.raw(["worktree", "list", "--porcelain"]).catch(() => "");
+  if (list.split("\n").some((l) => l === `worktree ${worktreePath}`)) return worktreePath;
+  if (existsSync(worktreePath)) {
+    await git.raw(["worktree", "prune"]).catch(() => {}); // drop stale bookkeeping
+    rmSync(worktreePath, { recursive: true, force: true }); // clear the leftover dir
+  }
+  // The shared clone must hold no named branch, or `worktree add -B <branch>` collides with it.
+  // Self-heals a clone left on a task branch by an older layout (fresh clones are already detached).
+  const onBranch = (await git.raw(["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "HEAD")).trim();
+  if (onBranch !== "HEAD") await git.raw(["checkout", "--detach"]).catch(() => {});
   await git.fetch(["origin"]);
   const head = (await git.raw(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => "")).trim();
   const base = head.replace(/^origin\//, "") || "main";
