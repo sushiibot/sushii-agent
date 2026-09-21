@@ -105,7 +105,10 @@ export class LiveTaskView {
     const budget = MAX_CONTENT - head.length - reserve;
     if (block.length > budget) block = `…\n${block.slice(block.length - Math.max(0, budget))}`;
     let out = block ? `${head}\n\`\`\`\n${block}\n\`\`\`` : head;
-    if (settled && summary) out += `\n${summary.slice(0, 500)}`;
+    if (settled && summary) {
+      const note = status === "failed" ? "-# ✗ failed · returned to orchestrator" : "-# ↩ handed back to orchestrator";
+      out += `\n\n${summary.slice(0, 600)}\n${note}`;
+    }
     if (settled && this.meta.resumeCommand) out += `\nResume elsewhere:\n\`\`\`\n${this.meta.resumeCommand}\n\`\`\``;
     return out.slice(0, 2000);
   }

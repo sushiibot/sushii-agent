@@ -257,12 +257,13 @@ const VIEWER_HTML = `<!doctype html>
   .tool.err .name { color:var(--red); }
   .tool.err .result pre { border-left-color:var(--red); }
 
-  .final { margin:16px 0 0; padding:14px 16px; border-radius:14px; background: color-mix(in srgb, var(--mantle) 75%, transparent);
-    border:1px solid color-mix(in srgb,var(--surface0) 80%, transparent); box-shadow:var(--shadow); }
-  .final .lbl { display:flex; align-items:center; gap:8px; font-size:11px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--green); margin-bottom:7px; }
-  .final.failed .lbl { color:var(--red); }
-  .final .lbl svg { width:14px; height:14px; }
-  .final .txt { color:var(--text); font-size:14px; line-height:1.6; word-break:break-word; }
+  /* the agent's final message is a regular bubble; this chip notes it was returned to the orchestrator */
+  .handoff { display:inline-flex; align-items:center; gap:6px; margin:5px 0 2px 21px; padding:2px 9px 2px 7px; border-radius:999px;
+    font-size:11.5px; font-weight:700; letter-spacing:.01em; color:var(--overlay2);
+    background: color-mix(in srgb, var(--mauve) 10%, transparent); border:1px solid color-mix(in srgb,var(--surface0) 70%, transparent); }
+  .handoff svg { width:13px; height:13px; color:var(--mauve); }
+  .handoff.failed { color:var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+  .handoff.failed svg { color:var(--red); }
 
   .empty { display:flex; flex-direction:column; align-items:center; gap:14px; padding:16vh 0 0; color:var(--overlay1); text-align:center; }
   .empty svg { width:64px; height:64px; animation: bob 3.4s ease-in-out infinite; }
@@ -387,13 +388,30 @@ const VIEWER_HTML = `<!doctype html>
     stick(was);
   }
 
-  // The agent's closing message streams as a (400-char truncated) text bubble AND arrives again as the
-  // full handback summary. If the last bubble is that truncated head, drop it so the summary shows once.
-  function dedupeFinal(summary){
-    if(!lastTextEl) return;
-    const head=String(lastTextRaw).replace(/…\s*$/,'').trim().replace(/\s+/g,' ');
-    const sum=String(summary).trim().replace(/\s+/g,' ');
-    if(head.length>=8 && sum.startsWith(head)){ lastTextEl.remove(); }
+  // The settle summary IS the agent's final message (its closing text, which is also what the
+  // orchestrator receives). If it's already the last streamed bubble, tag that bubble; otherwise render
+  // it as one more regular message. Either way it reads as a normal message that was returned upstream.
+  function finalMessage(summary, failed){
+    let target=null;
+    if(lastTextEl){
+      const head=String(lastTextRaw).replace(/…\s*$/,'').trim().replace(/\s+/g,' ');
+      const sum=String(summary).trim().replace(/\s+/g,' ');
+      if(head.length>=8 && sum.startsWith(head)){
+        target=lastTextEl;
+        const prose=target.querySelector('.prose'); if(prose) prose.innerHTML=md(summary); // upgrade to full text
+      }
+    }
+    if(!target){
+      clearEmpty();
+      target=document.createElement('div'); target.className='entry';
+      const say=document.createElement('div'); say.className='say';
+      say.innerHTML='<span class="bullet"></span><div class="prose md">'+md(summary)+'</div>';
+      target.appendChild(say); log.appendChild(target);
+    }
+    const chip=document.createElement('div'); chip.className='handoff'+(failed?' failed':'');
+    chip.innerHTML=svg('<polyline points="9 14 4 9 9 4"/><path d="M4 9h11a5 5 0 0 1 5 5v3"/>')
+      +'<span>'+(failed?'failed · returned to orchestrator':'handed back to orchestrator')+'</span>';
+    target.appendChild(chip);
     lastTextEl=null;
   }
 
@@ -419,11 +437,8 @@ const VIEWER_HTML = `<!doctype html>
       const s=JSON.parse(e.data); statusText.textContent=s.status; statusEl.className='status '+s.status;
       if(s.summary){
         const was=atBottom();
-        dedupeFinal(s.summary);
-        const d=document.createElement('div'); d.className='final '+(s.status==='failed'?'failed':'');
-        const ic=s.status==='failed'?'<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.3" x2="12" y2="16.4"/>':'<polyline points="20 6 9 17 4 12"/>';
-        d.innerHTML='<div class="lbl">'+svg(ic)+(s.status==='failed'?'Failed':'Handback')+'</div><div class="txt md">'+md(s.summary)+'</div>';
-        clearEmpty(); log.appendChild(d); stick(was);
+        finalMessage(s.summary, s.status==='failed');
+        stick(was);
       }
     } catch {}
     es.close(); // settled — stop, and stop the browser from reconnecting
