@@ -309,7 +309,7 @@ const VIEWER_HTML = `<!doctype html>
 </div>
 <script>
   const log=document.getElementById('log'), statusEl=document.getElementById('status'), statusText=document.getElementById('statustext');
-  let lastSeq=0, pendingTool=null, hasContent=false;
+  let lastSeq=0, pendingTool=null, hasContent=false, lastTextEl=null, lastTextRaw='';
   const pad=n=>String(n).padStart(2,'0');
   const fmtTs=ms=>{const d=new Date(ms);let h=d.getHours();const ap=h<12?'AM':'PM';h=h%12||12;return h+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())+' '+ap;};
   const atBottom=()=>window.innerHeight+window.scrollY>=document.body.scrollHeight-80;
@@ -377,12 +377,24 @@ const VIEWER_HTML = `<!doctype html>
         +'<div class="result"><div class="inner"><pre></pre></div></div>';
       wrap.appendChild(tool); log.appendChild(wrap);
       pendingTool={ tool, pre:tool.querySelector('pre') };
+      lastTextEl=null; // a tool interrupts the "text is last" state used for settle de-dup
     } else {
       const say=document.createElement('div'); say.className='say';
       say.innerHTML='<span class="bullet"></span><div class="prose md">'+md(entry.line)+'</div>';
       wrap.appendChild(say); log.appendChild(wrap);
+      lastTextEl=wrap; lastTextRaw=entry.line;
     }
     stick(was);
+  }
+
+  // The agent's closing message streams as a (400-char truncated) text bubble AND arrives again as the
+  // full handback summary. If the last bubble is that truncated head, drop it so the summary shows once.
+  function dedupeFinal(summary){
+    if(!lastTextEl) return;
+    const head=String(lastTextRaw).replace(/…\s*$/,'').trim().replace(/\s+/g,' ');
+    const sum=String(summary).trim().replace(/\s+/g,' ');
+    if(head.length>=8 && sum.startsWith(head)){ lastTextEl.remove(); }
+    lastTextEl=null;
   }
 
   const es=new EventSource('/tasks/__TASK_ID__/stream' + location.search);
@@ -407,6 +419,7 @@ const VIEWER_HTML = `<!doctype html>
       const s=JSON.parse(e.data); statusText.textContent=s.status; statusEl.className='status '+s.status;
       if(s.summary){
         const was=atBottom();
+        dedupeFinal(s.summary);
         const d=document.createElement('div'); d.className='final '+(s.status==='failed'?'failed':'');
         const ic=s.status==='failed'?'<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.3" x2="12" y2="16.4"/>':'<polyline points="20 6 9 17 4 12"/>';
         d.innerHTML='<div class="lbl">'+svg(ic)+(s.status==='failed'?'Failed':'Handback')+'</div><div class="txt md">'+md(s.summary)+'</div>';

@@ -72,7 +72,22 @@ export class LiveTaskView {
     this.disposed = true;
     if (this.editTimer) clearTimeout(this.editTimer);
     for (const u of this.unsubs) u();
+    if (summary) this.dropDuplicateFinal(summary);
     void this.message.edit(this.body(status, summary)).catch(() => {});
+  }
+
+  // The agent's closing message is in the tail as a (truncated) 💬 line AND arrives again as the full
+  // handback summary. If the last text line is that truncated head, drop it so it isn't shown twice.
+  private dropDuplicateFinal(summary: string): void {
+    const sum = summary.trim().replace(/\s+/g, " ");
+    for (let i = this.lines.length - 1; i >= 0; i--) {
+      const l = this.lines[i]!;
+      if (l.startsWith("🔧")) return; // last activity was a tool call — no duplicate to drop
+      if (l.startsWith("💬")) {
+        if (isTruncatedHeadOf(l.replace(/^💬\s*/, ""), sum)) this.lines.splice(i, 1);
+        return;
+      }
+    }
   }
 
   private render(status: string): void {
@@ -98,6 +113,13 @@ export class LiveTaskView {
 
 function fmtLine(entry: ActivityLine): string {
   return entry.atype === "tool" ? `🔧 ${entry.line}` : `💬 ${entry.line}`;
+}
+
+/** True when `text` (a possibly 400-char-truncated assistant line) is the leading head of `summary`. */
+export function isTruncatedHeadOf(text: string, summary: string): boolean {
+  const head = text.replace(/…\s*$/, "").trim().replace(/\s+/g, " ");
+  const sum = summary.trim().replace(/\s+/g, " ");
+  return head.length >= 8 && sum.startsWith(head);
 }
 
 function headerBlock(taskId: string, status: string, webUrl: string | null, meta: TaskMeta): string {
