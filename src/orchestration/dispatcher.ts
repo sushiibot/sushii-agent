@@ -16,6 +16,7 @@ interface LiveRunner {
   kind: string;
   projects: string[];
   workspaceRoot: string | null;
+  location: string | null;
 }
 
 export interface DispatchInput {
@@ -59,8 +60,8 @@ export class Dispatcher {
   ) {
     this.server = new OrchestrationServer({
       port: options.port,
-      onRegister: (runnerId, kind, projects, workspaceRoot) => {
-        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot });
+      onRegister: (runnerId, kind, projects, workspaceRoot, location) => {
+        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot, location });
         // A fresh connection means we can't observe any turn that was mid-flight on this runner
         // before (e.g. across an orchestrator restart), so clear stale "running" phantoms.
         const reconciled = this.registry.failRunningForRunner(
@@ -111,6 +112,12 @@ export class Dispatcher {
    *  agent to resolve a project name → cwd. */
   listRunners(): { runnerId: string; kind: string; projects: string[] }[] {
     return [...this.liveRunners.entries()].map(([runnerId, r]) => ({ runnerId, kind: r.kind, projects: r.projects }));
+  }
+
+  /** Kind + location for a connected runner, for display metadata. */
+  runnerInfo(runnerId: string): { kind: string; location: string | null } | undefined {
+    const r = this.liveRunners.get(runnerId);
+    return r ? { kind: r.kind, location: r.location } : undefined;
   }
 
   /** Scope fence: a dispatch cwd must be one of the runner's declared projects (or nested under

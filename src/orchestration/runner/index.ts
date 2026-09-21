@@ -94,9 +94,10 @@ async function main(): Promise<void> {
   if (!factory) throw new Error(`unknown RUNNER_KIND "${kind}" (known: ${Object.keys(ADAPTERS).join(", ")})`);
   const adapter = factory();
 
-  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, adapter });
+  const location = process.env.RUNNER_LOCATION?.trim() || null;
+  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, adapter });
 
-  log.info({ url, runnerId, kind, projects, workspaceRoot }, "runner starting (auto-reconnect)");
+  log.info({ url, runnerId, kind, projects, workspaceRoot, location }, "runner starting (auto-reconnect)");
   await client.run(); // reconnects with backoff + heartbeats until the process is stopped
 }
 

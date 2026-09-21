@@ -11,10 +11,23 @@ export interface ActivityLine {
   seq: number; // monotonic per task — the SSE event id, for de-dup + Last-Event-ID resume
 }
 
+// Static task context for the header/panels: which runner + where, which project + path, and how to
+// resume from a terminal (null when not cleanly resumable outside the bot).
+export interface TaskMeta {
+  runnerId: string;
+  kind: string;
+  location: string | null;
+  project: string | null;
+  cwd: string | null;
+  nativeSessionId: string | null;
+  resumeCommand: string | null;
+}
+
 interface TaskStream {
   token: string;
   lines: ActivityLine[];
   seq: number;
+  meta: TaskMeta | null;
   status: string; // "running" | "idle" | "done" | "failed"
   summary: string | null;
   subscribers: Set<(l: ActivityLine) => void>;
@@ -29,6 +42,7 @@ export interface TaskView {
   lines: ActivityLine[];
   status: string;
   summary: string | null;
+  meta: TaskMeta | null;
   /** Subscribe to new lines; returns an unsubscribe fn. */
   onLine: (cb: (l: ActivityLine) => void) => () => void;
   /** Subscribe to status/summary changes (settle); returns an unsubscribe fn. */
@@ -42,7 +56,7 @@ export class ActivityHub {
   open(taskId: string): string {
     let t = this.tasks.get(taskId);
     if (!t) {
-      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, status: "running", summary: null, subscribers: new Set(), statusSubs: new Set(), gcTimer: null };
+      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, meta: null, status: "running", summary: null, subscribers: new Set(), statusSubs: new Set(), gcTimer: null };
       this.tasks.set(taskId, t);
     }
     return t.token;
@@ -50,6 +64,11 @@ export class ActivityHub {
 
   tokenFor(taskId: string): string | undefined {
     return this.tasks.get(taskId)?.token;
+  }
+
+  setMeta(taskId: string, meta: TaskMeta): void {
+    const t = this.tasks.get(taskId);
+    if (t) t.meta = meta;
   }
 
   append(taskId: string, line: string, at: number): void {
@@ -103,6 +122,7 @@ export class ActivityHub {
       lines: [...t.lines],
       status: t.status,
       summary: t.summary,
+      meta: t.meta,
       onLine: (cb) => {
         t.subscribers.add(cb);
         return () => t.subscribers.delete(cb);

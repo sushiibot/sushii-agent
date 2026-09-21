@@ -106,6 +106,8 @@ export const registerParams = z.object({
   // the dispatch scope fence even when `projects` is empty, and lets the orchestrator derive a
   // clone cwd under it. null = runner does no clone-on-demand.
   workspaceRoot: z.string().nullable().default(null),
+  // Human-friendly location for display (e.g. "apps · container", "drk-wsl2 · desktop"). Optional.
+  location: z.string().nullable().default(null),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
 

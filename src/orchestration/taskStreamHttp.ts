@@ -18,6 +18,7 @@ export function registerTaskStreamRoutes(app: Hono): void {
     const lastId = Number(c.req.header("Last-Event-ID") ?? c.req.query("lastId") ?? "0") || 0;
 
     return streamSSE(c, async (stream) => {
+      if (view.meta) await stream.writeSSE({ event: "meta", data: JSON.stringify(view.meta) });
       for (const l of view.lines) {
         if (l.seq > lastId) await stream.writeSSE({ id: String(l.seq), data: JSON.stringify(l) });
       }
@@ -91,9 +92,20 @@ const VIEWER_HTML = `<!doctype html>
   .result { } .result .msg { color:var(--dim); }
   .text .msg { color:var(--text); }
   .summary { margin:8px 16px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:8px; color:var(--text); white-space:pre-wrap; }
+  #meta { padding:10px 16px; border-bottom:1px solid var(--border); background:#0f141b; display:none; flex-wrap:wrap; gap:6px 20px; }
+  #meta.on { display:flex; }
+  #meta .kv { color:var(--dim); } #meta .kv b { color:var(--fg); font-weight:600; }
+  #resume { margin:10px 16px 0; display:none; }
+  #resume.on { display:block; }
+  #resume .bar { display:flex; gap:8px; align-items:center; margin-bottom:4px; color:var(--dim); font-size:12px; }
+  #resume button { background:#21262d; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:3px 10px; cursor:pointer; font:inherit; }
+  #resume button:hover { border-color:var(--tool); }
+  #resume pre { margin:0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:8px; overflow:auto; color:var(--tool); }
 </style></head>
 <body>
   <header><span class="id">#__TASK_ID__</span><span id="status" class="running">connecting…</span></header>
+  <div id="meta"></div>
+  <div id="resume"><div class="bar"><span>Resume from a terminal</span><button id="copy">Copy</button></div><pre id="resumecmd"></pre></div>
   <main id="log"></main>
 <script>
   const log = document.getElementById('log'), statusEl = document.getElementById('status');
@@ -113,6 +125,19 @@ const VIEWER_HTML = `<!doctype html>
     if(stick) window.scrollTo(0,document.body.scrollHeight);
   }
   es.onmessage = (e) => { try { add(JSON.parse(e.data)); } catch {} };
+  es.addEventListener('meta', (e) => {
+    try {
+      const m = JSON.parse(e.data); const el = document.getElementById('meta');
+      const kv = (k,v) => v ? '<span class="kv">'+k+' <b>'+String(v).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</b></span>' : '';
+      el.innerHTML = kv('runner', m.runnerId+' ('+m.kind+')') + kv('where', m.location) + kv('project', m.project) + kv('path', m.cwd);
+      el.className = 'on';
+      if (m.resumeCommand) {
+        document.getElementById('resumecmd').textContent = m.resumeCommand;
+        document.getElementById('resume').className = 'on';
+        document.getElementById('copy').onclick = () => navigator.clipboard.writeText(m.resumeCommand).then(()=>{ const b=document.getElementById('copy'); b.textContent='Copied'; setTimeout(()=>b.textContent='Copy',1200); });
+      }
+    } catch {}
+  });
   es.addEventListener('status', (e) => {
     try { const s=JSON.parse(e.data); statusEl.textContent=s.status; statusEl.className=s.status;
       if(s.summary){ const d=document.createElement('div'); d.className='summary'; d.textContent=s.summary; log.appendChild(d); if(atBottom()) window.scrollTo(0,document.body.scrollHeight); }

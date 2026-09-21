@@ -61,17 +61,20 @@ async function resolveContextWindow(modelId: string, fallback: number): Promise<
 // Prefer the human-meaningful field of a tool's args for the activity line (the command, the path,
 // the pattern), else compact JSON. Truncation happens downstream in activityLine.
 function summarizeToolArgs(args: unknown): string {
+  if (typeof args === "string") return args;
   if (args && typeof args === "object") {
     const a = args as Record<string, unknown>;
-    for (const k of ["command", "path", "file_path", "pattern", "query"]) {
-      if (typeof a[k] === "string") return a[k] as string;
+    for (const k of ["command", "path", "file_path", "pattern", "query", "url"]) {
+      if (typeof a[k] === "string" && a[k]) return a[k] as string;
     }
+    // Fallback: a compact key=value of scalar fields, never a raw JSON object dump.
+    const parts = Object.entries(a)
+      .filter(([, v]) => v != null && typeof v !== "object")
+      .slice(0, 3)
+      .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`);
+    return parts.join(" ");
   }
-  try {
-    return typeof args === "string" ? args : JSON.stringify(args);
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 // Prefer a tool result's human-readable payload (a command's stdout, a file's text) over a raw JSON
@@ -86,9 +89,15 @@ function stringifyResult(result: unknown): string {
     for (const k of ["output", "text", "content", "message", "result"]) {
       if (typeof r[k] === "string" && r[k]) return r[k] as string;
     }
+    // Structured object without a text payload: a compact key=value, not a raw JSON dump.
+    const parts = Object.entries(r)
+      .filter(([, v]) => v != null && typeof v !== "object")
+      .slice(0, 4)
+      .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`);
+    if (parts.length) return parts.join(" ");
   }
   try {
-    return JSON.stringify(result);
+    return JSON.stringify(result).slice(0, 200);
   } catch {
     return String(result);
   }

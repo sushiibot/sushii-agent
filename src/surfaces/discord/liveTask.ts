@@ -1,6 +1,6 @@
 import type { Client, Message } from "discord.js";
 import type { TaskRow } from "../../orchestration/contracts.ts";
-import type { ActivityHub, TaskView } from "../../orchestration/activityHub.ts";
+import type { ActivityHub, TaskMeta, TaskView } from "../../orchestration/activityHub.ts";
 import { getLogger } from "../../logger.ts";
 
 const log = getLogger("surfaces/discord/liveTask");
@@ -25,16 +25,17 @@ export class LiveTaskView {
     private readonly message: Message,
     view: TaskView,
     private readonly webUrl: string | null,
+    private readonly meta: TaskMeta,
   ) {
     this.lines = view.lines.map((l) => l.line); // seed from the buffer captured so far
     this.unsubs.push(view.onLine((l) => this.onLine(l.line)));
     this.unsubs.push(view.onStatus((status, summary) => this.onSettle(status, summary)));
   }
 
-  static async start(client: Client, task: TaskRow, hub: ActivityHub, webUrl: string | null): Promise<LiveTaskView | null> {
+  static async start(client: Client, task: TaskRow, hub: ActivityHub, webUrl: string | null, meta: TaskMeta): Promise<LiveTaskView | null> {
     const user = await client.users.fetch(task.createdBy).catch(() => null);
     if (!user) return null;
-    const msg = await user.send(header(task.id, "running", webUrl)).catch((err) => {
+    const msg = await user.send(headerBlock(task.id, "running", webUrl, meta)).catch((err) => {
       log.warn({ err, taskId: task.id }, "failed to open live task message");
       return null;
     });
@@ -43,7 +44,7 @@ export class LiveTaskView {
     // that arrived during the await are in the seed and none fall between seed and subscription.
     const view = hub.view(task.id);
     if (!view) return null;
-    const live = new LiveTaskView(task.id, msg, view, webUrl);
+    const live = new LiveTaskView(task.id, msg, view, webUrl, meta);
     live.render("running"); // paint whatever is already buffered
     return live;
   }
@@ -78,16 +79,25 @@ export class LiveTaskView {
   }
 
   private body(status: string, summary: string | null): string {
+    const head = headerBlock(this.taskId, status, this.webUrl, this.meta);
+    const settled = status !== "running";
+    // Trim the activity tail so header + (on settle) summary + resume block fit under the 2000 limit.
+    const reserve = settled ? 700 : 0;
     let block = this.lines.slice(-MAX_LINES).join("\n");
-    if (block.length > MAX_CONTENT) block = `…\n${block.slice(block.length - MAX_CONTENT)}`;
-    const head = header(this.taskId, status, this.webUrl);
-    const tail = summary ? `\n${summary.slice(0, 500)}` : "";
-    return block ? `${head}\n\`\`\`\n${block}\n\`\`\`${tail}` : `${head}${tail}`;
+    const budget = MAX_CONTENT - head.length - reserve;
+    if (block.length > budget) block = `…\n${block.slice(block.length - Math.max(0, budget))}`;
+    let out = block ? `${head}\n\`\`\`\n${block}\n\`\`\`` : head;
+    if (settled && summary) out += `\n${summary.slice(0, 500)}`;
+    if (settled && this.meta.resumeCommand) out += `\nResume elsewhere:\n\`\`\`\n${this.meta.resumeCommand}\n\`\`\``;
+    return out.slice(0, 2000);
   }
 }
 
-function header(taskId: string, status: string, webUrl: string | null): string {
+function headerBlock(taskId: string, status: string, webUrl: string | null, meta: TaskMeta): string {
   const icon = status === "running" ? "⏳" : status === "failed" ? "❌" : "✅";
   const link = webUrl ? ` · [live](${webUrl})` : "";
-  return `${icon} \`#${taskId}\` · ${status}${link}`;
+  const runner = `${meta.runnerId} (${meta.kind})${meta.location ? ` · ${meta.location}` : ""}`;
+  const lines = [`${icon} \`#${taskId}\` · ${status}${link}`, `🖥 ${runner}${meta.project ? ` · 📁 ${meta.project}` : ""}`];
+  if (meta.cwd) lines.push(`\`${meta.cwd}\``);
+  return lines.join("\n");
 }

@@ -40,6 +40,7 @@ import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PR
 import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/dispatcher.ts";
 import type { TaskRow } from "../../orchestration/contracts.ts";
 import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts";
+import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
 import { LiveTaskView } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 
@@ -377,7 +378,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const hub = getActivityHub();
       const token = hub.tokenFor(task.id);
       const webUrl = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
-      void LiveTaskView.start(client, task, hub, webUrl).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
+      const meta = buildTaskMeta(task, dispatcher.runnerInfo(task.runnerId));
+      hub.setMeta(task.id, meta); // so the web viewer's meta panel + resume box populate
+      void LiveTaskView.start(client, task, hub, webUrl, meta).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
     });
     // Bind the ORCH port at boot so a runner reconnects immediately after any restart, rather than
     // waiting for the first dispatch to lazily bind it (which strands the runner until then).
