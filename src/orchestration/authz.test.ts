@@ -103,9 +103,13 @@ describe("authz.can — CONFIGURED registry (principal-aware, owner-only, DM-onl
     expect(can({ principal: "not-linked", capability: "runner.dispatch", space: spaceKey("slack", "T0AAA"), isPrivate: true })).toBe(false);
   });
 
-  test("the owner principal in a PUBLIC space (isPrivate false/absent) is denied", () => {
-    expect(can({ principal: DRK_SLACK, capability: "runner.dispatch", space: spaceKey("slack", "C-public"), isPrivate: false })).toBe(false);
-    expect(can({ principal: DRK_DISCORD, capability: "runner.dispatch", space: GUILD_SPACE })).toBe(false);
+  test("the owner principal in a PUBLIC space is allowed (owner tools are not DM-restricted)", () => {
+    expect(can({ principal: DRK_SLACK, capability: "runner.dispatch", space: spaceKey("slack", "C-public"), isPrivate: false })).toBe(true);
+    expect(can({ principal: DRK_DISCORD, capability: "runner.dispatch", space: GUILD_SPACE })).toBe(true);
+  });
+
+  test("a NON-owner in a PUBLIC space is still denied (the owner gate is what protects it)", () => {
+    expect(can({ principal: "not-linked", capability: "runner.dispatch", space: spaceKey("slack", "C-public"), isPrivate: false })).toBe(false);
   });
 
   test("a right-id/wrong-surface caller is denied (identities are surface-scoped)", () => {

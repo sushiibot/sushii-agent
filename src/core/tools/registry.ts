@@ -77,12 +77,14 @@ export class CoreToolRegistry implements ToolRegistry {
     const a = this.availability();
     const key = spaceKey(space.surface, space.spaceId);
 
-    // Owner-DM gating for runner + update_profile tools. Configured registry → author-aware
-    // (the resolved principal is the owner AND the turn is a private/DM context); unconfigured →
-    // today's space-string heuristic (isPersonalSpace), unchanged.
+    // Owner gating for runner + update_profile tools. Configured registry → author-aware.
+    // Runner/session tools are owner-only but NOT DM-only (the owner drives runners from guild
+    // channels too — same as ops-triage below); execution stays owner-gated in can(). update_profile
+    // stays DM-first (editing the personal profile shouldn't surface in a shared channel).
+    // Unconfigured → today's space-string heuristic (isPersonalSpace), unchanged.
     const configured = principalsConfigured();
     const ownerDm = space.isOwner === true && space.isPrivate === true;
-    const runnerAllowed = configured ? ownerDm : a.owner && isPersonalSpace(key);
+    const runnerAllowed = configured ? space.isOwner === true : a.owner && isPersonalSpace(key);
     const profileAllowed = configured ? ownerDm : isPersonalSpace(key);
     // ops-triage (Grafana/Linear) is owner-only but NOT DM-only — the owner triages from guild
     // channels too. Configured → the resolved principal is the owner (any surface); unconfigured →

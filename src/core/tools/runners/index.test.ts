@@ -201,10 +201,18 @@ describe("runner tools authz wiring — CONFIGURED registry (principal + isPriva
     expect(result.content).toContain("Dispatched task task-1");
   });
 
-  test("owner principal in a NON-private Slack channel is denied", async () => {
+  test("owner principal in a NON-private Slack channel dispatches (runner tools are owner-only, not DM-only)", async () => {
     const result = await dispatchToRunnerEntry.execute(
       { runner_id: "r1", cwd: "/tmp", prompt: "go" },
       privCtx({ surface: "slack", spaceId: "C-pub" }, slackAuthor(DRK_SLACK), false),
+    );
+    expect(result.content).toContain("Dispatched task task-1");
+  });
+
+  test("a NON-owner in a NON-private Slack channel is denied", async () => {
+    const result = await dispatchToRunnerEntry.execute(
+      { runner_id: "r1", cwd: "/tmp", prompt: "go" },
+      privCtx({ surface: "slack", spaceId: "C-pub" }, slackAuthor("someone-else"), false),
     );
     expect(result.content).toBe(DENIED);
   });

@@ -1,11 +1,11 @@
 // Execution authz for runner/session capabilities. Two regimes, selected by whether the manual
 // principal registry is configured:
 //   - CONFIGURED (principals.json non-empty): default-deny; grant only when the caller resolves to
-//     the OWNER principal, the turn is a private/DM context, and the capability is in the DM set.
+//     the OWNER principal and the capability is owner-grantable. NOT DM-restricted — the owner drives
+//     runners from guild channels too; only the owner's own principal ever qualifies, so a shared
+//     space grants nothing to non-owners.
 //   - UNCONFIGURED (empty/unset registry): today's exact behavior — the legacy `ownerDiscordId` id
-//     AND the hardcoded per-space capability allowlist. The new `isPrivate` signal is ignored here
-//     so an empty registry can never be widened by a DM-shaped space.
-// A guild/shared space must never offer runner.dispatch under either regime.
+//     AND the hardcoded per-space (discord:dm-only) allowlist. Unchanged; never widened.
 import type { AuthzInput, Capability, CanFn } from "./contracts.ts";
 import { config } from "../config.ts";
 import { ownerPrincipalId, principalsConfigured, resolvePrincipal } from "./principals.ts";
@@ -36,11 +36,11 @@ function legacyOwner(): string | undefined {
   return config.ownerDiscordId;
 }
 
-/** The capabilities an owner may exercise from a DM/personal space in the CONFIGURED regime. Unlike
- *  the legacy per-space allowlist, this is keyed by capability alone (the DM-ness is proven by the
- *  threaded `isPrivate`), so it works across surfaces whose DM spaceId isn't literally "dm" (Slack's
- *  is the teamId). Includes `session.stop`, which the legacy allowlist omits (see below). */
-const DM_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
+/** The capabilities the OWNER may exercise in the CONFIGURED regime, from any space (DM or guild
+ *  channel — only the owner's own principal ever qualifies, so a shared space grants nothing to
+ *  others). Keyed by capability alone, so it works across surfaces whose spaceId isn't literally
+ *  "dm" (Slack's is the teamId). Includes `session.stop`, which the legacy allowlist omits. */
+const OWNER_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "runner.dispatch",
   "session.read",
   "session.resume",
@@ -55,17 +55,17 @@ function surfaceOf(space: string): string {
   return i === -1 ? space : space.slice(0, i);
 }
 
-/** Default-deny. Configured registry → five conjunctions (known owner principal · isOwner · private
- *  space · capability in the DM set · an owner principal exists); unconfigured → the legacy owner id
- *  + per-space allowlist, unchanged. */
-export const can: CanFn = ({ principal, capability, space, isPrivate }: AuthzInput): boolean => {
+/** Default-deny. Configured registry → four conjunctions (known owner principal · isOwner ·
+ *  capability owner-grantable · an owner principal exists) — NOT space-restricted, since only the
+ *  owner's own principal ever resolves as owner; unconfigured → the legacy owner id + per-space
+ *  (discord:dm-only) allowlist, unchanged. */
+export const can: CanFn = ({ principal, capability, space }: AuthzInput): boolean => {
   if (principalsConfigured()) {
     const resolved = resolvePrincipal(surfaceOf(space), principal); // (1) caller is a known principal
     if (!resolved) return false;
     if (!resolved.isOwner) return false; // (2) and that principal is the owner
-    if (isPrivate !== true) return false; // (3) the turn is a private/DM context
-    if (!DM_CAPABILITIES.has(capability)) return false; // (4) the capability is DM-grantable
-    if (ownerPrincipalId() === undefined) return false; // (5) an owner principal exists at all
+    if (!OWNER_CAPABILITIES.has(capability)) return false; // (3) the capability is owner-grantable
+    if (ownerPrincipalId() === undefined) return false; // (4) an owner principal exists at all
     return true;
   }
 

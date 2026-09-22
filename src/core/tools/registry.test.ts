@@ -193,11 +193,13 @@ describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPri
     expect(names).toContain("update_profile");
   });
 
-  test("owner in a NON-private space is hidden; a private non-owner is hidden", () => {
+  test("owner in a NON-private space gets runner tools but not update_profile; a non-owner gets neither", () => {
     const publicOwner = registry()
       .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false })
       .map((e) => e.name);
-    expect(publicOwner).not.toContain("dispatch_to_runner");
+    // Runner tools are owner-only, not DM-only — the owner drives runners from a channel too.
+    expect(publicOwner).toContain("dispatch_to_runner");
+    // update_profile stays DM-first (editing the personal profile shouldn't happen in a shared space).
     expect(publicOwner).not.toContain("update_profile");
 
     const privateNonOwner = registry()
@@ -220,8 +222,8 @@ describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPri
       .map((e) => e.name);
     expect(names).toContain("search_logs");
     expect(names).toContain("file_linear_issue");
-    // ...but runner/update_profile stay DM-gated.
-    expect(names).not.toContain("dispatch_to_runner");
+    // runner tools are also owner-only-not-DM-only, so they're here too; update_profile stays DM-gated.
+    expect(names).toContain("dispatch_to_runner");
     expect(names).not.toContain("update_profile");
   });
 
