@@ -27,7 +27,7 @@ import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerCo
 import { buildOpsTriagePromptSection } from "../../modules/ops-triage/prompt.ts";
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
-import { makeDiscordWikiSyncContext } from "./wikiSync.ts";
+import type { MakeWikiSourceContext } from "../../modules/wiki-sync/scheduler.ts";
 import { createWikiFsHost } from "../../modules/wiki-sync/wikiHost.ts";
 import { DiscordHost } from "./hosts/discordHost.ts";
 import { DiscordMessageCacheHost } from "./hosts/messageCacheHost.ts";
@@ -204,6 +204,9 @@ export interface DiscordSurfaceDeps {
   store: SqliteConversationStore;
   memory: DiscordSpaceMemoryStore;
   hookBus: HookBus;
+  /** Builds the port bag for a source of the wiki a `/wiki-sync` invocation targets. Combined
+   *  (Discord + Slack) so a Discord-triggered sweep of a shared wiki can build the Slack source too. */
+  makeWikiSourceContext: MakeWikiSourceContext;
 }
 
 /** A paused automod approval, recovered when the amka:/amkd: button is clicked. In-memory only,
@@ -217,7 +220,7 @@ interface PendingApproval {
 }
 
 export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
-  const { client, core, store, memory, hookBus } = deps;
+  const { client, core, store, memory, hookBus, makeWikiSourceContext } = deps;
   const transcriber = createTranscriber();
   // One ToolProgressTracker per active conversation. The onToolsDispatched hook and the session
   // that renders the reply share the same instance; the gateway finalizes + removes it when the
@@ -711,7 +714,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
     if (interaction.isChatInputCommand() && interaction.commandName === WIKI_SYNC_COMMAND_NAME) {
-      await handleWikiSyncCommand(interaction, (wikiId, source) => makeDiscordWikiSyncContext(client, wikiId, source));
+      await handleWikiSyncCommand(interaction, makeWikiSourceContext);
       return;
     }
     if (!interaction.isButton()) return;

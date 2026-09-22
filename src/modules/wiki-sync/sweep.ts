@@ -79,7 +79,7 @@ async function sweepSource(
     { attributes: { "wiki_sync.surface": source.surface, "wiki_sync.space_id": source.spaceId } },
     async (span) => {
       try {
-        const messages = ctx.messages.fetchUnprocessed(source.spaceId, watermark, until, config.wikiSync.maxMessagesPerSweep);
+        const messages = await ctx.messages.fetchUnprocessed(source.spaceId, watermark, until, config.wikiSync.maxMessagesPerSweep);
         span.setAttribute("wiki_sync.message_count", messages.length);
         if (messages.length === 0) {
           // Advance to the window's end, not Date.now() -- jumping straight to "now" would skip

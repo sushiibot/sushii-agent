@@ -23,7 +23,8 @@ import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
 import { getWikiSyncEnabledGuildIds } from "./modules/wiki-sync/guilds.ts";
-import { makeDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
+import type { SlackWikiSyncClient } from "./surfaces/slack/wikiSync.ts";
+import { makeCombinedWikiSourceContext } from "./surfaces/wikiSyncFactory.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
 import { NostrBuzzClient } from "./surfaces/buzz/buzzClient.ts";
 import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
@@ -79,13 +80,22 @@ async function main() {
     memoryProvider,
   });
 
-  startDiscordSurface({ client: client as Client<true>, core, store, memory, hookBus });
+  // A wiki can be fed by several surfaces, so the sweep factory switches on the source's surface.
+  // Slack is captured lazily (its client + workspace URL are resolved further down, after auth.test)
+  // and read only at sweep time — cron/command sweeps run after startup, so the holder is set by then;
+  // an unwired Slack source returns null and is skipped (scheduler handles null gracefully).
+  let slackWiki: { client: SlackWikiSyncClient; workspaceUrl: string } | undefined;
+  const makeWikiSourceContext = makeCombinedWikiSourceContext({
+    discordClient: client as Client<true>,
+    getSlack: () => slackWiki,
+  });
+
+  startDiscordSurface({ client: client as Client<true>, core, store, memory, hookBus, makeWikiSourceContext });
   await client.login(config.discordBotToken);
 
   // Non-conversational drivers bootstrap here, not inside a surface, so they don't depend on the
-  // Discord gateway lifecycle (C14). The capability bag is still Discord-backed for now — a headless
-  // impl (buzz/U6) swaps only the factory.
-  startWikiSyncScheduler((wikiId, source) => makeDiscordWikiSyncContext(client as Client<true>, wikiId, source));
+  // Discord gateway lifecycle (C14).
+  startWikiSyncScheduler(makeWikiSourceContext);
 
   // Second surface: buzz. A separate AgentCore instance sharing the same store/memory/tools/model,
   // but with a plain buzz behavior (no Discord tokens) and a hookless bus — the Discord-host tools
@@ -157,6 +167,9 @@ async function main() {
       const selfId = auth.user_id as string;
       const selfName = (auth.user as string) ?? "sushii";
       const teamId = auth.team_id as string;
+      // Wire Slack as a wiki-sync source. auth.test().url is the workspace base URL (ends in "/"),
+      // the prefix for archive permalinks. The combined factory reads this on the next sweep.
+      if (auth.url) slackWiki = { client: slackApp.client as unknown as SlackWikiSyncClient, workspaceUrl: auth.url as string };
       startSlackAgentLoop(slackApp, {
         core: slackCore,
         client: slackApp.client as unknown as SlackAgentClient,

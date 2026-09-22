@@ -16,8 +16,9 @@ export interface FetchedAttachment {
 
 export interface MessageSource {
   /** Unprocessed messages for one source space in `(since, until]`, oldest first, capped at
-   *  `limit`. Each carries its own `surface`/`spaceId` so downstream code stays surface-neutral. */
-  fetchUnprocessed(spaceId: string, since: number, until: number, limit: number): WikiSyncMessage[];
+   *  `limit`. Each carries its own `surface`/`spaceId` so downstream code stays surface-neutral.
+   *  May be async — a surface can resolve author names (Slack) before returning. */
+  fetchUnprocessed(spaceId: string, since: number, until: number, limit: number): WikiSyncMessage[] | Promise<WikiSyncMessage[]>;
 }
 
 export interface ChannelNameResolver {
