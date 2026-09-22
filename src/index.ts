@@ -12,6 +12,8 @@ import { createToolRegistry } from "./core/tools/registry.ts";
 import { SqliteConversationStore } from "./core/stores/conversationStore.ts";
 import { DiscordSpaceMemoryStore } from "./core/stores/memoryStore.ts";
 import { createLocalMemoryProvider } from "./core/memory/localMemoryProvider.ts";
+import { createMnemosyneMemoryProvider } from "./core/memory/mnemosyne/mnemosyneMemoryProvider.ts";
+import { createMnemosyneCallTool } from "./core/memory/mnemosyne/mnemosyneClient.ts";
 import { createSummarizeFoldCompactor } from "./core/compaction/index.ts";
 import { createModelSummarizer } from "./agent/summarizer.ts";
 import type { LanguageModelProvider } from "./core/contracts.ts";
@@ -47,7 +49,14 @@ async function main() {
   // Both are multi-tenant by spaceId. The local provider backs onto the existing store (semantic
   // mnemosyne backend swaps in later behind the same interface).
   const compactor = createSummarizeFoldCompactor({ summarize: createModelSummarizer() });
-  const memoryProvider = createLocalMemoryProvider(memory);
+  // Semantic mnemosyne backend when MNEMOSYNE_MCP_URL is set; else the local FTS store. Both
+  // satisfy the same MemoryProvider contract, so this is the only wiring difference. Per-call
+  // retrieve is best-effort (deadline/error → null), so a slow or down server never blocks a turn.
+  const memoryProvider = config.mnemosyneMcpUrl
+    ? createMnemosyneMemoryProvider({
+        callTool: createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: config.mnemosyneMcpToken }),
+      })
+    : createLocalMemoryProvider(memory);
   const core = createAgentCore({
     model,
     store,

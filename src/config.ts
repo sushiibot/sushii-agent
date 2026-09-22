@@ -14,6 +14,10 @@ export interface Config {
   guildConfig: Record<string, GuildConfig>;
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
+  /** mnemosyne MCP server (streamable-http). Unset → the semantic memory backend is disabled and
+   *  the local FTS provider is used instead. */
+  mnemosyneMcpUrl: string | undefined;
+  mnemosyneMcpToken: string | undefined;
   exaApiKey: string | undefined;
   /** Discord user ID allowed to invoke ops-triage tools — gate is enforced at tool-execution time, not just list-assembly. */
   ownerDiscordId: string | undefined;
@@ -113,6 +117,8 @@ export const config: Config = {
   guildConfig: loadGuildConfig(),
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
+  mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],
+  mnemosyneMcpToken: process.env["MNEMOSYNE_MCP_TOKEN"],
   exaApiKey: process.env["EXA_API_KEY"],
   ownerDiscordId: process.env["OWNER_DISCORD_ID"],
   linearApiKey: process.env["LINEAR_API_KEY"],
