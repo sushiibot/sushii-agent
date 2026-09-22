@@ -401,6 +401,48 @@ export interface SpaceMemoryStore {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8b Context management — compaction (transient) + proactive memory (durable)
+// Two orthogonal layers, both optional on AgentCoreDeps. Compaction keeps ONE
+// conversation's transcript under the token budget; MemoryProvider injects durable
+// cross-session facts every turn. Pinned contracts — parallel units implement these.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CompactionOutcome {
+  /** The history to run the turn against — rewritten (older turns folded into a summary) when
+   *  `compacted`, else the input unchanged. MUST preserve tool-call/tool-result pairing: never
+   *  return a tool-result message whose originating tool-call is no longer present, or the model
+   *  API rejects the history (orphaned tool_call_id). Fold only on clean turn boundaries. */
+  messages: ModelMessage[];
+  compacted: boolean;
+  /** Durable-fact candidates surfaced by the fold, for the caller to forward to
+   *  MemoryProvider.remember (the "compaction is the deriver" hook). Empty when nothing folded. */
+  factCandidates: string[];
+}
+
+export interface Compactor {
+  /** Called at turn load with the persisted history, BEFORE the new user turn is appended. If the
+   *  history is over budget, fold; else return it unchanged with `compacted:false`. */
+  maybeCompact(input: { messages: ModelMessage[]; contextLimit: number }): Promise<CompactionOutcome>;
+}
+
+export interface MemoryProvider {
+  /** Per-turn retrieval keyed to the incoming user text. Best-effort and NON-BLOCKING: the caller
+   *  races this against `deadlineMs` and injects nothing if it doesn't resolve in time, so memory
+   *  can never add latency to a reply. Return a rendered, token-bounded block to inject, or null
+   *  when nothing is relevant / not ready. The impl owns any embedding cache / recency fast-path. */
+  retrieve(input: { spaceId: string; query: string; deadlineMs: number; tokenBudget?: number }): Promise<string | null>;
+  /** Persist one curated, NON-AUTHORITATIVE durable fact (decisions/preferences/standing context —
+   *  not dated authoritative data that lives in source tools). */
+  remember(input: {
+    spaceId: string;
+    text: string;
+    importance?: number;
+    scope?: "session" | "global";
+    validUntil?: number;
+  }): Promise<void>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9 AgentCore — the in-process door a surface (or a headless driver) calls
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -447,4 +489,8 @@ export interface AgentCoreDeps {
   hooks: HookBus;
   behavior: string;
   limits?: LoopLimits;
+  /** Transient transcript compaction (summarize-fold). When absent, no compaction runs. */
+  compactor?: Compactor;
+  /** Durable cross-session memory, proactively injected each turn. When absent, none injected. */
+  memoryProvider?: MemoryProvider;
 }

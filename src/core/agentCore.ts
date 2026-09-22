@@ -7,6 +7,7 @@ import type {
   CancelOutcome,
   ConversationRef,
   InboundMessage,
+  MemoryProvider,
   PendingInteraction,
   SurfaceSession,
   ToolContext,
@@ -21,6 +22,23 @@ import { fireHook, runLoop } from "./loop.ts";
 
 function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
   return a.surface === b.surface && a.userId === b.userId;
+}
+
+/** Hard cap on how long per-turn memory retrieval may delay a reply. Memory is best-effort: if the
+ *  provider (embedding + store round-trip) doesn't resolve in time, we inject nothing rather than
+ *  block. The provider also gets this as `deadlineMs` so it can self-bound; the race is the backstop. */
+const MEMORY_RETRIEVE_DEADLINE_MS = 600;
+
+async function raceMemoryRetrieve(provider: MemoryProvider, spaceId: string, query: string): Promise<string | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), MEMORY_RETRIEVE_DEADLINE_MS));
+  try {
+    return await Promise.race([
+      provider.retrieve({ spaceId, query, deadlineMs: MEMORY_RETRIEVE_DEADLINE_MS }),
+      timeout,
+    ]);
+  } catch {
+    return null; // a failing provider must never break a turn
+  }
 }
 
 /** Per-conversation runtime bookkeeping — never persisted. `initiator` gates `cancel()`; `owner`
@@ -63,7 +81,20 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     autoMod: boolean,
   ): Promise<AgentTurnResult> {
     const data = deps.store.load(conversation);
-    const messages = [...data.messages];
+    let messages = [...data.messages];
+
+    // Compaction runs on the persisted history BEFORE the new user turn is appended (fold old,
+    // then continue). No-op unless a Compactor is wired. Persisted immediately so the fold is
+    // durable and the prompt prefix stays stable until the next fold.
+    if (deps.compactor) {
+      const outcome = await deps.compactor.maybeCompact({ messages, contextLimit: deps.model.contextLimit });
+      if (outcome.compacted) {
+        messages = outcome.messages;
+        deps.store.save(conversation, { messages, initialThreadContext: data.initialThreadContext ?? null });
+        // outcome.factCandidates → deps.memoryProvider.remember is the compaction-as-deriver hook,
+        // wired in the compaction↔memory follow-up unit.
+      }
+    }
 
     for (const author of initialMentions ?? []) {
       if (!turn.knownUsers.has(author.userId)) turn.knownUsers.set(author.userId, author);
@@ -77,6 +108,13 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     // triggering-user section is suppressed for the autonomous auto-mod driver — it has no
     // requesting user, matching the old dispatch.ts path that passed no triggeringUser.
     const pc = session.promptContext?.() ?? {};
+
+    // Proactive memory: retrieve a durable-fact block keyed to this turn's user text, injected into
+    // the system prompt. Best-effort + time-bounded (raceMemoryRetrieve), no-op unless wired.
+    const memoryBlock = deps.memoryProvider
+      ? (await raceMemoryRetrieve(deps.memoryProvider, conversation.spaceId, firstUserText)) ?? undefined
+      : undefined;
+
     const systemPrompt = assembleSystemPrompt({
       behavior: deps.behavior,
       selfId: session.selfId,
@@ -92,6 +130,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       threadContext: pc.threadContext,
       threadChannelId: pc.threadChannelId,
       moduleExtras: pc.moduleExtras,
+      memoryBlock,
     });
 
     const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId, autoMod });
