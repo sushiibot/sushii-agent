@@ -107,6 +107,17 @@ describe("createLocalMemoryProvider", () => {
     expect(block).toContain("…");
   });
 
+  test("retrieve returns null when the store search throws", async () => {
+    const store = new FakeStore();
+    store.search = () => {
+      throw new Error("fts5: syntax error near \"*\"");
+    };
+    const provider = createLocalMemoryProvider(store);
+
+    const block = await provider.retrieve({ spaceId: "g1", query: "a * b", deadlineMs: 600 });
+    expect(block).toBeNull();
+  });
+
   test("remember upserts with a derived title", async () => {
     const store = new FakeStore();
     const provider = createLocalMemoryProvider(store);

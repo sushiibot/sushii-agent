@@ -1,4 +1,7 @@
 import type { MemoryEntry, MemoryProvider, SpaceMemoryStore } from "../contracts.ts";
+import { getLogger } from "../../logger.ts";
+
+const logger = getLogger("core/memory/local");
 
 const DEFAULT_TOKEN_BUDGET = 800;
 const DEFAULT_MAX_ITEMS = 6;
@@ -13,8 +16,11 @@ function deriveTitle(text: string): string {
 }
 
 function renderItem(entry: MemoryEntry): string {
+  // Collapse whitespace in both fields: a title with `\n## ...` could otherwise forge a
+  // section in the system prompt this block is injected into.
+  const title = entry.title.replace(/\s+/g, " ").trim();
   const content = entry.content.replace(/\s+/g, " ").trim();
-  return `- ${entry.title}: ${content}`;
+  return `- ${title}: ${content}`;
 }
 
 // Trim a rendered line to `maxChars`, appending an ellipsis so truncation is visible.
@@ -40,7 +46,14 @@ export function createLocalMemoryProvider(store: SpaceMemoryStore): MemoryProvid
       const maxItems = DEFAULT_MAX_ITEMS;
       const budget = tokenBudget ?? DEFAULT_TOKEN_BUDGET;
 
-      const hits = store.search(spaceId, q, maxItems);
+      // FTS5 can throw on query metacharacters in raw user text; degrade to no memory this turn.
+      let hits: MemoryEntry[];
+      try {
+        hits = store.search(spaceId, q, maxItems);
+      } catch (err) {
+        logger.debug({ err, spaceId }, "memory search failed; skipping injection");
+        return null;
+      }
       if (hits.length === 0) return null;
 
       const lines: string[] = [BLOCK_LABEL];
@@ -63,6 +76,8 @@ export function createLocalMemoryProvider(store: SpaceMemoryStore): MemoryProvid
           lines.push(truncateLine(line, remaining - 1));
           rendered += 1;
         }
+        // Stop on first overflow rather than skipping ahead: hits are relevance-ranked, so
+        // dropping the tail preserves the most-relevant items.
         break;
       }
 
@@ -73,7 +88,10 @@ export function createLocalMemoryProvider(store: SpaceMemoryStore): MemoryProvid
     async remember({ spaceId, text }) {
       const content = text.trim();
       if (content.length === 0) return;
-      store.upsert(spaceId, deriveTitle(content), content);
+      const result = store.upsert(spaceId, deriveTitle(content), content);
+      if ("error" in result) {
+        logger.debug({ spaceId, error: result.error }, "memory upsert rejected; not stored");
+      }
     },
   };
 }
