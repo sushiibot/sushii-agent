@@ -307,6 +307,18 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     if (!message.channel.isSendable()) return;
     const channel = message.channel;
 
+    // Deterministic DM session boundary. A DM has no threads (unlike guilds, where each thread is a
+    // fresh conversation), so this is the manual "start fresh" for the owner's one ever-growing DM.
+    // A `!` prefix (not `/`) avoids triggering Discord's slash-command autocomplete/registry.
+    const dmCommand = message.content.trim().toLowerCase();
+    if (dmCommand === "!new" || dmCommand === "!reset" || dmCommand === "!clear") {
+      const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
+      store.save(conversation, { messages: [], initialThreadContext: null });
+      await message.react("✅").catch(() => {});
+      await channel.send("Started a fresh conversation — this chat's history is cleared. Durable memory is unaffected.").catch(() => {});
+      return;
+    }
+
     // Immediate receipt ack — the turn (and any dispatch it kicks off) can take a while, so react
     // right away so the owner knows the DM was seen and is being worked on.
     await message.react("👀").catch(() => {});

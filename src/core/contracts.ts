@@ -317,11 +317,19 @@ export interface ToolDefinition {
 }
 
 /** Base context every tool gets. NO discord.js here. */
+/** A tool can request that THIS conversation's stored history be cleared. The reset is applied by
+ *  agentCore AFTER the turn (so it survives the normal end-of-turn save), which then persists an
+ *  empty history instead of the turn's messages. Durable memory (SpaceMemoryStore) is untouched. */
+export interface ResetSink {
+  request(): void;
+}
+
 export interface ToolContext {
   space: { surface: SurfaceId; spaceId: string };
   owner: AuthorRef | null; // tainted owner-gate identity, NOT inbound.author
   store: ConversationStore;
   memory: SpaceMemoryStore;
+  reset?: ResetSink;
   log: unknown; // Logger; typed loosely to avoid coupling U0 to the logger module
 }
 

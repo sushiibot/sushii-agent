@@ -171,12 +171,18 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     });
 
     turn.owner = result.owner;
-    // Freeze the surface's first-turn fetched context: once stored it's reused verbatim (stable
-    // prompt prefix, C11). Ports the old saveConversation, which persisted the turn's threadContext.
-    deps.store.save(conversation, {
-      messages: result.messages,
-      initialThreadContext: data.initialThreadContext ?? pc.threadContext ?? null,
-    });
+    if (result.resetRequested) {
+      // reset_conversation tool ran: clear this conversation's stored history (durable memory is
+      // untouched). Applied here, after the turn, so it isn't clobbered by the normal save below.
+      deps.store.save(conversation, { messages: [], initialThreadContext: null });
+    } else {
+      // Freeze the surface's first-turn fetched context: once stored it's reused verbatim (stable
+      // prompt prefix, C11). Ports the old saveConversation, which persisted the turn's threadContext.
+      deps.store.save(conversation, {
+        messages: result.messages,
+        initialThreadContext: data.initialThreadContext ?? pc.threadContext ?? null,
+      });
+    }
 
     if (result.cancelled) {
       fireHook(deps.hooks, "onCancelled", { conversation });

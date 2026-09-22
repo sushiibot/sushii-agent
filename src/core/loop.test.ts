@@ -557,3 +557,48 @@ describe("createHookBus — failure isolation", () => {
     expect(laterHandlerRan).toBe(true);
   });
 });
+
+describe("createAgentCore — reset_conversation", () => {
+  function resetTools(): ToolRegistry {
+    const entry: ToolEntry<never> = {
+      name: "reset_conversation",
+      definition: { name: "reset_conversation", description: "reset", parameters: {} },
+      requiresHosts: [],
+      execute: async (_input, ctx) => {
+        ctx.reset?.request();
+        return { content: "cleared" };
+      },
+    };
+    return { resolve: () => [entry as ToolEntry<keyof ToolHosts>] };
+  }
+
+  test("reset_conversation clears stored history after the turn, not mid-turn", async () => {
+    respond = async (call) => {
+      if (call === 1) {
+        return {
+          text: "",
+          toolCalls: [{ toolCallId: "1", toolName: "reset_conversation", input: {} }],
+          finishReason: "tool-calls",
+          usage: { inputTokens: 1, outputTokens: 1 },
+          response: { messages: [{ role: "assistant", content: [{ type: "tool-call", toolCallId: "1", toolName: "reset_conversation", input: {} }] }] },
+        };
+      }
+      return { text: "started fresh", toolCalls: [], finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1 }, response: { messages: [{ role: "assistant", content: "started fresh" }] } };
+    };
+
+    const { deps, store } = coreDeps({ tools: resetTools() });
+    const core = createAgentCore(deps);
+    const res = await core.handleInbound(inbound("u1", "please start over"), fakeSession());
+
+    expect(res.status).toBe("completed");
+    // The end-of-turn save persists an empty history (reset wins over the normal save).
+    expect(store.data.messages).toHaveLength(0);
+  });
+
+  test("without a reset, the turn's history is persisted normally", async () => {
+    const { deps, store } = coreDeps({ tools: resetTools() });
+    const core = createAgentCore(deps);
+    await core.handleInbound(inbound("u1", "hi"), fakeSession());
+    expect(store.data.messages.length).toBeGreaterThan(0);
+  });
+});

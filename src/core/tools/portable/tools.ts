@@ -180,4 +180,19 @@ export const askQuestionEntry: ToolEntry = {
   },
 };
 
-export const PORTABLE_TOOL_ENTRIES: ToolEntry[] = [memoryEntry, updateServerContextEntry, webSearchEntry, fetchUrlContentEntry, askQuestionEntry];
+export const resetConversationEntry: ToolEntry = {
+  name: "reset_conversation",
+  definition: {
+    name: "reset_conversation",
+    description:
+      "Start a fresh conversation, clearing the remembered message history of THIS conversation only. Durable agent memory is NOT affected. Use only when the user explicitly asks to start over, start fresh, clear the chat, or begin a new conversation.",
+    parameters: { type: "object", properties: {} },
+  },
+  requiresHosts: [],
+  async execute(_input, ctx) {
+    ctx.reset?.request();
+    return { content: "Conversation history cleared — starting fresh. Durable memory is unaffected." };
+  },
+};
+
+export const PORTABLE_TOOL_ENTRIES: ToolEntry[] = [memoryEntry, updateServerContextEntry, webSearchEntry, fetchUrlContentEntry, askQuestionEntry, resetConversationEntry];

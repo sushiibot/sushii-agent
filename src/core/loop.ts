@@ -26,6 +26,7 @@ import {
   type LanguageModelProvider,
   type PendingInteraction,
   type ReplySegment,
+  type ResetSink,
   type ToolActivity,
   type ToolContext,
   type ToolEntry,
@@ -96,6 +97,9 @@ export interface LoopResult {
   owner: AuthorRef | null;
   pending?: PendingInteraction;
   cancelled: boolean;
+  /** A tool (reset_conversation) asked to clear this conversation's history; agentCore honors it
+   *  after the turn by persisting an empty history instead of `messages`. */
+  resetRequested?: boolean;
 }
 
 function toReplySegments(text: string): ReplySegment[] {
@@ -180,6 +184,8 @@ export async function runLoop(
   // call that requested it — everything else is pooled across the batch.
   const imageUrls: string[] = [];
   const imagesSink: ImageSink = { push: (urls) => imageUrls.push(...urls) };
+  let resetRequested = false;
+  const resetSink: ResetSink = { request: () => { resetRequested = true; } };
   const novelUsers: AuthorRef[] = [];
   const knownUsersSink: KnownUsersSink = {
     add: (userId, names) => {
@@ -217,7 +223,7 @@ export async function runLoop(
       const pendingSink: PendingInteractionSink = { push: (p) => { if (!callPending) callPending = p; } };
 
       try {
-        const toolCtx = { ...ctx.toolContextBase, owner, pending: pendingSink, images: imagesSink, knownUsers: knownUsersSink } as ToolContext & Required<ToolHosts>;
+        const toolCtx = { ...ctx.toolContextBase, owner, pending: pendingSink, images: imagesSink, knownUsers: knownUsersSink, reset: resetSink } as ToolContext & Required<ToolHosts>;
         const result = await entry.execute(input, toolCtx);
         if (callPending) {
           paused.push({ call, pending: callPending });
@@ -394,6 +400,7 @@ export async function runLoop(
         messages: historyOut(),
         owner,
         cancelled: false,
+        resetRequested,
       };
     }
 
