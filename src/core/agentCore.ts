@@ -52,6 +52,10 @@ interface ActiveTurn {
   knownUsers: Map<string, AuthorRef>;
   cancelRequested: boolean;
   queue: InboundMessage[];
+  /** Author of the most-recently-injected user message — the initiator until a mid-loop message from
+   *  someone else is consumed. The deriver attributes to THIS, not the initiator, so a fact stated by
+   *  a mid-loop interjector lands in their bucket, not the turn starter's. */
+  lastUserAuthor: AuthorRef;
 }
 
 export function createAgentCore(deps: AgentCoreDeps): AgentCore {
@@ -64,6 +68,9 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       if (turn.queue.length === 0) return [];
       const batch = turn.queue;
       turn.queue = [];
+      // The last message in the drained batch becomes the newest user-role message in history — the
+      // one the deriver reads at turn end — so its author is who derived facts get attributed to.
+      turn.lastUserAuthor = batch[batch.length - 1]!.author;
       // onConsumed fires as each queued (mid-loop) message is actually injected — this is what
       // clears its ⏳ and adds ✅ on the Discord surface. The first message of a turn is NOT a
       // consume event (it was never queued), so it gets no reaction, matching the old path.
@@ -211,7 +218,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       toolUseCount: result.messages.filter((m) => m.role === "tool").length,
       userTurnCount: result.messages.filter((m) => m.role === "user").length,
       history: result.messages,
-      authorId: turn.initiator.userId,
+      authorId: turn.lastUserAuthor.userId,
       isPrivate,
     };
     fireHook(deps.hooks, "onTurnEnd", turnEndCtx);
@@ -235,6 +242,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
         knownUsers: new Map(),
         cancelRequested: false,
         queue: [],
+        lastUserAuthor: inbound.author,
       };
       activeTurns.set(key, turn);
       try {
@@ -266,6 +274,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
         knownUsers: new Map(),
         cancelRequested: false,
         queue: [],
+        lastUserAuthor: resumption.by,
       };
       activeTurns.set(key, turn);
       try {

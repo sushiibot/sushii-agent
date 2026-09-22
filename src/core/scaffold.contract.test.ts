@@ -17,6 +17,10 @@ import type {
 
 // Capture the params handed to generateText so we can assert on the assembled system prompt.
 let lastSystemPrompt = "";
+// Optional per-call script so a test can drive a multi-iteration turn (e.g. a tool call on call 1,
+// then stop). Null → the default single-turn "done" response every other test relies on.
+let modelScript: ((call: number) => Promise<unknown>) | null = null;
+let modelCallCount = 0;
 mock.module("ai", () => {
   const actual = require("ai") as typeof import("ai");
   return {
@@ -26,6 +30,7 @@ mock.module("ai", () => {
       // message after the cached system prompt (not inside it), so we must look past the first.
       const sysMsgs = (params.messages ?? []).filter((m) => m.role === "system");
       lastSystemPrompt = sysMsgs.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+      if (modelScript) return modelScript(++modelCallCount);
       return {
         text: "done",
         toolCalls: [],
@@ -172,6 +177,47 @@ describe("scaffold contract — compaction + memory hook sites", () => {
     const core = createAgentCore({ ...baseDeps(store), hooks });
     await core.handleInbound(inbound("hi"), fakeSession());
     expect(seen).toEqual({ authorId: "u1", isPrivate: false });
+  });
+
+  test("a mid-loop message from another user attributes the deriver's write to THAT user, not the initiator", async () => {
+    const store = new FakeStore();
+    const hooks = new FakeHooks();
+    let seenAuthor: string | undefined;
+    hooks.on("onTurnEnd", (ctx) => { seenAuthor = ctx.authorId; });
+    const core = createAgentCore({ ...baseDeps(store), hooks });
+
+    // Call 1: while "generating", u2 interjects (queued mid-loop); return a tool call so the loop
+    // runs a 2nd iteration and drains the queue. Call 2: stop. The last user message in history is
+    // then u2's, so the deriver must attribute to u2.
+    modelCallCount = 0;
+    modelScript = async (call) => {
+      if (call === 1) {
+        await core.handleInbound(
+          { conversation: ref, author: author("u2"), text: "u2 shares a durable fact" },
+          fakeSession(),
+        );
+        return {
+          text: "",
+          toolCalls: [{ toolCallId: "t1", toolName: "noop", input: {} }],
+          finishReason: "tool-calls",
+          usage: { inputTokens: 1, outputTokens: 1 },
+          response: { messages: [{ role: "assistant", content: [{ type: "tool-call", toolCallId: "t1", toolName: "noop", input: {} }] }] },
+        };
+      }
+      return {
+        text: "done",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        response: { messages: [{ role: "assistant", content: "done" }] },
+      };
+    };
+    try {
+      await core.handleInbound(inbound("u1 starts the turn"), fakeSession());
+    } finally {
+      modelScript = null;
+    }
+    expect(seenAuthor).toBe("u2");
   });
 
   test("a MemoryProvider slower than the deadline injects nothing but the turn still completes", async () => {

@@ -288,7 +288,8 @@ export interface TurnEndContext {
   toolUseCount: number;
   userTurnCount: number;
   history: readonly ModelMessage[];
-  /** Turn initiator — the individual-bucket owner the deriver writes derived facts to. */
+  /** Author of the last user message this turn (the initiator, or a mid-loop interjector if one spoke
+   *  last) — the individual-bucket owner the deriver writes derived facts to. */
   authorId: string;
   /** Whether this turn ran in a private (DM) space; selects the DM bank over the per-space bank. */
   isPrivate: boolean;
