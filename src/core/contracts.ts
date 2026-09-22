@@ -347,6 +347,10 @@ export interface ToolContext {
    *  personal-space check (a Slack DM's spaceId is the teamId, not "dm", so a space-string test
    *  can't infer it). */
   isPrivate?: boolean;
+  /** One per loop run (fresh inbound or resume) — lets a tool require that a confirmation came
+   *  after the user saw the previous turn's reply. Mid-loop injections don't change it: the user
+   *  hasn't seen this turn's reply yet. */
+  turnId?: string;
   owner: AuthorRef | null; // tainted owner-gate identity, NOT inbound.author
   store: ConversationStore;
   memory: SpaceMemoryStore;

@@ -55,6 +55,7 @@ describe("parseRepoSpec", () => {
   });
 });
 const { config } = await import("../../../config.ts");
+const { _resetParkedDispatches } = await import("./confirmGate.ts");
 const { createToolRegistry } = await import("../registry.ts");
 
 const OWNER = "owner-1";
@@ -291,5 +292,91 @@ describe("runner tools: registry-level availability gate (mirrors ops-triage)", 
 
   test("hidden in a personal/DM space when no owner is configured", () => {
     expect(names(false, "dm")).toEqual([]);
+  });
+});
+
+describe("dispatch_to_runner: confirm-before-dispatch for non-owner members", () => {
+  const prevOwner = config.ownerDiscordId;
+  const prevPrincipals = config.principals;
+  const prevCommunities = config.communities;
+  const DRK = "111";
+  const MEMBER = "222";
+  const GUILD = { surface: "discord", spaceId: "dc-guild" };
+  const args = { repo: "acme/widgets", prompt: "fix the login bug" };
+  const dispatched: { prompt: string; repo?: unknown }[] = [];
+  const realDispatch = fakeDispatcher.dispatch;
+
+  function turnCtx(userId: string, turnId: string): ToolContext {
+    return { space: GUILD, isPrivate: false, turnId, owner: author(userId), store: {} as never, memory: {} as never, log: {} as never };
+  }
+
+  beforeEach(() => {
+    config.ownerDiscordId = undefined;
+    config.principals = { drk: { owner: true, identities: { discord: DRK } }, member: { identities: { discord: MEMBER } } };
+    config.communities = { dc: { spaces: [{ surface: "discord", spaceId: GUILD.spaceId }], members: { member: { trusted: true } } } };
+    dispatched.length = 0;
+    fakeDispatcher.dispatch = async (input) => {
+      dispatched.push(input as never);
+      return realDispatch.call(fakeDispatcher, input);
+    };
+  });
+  afterEach(() => {
+    config.ownerDiscordId = prevOwner;
+    config.principals = prevPrincipals;
+    config.communities = prevCommunities;
+    fakeDispatcher.dispatch = realDispatch;
+    _resetParkedDispatches();
+  });
+
+  function tokenOf(content: string): string {
+    const m = content.match(/confirm_token: ([0-9a-f]+)/);
+    if (!m) throw new Error(`no token in: ${content}`);
+    return m[1];
+  }
+
+  test("the owner dispatches immediately, no confirmation", async () => {
+    const result = await dispatchToRunnerEntry.execute(args, turnCtx(DRK, "t1"));
+    expect(result.content).toContain("Dispatched task task-1");
+  });
+
+  test("a member's first call parks the dispatch instead of running it", async () => {
+    const result = await dispatchToRunnerEntry.execute(args, turnCtx(MEMBER, "t1"));
+    expect(result.content).toContain("NOT dispatched yet");
+    expect(result.content).toContain("acme/widgets");
+    expect(dispatched).toHaveLength(0);
+  });
+
+  test("redeeming in the SAME turn is refused and does not burn the token", async () => {
+    const token = tokenOf((await dispatchToRunnerEntry.execute(args, turnCtx(MEMBER, "t1"))).content);
+    const same = await dispatchToRunnerEntry.execute({ confirm_token: token }, turnCtx(MEMBER, "t1"));
+    expect(same.content).toContain("hasn't confirmed yet");
+    expect(dispatched).toHaveLength(0);
+    const later = await dispatchToRunnerEntry.execute({ confirm_token: token }, turnCtx(MEMBER, "t2"));
+    expect(later.content).toContain("Dispatched task task-1");
+  });
+
+  test("a later-turn redeem dispatches exactly what was confirmed, once", async () => {
+    const token = tokenOf((await dispatchToRunnerEntry.execute(args, turnCtx(MEMBER, "t1"))).content);
+    await dispatchToRunnerEntry.execute({ confirm_token: token, prompt: "something else entirely" }, turnCtx(MEMBER, "t2"));
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].prompt).toBe("fix the login bug");
+    const again = await dispatchToRunnerEntry.execute({ confirm_token: token }, turnCtx(MEMBER, "t3"));
+    expect(again.content).toContain("Unknown or expired");
+    expect(dispatched).toHaveLength(1);
+  });
+
+  test("another principal can't redeem a member's token", async () => {
+    const token = tokenOf((await dispatchToRunnerEntry.execute(args, turnCtx(MEMBER, "t1"))).content);
+    const result = await dispatchToRunnerEntry.execute({ confirm_token: token }, turnCtx(DRK, "t2"));
+    expect(result.content).toContain("Unknown or expired");
+    expect(dispatched).toHaveLength(0);
+  });
+
+  test("a missing turnId never releases a parked dispatch (fail-closed)", async () => {
+    const token = tokenOf((await dispatchToRunnerEntry.execute(args, turnCtx(MEMBER, "t1"))).content);
+    const { turnId: _, ...noTurn } = turnCtx(MEMBER, "x");
+    const result = await dispatchToRunnerEntry.execute({ confirm_token: token }, noTurn);
+    expect(result.content).toContain("hasn't confirmed yet");
+    expect(dispatched).toHaveLength(0);
   });
 });

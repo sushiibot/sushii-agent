@@ -147,6 +147,7 @@ export async function runLoop(
   const model = deps.toModel(deps.model);
 
   let owner = ctx.owner;
+  const turnBase = crypto.randomUUID();
   let iterations = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -226,7 +227,7 @@ export async function runLoop(
       const pendingSink: PendingInteractionSink = { push: (p) => { if (!callPending) callPending = p; } };
 
       try {
-        const toolCtx = { ...ctx.toolContextBase, owner, pending: pendingSink, images: imagesSink, knownUsers: knownUsersSink, reset: resetSink } as ToolContext & Required<ToolHosts>;
+        const toolCtx = { ...ctx.toolContextBase, owner, turnId: turnBase, pending: pendingSink, images: imagesSink, knownUsers: knownUsersSink, reset: resetSink } as ToolContext & Required<ToolHosts>;
         const result = await entry.execute(input, toolCtx);
         if (callPending) {
           paused.push({ call, pending: callPending });

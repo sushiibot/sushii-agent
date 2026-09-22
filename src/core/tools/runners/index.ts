@@ -6,6 +6,8 @@ import type { Capability, RepoSpec } from "../../../orchestration/contracts.ts";
 import { AuthzError, DispatcherUnavailableError, getDispatcher } from "../../../orchestration/dispatcher.ts";
 import { getActivityHub, taskViewUrl } from "../../../orchestration/activityHub.ts";
 import { can, spaceKey } from "../../../orchestration/authz.ts";
+import { principalsConfigured, resolvePrincipal } from "../../../orchestration/principals.ts";
+import { parkDispatch, redeemDispatch, type ParkedDispatch } from "./confirmGate.ts";
 import { config } from "../../../config.ts";
 
 // One message for every denial reason (missing identity, wrong space, wrong principal) —
@@ -43,7 +45,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
   name: "dispatch_to_runner",
   definition: {
     name: "dispatch_to_runner",
-    description: "Start a NEW background coding-agent task on a connected runner. Owner-only, personal spaces only. Each dispatch is a fresh, isolated task with its own git worktree, branch, and PR — use this for any new request, INCLUDING further/separate work on a repo already worked on before. Only use resume_session (not this) when the user explicitly asks to continue one specific existing task. Two modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it, works, and opens a PR at handback; omit cwd in this mode. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered).",
+    description: "Start a NEW background coding-agent task on a connected runner. Authorized users only. Only dispatch for a sincere, actionable request to do the work — never for a joke, hypothetical, venting, or musing ('lol just rewrite it in Rust'); if intent is unclear, ask first. Each dispatch is a fresh, isolated task with its own git worktree, branch, and PR — use this for any new request, INCLUDING further/separate work on a repo already worked on before. Only use resume_session (not this) when the user explicitly asks to continue one specific existing task. Two modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it, works, and opens a PR at handback; omit cwd in this mode. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered). Some users need confirmation: the call then returns a summary and a confirm_token instead of dispatching — show the user the summary, end your turn, and only after they explicitly confirm in a new message call again with just confirm_token.",
     parameters: {
       type: "object",
       properties: {
@@ -52,22 +54,15 @@ export const dispatchToRunnerEntry: ToolEntry = {
         prompt: { type: "string", description: "The task prompt to hand the runner." },
         project: { type: "string", description: "Logical project name, for grouping/lookup." },
         repo: { type: "string", description: "Clone-on-demand: 'owner/name' or a GitHub URL. The runner clones it and opens a PR at handback. When set, cwd is derived and ignored." },
+        confirm_token: { type: "string", description: "Only after the user explicitly confirmed a parked dispatch in a later message. Dispatches exactly what was confirmed; other arguments are ignored." },
       },
-      required: ["runner_id", "prompt"],
+      required: [],
     },
   },
   requiresHosts: [],
   async execute(input, ctx) {
     const principal = authorize(ctx, "runner.dispatch", input.runner_id as string | undefined);
     if (!principal) return { content: DENIED };
-
-    let repo;
-    if (input.repo) {
-      repo = parseRepoSpec(input.repo as string);
-      if (!repo) return { content: `Invalid repo "${input.repo}" — use 'owner/name' or a GitHub URL.` };
-    }
-    const cwd = (input.cwd as string | undefined) ?? "";
-    if (!repo && !cwd) return { content: "Provide either cwd (existing project) or repo (clone-on-demand)." };
 
     let dispatcher;
     try {
@@ -79,6 +74,22 @@ export const dispatchToRunnerEntry: ToolEntry = {
       if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
       throw err;
     }
+
+    if (input.confirm_token) {
+      const redeemed = redeemDispatch(input.confirm_token as string, principal, spaceOf(ctx), ctx.turnId);
+      if (!redeemed.ok) return { content: redeemed.reason };
+      return startDispatch(dispatcher, redeemed.dispatch, ctx);
+    }
+
+    const prompt = input.prompt as string | undefined;
+    if (!prompt) return { content: "Provide a prompt." };
+    let repo;
+    if (input.repo) {
+      repo = parseRepoSpec(input.repo as string);
+      if (!repo) return { content: `Invalid repo "${input.repo}" — use 'owner/name' or a GitHub URL.` };
+    }
+    const cwd = (input.cwd as string | undefined) ?? "";
+    if (!repo && !cwd) return { content: "Provide either cwd (existing project) or repo (clone-on-demand)." };
 
     // Remembered per (principal, project); repo → "owner/repo", else the project name or cwd.
     const projectKey = repo ? `${repo.owner}/${repo.repo}` : ((input.project as string | undefined) ?? cwd);
@@ -98,35 +109,68 @@ export const dispatchToRunnerEntry: ToolEntry = {
       runnerId = sel.runnerId;
       viaPref = sel.viaPref;
     }
-    if (!dispatcher.isRunnerLive(runnerId)) return { content: `Runner "${runnerId}" is not connected.` };
 
-    try {
-      const task = await dispatcher.dispatch({
-        principal,
-        runnerId,
-        cwd,
-        project: (input.project as string | undefined) ?? null,
-        prompt: input.prompt as string,
-        space: spaceOf(ctx),
-        isPrivate: ctx.isPrivate,
-        spawnedFromSurface: ctx.space.surface,
-        repo,
-      });
-      dispatcher.recordRoutingChoice(principal, projectKey, runnerId); // remember for next time
-      const note = viaPref ? ` (your saved runner for ${projectKey})` : "";
-      const token = getActivityHub().tokenFor(task.id);
-      const url = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
-      const live = url ? ` Live: ${url}` : "";
-      return { content: `Dispatched task ${task.id} on runner "${runnerId}"${note} (native session ${task.nativeSessionId}).${live}` };
-    } catch (err) {
-      if (err instanceof AuthzError) return { content: DENIED };
-      // dispatch() binds the ORCH port lazily on first use, so a listen() failure surfaces here
-      // rather than from the earlier getDispatcher() call.
-      if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
-      return { content: `Failed to dispatch: ${err instanceof Error ? err.message : String(err)}` };
+    const parked: ParkedDispatch = {
+      principal,
+      space: spaceOf(ctx),
+      runnerId,
+      viaPref,
+      cwd,
+      repo,
+      project: (input.project as string | undefined) ?? null,
+      projectKey,
+      prompt,
+    };
+    if (needsConfirmation(ctx)) {
+      const token = parkDispatch(parked, ctx.turnId);
+      return {
+        content: [
+          `NOT dispatched yet — this user must confirm first. confirm_token: ${token}`,
+          `Show them this and ask them to confirm; then end your turn:`,
+          `- target: ${repo ? `${repo.owner}/${repo.repo} (clone + PR)` : cwd} on runner "${runnerId}"`,
+          `- task: ${prompt.length > 300 ? `${prompt.slice(0, 299)}…` : prompt}`,
+          `Only if they explicitly confirm in a new message, call dispatch_to_runner with just confirm_token. If they decline or change the request, don't use this token.`,
+        ].join("\n"),
+      };
     }
+    return startDispatch(dispatcher, parked, ctx);
   },
 };
+
+/** Owners dispatch directly. In the legacy (unconfigured) regime only the owner can reach this tool. */
+function needsConfirmation(ctx: ToolContext): boolean {
+  if (!principalsConfigured() || !ctx.owner) return false;
+  return !resolvePrincipal(ctx.space.surface, ctx.owner.userId)?.isOwner;
+}
+
+async function startDispatch(dispatcher: ReturnType<typeof getDispatcher>, d: ParkedDispatch, ctx: ToolContext) {
+  if (!dispatcher.isRunnerLive(d.runnerId)) return { content: `Runner "${d.runnerId}" is not connected.` };
+  try {
+    const task = await dispatcher.dispatch({
+      principal: d.principal,
+      runnerId: d.runnerId,
+      cwd: d.cwd,
+      project: d.project,
+      prompt: d.prompt,
+      space: d.space,
+      isPrivate: ctx.isPrivate,
+      spawnedFromSurface: ctx.space.surface,
+      repo: d.repo,
+    });
+    dispatcher.recordRoutingChoice(d.principal, d.projectKey, d.runnerId); // remember for next time
+    const note = d.viaPref ? ` (your saved runner for ${d.projectKey})` : "";
+    const token = getActivityHub().tokenFor(task.id);
+    const url = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
+    const live = url ? ` Live: ${url}` : "";
+    return { content: `Dispatched task ${task.id} on runner "${d.runnerId}"${note} (native session ${task.nativeSessionId}).${live}` };
+  } catch (err) {
+    if (err instanceof AuthzError) return { content: DENIED };
+    // dispatch() binds the ORCH port lazily on first use, so a listen() failure surfaces here
+    // rather than from the earlier getDispatcher() call.
+    if (err instanceof DispatcherUnavailableError) return { content: UNAVAILABLE };
+    return { content: `Failed to dispatch: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
 
 export const listRunningSessionsEntry: ToolEntry = {
   name: "list_running_sessions",
