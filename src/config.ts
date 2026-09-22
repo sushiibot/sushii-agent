@@ -1,6 +1,7 @@
 export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
+import type { CommunityConfig } from "./orchestration/communities.ts";
 import { parseRelayUrls, parseWikiMap, parseAvatarMap } from "./surfaces/buzz/relayUrl.ts";
 
 export interface Config {
@@ -24,6 +25,10 @@ export interface Config {
    *  principals.json (path via PRINCIPALS_PATH). Empty/unset → the registry is unconfigured and
    *  authz falls back to the legacy `ownerDiscordId` behavior. See orchestration/principals.ts. */
   principals: Record<string, PrincipalConfig>;
+  /** Community grouping (community id → its spaces + per-community scoping), hand-maintained in
+   *  communities.json (path via COMMUNITIES_PATH). Empty/unset → unconfigured; ops-triage Linear
+   *  routing falls through to the global default. See orchestration/communities.ts. */
+  communities: Record<string, CommunityConfig>;
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
   /** mnemosyne MCP server (streamable-http). Unset → the semantic memory backend is disabled and
@@ -152,6 +157,37 @@ function loadPrincipals(): Record<string, PrincipalConfig> {
   return raw;
 }
 
+/** Load + validate the community grouping. A missing DEFAULT file means "unconfigured" (empty); an
+ *  explicitly-set COMMUNITIES_PATH that can't be read or parsed throws. Enforces the
+ *  no-space-claimed-twice invariant at load (mirrors principals' at-load owner check). */
+function loadCommunities(): Record<string, CommunityConfig> {
+  const explicit = process.env["COMMUNITIES_PATH"];
+  const filePath = explicit ?? "./communities.json";
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch (e) {
+    if (explicit) throw new Error(`Failed to load communities from ${filePath}: ${e}`);
+    return {};
+  }
+  let raw: Record<string, CommunityConfig>;
+  try {
+    raw = JSON.parse(content);
+  } catch (e) {
+    throw new Error(`Invalid communities JSON in ${filePath}: ${e}`);
+  }
+  const seen = new Map<string, string>();
+  for (const [id, entry] of Object.entries(raw)) {
+    for (const s of entry?.spaces ?? []) {
+      const k = `${s.surface} ${s.spaceId}`;
+      const owner = seen.get(k);
+      if (owner) throw new Error(`communities: space ${s.surface}/${s.spaceId} is claimed by both "${owner}" and "${id}"`);
+      seen.set(k, id);
+    }
+  }
+  return raw;
+}
+
 export const config: Config = {
   discordBotToken: required("DISCORD_BOT_TOKEN"),
   openaiApiKey: required("OPENAI_API_KEY"),
@@ -168,6 +204,7 @@ export const config: Config = {
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
   guildConfig: loadGuildConfig(),
   principals: loadPrincipals(),
+  communities: loadCommunities(),
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],
