@@ -1,12 +1,19 @@
 // Owner-only observability/triage tools. Grafana/Loki/Tempo and Linear are plain HTTP — no
-// discord.js, no host needed. Owner-gating is a RUNTIME check on ctx.owner (BRIEF), not a
-// registry-level filter.
+// discord.js, no host needed. Owner-gating is a RUNTIME check, unified onto the principal registry
+// (any linked identity of the owner, on any surface) with a legacy ownerDiscordId fallback.
 import type { ToolEntry, ToolContext } from "../../contracts.ts";
 import { config } from "../../../config.ts";
+import { principalsConfigured, resolvePrincipal } from "../../../orchestration/principals.ts";
 import { queryLoki, queryTempo, getTraceById } from "../../../modules/ops-triage/grafana.ts";
-import { createTriageIssue, fetchIssueStatus, listTriageIssues } from "../../../modules/ops-triage/linear.ts";
+import { linearFor } from "../../../modules/ops-triage/linear.ts";
 
+/** Denial string, or undefined when the caller is the owner. Configured registry → the caller must
+ *  resolve (on THIS surface) to the owner principal; unconfigured → today's ownerDiscordId check. */
 function requireOwner(ctx: ToolContext): string | undefined {
+  if (principalsConfigured()) {
+    const resolved = ctx.owner?.userId ? resolvePrincipal(ctx.space.surface, ctx.owner.userId) : undefined;
+    return resolved?.isOwner ? undefined : "This tool is owner-only.";
+  }
   if (!config.ownerDiscordId) return "ops-triage is not configured (OWNER_DISCORD_ID unset).";
   if (ctx.owner?.userId !== config.ownerDiscordId) return "This tool is owner-only.";
   return undefined;
@@ -22,8 +29,10 @@ export const searchLogsEntry: ToolEntry = {
       properties: {
         since: { type: "string", description: "Start of the time range, ISO 8601." },
         until: { type: "string", description: "End of the time range, ISO 8601." },
-        service: { type: "string", description: "Which bot/service to search. Omit to search all." },
-        query: { type: "string", description: "Free-text substring to filter log lines on." },
+        service: { type: "string", description: "Which bot/service to search. Omit to search all. Also selects the Tempo trace query." },
+        query: { type: "string", description: "Free-text substring to filter log lines on. Ignored when `logql` is given." },
+        logql: { type: "string", description: "Raw LogQL used verbatim, bypassing the service/query selector — for chained filters (`|= A |= B`), `!=`, `| json`, or rate/aggregation. `service` still drives the trace query." },
+        include_traces: { type: "boolean", description: "Whether to also query Tempo for traces. Default true." },
       },
       required: ["since", "until"],
     },
@@ -37,17 +46,21 @@ export const searchLogsEntry: ToolEntry = {
     const until = input.until as string;
     const service = input.service as string | undefined;
     const query = input.query as string | undefined;
+    const logql = input.logql as string | undefined;
+    const includeTraces = input.include_traces !== false;
     const startMs = Date.parse(since);
     const endMs = Date.parse(until);
     if (Number.isNaN(startMs) || Number.isNaN(endMs)) return { content: "since/until must be valid ISO 8601 timestamps." };
 
-    const logs = await queryLoki({ service, query, startMs, endMs });
+    const logs = await queryLoki({ service, query, logql, startMs, endMs });
     const parts = [`Logs ${since} to ${until}${service ? ` (${service})` : ""}:`, logs];
-    try {
-      const traces = await queryTempo(service, startMs, endMs);
-      if (traces) parts.push("", "Traces:", traces);
-    } catch (err) {
-      parts.push("", `(trace lookup failed: ${err instanceof Error ? err.message : String(err)})`);
+    if (includeTraces) {
+      try {
+        const traces = await queryTempo(service, startMs, endMs);
+        if (traces) parts.push("", "Traces:", traces);
+      } catch (err) {
+        parts.push("", `(trace lookup failed: ${err instanceof Error ? err.message : String(err)})`);
+      }
     }
     return { content: parts.join("\n") };
   },
@@ -93,7 +106,8 @@ export const fileLinearIssueEntry: ToolEntry = {
   async execute(input, ctx) {
     const denied = requireOwner(ctx);
     if (denied) return { content: denied };
-    const issue = await createTriageIssue(input.title as string, input.description as string, input.repo_label as string);
+    const linear = linearFor(ctx.space.surface, ctx.space.spaceId);
+    const issue = await linear.createTriageIssue(input.title as string, input.description as string, input.repo_label as string);
     return { content: `Filed ${issue.identifier}: ${issue.title} — ${issue.url}` };
   },
 };
@@ -113,7 +127,7 @@ export const getIssueStatusEntry: ToolEntry = {
   async execute(input, ctx) {
     const denied = requireOwner(ctx);
     if (denied) return { content: denied };
-    const status = await fetchIssueStatus(input.issue_id as string);
+    const status = await linearFor(ctx.space.surface, ctx.space.spaceId).fetchIssueStatus(input.issue_id as string);
     return { content: `${status.identifier}: ${status.title}\nstate: ${status.state} | assignee: ${status.assignee} | updated: ${status.updatedAt.toISOString()}\n${status.url}` };
   },
 };
@@ -136,7 +150,7 @@ export const listTriagedIssuesEntry: ToolEntry = {
   async execute(input, ctx) {
     const denied = requireOwner(ctx);
     if (denied) return { content: denied };
-    const issues = await listTriageIssues(input.repo_label as string | undefined, input.state as string | undefined);
+    const issues = await linearFor(ctx.space.surface, ctx.space.spaceId).listTriageIssues(input.repo_label as string | undefined, input.state as string | undefined);
     if (issues.length === 0) return { content: "(no matching issues)" };
     return { content: issues.map((i) => `${i.identifier} [${i.state}] ${i.title} — ${i.url}`).join("\n") };
   },

@@ -212,4 +212,24 @@ describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPri
     expect(noFlags).not.toContain("dispatch_to_runner");
     expect(noFlags).not.toContain("update_profile");
   });
+
+  // ops-triage is owner-only but NOT DM-only — it stays available to the owner in a guild channel.
+  test("ops-triage tools visible to the owner in a NON-private (guild) space", () => {
+    const names = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false })
+      .map((e) => e.name);
+    expect(names).toContain("search_logs");
+    expect(names).toContain("file_linear_issue");
+    // ...but runner/update_profile stay DM-gated.
+    expect(names).not.toContain("dispatch_to_runner");
+    expect(names).not.toContain("update_profile");
+  });
+
+  test("ops-triage tools hidden from a non-owner even in a private space", () => {
+    const names = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true })
+      .map((e) => e.name);
+    expect(names).not.toContain("search_logs");
+    expect(names).not.toContain("file_linear_issue");
+  });
 });

@@ -84,12 +84,16 @@ export class CoreToolRegistry implements ToolRegistry {
     const ownerDm = space.isOwner === true && space.isPrivate === true;
     const runnerAllowed = configured ? ownerDm : a.owner && isPersonalSpace(key);
     const profileAllowed = configured ? ownerDm : isPersonalSpace(key);
+    // ops-triage (Grafana/Linear) is owner-only but NOT DM-only — the owner triages from guild
+    // channels too. Configured → the resolved principal is the owner (any surface); unconfigured →
+    // today's ownerDiscordId presence gate. Credential filters below still apply on top.
+    const opsOwnerAllowed = configured ? space.isOwner === true : a.owner;
 
     return this.entries
       .filter((entry) => hostsSatisfied(entry, session.hosts) && capabilitiesSatisfied(entry, session))
       .filter((entry) => autoMod || !AUTO_MOD_ONLY_TOOLS.has(entry.name))
       .filter((entry) => a.exa || !EXA_TOOLS.has(entry.name))
-      .filter((entry) => a.owner || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
+      .filter((entry) => opsOwnerAllowed || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
       .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name))
       .filter((entry) => !RUNNER_TOOLS.has(entry.name) || runnerAllowed)

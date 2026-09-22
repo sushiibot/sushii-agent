@@ -24,25 +24,54 @@ const REPO_TO_CONTAINER: Record<string, string> = {
   "sushii-modmail": "sushii_modmail_lisa",
 };
 
+interface LokiStreamEntry {
+  stream: Record<string, string>;
+  values: [string, string][];
+}
+interface LokiMatrixEntry {
+  metric: Record<string, string>;
+  values: [number, string][];
+}
+interface LokiVectorEntry {
+  metric: Record<string, string>;
+  value: [number, string];
+}
 interface LokiQueryResult {
   data: {
-    result: { stream: Record<string, string>; values: [string, string][] }[];
+    resultType?: "streams" | "matrix" | "vector" | string;
+    result: (LokiStreamEntry | LokiMatrixEntry | LokiVectorEntry)[];
   };
 }
 
 export interface LogSearchParams {
   service?: string;
-  /** Free-text substring filter, applied as a LogQL line filter (case-sensitive). */
+  /** Free-text substring filter, applied as a LogQL line filter (case-sensitive). Ignored when `logql` is set. */
   query?: string;
+  /** Raw LogQL used VERBATIM as the query, bypassing the container selector — the model's escape
+   *  hatch for chained filters (`|= A |= B`), `!=`, `| json`, and rate/aggregation expressions. */
+  logql?: string;
   startMs: number;
   endMs: number;
 }
 
-/** Queries Loki (via Grafana's datasource-proxy) for log lines matching the given service/text filter over an explicit [startMs, endMs) range. */
-export async function queryLoki({ service, query, startMs, endMs }: LogSearchParams): Promise<string> {
+function labelSet(metric: Record<string, string>): string {
+  const entries = Object.entries(metric);
+  if (entries.length === 0) return "{}";
+  return `{${entries.map(([k, v]) => `${k}="${v}"`).join(", ")}}`;
+}
+
+/** Queries Loki (via Grafana's datasource-proxy) over an explicit [startMs, endMs) range. Formats
+ *  log-stream results as timestamped lines; matrix/vector results (from an aggregating `logql`) as
+ *  a label-set plus its value(s), rather than mis-formatting numbers as log lines. */
+export async function queryLoki({ service, query, logql, startMs, endMs }: LogSearchParams): Promise<string> {
   const container = service ? (REPO_TO_CONTAINER[service] ?? service) : undefined;
-  const streamSelector = container ? `{container="${container}"}` : `{container=~".+"}`;
-  const selector = query ? `${streamSelector} |= ${JSON.stringify(query)}` : streamSelector;
+  let selector: string;
+  if (logql) {
+    selector = logql;
+  } else {
+    const streamSelector = container ? `{container="${container}"}` : `{container=~".+"}`;
+    selector = query ? `${streamSelector} |= ${JSON.stringify(query)}` : streamSelector;
+  }
   const startNs = BigInt(startMs) * 1_000_000n;
   const endNs = BigInt(endMs) * 1_000_000n;
 
@@ -56,10 +85,27 @@ export async function queryLoki({ service, query, startMs, endMs }: LogSearchPar
   if (!res.ok) throw new Error(`Loki query failed: ${res.status} ${await res.text()}`);
 
   const body = (await res.json()) as LokiQueryResult;
-  const lines = body.data.result.flatMap((stream) => stream.values.map(([ts, line]) => `[${new Date(Number(ts) / 1_000_000).toISOString()}] ${line}`));
+  const scope = logql ? `\`${logql}\`` : (container ?? "any service");
+  const window = `between ${new Date(startMs).toISOString()} and ${new Date(endMs).toISOString()}`;
+
+  // An aggregating query (rate/count_over_time/sum by …) returns matrix/vector, where each entry is
+  // a metric label-set + numeric sample(s) — NOT a log stream. Format it as such.
+  if (body.data.resultType === "matrix" || body.data.resultType === "vector") {
+    const rows = body.data.result.flatMap((entry) => {
+      const e = entry as LokiMatrixEntry | LokiVectorEntry;
+      const label = labelSet(e.metric);
+      if ("value" in e) return [`${label} = ${e.value[1]}`];
+      return e.values.map(([ts, v]) => `[${new Date(ts * 1000).toISOString()}] ${label} = ${v}`);
+    });
+    if (rows.length === 0) return `No results for ${scope} ${window}.`;
+    return rows.slice(0, 100).join("\n");
+  }
+
+  const streams = body.data.result as LokiStreamEntry[];
+  const lines = streams.flatMap((s) => s.values.map(([ts, line]) => `[${new Date(Number(ts) / 1_000_000).toISOString()}] ${line}`));
   lines.sort();
 
-  if (lines.length === 0) return `No log lines found for ${container ?? "any service"} between ${new Date(startMs).toISOString()} and ${new Date(endMs).toISOString()}${query ? ` matching "${query}"` : ""}.`;
+  if (lines.length === 0) return `No log lines found for ${scope} ${window}${!logql && query ? ` matching "${query}"` : ""}.`;
   return lines.slice(0, 100).join("\n");
 }
 
