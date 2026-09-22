@@ -7,6 +7,7 @@ export interface Config {
   openaiApiKey: string;
   openaiBaseUrl: string;
   openaiModel: string;
+  compactionModel: string;
   openaiContextLimit: number;
   databasePath: string;
   feedbackPath: string;
@@ -103,6 +104,9 @@ export const config: Config = {
   openaiApiKey: required("OPENAI_API_KEY"),
   openaiBaseUrl: optional("OPENAI_BASE_URL", "https://api.anthropic.com/v1"),
   openaiModel: optional("OPENAI_MODEL", "claude-opus-4-6"),
+  // Model for the compaction summarize-fold. Runs over long histories, so a cheap model is ideal;
+  // empty falls back to openaiModel.
+  compactionModel: optional("COMPACTION_MODEL", ""),
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
