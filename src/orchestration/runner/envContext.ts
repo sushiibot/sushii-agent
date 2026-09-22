@@ -41,7 +41,10 @@ export function probeTools(run: Runner = defaultRun): ToolInfo[] {
     if (!r) continue;
     // Some tools (pdftotext -v) print their version to stderr.
     const firstLine = (r.stdout.trim() || r.stderr.trim()).split("\n")[0]?.trim() ?? "";
-    found.push({ name: tool.name, purpose: tool.purpose, version: firstLine.match(/\d+\.\d+(\.\d+)?/)?.[0] ?? null });
+    const version = firstLine.match(/\d+\.\d+(\.\d+)?/)?.[0] ?? null;
+    // A failing version check with no version is an alias, not the real tool (e.g. oven/bun's `node` → bun).
+    if (r.status !== 0 && !version) continue;
+    found.push({ name: tool.name, purpose: tool.purpose, version });
   }
   return found;
 }
@@ -68,6 +71,16 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
     "",
     "Tools not listed here are not installed.",
   ];
+  if (tools.some((t) => t.name === "agent-browser")) {
+    lines.push(
+      "",
+      "## Browser",
+      "",
+      "- Headless Chromium through `agent-browser`. Run `agent-browser skills get core` once before first use for the workflow and command reference.",
+      "- Your task already has its own browser session; do not pass `--session`. It can reach dev servers you start on localhost.",
+      "- The browser closes when the task finishes, so cookies and logins do not carry over to later tasks.",
+    );
+  }
   if (facts.workspaceRoot) {
     lines.push(
       "",

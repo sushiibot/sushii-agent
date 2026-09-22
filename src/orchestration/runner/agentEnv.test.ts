@@ -11,10 +11,17 @@ describe("buildAgentEnv", () => {
     OPENAI_API_KEY: "sk-or-secret",
     SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
     ORCH_URL: "ws://sushii_agent:8788",
+    AGENT_BROWSER_EXECUTABLE_PATH: "/usr/bin/chromium",
   };
 
   test("keeps only allowlisted vars", () => {
-    expect(buildAgentEnv(base)).toEqual({ PATH: "/usr/bin", HOME: "/root", LANG: "C.UTF-8", LC_ALL: "C.UTF-8" });
+    expect(buildAgentEnv(base)).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/root",
+      LANG: "C.UTF-8",
+      LC_ALL: "C.UTF-8",
+      AGENT_BROWSER_EXECUTABLE_PATH: "/usr/bin/chromium",
+    });
   });
 
   test("layers the extra (git/gh) env on top", () => {

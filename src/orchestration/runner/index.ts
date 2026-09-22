@@ -39,9 +39,10 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
     const ttlHours = Number.isFinite(rawTtl) ? rawTtl : 24;
     const repoOps = buildRepoOps();
     // Probed once at startup: the image is fixed for the process lifetime.
+    const tools = probeTools();
     const environmentContext = buildEnvironmentContext(
       { ...ctx, workspaceRoot: repoOps ? ctx.workspaceRoot : null, worktreeTtlHours: ttlHours },
-      probeTools(),
+      tools,
     );
     return new PiRunnerAdapter({
       model,
@@ -49,6 +50,7 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
       baseUrl,
       agentDir,
       environmentContext,
+      browser: tools.some((t) => t.name === "agent-browser"),
       repoOps,
       workspaceRoot: ctx.workspaceRoot,
       worktreeTtlMs: ttlHours * 3600_000,

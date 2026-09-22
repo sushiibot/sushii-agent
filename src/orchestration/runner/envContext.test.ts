@@ -7,6 +7,7 @@ describe("probeTools", () => {
       if (cmd === "git") return { status: 0, stdout: "git version 2.39.5\n", stderr: "" };
       if (cmd === "pdftotext") return { status: 0, stdout: "", stderr: "pdftotext version 22.02.0\nCopyright" };
       if (cmd === "jq") return { status: 0, stdout: "jq-1.7\n", stderr: "" };
+      if (cmd === "node") return { status: 1, stdout: "", stderr: "error: Missing script to execute." };
       return null;
     });
     expect(tools.map((t) => [t.name, t.version])).toEqual([
@@ -29,6 +30,13 @@ describe("buildEnvironmentContext", () => {
     expect(doc).toContain("- `git` 2.39.5 — version control");
     expect(doc).toContain("Repositories are cloned under `/data/workspace`");
     expect(doc).toContain("after 24h idle");
+  });
+
+  test("adds a browser section only when agent-browser is installed", () => {
+    const facts = { runnerId: "r", location: null, workspaceRoot: null, worktreeTtlHours: 24 };
+    expect(buildEnvironmentContext(facts, tools)).not.toContain("## Browser");
+    const withBrowser = [...tools, { name: "agent-browser", purpose: "browser", version: "0.38.1" }];
+    expect(buildEnvironmentContext(facts, withBrowser)).toContain("## Browser");
   });
 
   test("omits the workspace section on a runner without clone-on-demand", () => {

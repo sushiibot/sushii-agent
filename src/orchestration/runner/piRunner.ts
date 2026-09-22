@@ -9,6 +9,7 @@ import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
 import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
 import { buildAgentEnv } from "./agentEnv.ts";
+import { closeBrowserSession } from "./browser.ts";
 import { ENV_CONTEXT_PATH } from "./envContext.ts";
 
 const log = getLogger("orchestration.runner.pi");
@@ -96,6 +97,7 @@ export interface PiRunnerOptions {
   baseUrl: string;
   agentDir: string; // where Pi keeps auth/models/sessions (session files = resume handles)
   environmentContext?: string; // markdown injected ahead of the repo's own AGENTS.md
+  browser?: boolean; // agent-browser is installed: give each task its own browser session
   maxOutputTokens?: number;
   fallbackContextWindow?: number;
   progressDebounceMs?: number;
@@ -297,7 +299,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     }
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
-    const { session, sessionFile, askBridge } = await this.createSession(cwd, null, tokenRef, repoHome);
+    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, null, tokenRef, repoHome);
     const startSha = await this.readHeadSha(cwd);
     const state: PiTaskState = {
       session,
@@ -317,6 +319,13 @@ export class PiRunnerAdapter implements RunnerAdapter {
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
     return { nativeSessionId: sessionFile };
+  }
+
+  // Stop the task's credential refresh and close its browser; the Chromium process otherwise
+  // outlives the task. A resume starts a fresh browser under the same session name.
+  private releaseTask(taskId: string, task: PiTaskState): void {
+    if (task.credsTimer) clearInterval(task.credsTimer);
+    if (this.options.browser) closeBrowserSession(taskId);
   }
 
   // Mint the per-repo token, keep it fresh, and (re)write the git askpass helper + pre-push guard so
@@ -362,7 +371,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
     // nativeSessionId is the persisted session file path; open() resumes that exact session.
-    const { session, sessionFile, askBridge } = await this.createSession(cwd, input.nativeSessionId, tokenRef, repoHome);
+    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, input.nativeSessionId, tokenRef, repoHome);
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
     const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer, askBridge };
     askBridge.emit = (sig) => state.queue.push(sig);
@@ -373,7 +382,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
   async interrupt(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    if (task.credsTimer) clearInterval(task.credsTimer);
+    this.releaseTask(taskId, task);
     await task.session.abort().catch(() => {});
     task.queue.close();
     task.session.dispose();
@@ -386,7 +395,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const task = this.tasks.get(input.taskId);
     if (task) {
       task.superseded = true;
-      if (task.credsTimer) clearInterval(task.credsTimer);
+      this.releaseTask(input.taskId, task);
       await task.session.abort().catch(() => {});
       task.queue.close();
       task.session.dispose();
@@ -441,7 +450,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
       if (terminal) break;
     }
     if (this.tasks.get(taskId) === task) {
-      if (task.credsTimer) clearInterval(task.credsTimer);
+      this.releaseTask(taskId, task);
       this.tasks.delete(taskId);
     }
   }
@@ -469,6 +478,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
   }
 
   private async createSession(
+    taskId: string,
     cwd: string,
     resumeSessionFile: string | null,
     tokenRef: { current: string | null },
@@ -529,7 +539,11 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const bashTool = createBashToolDefinition(cwd, {
       spawnHook: (context) => {
         const token = tokenRef.current;
-        return { ...context, env: buildAgentEnv(context.env, token ? agentGitEnv(repoHome, token) : {}) };
+        const extra = {
+          ...(token ? agentGitEnv(repoHome, token) : {}),
+          ...(this.options.browser ? { AGENT_BROWSER_SESSION: taskId } : {}),
+        };
+        return { ...context, env: buildAgentEnv(context.env, extra) };
       },
     });
 
