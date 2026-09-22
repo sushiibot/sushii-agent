@@ -24,6 +24,9 @@ export interface ConversationRef {
   surface: SurfaceId;
   spaceId: string;
   conversationId: string;
+  /** Surface declares a private/DM conversation; overrides the spaceId-based personal-space heuristic
+   *  for memory scoping. */
+  isPrivate?: boolean;
 }
 
 /** Stable key for in-memory maps. Unique within a surface; space is a scoping attribute, not identity. */

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentReply, AgentTurnResult, InboundMessage, SurfaceSession } from "../../core/contracts.ts";
 import { startBuzzSurface, type CursorStore, type ServerContextStore } from "./gateway.ts";
-import type { BuzzChannel, BuzzClient, BuzzEvent, BuzzSendResult, PresenceStatus } from "./buzzClient.ts";
+import type { BuzzChannel, BuzzChannelType, BuzzClient, BuzzEvent, BuzzSendResult, PresenceStatus } from "./buzzClient.ts";
 import type { AgentCore } from "../../core/contracts.ts";
 
 const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -37,6 +37,7 @@ interface FakeClientOpts {
   channelsCalls?: { n: number };
   subscribedSince?: { value: number };
   edits?: { channelId: string; targetEventId: string; content: string }[];
+  channelTypes?: Record<string, BuzzChannelType | "unknown">;
 }
 
 function fakeClient(
@@ -66,6 +67,9 @@ function fakeClient(
       if (opts.channelsThrow) throw new Error("not admitted");
       return opts.channels ?? [];
     },
+    async channelType(channelId): Promise<BuzzChannelType | "unknown"> {
+      return opts.channelTypes?.[channelId] ?? "stream";
+    },
   };
 }
 
@@ -90,7 +94,7 @@ describe("startBuzzSurface subscription", () => {
     surface.stop();
 
     expect(inbounds).toHaveLength(1);
-    expect(inbounds[0].inbound.conversation).toEqual({ surface: "buzz", spaceId: "buzz", conversationId: "evt1" });
+    expect(inbounds[0].inbound.conversation).toEqual({ surface: "buzz", spaceId: "buzz", conversationId: "evt1", isPrivate: false });
     expect(inbounds[0].inbound.author).toMatchObject({ surface: "buzz", userId: "user1" });
     expect(inbounds[0].inbound.text).toBe("hey @sushii");
     expect(sends).toEqual([{ channelId: "chan-uuid", content: "hi there", replyToId: "evt1" }]);
@@ -160,6 +164,30 @@ describe("startBuzzSurface subscription", () => {
     expect(inbounds[0].inbound.conversation.spaceId).toBe("buzz:wss://a");
   });
 
+  test("routes a DM channel turn to private memory scope (isPrivate)", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], [], { channelTypes: { "chan-uuid": "dm" } }), cursor: memCursor(500), serverContext: memServerContext("scanned") });
+    await tick();
+    surface.stop();
+    expect(inbounds[0].inbound.conversation.isPrivate).toBe(true);
+  });
+
+  test("routes a public channel turn to the shared per-space scope (not private)", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], [], { channelTypes: { "chan-uuid": "stream" } }), cursor: memCursor(500), serverContext: memServerContext("scanned") });
+    await tick();
+    surface.stop();
+    expect(inbounds[0].inbound.conversation.isPrivate).toBe(false);
+  });
+
+  test("fails closed to private when the channel type is unresolved", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], [], { channelTypes: { "chan-uuid": "unknown" } }), cursor: memCursor(500), serverContext: memServerContext("scanned") });
+    await tick();
+    surface.stop();
+    expect(inbounds[0].inbound.conversation.isPrivate).toBe(true);
+  });
+
   test("a fresh cursor (0) is initialized to ~now and used as the subscription since", async () => {
     const cursor = memCursor(0);
     const subscribedSince = { value: -1 };
@@ -175,8 +203,8 @@ describe("startBuzzSurface subscription", () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const ctx = memServerContext(null);
     const channels: BuzzChannel[] = [
-      { id: "c1", name: "general", topic: "chit-chat" },
-      { id: "c2", name: "dev" },
+      { id: "c1", name: "general", topic: "chit-chat", channelType: "stream" },
+      { id: "c2", name: "dev", channelType: "stream" },
     ];
     const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], [], { channels }), cursor: memCursor(500), serverContext: ctx });
     await tick();

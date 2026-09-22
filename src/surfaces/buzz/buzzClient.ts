@@ -20,6 +20,10 @@ export interface BuzzSendResult {
   accepted: boolean;
 }
 
+/** Channel privacy as buzz classifies it (buzz-acp `channel_type_from_tags`): a `dm` is walled off
+ *  like a Discord DM, a `private` channel is a members-only group, a `stream` is public. */
+export type BuzzChannelType = "dm" | "private" | "stream";
+
 /** A community channel (kind:41 metadata). Only `id` is guaranteed. */
 export interface BuzzChannel {
   id: string;
@@ -27,7 +31,7 @@ export interface BuzzChannel {
   topic?: string;
   purpose?: string;
   description?: string;
-  visibility?: string;
+  channelType: BuzzChannelType;
 }
 
 export type PresenceStatus = "online" | "away" | "offline";
@@ -63,6 +67,10 @@ export interface BuzzClient {
   react(eventId: string, emoji: string): Promise<void>;
   /** Channels visible to the bot in this community — the scannable structure for server context. */
   channelsList(limit?: number): Promise<BuzzChannel[]>;
+  /** A channel's privacy class (buzz `channel_type_from_tags`), used to route DM turns to private
+   *  memory. Resolves from a cache warmed on each connect; a miss triggers one refresh, and an
+   *  unresolvable id returns `"unknown"` (fail-closed at the caller) without being cached. */
+  channelType(channelId: string): Promise<BuzzChannelType | "unknown">;
 }
 
 /** Decodes an nsec/hex private key into raw bytes. */
@@ -91,6 +99,7 @@ export class NostrBuzzClient implements BuzzClient {
   private mentionHandler: ((e: BuzzEvent) => void | Promise<void>) | null = null;
   private readonly seen = new Set<string>();
   private readonly subscribedChannels = new Set<string>();
+  private readonly channelTypes = new Map<string, BuzzChannelType>();
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -213,7 +222,16 @@ export class NostrBuzzClient implements BuzzClient {
 
   async channelsList(limit = 500): Promise<BuzzChannel[]> {
     const events = await this.connection().query({ kinds: [KIND_CHANNEL_METADATA], limit });
-    return events.map(normalizeChannel).filter((c): c is BuzzChannel => c !== null);
+    const channels = events.map(normalizeChannel).filter((c): c is BuzzChannel => c !== null);
+    for (const ch of channels) this.channelTypes.set(ch.id, ch.channelType);
+    return channels;
+  }
+
+  async channelType(channelId: string): Promise<BuzzChannelType | "unknown"> {
+    const cached = this.channelTypes.get(channelId);
+    if (cached) return cached;
+    await this.channelsList(); // warm on a miss (e.g. a channel created since the last resync)
+    return this.channelTypes.get(channelId) ?? "unknown";
   }
 }
 
@@ -239,6 +257,23 @@ export function channelIdOf(event: BuzzEvent): string | null {
   return tag?.[1] ?? null;
 }
 
+/** Channel privacy from a kind:39000 event's tags, ported from buzz-acp `channel_type_from_tags`:
+ *  `dm` on a `["t","dm"]` or bare `["hidden"]` tag, else `private` on `["t","private"]` or a bare
+ *  `["private"]` tag, else `stream` (public). */
+export function channelTypeFromTags(tags: string[][]): BuzzChannelType {
+  let hidden = false;
+  let priv = false;
+  let declared: string | undefined;
+  for (const t of tags) {
+    if (t[0] === "hidden") hidden = true;
+    else if (t[0] === "private") priv = true;
+    else if (t[0] === "t") declared = t[1];
+  }
+  if (declared === "dm" || hidden) return "dm";
+  if (declared === "private" || priv) return "private";
+  return "stream";
+}
+
 /** kind:39000 channel metadata → BuzzChannel. The channel id is the `d` tag; name/about live in
  *  their own tags (`["name", …]`, `["about", …]`), not the content. Tolerant: missing fields drop,
  *  a row with no id returns null. */
@@ -253,6 +288,6 @@ function normalizeChannel(e: NostrEvent): BuzzChannel | null {
     topic: about,
     purpose: tag("purpose"),
     description: about,
-    visibility: e.tags.some((t) => t[0] === "private") ? "private" : e.tags.some((t) => t[0] === "public") ? "open" : undefined,
+    channelType: channelTypeFromTags(e.tags),
   };
 }

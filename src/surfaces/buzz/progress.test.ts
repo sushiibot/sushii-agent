@@ -19,6 +19,7 @@ function recordingClient(rec: Recorder, sendId = "prog-evt"): BuzzClient {
     subscribeMentions() { return { stop() {} }; },
     async react() {},
     async channelsList() { return []; },
+    async channelType() { return "stream"; },
   };
 }
 

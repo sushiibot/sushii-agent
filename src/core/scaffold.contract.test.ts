@@ -10,10 +10,12 @@ import type {
   InboundMessage,
   MemoryEntry,
   MemoryProvider,
+  MemoryScope,
   SpaceMemoryStore,
   SurfaceSession,
   ToolRegistry,
 } from "./contracts.ts";
+import { memoryBanks } from "./memory/banks.ts";
 
 // Capture the params handed to generateText so we can assert on the assembled system prompt.
 let lastSystemPrompt = "";
@@ -165,6 +167,24 @@ describe("scaffold contract — compaction + memory hook sites", () => {
     expect(lastSystemPrompt).toContain("TEST-MEMORY-BLOCK");
     // guild1 is not a personal/DM space → public scope keyed to the triggering user u1.
     expect(seenScope).toEqual({ spaceId: "guild1", userId: "u1", isPrivate: false });
+  });
+
+  test("an explicit isPrivate on the ConversationRef flips the memory scope to private, overriding the spaceId heuristic", async () => {
+    const store = new FakeStore();
+    let seenScope: MemoryScope | undefined;
+    const memoryProvider: MemoryProvider = {
+      retrieve: async ({ scope }) => {
+        seenScope = scope;
+        return null;
+      },
+      remember: async () => {},
+    };
+    const core = createAgentCore({ ...baseDeps(store), memoryProvider });
+    const privateInbound: InboundMessage = { conversation: { ...ref, isPrivate: true }, author: author("u1"), text: "hi" };
+    await core.handleInbound(privateInbound, fakeSession());
+    // guild1 is not a personal space, but the surface declared privacy → DM bucket for user u1.
+    expect(seenScope).toEqual({ spaceId: "guild1", userId: "u1", isPrivate: true });
+    expect(memoryBanks(seenScope!).write).toBe("sushii-dm-u1");
   });
 
   test("onTurnEnd carries the initiator authorId + isPrivate for the deriver's write scope", async () => {

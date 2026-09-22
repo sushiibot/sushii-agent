@@ -134,7 +134,12 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
     }
     // Reply to the thread root, not the mention itself, so replies stay one level deep (Slack-style).
     const threadRoot = threadRootOf(event);
-    const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRoot };
+    // Route DM turns to the private per-user memory bucket, walled off like a Discord DM. Fail-closed:
+    // an unresolved type is treated as private, which at worst under-recalls a public channel — never a
+    // leak, since the private bucket is per-pubkey and shares no legacy store with the community space.
+    const chType = await client.channelType(channelId);
+    const isDm = chType === "dm" || chType === "unknown";
+    const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRoot, isPrivate: isDm };
     const session = new BuzzSurfaceSession({ client, ownPubkey: selfPubkey, channelId, replyToId: threadRoot, fsHost: deps.fsHost });
     const inbound: InboundMessage = {
       conversation,

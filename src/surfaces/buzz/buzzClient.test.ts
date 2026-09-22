@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { NostrBuzzClient, profileEvent } from "./buzzClient.ts";
+import { channelTypeFromTags, NostrBuzzClient, profileEvent } from "./buzzClient.ts";
 import { toWsUrl } from "./nostrClient.ts";
 
 // Fixed keypair (generated offline with `nak key generate`); ownPubkey must derive PUB with no relay.
@@ -42,6 +42,27 @@ describe("profileEvent", () => {
 
   test("omits picture when no avatar is set", () => {
     expect(JSON.parse(profileEvent("sushii-agent", null, null).content)).toEqual({ name: "sushii-agent" });
+  });
+});
+
+describe("channelTypeFromTags", () => {
+  test("classifies a declared dm type as dm", () => {
+    expect(channelTypeFromTags([["t", "dm"], ["name", "chat"]])).toBe("dm");
+  });
+  test("classifies a bare hidden tag as dm", () => {
+    expect(channelTypeFromTags([["hidden"], ["name", "chat"]])).toBe("dm");
+  });
+  test("classifies a declared private type as private", () => {
+    expect(channelTypeFromTags([["t", "private"]])).toBe("private");
+  });
+  test("classifies a bare private tag as private", () => {
+    expect(channelTypeFromTags([["private"]])).toBe("private");
+  });
+  test("classifies a plain channel as a public stream", () => {
+    expect(channelTypeFromTags([["name", "general"]])).toBe("stream");
+  });
+  test("dm wins over a private tag on the same channel", () => {
+    expect(channelTypeFromTags([["private"], ["t", "dm"]])).toBe("dm");
   });
 });
 

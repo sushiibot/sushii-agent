@@ -120,7 +120,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
 
     // Memory scoping: the private (DM) self is walled off from the public (in-space) self. Retrieval
     // reads the initiator's bucket set for this space; the deriver writes the individual bucket.
-    const isPrivate = isPersonalSpace(spaceKey(conversation.surface, conversation.spaceId));
+    const isPrivate = conversation.isPrivate ?? isPersonalSpace(spaceKey(conversation.surface, conversation.spaceId));
     const memoryScope: MemoryScope = { spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate };
 
     // Proactive memory: retrieve a durable-fact block keyed to this turn's user text, injected into
