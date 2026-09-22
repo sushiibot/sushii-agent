@@ -62,11 +62,16 @@ async function main() {
   // Semantic mnemosyne backend when MNEMOSYNE_MCP_URL is set; else the local FTS store. Both
   // satisfy the same MemoryProvider contract, so this is the only wiring difference. Per-call
   // retrieve is best-effort (deadline/error → null), so a slow or down server never blocks a turn.
-  const memoryProvider = config.mnemosyneMcpUrl
-    ? createMnemosyneMemoryProvider({
-        callTool: createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: config.mnemosyneMcpToken }),
-      })
+  const mnemosyneCallTool = config.mnemosyneMcpUrl
+    ? createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: config.mnemosyneMcpToken })
+    : null;
+  const memoryProvider = mnemosyneCallTool
+    ? createMnemosyneMemoryProvider({ callTool: mnemosyneCallTool })
     : createLocalMemoryProvider(memory);
+  // Warm the mnemosyne SSE connection off the reply path. The connect gets the whole Discord gateway
+  // handshake below as headroom, so the first turn's retrieve reuses a live connection within its
+  // 1.5s deadline instead of racing the (default 5s) connect. No-op/optional: never blocks startup.
+  mnemosyneCallTool?.warm();
   // Write-side of first-class memory: derive + persist durable facts from each finished turn, so
   // saving no longer depends on the agent choosing to call the memory tool. Async, off the reply path.
   const memoryDeriver = createMemoryDeriver(memoryProvider);

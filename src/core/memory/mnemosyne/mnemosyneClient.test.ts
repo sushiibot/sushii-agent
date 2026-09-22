@@ -72,6 +72,86 @@ describe("mnemosyne client seam", () => {
     expect(closes.closes).toBe(2);
   });
 
+  test("warm() connects once at startup and the warmed connection is reused by a later call", async () => {
+    const closes = { closes: 0 };
+    let created = 0;
+    let connects = 0;
+
+    const callTool = createMnemosyneCallTool({
+      url: "http://x",
+      createClient: () => {
+        created += 1;
+        return fakeClient(
+          {
+            connect: async () => {
+              connects += 1;
+            },
+            callTool: async () => ({ status: "ok", results: [] }),
+          },
+          closes,
+        );
+      },
+    });
+
+    callTool.warm();
+    // The warm connect resolves before the first real call; that call reuses it (no re-handshake).
+    const result = await callTool("mnemosyne_recall", {});
+
+    expect(result).toEqual({ status: "ok", results: [] });
+    expect(created).toBe(1);
+    expect(connects).toBe(1);
+  });
+
+  test("a call issued while warm() is still connecting shares the in-flight connect", async () => {
+    const closes = { closes: 0 };
+    let created = 0;
+    let releaseConnect: (() => void) | undefined;
+
+    const callTool = createMnemosyneCallTool({
+      url: "http://x",
+      createClient: () => {
+        created += 1;
+        return fakeClient(
+          {
+            connect: () => new Promise<void>((resolve) => { releaseConnect = resolve; }),
+            callTool: async () => ({ status: "ok", results: [] }),
+          },
+          closes,
+        );
+      },
+    });
+
+    callTool.warm(); // starts a connect that hasn't resolved yet
+    const inFlight = callTool("mnemosyne_recall", {}); // must join the same connect, not start a new one
+    releaseConnect?.();
+    await inFlight;
+
+    expect(created).toBe(1);
+  });
+
+  test("warm() never throws or rejects when the connect fails", async () => {
+    const closes = { closes: 0 };
+
+    const callTool = createMnemosyneCallTool({
+      url: "http://x",
+      connectTimeoutMs: 20,
+      createClient: () =>
+        fakeClient(
+          {
+            connect: async () => {
+              throw new Error("mnemosyne down");
+            },
+          },
+          closes,
+        ),
+    });
+
+    // Synchronous call returns void and the rejected connect is swallowed — startup must not crash.
+    expect(callTool.warm()).toBeUndefined();
+    // Let the fire-and-forget catch settle; an unhandled rejection here would fail the test run.
+    await new Promise((r) => setTimeout(r, 5));
+  });
+
   test("a hung connect rejects on the timeout and a later call recovers", async () => {
     const closes = { closes: 0 };
     let created = 0;

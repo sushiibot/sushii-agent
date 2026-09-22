@@ -64,13 +64,17 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
   return (err as { name?: string } | null)?.name === "AbortError" || signal?.aborted === true;
 }
 
+/** A call seam that can also be warmed: `warm()` establishes the connection off the reply path so the
+ *  first real retrieve reuses a live connection instead of racing the connect against its deadline. */
+export type MnemosyneCallTool = McpToolCall & { warm(): void };
+
 /**
  * Real MCP call seam for the mnemosyne provider: a lazily-connected, reused client. The connection
  * is established on first use and kept; a genuine transport/stream failure drops it so the next call
  * reconnects, while a caller abort (deadline race, or a concurrent slow call from the other surface)
  * leaves the healthy connection intact. Returns the parsed JSON tool payload the provider expects.
  */
-export function createMnemosyneCallTool(cfg: MnemosyneClientConfig): McpToolCall {
+export function createMnemosyneCallTool(cfg: MnemosyneClientConfig): MnemosyneCallTool {
   const createClient = cfg.createClient ?? defaultCreateClient;
   const connectTimeoutMs = cfg.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   let clientPromise: Promise<MnemosyneClient> | null = null;
@@ -104,7 +108,7 @@ export function createMnemosyneCallTool(cfg: MnemosyneClientConfig): McpToolCall
     void pending?.then((c) => c.close()).catch(() => {});
   }
 
-  return async (name, args, signal) => {
+  const callTool: McpToolCall = async (name, args, signal) => {
     const client = await ensureConnected();
     try {
       return await client.callTool(name, args, signal);
@@ -120,4 +124,15 @@ export function createMnemosyneCallTool(cfg: MnemosyneClientConfig): McpToolCall
       throw err;
     }
   };
+
+  return Object.assign(callTool, {
+    warm(): void {
+      // Fire-and-forget: the connect (default 5s) would otherwise happen inside the per-turn retrieve
+      // deadline, so the first turns after startup inject no memory. A failed warm-up nulls the cached
+      // promise (ensureConnected), so a later real call still retries — never throws, never blocks.
+      void ensureConnected().catch((err) => {
+        logger.debug({ err }, "mnemosyne connection warm-up failed; will connect lazily on first use");
+      });
+    },
+  });
 }
