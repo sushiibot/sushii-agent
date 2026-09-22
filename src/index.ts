@@ -16,6 +16,7 @@ import { createMnemosyneMemoryProvider } from "./core/memory/mnemosyne/mnemosyne
 import { createMnemosyneCallTool } from "./core/memory/mnemosyne/mnemosyneClient.ts";
 import { createSummarizeFoldCompactor } from "./core/compaction/index.ts";
 import { createModelSummarizer } from "./agent/summarizer.ts";
+import { createMemoryDeriver } from "./agent/memoryDeriver.ts";
 import type { LanguageModelProvider } from "./core/contracts.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
@@ -57,6 +58,10 @@ async function main() {
         callTool: createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: config.mnemosyneMcpToken }),
       })
     : createLocalMemoryProvider(memory);
+  // Write-side of first-class memory: derive + persist durable facts from each finished turn, so
+  // saving no longer depends on the agent choosing to call the memory tool. Async, off the reply path.
+  const memoryDeriver = createMemoryDeriver(memoryProvider);
+  hookBus.on("onTurnEnd", memoryDeriver);
   const core = createAgentCore({
     model,
     store,
@@ -86,6 +91,7 @@ async function main() {
     // One hook bus + progress registry shared by every relay's surface (all share buzzCore). Wiring
     // the bus is what gives buzz live tool-progress + never-silent failures, parity with Discord.
     const buzzBus = createHookBus();
+    buzzBus.on("onTurnEnd", memoryDeriver);
     const buzzProgress = registerBuzzProgressHooks(buzzBus);
     const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider });
     // Empty list → one connection on the default relay (dev localhost), keyed "default".
