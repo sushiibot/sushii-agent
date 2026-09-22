@@ -22,6 +22,7 @@ import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
+import { resolveWikiIdForSource } from "./modules/wiki-sync/sources.ts";
 import { getWikiSyncEnabledGuildIds } from "./modules/wiki-sync/guilds.ts";
 import type { SlackWikiSyncClient } from "./surfaces/slack/wikiSync.ts";
 import { makeCombinedWikiSourceContext } from "./surfaces/wikiSyncFactory.ts";
@@ -172,6 +173,10 @@ async function main() {
       // Wire Slack as a wiki-sync source. auth.test().url is the workspace base URL (ends in "/"),
       // the prefix for archive permalinks. The combined factory reads this on the next sweep.
       if (auth.url) slackWiki = { client: slackApp.client as unknown as SlackWikiSyncClient, workspaceUrl: auth.url as string };
+      // Expose read access to the wiki this workspace feeds (if any), mirroring buzz's per-community
+      // wiki fs host — the Slack agent reads exactly the wiki it contributes to.
+      const slackWikiId = resolveWikiIdForSource("slack", teamId);
+      const slackFsHost = slackWikiId ? createWikiFsHost(slackWikiId) : undefined;
       startSlackAgentLoop(slackApp, {
         core: slackCore,
         client: slackApp.client as unknown as SlackAgentClient,
@@ -179,6 +184,7 @@ async function main() {
         selfName,
         teamId,
         progress: slackProgress,
+        fsHost: slackFsHost,
       });
 
       superviseSlackApp(slackApp, slack.receiver, { logger });

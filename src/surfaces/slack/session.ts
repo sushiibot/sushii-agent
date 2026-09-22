@@ -1,6 +1,7 @@
 import type {
   AgentReply,
   AuthorRef,
+  FsHost,
   PlatformRenderer,
   PromptGuidance,
   RenderContext,
@@ -78,6 +79,9 @@ export interface SlackSurfaceSessionOptions {
   channelId: string;
   /** Thread the reply threads under (the triggering message's thread_ts, or its own ts). */
   threadTs: string;
+  /** This workspace's wiki as an `fs` root (read/search/list), when it feeds one. Omitted → no wiki
+   *  tools, so wiki readability is scoped to whether the workspace is mapped to a wiki. */
+  fsHost?: FsHost;
 }
 
 export class SlackSurfaceSession implements SurfaceSession {
@@ -85,14 +89,14 @@ export class SlackSurfaceSession implements SurfaceSession {
   readonly renderer = new SlackPlatformRenderer();
   readonly selfId: string;
   readonly selfName: string;
-  // No fs host in Phase 2 — the per-workspace wiki mapping lands in a later phase.
-  readonly hosts: ToolHosts = {};
+  readonly hosts: ToolHosts;
 
   private readonly client: SlackPostClient;
   private readonly channelId: string;
   private readonly threadTs: string;
 
   constructor(opts: SlackSurfaceSessionOptions) {
+    this.hosts = opts.fsHost ? { fs: opts.fsHost } : {};
     this.selfId = opts.selfId;
     this.selfName = opts.selfName;
     this.client = opts.client;

@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import { trace } from "@opentelemetry/api";
-import type { AgentCore, AuthorRef, ConversationRef, InboundAttachment, InboundMessage } from "../../core/contracts.ts";
+import type { AgentCore, AuthorRef, ConversationRef, FsHost, InboundAttachment, InboundMessage } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { SlackSurfaceSession, segmentsToText, type SlackPostClient } from "./session.ts";
 import { SlackToolProgress, type SlackProgressRegistry } from "./progress.ts";
@@ -38,6 +38,8 @@ export interface SlackAgentDeps {
   /** Live tool-progress registry. Omitted → no progress display; the turn still runs and errors are
    *  still reported. */
   progress?: SlackProgressRegistry;
+  /** This workspace's wiki as an `fs` root (read/search/list). Omitted → the agent has no wiki tools. */
+  fsHost?: FsHost;
 }
 
 // Loose views of the Bolt event payloads — the union is broad and only a few fields are read.
@@ -136,7 +138,7 @@ export function startSlackAgentLoop(app: App, deps: SlackAgentDeps): void {
     const rawText = event.text ?? "";
     const text = isPrivate ? rawText.trim() : stripBotMention(rawText, selfId);
     const replyTo = event.thread_ts && event.thread_ts !== ts ? await fetchReplyTo(channel, event.thread_ts) : null;
-    const session = new SlackSurfaceSession({ client, selfId, selfName, channelId: channel, threadTs });
+    const session = new SlackSurfaceSession({ client, selfId, selfName, channelId: channel, threadTs, fsHost: deps.fsHost });
     const inbound: InboundMessage = {
       conversation,
       author: { surface: SURFACE, userId: user, username: displayName, displayName },

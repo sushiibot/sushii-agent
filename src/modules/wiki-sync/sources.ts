@@ -46,3 +46,12 @@ export function resolveWikiIdForGuild(guildId: string): string {
   }
   return guildId;
 }
+
+/** The wiki a `(surface, spaceId)` source feeds, or undefined when none is configured — lets a
+ *  surface expose read access to exactly the wiki it contributes to. */
+export function resolveWikiIdForSource(surface: string, spaceId: string): string | undefined {
+  for (const [wikiId, sources] of getWikiSources()) {
+    if (sources.some((s) => s.surface === surface && s.spaceId === spaceId)) return wikiId;
+  }
+  return undefined;
+}
