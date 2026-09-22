@@ -73,7 +73,7 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
       "",
       "## Workspace",
       "",
-      `- Repositories are cloned under \`${facts.workspaceRoot}\`. Each task runs in its own git worktree (\`<clone>.wt/<taskId>\`) on branch \`sushii-runner/<taskId>\`, which is your working directory.`,
+      `- Repositories are cloned under \`${facts.workspaceRoot}\`. Each task runs in its own git worktree (\`<clone>.wt/<taskId>\`) on its own branch \`sushii-runner/<taskId>\`, cut from the latest default branch. That worktree is your working directory.`,
       "- The shared clone stays on a detached HEAD. Do not check out branches there.",
       `- A task worktree is deleted once its PR merges or after ${facts.worktreeTtlHours}h idle. Commit anything worth keeping.`,
       "- When a task targets a repository, git push and `gh` are already authenticated for that repository only.",
