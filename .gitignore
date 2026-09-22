@@ -7,3 +7,6 @@ feedback-export/
 .kanban/
 .playwright-mcp/
 test-results/
+
+# ad-hoc secret staging files (never commit)
+.env.temp*

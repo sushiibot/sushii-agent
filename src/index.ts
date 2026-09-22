@@ -31,6 +31,7 @@ import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
 import { registerBuzzProgressHooks } from "./surfaces/buzz/progress.ts";
 import { getBuzzCursor, setBuzzCursor } from "./db/buzzState.ts";
 import { createSlackApp } from "./surfaces/slack/connection.ts";
+import { superviseSlackApp } from "./surfaces/slack/supervisor.ts";
 import { startSlackIngestion } from "./surfaces/slack/ingest.ts";
 import { startSlackAgentLoop, type SlackAgentClient } from "./surfaces/slack/gateway.ts";
 import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
@@ -152,7 +153,8 @@ async function main() {
   let slackApp: SlackApp | undefined;
   if (config.slack.botToken && config.slack.appToken) {
     try {
-      slackApp = createSlackApp({ botToken: config.slack.botToken, appToken: config.slack.appToken });
+      const slack = createSlackApp({ botToken: config.slack.botToken, appToken: config.slack.appToken });
+      slackApp = slack.app;
       // Phase 1: durable ingestion of every message. Registered first, coexists with the agent loop.
       startSlackIngestion(slackApp, { db });
 
@@ -179,6 +181,7 @@ async function main() {
         progress: slackProgress,
       });
 
+      superviseSlackApp(slackApp, slack.receiver, { logger });
       slackApp.start().catch((err) => logger.error({ err }, "Slack Socket Mode failed to start"));
       logger.info({ selfId, teamId }, "Slack ingestion + agent-loop surfaces started");
     } catch (err) {
