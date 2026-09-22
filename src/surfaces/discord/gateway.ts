@@ -373,12 +373,15 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   }
 
   /** Owner-only ops notice (startup, runner connect/disconnect). Best-effort — a failed DM never
-   *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. */
+   *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. Sent silently
+   *  (SuppressNotifications) — these are routine status pings, not something to buzz the owner for. */
   async function notifyOwner(text: string): Promise<void> {
     if (!config.ownerDiscordId) return;
     const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
     if (!user) return;
-    await user.send(text).catch((err) => logger.warn({ err }, "failed to send owner ops DM"));
+    await user
+      .send({ content: text, flags: MessageFlags.SuppressNotifications })
+      .catch((err) => logger.warn({ err }, "failed to send owner ops DM"));
   }
 
   try {
