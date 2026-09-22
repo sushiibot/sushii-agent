@@ -1,6 +1,6 @@
 import type { MemoryProvider } from "../../contracts.ts";
 import { getLogger } from "../../../logger.ts";
-import { deriveTitle, renderMemoryBlock, type RenderableMemory } from "./renderMemoryBlock.ts";
+import { renderMemoryBlock, type RenderableMemory } from "./renderMemoryBlock.ts";
 
 const defaultLogger = getLogger("core/memory/mnemosyne");
 
@@ -26,32 +26,49 @@ export interface MnemosyneProviderOptions {
 
 const DEADLINE = Symbol("mnemosyne-recall-deadline");
 
+/** Namespace each guild's bank so a bare numeric id isn't a weak bank name on a shared server, and
+ *  guard blank ids (an empty bank hits the server's default shared bank). One mapping so retrieve
+ *  and remember can't drift. Returns null when the space id is empty/blank. */
+function toBank(spaceId: string): string | null {
+  const s = spaceId.trim();
+  if (s.length === 0) return null;
+  return `sushii-${s}`;
+}
+
 // mnemosyne recall returns `{ status, count, results: [{ content, importance, score, id, ... }] }`
 // (confirmed against mnemosyne/mcp_tools.py + hermes_memory_provider consuming `row.get("content")`).
-function parseRecallHits(payload: unknown): RenderableMemory[] {
-  const results = (payload as { results?: unknown } | null)?.results;
-  if (!Array.isArray(results)) return [];
+// The MCP SDK does NOT throw on a server-side error envelope, so we inspect the parsed payload:
+// `malformed` distinguishes an erroring/misconfigured server (warn) from a genuine empty result set.
+function parseRecallHits(payload: unknown): { hits: RenderableMemory[]; malformed: boolean } {
+  const obj = payload as { status?: unknown; results?: unknown } | null;
+  const results = obj?.results;
+  if (obj?.status !== "ok" || !Array.isArray(results)) {
+    return { hits: [], malformed: true };
+  }
   const hits: RenderableMemory[] = [];
   for (const row of results) {
     const content = typeof (row as { content?: unknown })?.content === "string"
       ? (row as { content: string }).content
       : "";
     if (content.trim().length === 0) continue;
-    hits.push({ title: deriveTitle(content), content });
+    hits.push({ content });
   }
-  return hits;
+  return { hits, malformed: false };
 }
 
-/** epoch-ms → mnemosyne's ISO date (`YYYY-MM-DD`) valid_until. */
+/** epoch-ms → mnemosyne's ISO date (`YYYY-MM-DD`) valid_until. Out-of-range values (which would
+ *  make `Date` throw on ISO conversion) yield undefined rather than throwing. */
 function toValidUntil(ms: number): string | undefined {
   if (!Number.isFinite(ms)) return undefined;
-  return new Date(ms).toISOString().slice(0, 10);
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString().slice(0, 10);
 }
 
 /**
- * mnemosyne-backed MemoryProvider (semantic recall over MCP). `bank = spaceId` isolates each guild.
- * Best-effort by contract: any recall failure or deadline overrun yields `null` (never blocks a
- * turn) and any remember failure is logged and swallowed.
+ * mnemosyne-backed MemoryProvider (semantic recall over MCP). `bank = sushii-<spaceId>` isolates
+ * each guild. Best-effort by contract: any recall failure or deadline overrun yields `null` (never
+ * blocks a turn) and any remember failure is logged and swallowed.
  */
 export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): MemoryProvider {
   const { callTool } = opts;
@@ -61,6 +78,8 @@ export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): M
   return {
     async retrieve({ spaceId, query, deadlineMs, tokenBudget }) {
       if (deadlineMs <= 0) return null;
+      const bank = toBank(spaceId);
+      if (bank === null) return null;
       const q = query.trim();
       if (q.length === 0) return null;
 
@@ -77,14 +96,18 @@ export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): M
 
       try {
         const raw = await Promise.race([
-          callTool(RECALL_TOOL, { bank: spaceId, query: q, limit: recallLimit }, controller.signal),
+          callTool(RECALL_TOOL, { bank, query: q, limit: recallLimit }, controller.signal),
           deadline,
         ]);
         if (raw === DEADLINE) {
           logger.debug({ spaceId, deadlineMs }, "mnemosyne recall hit deadline; skipping injection");
           return null;
         }
-        const hits = parseRecallHits(raw);
+        const { hits, malformed } = parseRecallHits(raw);
+        if (malformed) {
+          logger.warn({ spaceId }, "mnemosyne recall returned an unexpected shape; skipping injection");
+          return null;
+        }
         if (hits.length === 0) return null;
         return renderMemoryBlock(hits, { maxItems: recallLimit, tokenBudget });
       } catch (err) {
@@ -96,19 +119,28 @@ export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): M
     },
 
     async remember({ spaceId, text, importance, scope, validUntil }) {
+      const bank = toBank(spaceId);
+      if (bank === null) return;
       const content = text.trim();
       if (content.length === 0) return;
 
-      const args: Record<string, unknown> = { bank: spaceId, content };
-      if (importance !== undefined) args["importance"] = importance;
-      if (scope !== undefined) args["scope"] = scope;
-      if (validUntil !== undefined) {
-        const iso = toValidUntil(validUntil);
-        if (iso !== undefined) args["valid_until"] = iso;
-      }
-
       try {
-        await callTool(REMEMBER_TOOL, args);
+        const args: Record<string, unknown> = { bank, content };
+        if (importance !== undefined) args["importance"] = importance;
+        // Default to a durable cross-session scope; the server otherwise defaults to session-scoped.
+        args["scope"] = scope ?? "global";
+        if (validUntil !== undefined) {
+          const iso = toValidUntil(validUntil);
+          if (iso !== undefined) args["valid_until"] = iso;
+        }
+
+        const raw = await callTool(REMEMBER_TOOL, args);
+        // The MCP SDK does NOT throw on a filtered/errored write — inspect the parsed payload so a
+        // silently-dropped fact is diagnosable.
+        const status = (raw as { status?: unknown } | null)?.status;
+        if (status !== "stored") {
+          logger.warn({ spaceId, status }, "mnemosyne remember did not store the fact");
+        }
       } catch (err) {
         logger.warn({ err, spaceId }, "mnemosyne remember failed; fact not persisted");
       }

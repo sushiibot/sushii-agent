@@ -1,6 +1,6 @@
-// Duplicated from localMemoryProvider's renderer so both backends inject an identical
-// `## Relevant memory` block shape regardless of which store answered. Kept as a tiny
-// standalone helper (localMemoryProvider stays untouched) rather than a shared import.
+// Renders the `## Relevant memory` block for mnemosyne recall hits. Hits arrive as bare content
+// with no stored title, so each line renders content-only (`- <content>`) rather than duplicating
+// the content as its own derived title.
 
 const DEFAULT_TOKEN_BUDGET = 800;
 const DEFAULT_MAX_ITEMS = 6;
@@ -8,25 +8,14 @@ const CHARS_PER_TOKEN = 4;
 const BLOCK_LABEL = "## Relevant memory";
 
 export interface RenderableMemory {
-  title: string;
   content: string;
 }
 
-/** First 6 words of the first line — mirrors localMemoryProvider.deriveTitle for recall hits,
- *  which come back as bare content with no stored title. */
-export function deriveTitle(text: string): string {
-  const firstLine = text.trim().split(/\r?\n/, 1)[0] ?? "";
-  const words = firstLine.split(/\s+/).filter(Boolean).slice(0, 6);
-  const title = words.join(" ");
-  return title.length > 0 ? title : "memory";
-}
-
 function renderItem(entry: RenderableMemory): string {
-  // Collapse whitespace in both fields: a title with `\n## ...` could otherwise forge a
-  // section in the system prompt this block is injected into.
-  const title = entry.title.replace(/\s+/g, " ").trim();
+  // Collapse whitespace: content with `\n## ...` could otherwise forge a section in the system
+  // prompt this block is injected into.
   const content = entry.content.replace(/\s+/g, " ").trim();
-  return `- ${title}: ${content}`;
+  return `- ${content}`;
 }
 
 function truncateLine(line: string, maxChars: number): string {
