@@ -73,7 +73,8 @@ export interface InboundAttachment {
 /** Discriminated on `surface`. The typed escape hatch the core forwards but never interprets. */
 export type PlatformInbound =
   | { surface: "discord"; autoModTrigger?: AutoModTrigger }
-  | { surface: "buzz" };
+  | { surface: "buzz" }
+  | { surface: "slack" };
 
 /** Ports AutoModTriggerContext — present only for the autonomous auto-mod driver. */
 export interface AutoModTrigger {

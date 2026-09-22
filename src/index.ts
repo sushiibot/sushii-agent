@@ -31,6 +31,9 @@ import { registerBuzzProgressHooks } from "./surfaces/buzz/progress.ts";
 import { getBuzzCursor, setBuzzCursor } from "./db/buzzState.ts";
 import { createSlackApp } from "./surfaces/slack/connection.ts";
 import { startSlackIngestion } from "./surfaces/slack/ingest.ts";
+import { startSlackAgentLoop, type SlackAgentClient } from "./surfaces/slack/gateway.ts";
+import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
+import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
 
 async function main() {
@@ -140,9 +143,31 @@ async function main() {
   if (config.slack.botToken && config.slack.appToken) {
     try {
       slackApp = createSlackApp({ botToken: config.slack.botToken, appToken: config.slack.appToken });
+      // Phase 1: durable ingestion of every message. Registered first, coexists with the agent loop.
       startSlackIngestion(slackApp, { db });
+
+      // Phase 2: the agent loop, on its own hook bus + core (sharing store/memory/tools/model), so its
+      // live tool-progress and never-silent failures match Discord/buzz. The workspace team id scopes
+      // memory + server context (analogous to a Discord guild); DMs wall off via isPrivate.
+      const slackBus = createHookBus();
+      slackBus.on("onTurnEnd", memoryDeriver);
+      const slackProgress = registerSlackProgressHooks(slackBus);
+      const slackCore = createAgentCore({ model, store, memory, tools, hooks: slackBus, behavior: SLACK_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider });
+      const auth = await slackApp.client.auth.test();
+      const selfId = auth.user_id as string;
+      const selfName = (auth.user as string) ?? "sushii";
+      const teamId = auth.team_id as string;
+      startSlackAgentLoop(slackApp, {
+        core: slackCore,
+        client: slackApp.client as unknown as SlackAgentClient,
+        selfId,
+        selfName,
+        teamId,
+        progress: slackProgress,
+      });
+
       slackApp.start().catch((err) => logger.error({ err }, "Slack Socket Mode failed to start"));
-      logger.info("Slack ingestion surface started");
+      logger.info({ selfId, teamId }, "Slack ingestion + agent-loop surfaces started");
     } catch (err) {
       logger.error({ err }, "Slack surface failed to start");
       slackApp = undefined;
