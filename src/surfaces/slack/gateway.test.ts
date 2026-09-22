@@ -80,6 +80,18 @@ describe("startSlackAgentLoop", () => {
     expect(rec.reactions).toEqual([{ channel: "C1", timestamp: "1000.0001", name: "sushi" }]);
   });
 
+  test("the labeled `<@UBOT|name>` mention form is stripped, label and all", async () => {
+    const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
+    const rec: Recorder = { posts: [], reactions: [] };
+    const h = fakeApp();
+    startSlackAgentLoop(h.app, deps(fakeCore(inbounds), fakeClient(rec, { names: { U1: "Alice" } })));
+    await h.emit("app_mention", { type: "app_mention", user: "U1", text: "<@UBOT|sushii> hello there", ts: "1100.0001", channel: "C1", team: "T123" });
+    await tick();
+
+    expect(inbounds).toHaveLength(1);
+    expect(inbounds[0].inbound.text).toBe("hello there");
+  });
+
   test("a DM message triggers with isPrivate true and no mention required", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const rec: Recorder = { posts: [], reactions: [] };

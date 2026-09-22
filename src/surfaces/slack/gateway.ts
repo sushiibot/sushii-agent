@@ -60,10 +60,11 @@ interface SlackTriggerEvent {
   [k: string]: unknown;
 }
 
-/** Strip every occurrence of the bot's own `<@U…>` mention (with any trailing space) and trim, so the
- *  core sees the message the way a person wrote it minus the summon. */
+/** Strip every occurrence of the bot's own mention (with any trailing space) and trim, so the core
+ *  sees the message the way a person wrote it minus the summon. Handles both `<@U…>` and the older
+ *  labeled `<@U…|name>` form some clients still emit. */
 function stripBotMention(text: string, selfId: string): string {
-  return text.replace(new RegExp(`<@${selfId}>\\s*`, "g"), "").trim();
+  return text.replace(new RegExp(`<@${selfId}(?:\\|[^>]+)?>\\s*`, "g"), "").trim();
 }
 
 /** Map Slack files to neutral attachments. url_private needs a Bearer token to fetch, so image
