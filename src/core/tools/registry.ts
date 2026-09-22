@@ -79,7 +79,10 @@ export class CoreToolRegistry implements ToolRegistry {
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
       .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name))
       .filter((entry) => a.owner || !RUNNER_TOOLS.has(entry.name))
-      .filter((entry) => !RUNNER_TOOLS.has(entry.name) || isPersonalSpace(spaceKey(space.surface, space.spaceId)));
+      .filter((entry) => !RUNNER_TOOLS.has(entry.name) || isPersonalSpace(spaceKey(space.surface, space.spaceId)))
+      // Core-profile editing is DM-first: available only in a personal/DM space for now (per-environment
+      // and per-user profiles in guilds are a deferred follow-up).
+      .filter((entry) => entry.name !== "update_profile" || isPersonalSpace(spaceKey(space.surface, space.spaceId)));
   }
 }
 

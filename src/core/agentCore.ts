@@ -17,7 +17,7 @@ import type {
 import { conversationKey } from "./contracts.ts";
 import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
-import { MEMORY_LIMIT } from "./stores/index.ts";
+import { MEMORY_LIMIT, CORE_PROFILE_TITLE } from "./stores/index.ts";
 import { fireHook, runLoop } from "./loop.ts";
 
 function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
@@ -123,7 +123,8 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       author: autoMod ? undefined : turn.initiator,
       ownerSection: pc.ownerSection,
       serverContext: deps.memory.getServerContext(conversation.spaceId),
-      memoryIndex: deps.memory.listTitles(conversation.spaceId),
+      coreProfile: deps.memory.read(conversation.spaceId, CORE_PROFILE_TITLE)?.content ?? undefined,
+      memoryIndex: deps.memory.listTitles(conversation.spaceId).filter((t) => t !== CORE_PROFILE_TITLE),
       memoryCount: deps.memory.count(conversation.spaceId),
       memoryLimit: MEMORY_LIMIT,
       emojiMap: pc.emojiMap,

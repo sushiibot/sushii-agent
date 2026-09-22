@@ -2,6 +2,7 @@
 // (SpaceMemoryStore, contracts.ts §8), web_search/fetch_url_content hit Exa directly (no
 // discord.js), and ask_question only needs ctx.pending + ctx.owner.
 import type { ToolEntry } from "../../contracts.ts";
+import { CORE_PROFILE_TITLE } from "../../stores/index.ts";
 import "../pendingSink.ts";
 import { webSearch, fetchUrlContent } from "../../../tools/webSearch.ts";
 
@@ -195,4 +196,25 @@ export const resetConversationEntry: ToolEntry = {
   },
 };
 
-export const PORTABLE_TOOL_ENTRIES: ToolEntry[] = [memoryEntry, updateServerContextEntry, webSearchEntry, fetchUrlContentEntry, askQuestionEntry, resetConversationEntry];
+export const updateProfileEntry: ToolEntry = {
+  name: "update_profile",
+  definition: {
+    name: "update_profile",
+    description:
+      "Update the always-present core profile about the user — a small, curated block (durable preferences, ongoing goals, standing context, relationships) injected into EVERY conversation with them. Pass the FULL updated profile text: you are REPLACING it, not appending, so include everything that should remain. Keep it concise and current — prune stale items. Do NOT put transient details, one-off task specifics, or already-authoritative data here.",
+    parameters: {
+      type: "object",
+      properties: { content: { type: "string", description: "The complete updated profile text (replaces the current profile)." } },
+      required: ["content"],
+    },
+  },
+  requiresHosts: [],
+  async execute(input, ctx) {
+    const content = (input.content as string | undefined)?.trim();
+    if (!content) return { content: "update_profile requires content." };
+    const result = ctx.memory.upsert(ctx.space.spaceId, CORE_PROFILE_TITLE, content);
+    return { content: "error" in result ? result.error : "Core profile updated." };
+  },
+};
+
+export const PORTABLE_TOOL_ENTRIES: ToolEntry[] = [memoryEntry, updateServerContextEntry, webSearchEntry, fetchUrlContentEntry, askQuestionEntry, resetConversationEntry, updateProfileEntry];

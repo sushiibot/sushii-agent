@@ -21,6 +21,9 @@ export interface SystemPromptInputs {
    *  the triggeringUser section, matching the old prompt. */
   ownerSection?: string;
   serverContext?: string | null;
+  /** Tier-A core memory: a small, stable, always-present profile about the user/space. Stable → lives
+   *  in the cached system prompt (unlike per-turn recall). Opt-in; absent → prompt unchanged (parity). */
+  coreProfile?: string;
   memoryIndex?: string[];
   memoryCount?: number;
   memoryLimit?: number;
@@ -83,6 +86,12 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
     systemParts.push(
       `## Server Context\nNot yet available for this space. Answer normally; your awareness of this space's structure is limited until it has been learned.`,
     );
+  }
+
+  // Core profile (Tier-A memory: small, stable, always present). Kept here in the cached prefix
+  // because it changes rarely — updated via the update_profile tool, not per turn.
+  if (inputs.coreProfile) {
+    systemParts.push(`## About the user\n${inputs.coreProfile}\n\nKeep this current: when you learn a durable, non-authoritative fact about the user (a preference, an ongoing goal, standing context), call update_profile to refine it. Do not store transient or already-authoritative data here.`);
   }
 
   // Memory index (titles only — agent fetches full content via read_memory when relevant)
