@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { getLogger } from "../../../logger.ts";
 import type { McpToolCall } from "./mnemosyneMemoryProvider.ts";
 
@@ -7,8 +7,8 @@ const logger = getLogger("core/memory/mnemosyne/client");
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 
-/** The low-level connection the factory manages. The default binds the real streamable-HTTP MCP
- *  client; tests supply a fake to exercise connect/abort/reset behavior without a live server. */
+/** The low-level connection the factory manages. The default binds a real SSE MCP client (mnemosyne
+ *  serves the `sse` transport); tests supply a fake to exercise connect/abort/reset without a live server. */
 export interface MnemosyneClient {
   connect(): Promise<void>;
   callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
@@ -20,7 +20,7 @@ export interface MnemosyneClientConfig {
   token?: string | undefined;
   /** Rejects a hung (black-holed) connect so a wedged provider can retry. */
   connectTimeoutMs?: number;
-  /** Test seam: build the underlying client. Defaults to a real streamable-HTTP MCP client. */
+  /** Test seam: build the underlying client. Defaults to a real SSE MCP client. */
   createClient?: (cfg: MnemosyneClientConfig) => MnemosyneClient;
 }
 
@@ -37,7 +37,7 @@ function extractPayload(content: unknown): unknown {
 
 function defaultCreateClient(cfg: MnemosyneClientConfig): MnemosyneClient {
   const client = new Client({ name: "sushii-agent", version: "1.0.0" }, { capabilities: {} });
-  const transport = new StreamableHTTPClientTransport(new URL(cfg.url), {
+  const transport = new SSEClientTransport(new URL(cfg.url), {
     requestInit: cfg.token
       ? { headers: { Authorization: `Bearer ${cfg.token}` } }
       : undefined,
