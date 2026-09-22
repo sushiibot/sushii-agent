@@ -4,12 +4,15 @@ import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("surfaces/slack/connection");
 
-// Slack app configuration drk must set up (Socket Mode):
+// Slack app configuration (Socket Mode) — cumulative across ingestion, the agent loop, and the
+// wiki-sync source:
 //   App-level token (xapp-): connections:write
 //   Bot token scopes: channels:history, channels:read, groups:history, groups:read,
-//     im:history, im:read, mpim:history, mpim:read
-//   Event subscriptions: message.channels, message.groups, message.im, message.mpim
-// Phase 1 does not auto-join channels, so channels:join is intentionally not required.
+//     im:history, im:read, mpim:history, mpim:read,  // ingestion + backfill
+//     app_mentions:read, chat:write, reactions:write, users:read  // agent loop + wiki notifier/name resolution
+//   Event subscriptions: message.channels, message.groups, message.im, message.mpim, app_mention
+// The bot never auto-joins channels, so channels:join is intentionally not required — it ingests
+// and responds only in channels it has been invited to.
 
 export interface SlackConfig {
   botToken: string;
