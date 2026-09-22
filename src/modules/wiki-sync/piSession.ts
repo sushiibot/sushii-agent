@@ -207,7 +207,7 @@ export interface WikiSyncRunResult {
  * Runs one Pi coding-agent turn against the wiki repo checkout. Imports the SDK lazily so its
  * ~14MB of transitive deps only load for guilds that actually have wiki-sync enabled.
  */
-export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string; guildId: string; runId: string }): Promise<WikiSyncRunResult> {
+export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string; inboxDir: string; wikiId: string; runId: string }): Promise<WikiSyncRunResult> {
   const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, defineTool } = await import(
     "@earendil-works/pi-coding-agent"
   );
@@ -251,7 +251,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
         // the watermark untouched, retrying this batch once the checker works again, rather than
         // silently skipping it.
         commitError = err instanceof Error ? err : new Error(String(err));
-        logger.error({ guildId: opts.guildId, runId: opts.runId, err: commitError }, "link check failed to run");
+        logger.error({ wikiId: opts.wikiId, runId: opts.runId, err: commitError }, "link check failed to run");
         return {
           content: [{ type: "text" as const, text: `Commit blocked: link check failed to run: ${commitError.message}` }],
           details: { sha: null },
@@ -285,7 +285,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     },
   });
 
-  const embedAttachmentTool = createEmbedAttachmentTool(defineTool, Type, opts.repo.dir, join(config.wikiSync.inboxDir, opts.guildId));
+  const embedAttachmentTool = createEmbedAttachmentTool(defineTool, Type, opts.repo.dir, opts.inboxDir);
 
   const modelRuntime = await ModelRuntime.create({
     authPath: join(config.wikiSync.agentDir, "auth.json"),
@@ -380,7 +380,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSync.agentDir, "sessions")),
   });
 
-  const eventLog = sessionLogger.child({ guildId: opts.guildId });
+  const eventLog = sessionLogger.child({ wikiId: opts.wikiId });
   const spans = createSessionSpans();
   let finalText = "";
   // Reset before each session.prompt() call below (initial + continue-nudge retries) so a prior
@@ -410,7 +410,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     // were legitimately finished. Left alone this looks identical to "nothing needed syncing"
     // and sweep.ts advances its watermark past messages that were never actually looked at.
     for (let attempt = 0; attempt < MAX_EMPTY_TURN_RETRIES && !turnHadActivity && !commitError; attempt++) {
-      logger.warn({ guildId: opts.guildId, runId: opts.runId, attempt: attempt + 1 }, "empty turn from provider, nudging session to continue");
+      logger.warn({ wikiId: opts.wikiId, runId: opts.runId, attempt: attempt + 1 }, "empty turn from provider, nudging session to continue");
       turnHadActivity = false;
       await session.prompt(CONTINUE_NUDGE_PROMPT);
     }
@@ -419,7 +419,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   }
   session.dispose();
 
-  logger.info({ guildId: opts.guildId, commitSha, finalText: finalText.slice(0, 2000), hadActivity: turnHadActivity }, "session finished");
+  logger.info({ wikiId: opts.wikiId, commitSha, finalText: finalText.slice(0, 2000), hadActivity: turnHadActivity }, "session finished");
 
   // Surface a failed push as a thrown error rather than a successful-looking result — tool
   // execution errors are reported back to the model as a turn result, not rethrown out of
@@ -432,7 +432,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // returning a quiet no-op, so sweep.ts's watermark stays put and this batch is retried on the
   // next sweep rather than silently marked processed.
   if (!turnHadActivity) {
-    throw new Error(`wiki-sync session for guild ${opts.guildId} produced no output after ${MAX_EMPTY_TURN_RETRIES} continue-nudges`);
+    throw new Error(`wiki-sync session for wiki ${opts.wikiId} produced no output after ${MAX_EMPTY_TURN_RETRIES} continue-nudges`);
   }
 
   return { finalText, commitSha };

@@ -2,7 +2,8 @@ import { REST, Routes, SlashCommandBuilder, type ChatInputCommandInteraction, ty
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { getWikiSyncEnabledGuildIds } from "./guilds.ts";
-import type { WikiSyncContext } from "./context.ts";
+import { resolveWikiIdForGuild } from "./sources.ts";
+import type { MakeWikiSourceContext } from "./scheduler.ts";
 import { isSweepInFlight, runWikiSyncSweep } from "./sweep.ts";
 
 const logger = getLogger("wiki-sync:command");
@@ -32,7 +33,7 @@ export async function registerWikiSyncCommands(client: Client<true>): Promise<vo
 
 export async function handleWikiSyncCommand(
   interaction: ChatInputCommandInteraction,
-  makeContext: (guildId: string) => WikiSyncContext,
+  makeContext: MakeWikiSourceContext,
 ): Promise<void> {
   if (!interaction.inCachedGuild()) return;
 
@@ -43,7 +44,11 @@ export async function handleWikiSyncCommand(
     return;
   }
 
-  if (isSweepInFlight(interaction.guildId)) {
+  // A guild's /wiki-sync targets whichever wiki this guild feeds (its own by default), sweeping
+  // every source of that wiki — correct even when the wiki is shared across surfaces.
+  const wikiId = resolveWikiIdForGuild(interaction.guildId);
+
+  if (isSweepInFlight(wikiId)) {
     await interaction.reply({ content: "A sweep is already running for this server — hang tight.", ephemeral: true });
     return;
   }
@@ -62,7 +67,7 @@ export async function handleWikiSyncCommand(
 
   logger.info({ guildId: interaction.guildId, runId, triggeredBy: interaction.user.id }, "command triggered");
 
-  runWikiSyncSweep(interaction.guildId, makeContext(interaction.guildId), runId).catch((err) => {
-    logger.error({ guildId: interaction.guildId, runId, err }, "command-triggered sweep failed");
+  runWikiSyncSweep(wikiId, (source) => makeContext(wikiId, source), runId).catch((err) => {
+    logger.error({ guildId: interaction.guildId, wikiId, runId, err }, "command-triggered sweep failed");
   });
 }

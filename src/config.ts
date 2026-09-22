@@ -81,6 +81,10 @@ export interface Config {
     contextLimit: number;
     /** Per-turn output cap passed to the provider as max_tokens. Required by Pi's registerProvider API (no "unbounded" option). */
     maxOutputTokens: number;
+    /** Explicit wiki → sources map (from WIKI_SYNC_SOURCES JSON). Lets one wiki be fed by many
+     *  `(surface, spaceId)` sources. Empty → each enabled Discord guild is synthesized as its own
+     *  single-source wiki (see modules/wiki-sync/sources.ts). */
+    sources: Record<string, { sources: { surface: string; spaceId: string; statusChannelId?: string }[] }>;
   };
 }
 
@@ -186,5 +190,15 @@ export const config: Config = {
     // real ceiling and got rejected before generating anything. 64k is generous for a wiki-edit
     // turn (markdown file writes) while leaving most of contextLimit for actual input.
     maxOutputTokens: parseInt(optional("WIKI_SYNC_MAX_OUTPUT_TOKENS", "65536"), 10),
+    sources: parseWikiSources(process.env["WIKI_SYNC_SOURCES"]),
   },
 };
+
+function parseWikiSources(raw: string | undefined): Config["wikiSync"]["sources"] {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`Invalid WIKI_SYNC_SOURCES JSON: ${e}`);
+  }
+}

@@ -44,7 +44,9 @@ if (!PDFTOTEXT_AVAILABLE || !PDFTOPPM_AVAILABLE) {
 
 function msg(overrides: Partial<WikiSyncMessage> = {}): WikiSyncMessage {
   return {
-    discordId: "555",
+    surface: "discord",
+    spaceId: "g1",
+    messageId: "555",
     channelId: "chan1",
     parentChannelId: null,
     authorId: "u1",
@@ -57,19 +59,31 @@ function msg(overrides: Partial<WikiSyncMessage> = {}): WikiSyncMessage {
   };
 }
 
-import type { AttachmentSource, FetchedAttachment } from "./context.ts";
+import type { AttachmentSource, FetchedAttachment, Replacement } from "./context.ts";
 
-/** An AttachmentSource returning a fixed list — the Discord impl (channel/message fetch → map) lives
- *  in the surface now; the engine only sees this interface. */
-function source(attachments: FetchedAttachment[]): AttachmentSource {
-  return { fetchMessageAttachments: async () => attachments };
+// The Discord-shaped reference rewrite (attachment id captured from the CDN URL). The neutral
+// materialize pipeline under test calls this back to relocate labels to local paths; the real
+// impl lives in the Discord surface.
+const CDN_LABEL_URL_RE = /\]\((https:\/\/cdn\.discordapp\.com\/attachments\/\d+\/(\d+)\/[^\s)]+)\)/g;
+function rewriteAttachmentLinks(content: string, replacements: Map<string, Replacement>): string {
+  return content.replace(CDN_LABEL_URL_RE, (full, _url, id) => {
+    const r = replacements.get(id);
+    return r ? `](${r.url})${r.extra ?? ""}` : full;
+  });
 }
 
-/** Models a channel that can't be refetched (fetchMessageAttachments throws → content unchanged). */
+/** An AttachmentSource returning a fixed list — the Discord impl (CDN detect + channel/message
+ *  fetch → map) lives in the surface now; the engine only sees this interface. */
+function source(attachments: FetchedAttachment[]): AttachmentSource {
+  return { attachmentsFor: async () => attachments, rewriteAttachmentLinks };
+}
+
+/** Models a source that can't be fetched (attachmentsFor throws → content unchanged). */
 const throwingSource: AttachmentSource = {
-  fetchMessageAttachments: async () => {
+  attachmentsFor: async () => {
     throw new Error("unknown channel");
   },
+  rewriteAttachmentLinks,
 };
 
 let dir: string;

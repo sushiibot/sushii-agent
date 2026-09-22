@@ -50,6 +50,13 @@
       "when": 1790092414041,
       "tag": "0006_square_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1790095130137,
+      "tag": "0007_green_betty_ross",
+      "breakpoints": true
     }
   ]
 }

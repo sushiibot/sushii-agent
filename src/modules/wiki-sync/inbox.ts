@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MESSAGE_CONCURRENCY, materializeMessageAttachments, runPool } from "./attachments.ts";
-import type { AttachmentSource, ChannelNameResolver } from "./context.ts";
+import type { AttachmentSource, ChannelNameResolver, WikiSyncContext } from "./context.ts";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
 
 function slugifyChannelName(name: string): string {
@@ -16,6 +16,7 @@ function slugifyChannelName(name: string): string {
  * conversation with no indication of where they belong.
  */
 interface ChannelGroup {
+  surface: string;
   channelId: string;
   channelName: string | null;
   parentChannelId: string | null;
@@ -73,20 +74,22 @@ function groupConsecutive(messages: WikiSyncMessage[]): WikiSyncMessage[][] {
 // burst, and worth the imprecision for not repeating the header per line. A run mixing a reply
 // back in never happens: groupConsecutive never extends a group with a reply, so every group
 // here is either size 1 or reply-free.
-function formatMessageGroup(guildId: string, group: WikiSyncMessage[]): string {
+function formatMessageGroup(linkFor: WikiSyncContext["linkFor"], group: WikiSyncMessage[]): string {
   const first = group[0]!;
   const author = first.authorDisplayName ?? first.authorUsername;
   const timestamp = new Date(first.createdAt).toISOString();
-  const url = `https://discord.com/channels/${guildId}/${first.channelId}/${first.discordId}`;
+  const link = linkFor(first);
+  const source = link ? `(${link}) ` : "";
   const replyPrefix = first.replyTo ? `↳ replying to ${first.replyTo.author} ("${first.replyTo.content}") — ` : "";
   const runSuffix = group.length > 1 ? ` sent ${group.length} messages in a row` : "";
-  const header = `[${timestamp}] (${url}) ${replyPrefix}${author} (id ${first.authorId})${runSuffix}`;
+  const header = `[${timestamp}] ${source}${replyPrefix}${author} (id ${first.authorId})${runSuffix}`;
   const lines = group.map((m) => m.content);
   return `${header}\n${lines.join("\n")}`;
 }
 
 export interface InboxFile {
   path: string;
+  surface: string;
   channelId: string;
   parentChannelId: string | null;
 }
@@ -106,8 +109,7 @@ export interface InboxFile {
  */
 export async function writeMessageInbox(
   inboxDir: string,
-  deps: { channelNames: ChannelNameResolver; attachments: AttachmentSource },
-  guildId: string,
+  deps: { channelNames: ChannelNameResolver; attachments: AttachmentSource; linkFor: WikiSyncContext["linkFor"] },
   messages: WikiSyncMessage[],
 ): Promise<{ files: InboxFile[] }> {
   await rm(inboxDir, { recursive: true, force: true });
@@ -128,6 +130,7 @@ export async function writeMessageInbox(
     let group = groups.get(message.channelId);
     if (!group) {
       group = {
+        surface: message.surface,
         channelId: message.channelId,
         channelName: deps.channelNames.resolve(message.channelId),
         parentChannelId: message.parentChannelId,
@@ -143,11 +146,11 @@ export async function writeMessageInbox(
   for (const group of groups.values()) {
     const fileName = `${fileStem(group)}.md`;
     const body = groupConsecutive(group.messages)
-      .map((g) => formatMessageGroup(guildId, g))
+      .map((g) => formatMessageGroup(deps.linkFor, g))
       .join("\n");
     const filePath = join(inboxDir, fileName);
     await writeFile(filePath, `${fileHeader(group)}${body}\n`, "utf8");
-    files.push({ path: filePath, channelId: group.channelId, parentChannelId: group.parentChannelId });
+    files.push({ path: filePath, surface: group.surface, channelId: group.channelId, parentChannelId: group.parentChannelId });
   }
 
   return { files };

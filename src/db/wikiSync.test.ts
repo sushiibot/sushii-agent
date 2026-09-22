@@ -1,7 +1,15 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { applySchema } from "./index.ts";
+import * as schema from "./schema.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "./wikiSync.ts";
+
+const realMigrationsDir = join(import.meta.dir, "..", "..", "drizzle");
 
 /** Effectively unbounded `until` for tests that don't care about the upper window edge. */
 const UNTIL_MAX = Number.MAX_SAFE_INTEGER;
@@ -49,30 +57,64 @@ function insertMessage(
 }
 
 describe("wiki-sync watermark", () => {
-  test("defaults to 0 for a guild that has never synced", () => {
+  test("defaults to 0 for a source that has never synced", () => {
     const db = testDb();
-    expect(getWikiSyncWatermark(db, "g1")).toBe(0);
+    expect(getWikiSyncWatermark(db, "w1", "discord", "w1")).toBe(0);
   });
 
   test("round-trips a set watermark", () => {
     const db = testDb();
-    setWikiSyncWatermark(db, "g1", 12345);
-    expect(getWikiSyncWatermark(db, "g1")).toBe(12345);
+    setWikiSyncWatermark(db, "w1", "discord", "w1", 12345);
+    expect(getWikiSyncWatermark(db, "w1", "discord", "w1")).toBe(12345);
   });
 
-  test("upserts on repeated sets for the same guild", () => {
+  test("upserts on repeated sets for the same source", () => {
     const db = testDb();
-    setWikiSyncWatermark(db, "g1", 100);
-    setWikiSyncWatermark(db, "g1", 200);
-    expect(getWikiSyncWatermark(db, "g1")).toBe(200);
+    setWikiSyncWatermark(db, "w1", "discord", "w1", 100);
+    setWikiSyncWatermark(db, "w1", "discord", "w1", 200);
+    expect(getWikiSyncWatermark(db, "w1", "discord", "w1")).toBe(200);
   });
 
-  test("tracks watermarks independently per guild", () => {
+  test("tracks watermarks independently per source of the same wiki", () => {
     const db = testDb();
-    setWikiSyncWatermark(db, "g1", 100);
-    setWikiSyncWatermark(db, "g2", 200);
-    expect(getWikiSyncWatermark(db, "g1")).toBe(100);
-    expect(getWikiSyncWatermark(db, "g2")).toBe(200);
+    setWikiSyncWatermark(db, "w1", "discord", "g1", 100);
+    setWikiSyncWatermark(db, "w1", "slack", "T1", 200);
+    expect(getWikiSyncWatermark(db, "w1", "discord", "g1")).toBe(100);
+    expect(getWikiSyncWatermark(db, "w1", "slack", "T1")).toBe(200);
+  });
+});
+
+// The 0007 migration backfills the old single-source table into the per-source one. A dropped or
+// zeroed watermark re-ingests ~30 days and reproduces a known "repeated content" bug, so this
+// asserts the preserved VALUE through the exact prod upgrade path: a DB migrated to 0006 by
+// drizzle's own journal, then 0007 applied on top — not a hand-run INSERT.
+describe("wiki_sync_state → wiki_sync_source_state migration", () => {
+  test("preserves an existing discord watermark value through the real 0006 → 0007 upgrade", () => {
+    // Build a migrations folder frozen at the pre-0007 state (strip 0007's sql, snapshot, and
+    // journal entry) so drizzle writes its own 0000–0006 journal, exactly as prod's DB has it.
+    const scratch = mkdtempSync(join(tmpdir(), "wiki-sync-pre0007-"));
+    cpSync(realMigrationsDir, scratch, { recursive: true });
+    rmSync(join(scratch, "0007_green_betty_ross.sql"));
+    rmSync(join(scratch, "meta", "0007_snapshot.json"));
+    const journalPath = join(scratch, "meta", "_journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { tag: string }[] };
+    journal.entries = journal.entries.filter((e) => !e.tag.startsWith("0007"));
+    writeFileSync(journalPath, JSON.stringify(journal));
+
+    const db = new Database(":memory:");
+    try {
+      const orm = drizzle({ client: db, schema });
+      migrate(orm, { migrationsFolder: scratch }); // 0000–0006, drizzle-written journal
+      db.run("INSERT INTO wiki_sync_state (guild_id, last_processed_at) VALUES ('G1', 12345)");
+
+      applySchema(db); // applies only 0007 on top
+
+      expect(getWikiSyncWatermark(db, "G1", "discord", "G1")).toBe(12345);
+      expect(db.query("SELECT name FROM sqlite_master WHERE name = 'wiki_sync_state'").all()).toHaveLength(0);
+    } finally {
+      db.close();
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });
 
@@ -84,7 +126,15 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "3", guildId: "g1", createdAt: 200 });
 
     const result = getUnprocessedMessages(db, "g1", 150, UNTIL_MAX, 100);
-    expect(result.map((m) => m.discordId)).toEqual(["3", "2"]);
+    expect(result.map((m) => m.messageId)).toEqual(["3", "2"]);
+  });
+
+  test("stamps each row with surface 'discord' and the queried spaceId", () => {
+    const db = testDb();
+    insertMessage(db, { discordId: "1", guildId: "g1", createdAt: 100 });
+    const result = getUnprocessedMessages(db, "g1", 0, UNTIL_MAX, 100);
+    expect(result[0]!.surface).toBe("discord");
+    expect(result[0]!.spaceId).toBe("g1");
   });
 
   test("excludes bot messages", () => {
@@ -93,7 +143,7 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "2", guildId: "g1", createdAt: 200 });
 
     const result = getUnprocessedMessages(db, "g1", 0, UNTIL_MAX, 100);
-    expect(result.map((m) => m.discordId)).toEqual(["2"]);
+    expect(result.map((m) => m.messageId)).toEqual(["2"]);
   });
 
   test("excludes soft-deleted messages", () => {
@@ -102,7 +152,7 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "2", guildId: "g1", createdAt: 200 });
 
     const result = getUnprocessedMessages(db, "g1", 0, UNTIL_MAX, 100);
-    expect(result.map((m) => m.discordId)).toEqual(["2"]);
+    expect(result.map((m) => m.messageId)).toEqual(["2"]);
   });
 
   test("excludes other guilds", () => {
@@ -111,7 +161,7 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "2", guildId: "g2", createdAt: 100 });
 
     const result = getUnprocessedMessages(db, "g1", 0, UNTIL_MAX, 100);
-    expect(result.map((m) => m.discordId)).toEqual(["1"]);
+    expect(result.map((m) => m.messageId)).toEqual(["1"]);
   });
 
   test("respects the limit", () => {
@@ -130,7 +180,7 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "3", guildId: "g1", createdAt: 300 });
 
     const result = getUnprocessedMessages(db, "g1", 0, 200, 100);
-    expect(result.map((m) => m.discordId)).toEqual(["1", "2"]);
+    expect(result.map((m) => m.messageId)).toEqual(["1", "2"]);
   });
 
   test("carries parentChannelId through for thread messages", () => {
@@ -160,7 +210,7 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "2", guildId: "g1", createdAt: 200, replyToId: "1", content: "yes, still broken" });
 
     const result = getUnprocessedMessages(db, "g1", 0, UNTIL_MAX, 100);
-    const reply = result.find((m) => m.discordId === "2")!;
+    const reply = result.find((m) => m.messageId === "2")!;
     expect(reply.replyTo).toEqual({ author: "pham", content: "is this still broken?" });
   });
 
@@ -178,7 +228,7 @@ describe("getUnprocessedMessages", () => {
     insertMessage(db, { discordId: "2", guildId: "g1", createdAt: 200, replyToId: "1" });
 
     const result = getUnprocessedMessages(db, "g1", 0, UNTIL_MAX, 100);
-    const reply = result.find((m) => m.discordId === "2")!;
+    const reply = result.find((m) => m.messageId === "2")!;
     expect(reply.replyTo!.content.length).toBe(121); // 120 chars + ellipsis
     expect(reply.replyTo!.content.endsWith("…")).toBe(true);
   });

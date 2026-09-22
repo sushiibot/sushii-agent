@@ -1,13 +1,10 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { AttachmentSource, FetchedAttachment } from "./context.ts";
+import type { AttachmentSource, FetchedAttachment, Replacement } from "./context.ts";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
 import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("wiki-sync:attachments");
-
-const CDN_MARKER = "cdn.discordapp.com/attachments/";
-const CDN_LABEL_URL_RE = /\]\((https:\/\/cdn\.discordapp\.com\/attachments\/\d+\/(\d+)\/[^\s)]+)\)/g;
 
 const MAX_BYTES = Number(Bun.env.WIKI_SYNC_ATTACHMENT_MAX_BYTES ?? 25 * 1024 * 1024);
 const PDF_MAX_PAGES = Number(Bun.env.WIKI_SYNC_PDF_MAX_PAGES ?? 12);
@@ -101,12 +98,6 @@ export async function runSpawn(cmd: string[], timeoutMs = PDF_TIMEOUT_MS): Promi
   } catch (err) {
     return { ok: false, stdout: "", stderr: String(err) };
   }
-}
-
-/** What a materialized attachment rewrites its markdown label to: the link target, plus optional trailing text appended after the closing `)`. */
-interface Replacement {
-  url: string;
-  extra?: string;
 }
 
 async function materializeImage(msgDir: string, attachment: FetchedAttachment): Promise<Replacement | null> {
@@ -218,36 +209,26 @@ async function materializeOne(msgDir: string, attachment: FetchedAttachment): Pr
   return null;
 }
 
-function rewriteContent(content: string, replacements: Map<string, Replacement>): string {
-  return content.replace(CDN_LABEL_URL_RE, (full, _url, attachmentId) => {
-    const replacement = replacements.get(attachmentId);
-    return replacement ? `](${replacement.url})${replacement.extra ?? ""}` : full;
-  });
-}
-
 /**
- * Rewrites a message's content so any Discord attachment labels point at local files instead of
- * CDN URLs, which are already expired by the time a sweep runs this. Refetches the live message
- * to get fresh, re-signed attachment URLs rather than trusting what's stored in `content`.
+ * Rewrites a message's content so any attachment references point at local files instead of the
+ * surface's own (often already-expired) URLs. Both the detection of which attachments to fetch and
+ * the reference-rewriting are delegated to the surface's `AttachmentSource` — this stays neutral,
+ * doing only the download + pdf/image materialization.
  *
- * Never throws: any failure (deleted message, lost channel access, missing pdftotext/pdftoppm,
- * a single attachment's download failing) degrades to leaving the affected label(s) as-is rather
- * than failing the whole sweep.
+ * Never throws: any failure (deleted message, lost access, missing pdftotext/pdftoppm, a single
+ * attachment's download failing) degrades to leaving the affected reference(s) as-is rather than
+ * failing the whole sweep.
  */
 export async function materializeMessageAttachments(
   source: AttachmentSource,
   attachmentsDir: string,
   message: WikiSyncMessage,
 ): Promise<string> {
-  if (!message.content.includes(CDN_MARKER)) {
-    return message.content;
-  }
-
   let attachments: FetchedAttachment[];
   try {
-    attachments = await source.fetchMessageAttachments(message.channelId, message.discordId);
+    attachments = await source.attachmentsFor(message);
   } catch (err) {
-    logger.warn({ err, channelId: message.channelId, discordId: message.discordId }, "failed to refetch message for attachments");
+    logger.warn({ err, channelId: message.channelId, messageId: message.messageId }, "failed to fetch message attachments");
     return message.content;
   }
 
@@ -255,7 +236,7 @@ export async function materializeMessageAttachments(
     return message.content;
   }
 
-  const msgDir = join(attachmentsDir, message.discordId);
+  const msgDir = join(attachmentsDir, message.messageId);
   const replacements = new Map<string, Replacement>();
 
   await runPool(attachments, DOWNLOAD_CONCURRENCY, async (attachment) => {
@@ -270,5 +251,5 @@ export async function materializeMessageAttachments(
   if (replacements.size === 0) {
     return message.content;
   }
-  return rewriteContent(message.content, replacements);
+  return source.rewriteAttachmentLinks(message.content, replacements);
 }

@@ -1,10 +1,15 @@
 import type { Database } from "bun:sqlite";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { wikiSyncState } from "./schema.ts";
+import { wikiSyncSourceState } from "./schema.ts";
 
 export interface WikiSyncMessage {
-  discordId: string;
+  /** Source surface this message came from (e.g. "discord"). */
+  surface: string;
+  /** The source space this message belongs to — a Discord guild id, a Slack team, etc. */
+  spaceId: string;
+  /** Surface-native message id (a Discord snowflake, a Slack `ts`, …). */
+  messageId: string;
   channelId: string;
   /** Set when channelId is a thread — the channel the thread lives under. */
   parentChannelId: string | null;
@@ -17,19 +22,40 @@ export interface WikiSyncMessage {
   replyTo: { author: string; content: string } | null;
 }
 
-/** Cursor for this guild's next sweep. 0 (never synced) means "everything currently retained". */
-export function getWikiSyncWatermark(db: Database, guildId: string): number {
-  const orm = drizzle({ client: db, schema: { wikiSyncState } });
-  const row = orm.select().from(wikiSyncState).where(eq(wikiSyncState.guildId, guildId)).get();
+/** Cursor for one source's next sweep of a wiki. 0 (never synced) means "everything currently
+ *  retained". Keyed per `(wikiId, surface, spaceId)` so each source of a shared wiki advances
+ *  independently. */
+export function getWikiSyncWatermark(db: Database, wikiId: string, surface: string, spaceId: string): number {
+  const orm = drizzle({ client: db, schema: { wikiSyncSourceState } });
+  const row = orm
+    .select()
+    .from(wikiSyncSourceState)
+    .where(
+      and(
+        eq(wikiSyncSourceState.wikiId, wikiId),
+        eq(wikiSyncSourceState.surface, surface),
+        eq(wikiSyncSourceState.spaceId, spaceId),
+      ),
+    )
+    .get();
   return row?.lastProcessedAt ?? 0;
 }
 
-export function setWikiSyncWatermark(db: Database, guildId: string, timestamp: number): void {
-  const orm = drizzle({ client: db, schema: { wikiSyncState } });
+export function setWikiSyncWatermark(
+  db: Database,
+  wikiId: string,
+  surface: string,
+  spaceId: string,
+  timestamp: number,
+): void {
+  const orm = drizzle({ client: db, schema: { wikiSyncSourceState } });
   orm
-    .insert(wikiSyncState)
-    .values({ guildId, lastProcessedAt: timestamp })
-    .onConflictDoUpdate({ target: wikiSyncState.guildId, set: { lastProcessedAt: timestamp } })
+    .insert(wikiSyncSourceState)
+    .values({ wikiId, surface, spaceId, lastProcessedAt: timestamp })
+    .onConflictDoUpdate({
+      target: [wikiSyncSourceState.wikiId, wikiSyncSourceState.surface, wikiSyncSourceState.spaceId],
+      set: { lastProcessedAt: timestamp },
+    })
     .run();
 }
 
@@ -79,7 +105,9 @@ export function getUnprocessedMessages(
   }>;
 
   return rows.map((r) => ({
-    discordId: r.discord_id,
+    surface: "discord",
+    spaceId: guildId,
+    messageId: r.discord_id,
     channelId: r.channel_id,
     parentChannelId: r.parent_channel_id,
     authorId: r.author_id,

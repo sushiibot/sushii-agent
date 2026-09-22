@@ -27,7 +27,7 @@ import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerCo
 import { buildOpsTriagePromptSection } from "../../modules/ops-triage/prompt.ts";
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
-import { createDiscordWikiSyncContext } from "./wikiSync.ts";
+import { makeDiscordWikiSyncContext } from "./wikiSync.ts";
 import { createWikiFsHost } from "../../modules/wiki-sync/wikiHost.ts";
 import { DiscordHost } from "./hosts/discordHost.ts";
 import { DiscordMessageCacheHost } from "./hosts/messageCacheHost.ts";
@@ -711,7 +711,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
     if (interaction.isChatInputCommand() && interaction.commandName === WIKI_SYNC_COMMAND_NAME) {
-      await handleWikiSyncCommand(interaction, (gid) => createDiscordWikiSyncContext(client, gid));
+      await handleWikiSyncCommand(interaction, (wikiId, source) => makeDiscordWikiSyncContext(client, wikiId, source));
       return;
     }
     if (!interaction.isButton()) return;

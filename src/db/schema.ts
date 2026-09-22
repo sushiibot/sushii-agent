@@ -79,10 +79,18 @@ export const mcpOauthSessions = sqliteTable("mcp_oauth_sessions", {
   expiresAt: integer("expires_at").notNull(),
 });
 
-export const wikiSyncState = sqliteTable("wiki_sync_state", {
-  guildId: text("guild_id").primaryKey(),
-  lastProcessedAt: integer("last_processed_at").notNull(),
-});
+/** Per-source sweep cursor for a wiki. One wiki (`wikiId`) can be fed by many sources, each a
+ *  `(surface, spaceId)` pair keeping its own independent watermark. */
+export const wikiSyncSourceState = sqliteTable(
+  "wiki_sync_source_state",
+  {
+    wikiId: text("wiki_id").notNull(),
+    surface: text("surface").notNull(),
+    spaceId: text("space_id").notNull(),
+    lastProcessedAt: integer("last_processed_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.wikiId, t.surface, t.spaceId] })],
+);
 
 /** Poll cursor for the buzz surface — last-processed mention `created_at` (unix seconds). Single row. */
 export const buzzState = sqliteTable("buzz_state", {

@@ -23,7 +23,7 @@ import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
 import { getWikiSyncEnabledGuildIds } from "./modules/wiki-sync/guilds.ts";
-import { createDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
+import { makeDiscordWikiSyncContext } from "./surfaces/discord/wikiSync.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
 import { NostrBuzzClient } from "./surfaces/buzz/buzzClient.ts";
 import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
@@ -85,7 +85,7 @@ async function main() {
   // Non-conversational drivers bootstrap here, not inside a surface, so they don't depend on the
   // Discord gateway lifecycle (C14). The capability bag is still Discord-backed for now — a headless
   // impl (buzz/U6) swaps only the factory.
-  startWikiSyncScheduler((guildId) => createDiscordWikiSyncContext(client as Client<true>, guildId));
+  startWikiSyncScheduler((wikiId, source) => makeDiscordWikiSyncContext(client as Client<true>, wikiId, source));
 
   // Second surface: buzz. A separate AgentCore instance sharing the same store/memory/tools/model,
   // but with a plain buzz behavior (no Discord tokens) and a hookless bus — the Discord-host tools
