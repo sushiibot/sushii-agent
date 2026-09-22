@@ -71,6 +71,30 @@ describe("mnemosyne retrieve", () => {
     );
   });
 
+  test("scoreless individual hits keep bank order (not evicted by scored space-general hits)", async () => {
+    const callTool: McpToolCall = async (_name, args) => {
+      const bank = args["bank"] as string;
+      if (bank === "sushii-space-guild-1-user-u1") {
+        // Individual bank returns hits WITHOUT a score field (e.g. keyword-only match).
+        return {
+          status: "ok",
+          count: 2,
+          results: [
+            { id: "m0", content: "user fact one" },
+            { id: "m1", content: "user fact two" },
+          ],
+        };
+      }
+      return recallHits([{ id: "m0", content: "space fact", score: 0.95 }]);
+    };
+    const provider = createMnemosyneMemoryProvider({ callTool, recallLimit: 2, logger: silentLogger });
+
+    const block = await provider.retrieve({ scope: PUBLIC, query: "x", deadlineMs: 1000 });
+    // Any absent score → preserve bank insertion order (individual first); the high-scored space
+    // fact must NOT sort ahead and evict both of the user's own facts.
+    expect(block).toBe("## Relevant memory\n- user fact one\n- user fact two");
+  });
+
   test("a cold/malformed bank contributes nothing but the good bank still injects (no warn)", async () => {
     const { warns, logger } = capturingLogger();
     const callTool: McpToolCall = async (_name, args) => {

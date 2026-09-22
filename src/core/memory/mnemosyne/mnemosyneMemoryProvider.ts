@@ -32,7 +32,7 @@ const DEADLINE = Symbol("mnemosyne-recall-deadline");
 interface RecallHit {
   id: string | null;
   content: string;
-  score: number;
+  score: number | null;
 }
 
 // mnemosyne recall returns `{ status, count, results: [{ content, importance, score, id, ... }] }`
@@ -52,16 +52,18 @@ function parseRecallHits(payload: unknown): { hits: RecallHit[]; malformed: bool
     const content = typeof r?.content === "string" ? r.content : "";
     if (content.trim().length === 0) continue;
     const id = typeof r?.id === "string" ? r.id : null;
-    const score = typeof r?.score === "number" ? r.score : 0;
+    const score = typeof r?.score === "number" ? r.score : null;
     hits.push({ id, content, score });
   }
   return { hits, malformed: false };
 }
 
-/** Merge hits across banks: dedupe by `${bank}:${id}` (id-less hits are all kept), rank by `score`
- *  desc, cap at `limit`. mnemosyne ids look per-bank (sequence-like), so the bank must be part of
- *  the key — a bare id would drop a genuinely distinct fact that happens to share an id. First
- *  occurrence of a key wins. */
+/** Merge hits across banks: dedupe by `${bank}:${id}` (id-less hits are all kept), cap at `limit`.
+ *  mnemosyne ids look per-bank (sequence-like), so the bank must be part of the key — a bare id would
+ *  drop a genuinely distinct fact that happens to share an id. First occurrence of a key wins.
+ *  Ranking: sort by `score` desc ONLY when every hit carries a real score; if any score is missing,
+ *  preserve bank insertion order (individual bank first per `memoryBanks().read`) so a scoreless
+ *  individual fact is never evicted by a scored space-general one — the brief's individual-first rule. */
 function mergeHits(banks: { bank: string; hits: RecallHit[] }[], limit: number): RenderableMemory[] {
   const seen = new Set<string>();
   const merged: RecallHit[] = [];
@@ -75,7 +77,9 @@ function mergeHits(banks: { bank: string; hits: RecallHit[] }[], limit: number):
       merged.push(hit);
     }
   }
-  merged.sort((a, b) => b.score - a.score);
+  if (merged.every((h) => h.score !== null)) {
+    merged.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  }
   return merged.slice(0, limit).map((h) => ({ content: h.content }));
 }
 
