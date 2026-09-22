@@ -8,6 +8,8 @@ import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../cont
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
 import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
+import { buildAgentEnv } from "./agentEnv.ts";
+import { ENV_CONTEXT_PATH } from "./envContext.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
@@ -93,6 +95,7 @@ export interface PiRunnerOptions {
   apiKey: string;
   baseUrl: string;
   agentDir: string; // where Pi keeps auth/models/sessions (session files = resume handles)
+  environmentContext?: string; // markdown injected ahead of the repo's own AGENTS.md
   maxOutputTokens?: number;
   fallbackContextWindow?: number;
   progressDebounceMs?: number;
@@ -510,17 +513,23 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const sessionManager = resumeSessionFile
       ? SessionManager.open(resumeSessionFile, sessionDir, cwd)
       : SessionManager.create(cwd, sessionDir);
-    const loader = new DefaultResourceLoader({ cwd, agentDir: this.options.agentDir, systemPromptOverride: () => RUNNER_SYSTEM_PROMPT });
+    const envContext = this.options.environmentContext;
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir: this.options.agentDir,
+      systemPromptOverride: () => RUNNER_SYSTEM_PROMPT,
+      agentsFilesOverride: (base) =>
+        envContext ? { agentsFiles: [{ path: ENV_CONTEXT_PATH, content: envContext }, ...base.agentsFiles] } : base,
+    });
     await loader.reload();
 
-    // Custom bash tool whose every spawn gets the per-repo git/gh credentials injected into its env
-    // (fresh token via tokenRef). This is how the agent's own `git push` / `gh pr create` authenticate
-    // without the runner pushing for it, and without the App key ever reaching the agent.
+    // Every spawn gets an allowlisted env plus the per-repo git/gh credentials (fresh token via
+    // tokenRef), so the agent's own `git push` / `gh pr create` authenticate without the runner's
+    // secrets appearing in `env` output.
     const bashTool = createBashToolDefinition(cwd, {
       spawnHook: (context) => {
         const token = tokenRef.current;
-        if (token) Object.assign(context.env, agentGitEnv(repoHome, token));
-        return context;
+        return { ...context, env: buildAgentEnv(context.env, token ? agentGitEnv(repoHome, token) : {}) };
       },
     });
 

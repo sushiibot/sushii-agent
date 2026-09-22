@@ -5,6 +5,7 @@ import type { RunnerAdapter } from "../contracts.ts";
 import { OrchestrationClient } from "../transport/client.ts";
 import { ClaudeCodeRunnerAdapter } from "./claudeCodeRunner.ts";
 import { PiRunnerAdapter } from "./piRunner.ts";
+import { buildEnvironmentContext, probeTools } from "./envContext.ts";
 import { tokenProviderFromEnv } from "./githubApp.ts";
 import type { RepoOpsDeps } from "./repoOps.ts";
 
@@ -13,7 +14,13 @@ const log = getLogger("orchestration.runner");
 // Kind → adapter factory. Adding a runner kind (e.g. Hermes) is a new entry here + an adapter
 // implementing RunnerAdapter — nothing else in the transport/orchestrator changes, since every
 // kind speaks the same start/resume/stream/interrupt contract.
-const ADAPTERS: Record<string, () => RunnerAdapter> = {
+interface AdapterContext {
+  runnerId: string;
+  location: string | null;
+  workspaceRoot: string | null;
+}
+
+const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
   "claude-code": () =>
     new ClaudeCodeRunnerAdapter({
       claudeBin: process.env.CLAUDE_BIN,
@@ -21,22 +28,30 @@ const ADAPTERS: Record<string, () => RunnerAdapter> = {
       // ONLY on a sandboxed runner (container/VM), where the CLI permits skipping all checks.
       permissionArgs: process.env.RUNNER_PERMISSION_MODE === "bypass" ? ["--dangerously-skip-permissions"] : undefined,
     }),
-  pi: () => {
+  pi: (ctx) => {
     const model = process.env.RUNNER_MODEL;
     const apiKey = process.env.OPENAI_API_KEY;
     const baseUrl = process.env.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1";
     const agentDir = process.env.RUNNER_AGENT_DIR ?? `${process.env.HOME}/.pi-runner`;
     if (!model) throw new Error("RUNNER_KIND=pi requires RUNNER_MODEL");
     if (!apiKey) throw new Error("RUNNER_KIND=pi requires OPENAI_API_KEY");
-    const ttlHours = Number(process.env.RUNNER_WORKTREE_TTL_HOURS ?? "24");
+    const rawTtl = Number(process.env.RUNNER_WORKTREE_TTL_HOURS ?? "24");
+    const ttlHours = Number.isFinite(rawTtl) ? rawTtl : 24;
+    const repoOps = buildRepoOps();
+    // Probed once at startup: the image is fixed for the process lifetime.
+    const environmentContext = buildEnvironmentContext(
+      { ...ctx, workspaceRoot: repoOps ? ctx.workspaceRoot : null, worktreeTtlHours: ttlHours },
+      probeTools(),
+    );
     return new PiRunnerAdapter({
       model,
       apiKey,
       baseUrl,
       agentDir,
-      repoOps: buildRepoOps(),
-      workspaceRoot: process.env.RUNNER_WORKSPACE?.trim() || null,
-      worktreeTtlMs: (Number.isFinite(ttlHours) ? ttlHours : 24) * 3600_000,
+      environmentContext,
+      repoOps,
+      workspaceRoot: ctx.workspaceRoot,
+      worktreeTtlMs: ttlHours * 3600_000,
     });
   },
   // hermes: reserved — add a HermesRunnerAdapter implementing RunnerAdapter and register it here.
@@ -90,11 +105,11 @@ async function main(): Promise<void> {
   // is not silently permissive.
   const workspaceRoot = process.env.RUNNER_WORKSPACE?.trim() || null;
 
+  const location = process.env.RUNNER_LOCATION?.trim() || null;
   const factory = ADAPTERS[kind];
   if (!factory) throw new Error(`unknown RUNNER_KIND "${kind}" (known: ${Object.keys(ADAPTERS).join(", ")})`);
-  const adapter = factory();
+  const adapter = factory({ runnerId, location, workspaceRoot });
 
-  const location = process.env.RUNNER_LOCATION?.trim() || null;
   const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, adapter });
 
   log.info({ url, runnerId, kind, projects, workspaceRoot, location }, "runner starting (auto-reconnect)");
