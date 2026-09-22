@@ -1,6 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import { getLogger } from "../logger.ts";
+
+const logger = getLogger("mcp/sushii-client");
 
 export interface ModCase {
   guildId: string;
@@ -39,61 +41,93 @@ export interface GetGuildRecentCasesArgs {
   limit?: number;
 }
 
-// Server is stateless — create a fresh client+transport per call so there's
-// no persistent connection and startup never crashes on unreachable URL.
+/** The low-level MCP connection the client manages. The default binds a real Streamable HTTP client;
+ *  tests supply a fake to exercise connect/reuse/reset without a live server. */
+export interface SushiiMcpConnection {
+  connect(): Promise<void>;
+  callTool(name: string, args: Record<string, unknown>): Promise<{ content: unknown }>;
+  close(): Promise<void>;
+}
+
+export interface SushiiMcpClientOptions {
+  /** Test seam: build the underlying MCP connection. Defaults to a real Streamable HTTP client. */
+  createClient?: () => SushiiMcpConnection;
+}
+
+// Lazy so an unreachable URL can't crash startup — nothing connects until the first tool call. The
+// connection is then reused across calls; a transport failure drops it so the next call reconnects.
 export class SushiiMcpClient {
+  private readonly createClient: () => SushiiMcpConnection;
+  private clientPromise: Promise<SushiiMcpConnection> | null = null;
+
   constructor(
     private readonly baseUrl: string,
     private readonly token: string,
-  ) {}
-
-  async getTools(): Promise<ChatCompletionTool[]> {
-    const client = new Client(
-      { name: "sushii-agent", version: "1.0.0" },
-      { capabilities: {} },
-    );
-
-    const transport = new StreamableHTTPClientTransport(new URL(this.baseUrl), {
-      requestInit: {
-        headers: { Authorization: `Bearer ${this.token}` },
-      },
-    });
-
-    await client.connect(transport);
-
-    try {
-      const { tools } = await client.listTools();
-      return tools.map((tool) => ({
-        type: "function" as const,
-        function: {
-          name: tool.name,
-          description: tool.description ?? "",
-          parameters: (tool.inputSchema ?? { type: "object", properties: {} }) as Record<string, unknown>,
-        },
-      }));
-    } finally {
-      await client.close().catch(() => {});
-    }
+    options?: SushiiMcpClientOptions,
+  ) {
+    this.createClient = options?.createClient ?? (() => this.defaultCreateClient());
   }
 
-  private async callTool(name: string, args: Record<string, unknown>) {
+  private defaultCreateClient(): SushiiMcpConnection {
     const client = new Client(
       { name: "sushii-agent", version: "1.0.0" },
       { capabilities: {} },
     );
-
     const transport = new StreamableHTTPClientTransport(new URL(this.baseUrl), {
       requestInit: {
         headers: { Authorization: `Bearer ${this.token}` },
       },
     });
+    return {
+      connect: () => client.connect(transport),
+      callTool: async (name, args) => {
+        const result = await client.callTool({ name, arguments: args });
+        return { content: (result as { content: unknown }).content };
+      },
+      close: () => client.close(),
+    };
+  }
 
-    await client.connect(transport);
+  private ensureConnected(): Promise<SushiiMcpConnection> {
+    if (this.clientPromise === null) {
+      this.clientPromise = (async () => {
+        const client = this.createClient();
+        await client.connect();
+        return client;
+      })().catch((err) => {
+        this.clientPromise = null; // don't cache a failed connect — a later call retries
+        throw err;
+      });
+    }
+    return this.clientPromise;
+  }
 
+  private reset(): void {
+    const pending = this.clientPromise;
+    this.clientPromise = null;
+    void pending?.then((c) => c.close()).catch(() => {});
+  }
+
+  /** Close the reused connection (if any) — for graceful process shutdown. */
+  async close(): Promise<void> {
+    const pending = this.clientPromise;
+    this.clientPromise = null;
+    if (pending) await pending.then((c) => c.close()).catch(() => {});
+  }
+
+  // Retry once on transport failure: unlike the every-turn mnemosyne seam, mod-history lookups are
+  // rare, so the reused connection can be idle-reaped between them — the caller (a Discord tool) would
+  // otherwise see a spurious error on the first lookup after any quiet period. Bounded at one retry so
+  // a genuinely-down server still fails fast.
+  private async callTool(name: string, args: Record<string, unknown>, retry = true): Promise<{ content: unknown }> {
+    const client = await this.ensureConnected();
     try {
-      return await client.callTool({ name, arguments: args });
-    } finally {
-      await client.close().catch(() => {});
+      return await client.callTool(name, args);
+    } catch (err) {
+      logger.debug({ err, tool: name }, "sushii MCP call failed; resetting connection");
+      this.reset();
+      if (retry) return this.callTool(name, args, false);
+      throw err;
     }
   }
 

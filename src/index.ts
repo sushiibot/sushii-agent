@@ -20,6 +20,7 @@ import { createMemoryDeriver } from "./agent/memoryDeriver.ts";
 import type { LanguageModelProvider } from "./core/contracts.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
+import { closeSharedSushiMcpClients } from "./surfaces/discord/hosts/sushiMcpHost.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
 import { resolveWikiIdForSource } from "./modules/wiki-sync/sources.ts";
@@ -221,6 +222,11 @@ async function main() {
       await slackApp?.stop();
     } catch (err) {
       logger.error({ err }, "Slack app stop failed");
+    }
+    try {
+      await closeSharedSushiMcpClients();
+    } catch (err) {
+      logger.error({ err }, "sushii-mcp client close failed");
     }
     closeDb();
     try {
