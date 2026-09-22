@@ -14,6 +14,10 @@ export interface CommunitySpace {
   spaceId: string;
 }
 
+/** Vetted people beyond the owner. `trusted: true` = the elevated set (same tools the owner gets),
+ *  scoped to this community's spaces. Deliberately flat — no per-capability granularity. */
+export type CommunityMembers = Record<string, { trusted?: boolean }>;
+
 /** Raw per-community entry as it appears in communities.json (keyed by community id). */
 export interface CommunityConfig {
   spaces: CommunitySpace[];
@@ -21,6 +25,8 @@ export interface CommunityConfig {
   wiki?: { wikiId: string };
   /** This community's own Linear account. Absent → ops-triage falls through to the default (SUSHI). */
   linear?: { apiKey: string; teamId: string };
+  /** Authorized principals in this community, keyed by principalId. */
+  members?: CommunityMembers;
 }
 
 export interface Community {
@@ -28,6 +34,7 @@ export interface Community {
   spaces: CommunitySpace[];
   wiki?: { wikiId: string };
   linear?: { apiKey: string; teamId: string };
+  members?: CommunityMembers;
 }
 
 interface CommunityIndex {
@@ -43,7 +50,7 @@ function keyOf(surface: string, spaceId: string): string {
 export function buildCommunityIndex(communities: Record<string, CommunityConfig>): CommunityIndex {
   const bySpace = new Map<string, Community>();
   for (const [id, entry] of Object.entries(communities)) {
-    const community: Community = { id, spaces: entry?.spaces ?? [], wiki: entry?.wiki, linear: entry?.linear };
+    const community: Community = { id, spaces: entry?.spaces ?? [], wiki: entry?.wiki, linear: entry?.linear, members: entry?.members };
     for (const s of community.spaces) {
       const k = keyOf(s.surface, s.spaceId);
       const existing = bySpace.get(k);
@@ -72,4 +79,10 @@ function index(): CommunityIndex {
 export function resolveCommunity(surface: string, spaceId: string): Community | undefined {
   if (spaceId.length === 0) return undefined;
   return index().bySpace.get(keyOf(surface, spaceId));
+}
+
+/** Whether `principalId` is a trusted member of the community that owns (surface, spaceId). Pure;
+ *  false when the space belongs to no community or the principal isn't listed as trusted there. */
+export function isCommunityMember(principalId: string, surface: string, spaceId: string): boolean {
+  return resolveCommunity(surface, spaceId)?.members?.[principalId]?.trusted === true;
 }

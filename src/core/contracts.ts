@@ -402,6 +402,9 @@ export interface ToolRegistry {
        *  configured these decide visibility; unconfigured falls back to the space-string heuristic. */
       isOwner?: boolean;
       isPrivate?: boolean;
+      /** Whether the caller is authorized for this space (owner OR a community-trusted member). Gates
+       *  runner + ops-triage tool visibility in the configured regime; update_profile stays isOwner. */
+      authorized?: boolean;
     },
   ): ToolEntry<keyof ToolHosts>[];
 }

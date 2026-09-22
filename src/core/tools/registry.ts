@@ -71,25 +71,23 @@ export class CoreToolRegistry implements ToolRegistry {
 
   resolve(
     session: SurfaceSession,
-    space: { surface: SurfaceId; spaceId: string; autoMod?: boolean; isOwner?: boolean; isPrivate?: boolean },
+    space: { surface: SurfaceId; spaceId: string; autoMod?: boolean; isOwner?: boolean; isPrivate?: boolean; authorized?: boolean },
   ): ToolEntry<keyof ToolHosts>[] {
     const autoMod = space.autoMod ?? false;
     const a = this.availability();
     const key = spaceKey(space.surface, space.spaceId);
 
-    // Owner gating for runner + update_profile tools. Configured registry → author-aware.
-    // Runner/session tools are owner-only but NOT DM-only (the owner drives runners from guild
-    // channels too — same as ops-triage below); execution stays owner-gated in can(). update_profile
-    // stays DM-first (editing the personal profile shouldn't surface in a shared channel).
-    // Unconfigured → today's space-string heuristic (isPersonalSpace), unchanged.
+    // Gating for runner/ops-triage + update_profile tools. Configured registry → author-aware.
+    // Runner/session + ops-triage tools gate on `authorized` (owner OR a community-trusted member) but
+    // NOT on DM — authorized callers drive them from guild channels too; execution stays gated in
+    // can(). update_profile stays owner-DM-first (editing the personal profile shouldn't surface in a
+    // shared channel, and a trusted member must not reach it). Unconfigured → today's space-string
+    // heuristic (isPersonalSpace) + ownerDiscordId presence, unchanged.
     const configured = principalsConfigured();
     const ownerDm = space.isOwner === true && space.isPrivate === true;
-    const runnerAllowed = configured ? space.isOwner === true : a.owner && isPersonalSpace(key);
+    const runnerAllowed = configured ? space.authorized === true : a.owner && isPersonalSpace(key);
     const profileAllowed = configured ? ownerDm : isPersonalSpace(key);
-    // ops-triage (Grafana/Linear) is owner-only but NOT DM-only — the owner triages from guild
-    // channels too. Configured → the resolved principal is the owner (any surface); unconfigured →
-    // today's ownerDiscordId presence gate. Credential filters below still apply on top.
-    const opsOwnerAllowed = configured ? space.isOwner === true : a.owner;
+    const opsOwnerAllowed = configured ? space.authorized === true : a.owner;
 
     return this.entries
       .filter((entry) => hostsSatisfied(entry, session.hosts) && capabilitiesSatisfied(entry, session))

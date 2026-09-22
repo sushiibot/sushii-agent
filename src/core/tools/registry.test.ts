@@ -175,7 +175,7 @@ describe("owner-DM gating — UNCONFIGURED registry (legacy isPersonalSpace heur
   });
 });
 
-describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPrivate)", () => {
+describe("runner/ops gating — CONFIGURED registry (author-aware authorized; update_profile stays owner-DM)", () => {
   const prev = config.principals;
   const DRK: Record<string, PrincipalConfig> = { drk: { owner: true, identities: { slack: "U0OWNERTEST0" } } };
   beforeEach(() => {
@@ -185,28 +185,40 @@ describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPri
     config.principals = prev;
   });
 
-  test("owner in a private space (ANY surface) sees runner + update_profile tools", () => {
+  test("owner (authorized) in a private space (ANY surface) sees runner + update_profile tools", () => {
     const names = registry()
-      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: true, isPrivate: true })
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: true, isPrivate: true, authorized: true })
       .map((e) => e.name);
     expect(names).toContain("dispatch_to_runner");
     expect(names).toContain("update_profile");
   });
 
-  test("owner in a NON-private space gets runner tools but not update_profile; a non-owner gets neither", () => {
+  test("owner in a NON-private space gets runner tools but not update_profile; a non-authorized caller gets neither", () => {
     const publicOwner = registry()
-      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false })
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false, authorized: true })
       .map((e) => e.name);
-    // Runner tools are owner-only, not DM-only — the owner drives runners from a channel too.
+    // Runner tools gate on `authorized`, not DM — an authorized caller drives runners from a channel too.
     expect(publicOwner).toContain("dispatch_to_runner");
-    // update_profile stays DM-first (editing the personal profile shouldn't happen in a shared space).
+    // update_profile stays owner-DM-first (editing the personal profile shouldn't happen in a shared space).
     expect(publicOwner).not.toContain("update_profile");
 
-    const privateNonOwner = registry()
-      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true })
+    const privateNonAuth = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true, authorized: false })
       .map((e) => e.name);
-    expect(privateNonOwner).not.toContain("dispatch_to_runner");
-    expect(privateNonOwner).not.toContain("update_profile");
+    expect(privateNonAuth).not.toContain("dispatch_to_runner");
+    expect(privateNonAuth).not.toContain("update_profile");
+  });
+
+  // A community-trusted member is authorized for runner + ops tools but must NOT reach update_profile
+  // (that stays behind the owner-DM gate — a trusted member is not the owner).
+  test("a trusted member (authorized, not owner) gets runner + ops tools but never update_profile", () => {
+    const names = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: false, isPrivate: true, authorized: true })
+      .map((e) => e.name);
+    expect(names).toContain("dispatch_to_runner");
+    expect(names).toContain("search_logs");
+    expect(names).toContain("file_linear_issue");
+    expect(names).not.toContain("update_profile");
   });
 
   test("in the configured regime the legacy discord:dm space alone no longer suffices (needs the flags)", () => {
@@ -215,21 +227,21 @@ describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPri
     expect(noFlags).not.toContain("update_profile");
   });
 
-  // ops-triage is owner-only but NOT DM-only — it stays available to the owner in a guild channel.
-  test("ops-triage tools visible to the owner in a NON-private (guild) space", () => {
+  // ops-triage gates on `authorized` but NOT DM — it stays available in a guild channel.
+  test("ops-triage tools visible to an authorized caller in a NON-private (guild) space", () => {
     const names = registry()
-      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false })
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false, authorized: true })
       .map((e) => e.name);
     expect(names).toContain("search_logs");
     expect(names).toContain("file_linear_issue");
-    // runner tools are also owner-only-not-DM-only, so they're here too; update_profile stays DM-gated.
+    // runner tools gate the same way, so they're here too; update_profile stays owner-DM-gated.
     expect(names).toContain("dispatch_to_runner");
     expect(names).not.toContain("update_profile");
   });
 
-  test("ops-triage tools hidden from a non-owner even in a private space", () => {
+  test("ops-triage tools hidden from a non-authorized caller even in a private space", () => {
     const names = registry()
-      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true })
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true, authorized: false })
       .map((e) => e.name);
     expect(names).not.toContain("search_logs");
     expect(names).not.toContain("file_linear_issue");

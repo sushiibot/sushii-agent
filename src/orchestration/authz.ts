@@ -1,14 +1,15 @@
 // Execution authz for runner/session capabilities. Two regimes, selected by whether the manual
 // principal registry is configured:
-//   - CONFIGURED (principals.json non-empty): default-deny; grant only when the caller resolves to
-//     the OWNER principal and the capability is owner-grantable. NOT DM-restricted — the owner drives
-//     runners from guild channels too; only the owner's own principal ever qualifies, so a shared
-//     space grants nothing to non-owners.
+//   - CONFIGURED (principals.json non-empty): default-deny; grant only when the caller is authorized
+//     (the owner in any space, or a principal trusted in the community that owns the space) and the
+//     capability is owner-grantable. NOT DM-restricted — authorized callers drive runners from guild
+//     channels too; a shared space grants nothing to a caller not authorized for it.
 //   - UNCONFIGURED (empty/unset registry): today's exact behavior — the legacy `ownerDiscordId` id
 //     AND the hardcoded per-space (discord:dm-only) allowlist. Unchanged; never widened.
 import type { AuthzInput, Capability, CanFn } from "./contracts.ts";
 import { config } from "../config.ts";
 import { ownerPrincipalId, principalsConfigured, resolvePrincipal } from "./principals.ts";
+import { isCommunityMember } from "./communities.ts";
 
 export function spaceKey(surface: string, spaceId: string): string {
   return `${surface}:${spaceId}`;
@@ -55,17 +56,35 @@ function surfaceOf(space: string): string {
   return i === -1 ? space : space.slice(0, i);
 }
 
-/** Default-deny. Configured registry → four conjunctions (known owner principal · isOwner ·
- *  capability owner-grantable · an owner principal exists) — NOT space-restricted, since only the
- *  owner's own principal ever resolves as owner; unconfigured → the legacy owner id + per-space
- *  (discord:dm-only) allowlist, unchanged. */
+/** spaceId suffix of a `surface:spaceId` key — the exact inverse of spaceKey(). No colon → "",
+ *  which resolveCommunity rejects (default-deny for a malformed key). */
+function spaceIdOf(space: string): string {
+  const i = space.indexOf(":");
+  return i === -1 ? "" : space.slice(i + 1);
+}
+
+/** The single authorization predicate (CONFIGURED regime): the caller is authorized when they resolve
+ *  to the owner principal (superset, any space) OR to a principal listed as trusted in the community
+ *  that owns `space`. Default-deny: an unresolved caller, or a trusted-but-not-owner principal in a
+ *  space belonging to no community / a different community, → false. Authorization is by principalId,
+ *  so a member's grants span their linked identities across surfaces. */
+export function isAuthorized(surface: string, userId: string, space: string): boolean {
+  const resolved = resolvePrincipal(surface, userId);
+  if (!resolved) return false;
+  if (resolved.isOwner) return true;
+  return isCommunityMember(resolved.principalId, surface, spaceIdOf(space));
+}
+
+/** Default-deny. Configured registry → three conjunctions (caller is authorized for this space ·
+ *  capability owner-grantable · an owner principal exists). Authorized = the owner (any space) OR a
+ *  principal trusted in the community that owns the space; NOT space-restricted for the owner, since
+ *  only the owner's own principal ever resolves as owner. Unconfigured → the legacy owner id +
+ *  per-space (discord:dm-only) allowlist, unchanged. */
 export const can: CanFn = ({ principal, capability, space }: AuthzInput): boolean => {
   if (principalsConfigured()) {
-    const resolved = resolvePrincipal(surfaceOf(space), principal); // (1) caller is a known principal
-    if (!resolved) return false;
-    if (!resolved.isOwner) return false; // (2) and that principal is the owner
-    if (!OWNER_CAPABILITIES.has(capability)) return false; // (3) the capability is owner-grantable
-    if (ownerPrincipalId() === undefined) return false; // (4) an owner principal exists at all
+    if (!isAuthorized(surfaceOf(space), principal, space)) return false; // (1) owner OR community-trusted
+    if (!OWNER_CAPABILITIES.has(capability)) return false; // (2) the capability is owner-grantable
+    if (ownerPrincipalId() === undefined) return false; // (3) an owner principal exists at all
     return true;
   }
 

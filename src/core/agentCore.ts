@@ -16,7 +16,7 @@ import type {
   TurnResumption,
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
-import { isPersonalSpace, spaceKey } from "../orchestration/authz.ts";
+import { isAuthorized, isPersonalSpace, spaceKey } from "../orchestration/authz.ts";
 import { principalAliasUserIds, resolvePrincipal } from "../orchestration/principals.ts";
 import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
@@ -161,9 +161,13 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       moduleExtras: pc.moduleExtras,
     });
 
-    // Author-aware owner-DM gating: the autonomous auto-mod driver has no requesting owner, so it's
-    // never the owner regardless of who tripped the keyword.
+    // Author-aware gating: the autonomous auto-mod driver has no requesting user, so it's neither the
+    // owner nor authorized regardless of who tripped the keyword. isOwner still gates update_profile;
+    // authorized (owner OR a trusted member of this space's community) gates runner + ops-triage tools.
     const isOwner = autoMod ? false : (initiatorPrincipal?.isOwner ?? false);
+    const authorized = autoMod
+      ? false
+      : isAuthorized(conversation.surface, turn.initiator.userId, spaceKey(conversation.surface, conversation.spaceId));
 
     const toolEntries = deps.tools.resolve(session, {
       surface: conversation.surface,
@@ -171,6 +175,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       autoMod,
       isOwner,
       isPrivate,
+      authorized,
     });
 
     const toolContextBase: Omit<ToolContext, "owner"> = {
