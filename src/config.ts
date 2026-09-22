@@ -59,6 +59,13 @@ export interface Config {
      *  gets no wiki tools, so each community can read only the one wiki it is explicitly mapped to. */
     wikiMap: Record<string, string>;
   };
+  slack: {
+    /** Bot token (xoxb-). Unset → the Slack surface is disabled. */
+    botToken: string | undefined;
+    /** App-level token (xapp-, needs `connections:write`) for Socket Mode. Unset → surface disabled.
+     *  The surface starts only when BOTH tokens are present. */
+    appToken: string | undefined;
+  };
   wikiSync: {
     repoUrl: string | undefined;
     /** Access token for an https:// repoUrl. Unused for ssh:// (ssh-agent handles auth instead). */
@@ -148,6 +155,10 @@ export const config: Config = {
     avatarUrl: process.env["BUZZ_AVATAR_URL"],
     avatarMap: parseAvatarMap(process.env["BUZZ_AVATAR_MAP"]),
     wikiMap: parseWikiMap(process.env["BUZZ_WIKI_MAP"]),
+  },
+  slack: {
+    botToken: process.env["SLACK_BOT_TOKEN"],
+    appToken: process.env["SLACK_APP_TOKEN"],
   },
   wikiSync: {
     repoUrl: process.env["WIKI_SYNC_REPO_URL"],

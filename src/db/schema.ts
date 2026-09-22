@@ -90,6 +90,45 @@ export const buzzState = sqliteTable("buzz_state", {
   lastCursor: integer("last_cursor").notNull(),
 });
 
+/** Raw Slack message archive — kept at full Slack fidelity (never flattened into `messages`, which
+ *  is discord.js-shaped). `rawJson` holds the whole event so nothing is ever lost; the extracted
+ *  columns exist for querying. Keyed on (channel, ts) for idempotent upsert across live + backfill. */
+export const slackMessages = sqliteTable(
+  "slack_messages",
+  {
+    channel: text("channel").notNull(),
+    ts: text("ts").notNull(),
+    threadTs: text("thread_ts"),
+    user: text("user"),
+    botId: text("bot_id"),
+    subtype: text("subtype"),
+    text: text("text").notNull().default(""),
+    blocks: text("blocks"),
+    files: text("files"),
+    team: text("team"),
+    editedTs: text("edited_ts"),
+    deletedAt: integer("deleted_at"),
+    createdAt: integer("created_at").notNull(),
+    rawJson: text("raw_json").notNull(),
+    ingestedAt: integer("ingested_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.channel, table.ts] }),
+    index("idx_slack_messages_channel_created").on(table.channel, table.createdAt),
+    index("idx_slack_messages_thread").on(table.threadTs),
+  ],
+);
+
+/** Per-channel backfill progress so a restart resumes without re-crawling. `oldestBackfilled` is the
+ *  oldest ts the historical crawl has reached (resume the backward crawl from here); `latestSeen` is
+ *  the newest ts observed (forward catch-up starts here). Both are Slack ts strings. */
+export const slackSyncState = sqliteTable("slack_sync_state", {
+  channel: text("channel").primaryKey(),
+  oldestBackfilled: text("oldest_backfilled"),
+  latestSeen: text("latest_seen"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
 /** Orchestration task registry (Phase 0). Pointers only — the runner holds the real transcript. */
 export const tasks = sqliteTable(
   "tasks",

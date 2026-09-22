@@ -43,6 +43,13 @@
       "when": 1789954562021,
       "tag": "0005_bizarre_phil_sheldon",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790092414041,
+      "tag": "0006_square_nightshade",
+      "breakpoints": true
     }
   ]
 }

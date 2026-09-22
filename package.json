@@ -24,6 +24,7 @@
     "@opentelemetry/sdk-metrics": "^2.6.1",
     "@opentelemetry/sdk-trace-base": "^2.6.1",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@slack/bolt": "^5.1.0",
     "ai": "^6.0.146",
     "discord.js": "^14.16.3",
     "dompurify": "^3.4.15",

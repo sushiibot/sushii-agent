@@ -29,6 +29,9 @@ import { NostrBuzzClient } from "./surfaces/buzz/buzzClient.ts";
 import { startBuzzSurface } from "./surfaces/buzz/gateway.ts";
 import { registerBuzzProgressHooks } from "./surfaces/buzz/progress.ts";
 import { getBuzzCursor, setBuzzCursor } from "./db/buzzState.ts";
+import { createSlackApp } from "./surfaces/slack/connection.ts";
+import { startSlackIngestion } from "./surfaces/slack/ingest.ts";
+import type { App as SlackApp } from "@slack/bolt";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -130,6 +133,24 @@ async function main() {
     logger.info("BUZZ_PRIVATE_KEY not set — buzz surface disabled");
   }
 
+  // Third surface: Slack (Phase 1 = raw ingestion only). The app is constructed once so a later
+  // phase can attach an agent-loop consumer to the same instance before start(). Disabled unless
+  // both tokens are set; any Slack failure is isolated so it can't take down Discord/buzz.
+  let slackApp: SlackApp | undefined;
+  if (config.slack.botToken && config.slack.appToken) {
+    try {
+      slackApp = createSlackApp({ botToken: config.slack.botToken, appToken: config.slack.appToken });
+      startSlackIngestion(slackApp, { db });
+      slackApp.start().catch((err) => logger.error({ err }, "Slack Socket Mode failed to start"));
+      logger.info("Slack ingestion surface started");
+    } catch (err) {
+      logger.error({ err }, "Slack surface failed to start");
+      slackApp = undefined;
+    }
+  } else {
+    logger.info("SLACK_BOT_TOKEN / SLACK_APP_TOKEN not set — Slack surface disabled");
+  }
+
   const mcpApp = buildMcpHttpApp(client as Client<true>);
   // MCP clients hold a GET open for server-initiated notifications that this stateless,
   // per-request transport never sends — the default 10s idle timeout logs a warning on every
@@ -144,6 +165,11 @@ async function main() {
     logger.info("Shutting down...");
     client.destroy();
     mcpServer.stop();
+    try {
+      await slackApp?.stop();
+    } catch (err) {
+      logger.error({ err }, "Slack app stop failed");
+    }
     closeDb();
     try {
       await otelSDK?.shutdown();
