@@ -22,8 +22,10 @@ mock.module("ai", () => {
   return {
     ...actual,
     generateText: async (params: { messages?: { role: string; content: unknown }[] }) => {
-      const sys = params.messages?.find((m) => m.role === "system");
-      lastSystemPrompt = typeof sys?.content === "string" ? sys.content : JSON.stringify(sys?.content);
+      // Capture ALL system messages joined — the proactive memory block is now a SEPARATE system
+      // message after the cached system prompt (not inside it), so we must look past the first.
+      const sysMsgs = (params.messages ?? []).filter((m) => m.role === "system");
+      lastSystemPrompt = sysMsgs.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
       return {
         text: "done",
         toolCalls: [],

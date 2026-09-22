@@ -130,7 +130,6 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       threadContext: pc.threadContext,
       threadChannelId: pc.threadChannelId,
       moduleExtras: pc.moduleExtras,
-      memoryBlock,
     });
 
     const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId, autoMod });
@@ -159,6 +158,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       knownUsers: turn.knownUsers,
       toolContextBase,
       systemPrompt,
+      memoryBlock,
       dequeue: drainQueue(turn),
       isCancelled: () => turn.cancelRequested || !!session.isCancelled?.(),
       onInterim: async (reply) => {

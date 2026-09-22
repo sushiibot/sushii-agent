@@ -84,6 +84,9 @@ export interface LoopRunContext {
   knownUsers: Map<string, AuthorRef>;
   toolContextBase: Omit<ToolContext, "owner">;
   systemPrompt: string;
+  /** Proactively-injected memory, placed as a separate system message AFTER the cached system prompt
+   *  (variable per turn → must sit past the cache breakpoint, or it busts the prompt cache every turn). */
+  memoryBlock?: string;
   /** Drains messages queued mid-loop; returns them so the loop can inject + re-taint ownership. */
   dequeue: () => { author: AuthorRef; text: string }[];
   isCancelled: () => boolean;
@@ -296,7 +299,11 @@ export async function runLoop(
 
     const generateParams = (): Parameters<typeof generateText>[0] => ({
       model,
-      messages: [{ role: "system", content: ctx.systemPrompt, providerOptions: { openrouter: { cacheControl: { type: "ephemeral" } } } }, ...messages],
+      messages: [
+        { role: "system", content: ctx.systemPrompt, providerOptions: { openrouter: { cacheControl: { type: "ephemeral" } } } },
+        ...(ctx.memoryBlock ? [{ role: "system" as const, content: ctx.memoryBlock }] : []),
+        ...messages,
+      ],
       tools: aiTools,
       maxOutputTokens: 4096,
       experimental_telemetry: {
@@ -467,7 +474,11 @@ export async function runLoop(
     pushEphemeral({ role: "system", content: attempt === 0 ? WRAP_UP_PROMPT : WRAP_UP_RETRY_PROMPT });
     const finalResult = await generateText({
       model,
-      messages: [{ role: "system", content: ctx.systemPrompt }, ...messages],
+      messages: [
+        { role: "system", content: ctx.systemPrompt },
+        ...(ctx.memoryBlock ? [{ role: "system" as const, content: ctx.memoryBlock }] : []),
+        ...messages,
+      ],
       tools: {
         [SUBMIT_FINAL_ANSWER_TOOL_NAME]: {
           description: "Deliver your final written answer. This is the only way to respond — call it exactly once with your complete write-up.",
