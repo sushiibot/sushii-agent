@@ -5,8 +5,6 @@ import type { ModelMessage } from "ai";
 import type { ConversationData, ConversationRef, ConversationStore } from "../contracts.ts";
 import { conversations } from "../../db/schema.ts";
 
-const MAX_HISTORY_MESSAGES = 200;
-
 function ormFor(db: Database) {
   return drizzle({ client: db, schema: { conversations } });
 }
@@ -35,36 +33,24 @@ export class SqliteConversationStore implements ConversationStore {
   save(ref: ConversationRef, data: ConversationData): void {
     const now = Date.now();
 
-    const messagesToSave = data.messages.length > MAX_HISTORY_MESSAGES
-      ? data.messages.slice(data.messages.length - MAX_HISTORY_MESSAGES)
-      : data.messages;
-
-    // Walk forward past any orphaned tool/system messages at the front that may have been
-    // created by slicing between an assistant tool-call message and its tool results — the LLM
-    // API rejects histories that start with tool results without a preceding tool call.
-    let startIdx = 0;
-    while (startIdx < messagesToSave.length && messagesToSave[startIdx].role !== "user") {
-      startIdx++;
-    }
-    // If no user message exists in the trimmed window (extreme edge case), keep the untrimmed
-    // slice rather than silently wiping the conversation.
-    const safeMsgs = startIdx > 0 && startIdx < messagesToSave.length
-      ? messagesToSave.slice(startIdx)
-      : messagesToSave;
+    // Persist history as-is. Budget and history validity are owned by the Compactor (summarize-fold
+    // on user-turn boundaries); a front-slice here would shift the prompt prefix and strip a leading
+    // compaction summary.
+    const messages = JSON.stringify(data.messages);
 
     ormFor(this.db)
       .insert(conversations)
       .values({
         threadId: ref.conversationId,
         guildId: ref.spaceId,
-        messages: JSON.stringify(safeMsgs),
+        messages,
         initialThreadContext: data.initialThreadContext,
         createdAt: now,
         updatedAt: now,
       })
       .onConflictDoUpdate({
         target: conversations.threadId,
-        set: { messages: JSON.stringify(safeMsgs), updatedAt: now },
+        set: { messages, updatedAt: now },
       })
       .run();
   }
