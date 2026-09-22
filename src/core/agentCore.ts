@@ -27,7 +27,7 @@ function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
 /** Hard cap on how long per-turn memory retrieval may delay a reply. Memory is best-effort: if the
  *  provider (embedding + store round-trip) doesn't resolve in time, we inject nothing rather than
  *  block. The provider also gets this as `deadlineMs` so it can self-bound; the race is the backstop. */
-const MEMORY_RETRIEVE_DEADLINE_MS = 600;
+const MEMORY_RETRIEVE_DEADLINE_MS = 1500;
 
 async function raceMemoryRetrieve(provider: MemoryProvider, spaceId: string, query: string): Promise<string | null> {
   const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), MEMORY_RETRIEVE_DEADLINE_MS));
