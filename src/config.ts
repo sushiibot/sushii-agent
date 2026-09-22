@@ -7,12 +7,17 @@ export interface Config {
   openaiApiKey: string;
   openaiBaseUrl: string;
   openaiModel: string;
+  compactionModel: string;
   openaiContextLimit: number;
   databasePath: string;
   feedbackPath: string;
   guildConfig: Record<string, GuildConfig>;
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
+  /** mnemosyne MCP server (streamable-http). Unset → the semantic memory backend is disabled and
+   *  the local FTS provider is used instead. */
+  mnemosyneMcpUrl: string | undefined;
+  mnemosyneMcpToken: string | undefined;
   exaApiKey: string | undefined;
   /** Discord user ID allowed to invoke ops-triage tools — gate is enforced at tool-execution time, not just list-assembly. */
   ownerDiscordId: string | undefined;
@@ -103,12 +108,17 @@ export const config: Config = {
   openaiApiKey: required("OPENAI_API_KEY"),
   openaiBaseUrl: optional("OPENAI_BASE_URL", "https://api.anthropic.com/v1"),
   openaiModel: optional("OPENAI_MODEL", "claude-opus-4-6"),
+  // Model for the compaction summarize-fold. Runs over long histories, so a cheap model is ideal;
+  // empty falls back to openaiModel.
+  compactionModel: optional("COMPACTION_MODEL", ""),
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
   guildConfig: loadGuildConfig(),
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
+  mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],
+  mnemosyneMcpToken: process.env["MNEMOSYNE_MCP_TOKEN"],
   exaApiKey: process.env["EXA_API_KEY"],
   ownerDiscordId: process.env["OWNER_DISCORD_ID"],
   linearApiKey: process.env["LINEAR_API_KEY"],

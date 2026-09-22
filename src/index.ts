@@ -11,6 +11,11 @@ import { createHookBus } from "./core/hooks.ts";
 import { createToolRegistry } from "./core/tools/registry.ts";
 import { SqliteConversationStore } from "./core/stores/conversationStore.ts";
 import { DiscordSpaceMemoryStore } from "./core/stores/memoryStore.ts";
+import { createLocalMemoryProvider } from "./core/memory/localMemoryProvider.ts";
+import { createMnemosyneMemoryProvider } from "./core/memory/mnemosyne/mnemosyneMemoryProvider.ts";
+import { createMnemosyneCallTool } from "./core/memory/mnemosyne/mnemosyneClient.ts";
+import { createSummarizeFoldCompactor } from "./core/compaction/index.ts";
+import { createModelSummarizer } from "./agent/summarizer.ts";
 import type { LanguageModelProvider } from "./core/contracts.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
@@ -39,6 +44,19 @@ async function main() {
   const model = Object.assign(openaiProvider(config.openaiModel), { contextLimit: config.openaiContextLimit }) as unknown as LanguageModelProvider;
   // One tool registry (stateless), shared by every surface's core.
   const tools = createToolRegistry();
+  // Context-management layers, shared by every surface's core. Compaction summarize-folds long
+  // histories under budget; the memory provider proactively injects durable per-space facts each turn.
+  // Both are multi-tenant by spaceId. The local provider backs onto the existing store (semantic
+  // mnemosyne backend swaps in later behind the same interface).
+  const compactor = createSummarizeFoldCompactor({ summarize: createModelSummarizer() });
+  // Semantic mnemosyne backend when MNEMOSYNE_MCP_URL is set; else the local FTS store. Both
+  // satisfy the same MemoryProvider contract, so this is the only wiring difference. Per-call
+  // retrieve is best-effort (deadline/error → null), so a slow or down server never blocks a turn.
+  const memoryProvider = config.mnemosyneMcpUrl
+    ? createMnemosyneMemoryProvider({
+        callTool: createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: config.mnemosyneMcpToken }),
+      })
+    : createLocalMemoryProvider(memory);
   const core = createAgentCore({
     model,
     store,
@@ -46,6 +64,8 @@ async function main() {
     tools,
     hooks: hookBus,
     behavior: BEHAVIOR_INSTRUCTIONS,
+    compactor,
+    memoryProvider,
   });
 
   startDiscordSurface({ client: client as Client<true>, core, store, memory, hookBus });
@@ -67,7 +87,7 @@ async function main() {
     // the bus is what gives buzz live tool-progress + never-silent failures, parity with Discord.
     const buzzBus = createHookBus();
     const buzzProgress = registerBuzzProgressHooks(buzzBus);
-    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS });
+    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider });
     // Empty list → one connection on the default relay (dev localhost), keyed "default".
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
     const wikiEnabledGuilds = new Set(getWikiSyncEnabledGuildIds());

@@ -30,6 +30,9 @@ export interface SystemPromptInputs {
   threadChannelId?: string;
   /** Module-supplied sections appended last (e.g. the auto-mod enforcement block). */
   moduleExtras?: string[];
+  /** Proactively-injected memory block (rendered by MemoryProvider). Opt-in: when undefined the
+   *  assembled prompt is byte-identical to the pre-memory prompt (parity test relies on this). */
+  memoryBlock?: string;
 }
 
 export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
@@ -83,6 +86,12 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
     systemParts.push(
       `## Server Context\nNot yet available for this space. Answer normally; your awareness of this space's structure is limited until it has been learned.`,
     );
+  }
+
+  // Proactively-injected durable memory (retrieved + rendered by MemoryProvider). Opt-in: absent
+  // unless a MemoryProvider is wired, so the byte-identical parity test still holds.
+  if (inputs.memoryBlock) {
+    systemParts.push(inputs.memoryBlock);
   }
 
   // Memory index (titles only — agent fetches full content via read_memory when relevant)

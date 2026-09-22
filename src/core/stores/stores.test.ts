@@ -28,7 +28,7 @@ describe("SqliteConversationStore", () => {
     expect(store.load(ref)).toEqual({ messages, initialThreadContext: "some context" });
   });
 
-  test("caps history at 200 messages", () => {
+  test("persists full history without capping (compaction owns the budget)", () => {
     const store = new SqliteConversationStore(testDb());
     const messages: ModelMessage[] = Array.from({ length: 250 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "assistant",
@@ -37,23 +37,21 @@ describe("SqliteConversationStore", () => {
     store.save(ref, { messages, initialThreadContext: null });
 
     const loaded = store.load(ref);
-    expect(loaded.messages.length).toBe(200);
-    expect(loaded.messages[0].content).toBe("msg 50");
+    expect(loaded.messages.length).toBe(250);
+    expect(loaded.messages[0].content).toBe("msg 0");
   });
 
-  test("trims leading non-user messages left by the cap", () => {
+  test("persists a leading system summary as-is (no forward-walk trim)", () => {
     const store = new SqliteConversationStore(testDb());
     const messages: ModelMessage[] = [
-      { role: "assistant", content: "orphaned tool-call artifact" },
-      { role: "tool", content: [] } as unknown as ModelMessage,
+      { role: "system", content: "SUMMARY: folded prior turns" },
       { role: "user", content: "real start" },
       { role: "assistant", content: "reply" },
     ];
     store.save(ref, { messages, initialThreadContext: null });
 
     const loaded = store.load(ref);
-    expect(loaded.messages[0]).toEqual({ role: "user", content: "real start" });
-    expect(loaded.messages.length).toBe(2);
+    expect(loaded.messages).toEqual(messages);
   });
 
   test("upsert on save keeps guildId/threadId keyed by ref", () => {
