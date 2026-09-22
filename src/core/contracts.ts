@@ -7,6 +7,9 @@
 // stores (§8) · AgentCore (§9).
 
 import type { ModelMessage } from "ai";
+import type { MemoryScope } from "./memory/banks.ts";
+
+export type { MemoryScope } from "./memory/banks.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1 Identity
@@ -285,6 +288,10 @@ export interface TurnEndContext {
   toolUseCount: number;
   userTurnCount: number;
   history: readonly ModelMessage[];
+  /** Turn initiator — the individual-bucket owner the deriver writes derived facts to. */
+  authorId: string;
+  /** Whether this turn ran in a private (DM) space; selects the DM bank over the per-space bank. */
+  isPrivate: boolean;
 }
 
 export interface HookEvents {
@@ -438,16 +445,10 @@ export interface MemoryProvider {
    *  races this against `deadlineMs` and injects nothing if it doesn't resolve in time, so memory
    *  can never add latency to a reply. Return a rendered, token-bounded block to inject, or null
    *  when nothing is relevant / not ready. The impl owns any embedding cache / recency fast-path. */
-  retrieve(input: { spaceId: string; query: string; deadlineMs: number; tokenBudget?: number }): Promise<string | null>;
+  retrieve(input: { scope: MemoryScope; query: string; deadlineMs: number; tokenBudget?: number }): Promise<string | null>;
   /** Persist one curated, NON-AUTHORITATIVE durable fact (decisions/preferences/standing context —
-   *  not dated authoritative data that lives in source tools). */
-  remember(input: {
-    spaceId: string;
-    text: string;
-    importance?: number;
-    scope?: "session" | "global";
-    validUntil?: number;
-  }): Promise<void>;
+   *  not dated authoritative data that lives in source tools). Writes to the individual bucket. */
+  remember(input: { scope: MemoryScope; text: string; importance?: number }): Promise<void>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

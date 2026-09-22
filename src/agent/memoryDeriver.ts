@@ -54,8 +54,9 @@ export function createMemoryDeriver(memoryProvider: MemoryProvider): (ctx: TurnE
     });
 
     const facts = parseFacts(res.text);
+    const scope = { spaceId: ctx.conversation.spaceId, userId: ctx.authorId, isPrivate: ctx.isPrivate };
     for (const f of facts) {
-      await memoryProvider.remember({ spaceId: ctx.conversation.spaceId, text: f.content, importance: f.importance });
+      await memoryProvider.remember({ scope, text: f.content, importance: f.importance });
     }
     if (facts.length > 0) {
       logger.debug({ spaceId: ctx.conversation.spaceId, count: facts.length }, "derived durable memory from turn");

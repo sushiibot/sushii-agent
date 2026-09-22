@@ -1,5 +1,6 @@
 import type { MemoryEntry, MemoryProvider, SpaceMemoryStore } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
+import { memoryBanks } from "./banks.ts";
 
 const logger = getLogger("core/memory/local");
 
@@ -32,27 +33,44 @@ function truncateLine(line: string, maxChars: number): string {
 
 /**
  * Local-store-backed MemoryProvider. Proactive injection against today's FTS DB; the semantic
- * mnemosyne backend swaps in later behind this same interface. `importance`/`scope`/`validUntil`
- * are accepted but not persisted here — the future mnemosyne impl honors them.
+ * mnemosyne backend swaps in later behind this same interface. The bank string (from `memoryBanks`)
+ * is used as the store's space key; `importance` is accepted but not persisted here.
  */
 export function createLocalMemoryProvider(store: SpaceMemoryStore): MemoryProvider {
   return {
-    async retrieve({ spaceId, query, deadlineMs, tokenBudget }) {
+    async retrieve({ scope, query, deadlineMs, tokenBudget }) {
       // Local FTS is synchronous and fast, but never do work past the caller's deadline.
       if (deadlineMs <= 0) return null;
+      const banks = memoryBanks(scope).read;
+      if (banks.length === 0) return null;
       const q = query.trim();
       if (q.length === 0) return null;
 
       const maxItems = DEFAULT_MAX_ITEMS;
       const budget = tokenBudget ?? DEFAULT_TOKEN_BUDGET;
 
-      // FTS5 can throw on query metacharacters in raw user text; degrade to no memory this turn.
-      let hits: MemoryEntry[];
-      try {
-        hits = store.search(spaceId, q, maxItems);
-      } catch (err) {
-        logger.debug({ err, spaceId }, "memory search failed; skipping injection");
-        return null;
+      // Read each bank (the store treats the bank as its "space" key), then merge in read-bank
+      // order — individual bucket first (its hits are the priority), space-general after. Dedupe by
+      // `${bank}:${id}` since MemoryEntry.id is a per-store rowid that repeats across bank keys.
+      const seen = new Set<string>();
+      const hits: MemoryEntry[] = [];
+      for (const bank of banks) {
+        if (hits.length >= maxItems) break;
+        // FTS5 can throw on query metacharacters in raw user text; degrade past that bank.
+        let bankHits: MemoryEntry[];
+        try {
+          bankHits = store.search(bank, q, maxItems);
+        } catch (err) {
+          logger.debug({ err, bank }, "memory search failed for a bank; skipping it");
+          continue;
+        }
+        for (const entry of bankHits) {
+          const key = `${bank}:${entry.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          hits.push(entry);
+          if (hits.length >= maxItems) break;
+        }
       }
       if (hits.length === 0) return null;
 
@@ -85,12 +103,14 @@ export function createLocalMemoryProvider(store: SpaceMemoryStore): MemoryProvid
       return lines.join("\n");
     },
 
-    async remember({ spaceId, text }) {
+    async remember({ scope, text }) {
+      const bank = memoryBanks(scope).write;
+      if (bank === null) return;
       const content = text.trim();
       if (content.length === 0) return;
-      const result = store.upsert(spaceId, deriveTitle(content), content);
+      const result = store.upsert(bank, deriveTitle(content), content);
       if ("error" in result) {
-        logger.debug({ spaceId, error: result.error }, "memory upsert rejected; not stored");
+        logger.debug({ bank, error: result.error }, "memory upsert rejected; not stored");
       }
     },
   };

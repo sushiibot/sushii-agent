@@ -8,6 +8,7 @@ import type {
   ConversationRef,
   InboundMessage,
   MemoryProvider,
+  MemoryScope,
   PendingInteraction,
   SurfaceSession,
   ToolContext,
@@ -15,6 +16,7 @@ import type {
   TurnResumption,
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
+import { isPersonalSpace, spaceKey } from "../orchestration/authz.ts";
 import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
 import { MEMORY_LIMIT, CORE_PROFILE_TITLE } from "./stores/index.ts";
@@ -29,11 +31,11 @@ function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
  *  block. The provider also gets this as `deadlineMs` so it can self-bound; the race is the backstop. */
 const MEMORY_RETRIEVE_DEADLINE_MS = 1500;
 
-async function raceMemoryRetrieve(provider: MemoryProvider, spaceId: string, query: string): Promise<string | null> {
+async function raceMemoryRetrieve(provider: MemoryProvider, scope: MemoryScope, query: string): Promise<string | null> {
   const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), MEMORY_RETRIEVE_DEADLINE_MS));
   try {
     return await Promise.race([
-      provider.retrieve({ spaceId, query, deadlineMs: MEMORY_RETRIEVE_DEADLINE_MS }),
+      provider.retrieve({ scope, query, deadlineMs: MEMORY_RETRIEVE_DEADLINE_MS }),
       timeout,
     ]);
   } catch {
@@ -109,10 +111,15 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     // requesting user, matching the old dispatch.ts path that passed no triggeringUser.
     const pc = session.promptContext?.() ?? {};
 
+    // Memory scoping: the private (DM) self is walled off from the public (in-space) self. Retrieval
+    // reads the initiator's bucket set for this space; the deriver writes the individual bucket.
+    const isPrivate = isPersonalSpace(spaceKey(conversation.surface, conversation.spaceId));
+    const memoryScope: MemoryScope = { spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate };
+
     // Proactive memory: retrieve a durable-fact block keyed to this turn's user text, injected into
     // the system prompt. Best-effort + time-bounded (raceMemoryRetrieve), no-op unless wired.
     const memoryBlock = deps.memoryProvider
-      ? (await raceMemoryRetrieve(deps.memoryProvider, conversation.spaceId, firstUserText)) ?? undefined
+      ? (await raceMemoryRetrieve(deps.memoryProvider, memoryScope, firstUserText)) ?? undefined
       : undefined;
 
     const systemPrompt = assembleSystemPrompt({
@@ -204,6 +211,8 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       toolUseCount: result.messages.filter((m) => m.role === "tool").length,
       userTurnCount: result.messages.filter((m) => m.role === "user").length,
       history: result.messages,
+      authorId: turn.initiator.userId,
+      isPrivate,
     };
     fireHook(deps.hooks, "onTurnEnd", turnEndCtx);
 

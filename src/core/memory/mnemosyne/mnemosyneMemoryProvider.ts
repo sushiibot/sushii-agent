@@ -1,5 +1,6 @@
 import type { MemoryProvider } from "../../contracts.ts";
 import { getLogger } from "../../../logger.ts";
+import { memoryBanks } from "../banks.ts";
 import { renderMemoryBlock, type RenderableMemory } from "./renderMemoryBlock.ts";
 
 const defaultLogger = getLogger("core/memory/mnemosyne");
@@ -26,49 +27,62 @@ export interface MnemosyneProviderOptions {
 
 const DEADLINE = Symbol("mnemosyne-recall-deadline");
 
-/** Namespace each guild's bank so a bare numeric id isn't a weak bank name on a shared server, and
- *  guard blank ids (an empty bank hits the server's default shared bank). One mapping so retrieve
- *  and remember can't drift. Returns null when the space id is empty/blank. */
-function toBank(spaceId: string): string | null {
-  const s = spaceId.trim();
-  if (s.length === 0) return null;
-  return `sushii-${s}`;
+/** A parsed recall hit, carrying the fields needed to merge across banks (dedupe by `id`, rank by
+ *  `score`) before rendering. */
+interface RecallHit {
+  id: string | null;
+  content: string;
+  score: number;
 }
 
 // mnemosyne recall returns `{ status, count, results: [{ content, importance, score, id, ... }] }`
 // (confirmed against mnemosyne/mcp_tools.py + hermes_memory_provider consuming `row.get("content")`).
 // The MCP SDK does NOT throw on a server-side error envelope, so we inspect the parsed payload:
-// `malformed` distinguishes an erroring/misconfigured server (warn) from a genuine empty result set.
-function parseRecallHits(payload: unknown): { hits: RenderableMemory[]; malformed: boolean } {
+// `malformed` distinguishes an erroring/misconfigured server OR a not-yet-created bank (both warn,
+// per-bank) from a genuine empty result set. A cold bank must not zero out the whole read set.
+function parseRecallHits(payload: unknown): { hits: RecallHit[]; malformed: boolean } {
   const obj = payload as { status?: unknown; results?: unknown } | null;
   const results = obj?.results;
   if (obj?.status !== "ok" || !Array.isArray(results)) {
     return { hits: [], malformed: true };
   }
-  const hits: RenderableMemory[] = [];
+  const hits: RecallHit[] = [];
   for (const row of results) {
-    const content = typeof (row as { content?: unknown })?.content === "string"
-      ? (row as { content: string }).content
-      : "";
+    const r = row as { content?: unknown; id?: unknown; score?: unknown };
+    const content = typeof r?.content === "string" ? r.content : "";
     if (content.trim().length === 0) continue;
-    hits.push({ content });
+    const id = typeof r?.id === "string" ? r.id : null;
+    const score = typeof r?.score === "number" ? r.score : 0;
+    hits.push({ id, content, score });
   }
   return { hits, malformed: false };
 }
 
-/** epoch-ms → mnemosyne's ISO date (`YYYY-MM-DD`) valid_until. Out-of-range values (which would
- *  make `Date` throw on ISO conversion) yield undefined rather than throwing. */
-function toValidUntil(ms: number): string | undefined {
-  if (!Number.isFinite(ms)) return undefined;
-  const date = new Date(ms);
-  if (Number.isNaN(date.getTime())) return undefined;
-  return date.toISOString().slice(0, 10);
+/** Merge hits across banks: dedupe by `${bank}:${id}` (id-less hits are all kept), rank by `score`
+ *  desc, cap at `limit`. mnemosyne ids look per-bank (sequence-like), so the bank must be part of
+ *  the key — a bare id would drop a genuinely distinct fact that happens to share an id. First
+ *  occurrence of a key wins. */
+function mergeHits(banks: { bank: string; hits: RecallHit[] }[], limit: number): RenderableMemory[] {
+  const seen = new Set<string>();
+  const merged: RecallHit[] = [];
+  for (const { bank, hits } of banks) {
+    for (const hit of hits) {
+      if (hit.id !== null) {
+        const key = `${bank}:${hit.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      merged.push(hit);
+    }
+  }
+  merged.sort((a, b) => b.score - a.score);
+  return merged.slice(0, limit).map((h) => ({ content: h.content }));
 }
 
 /**
- * mnemosyne-backed MemoryProvider (semantic recall over MCP). `bank = sushii-<spaceId>` isolates
- * each guild. Best-effort by contract: any recall failure or deadline overrun yields `null` (never
- * blocks a turn) and any remember failure is logged and swallowed.
+ * mnemosyne-backed MemoryProvider (semantic recall over MCP). Banks are keyed by `memoryBanks`
+ * (per-user / per-space / DM buckets). Best-effort by contract: any recall failure or deadline
+ * overrun yields `null` (never blocks a turn) and any remember failure is logged and swallowed.
  */
 export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): MemoryProvider {
   const { callTool } = opts;
@@ -76,17 +90,17 @@ export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): M
   const logger = opts.logger ?? defaultLogger;
 
   return {
-    async retrieve({ spaceId, query, deadlineMs, tokenBudget }) {
+    async retrieve({ scope, query, deadlineMs, tokenBudget }) {
       if (deadlineMs <= 0) return null;
-      const bank = toBank(spaceId);
-      if (bank === null) return null;
+      const banks = memoryBanks(scope).read;
+      if (banks.length === 0) return null;
       const q = query.trim();
       if (q.length === 0) return null;
 
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
-      // Race the network call against the deadline: resolve to null rather than hang even if the
-      // seam ignores the abort signal (agentCore also races, but retrieve is defensive on its own).
+      // Race ALL bank calls against the SINGLE deadline (total, not per-bank): resolve to null
+      // rather than hang even if the seam ignores the abort signal.
       const deadline = new Promise<typeof DEADLINE>((resolve) => {
         timer = setTimeout(() => {
           controller.abort();
@@ -95,31 +109,53 @@ export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): M
       });
 
       try {
-        const raw = await Promise.race([
-          callTool(RECALL_TOOL, { bank, query: q, limit: recallLimit }, controller.signal),
+        const settled = await Promise.race([
+          Promise.allSettled(
+            banks.map((bank) => callTool(RECALL_TOOL, { bank, query: q, limit: recallLimit }, controller.signal)),
+          ),
           deadline,
         ]);
-        if (raw === DEADLINE) {
-          logger.debug({ spaceId, deadlineMs }, "mnemosyne recall hit deadline; skipping injection");
+        if (settled === DEADLINE) {
+          logger.debug({ banks, deadlineMs }, "mnemosyne recall hit deadline; skipping injection");
           return null;
         }
-        const { hits, malformed } = parseRecallHits(raw);
-        if (malformed) {
-          logger.warn({ spaceId }, "mnemosyne recall returned an unexpected shape; skipping injection");
+
+        const perBank: { bank: string; hits: RecallHit[] }[] = [];
+        let malformed = false;
+        settled.forEach((outcome, i) => {
+          const bank = banks[i]!;
+          if (outcome.status === "rejected") {
+            // A rejected bank contributes nothing; the merged set from the others still stands.
+            logger.debug({ err: outcome.reason, bank }, "mnemosyne recall failed for a bank; skipping it");
+            return;
+          }
+          const parsed = parseRecallHits(outcome.value);
+          if (parsed.malformed) {
+            malformed = true; // cold or misconfigured bank — warn once below, don't zero the set
+            return;
+          }
+          perBank.push({ bank, hits: parsed.hits });
+        });
+        // Warn at most once per retrieve, and only when NO bank yielded a usable shape (an erroring
+        // server), not when a cold bank simply doesn't exist yet alongside a good one.
+        if (malformed && perBank.length === 0) {
+          logger.warn({ banks }, "mnemosyne recall returned an unexpected shape; skipping injection");
           return null;
         }
+
+        const hits = mergeHits(perBank, recallLimit);
         if (hits.length === 0) return null;
         return renderMemoryBlock(hits, { maxItems: recallLimit, tokenBudget });
       } catch (err) {
-        logger.debug({ err, spaceId }, "mnemosyne recall failed; skipping injection");
+        logger.debug({ err, banks }, "mnemosyne recall failed; skipping injection");
         return null;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
     },
 
-    async remember({ spaceId, text, importance, scope, validUntil }) {
-      const bank = toBank(spaceId);
+    async remember({ scope, text, importance }) {
+      const bank = memoryBanks(scope).write;
       if (bank === null) return;
       const content = text.trim();
       if (content.length === 0) return;
@@ -127,22 +163,19 @@ export function createMnemosyneMemoryProvider(opts: MnemosyneProviderOptions): M
       try {
         const args: Record<string, unknown> = { bank, content };
         if (importance !== undefined) args["importance"] = importance;
-        // Default to a durable cross-session scope; the server otherwise defaults to session-scoped.
-        args["scope"] = scope ?? "global";
-        if (validUntil !== undefined) {
-          const iso = toValidUntil(validUntil);
-          if (iso !== undefined) args["valid_until"] = iso;
-        }
+        // mnemosyne durability scope stays "global" (durable cross-session); the server otherwise
+        // defaults to session-scoped. This is unrelated to the read/write bank scoping above.
+        args["scope"] = "global";
 
         const raw = await callTool(REMEMBER_TOOL, args);
         // The MCP SDK does NOT throw on a filtered/errored write — inspect the parsed payload so a
         // silently-dropped fact is diagnosable.
         const status = (raw as { status?: unknown } | null)?.status;
         if (status !== "stored") {
-          logger.warn({ spaceId, status }, "mnemosyne remember did not store the fact");
+          logger.warn({ bank, status }, "mnemosyne remember did not store the fact");
         }
       } catch (err) {
-        logger.warn({ err, spaceId }, "mnemosyne remember failed; fact not persisted");
+        logger.warn({ err, bank }, "mnemosyne remember failed; fact not persisted");
       }
     },
   };

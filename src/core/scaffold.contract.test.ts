@@ -144,16 +144,34 @@ describe("scaffold contract — compaction + memory hook sites", () => {
     expect(lastSystemPrompt).not.toContain("MEMORY-BLOCK");
   });
 
-  test("a wired MemoryProvider's retrieved block lands in the assembled system prompt", async () => {
+  test("a wired MemoryProvider's retrieved block lands in the assembled system prompt, scoped to the initiator", async () => {
     const store = new FakeStore();
+    let seenScope: unknown;
     const memoryProvider: MemoryProvider = {
-      retrieve: async () => "## Memory\nTEST-MEMORY-BLOCK",
+      retrieve: async ({ scope }) => {
+        seenScope = scope;
+        return "## Memory\nTEST-MEMORY-BLOCK";
+      },
       remember: async () => {},
     };
     const core = createAgentCore({ ...baseDeps(store), memoryProvider });
     const res = await core.handleInbound(inbound("what do you know?"), fakeSession());
     expect(res.status).toBe("completed");
     expect(lastSystemPrompt).toContain("TEST-MEMORY-BLOCK");
+    // guild1 is not a personal/DM space → public scope keyed to the triggering user u1.
+    expect(seenScope).toEqual({ spaceId: "guild1", userId: "u1", isPrivate: false });
+  });
+
+  test("onTurnEnd carries the initiator authorId + isPrivate for the deriver's write scope", async () => {
+    const store = new FakeStore();
+    const hooks = new FakeHooks();
+    let seen: { authorId?: string; isPrivate?: boolean } = {};
+    hooks.on("onTurnEnd", (ctx) => {
+      seen = { authorId: ctx.authorId, isPrivate: ctx.isPrivate };
+    });
+    const core = createAgentCore({ ...baseDeps(store), hooks });
+    await core.handleInbound(inbound("hi"), fakeSession());
+    expect(seen).toEqual({ authorId: "u1", isPrivate: false });
   });
 
   test("a MemoryProvider slower than the deadline injects nothing but the turn still completes", async () => {
