@@ -13,6 +13,7 @@ import { deleteUserMessagesEntry } from "./discord/deleteUserMessages.ts";
 import { FS_TOOL_ENTRIES } from "./fs/tools.ts";
 import { RUNNER_TOOL_ENTRIES } from "./runners/index.ts";
 import { isPersonalSpace, spaceKey } from "../../orchestration/authz.ts";
+import { principalsConfigured } from "../../orchestration/principals.ts";
 
 export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...MESSAGE_CACHE_TOOL_ENTRIES,
@@ -68,9 +69,22 @@ export class CoreToolRegistry implements ToolRegistry {
     private readonly availability: () => ToolAvailability = defaultAvailability,
   ) {}
 
-  resolve(session: SurfaceSession, space: { surface: SurfaceId; spaceId: string; autoMod?: boolean }): ToolEntry<keyof ToolHosts>[] {
+  resolve(
+    session: SurfaceSession,
+    space: { surface: SurfaceId; spaceId: string; autoMod?: boolean; isOwner?: boolean; isPrivate?: boolean },
+  ): ToolEntry<keyof ToolHosts>[] {
     const autoMod = space.autoMod ?? false;
     const a = this.availability();
+    const key = spaceKey(space.surface, space.spaceId);
+
+    // Owner-DM gating for runner + update_profile tools. Configured registry → author-aware
+    // (the resolved principal is the owner AND the turn is a private/DM context); unconfigured →
+    // today's space-string heuristic (isPersonalSpace), unchanged.
+    const configured = principalsConfigured();
+    const ownerDm = space.isOwner === true && space.isPrivate === true;
+    const runnerAllowed = configured ? ownerDm : a.owner && isPersonalSpace(key);
+    const profileAllowed = configured ? ownerDm : isPersonalSpace(key);
+
     return this.entries
       .filter((entry) => hostsSatisfied(entry, session.hosts) && capabilitiesSatisfied(entry, session))
       .filter((entry) => autoMod || !AUTO_MOD_ONLY_TOOLS.has(entry.name))
@@ -78,11 +92,10 @@ export class CoreToolRegistry implements ToolRegistry {
       .filter((entry) => a.owner || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
       .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name))
-      .filter((entry) => a.owner || !RUNNER_TOOLS.has(entry.name))
-      .filter((entry) => !RUNNER_TOOLS.has(entry.name) || isPersonalSpace(spaceKey(space.surface, space.spaceId)))
-      // Core-profile editing is DM-first: available only in a personal/DM space for now (per-environment
-      // and per-user profiles in guilds are a deferred follow-up).
-      .filter((entry) => entry.name !== "update_profile" || isPersonalSpace(spaceKey(space.surface, space.spaceId)));
+      .filter((entry) => !RUNNER_TOOLS.has(entry.name) || runnerAllowed)
+      // Core-profile editing is DM-first: available only in a personal/DM space (owner-only once the
+      // registry is configured); per-environment / per-user guild profiles are a deferred follow-up.
+      .filter((entry) => entry.name !== "update_profile" || profileAllowed);
   }
 }
 

@@ -5,6 +5,7 @@ import { TaskRegistry } from "./registry.ts";
 import { MockRunnerAdapter } from "./mockRunner.ts";
 import { OrchestrationClient } from "./transport/client.ts";
 import { AuthzError, Dispatcher } from "./dispatcher.ts";
+import type { AuthzInput } from "./contracts.ts";
 
 function testRegistry(): TaskRegistry {
   const db = new Database(":memory:");
@@ -36,6 +37,41 @@ describe("Dispatcher", () => {
         }),
       ).rejects.toBeInstanceOf(AuthzError);
       expect(dispatcher.listRunning("someone")).toEqual([]);
+    } finally {
+      dispatcher.stop();
+    }
+  });
+
+  test("forwards isPrivate to canFn for every gated verb (dispatch/resume/halt/steer)", async () => {
+    // A recording spy that denies: proves the isPrivate signal reaches canFn on all four call sites
+    // without needing a live runner. FakeDispatcher in runners/index.test.ts never calls canFn, so
+    // this is the only place the four dispatcher call sites are checked.
+    const seen: AuthzInput[] = [];
+    const canFn = (input: AuthzInput): boolean => {
+      seen.push(input);
+      return false;
+    };
+    const dispatcher = new Dispatcher(testRegistry(), canFn);
+    dispatcher.listen();
+    try {
+      await expect(
+        dispatcher.dispatch({
+          principal: "p",
+          runnerId: "r",
+          cwd: "/tmp",
+          project: null,
+          prompt: "go",
+          space: "slack:T1",
+          isPrivate: true,
+          spawnedFromSurface: "slack",
+        }),
+      ).rejects.toBeInstanceOf(AuthzError);
+      await expect(dispatcher.resume({ principal: "p", taskId: "t", prompt: "go", space: "slack:T1", isPrivate: true })).rejects.toBeInstanceOf(AuthzError);
+      await expect(dispatcher.haltTask({ principal: "p", taskId: "t", space: "slack:T1", isPrivate: true })).rejects.toBeInstanceOf(AuthzError);
+      await expect(dispatcher.steer({ principal: "p", taskId: "t", space: "slack:T1", text: "go", isPrivate: true })).rejects.toBeInstanceOf(AuthzError);
+
+      expect(seen.map((i) => i.capability)).toEqual(["runner.dispatch", "session.resume", "session.stop", "session.resume"]);
+      expect(seen.every((i) => i.isPrivate === true)).toBe(true);
     } finally {
       dispatcher.stop();
     }

@@ -26,6 +26,8 @@ export interface DispatchInput {
   project: string | null;
   prompt: string;
   space: string;
+  /** Private/DM context signal, forwarded to canFn's personal-space check. */
+  isPrivate?: boolean;
   spawnedFromSurface: string;
   threadRefs?: string[];
   // Clone-on-demand: when set, the orchestrator derives the cwd under the runner's workspace root
@@ -38,12 +40,14 @@ export interface ResumeInput {
   taskId: string;
   prompt: string;
   space: string;
+  isPrivate?: boolean;
 }
 
 export interface HaltInput {
   principal: string;
   taskId: string;
   space: string;
+  isPrivate?: boolean;
   discard?: boolean; // true = also reclaim the worktree, terminal (not resumable)
 }
 
@@ -51,6 +55,7 @@ export interface SteerInput {
   principal: string;
   taskId: string;
   space: string;
+  isPrivate?: boolean;
   text: string;
 }
 
@@ -198,6 +203,7 @@ export class Dispatcher {
       capability: "runner.dispatch",
       resource: input.runnerId,
       space: input.space,
+      isPrivate: input.isPrivate,
     });
     if (!allowed) throw new AuthzError("runner.dispatch denied");
 
@@ -259,6 +265,7 @@ export class Dispatcher {
       capability: "session.resume",
       resource: input.taskId,
       space: input.space,
+      isPrivate: input.isPrivate,
     });
     if (!allowed) throw new AuthzError("session.resume denied");
 
@@ -299,7 +306,7 @@ export class Dispatcher {
    *  records the status. The runner's stop() suppresses any "failed" from the abort, so the status
    *  recorded here is authoritative. */
   async haltTask(input: HaltInput): Promise<TaskRow> {
-    const allowed = this.canFn({ principal: input.principal, capability: "session.stop", resource: input.taskId, space: input.space });
+    const allowed = this.canFn({ principal: input.principal, capability: "session.stop", resource: input.taskId, space: input.space, isPrivate: input.isPrivate });
     if (!allowed) throw new AuthzError("session.stop denied");
     const task = this.registry.get(input.taskId);
     if (!task || task.createdBy !== input.principal) throw new AuthzError("session.stop denied");
@@ -323,7 +330,7 @@ export class Dispatcher {
    *  session context (this is `resume` with the steer text). The steer is recorded as an activity line
    *  so every watcher and the transcript sees the intervention. */
   async steer(input: SteerInput): Promise<TaskRow> {
-    const allowed = this.canFn({ principal: input.principal, capability: "session.resume", resource: input.taskId, space: input.space });
+    const allowed = this.canFn({ principal: input.principal, capability: "session.resume", resource: input.taskId, space: input.space, isPrivate: input.isPrivate });
     if (!allowed) throw new AuthzError("session.resume denied");
     const task = this.registry.get(input.taskId);
     if (!task || task.createdBy !== input.principal) throw new AuthzError("session.resume denied");

@@ -21,6 +21,42 @@ describe("memoryBanks", () => {
     expect(pub.read).not.toContain("sushii-dm-u1");
   });
 
+  test("private + linked principal → write is the principal bank; read unions the per-identity DM banks", () => {
+    const banks = memoryBanks({
+      spaceId: "T1",
+      userId: "U0OWNERTEST0", // the current (slack) identity
+      isPrivate: true,
+      principalId: "drk",
+      aliasUserIds: ["100000000000000000", "4fe70a"],
+    });
+    expect(banks.write).toBe("sushii-dm-principal-drk");
+    expect(banks.read).toEqual([
+      "sushii-dm-principal-drk",
+      "sushii-dm-U0OWNERTEST0",
+      "sushii-dm-100000000000000000",
+      "sushii-dm-4fe70a",
+    ]);
+  });
+
+  test("private + no principalId → unchanged single-identity DM bucket", () => {
+    expect(memoryBanks({ spaceId: "dm", userId: "u9", isPrivate: true, aliasUserIds: ["x"] })).toEqual({
+      read: ["sushii-dm-u9"],
+      write: "sushii-dm-u9",
+    });
+  });
+
+  test("public space ignores principal aliasing entirely (wall intact for a linked principal)", () => {
+    const pub = memoryBanks({
+      spaceId: "s1",
+      userId: "u1",
+      isPrivate: false,
+      principalId: "drk",
+      aliasUserIds: ["100000000000000000"],
+    });
+    expect(pub).toEqual({ read: ["sushii-space-s1-user-u1", "sushii-space-s1"], write: "sushii-space-s1-user-u1" });
+    expect(pub.read.some((b) => b.startsWith("sushii-dm-"))).toBe(false);
+  });
+
   test("blank userId → no access, no write", () => {
     expect(memoryBanks({ spaceId: "s1", userId: "   ", isPrivate: false })).toEqual({ read: [], write: null });
   });

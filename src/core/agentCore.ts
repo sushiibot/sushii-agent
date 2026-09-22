@@ -17,6 +17,7 @@ import type {
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
 import { isPersonalSpace, spaceKey } from "../orchestration/authz.ts";
+import { principalAliasUserIds, resolvePrincipal } from "../orchestration/principals.ts";
 import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
 import { MEMORY_LIMIT, CORE_PROFILE_TITLE } from "./stores/index.ts";
@@ -121,7 +122,20 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     // Memory scoping: the private (DM) self is walled off from the public (in-space) self. Retrieval
     // reads the initiator's bucket set for this space; the deriver writes the individual bucket.
     const isPrivate = conversation.isPrivate ?? isPersonalSpace(spaceKey(conversation.surface, conversation.spaceId));
-    const memoryScope: MemoryScope = { spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate };
+    // Resolve the initiator's cross-platform principal once — reused for owner-DM tool gating and, in
+    // a private DM, for the unified/read-aliased memory identity.
+    const initiatorPrincipal = resolvePrincipal(conversation.surface, turn.initiator.userId);
+    const memoryScope: MemoryScope = {
+      spaceId: conversation.spaceId,
+      userId: turn.initiator.userId,
+      isPrivate,
+      ...(initiatorPrincipal
+        ? {
+            principalId: initiatorPrincipal.principalId,
+            aliasUserIds: principalAliasUserIds(initiatorPrincipal.principalId, conversation.surface, turn.initiator.userId),
+          }
+        : {}),
+    };
 
     // Proactive memory: retrieve a durable-fact block keyed to this turn's user text, injected into
     // the system prompt. Best-effort + time-bounded (raceMemoryRetrieve), no-op unless wired.
@@ -147,10 +161,21 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       moduleExtras: pc.moduleExtras,
     });
 
-    const toolEntries = deps.tools.resolve(session, { surface: conversation.surface, spaceId: conversation.spaceId, autoMod });
+    // Author-aware owner-DM gating: the autonomous auto-mod driver has no requesting owner, so it's
+    // never the owner regardless of who tripped the keyword.
+    const isOwner = autoMod ? false : (initiatorPrincipal?.isOwner ?? false);
+
+    const toolEntries = deps.tools.resolve(session, {
+      surface: conversation.surface,
+      spaceId: conversation.spaceId,
+      autoMod,
+      isOwner,
+      isPrivate,
+    });
 
     const toolContextBase: Omit<ToolContext, "owner"> = {
       space: { surface: conversation.surface, spaceId: conversation.spaceId },
+      isPrivate,
       store: deps.store,
       memory: deps.memory,
       log: undefined,
@@ -212,6 +237,9 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
 
     await session.deliver(result.reply);
 
+    // The deriver attributes to the LAST author (a mid-loop interjector if one spoke last), so the
+    // durable-write principal is resolved for that author — not necessarily the initiator above.
+    const lastAuthorPrincipal = resolvePrincipal(conversation.surface, turn.lastUserAuthor.userId);
     const turnEndCtx: TurnEndContext = {
       conversation,
       reply: result.reply,
@@ -220,6 +248,12 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       history: result.messages,
       authorId: turn.lastUserAuthor.userId,
       isPrivate,
+      ...(lastAuthorPrincipal
+        ? {
+            principalId: lastAuthorPrincipal.principalId,
+            aliasUserIds: principalAliasUserIds(lastAuthorPrincipal.principalId, conversation.surface, turn.lastUserAuthor.userId),
+          }
+        : {}),
     };
     fireHook(deps.hooks, "onTurnEnd", turnEndCtx);
 

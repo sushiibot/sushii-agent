@@ -101,13 +101,16 @@ function ctx(space: { surface: string; spaceId: string }, owner: AuthorRef | nul
 
 describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -> can())", () => {
   const prevOwner = config.ownerDiscordId;
+  const prevPrincipals = config.principals;
 
   beforeEach(() => {
     config.ownerDiscordId = OWNER;
+    config.principals = {}; // legacy regime — an empty registry falls back to the ownerDiscordId gate
   });
 
   afterEach(() => {
     config.ownerDiscordId = prevOwner;
+    config.principals = prevPrincipals;
   });
 
   test("dispatch_to_runner: denied in a guild space", async () => {
@@ -168,16 +171,66 @@ describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -
   });
 });
 
+describe("runner tools authz wiring — CONFIGURED registry (principal + isPrivate)", () => {
+  const prevOwner = config.ownerDiscordId;
+  const prevPrincipals = config.principals;
+  const DRK_SLACK = "U0OWNERTEST0";
+  const SLACK_DM = { surface: "slack", spaceId: "T0AAA" };
+
+  beforeEach(() => {
+    config.ownerDiscordId = undefined; // registry is the sole owner source
+    config.principals = { drk: { owner: true, identities: { slack: DRK_SLACK } } };
+  });
+  afterEach(() => {
+    config.ownerDiscordId = prevOwner;
+    config.principals = prevPrincipals;
+  });
+
+  function slackAuthor(userId: string): AuthorRef {
+    return { surface: "slack", userId, username: userId };
+  }
+  function privCtx(space: { surface: string; spaceId: string }, owner: AuthorRef | null, isPrivate: boolean): ToolContext {
+    return { space, isPrivate, owner, store: {} as never, memory: {} as never, log: {} as never };
+  }
+
+  test("owner principal in a private Slack DM dispatches (no legacy ownerDiscordId needed)", async () => {
+    const result = await dispatchToRunnerEntry.execute(
+      { runner_id: "r1", cwd: "/tmp", prompt: "go" },
+      privCtx(SLACK_DM, slackAuthor(DRK_SLACK), true),
+    );
+    expect(result.content).toContain("Dispatched task task-1");
+  });
+
+  test("owner principal in a NON-private Slack channel is denied", async () => {
+    const result = await dispatchToRunnerEntry.execute(
+      { runner_id: "r1", cwd: "/tmp", prompt: "go" },
+      privCtx({ surface: "slack", spaceId: "C-pub" }, slackAuthor(DRK_SLACK), false),
+    );
+    expect(result.content).toBe(DENIED);
+  });
+
+  test("a non-owner (unlinked) id in a private Slack DM is denied", async () => {
+    const result = await dispatchToRunnerEntry.execute(
+      { runner_id: "r1", cwd: "/tmp", prompt: "go" },
+      privCtx(SLACK_DM, slackAuthor("someone-else"), true),
+    );
+    expect(result.content).toBe(DENIED);
+  });
+});
+
 describe("runner tools: dispatcher unavailable (getDispatcher listen failure)", () => {
   const prevOwner = config.ownerDiscordId;
+  const prevPrincipals = config.principals;
 
   beforeEach(() => {
     config.ownerDiscordId = OWNER;
+    config.principals = {};
     dispatcherUnavailable = true;
   });
 
   afterEach(() => {
     config.ownerDiscordId = prevOwner;
+    config.principals = prevPrincipals;
     dispatcherUnavailable = false;
   });
 
@@ -204,9 +257,15 @@ describe("runner tools: dispatcher unavailable (getDispatcher listen failure)", 
 
 describe("runner tools: registry-level availability gate (mirrors ops-triage)", () => {
   const prevOwner = config.ownerDiscordId;
+  const prevPrincipals = config.principals;
+
+  beforeEach(() => {
+    config.principals = {}; // legacy regime: gating falls back to owner-availability + isPersonalSpace
+  });
 
   afterEach(() => {
     config.ownerDiscordId = prevOwner;
+    config.principals = prevPrincipals;
   });
 
   function names(owner: boolean, spaceId: string): string[] {

@@ -297,6 +297,11 @@ export interface TurnEndContext {
   authorId: string;
   /** Whether this turn ran in a private (DM) space; selects the DM bank over the per-space bank. */
   isPrivate: boolean;
+  /** When the last author resolves to a linked principal: the unified DM write identity + its alias
+   *  identity userIds, so the deriver's durable write lands in `sushii-dm-principal-<principalId>`
+   *  (mirroring the retrieval scope). Absent for unlinked authors. */
+  principalId?: string;
+  aliasUserIds?: string[];
 }
 
 export interface HookEvents {
@@ -338,6 +343,10 @@ export interface ResetSink {
 
 export interface ToolContext {
   space: { surface: SurfaceId; spaceId: string };
+  /** Whether this turn runs in a private/DM context — threaded into execution authz's
+   *  personal-space check (a Slack DM's spaceId is the teamId, not "dm", so a space-string test
+   *  can't infer it). */
+  isPrivate?: boolean;
   owner: AuthorRef | null; // tainted owner-gate identity, NOT inbound.author
   store: ConversationStore;
   memory: SpaceMemoryStore;
@@ -383,7 +392,18 @@ export interface ToolRegistry {
   /** Assemble the per-turn tool set given the session's hosts + capabilities + config/mode gates.
    *  `autoMod` mirrors the old resolveToolEntries(enabledModules, autoModMode) signal — restricts
    *  timeout_member/delete_user_messages/send_alert_message to the autonomous auto-mod driver. */
-  resolve(session: SurfaceSession, space: { surface: SurfaceId; spaceId: string; autoMod?: boolean }): ToolEntry<keyof ToolHosts>[];
+  resolve(
+    session: SurfaceSession,
+    space: {
+      surface: SurfaceId;
+      spaceId: string;
+      autoMod?: boolean;
+      /** Author-aware owner-DM gating (runner + update_profile tools). When the principal registry is
+       *  configured these decide visibility; unconfigured falls back to the space-string heuristic. */
+      isOwner?: boolean;
+      isPrivate?: boolean;
+    },
+  ): ToolEntry<keyof ToolHosts>[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

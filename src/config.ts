@@ -1,5 +1,6 @@
 export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
+import type { PrincipalConfig } from "./orchestration/principals.ts";
 import { parseRelayUrls, parseWikiMap, parseAvatarMap } from "./surfaces/buzz/relayUrl.ts";
 
 export interface Config {
@@ -19,6 +20,10 @@ export interface Config {
   databasePath: string;
   feedbackPath: string;
   guildConfig: Record<string, GuildConfig>;
+  /** Manual cross-platform identity registry (principal → identities), hand-maintained in
+   *  principals.json (path via PRINCIPALS_PATH). Empty/unset → the registry is unconfigured and
+   *  authz falls back to the legacy `ownerDiscordId` behavior. See orchestration/principals.ts. */
+  principals: Record<string, PrincipalConfig>;
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
   /** mnemosyne MCP server (streamable-http). Unset → the semantic memory backend is disabled and
@@ -121,6 +126,32 @@ function loadGuildConfig(): Record<string, GuildConfig> {
   return raw;
 }
 
+/** Load + validate the manual principal registry. A missing DEFAULT file means "unconfigured" (empty
+ *  → legacy fallback); an explicitly-set PRINCIPALS_PATH that can't be read or parsed is a
+ *  misconfiguration and throws. Enforces the at-most-one-owner invariant at load. */
+function loadPrincipals(): Record<string, PrincipalConfig> {
+  const explicit = process.env["PRINCIPALS_PATH"];
+  const filePath = explicit ?? "./principals.json";
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch (e) {
+    if (explicit) throw new Error(`Failed to load principals from ${filePath}: ${e}`);
+    return {};
+  }
+  let raw: Record<string, PrincipalConfig>;
+  try {
+    raw = JSON.parse(content);
+  } catch (e) {
+    throw new Error(`Invalid principals JSON in ${filePath}: ${e}`);
+  }
+  const owners = Object.keys(raw).filter((id) => raw[id]?.owner === true);
+  if (owners.length > 1) {
+    throw new Error(`principals: at most one principal may be owner (found ${owners.join(", ")})`);
+  }
+  return raw;
+}
+
 export const config: Config = {
   discordBotToken: required("DISCORD_BOT_TOKEN"),
   openaiApiKey: required("OPENAI_API_KEY"),
@@ -136,6 +167,7 @@ export const config: Config = {
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
   guildConfig: loadGuildConfig(),
+  principals: loadPrincipals(),
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],

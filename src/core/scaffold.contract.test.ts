@@ -16,6 +16,8 @@ import type {
   ToolRegistry,
 } from "./contracts.ts";
 import { memoryBanks } from "./memory/banks.ts";
+import { config } from "../config.ts";
+import type { PrincipalConfig } from "../orchestration/principals.ts";
 
 // Capture the params handed to generateText so we can assert on the assembled system prompt.
 let lastSystemPrompt = "";
@@ -185,6 +187,53 @@ describe("scaffold contract — compaction + memory hook sites", () => {
     // guild1 is not a personal space, but the surface declared privacy → DM bucket for user u1.
     expect(seenScope).toEqual({ spaceId: "guild1", userId: "u1", isPrivate: true });
     expect(memoryBanks(seenScope!).write).toBe("sushii-dm-u1");
+  });
+
+  test("a private turn from a linked principal → unified write bank + read-aliased identity banks", async () => {
+    const DRK: Record<string, PrincipalConfig> = {
+      drk: {
+        owner: true,
+        identities: { slack: "U0OWNERTEST0", discord: "100000000000000000", buzz: "4fe70a" },
+      },
+    };
+    const prev = config.principals;
+    config.principals = DRK; // reassign (never mutate) so the principals cache rebuilds
+    try {
+      const store = new FakeStore();
+      const hooks = new FakeHooks();
+      let writePrincipalId: string | undefined;
+      hooks.on("onTurnEnd", (ctx) => {
+        writePrincipalId = ctx.principalId;
+      });
+      let seenScope: MemoryScope | undefined;
+      const memoryProvider: MemoryProvider = {
+        retrieve: async ({ scope }) => {
+          seenScope = scope;
+          return null;
+        },
+        remember: async () => {},
+      };
+      const core = createAgentCore({ ...baseDeps(store), hooks, memoryProvider });
+      const slackDm: InboundMessage = {
+        conversation: { surface: "slack", spaceId: "T1", conversationId: "c1", isPrivate: true },
+        author: { surface: "slack", userId: "U0OWNERTEST0", username: "drk" },
+        text: "hi",
+      };
+      await core.handleInbound(slackDm, fakeSession());
+      expect(seenScope?.principalId).toBe("drk");
+      // The write path (deriver via onTurnEnd) resolves the same principal → durable writes consolidate.
+      expect(writePrincipalId).toBe("drk");
+      const banks = memoryBanks(seenScope!);
+      expect(banks.write).toBe("sushii-dm-principal-drk");
+      expect(banks.read).toEqual([
+        "sushii-dm-principal-drk",
+        "sushii-dm-U0OWNERTEST0",
+        "sushii-dm-100000000000000000",
+        "sushii-dm-4fe70a",
+      ]);
+    } finally {
+      config.principals = prev;
+    }
   });
 
   test("onTurnEnd carries the initiator authorId + isPrivate for the deriver's write scope", async () => {

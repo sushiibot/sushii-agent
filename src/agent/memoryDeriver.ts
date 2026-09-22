@@ -54,7 +54,13 @@ export function createMemoryDeriver(memoryProvider: MemoryProvider): (ctx: TurnE
     });
 
     const facts = parseFacts(res.text);
-    const scope = { spaceId: ctx.conversation.spaceId, userId: ctx.authorId, isPrivate: ctx.isPrivate };
+    const scope = {
+      spaceId: ctx.conversation.spaceId,
+      userId: ctx.authorId,
+      isPrivate: ctx.isPrivate,
+      principalId: ctx.principalId,
+      aliasUserIds: ctx.aliasUserIds,
+    };
     for (const f of facts) {
       await memoryProvider.remember({ scope, text: f.content, importance: f.importance });
     }

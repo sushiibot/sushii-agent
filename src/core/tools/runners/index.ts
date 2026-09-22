@@ -36,7 +36,7 @@ function spaceOf(ctx: ToolContext): string {
 function authorize(ctx: ToolContext, capability: Capability, resource?: string): string | undefined {
   const principal = principalOf(ctx);
   if (!principal) return undefined;
-  return can({ principal, capability, resource, space: spaceOf(ctx) }) ? principal : undefined;
+  return can({ principal, capability, resource, space: spaceOf(ctx), isPrivate: ctx.isPrivate }) ? principal : undefined;
 }
 
 export const dispatchToRunnerEntry: ToolEntry = {
@@ -108,6 +108,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
         project: (input.project as string | undefined) ?? null,
         prompt: input.prompt as string,
         space: spaceOf(ctx),
+        isPrivate: ctx.isPrivate,
         spawnedFromSurface: ctx.space.surface,
         repo,
       });
@@ -262,7 +263,7 @@ export const resumeSessionEntry: ToolEntry = {
     }
 
     try {
-      const task = await dispatcher.resume({ principal, taskId, prompt: input.prompt as string, space: spaceOf(ctx) });
+      const task = await dispatcher.resume({ principal, taskId, prompt: input.prompt as string, space: spaceOf(ctx), isPrivate: ctx.isPrivate });
       return { content: `Resumed task ${task.id} (status: ${task.status}).` };
     } catch (err) {
       if (err instanceof AuthzError) return { content: DENIED };
@@ -334,7 +335,7 @@ export const steerTaskEntry: ToolEntry = {
       throw err;
     }
     try {
-      const task = await dispatcher.steer({ principal, taskId, text: input.text as string, space: spaceOf(ctx) });
+      const task = await dispatcher.steer({ principal, taskId, text: input.text as string, space: spaceOf(ctx), isPrivate: ctx.isPrivate });
       return { content: `Steered task ${task.id} (status: ${task.status}).` };
     } catch (err) {
       if (err instanceof AuthzError) return { content: DENIED };
@@ -356,7 +357,7 @@ async function haltAndReport(taskId: string, ctx: Parameters<typeof spaceOf>[0],
     throw err;
   }
   try {
-    const task = await dispatcher.haltTask({ principal, taskId, discard, space: spaceOf(ctx) });
+    const task = await dispatcher.haltTask({ principal, taskId, discard, space: spaceOf(ctx), isPrivate: ctx.isPrivate });
     return { content: discard ? `Discarded task ${task.id} (worktree removed).` : `Stopped task ${task.id} — resumable with resume_session.` };
   } catch (err) {
     if (err instanceof AuthzError) return { content: DENIED };

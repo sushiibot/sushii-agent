@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SurfaceCapabilities, SurfaceSession, ToolHosts } from "../contracts.ts";
+import { config } from "../../config.ts";
+import type { PrincipalConfig } from "../../orchestration/principals.ts";
 import { ALL_TOOL_ENTRIES, createToolRegistry, type ToolAvailability } from "./registry.ts";
 import "./hosts.ts";
 
@@ -141,5 +143,73 @@ describe("CoreToolRegistry", () => {
   test("every declared tool name is unique", () => {
     const names = ALL_TOOL_ENTRIES.map((e) => e.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe("owner-DM gating — UNCONFIGURED registry (legacy isPersonalSpace heuristic)", () => {
+  const prev = config.principals;
+  beforeEach(() => {
+    config.principals = {};
+  });
+  afterEach(() => {
+    config.principals = prev;
+  });
+
+  test("update_profile + runner tools hidden in a guild, offered in a discord DM (with owner set)", () => {
+    const guild = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "g1" }).map((e) => e.name);
+    expect(guild).not.toContain("update_profile");
+    expect(guild).not.toContain("dispatch_to_runner");
+
+    const dm = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "dm" }).map((e) => e.name);
+    expect(dm).toContain("update_profile");
+    expect(dm).toContain("dispatch_to_runner");
+  });
+
+  test("isOwner/isPrivate flags are ignored in the legacy regime (space string still decides)", () => {
+    // A Slack DM has no "dm" spaceId, so the legacy heuristic can't recognize it even with flags set.
+    const slackDm = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: true, isPrivate: true })
+      .map((e) => e.name);
+    expect(slackDm).not.toContain("dispatch_to_runner");
+    expect(slackDm).not.toContain("update_profile");
+  });
+});
+
+describe("owner-DM gating — CONFIGURED registry (author-aware isOwner && isPrivate)", () => {
+  const prev = config.principals;
+  const DRK: Record<string, PrincipalConfig> = { drk: { owner: true, identities: { slack: "U0OWNERTEST0" } } };
+  beforeEach(() => {
+    config.principals = DRK;
+  });
+  afterEach(() => {
+    config.principals = prev;
+  });
+
+  test("owner in a private space (ANY surface) sees runner + update_profile tools", () => {
+    const names = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: true, isPrivate: true })
+      .map((e) => e.name);
+    expect(names).toContain("dispatch_to_runner");
+    expect(names).toContain("update_profile");
+  });
+
+  test("owner in a NON-private space is hidden; a private non-owner is hidden", () => {
+    const publicOwner = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false })
+      .map((e) => e.name);
+    expect(publicOwner).not.toContain("dispatch_to_runner");
+    expect(publicOwner).not.toContain("update_profile");
+
+    const privateNonOwner = registry()
+      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true })
+      .map((e) => e.name);
+    expect(privateNonOwner).not.toContain("dispatch_to_runner");
+    expect(privateNonOwner).not.toContain("update_profile");
+  });
+
+  test("in the configured regime the legacy discord:dm space alone no longer suffices (needs the flags)", () => {
+    const noFlags = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "dm" }).map((e) => e.name);
+    expect(noFlags).not.toContain("dispatch_to_runner");
+    expect(noFlags).not.toContain("update_profile");
   });
 });

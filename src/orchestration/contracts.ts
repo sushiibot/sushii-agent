@@ -133,5 +133,8 @@ export interface AuthzInput {
   capability: Capability;
   resource?: string; // e.g. runnerId or taskId
   space: string; // surface+scope key the request arrived in
+  /** Whether the request arrived in a private/DM context. Required true for the configured-registry
+   *  personal-space conjunction; ignored in the legacy regime. Callers populate it via ToolContext. */
+  isPrivate?: boolean;
 }
 export type CanFn = (input: AuthzInput) => boolean;
