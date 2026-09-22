@@ -39,6 +39,7 @@ import { renderDiscordText } from "./render.ts";
 import { handleFeedbackButton, handleFeedbackModal } from "./feedback.ts";
 import { SCAN_QUERY, applyAutomodDecision } from "./approvals.ts";
 import { buildTriggerText } from "./inbound.ts";
+import { createTranscriber } from "../../agent/transcribe.ts";
 import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
 import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/dispatcher.ts";
 import type { TaskRow } from "../../orchestration/contracts.ts";
@@ -217,6 +218,7 @@ interface PendingApproval {
 
 export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   const { client, core, store, memory, hookBus } = deps;
+  const transcriber = createTranscriber();
   // One ToolProgressTracker per active conversation. The onToolsDispatched hook and the session
   // that renders the reply share the same instance; the gateway finalizes + removes it when the
   // turn that owns it (not a queued mid-loop message) finishes.
@@ -319,6 +321,24 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
 
+    // Voice messages: transcribe the audio attachment to text and run the turn on the transcript.
+    // Empty content + IsVoiceMessage flag identifies one; the owner sees what was heard.
+    let userText = message.content;
+    if (config.transcriptionEnabled && message.flags.has(MessageFlags.IsVoiceMessage)) {
+      const att = message.attachments.first();
+      await message.react("🎙️").catch(() => {});
+      const buf = att ? await fetch(att.url).then((r) => r.arrayBuffer()).catch(() => null) : null;
+      const transcript = buf
+        ? await transcriber({ data: buf, mediaType: att!.contentType ?? "audio/ogg", filename: att!.name ?? "voice-message.ogg" })
+        : null;
+      if (!transcript) {
+        await channel.send("Sorry, I couldn't transcribe that voice message.").catch(() => {});
+        return;
+      }
+      userText = transcript;
+      await channel.send(`-# 🎙️ heard: ${transcript}`).catch(() => {});
+    }
+
     // Immediate receipt ack — the turn (and any dispatch it kicks off) can take a while, so react
     // right away so the owner knows the DM was seen and is being worked on.
     await message.react("👀").catch(() => {});
@@ -326,7 +346,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
     const author: AuthorRef = { surface: SURFACE, userId: message.author.id, username: message.author.username };
     const session = new DmConductorSession(channel, { id: client.user.id, username: client.user.username });
-    const inbound: InboundMessage = { conversation, author, text: message.content };
+    const inbound: InboundMessage = { conversation, author, text: userText };
 
     await tracer.startActiveSpan("discord.dm", {
       attributes: { "discord.user_id": author.userId, "discord.channel_id": message.channelId },

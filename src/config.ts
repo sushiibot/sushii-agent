@@ -11,6 +11,10 @@ export interface Config {
   /** Auto-derive durable memory from each finished turn (write-side of proactive memory). Default on;
    *  set MEMORY_DERIVER=0 to disable if the per-turn extraction cost isn't worth it. */
   memoryDeriverEnabled: boolean;
+  /** Transcribe Discord voice messages to text (STT). Default on; VOICE_TRANSCRIPTION=0 disables. */
+  transcriptionEnabled: boolean;
+  /** OpenRouter transcription (ASR) model for voice messages. */
+  transcriptionModel: string;
   openaiContextLimit: number;
   databasePath: string;
   feedbackPath: string;
@@ -115,6 +119,8 @@ export const config: Config = {
   // empty falls back to openaiModel.
   compactionModel: optional("COMPACTION_MODEL", ""),
   memoryDeriverEnabled: !["0", "false", "no"].includes(optional("MEMORY_DERIVER", "1").toLowerCase()),
+  transcriptionEnabled: !["0", "false", "no"].includes(optional("VOICE_TRANSCRIPTION", "1").toLowerCase()),
+  transcriptionModel: optional("TRANSCRIPTION_MODEL", "openai/whisper-large-v3"),
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
