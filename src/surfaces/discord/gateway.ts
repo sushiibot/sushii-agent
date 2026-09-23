@@ -24,7 +24,7 @@ import { savePendingQuestion, loadPendingQuestion, deletePendingQuestion, delete
 import { buildMessageContent } from "../../utils/flattenMessage.ts";
 import { isPrivateChannel } from "../../tools/channelUtils.ts";
 import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerContext } from "../../modules/moderation/prompt.ts";
-import { buildOpsTriagePromptSection } from "../../modules/ops-triage/prompt.ts";
+import { buildOwnerPromptSection } from "../../orchestration/promptSection.ts";
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
 import type { MakeWikiSourceContext } from "../../modules/wiki-sync/scheduler.ts";
@@ -564,7 +564,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
           }
         }
 
-        const ownerSection = config.ownerDiscordId && author.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
+        const ownerSection = config.ownerDiscordId && author.userId === config.ownerDiscordId ? buildOwnerPromptSection() : undefined;
         const tracker = new ToolProgressTracker(thread);
         const session = new DiscordSurfaceSession({
           client,
@@ -875,7 +875,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const { initialThreadContext } = store.load(conversation);
       const by = await memberAuthor(thread, interaction.user.id, guildConfig.allowedRoles);
       const channel = threadChannelRef(thread);
-      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
+      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOwnerPromptSection() : undefined;
       const tracker = new ToolProgressTracker(thread);
       const session = new DiscordSurfaceSession({
         client,
@@ -953,7 +953,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const { initialThreadContext } = store.load(conversation);
       const by = await memberAuthor(thread, interaction.user.id, guildConfig.allowedRoles);
       const channel = threadChannelRef(thread);
-      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOpsTriagePromptSection() : undefined;
+      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOwnerPromptSection() : undefined;
       const tracker = new ToolProgressTracker(thread);
       const session = new DiscordSurfaceSession({
         client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: tracker,
