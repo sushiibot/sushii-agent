@@ -139,6 +139,8 @@ export const registerParams = z.object({
   workspaceRoot: z.string().nullable().default(null),
   // Human-friendly location for display (e.g. "apps · container", "drk-wsl2 · desktop"). Optional.
   location: z.string().nullable().default(null),
+  // What the runner's agent can do beyond coding, e.g. "browser" (headless Chromium via agent-browser).
+  capabilities: z.array(z.string()).default([]),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
 

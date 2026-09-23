@@ -1,16 +1,16 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import simpleGit from "simple-git";
 import { defineTool, type AgentSession, type AgentSessionEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
+import type { BrowserUpdate, HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
 import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
 import { buildAgentEnv } from "./agentEnv.ts";
-import { browserEnv, closeBrowserSession } from "./browser.ts";
-import { allocatePort, BrowserRelay } from "./browserStream.ts";
+import { allocateBrowserPorts, browserEnv, closeBrowserSessions, type BrowserPorts } from "./browser.ts";
+import { BrowserRelay } from "./browserStream.ts";
 import { ENV_CONTEXT_PATH } from "./envContext.ts";
 
 const log = getLogger("orchestration.runner.pi");
@@ -86,9 +86,9 @@ function createAskOwnerTool(bridge: AskBridge): ToolDefinition {
 // Generic coding-runner system prompt. The trailing summary instruction is what makes the handback
 // informative — without it a model that does its work purely via tools stops with no final text, so
 // the handback recap comes back empty ("Stopped."). Kept minimal + agent-agnostic (no wiki/Discord).
-const RUNNER_SYSTEM_PROMPT = `You are an autonomous coding agent. Carry out the requested task directly using your tools (read, edit, write, bash, etc.).
+const RUNNER_SYSTEM_PROMPT = `You are an autonomous agent. Carry out the requested task directly using your tools (read, edit, write, bash, etc.). Your working directory is a git repository for coding tasks, or an empty scratch folder for other work such as browsing or research.
 
-Git & GitHub: use git/gh yourself, and only when the task calls for it — not every task needs a commit or a PR. When you have changes to publish: commit them, push the current branch with \`git push -u origin HEAD\`, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). Do not create another branch, and never push to the default branch (it is blocked). If the task is exploratory, a question, or needs no change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.
+Git & GitHub (repository tasks): use git/gh yourself, and only when the task calls for it — not every task needs a commit or a PR. When you have changes to publish: commit them, push the current branch with \`git push -u origin HEAD\`, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). Do not create another branch, and never push to the default branch (it is blocked). If the task is exploratory, a question, or needs no change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.
 
 Asking the owner: you have an \`ask_owner\` tool that BLOCKS until the owner replies. Use it ONLY when genuinely blocked and you cannot safely proceed — a decision only the owner can make, a truly ambiguous requirement, or a destructive/irreversible choice. Do NOT use it for things you can decide yourself or to ask permission for routine work; prefer a reasonable assumption noted in your summary over stopping. Make the question specific, and pass \`choices\` when the answer is one of a few options.`;
 
@@ -99,6 +99,7 @@ export interface PiRunnerOptions {
   agentDir: string; // where Pi keeps auth/models/sessions (session files = resume handles)
   environmentContext?: string; // markdown injected ahead of the repo's own AGENTS.md
   browser?: boolean; // agent-browser is installed: give each task its own browser session
+  browserUseApiKey?: string; // enables `agent-browser-web` (Browser Use cloud browser) for blocked sites
   maxOutputTokens?: number;
   fallbackContextWindow?: number;
   progressDebounceMs?: number;
@@ -251,15 +252,44 @@ interface PiTaskState {
   tokenRef: { current: string | null };
   credsTimer: ReturnType<typeof setInterval> | null;
   askBridge: AskBridge; // ask_owner ↔ answer routing for this session
-  browserPort: number | null; // pinned agent-browser stream port (stable across resume)
+  browserPorts: BrowserPorts | null; // pinned agent-browser stream ports (stable across resume)
   emit: ((e: RunnerEvent) => void) | null; // the live stream() callback, for browser relay events
-  relay: BrowserRelay | null; // live browser view, only while a viewer watches
+  relays: BrowserRelay[]; // live browser view (local + cloud), only while a viewer watches
 }
 
 // Poll the token provider often; it serves the cached token until ~5min before expiry and re-mints
 // past that, so frequent polling keeps the injected token fresh for long tasks at near-zero cost
 // (most ticks are cache hits, no API call).
 const TOKEN_REFRESH_MS = 4 * 60_000;
+
+function isScratchDir(workspaceRoot: string | null | undefined, cwd: string): boolean {
+  return Boolean(workspaceRoot) && cwd.startsWith(`${workspaceRoot}/`) && cwd.split("/").at(-2) === "scratch";
+}
+
+/** Remove `<root>/<principal>/scratch/<id>` folders idle past the TTL. Returns how many were removed. */
+export function pruneScratch(workspaceRoot: string, ttlMs: number, activeCwds: Set<string>, now: number): number {
+  let removed = 0;
+  const subdirs = (dir: string) => {
+    try {
+      return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(dir, e.name));
+    } catch {
+      return [];
+    }
+  };
+  for (const principalDir of subdirs(workspaceRoot)) {
+    for (const dir of subdirs(join(principalDir, "scratch"))) {
+      if (activeCwds.has(dir)) continue;
+      try {
+        if (now - statSync(dir).mtimeMs < ttlMs) continue;
+        rmSync(dir, { recursive: true, force: true });
+        removed++;
+      } catch {
+        // vanished or unreadable; the next sweep retries
+      }
+    }
+  }
+  return removed;
+}
 
 /**
  * Pi coding-agent runner adapter — same RunnerAdapter contract as ClaudeCodeRunnerAdapter, so a
@@ -275,6 +305,25 @@ export class PiRunnerAdapter implements RunnerAdapter {
     this.progressDebounceMs = options.progressDebounceMs ?? 1500;
     this.now = options.now ?? Date.now;
     this.startWorktreeGc();
+    this.startScratchGc();
+  }
+
+  get hasBrowser(): boolean {
+    return Boolean(this.options.browser);
+  }
+
+  // Scratch folders (tasks with no repo) hold nothing worth keeping past the worktree TTL.
+  private startScratchGc(): void {
+    const { workspaceRoot } = this.options;
+    if (!workspaceRoot) return;
+    const ttlMs = this.options.worktreeTtlMs ?? 24 * 3600_000;
+    const run = () => {
+      const active = new Set([...this.tasks.values()].map((t) => t.cwd));
+      const removed = pruneScratch(workspaceRoot, ttlMs, active, this.now());
+      if (removed) log.info({ count: removed }, "pruned scratch folders");
+    };
+    const timer = setInterval(run, this.options.gcIntervalMs ?? 3600_000);
+    timer.unref?.();
   }
 
   // Periodically reclaim task worktrees whose PR has merged or that have gone idle past the TTL.
@@ -297,14 +346,15 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const repo = input.repo ?? null;
     const repoHome = input.cwd;
     let cwd = input.cwd;
+    if (!repo && isScratchDir(this.options.workspaceRoot, cwd)) mkdirSync(cwd, { recursive: true });
     if (repo && this.options.repoOps) {
       await cloneIfAbsent(repoHome, repo, this.options.repoOps);
       cwd = await ensureWorktree(repoHome, input.taskId, this.options.repoOps); // per-task isolation
     }
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
-    const browserPort = this.options.browser ? await allocatePort() : null;
-    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, null, tokenRef, repoHome, browserPort);
+    const browserPorts = this.options.browser ? await allocateBrowserPorts(Boolean(this.options.browserUseApiKey)) : null;
+    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, null, tokenRef, repoHome, browserPorts);
     const startSha = await this.readHeadSha(cwd);
     const state: PiTaskState = {
       session,
@@ -319,9 +369,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
       tokenRef,
       credsTimer,
       askBridge,
-      browserPort,
+      browserPorts,
       emit: null,
-      relay: null,
+      relays: [],
     };
     askBridge.emit = (sig) => state.queue.push(sig); // route ask/ask_resolved into the task's signal stream
     this.tasks.set(input.taskId, state);
@@ -333,21 +383,26 @@ export class PiRunnerAdapter implements RunnerAdapter {
   // outlives the task. A resume starts a fresh browser under the same session name.
   private releaseTask(taskId: string, task: PiTaskState): void {
     if (task.credsTimer) clearInterval(task.credsTimer);
-    task.relay?.stop();
-    task.relay = null;
-    if (this.options.browser) closeBrowserSession(taskId);
+    this.stopRelays(task);
+    if (this.options.browser) closeBrowserSessions(taskId, this.options.browserUseApiKey);
   }
 
   async watchBrowser(input: { taskId: string; watch: boolean }): Promise<{ supported: boolean }> {
     const task = this.tasks.get(input.taskId);
-    if (!this.options.browser || !task?.browserPort) return { supported: Boolean(this.options.browser) };
+    if (!this.options.browser || !task?.browserPorts) return { supported: Boolean(this.options.browser) };
     if (!input.watch) {
-      task.relay?.stop();
-      task.relay = null;
-    } else if (!task.relay) {
-      task.relay = new BrowserRelay(task.browserPort, (u) => task.emit?.({ kind: "browser", taskId: input.taskId, ...u }));
+      this.stopRelays(task);
+    } else if (task.relays.length === 0) {
+      const emit = (u: BrowserUpdate) => task.emit?.({ kind: "browser", taskId: input.taskId, ...u });
+      const { local, web } = task.browserPorts;
+      task.relays = [local, web].filter((p): p is number => p !== null).map((port) => new BrowserRelay(port, emit));
     }
     return { supported: true };
+  }
+
+  private stopRelays(task: PiTaskState): void {
+    for (const relay of task.relays) relay.stop();
+    task.relays = [];
   }
 
   // Mint the per-repo token, keep it fresh, and (re)write the git askpass helper + pre-push guard so
@@ -393,12 +448,13 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
     // Same port as before: a browser daemon that survived a live resume is still bound to it.
-    const browserPort = existing?.browserPort ?? (this.options.browser ? await allocatePort() : null);
-    existing?.relay?.stop();
+    const browserPorts =
+      existing?.browserPorts ?? (this.options.browser ? await allocateBrowserPorts(Boolean(this.options.browserUseApiKey)) : null);
+    if (existing) this.stopRelays(existing);
     // nativeSessionId is the persisted session file path; open() resumes that exact session.
-    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, input.nativeSessionId, tokenRef, repoHome, browserPort);
+    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, input.nativeSessionId, tokenRef, repoHome, browserPorts);
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
-    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer, askBridge, browserPort, emit: null, relay: null };
+    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer, askBridge, browserPorts, emit: null, relays: [] };
     askBridge.emit = (sig) => state.queue.push(sig);
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
@@ -509,7 +565,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     resumeSessionFile: string | null,
     tokenRef: { current: string | null },
     repoHome: string,
-    browserPort: number | null,
+    browserPorts: BrowserPorts | null,
   ): Promise<{ session: AgentSession; sessionFile: string; askBridge: AskBridge }> {
     const { createAgentSession, ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createBashToolDefinition } =
       await import("@earendil-works/pi-coding-agent");
@@ -568,7 +624,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
         const token = tokenRef.current;
         const extra = {
           ...(token ? agentGitEnv(repoHome, token) : {}),
-          ...(browserPort ? browserEnv(taskId, browserPort) : {}),
+          ...(browserPorts ? browserEnv(taskId, browserPorts, this.options.browserUseApiKey) : {}),
         };
         return { ...context, env: buildAgentEnv(context.env, extra) };
       },

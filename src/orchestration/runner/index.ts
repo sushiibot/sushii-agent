@@ -41,7 +41,12 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
     // Probed once at startup: the image is fixed for the process lifetime.
     const tools = probeTools();
     const environmentContext = buildEnvironmentContext(
-      { ...ctx, workspaceRoot: repoOps ? ctx.workspaceRoot : null, worktreeTtlHours: ttlHours },
+      {
+        ...ctx,
+        workspaceRoot: repoOps ? ctx.workspaceRoot : null,
+        worktreeTtlHours: ttlHours,
+        cloudBrowser: Boolean(process.env.BROWSER_USE_API_KEY?.trim()),
+      },
       tools,
     );
     return new PiRunnerAdapter({
@@ -51,6 +56,7 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
       agentDir,
       environmentContext,
       browser: tools.some((t) => t.name === "agent-browser"),
+      browserUseApiKey: process.env.BROWSER_USE_API_KEY?.trim() || undefined,
       repoOps,
       workspaceRoot: ctx.workspaceRoot,
       worktreeTtlMs: ttlHours * 3600_000,
@@ -111,10 +117,11 @@ async function main(): Promise<void> {
   const factory = ADAPTERS[kind];
   if (!factory) throw new Error(`unknown RUNNER_KIND "${kind}" (known: ${Object.keys(ADAPTERS).join(", ")})`);
   const adapter = factory({ runnerId, location, workspaceRoot });
+  const capabilities = adapter instanceof PiRunnerAdapter && adapter.hasBrowser ? ["browser"] : [];
 
-  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, adapter });
+  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, capabilities, adapter });
 
-  log.info({ url, runnerId, kind, projects, workspaceRoot, location }, "runner starting (auto-reconnect)");
+  log.info({ url, runnerId, kind, projects, workspaceRoot, location, capabilities }, "runner starting (auto-reconnect)");
   await client.run(); // reconnects with backoff + heartbeats until the process is stopped
 }
 

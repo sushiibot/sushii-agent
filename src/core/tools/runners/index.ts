@@ -45,7 +45,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
   name: "dispatch_to_runner",
   definition: {
     name: "dispatch_to_runner",
-    description: "Start a NEW background coding-agent task on a connected runner. Authorized users only. Only dispatch for a sincere, actionable request to do the work — never for a joke, hypothetical, venting, or musing ('lol just rewrite it in Rust'); if intent is unclear, ask first. Each dispatch is a fresh, isolated task with its own git worktree, branch, and PR — use this for any new request, INCLUDING further/separate work on a repo already worked on before. Only use resume_session (not this) when the user explicitly asks to continue one specific existing task. Two modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it, works, and opens a PR at handback; omit cwd in this mode. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered). Some users need confirmation: the call then returns a summary and a confirm_token instead of dispatching — show the user the summary, end your turn, and only after they explicitly confirm in a new message call again with just confirm_token.",
+    description: "Start a NEW background agent task on a connected runner — coding, or web work in a real browser on runners with the `browser` capability (see list_runners): testing a site, filling a form, adding to a cart, reading pages that block plain fetches. Authorized users only. Only dispatch for a sincere, actionable request to do the work — never for a joke, hypothetical, venting, or musing ('lol just rewrite it in Rust'); if intent is unclear, ask first. Each dispatch is a fresh, isolated task — use this for any new request, INCLUDING further/separate work on a repo already worked on before. Only use resume_session (not this) when the user explicitly asks to continue one specific existing task. Three modes: (1) an existing on-disk project — call list_runners to resolve the name to an absolute path, pass it as cwd; (2) clone-on-demand — pass `repo` as 'owner/name' (or a GitHub URL) and the runner clones it into its own worktree and branch, and can open a PR; omit cwd; (3) no repo — omit both cwd and repo and the task gets an empty scratch folder; use this for browsing/research, and set browser=true when it needs a browser. Leave runner_id OUT to auto-select: if one runner fits it's chosen automatically; if several fit and this project has a saved choice it's reused; if several fit with no saved choice, this returns 'Multiple runners can do this: …' — then call ask_question with exactly those ids and re-call with the chosen runner_id (the choice is remembered). Some users need confirmation: the call then returns a summary and a confirm_token instead of dispatching — show the user the summary, end your turn, and only after they explicitly confirm in a new message call again with just confirm_token.",
     parameters: {
       type: "object",
       properties: {
@@ -54,6 +54,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
         prompt: { type: "string", description: "The task prompt to hand the runner." },
         project: { type: "string", description: "Logical project name, for grouping/lookup." },
         repo: { type: "string", description: "Clone-on-demand: 'owner/name' or a GitHub URL. The runner clones it and opens a PR at handback. When set, cwd is derived and ignored." },
+        browser: { type: "boolean", description: "The task needs a web browser; only runners with the `browser` capability are eligible." },
         confirm_token: { type: "string", description: "Only after the user explicitly confirmed a parked dispatch in a later message. Dispatches exactly what was confirmed; other arguments are ignored." },
       },
       required: [],
@@ -89,19 +90,21 @@ export const dispatchToRunnerEntry: ToolEntry = {
       if (!repo) return { content: `Invalid repo "${input.repo}" — use 'owner/name' or a GitHub URL.` };
     }
     const cwd = (input.cwd as string | undefined) ?? "";
-    if (!repo && !cwd) return { content: "Provide either cwd (existing project) or repo (clone-on-demand)." };
+    const scratch = !repo && !cwd;
+    const capability = input.browser === true ? "browser" : undefined;
 
-    // Remembered per (principal, project); repo → "owner/repo", else the project name or cwd.
-    const projectKey = repo ? `${repo.owner}/${repo.repo}` : ((input.project as string | undefined) ?? cwd);
+    // Remembered per (principal, project); repo → "owner/repo", else the project name, cwd, or "scratch".
+    const projectKey = repo ? `${repo.owner}/${repo.repo}` : ((input.project as string | undefined) ?? (cwd || "scratch"));
 
     // Auto-select the runner when the caller didn't name one: sole eligible, or a saved preference,
     // else hand the ambiguous set back so the agent asks the user (which it records for next time).
     let runnerId = input.runner_id as string | undefined;
     let viaPref = false;
     if (!runnerId) {
-      const sel = dispatcher.selectRunner(principal, projectKey, { repo, cwd });
+      const sel = dispatcher.selectRunner(principal, projectKey, { repo, cwd, scratch, capability });
       if ("none" in sel) {
-        return { content: "No connected runner can handle this — need one online that can clone a repo (for `repo`) or that declares this project (for `cwd`)." };
+        const need = capability ? " with the `browser` capability" : "";
+        return { content: `No connected runner${need} can handle this — need one online with a workspace (for \`repo\` or a scratch task) or that declares this project (for \`cwd\`).` };
       }
       if ("ambiguous" in sel) {
         return { content: `Multiple runners can do this: ${sel.ambiguous.join(", ")}. Ask the user which one with ask_question (choices = exactly those runner ids), then call dispatch_to_runner again with the chosen runner_id.` };
@@ -127,7 +130,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
         content: [
           `NOT dispatched yet — this user must confirm first. confirm_token: ${token}`,
           `Show them this and ask them to confirm; then end your turn:`,
-          `- target: ${repo ? `${repo.owner}/${repo.repo} (clone + PR)` : cwd} on runner "${runnerId}"`,
+          `- target: ${repo ? `${repo.owner}/${repo.repo} (clone + PR)` : cwd || "scratch folder"} on runner "${runnerId}"`,
           `- task: ${prompt.length > 300 ? `${prompt.slice(0, 299)}…` : prompt}`,
           `Only if they explicitly confirm in a new message, call dispatch_to_runner with just confirm_token. If they decline or change the request, don't use this token.`,
         ].join("\n"),
@@ -207,7 +210,7 @@ export const listRunnersEntry: ToolEntry = {
   name: "list_runners",
   definition: {
     name: "list_runners",
-    description: "List connected runners and the projects (git repos) each can work on. Use this to answer 'what can you work on' and to resolve a project name (e.g. 'sushii-sns') to its runner + path before dispatch_to_runner. Owner-only, personal spaces only.",
+    description: "List connected runners: what each can do (capabilities such as `browser`), whether it can clone repos / run scratch tasks, and the on-disk projects it declares. Use this to answer 'what can you work on' / 'can you use a browser', and to resolve a project name (e.g. 'sushii-sns') to its runner + path before dispatch_to_runner. Owner-only, personal spaces only.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   requiresHosts: [],
@@ -228,10 +231,12 @@ export const listRunnersEntry: ToolEntry = {
     return {
       content: runners
         .map((r) => {
-          const projects = r.projects.length
-            ? r.projects.map((p) => `  ${p.split("/").pop()} → ${p}`).join("\n")
-            : "  (no projects declared — any cwd allowed)";
-          return `${r.runnerId} [${r.kind}]\n${projects}`;
+          const lines = [`${r.runnerId} [${r.kind}]`];
+          lines.push(`  capabilities: ${r.capabilities.length ? r.capabilities.join(", ") : "coding only"}`);
+          if (r.workspaceRoot) lines.push("  can clone any repo (repo=owner/name) and run scratch tasks (no repo)");
+          for (const p of r.projects) lines.push(`  project ${p.split("/").pop()} → ${p}`);
+          if (!r.workspaceRoot && r.projects.length === 0) lines.push("  (no projects declared — any cwd allowed)");
+          return lines.join("\n");
         })
         .join("\n"),
     };

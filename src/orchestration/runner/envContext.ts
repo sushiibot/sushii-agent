@@ -54,6 +54,7 @@ export interface EnvironmentFacts {
   location: string | null;
   workspaceRoot: string | null;
   worktreeTtlHours: number;
+  cloudBrowser?: boolean; // agent-browser-web (Browser Use) is configured
   platform?: string;
   arch?: string;
 }
@@ -80,6 +81,11 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
       "- Your task already has its own browser session; do not pass `--session`. It can reach dev servers you start on localhost.",
       "- The browser closes whenever the task stops or goes idle, so cookies and logins do not survive into a later turn or task.",
     );
+    if (facts.cloudBrowser) {
+      lines.push(
+        "- Some sites block this datacenter browser (bot checks, CAPTCHAs, \"access denied\"). For those, run the same commands with `agent-browser-web` instead: a Browser Use cloud browser with stealth, residential proxies and CAPTCHA solving. It is billed while open, so try the local browser first. It is a separate browser, so its pages, cookies and cart do not carry over from the local one.",
+      );
+    }
   }
   if (facts.workspaceRoot) {
     lines.push(

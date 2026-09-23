@@ -178,6 +178,47 @@ describe("Dispatcher", () => {
     }
   });
 
+  test("a task with neither repo nor cwd gets a per-principal scratch folder", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const client = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "cloud", kind: "mock", workspaceRoot: "/data/workspace", adapter: new MockRunnerAdapter() });
+    try {
+      await client.connect();
+      client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("cloud"));
+      const task = await dispatcher.dispatch({
+        principal: "owner-1",
+        runnerId: "cloud",
+        cwd: "",
+        project: null,
+        prompt: "add tofu litter to the cart",
+        space: "discord:dm",
+        spawnedFromSurface: "discord",
+      });
+      expect(task.cwd).toMatch(/^\/data\/workspace\/owner-1\/scratch\/[a-z0-9]+-[0-9a-f]{6}$/);
+    } finally {
+      client.close();
+      dispatcher.stop();
+    }
+  });
+
+  test("selectRunner filters by capability and treats scratch like clone-on-demand", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true);
+    dispatcher.listen();
+    const browserRunner = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "cloud", kind: "mock", workspaceRoot: "/w", capabilities: ["browser"], adapter: new MockRunnerAdapter() });
+    const plain = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "desktop", kind: "mock", workspaceRoot: "/w2", adapter: new MockRunnerAdapter() });
+    try {
+      await browserRunner.connect(); browserRunner.listen();
+      await plain.connect(); plain.listen();
+      await waitFor(() => dispatcher.isRunnerLive("cloud") && dispatcher.isRunnerLive("desktop"));
+      expect(dispatcher.selectRunner("owner-1", "scratch", { scratch: true })).toHaveProperty("ambiguous");
+      expect(dispatcher.selectRunner("owner-1", "scratch", { scratch: true, capability: "browser" })).toEqual({ runnerId: "cloud", viaPref: false });
+      expect(dispatcher.listRunners().find((r) => r.runnerId === "cloud")?.capabilities).toEqual(["browser"]);
+    } finally {
+      browserRunner.close(); plain.close(); dispatcher.stop();
+    }
+  });
+
   test("clone-on-demand is rejected on a runner with no workspace root", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => true);
     dispatcher.listen();

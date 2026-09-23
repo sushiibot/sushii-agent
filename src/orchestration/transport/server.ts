@@ -83,7 +83,14 @@ const runnerEventSchema = z.discriminatedUnion("kind", [
 export interface OrchestrationServerOptions {
   port?: number;
   onEvent: (runnerId: string, event: RunnerEvent) => void;
-  onRegister?: (runnerId: string, kind: string, projects: string[], workspaceRoot: string | null, location: string | null) => void;
+  onRegister?: (
+    runnerId: string,
+    kind: string,
+    projects: string[],
+    workspaceRoot: string | null,
+    location: string | null,
+    capabilities: string[],
+  ) => void;
   onDisconnect?: (runnerId: string) => void;
 }
 
@@ -202,7 +209,7 @@ export class OrchestrationServer {
       }
       ws.data.runnerId = params.runnerId;
       this.sockets.set(params.runnerId, ws);
-      this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location);
+      this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location, params.capabilities);
       ws.send(
         JSON.stringify({ jsonrpc: "2.0", id: req.data.id, result: { ok: true } }),
       );

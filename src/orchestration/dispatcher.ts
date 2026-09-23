@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 // Wires the WS transport (server.ts) + durable registry (registry.ts) + a live-runners map into
 // one seam the host-typed runner tools call through. Every dispatch is authz-gated FIRST.
 import { getLogger } from "../logger.ts";
@@ -12,11 +13,14 @@ const logger = getLogger("orchestration:dispatcher");
 
 export class AuthzError extends Error {}
 
+const safePath = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
+
 interface LiveRunner {
   kind: string;
   projects: string[];
   workspaceRoot: string | null;
   location: string | null;
+  capabilities: string[];
 }
 
 export interface DispatchInput {
@@ -79,8 +83,8 @@ export class Dispatcher {
   ) {
     this.server = new OrchestrationServer({
       port: options.port,
-      onRegister: (runnerId, kind, projects, workspaceRoot, location) => {
-        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot, location });
+      onRegister: (runnerId, kind, projects, workspaceRoot, location, capabilities) => {
+        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot, location, capabilities });
         // A fresh connection means we can't observe any turn that was mid-flight on this runner
         // before (e.g. across an orchestrator restart), so clear stale "running" phantoms.
         const reconciled = this.registry.failRunningForRunner(
@@ -142,8 +146,14 @@ export class Dispatcher {
 
   /** Live runners + the git repos each declared, for a "what can you work on" listing and for the
    *  agent to resolve a project name → cwd. */
-  listRunners(): { runnerId: string; kind: string; projects: string[] }[] {
-    return [...this.liveRunners.entries()].map(([runnerId, r]) => ({ runnerId, kind: r.kind, projects: r.projects }));
+  listRunners(): { runnerId: string; kind: string; projects: string[]; workspaceRoot: string | null; capabilities: string[] }[] {
+    return [...this.liveRunners.entries()].map(([runnerId, r]) => ({
+      runnerId,
+      kind: r.kind,
+      projects: r.projects,
+      workspaceRoot: r.workspaceRoot,
+      capabilities: r.capabilities,
+    }));
   }
 
   /** Kind + location for a connected runner, for display metadata. */
@@ -174,16 +184,25 @@ export class Dispatcher {
     if (!workspaceRoot) {
       throw new Error(`runner "${runnerId}" does not support clone-on-demand (no workspace root declared)`);
     }
-    const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, "_");
-    return `${workspaceRoot}/${safe(principal)}/${safe(repo.owner)}-${safe(repo.repo)}`;
+    return `${workspaceRoot}/${safePath(principal)}/${safePath(repo.owner)}-${safePath(repo.repo)}`;
+  }
+
+  /** Scratch target for a task with no repo (browsing, research): a fresh empty folder under the
+   *  principal's workspace, `<workspaceRoot>/<principal>/scratch/<id>`. The runner creates it. */
+  private scratchCwd(runnerId: string, principal: string): string {
+    const workspaceRoot = this.liveRunners.get(runnerId)?.workspaceRoot;
+    if (!workspaceRoot) throw new Error(`runner "${runnerId}" has no workspace for a task without a repo`);
+    return `${workspaceRoot}/${safePath(principal)}/scratch/${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
   }
 
   /** Runners that are online AND can service this request: for a clone-on-demand `repo`, any runner
    *  that declared a workspace root; for an existing `cwd`, any runner that declares that path. */
-  eligibleRunners(intent: { repo?: RepoSpec | null; cwd?: string }): string[] {
+  eligibleRunners(intent: { repo?: RepoSpec | null; cwd?: string; scratch?: boolean; capability?: string }): string[] {
     return [...this.liveRunners.keys()].filter((id) => {
       if (!this.isRunnerLive(id)) return false;
-      if (intent.repo) return this.liveRunners.get(id)?.workspaceRoot != null;
+      const runner = this.liveRunners.get(id);
+      if (intent.capability && !runner?.capabilities.includes(intent.capability)) return false;
+      if (intent.repo || intent.scratch) return runner?.workspaceRoot != null;
       return intent.cwd ? this.cwdInScope(id, intent.cwd) : false;
     });
   }
@@ -193,7 +212,7 @@ export class Dispatcher {
   selectRunner(
     principal: string,
     projectKey: string,
-    intent: { repo?: RepoSpec | null; cwd?: string },
+    intent: { repo?: RepoSpec | null; cwd?: string; scratch?: boolean; capability?: string },
   ): { runnerId: string; viaPref: boolean } | { ambiguous: string[] } | { none: true } {
     const eligible = this.eligibleRunners(intent);
     if (eligible.length === 0) return { none: true };
@@ -222,7 +241,9 @@ export class Dispatcher {
 
     this.ensureListening();
 
-    const cwd = input.repo ? this.cloneCwd(input.runnerId, input.principal, input.repo) : input.cwd;
+    const cwd = input.repo
+      ? this.cloneCwd(input.runnerId, input.principal, input.repo)
+      : input.cwd || this.scratchCwd(input.runnerId, input.principal);
 
     if (!this.cwdInScope(input.runnerId, cwd)) {
       throw new Error(`cwd "${cwd}" is not within any project the runner "${input.runnerId}" declared`);

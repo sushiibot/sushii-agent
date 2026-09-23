@@ -46,7 +46,12 @@ RUN set -eu; \
     curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
       | tar -xz -C /opt/agent-browser --strip-components=1 "package/bin/agent-browser-${AB_ARCH}" package/skill-data; \
     chmod 755 "/opt/agent-browser/bin/agent-browser-${AB_ARCH}"; \
-    ln -s "/opt/agent-browser/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser
+    ln -s "/opt/agent-browser/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser; \
+    printf '%s\n' '#!/bin/sh' \
+      '# Same commands as agent-browser, in a Browser Use cloud browser: a sibling session with its own stream port.' \
+      'exec env AGENT_BROWSER_PROVIDER=browseruse AGENT_BROWSER_SESSION="${AGENT_BROWSER_SESSION:-default}-web" AGENT_BROWSER_STREAM_PORT="${AGENT_BROWSER_WEB_STREAM_PORT:-0}" agent-browser "$@"' \
+      > /usr/local/bin/agent-browser-web; \
+    chmod 755 /usr/local/bin/agent-browser-web
 # Root in a container needs --no-sandbox; Docker's 64MB /dev/shm crashes Chromium without the shm flag.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
     AGENT_BROWSER_SKILLS_DIR=/opt/agent-browser/skill-data \
