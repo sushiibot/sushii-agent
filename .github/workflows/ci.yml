@@ -42,8 +42,21 @@ jobs:
           DISCORD_BOT_TOKEN: test-token
           OPENAI_API_KEY: test-key
 
+  # Builds the image natively per arch (the deploy host is arm64) and drives a real browser in it.
+  browser-smoke:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: docker build -t sushii-agent:smoke .
+      - run: docker run --rm --init --entrypoint sh sushii-agent:smoke scripts/browser-smoke.sh
+
   docker-build:
-    needs: [typecheck, test]
+    needs: [typecheck, test, browser-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: sushiibot/sushii-workflows/.github/workflows/docker-build.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
     with:
