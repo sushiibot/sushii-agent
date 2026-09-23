@@ -238,6 +238,8 @@ export interface TurnPromptContext {
   /** Per-space persona, replacing the core's default behavior for this turn (e.g. a moderation
    *  server vs. a general one vs. the owner's DMs, all served by one Discord core). */
   behavior?: string;
+  /** No Discord timestamp tokens on this surface; see SystemPromptInputs.plainTimestamps. */
+  plainTimestamps?: boolean;
 }
 
 /**
@@ -539,5 +541,13 @@ export interface AgentCoreDeps {
   memoryProvider?: MemoryProvider;
   /** What the turn's initiator can have the agent do beyond its tools (runners, ops), as system prompt
    *  text. Gated per initiator + space, so it matches the tools that check the same thing. */
-  capabilitySections?: (turn: { surface: string; spaceId: string; userId: string; isPrivate: boolean }) => string | undefined;
+  capabilitySections?: (turn: {
+    surface: string;
+    spaceId: string;
+    userId: string;
+    isPrivate: boolean;
+    isOwner: boolean;
+    /** Names of the tools resolved for this turn. */
+    tools: string[];
+  }) => string | undefined;
 }

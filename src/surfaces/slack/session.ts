@@ -9,6 +9,7 @@ import type {
   SurfaceCapabilities,
   SurfaceSession,
   ToolHosts,
+  TurnPromptContext,
 } from "../../core/contracts.ts";
 
 // The write surface the agent loop needs — narrowed from `WebClient` so a fake client is trivial to
@@ -94,6 +95,10 @@ export class SlackSurfaceSession implements SurfaceSession {
   private readonly client: SlackPostClient;
   private readonly channelId: string;
   private readonly threadTs: string;
+
+  promptContext(): TurnPromptContext {
+    return { plainTimestamps: true };
+  }
 
   constructor(opts: SlackSurfaceSessionOptions) {
     this.hosts = opts.fsHost ? { fs: opts.fsHost } : {};

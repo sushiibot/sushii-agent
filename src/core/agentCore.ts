@@ -143,27 +143,6 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       ? (await raceMemoryRetrieve(deps.memoryProvider, memoryScope, firstUserText)) ?? undefined
       : undefined;
 
-    const systemPrompt = assembleSystemPrompt({
-      behavior: pc.behavior ?? deps.behavior,
-      selfId: session.selfId,
-      selfName: session.selfName,
-      channel: pc.channel,
-      author: autoMod ? undefined : turn.initiator,
-      ownerSection: autoMod
-        ? pc.ownerSection
-        : [pc.ownerSection, deps.capabilitySections?.({ surface: conversation.surface, spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate })]
-            .filter((s): s is string => !!s)
-            .join("\n\n") || undefined,
-      serverContext: deps.memory.getServerContext(conversation.spaceId),
-      coreProfile: deps.memory.read(conversation.spaceId, CORE_PROFILE_TITLE)?.content ?? undefined,
-      memoryIndex: deps.memory.listTitles(conversation.spaceId).filter((t) => t !== CORE_PROFILE_TITLE),
-      memoryCount: deps.memory.count(conversation.spaceId),
-      memoryLimit: MEMORY_LIMIT,
-      emojiMap: pc.emojiMap,
-      threadContext: pc.threadContext,
-      threadChannelId: pc.threadChannelId,
-      moduleExtras: pc.moduleExtras,
-    });
 
     // Author-aware gating: the autonomous auto-mod driver has no requesting user, so it's neither the
     // owner nor authorized regardless of who tripped the keyword. isOwner still gates update_profile;
@@ -180,6 +159,30 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       isOwner,
       isPrivate,
       authorized,
+    });
+
+    // Built from the resolved tool list, so the prompt only describes what this turn can actually use.
+    const capabilities = autoMod
+      ? undefined
+      : deps.capabilitySections?.({ surface: conversation.surface, spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate, isOwner, tools: toolEntries.map((e) => e.name) });
+
+    const systemPrompt = assembleSystemPrompt({
+      behavior: pc.behavior ?? deps.behavior,
+      selfId: session.selfId,
+      selfName: session.selfName,
+      channel: pc.channel,
+      author: autoMod ? undefined : turn.initiator,
+      ownerSection: [pc.ownerSection, capabilities].filter((s): s is string => !!s).join("\n\n") || undefined,
+      serverContext: deps.memory.getServerContext(conversation.spaceId),
+      coreProfile: deps.memory.read(conversation.spaceId, CORE_PROFILE_TITLE)?.content ?? undefined,
+      memoryIndex: deps.memory.listTitles(conversation.spaceId).filter((t) => t !== CORE_PROFILE_TITLE),
+      memoryCount: deps.memory.count(conversation.spaceId),
+      memoryLimit: MEMORY_LIMIT,
+      emojiMap: pc.emojiMap,
+      threadContext: pc.threadContext,
+      threadChannelId: pc.threadChannelId,
+      plainTimestamps: pc.plainTimestamps,
+      moduleExtras: pc.moduleExtras,
     });
 
     const toolContextBase: Omit<ToolContext, "owner"> = {

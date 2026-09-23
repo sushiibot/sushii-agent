@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderRunnerSection } from "./capabilityPrompt.ts";
+import { buildCapabilitySections, renderCapabilityMap, renderRunnerSection } from "./capabilityPrompt.ts";
 
 describe("renderRunnerSection", () => {
   test("lists online runners with their capabilities and tells the model to dispatch browser work", () => {
@@ -20,5 +20,23 @@ describe("renderRunnerSection", () => {
 
   test("says so when no runner is online", () => {
     expect(renderRunnerSection([])).toContain("No runners are online right now");
+  });
+});
+
+describe("capability sections follow the resolved tools", () => {
+  const base = { surface: "slack", spaceId: "T1", userId: "U1", isPrivate: false, isOwner: false };
+
+  test("the map lists only capabilities whose tools resolved", () => {
+    const map = renderCapabilityMap(new Set(["web_search", "memory"]))!;
+    expect(map).toContain("Search the web");
+    expect(map).toContain("persist for this space");
+    expect(map).not.toContain("knowledge base");
+    expect(map).not.toContain("message history");
+    expect(renderCapabilityMap(new Set())).toBeUndefined();
+  });
+
+  test("no dispatch tool means no runner section, even for the owner", () => {
+    const text = buildCapabilitySections({ ...base, isOwner: true, tools: ["web_search"] }) ?? "";
+    expect(text).not.toContain("## Runners");
   });
 });

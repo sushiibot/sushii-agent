@@ -9,6 +9,7 @@ import type {
   SurfaceCapabilities,
   SurfaceSession,
   ToolHosts,
+  TurnPromptContext,
 } from "../../core/contracts.ts";
 import type { BuzzClient } from "./buzzClient.ts";
 
@@ -67,6 +68,10 @@ export class BuzzSurfaceSession implements SurfaceSession {
   private readonly client: BuzzClient;
   private readonly channelId: string;
   private readonly replyToId: string;
+
+  promptContext(): TurnPromptContext {
+    return { plainTimestamps: true };
+  }
 
   constructor(opts: BuzzSurfaceSessionOptions) {
     this.selfId = opts.ownPubkey;

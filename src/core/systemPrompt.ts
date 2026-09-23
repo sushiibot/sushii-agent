@@ -33,6 +33,8 @@ export interface SystemPromptInputs {
   threadChannelId?: string;
   /** Module-supplied sections appended last (e.g. the auto-mod enforcement block). */
   moduleExtras?: string[];
+  /** Surfaces without Discord's t: timestamp tokens (Slack, Buzz) get a date note that doesn't mention them. */
+  plainTimestamps?: boolean;
 }
 
 export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
@@ -40,7 +42,9 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
   const currentDate = now.toISOString().split("T")[0];
   const systemParts = [
     inputs.behavior,
-    `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). Do NOT use it to compute or write timestamp math in your responses — always use Discord timestamp format instead.`,
+    inputs.plainTimestamps
+      ? `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week").`
+      : `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). Do NOT use it to compute or write timestamp math in your responses — always use Discord timestamp format instead.`,
   ];
 
   // Bot's own identity
