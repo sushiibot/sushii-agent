@@ -393,7 +393,25 @@ const VIEWER_HTML = `<!doctype html>
   .bempty { margin:12vh auto 0; max-width:34ch; text-align:center; color:var(--overlay1); font-size:13.5px; font-weight:600; line-height:1.55; }
   .bempty svg { display:block; margin:0 auto 12px; width:44px; height:44px; color:var(--overlay0); }
   .bempty[hidden] { display:none; }
-  @media (max-width:900px) { :root, body.browser-max { --bw: 100vw; } body.browser-open .wrap { margin-right:auto; } .bresize, #bmax { display:none; } }
+  /* phones: dock the browser above the transcript instead of covering it; tap the frame to zoom + pan */
+  .bhint { display:none; }
+  @media (max-width:900px) {
+    :root, body.browser-max { --bw: 100vw; }
+    .bresize, #bmax { display:none; }
+    body.browser-open .wrap { margin-right:auto; padding-top: var(--bph, 0px); }
+    body.browser-open header { top: var(--bph, 0px); }
+    .bpanel { bottom:auto; max-height:100dvh; border-left:none; border-bottom:1px solid color-mix(in srgb, var(--surface0) 80%, transparent); }
+    .bbar { padding:8px 12px; }
+    .bscreen { padding:8px; flex-direction:column; align-items:stretch; }
+    .bframe { cursor:zoom-in; }
+    .bempty { margin:12px auto; }
+    .bempty svg { display:none; }
+    .bhint { display:block; text-align:center; font-size:11px; color:var(--overlay1); padding-top:5px; }
+    .bpanel.zoom { bottom:0; }
+    .bpanel.zoom .bscreen { overflow:auto; align-items:flex-start; justify-content:flex-start; }
+    .bpanel.zoom .bhint { display:none; }
+    .bpanel.zoom .bframe { width:250%; max-width:none; flex:0 0 auto; cursor:zoom-out; border-radius:0; }
+  }
   @media (max-width:560px) { .tool .ts { display:none; } .say .prose { font-size:14px; } header { gap:9px; } .ctl { padding:5px 8px; } }
 </style></head>
 <body>
@@ -450,6 +468,7 @@ const VIEWER_HTML = `<!doctype html>
   </div>
   <div class="bscreen">
     <div class="bframe" id="bframe" hidden><img id="bimg" alt="Live view of the task's browser"/></div>
+    <div class="bhint" id="bhint">Tap to zoom</div>
     <div class="bempty" id="bempty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><line x1="3" y1="9" x2="21" y2="9"/></svg><span id="bemptytext">Connecting…</span></div>
   </div>
 </aside>
@@ -597,6 +616,7 @@ const VIEWER_HTML = `<!doctype html>
     document.getElementById('burl').textContent=B.url||'';
     const showFrame=!!B.frame && B.supported!==false;
     bframe.hidden=!showFrame; bframe.classList.toggle('stale', showFrame && state!=='live');
+    document.getElementById('bhint').hidden=!showFrame;
     bempty.hidden=showFrame;
     document.getElementById('bemptytext').textContent=msg;
   }
@@ -615,11 +635,20 @@ const VIEWER_HTML = `<!doctype html>
   }
   function setBrowserOpen(open){
     bpanel.hidden=!open; document.body.classList.toggle('browser-open', open);
+    if(!open){ bpanel.classList.remove('zoom'); document.body.style.setProperty('--bph','0px'); }
     browserbtn.setAttribute('aria-pressed', String(open));
     try { localStorage.setItem('viewer-browser', open?'1':'0'); } catch {}
     if(open) connectBrowser(); else if(bes){ try{ bes.close(); }catch{} bes=null; }
   }
   browserbtn.onclick=()=>setBrowserOpen(bpanel.hidden);
+  // Docked mode on phones: the transcript is pushed down by the panel's live height.
+  new ResizeObserver(()=>{ document.body.style.setProperty('--bph', bpanel.hidden ? '0px' : bpanel.offsetHeight+'px'); }).observe(bpanel);
+  const phone=matchMedia('(max-width:900px)');
+  bframe.onclick=()=>{
+    if(!phone.matches) return;
+    const on=bpanel.classList.toggle('zoom');
+    document.getElementById('bhint').textContent=on?'Tap to fit':'Tap to zoom';
+  };
   // Width: drag the left edge (remembered per viewer) or toggle maximize.
   const bmax=document.getElementById('bmax'), bresize=document.getElementById('bresize');
   const setWidth=(px)=>{ document.documentElement.style.setProperty('--bw', px ? Math.round(px)+'px' : ''); };
