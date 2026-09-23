@@ -21,6 +21,9 @@ export interface GuildConfig {
   autoModCooldownSeconds?: number;
   /** Discord user ids allowed to reach this guild through the MCP bridge. Unset/empty = unreachable. */
   mcpBridgeAllowedUserIds?: string[];
+  /** Persona for the bot in this guild: "moderation" (investigate + recommend for mods) or "general"
+   *  (a community assistant). Unset = moderation, matching configs written before this field existed. */
+  promptTemplate?: "moderation" | "general";
   /** Which agent modules are active for this guild. Unset defaults to ["moderation"] — see resolvedModules(). */
   enabledModules?: ModuleId[];
   /** wiki-sync module settings for this guild. */

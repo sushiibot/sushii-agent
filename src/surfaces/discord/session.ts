@@ -59,6 +59,7 @@ export interface DiscordSurfaceSessionOptions {
   threadChannelId?: string;
   ownerSection?: string;
   moduleExtras?: string[];
+  behavior?: string;
 }
 
 export class DiscordSurfaceSession implements SurfaceSession {
@@ -92,6 +93,7 @@ export class DiscordSurfaceSession implements SurfaceSession {
       threadChannelId: opts.threadChannelId,
       ownerSection: opts.ownerSection,
       moduleExtras: opts.moduleExtras,
+      behavior: opts.behavior,
     };
   }
 

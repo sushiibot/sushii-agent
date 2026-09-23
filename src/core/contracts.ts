@@ -235,6 +235,9 @@ export interface TurnPromptContext {
   threadChannelId?: string;
   ownerSection?: string;
   moduleExtras?: string[];
+  /** Per-space persona, replacing the core's default behavior for this turn (e.g. a moderation
+   *  server vs. a general one vs. the owner's DMs, all served by one Discord core). */
+  behavior?: string;
 }
 
 /**

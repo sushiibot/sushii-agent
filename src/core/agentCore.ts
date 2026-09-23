@@ -144,7 +144,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       : undefined;
 
     const systemPrompt = assembleSystemPrompt({
-      behavior: deps.behavior,
+      behavior: pc.behavior ?? deps.behavior,
       selfId: session.selfId,
       selfName: session.selfName,
       channel: pc.channel,

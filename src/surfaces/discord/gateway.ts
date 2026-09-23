@@ -25,6 +25,7 @@ import { buildMessageContent } from "../../utils/flattenMessage.ts";
 import { isPrivateChannel } from "../../tools/channelUtils.ts";
 import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerContext } from "../../modules/moderation/prompt.ts";
 import { buildOwnerPromptSection } from "../../orchestration/promptSection.ts";
+import { guildBehavior } from "./personas.ts";
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
 import type { MakeWikiSourceContext } from "../../modules/wiki-sync/scheduler.ts";
@@ -47,6 +48,10 @@ import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts"
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
 import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
+
+function behaviorFor(guildId: string): string {
+  return guildBehavior(config.guildConfig[guildId] ?? {});
+}
 
 const logger = getLogger("surfaces/discord/gateway");
 const tracer = trace.getTracer("sushii-agent");
@@ -578,6 +583,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
           threadChannelId: thread.id,
           ownerSection,
           moduleExtras: undefined,
+          behavior: behaviorFor(guildId),
         });
 
         const inbound: InboundMessage = {
@@ -888,6 +894,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
         threadContext: initialThreadContext ?? undefined,
         threadChannelId: thread.id,
         ownerSection,
+        behavior: behaviorFor(guildId),
       });
       await runThroughCore(conversation, thread, tracker, span, () => core.resume(conversation, { kind: "question-answer", choice, by }, session));
     });
@@ -909,7 +916,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const scanTracker = new ToolProgressTracker(thread);
       const scanSession = new DiscordSurfaceSession({
         client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: scanTracker,
-        attachFeedback: false, channel,
+        attachFeedback: false, channel, behavior: behaviorFor(guildId),
       });
       const scanInbound: InboundMessage = { conversation: scanConv, author, text: SCAN_QUERY, channel };
       await runThroughCore(scanConv, thread, scanTracker, span, () => core.handleInbound(scanInbound, scanSession));
@@ -958,6 +965,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const session = new DiscordSurfaceSession({
         client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: tracker,
         channel, threadContext: initialThreadContext ?? undefined, threadChannelId: thread.id, ownerSection,
+        behavior: behaviorFor(guildId),
       });
       await runThroughCore(conversation, thread, tracker, span, () => core.resume(conversation, { kind: "approval", decision: decision === "approve" ? "approved" : "rejected", by, systemMessage }, session));
     });
