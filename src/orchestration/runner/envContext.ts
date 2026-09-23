@@ -78,7 +78,7 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
       "",
       "- Headless Chromium through `agent-browser`. Run `agent-browser skills get core` once before first use for the workflow and command reference.",
       "- Your task already has its own browser session; do not pass `--session`. It can reach dev servers you start on localhost.",
-      "- The browser closes when the task finishes, so cookies and logins do not carry over to later tasks.",
+      "- The browser closes whenever the task stops or goes idle, so cookies and logins do not survive into a later turn or task.",
     );
   }
   if (facts.workspaceRoot) {

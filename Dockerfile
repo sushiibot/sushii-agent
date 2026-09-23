@@ -31,8 +31,8 @@ RUN set -eu; \
       | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh"
 
 # Headless browser for runner agents: Debian's chromium (built for both amd64 and arm64, unlike
-# Chrome for Testing) driven by the agent-browser CLI. Static binary taken from the npm tarball,
-# same TARGETARCH pattern as above.
+# Chrome for Testing) driven by the agent-browser CLI. Static binary + its version-matched skill
+# docs taken from the npm tarball, same TARGETARCH pattern as above.
 ARG AGENT_BROWSER_VERSION=0.38.1
 RUN set -eu; \
     apt-get update && apt-get install -y --no-install-recommends chromium fonts-liberation fonts-noto-color-emoji \
@@ -42,12 +42,14 @@ RUN set -eu; \
       arm64) AB_ARCH=linux-arm64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
+    mkdir -p /opt/agent-browser; \
     curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
-      | tar -xz -C /tmp "package/bin/agent-browser-${AB_ARCH}"; \
-    install -m 755 "/tmp/package/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser; \
-    rm -rf /tmp/package
+      | tar -xz -C /opt/agent-browser --strip-components=1 "package/bin/agent-browser-${AB_ARCH}" package/skill-data; \
+    chmod 755 "/opt/agent-browser/bin/agent-browser-${AB_ARCH}"; \
+    ln -s "/opt/agent-browser/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser
 # Root in a container needs --no-sandbox; Docker's 64MB /dev/shm crashes Chromium without the shm flag.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
+    AGENT_BROWSER_SKILLS_DIR=/opt/agent-browser/skill-data \
     AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
 
 WORKDIR /app
