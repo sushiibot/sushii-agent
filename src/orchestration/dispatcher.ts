@@ -96,6 +96,19 @@ export class Dispatcher {
       },
       onEvent: (runnerId, event) => this.onEvent(runnerId, event),
     });
+    getActivityHub().setBrowserWatchHandler((taskId, watch) => this.watchBrowser(taskId, watch));
+  }
+
+  // Relay the task's live browser only while a web viewer has the browser panel open.
+  private watchBrowser(taskId: string, watch: boolean): void {
+    const task = this.registry.get(taskId);
+    if (!task || !this.isRunnerLive(task.runnerId)) return;
+    this.server
+      .watchBrowser(task.runnerId, { taskId, watch })
+      .then((res) => {
+        if ((res as { supported?: boolean }).supported === false) getActivityHub().pushBrowser(taskId, { supported: false });
+      })
+      .catch((err) => logger.warn({ err, taskId, watch }, "browser watch request failed"));
   }
 
   listen(): void {
@@ -465,6 +478,11 @@ export class Dispatcher {
       case "ask":
         getActivityHub().setAsk(event.taskId, { askId: event.askId, question: event.question, choices: event.choices });
         return;
+      case "browser": {
+        const { kind: _kind, taskId, ...update } = event;
+        getActivityHub().pushBrowser(taskId, update);
+        return;
+      }
       case "handback":
         // The agent opens its own PR (via gh) when the task calls for it and names the link in its
         // summary, so the summary is stored as-authored.

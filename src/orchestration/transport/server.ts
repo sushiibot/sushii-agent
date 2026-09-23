@@ -45,6 +45,24 @@ const runnerEventSchema = z.discriminatedUnion("kind", [
     atype: z.enum(["tool", "result", "text"]),
   }),
   z.object({
+    kind: z.literal("ask"),
+    taskId: z.string(),
+    askId: z.string(),
+    question: z.string(),
+    choices: z.array(z.string()).optional(),
+  }),
+  z.object({
+    kind: z.literal("browser"),
+    taskId: z.string(),
+    supported: z.boolean().optional(),
+    connected: z.boolean().optional(),
+    frame: z.string().optional(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+    url: z.string().optional(),
+    title: z.string().optional(),
+  }),
+  z.object({
     kind: z.literal("handback"),
     taskId: z.string(),
     summary: z.string(),
@@ -234,6 +252,10 @@ export class OrchestrationServer {
 
   message(runnerId: string, input: { taskId: string; text: string }): Promise<unknown> {
     return this.call(runnerId, RPC_METHODS.message, input);
+  }
+
+  watchBrowser(runnerId: string, input: { taskId: string; watch: boolean }): Promise<unknown> {
+    return this.call(runnerId, RPC_METHODS.browserWatch, input);
   }
 
   isConnected(runnerId: string): boolean {

@@ -43,3 +43,28 @@ describe("ActivityHub", () => {
     expect(taskViewUrl("https://h.example/", "t", "k")).toBe("https://h.example/tasks/t?key=k");
   });
 });
+
+describe("ActivityHub browser view", () => {
+  test("first subscriber starts the relay, last one stops it, state merges", () => {
+    const hub = new ActivityHub();
+    const calls: [string, boolean][] = [];
+    hub.setBrowserWatchHandler((taskId, watch) => calls.push([taskId, watch]));
+    hub.open("b1");
+    const view = hub.view("b1")!;
+
+    const got: unknown[] = [];
+    const unsubA = view.onBrowser((u) => got.push(u));
+    const unsubB = view.onBrowser(() => {});
+    expect(calls).toEqual([["b1", true]]);
+
+    hub.pushBrowser("b1", { connected: true, url: "https://example.com" });
+    hub.pushBrowser("b1", { frame: "AAAA", width: 1024, height: 576 });
+    expect(got).toHaveLength(2);
+    expect(hub.view("b1")!.browser).toMatchObject({ connected: true, url: "https://example.com", frame: "AAAA", width: 1024 });
+
+    unsubA();
+    expect(calls).toHaveLength(1);
+    unsubB();
+    expect(calls).toEqual([["b1", true], ["b1", false]]);
+  });
+});

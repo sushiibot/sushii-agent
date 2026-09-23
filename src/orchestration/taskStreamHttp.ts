@@ -51,8 +51,10 @@ export function registerTaskStreamRoutes(app: Hono): void {
         const unsubLine = view.onLine((l) => void stream.writeSSE({ id: String(l.seq), data: JSON.stringify(l) }).catch(() => {}));
         const unsubAsk = view.onAsk((ask) => void stream.writeSSE({ event: "ask", data: JSON.stringify(ask) }).catch(() => {}));
         const unsubStatus = view.onStatus((status, summary) => {
-          void stream.writeSSE({ event: "status", data: JSON.stringify({ status, summary }) }).catch(() => {});
-          finish();
+          void stream
+            .writeSSE({ event: "status", data: JSON.stringify({ status, summary }) })
+            .catch(() => {})
+            .finally(finish);
         });
         function finish(): void {
           if (closed) return;
@@ -60,6 +62,36 @@ export function registerTaskStreamRoutes(app: Hono): void {
           clearInterval(heartbeat);
           unsubLine();
           unsubAsk();
+          unsubStatus();
+          resolve();
+        }
+        stream.onAbort(finish);
+      });
+    });
+  });
+
+  // Live browser panel: current state first, then updates while the panel stays open. Opening it is
+  // what starts the runner's relay (see ActivityHub.onBrowser), so frames only flow while watched.
+  app.get("/tasks/:id/browser", (c) => {
+    const view = getActivityHub().viewWithToken(c.req.param("id"), c.req.query("key") ?? "");
+    if (!view) return c.json({ error: "not_found" }, 404);
+    return streamSSE(c, async (stream) => {
+      await stream.writeSSE({ event: "state", data: JSON.stringify(view.browser) });
+      if (view.status !== "running") {
+        await stream.writeSSE({ event: "end", data: "" });
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        let closed = false;
+        const heartbeat = setInterval(() => void stream.writeSSE({ event: "ping", data: "" }).catch(() => {}), 15000);
+        const unsubBrowser = view.onBrowser((u) => void stream.writeSSE({ event: "update", data: JSON.stringify(u) }).catch(() => {}));
+        // Close only after "end" is written, or the final event can be dropped with the stream.
+        const unsubStatus = view.onStatus(() => void stream.writeSSE({ event: "end", data: "" }).catch(() => {}).finally(finish));
+        function finish(): void {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          unsubBrowser();
           unsubStatus();
           resolve();
         }
@@ -326,6 +358,35 @@ const VIEWER_HTML = `<!doctype html>
   .ctl.go { color:var(--green); } .ctl.go:hover { border-color:var(--green); }
   .ctl[hidden] { display:none; }
   .ctl:disabled { opacity:.5; cursor:default; }
+  /* browser side panel */
+  :root { --bw: min(46vw, 760px); }
+  body.browser-open .wrap { margin-right: var(--bw); }
+  @media (min-width:1500px) { body.browser-open .wrap { margin-left: max(16px, calc((100vw - var(--bw) - 900px) / 2)); } }
+  .themetoggle[aria-pressed="true"] { color:var(--sky); border-color: color-mix(in srgb, var(--sky) 55%, var(--surface2));
+    background: color-mix(in srgb, var(--sky) 14%, var(--surface0)); }
+  .bpanel { position:fixed; top:0; right:0; bottom:0; width:var(--bw); z-index:6; display:flex; flex-direction:column;
+    background: color-mix(in srgb, var(--mantle) 94%, transparent); backdrop-filter: blur(12px);
+    border-left:1px solid color-mix(in srgb, var(--surface0) 80%, transparent); box-shadow: var(--shadow); }
+  .bpanel[hidden] { display:none; }
+  .bbar { display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid color-mix(in srgb, var(--surface0) 70%, transparent); }
+  .bstate { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; font-size:11.5px; font-weight:800;
+    letter-spacing:.04em; text-transform:uppercase; color:var(--overlay2); background:var(--surface0); }
+  .bstate .dot { width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .bstate.live { color:var(--green); background: color-mix(in srgb, var(--green) 15%, var(--surface0)); }
+  .bstate.live .dot { animation: pulse 1.6s ease-out infinite; }
+  .baddr { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; line-height:1.25; }
+  .baddr .t { font-size:13px; font-weight:700; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .baddr .u { font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11.5px; color:var(--subtext0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .bscreen { flex:1 1 auto; min-height:0; padding:14px; display:flex; align-items:flex-start; justify-content:center; overflow:auto; }
+  .bframe { width:100%; border-radius:10px; overflow:hidden; background:var(--crust);
+    border:1px solid color-mix(in srgb, var(--surface0) 80%, transparent); box-shadow: var(--shadow); }
+  .bframe img { display:block; width:100%; height:auto; }
+  .bframe.stale img { opacity:.55; filter:saturate(.6); }
+  .bframe[hidden] { display:none; }
+  .bempty { margin:12vh auto 0; max-width:34ch; text-align:center; color:var(--overlay1); font-size:13.5px; font-weight:600; line-height:1.55; }
+  .bempty svg { display:block; margin:0 auto 12px; width:44px; height:44px; color:var(--overlay0); }
+  .bempty[hidden] { display:none; }
+  @media (max-width:900px) { :root { --bw: 100vw; } body.browser-open .wrap { margin-right:auto; } }
   @media (max-width:560px) { .tool .ts { display:none; } .say .prose { font-size:14px; } header { gap:9px; } .ctl { padding:5px 8px; } }
 </style></head>
 <body>
@@ -343,6 +404,9 @@ const VIEWER_HTML = `<!doctype html>
     </span>
     <button class="themetoggle" id="themebtn" title="Toggle theme" aria-label="Toggle theme">
       <svg id="themeicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>
+    </button>
+    <button class="themetoggle" id="browserbtn" title="Show the task's browser" aria-label="Toggle browser panel" aria-pressed="false" aria-controls="bpanel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="6.3" cy="6.8" r=".5"/><circle cx="8.6" cy="6.8" r=".5"/></svg>
     </button>
     <span class="status connecting" id="status"><span class="dot"></span><span id="statustext">connecting…</span></span>
     <span class="ctlgroup" id="ctlgroup">
@@ -365,6 +429,19 @@ const VIEWER_HTML = `<!doctype html>
     <path d="M13.7 20.6c.7.6 1.9.6 2.3 0 .4.6 1.6.6 2.3 0" stroke="var(--pink)" stroke-width="1.3" stroke-linecap="round" fill="none"/>
   </svg><p>Waiting for the first step…</p><span class="sub">the agent's activity will stream in here</span></div></main>
 </div>
+<aside class="bpanel" id="bpanel" hidden aria-label="Task browser">
+  <div class="bbar">
+    <span class="bstate" id="bstate"><span class="dot"></span><span id="bstatetext">connecting</span></span>
+    <span class="baddr"><span class="t" id="btitle">Browser</span><span class="u" id="burl"></span></span>
+    <button class="themetoggle" id="bclose" title="Hide browser" aria-label="Hide browser panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="bscreen">
+    <div class="bframe" id="bframe" hidden><img id="bimg" alt="Live view of the task's browser"/></div>
+    <div class="bempty" id="bempty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><line x1="3" y1="9" x2="21" y2="9"/></svg><span id="bemptytext">Connecting…</span></div>
+  </div>
+</aside>
 <script>
   const log=document.getElementById('log'), statusEl=document.getElementById('status'), statusText=document.getElementById('statustext');
   let lastSeq=0, pendingTool=null, hasContent=false, lastTextEl=null, lastTextRaw='';
@@ -490,6 +567,51 @@ const VIEWER_HTML = `<!doctype html>
   btnDiscard.onclick=async()=>{ if(confirm('Discard this task and remove its worktree? This cannot be undone.')) await control('discard'); };
   btnResume.onclick=async()=>{ btnResume.disabled=true; if(await control('resume')) reconnectIfClosed(); btnResume.disabled=false; };
 
+  // Browser side panel. Its SSE stream is only open while the panel is, and that is what makes the
+  // runner relay frames at all.
+  const bpanel=document.getElementById('bpanel'), browserbtn=document.getElementById('browserbtn');
+  const bimg=document.getElementById('bimg'), bframe=document.getElementById('bframe'), bempty=document.getElementById('bempty');
+  const B={ supported:null, connected:false, frame:null, url:null, title:null, ended:false };
+  let bes=null;
+  function paintBrowser(){
+    const st=document.getElementById('bstate'), stt=document.getElementById('bstatetext');
+    let state, msg='';
+    if(B.supported===false){ state='n/a'; msg="This runner doesn't have a browser."; }
+    else if(B.ended){ state='closed'; msg='The task is no longer running.'; }
+    else if(B.connected){ state='live'; }
+    else if(B.frame){ state='closed'; }
+    else { state='waiting'; msg="No browser open yet. It shows up here once the agent opens a page."; }
+    st.className='bstate'+(state==='live'?' live':''); stt.textContent=state;
+    document.getElementById('btitle').textContent=B.title||'Browser';
+    document.getElementById('burl').textContent=B.url||'';
+    const showFrame=!!B.frame && B.supported!==false;
+    bframe.hidden=!showFrame; bframe.classList.toggle('stale', showFrame && state!=='live');
+    bempty.hidden=showFrame;
+    document.getElementById('bemptytext').textContent=msg;
+  }
+  function applyBrowser(u){
+    for(const k of ['supported','connected','url','title']) if(u[k]!==undefined && u[k]!==null) B[k]=u[k];
+    if(u.frame){ B.frame=u.frame; bimg.src='data:image/jpeg;base64,'+u.frame; }
+    paintBrowser();
+  }
+  function connectBrowser(){
+    if(bes){ try{ bes.close(); }catch{} }
+    B.ended=false; paintBrowser();
+    bes=new EventSource('/tasks/__TASK_ID__/browser'+location.search);
+    bes.addEventListener('state',(e)=>{ try { applyBrowser(JSON.parse(e.data)); } catch {} });
+    bes.addEventListener('update',(e)=>{ try { applyBrowser(JSON.parse(e.data)); } catch {} });
+    bes.addEventListener('end',()=>{ B.ended=true; B.connected=false; paintBrowser(); try{ bes.close(); }catch{} bes=null; });
+  }
+  function setBrowserOpen(open){
+    bpanel.hidden=!open; document.body.classList.toggle('browser-open', open);
+    browserbtn.setAttribute('aria-pressed', String(open));
+    try { localStorage.setItem('viewer-browser', open?'1':'0'); } catch {}
+    if(open) connectBrowser(); else if(bes){ try{ bes.close(); }catch{} bes=null; }
+  }
+  browserbtn.onclick=()=>setBrowserOpen(bpanel.hidden);
+  document.getElementById('bclose').onclick=()=>setBrowserOpen(false);
+  document.addEventListener('keydown',(e)=>{ if(e.key==='Escape' && !bpanel.hidden) setBrowserOpen(false); });
+
   let es=null;
   function connect(){
     if(es){ try{ es.close(); }catch{} }
@@ -536,10 +658,15 @@ const VIEWER_HTML = `<!doctype html>
         }
       } catch {}
     });
-    es.onopen=()=>{ if(statusEl.classList.contains('connecting')){ statusText.textContent='running'; statusEl.className='status running'; } setControls(statusText.textContent); };
+    es.onopen=()=>{
+      if(statusEl.classList.contains('connecting')){ statusText.textContent='running'; statusEl.className='status running'; }
+      setControls(statusText.textContent);
+      if(!bpanel.hidden && !bes) connectBrowser(); // a resumed task gets a fresh relay
+    };
     es.onerror=()=>{ const s=statusEl.className; if(es.readyState===2 && !/idle|done|failed/.test(s)){ statusText.textContent='disconnected'; statusEl.className='status disconnected'; } };
   }
   connect();
+  try { if(localStorage.getItem('viewer-browser')==='1') setBrowserOpen(true); } catch {}
 
   const themebtn=document.getElementById('themebtn');
   const sun='<circle cx="12" cy="12" r="4.2"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/>';

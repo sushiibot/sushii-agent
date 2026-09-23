@@ -9,7 +9,8 @@ import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
 import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
 import { buildAgentEnv } from "./agentEnv.ts";
-import { closeBrowserSession } from "./browser.ts";
+import { browserEnv, closeBrowserSession } from "./browser.ts";
+import { allocatePort, BrowserRelay } from "./browserStream.ts";
 import { ENV_CONTEXT_PATH } from "./envContext.ts";
 
 const log = getLogger("orchestration.runner.pi");
@@ -250,6 +251,9 @@ interface PiTaskState {
   tokenRef: { current: string | null };
   credsTimer: ReturnType<typeof setInterval> | null;
   askBridge: AskBridge; // ask_owner ↔ answer routing for this session
+  browserPort: number | null; // pinned agent-browser stream port (stable across resume)
+  emit: ((e: RunnerEvent) => void) | null; // the live stream() callback, for browser relay events
+  relay: BrowserRelay | null; // live browser view, only while a viewer watches
 }
 
 // Poll the token provider often; it serves the cached token until ~5min before expiry and re-mints
@@ -299,7 +303,8 @@ export class PiRunnerAdapter implements RunnerAdapter {
     }
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
-    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, null, tokenRef, repoHome);
+    const browserPort = this.options.browser ? await allocatePort() : null;
+    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, null, tokenRef, repoHome, browserPort);
     const startSha = await this.readHeadSha(cwd);
     const state: PiTaskState = {
       session,
@@ -314,6 +319,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
       tokenRef,
       credsTimer,
       askBridge,
+      browserPort,
+      emit: null,
+      relay: null,
     };
     askBridge.emit = (sig) => state.queue.push(sig); // route ask/ask_resolved into the task's signal stream
     this.tasks.set(input.taskId, state);
@@ -325,7 +333,21 @@ export class PiRunnerAdapter implements RunnerAdapter {
   // outlives the task. A resume starts a fresh browser under the same session name.
   private releaseTask(taskId: string, task: PiTaskState): void {
     if (task.credsTimer) clearInterval(task.credsTimer);
+    task.relay?.stop();
+    task.relay = null;
     if (this.options.browser) closeBrowserSession(taskId);
+  }
+
+  async watchBrowser(input: { taskId: string; watch: boolean }): Promise<{ supported: boolean }> {
+    const task = this.tasks.get(input.taskId);
+    if (!this.options.browser || !task?.browserPort) return { supported: Boolean(this.options.browser) };
+    if (!input.watch) {
+      task.relay?.stop();
+      task.relay = null;
+    } else if (!task.relay) {
+      task.relay = new BrowserRelay(task.browserPort, (u) => task.emit?.({ kind: "browser", taskId: input.taskId, ...u }));
+    }
+    return { supported: true };
   }
 
   // Mint the per-repo token, keep it fresh, and (re)write the git askpass helper + pre-push guard so
@@ -370,10 +392,13 @@ export class PiRunnerAdapter implements RunnerAdapter {
     if (repo && this.options.repoOps) cwd = await ensureWorktree(repoHome, input.taskId, this.options.repoOps);
     const tokenRef: { current: string | null } = { current: null };
     const credsTimer = await this.provisionCreds(repoHome, repo, tokenRef);
+    // Same port as before: a browser daemon that survived a live resume is still bound to it.
+    const browserPort = existing?.browserPort ?? (this.options.browser ? await allocatePort() : null);
+    existing?.relay?.stop();
     // nativeSessionId is the persisted session file path; open() resumes that exact session.
-    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, input.nativeSessionId, tokenRef, repoHome);
+    const { session, sessionFile, askBridge } = await this.createSession(input.taskId, cwd, input.nativeSessionId, tokenRef, repoHome, browserPort);
     const startSha = existing?.startSha ?? (await this.readHeadSha(cwd));
-    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer, askBridge };
+    const state: PiTaskState = { session, queue: new SignalQueue(), cwd, startedAt: this.now(), startSha, sessionFile, superseded: false, repo, repoHome, tokenRef, credsTimer, askBridge, browserPort, emit: null, relay: null };
     askBridge.emit = (sig) => state.queue.push(sig);
     this.tasks.set(input.taskId, state);
     this.wireAndPrompt(input.taskId, state, input.prompt);
@@ -427,6 +452,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task ${taskId}`);
     const reducer = new RunnerEventReducer(taskId, this.progressDebounceMs, this.now);
+    task.emit = onEvent;
     onEvent(reducer.start());
 
     while (true) {
@@ -483,6 +509,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
     resumeSessionFile: string | null,
     tokenRef: { current: string | null },
     repoHome: string,
+    browserPort: number | null,
   ): Promise<{ session: AgentSession; sessionFile: string; askBridge: AskBridge }> {
     const { createAgentSession, ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createBashToolDefinition } =
       await import("@earendil-works/pi-coding-agent");
@@ -541,7 +568,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
         const token = tokenRef.current;
         const extra = {
           ...(token ? agentGitEnv(repoHome, token) : {}),
-          ...(this.options.browser ? { AGENT_BROWSER_SESSION: taskId } : {}),
+          ...(browserPort ? browserEnv(taskId, browserPort) : {}),
         };
         return { ...context, env: buildAgentEnv(context.env, extra) };
       },

@@ -224,4 +224,51 @@ describe("orchestration transport round-trip", () => {
       server.stop();
     }
   });
+
+  test("ask and browser events pass wire validation, and browser watch reaches the adapter", async () => {
+    const events: RunnerEvent[] = [];
+    const watched: { taskId: string; watch: boolean }[] = [];
+    class BrowserAdapter extends MockRunnerAdapter {
+      override async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
+        onEvent({ kind: "ask", taskId, askId: "a1", question: "Which?", choices: ["x", "y"] });
+        onEvent({ kind: "browser", taskId, connected: true, frame: "AAAA", width: 10, height: 5 });
+      }
+      async watchBrowser(input: { taskId: string; watch: boolean }): Promise<{ supported: boolean }> {
+        watched.push(input);
+        return { supported: true };
+      }
+    }
+    const server = new OrchestrationServer({ onEvent: (_r, e) => events.push(e) });
+    server.listen();
+    const client = new OrchestrationClient({ url: server.url, runnerId: "r-browser", kind: "mock", adapter: new BrowserAdapter() });
+    try {
+      await client.connect();
+      client.listen();
+      await server.start("r-browser", { taskId: "t-b", cwd: "/tmp", prompt: "p" });
+      const deadline = Date.now() + 2000;
+      while (events.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      expect(events.map((e) => e.kind)).toEqual(["ask", "browser"]);
+      expect(events[1]).toMatchObject({ kind: "browser", connected: true, frame: "AAAA" });
+
+      expect(await server.watchBrowser("r-browser", { taskId: "t-b", watch: true })).toEqual({ supported: true });
+      expect(watched).toEqual([{ taskId: "t-b", watch: true }]);
+    } finally {
+      client.close();
+      server.stop();
+    }
+  });
+
+  test("a runner without browser support answers supported:false", async () => {
+    const server = new OrchestrationServer({ onEvent: () => {} });
+    server.listen();
+    const client = new OrchestrationClient({ url: server.url, runnerId: "r-plain", kind: "mock", adapter: new MockRunnerAdapter() });
+    try {
+      await client.connect();
+      client.listen();
+      expect(await server.watchBrowser("r-plain", { taskId: "t", watch: true })).toEqual({ supported: false });
+    } finally {
+      client.close();
+      server.stop();
+    }
+  });
 });

@@ -37,7 +37,20 @@ export type RunnerEvent =
   // The agent is blocked and asking the owner (ask_owner tool). The task pauses at needs_input until an
   // answer is routed back (via the steer channel). choices, when present, are offered as buttons.
   | { kind: "ask"; taskId: string; askId: string; question: string; choices?: string[] }
-  | { kind: "handback"; taskId: string; summary: string; meta?: HandbackMeta };
+  | { kind: "handback"; taskId: string; summary: string; meta?: HandbackMeta }
+  // Live browser view, only sent while a viewer watches (see RPC_METHODS.browserWatch). Every field
+  // but taskId is optional: a message carries a new frame, a navigation, or a state change.
+  | { kind: "browser"; taskId: string } & BrowserUpdate;
+
+export interface BrowserUpdate {
+  supported?: boolean; // false = this runner has no browser
+  connected?: boolean; // a browser is open for the task
+  frame?: string; // base64 JPEG of the viewport
+  width?: number;
+  height?: number;
+  url?: string;
+  title?: string;
+}
 
 // Deterministic, LLM-free metadata the runner computes (git + result object).
 export interface HandbackMeta {
@@ -75,6 +88,9 @@ export interface RunnerAdapter {
   // no live session to inject into (task not running, or the runner kind is one-shot) — the caller then
   // falls back to resume. Adapters that can't inject always return delivered:false.
   steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }>;
+  // Start/stop relaying the task's live browser view as "browser" events. Optional: kinds without a
+  // browser omit it and the client answers supported:false.
+  watchBrowser?(input: { taskId: string; watch: boolean }): Promise<{ supported: boolean }>;
   // Emits RunnerEvents for the task; implementation streams via the callback.
   stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void>;
 }
@@ -88,6 +104,7 @@ export const RPC_METHODS = {
   stop: "session/stop", // halt but keep resumable (params: { taskId, discard? })
   message: "session/message", // live steer into a running session (params: { taskId, text }) → { delivered }
   event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
+  browserWatch: "session/browser", // start/stop the live browser relay (params: { taskId, watch }) → { supported }
   heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)
 } as const;
 

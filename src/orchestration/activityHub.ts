@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import type { BrowserUpdate } from "./contracts.ts";
 
 // In-memory live activity per task: a capped ring of recent lines + fan-out to live viewers (the
 // Discord tail and the web stream). Not persisted — a task's stream lives only while it runs and for
@@ -31,6 +32,17 @@ export interface PendingAsk {
   choices?: string[];
 }
 
+// Latest known state of a task's browser. Only the newest frame is kept: the view is live, not a recording.
+export interface BrowserState {
+  supported: boolean | null; // null = not yet known
+  connected: boolean;
+  frame: string | null;
+  width: number | null;
+  height: number | null;
+  url: string | null;
+  title: string | null;
+}
+
 interface TaskStream {
   token: string;
   lines: ActivityLine[];
@@ -42,6 +54,8 @@ interface TaskStream {
   subscribers: Set<(l: ActivityLine) => void>;
   statusSubs: Set<(status: string, summary: string | null) => void>;
   askSubs: Set<(ask: PendingAsk | null) => void>;
+  browser: BrowserState;
+  browserSubs: Set<(u: BrowserUpdate) => void>;
   gcTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -54,6 +68,9 @@ export interface TaskView {
   summary: string | null;
   meta: TaskMeta | null;
   pendingAsk: PendingAsk | null;
+  browser: BrowserState;
+  /** Subscribe to browser updates. The first subscriber starts the runner's relay, the last one stops it. */
+  onBrowser: (cb: (u: BrowserUpdate) => void) => () => void;
   /** Subscribe to new lines; returns an unsubscribe fn. */
   onLine: (cb: (l: ActivityLine) => void) => () => void;
   /** Subscribe to status/summary changes (settle); returns an unsubscribe fn. */
@@ -64,12 +81,18 @@ export interface TaskView {
 
 export class ActivityHub {
   private readonly tasks = new Map<string, TaskStream>();
+  private browserWatch: ((taskId: string, watch: boolean) => void) | null = null;
+
+  /** Called when a task's browser view gains its first viewer or loses its last one. */
+  setBrowserWatchHandler(fn: (taskId: string, watch: boolean) => void): void {
+    this.browserWatch = fn;
+  }
 
   /** Begin (or return) a task's stream; returns its viewer token. Idempotent. */
   open(taskId: string): string {
     let t = this.tasks.get(taskId);
     if (!t) {
-      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, meta: null, status: "running", summary: null, pendingAsk: null, subscribers: new Set(), statusSubs: new Set(), askSubs: new Set(), gcTimer: null };
+      t = { token: randomBytes(16).toString("hex"), lines: [], seq: 0, meta: null, status: "running", summary: null, pendingAsk: null, subscribers: new Set(), statusSubs: new Set(), askSubs: new Set(), browser: emptyBrowser(), browserSubs: new Set(), gcTimer: null };
       this.tasks.set(taskId, t);
     } else if (t.gcTimer || t.status !== "running") {
       // Re-opening a settled task (a resume) — cancel its pending GC and mark it running again so late
@@ -134,6 +157,26 @@ export class ActivityHub {
     }
   }
 
+  pushBrowser(taskId: string, update: BrowserUpdate): void {
+    const t = this.tasks.get(taskId);
+    if (!t) return;
+    const b = t.browser;
+    if (update.supported !== undefined) b.supported = update.supported;
+    if (update.connected !== undefined) b.connected = update.connected;
+    if (update.frame !== undefined) b.frame = update.frame;
+    if (update.width !== undefined) b.width = update.width;
+    if (update.height !== undefined) b.height = update.height;
+    if (update.url !== undefined) b.url = update.url;
+    if (update.title !== undefined) b.title = update.title;
+    for (const cb of t.browserSubs) {
+      try {
+        cb(update);
+      } catch {
+        // a broken subscriber must not stall the others
+      }
+    }
+  }
+
   /** Mark the task settled with its final status + summary; buffer is retained briefly then GC'd. */
   settle(taskId: string, status: string, summary: string | null): void {
     const t = this.tasks.get(taskId);
@@ -155,23 +198,31 @@ export class ActivityHub {
   /** Internal (no token) view for in-process consumers like the Discord tail. */
   view(taskId: string): TaskView | null {
     const t = this.tasks.get(taskId);
-    return t ? this.toView(t) : null;
+    return t ? this.toView(taskId, t) : null;
   }
 
   /** Token-gated view for external consumers (the web stream). Constant-time token compare. */
   viewWithToken(taskId: string, token: string): TaskView | null {
     const t = this.tasks.get(taskId);
     if (!t || !tokensEqual(t.token, token)) return null;
-    return this.toView(t);
+    return this.toView(taskId, t);
   }
 
-  private toView(t: TaskStream): TaskView {
+  private toView(taskId: string, t: TaskStream): TaskView {
     return {
       lines: [...t.lines],
       status: t.status,
       summary: t.summary,
       meta: t.meta,
       pendingAsk: t.pendingAsk,
+      browser: { ...t.browser },
+      onBrowser: (cb) => {
+        t.browserSubs.add(cb);
+        if (t.browserSubs.size === 1) this.browserWatch?.(taskId, true);
+        return () => {
+          if (t.browserSubs.delete(cb) && t.browserSubs.size === 0) this.browserWatch?.(taskId, false);
+        };
+      },
       onLine: (cb) => {
         t.subscribers.add(cb);
         return () => t.subscribers.delete(cb);
@@ -186,6 +237,10 @@ export class ActivityHub {
       },
     };
   }
+}
+
+function emptyBrowser(): BrowserState {
+  return { supported: null, connected: false, frame: null, width: null, height: null, url: null, title: null };
 }
 
 function tokensEqual(a: string, b: string): boolean {

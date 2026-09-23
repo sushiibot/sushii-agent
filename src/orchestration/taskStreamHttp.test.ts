@@ -83,4 +83,45 @@ describe("task stream routes", () => {
     getActivityHub().open("web-sse-2");
     expect((await app.request("/tasks/web-sse-2/stream?key=nope")).status).toBe(404);
   });
+
+  test("browser stream is token-gated and sends current state, then updates", async () => {
+    const app = appWithRoutes();
+    const hub = getActivityHub();
+    const token = hub.open("web-browser");
+    hub.pushBrowser("web-browser", { connected: true, url: "https://example.com/" });
+
+    expect((await app.request("/tasks/web-browser/browser?key=wrong")).status).toBe(404);
+    const res = await app.request(`/tasks/web-browser/browser?key=${token}`);
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    const readUntil = async (needle: string) => {
+      while (!text.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value);
+      }
+    };
+    await readUntil("event: state");
+    expect(text).toContain("https://example.com/");
+    await new Promise((r) => setTimeout(r, 20)); // the route subscribes after writing the snapshot
+    hub.pushBrowser("web-browser", { frame: "QUJD" });
+    await readUntil("QUJD");
+    expect(text).toContain("event: update");
+    hub.settle("web-browser", "idle", null);
+    await readUntil("event: end");
+    await reader.cancel();
+  });
+
+  test("a task settling while watched still delivers its final status", async () => {
+    const app = appWithRoutes();
+    const hub = getActivityHub();
+    const token = hub.open("web-live-settle");
+    const res = await app.request(`/tasks/web-live-settle/stream?key=${token}`);
+    setTimeout(() => hub.settle("web-live-settle", "done", "all good"), 50);
+    const body = await res.text();
+    expect(body).toContain("event: status");
+    expect(body).toContain("all good");
+  });
 });
