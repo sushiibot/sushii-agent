@@ -83,7 +83,7 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
     );
     if (facts.cloudBrowser) {
       lines.push(
-        "- Some sites block this datacenter browser (bot checks, CAPTCHAs, \"access denied\"). For those, run the same commands with `agent-browser-web` instead: a Browser Use cloud browser with stealth, residential proxies and CAPTCHA solving. It is billed while open, so try the local browser first. It is a separate browser, so its pages, cookies and cart do not carry over from the local one.",
+        "- If a site blocks the local browser (bot check, CAPTCHA, 403/\"access denied\"), run the same commands with `agent-browser-web`: a Browser Use cloud browser with a stealth fingerprint and CAPTCHA solving. Only if that is still blocked, add `--proxy` (`agent-browser-web --proxy open <url>`) for a residential proxy, which is billed per MB. Always try the cheaper step first. Each is a separate browser, so pages, cookies and carts do not carry over between them. Run `agent-browser-web close` when done with it.",
       );
     }
   }

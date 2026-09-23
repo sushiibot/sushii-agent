@@ -27,21 +27,32 @@ export function browserEnv(taskId: string, ports: BrowserPorts, browserUseApiKey
   };
   if (ports.web && browserUseApiKey) {
     env.AGENT_BROWSER_WEB_STREAM_PORT = String(ports.web);
+    env.AGENT_BROWSER_WEB_STATE = webStatePath(taskId);
     env.BROWSER_USE_API_KEY = browserUseApiKey;
   }
   return env;
 }
 
-// Best-effort: a session that never opened a browser just has nothing to close. Closing the cloud
-// session also ends the Browser Use session, which bills while open.
+// Where agent-browser-web records the task's Browser Use session, so any later call (and cleanup) finds it.
+function webStatePath(taskId: string): string {
+  return `/tmp/sushii-browser-web/${taskId}.json`;
+}
+
+// Best-effort: a session that never opened a browser just has nothing to close. agent-browser-web
+// close also stops the Browser Use session, which bills while open (CDP close alone does not).
 export function closeBrowserSessions(taskId: string, browserUseApiKey?: string): void {
-  close(taskId, buildAgentEnv(process.env));
+  run(["agent-browser", "--session", taskId, "close"], buildAgentEnv(process.env), taskId);
   if (browserUseApiKey) {
-    close(`${taskId}-web`, buildAgentEnv(process.env, { AGENT_BROWSER_PROVIDER: "browseruse", BROWSER_USE_API_KEY: browserUseApiKey }));
+    const env = buildAgentEnv(process.env, {
+      AGENT_BROWSER_SESSION: taskId,
+      AGENT_BROWSER_WEB_STATE: webStatePath(taskId),
+      BROWSER_USE_API_KEY: browserUseApiKey,
+    });
+    run(["agent-browser-web", "close"], env, taskId);
   }
 }
 
-function close(session: string, env: NodeJS.ProcessEnv): void {
-  const child = spawn("agent-browser", ["--session", session, "close"], { env, stdio: "ignore", timeout: 15_000 });
-  child.on("error", (err) => log.warn({ err, session }, "failed to close browser session"));
+function run(cmd: string[], env: NodeJS.ProcessEnv, taskId: string): void {
+  const child = spawn(cmd[0]!, cmd.slice(1), { env, stdio: "ignore", timeout: 30_000 });
+  child.on("error", (err) => log.warn({ err, taskId, cmd: cmd[0] }, "failed to close browser session"));
 }
