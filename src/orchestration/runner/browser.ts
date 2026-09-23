@@ -5,14 +5,12 @@ import { buildAgentEnv } from "./agentEnv.ts";
 const log = getLogger("orchestration.runner.browser");
 
 // Per-task agent-browser env: an isolated session, plus a pinned stream port so the runner can relay
-// the live view without asking the daemon (which would launch a browser). Frames are downscaled for
-// the web viewer.
+// the live view without asking the daemon (which would launch a browser).
 export function browserEnv(taskId: string, streamPort: number): Record<string, string> {
   return {
     AGENT_BROWSER_SESSION: taskId,
     AGENT_BROWSER_STREAM_PORT: String(streamPort),
-    AGENT_BROWSER_STREAM_QUALITY: "60",
-    AGENT_BROWSER_STREAM_MAX_WIDTH: "1024",
+    AGENT_BROWSER_STREAM_QUALITY: "75",
   };
 }
 

@@ -1,7 +1,7 @@
 import { createServer } from "node:net";
 import type { BrowserUpdate } from "../contracts.ts";
 
-const MIN_FRAME_GAP_MS = 400;
+const MIN_FRAME_GAP_MS = 100; // ≤10fps; the screencast only emits on change, so idle pages cost nothing
 const RETRY_MS = 2000;
 
 /** A free localhost port for a task's agent-browser stream server. */

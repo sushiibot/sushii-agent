@@ -210,7 +210,9 @@ const VIEWER_HTML = `<!doctype html>
   ::-webkit-scrollbar-thumb:hover { background:var(--surface2); background-clip:content-box; }
   a { color:var(--blue); }
   :focus-visible { outline:2px solid var(--blue); outline-offset:2px; border-radius:6px; }
-  .wrap { max-width:900px; margin:0 auto; padding:0 16px 40vh; }
+  .wrap { max-width:900px; margin:0 auto; padding:0 16px 40vh; container-type:inline-size; }
+  /* the transcript column narrows when the browser panel is wide, so the header follows its width */
+  @container (max-width:560px) { header { flex-wrap:wrap; row-gap:8px; } .status { margin-left:0; } .ctlgroup { margin-left:auto; } }
 
   header {
     position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px;
@@ -359,7 +361,8 @@ const VIEWER_HTML = `<!doctype html>
   .ctl[hidden] { display:none; }
   .ctl:disabled { opacity:.5; cursor:default; }
   /* browser side panel */
-  :root { --bw: min(46vw, 760px); }
+  :root { --bw: clamp(480px, 58vw, 1400px); }
+  body.browser-max { --bw: calc(100vw - 340px); }
   body.browser-open .wrap { margin-right: var(--bw); }
   @media (min-width:1500px) { body.browser-open .wrap { margin-left: max(16px, calc((100vw - var(--bw) - 900px) / 2)); } }
   .themetoggle[aria-pressed="true"] { color:var(--sky); border-color: color-mix(in srgb, var(--sky) 55%, var(--surface2));
@@ -368,6 +371,10 @@ const VIEWER_HTML = `<!doctype html>
     background: color-mix(in srgb, var(--mantle) 94%, transparent); backdrop-filter: blur(12px);
     border-left:1px solid color-mix(in srgb, var(--surface0) 80%, transparent); box-shadow: var(--shadow); }
   .bpanel[hidden] { display:none; }
+  .bresize { position:absolute; left:-4px; top:0; bottom:0; width:8px; cursor:col-resize; z-index:1; }
+  .bresize:hover, .bresize.drag { background: color-mix(in srgb, var(--sky) 35%, transparent); }
+  body.bdragging { cursor:col-resize; user-select:none; }
+  body.bdragging .bframe img { pointer-events:none; }
   .bbar { display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid color-mix(in srgb, var(--surface0) 70%, transparent); }
   .bstate { flex:0 0 auto; display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; font-size:11.5px; font-weight:800;
     letter-spacing:.04em; text-transform:uppercase; color:var(--overlay2); background:var(--surface0); }
@@ -377,7 +384,7 @@ const VIEWER_HTML = `<!doctype html>
   .baddr { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; line-height:1.25; }
   .baddr .t { font-size:13px; font-weight:700; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .baddr .u { font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11.5px; color:var(--subtext0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .bscreen { flex:1 1 auto; min-height:0; padding:14px; display:flex; align-items:flex-start; justify-content:center; overflow:auto; }
+  .bscreen { flex:1 1 auto; min-height:0; padding:10px; display:flex; align-items:flex-start; justify-content:center; overflow:auto; }
   .bframe { width:100%; border-radius:10px; overflow:hidden; background:var(--crust);
     border:1px solid color-mix(in srgb, var(--surface0) 80%, transparent); box-shadow: var(--shadow); }
   .bframe img { display:block; width:100%; height:auto; }
@@ -386,7 +393,7 @@ const VIEWER_HTML = `<!doctype html>
   .bempty { margin:12vh auto 0; max-width:34ch; text-align:center; color:var(--overlay1); font-size:13.5px; font-weight:600; line-height:1.55; }
   .bempty svg { display:block; margin:0 auto 12px; width:44px; height:44px; color:var(--overlay0); }
   .bempty[hidden] { display:none; }
-  @media (max-width:900px) { :root { --bw: 100vw; } body.browser-open .wrap { margin-right:auto; } }
+  @media (max-width:900px) { :root, body.browser-max { --bw: 100vw; } body.browser-open .wrap { margin-right:auto; } .bresize, #bmax { display:none; } }
   @media (max-width:560px) { .tool .ts { display:none; } .say .prose { font-size:14px; } header { gap:9px; } .ctl { padding:5px 8px; } }
 </style></head>
 <body>
@@ -430,9 +437,13 @@ const VIEWER_HTML = `<!doctype html>
   </svg><p>Waiting for the first step…</p><span class="sub">the agent's activity will stream in here</span></div></main>
 </div>
 <aside class="bpanel" id="bpanel" hidden aria-label="Task browser">
+  <div class="bresize" id="bresize" title="Drag to resize"></div>
   <div class="bbar">
     <span class="bstate" id="bstate"><span class="dot"></span><span id="bstatetext">connecting</span></span>
     <span class="baddr"><span class="t" id="btitle">Browser</span><span class="u" id="burl"></span></span>
+    <button class="themetoggle" id="bmax" title="Maximize" aria-label="Maximize browser panel" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+    </button>
     <button class="themetoggle" id="bclose" title="Hide browser" aria-label="Hide browser panel">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
     </button>
@@ -609,6 +620,19 @@ const VIEWER_HTML = `<!doctype html>
     if(open) connectBrowser(); else if(bes){ try{ bes.close(); }catch{} bes=null; }
   }
   browserbtn.onclick=()=>setBrowserOpen(bpanel.hidden);
+  // Width: drag the left edge (remembered per viewer) or toggle maximize.
+  const bmax=document.getElementById('bmax'), bresize=document.getElementById('bresize');
+  const setWidth=(px)=>{ document.documentElement.style.setProperty('--bw', px ? Math.round(px)+'px' : ''); };
+  try { const w=Number(localStorage.getItem('viewer-browser-width')); if(w>=360) setWidth(Math.min(w, innerWidth-240)); } catch {}
+  bmax.onclick=()=>{ const on=!document.body.classList.contains('browser-max'); document.body.classList.toggle('browser-max', on); bmax.setAttribute('aria-pressed', String(on)); if(on) setWidth(null); };
+  bresize.addEventListener('pointerdown',(e)=>{
+    e.preventDefault(); bresize.setPointerCapture(e.pointerId); bresize.classList.add('drag'); document.body.classList.add('bdragging');
+    document.body.classList.remove('browser-max'); bmax.setAttribute('aria-pressed','false');
+    const move=(ev)=>setWidth(Math.max(360, Math.min(innerWidth-240, innerWidth-ev.clientX)));
+    const up=()=>{ bresize.removeEventListener('pointermove',move); bresize.removeEventListener('pointerup',up); bresize.classList.remove('drag'); document.body.classList.remove('bdragging');
+      try { localStorage.setItem('viewer-browser-width', String(parseInt(getComputedStyle(bpanel).width))); } catch {} };
+    bresize.addEventListener('pointermove',move); bresize.addEventListener('pointerup',up);
+  });
   document.getElementById('bclose').onclick=()=>setBrowserOpen(false);
   document.addEventListener('keydown',(e)=>{ if(e.key==='Escape' && !bpanel.hidden) setBrowserOpen(false); });
 
