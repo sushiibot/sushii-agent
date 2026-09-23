@@ -11,6 +11,7 @@ import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWor
 import { buildAgentEnv } from "./agentEnv.ts";
 import { allocateBrowserPorts, browserEnv, closeBrowserSessions, type BrowserPorts } from "./browser.ts";
 import { BrowserRelay } from "./browserStream.ts";
+import { sweepBrowserUse } from "./browserUse.ts";
 import { ENV_CONTEXT_PATH } from "./envContext.ts";
 
 const log = getLogger("orchestration.runner.pi");
@@ -100,6 +101,7 @@ export interface PiRunnerOptions {
   environmentContext?: string; // markdown injected ahead of the repo's own AGENTS.md
   browser?: boolean; // agent-browser is installed: give each task its own browser session
   browserUseApiKey?: string; // enables `agent-browser-web` (Browser Use cloud browser) for blocked sites
+  runnerId?: string; // tags Browser Use sessions so crash leftovers can be found and stopped
   maxOutputTokens?: number;
   fallbackContextWindow?: number;
   progressDebounceMs?: number;
@@ -306,6 +308,32 @@ export class PiRunnerAdapter implements RunnerAdapter {
     this.now = options.now ?? Date.now;
     this.startWorktreeGc();
     this.startScratchGc();
+    this.startBrowserUseSweep();
+  }
+
+  // Browser Use bills while a session is open, and the per-task close never runs if this process
+  // dies. So: stop everything tagged for this runner at startup (leftovers from a crash or deploy),
+  // then periodically stop any session whose task is no longer running here.
+  private startBrowserUseSweep(): void {
+    const { browserUseApiKey: apiKey, runnerId } = this.options;
+    if (!apiKey || !runnerId) return;
+    const sweep = (keepTaskIds: Set<string>) =>
+      sweepBrowserUse({ apiKey, runnerId, keepTaskIds })
+        .then((n) => {
+          if (n) log.info({ count: n }, "stopped orphaned Browser Use sessions");
+        })
+        .catch((err) => log.warn({ err }, "Browser Use sweep failed"));
+    void sweep(new Set());
+    const timer = setInterval(() => void sweep(new Set(this.tasks.keys())), 3 * 60_000);
+    timer.unref?.();
+  }
+
+  /** Stop every Browser Use session this runner owns. Called on SIGTERM/SIGINT before exit. */
+  async shutdown(): Promise<void> {
+    const { browserUseApiKey: apiKey, runnerId } = this.options;
+    if (!apiKey || !runnerId) return;
+    const n = await sweepBrowserUse({ apiKey, runnerId });
+    log.info({ count: n }, "stopped Browser Use sessions on shutdown");
   }
 
   get hasBrowser(): boolean {
@@ -624,7 +652,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
         const token = tokenRef.current;
         const extra = {
           ...(token ? agentGitEnv(repoHome, token) : {}),
-          ...(browserPorts ? browserEnv(taskId, browserPorts, this.options.browserUseApiKey) : {}),
+          ...(browserPorts ? browserEnv(taskId, browserPorts, this.options.browserUseApiKey, this.options.runnerId) : {}),
         };
         return { ...context, env: buildAgentEnv(context.env, extra) };
       },

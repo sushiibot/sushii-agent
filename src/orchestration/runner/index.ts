@@ -57,6 +57,7 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
       environmentContext,
       browser: tools.some((t) => t.name === "agent-browser"),
       browserUseApiKey: process.env.BROWSER_USE_API_KEY?.trim() || undefined,
+      runnerId: ctx.runnerId,
       repoOps,
       workspaceRoot: ctx.workspaceRoot,
       worktreeTtlMs: ttlHours * 3600_000,
@@ -122,6 +123,18 @@ async function main(): Promise<void> {
   const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, capabilities, adapter });
 
   log.info({ url, runnerId, kind, projects, workspaceRoot, location, capabilities }, "runner starting (auto-reconnect)");
+  // Deploys and `docker stop` send SIGTERM: stop billed cloud browsers before exiting, bounded so a
+  // slow API can't hold the container past Docker's kill timeout.
+  const shutdown = async (signal: string) => {
+    log.info({ signal }, "runner shutting down");
+    if (adapter instanceof PiRunnerAdapter) {
+      await Promise.race([adapter.shutdown().catch((err) => log.warn({ err }, "shutdown cleanup failed")), Bun.sleep(7000)]);
+    }
+    process.exit(0);
+  };
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+
   await client.run(); // reconnects with backoff + heartbeats until the process is stopped
 }
 

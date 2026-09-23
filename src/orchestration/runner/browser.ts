@@ -19,7 +19,7 @@ export async function allocateBrowserPorts(cloud: boolean): Promise<BrowserPorts
 
 // Per-task agent-browser env. `agent-browser-web` (a wrapper in the image) reads the WEB_* values to
 // run the same commands against a Browser Use cloud browser in a sibling session.
-export function browserEnv(taskId: string, ports: BrowserPorts, browserUseApiKey?: string): Record<string, string> {
+export function browserEnv(taskId: string, ports: BrowserPorts, browserUseApiKey?: string, runnerId?: string): Record<string, string> {
   const env: Record<string, string> = {
     AGENT_BROWSER_SESSION: taskId,
     AGENT_BROWSER_STREAM_PORT: String(ports.local),
@@ -28,6 +28,7 @@ export function browserEnv(taskId: string, ports: BrowserPorts, browserUseApiKey
   if (ports.web && browserUseApiKey) {
     env.AGENT_BROWSER_WEB_STREAM_PORT = String(ports.web);
     env.AGENT_BROWSER_WEB_STATE = webStatePath(taskId);
+    env.AGENT_BROWSER_WEB_RUNNER = runnerId ?? "unknown";
     env.BROWSER_USE_API_KEY = browserUseApiKey;
   }
   return env;

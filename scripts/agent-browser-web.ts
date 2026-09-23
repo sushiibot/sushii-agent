@@ -6,8 +6,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname } from "node:path";
 
 const API = "https://api.browser-use.com/api/v4/browsers";
-// Server-side cap: a session the runner fails to stop still ends (and stops billing) on its own.
-const SESSION_TIMEOUT_MIN = 60;
+// Hard cap on the session's lifetime (Browser Use sets a fixed timeoutAt). A session the runner fails
+// to stop still ends on its own; a longer task gets a fresh session through the retry below.
+const SESSION_TIMEOUT_MIN = 15;
 
 interface WebState {
   id: string;
@@ -44,7 +45,12 @@ async function create(): Promise<WebState> {
   const res = await fetch(API, {
     method: "POST",
     headers,
-    body: JSON.stringify({ proxyCountryCode: proxy ? "us" : null, timeout: SESSION_TIMEOUT_MIN }),
+    body: JSON.stringify({
+      proxyCountryCode: proxy ? "us" : null,
+      timeout: SESSION_TIMEOUT_MIN,
+      // Tags let the runner find and stop this session if it crashes before the task closes it.
+      metadata: { runner: process.env.AGENT_BROWSER_WEB_RUNNER ?? "unknown", task: process.env.AGENT_BROWSER_SESSION ?? "unknown" },
+    }),
   });
   const body = (await res.json().catch(() => ({}))) as { id?: string; cdpUrl?: string; detail?: unknown };
   if (!res.ok || !body.id || !body.cdpUrl) {
