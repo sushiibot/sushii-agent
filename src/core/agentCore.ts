@@ -149,7 +149,11 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       selfName: session.selfName,
       channel: pc.channel,
       author: autoMod ? undefined : turn.initiator,
-      ownerSection: pc.ownerSection,
+      ownerSection: autoMod
+        ? pc.ownerSection
+        : [pc.ownerSection, deps.capabilitySections?.({ surface: conversation.surface, spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate })]
+            .filter((s): s is string => !!s)
+            .join("\n\n") || undefined,
       serverContext: deps.memory.getServerContext(conversation.spaceId),
       coreProfile: deps.memory.read(conversation.spaceId, CORE_PROFILE_TITLE)?.content ?? undefined,
       memoryIndex: deps.memory.listTitles(conversation.spaceId).filter((t) => t !== CORE_PROFILE_TITLE),

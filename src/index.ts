@@ -19,6 +19,7 @@ import { createModelSummarizer } from "./agent/summarizer.ts";
 import { createMemoryDeriver } from "./agent/memoryDeriver.ts";
 import type { LanguageModelProvider } from "./core/contracts.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
+import { buildCapabilitySections } from "./orchestration/capabilityPrompt.ts";
 import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { closeSharedSushiMcpClients } from "./surfaces/discord/hosts/sushiMcpHost.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
@@ -86,6 +87,7 @@ async function main() {
     behavior: BEHAVIOR_INSTRUCTIONS,
     compactor,
     memoryProvider,
+    capabilitySections: buildCapabilitySections,
   });
 
   // A wiki can be fed by several surfaces, so the sweep factory switches on the source's surface.
@@ -117,7 +119,7 @@ async function main() {
     const buzzBus = createHookBus();
     buzzBus.on("onTurnEnd", memoryDeriver);
     const buzzProgress = registerBuzzProgressHooks(buzzBus);
-    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider });
+    const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider, capabilitySections: buildCapabilitySections });
     // Empty list → one connection on the default relay (dev localhost), keyed "default".
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
     const wikiEnabledGuilds = new Set(getWikiSyncEnabledGuildIds());
@@ -171,7 +173,7 @@ async function main() {
       const slackBus = createHookBus();
       slackBus.on("onTurnEnd", memoryDeriver);
       const slackProgress = registerSlackProgressHooks(slackBus);
-      const slackCore = createAgentCore({ model, store, memory, tools, hooks: slackBus, behavior: SLACK_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider });
+      const slackCore = createAgentCore({ model, store, memory, tools, hooks: slackBus, behavior: SLACK_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider, capabilitySections: buildCapabilitySections });
       const auth = await slackApp.client.auth.test();
       const selfId = auth.user_id as string;
       const selfName = (auth.user as string) ?? "sushii";

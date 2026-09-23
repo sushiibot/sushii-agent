@@ -24,7 +24,6 @@ import { savePendingQuestion, loadPendingQuestion, deletePendingQuestion, delete
 import { buildMessageContent } from "../../utils/flattenMessage.ts";
 import { isPrivateChannel } from "../../tools/channelUtils.ts";
 import { BEHAVIOR_INSTRUCTIONS, buildAutoModPromptSection, type AutoModTriggerContext } from "../../modules/moderation/prompt.ts";
-import { buildOwnerPromptSection } from "../../orchestration/promptSection.ts";
 import { guildBehavior } from "./personas.ts";
 import { isAutoModEligible, checkAndSetAutoModCooldown } from "./autoModTrigger.ts";
 import { registerWikiSyncCommands, handleWikiSyncCommand, WIKI_SYNC_COMMAND_NAME } from "../../modules/wiki-sync/index.ts";
@@ -569,7 +568,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
           }
         }
 
-        const ownerSection = config.ownerDiscordId && author.userId === config.ownerDiscordId ? buildOwnerPromptSection() : undefined;
         const tracker = new ToolProgressTracker(thread);
         const session = new DiscordSurfaceSession({
           client,
@@ -581,7 +579,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
           channel,
           threadContext: threadContext || undefined,
           threadChannelId: thread.id,
-          ownerSection,
           moduleExtras: undefined,
           behavior: behaviorFor(guildId),
         });
@@ -881,7 +878,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const { initialThreadContext } = store.load(conversation);
       const by = await memberAuthor(thread, interaction.user.id, guildConfig.allowedRoles);
       const channel = threadChannelRef(thread);
-      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOwnerPromptSection() : undefined;
       const tracker = new ToolProgressTracker(thread);
       const session = new DiscordSurfaceSession({
         client,
@@ -893,7 +889,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
         channel,
         threadContext: initialThreadContext ?? undefined,
         threadChannelId: thread.id,
-        ownerSection,
         behavior: behaviorFor(guildId),
       });
       await runThroughCore(conversation, thread, tracker, span, () => core.resume(conversation, { kind: "question-answer", choice, by }, session));
@@ -960,11 +955,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       const { initialThreadContext } = store.load(conversation);
       const by = await memberAuthor(thread, interaction.user.id, guildConfig.allowedRoles);
       const channel = threadChannelRef(thread);
-      const ownerSection = config.ownerDiscordId && by.userId === config.ownerDiscordId ? buildOwnerPromptSection() : undefined;
       const tracker = new ToolProgressTracker(thread);
       const session = new DiscordSurfaceSession({
         client, thread, guildId, emojiMap, hosts: buildHosts(client, guildId), toolTracker: tracker,
-        channel, threadContext: initialThreadContext ?? undefined, threadChannelId: thread.id, ownerSection,
+        channel, threadContext: initialThreadContext ?? undefined, threadChannelId: thread.id,
         behavior: behaviorFor(guildId),
       });
       await runThroughCore(conversation, thread, tracker, span, () => core.resume(conversation, { kind: "approval", decision: decision === "approve" ? "approved" : "rejected", by, systemMessage }, session));

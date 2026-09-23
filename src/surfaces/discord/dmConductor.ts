@@ -1,7 +1,6 @@
 // Owner-only DM conductor: the SurfaceSession + gate for letting the owner drive runner tasks
 // from a Discord DM. `DM_SPACE_ID` MUST match authz.ts's PERSONAL_SPACE_CAPABILITIES key exactly
 // (spaceKey("discord", DM_SPACE_ID) === "discord:dm") — that map is the pinned contract, not this file.
-import { buildOwnerPromptSection } from "../../orchestration/promptSection.ts";
 import { PERSONAL_BEHAVIOR } from "./personas.ts";
 import type { MessageCreateOptions } from "discord.js";
 import type { AgentReply, SurfaceCapabilities, SurfaceSession, ToolHosts, TurnPromptContext } from "../../core/contracts.ts";
@@ -55,9 +54,9 @@ export class DmConductorSession implements SurfaceSession {
     this.selfName = self.username;
   }
 
-  // Only the owner reaches this session (isOwnerDm), so the owner block always applies.
+  // Only the owner reaches this session (isOwnerDm).
   promptContext(): TurnPromptContext {
-    return { ownerSection: buildOwnerPromptSection(), behavior: PERSONAL_BEHAVIOR };
+    return { behavior: PERSONAL_BEHAVIOR };
   }
 
   async deliver(reply: AgentReply): Promise<{ messageId?: string }> {

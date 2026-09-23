@@ -171,6 +171,22 @@ describe("scaffold contract — compaction + memory hook sites", () => {
     expect(seenScope).toEqual({ spaceId: "guild1", userId: "u1", isPrivate: false });
   });
 
+  test("capability sections from the provider land in the system prompt, keyed to the initiator", async () => {
+    const store = new FakeStore();
+    let seen: unknown;
+    const core = createAgentCore({
+      ...baseDeps(store),
+      capabilitySections: (turn) => {
+        seen = turn;
+        return "## Runners\nTEST-RUNNER-SECTION";
+      },
+    });
+    const res = await core.handleInbound(inbound("browse chewy for me"), fakeSession());
+    expect(res.status).toBe("completed");
+    expect(lastSystemPrompt).toContain("TEST-RUNNER-SECTION");
+    expect(seen).toMatchObject({ spaceId: "guild1", userId: "u1", isPrivate: false });
+  });
+
   test("an explicit isPrivate on the ConversationRef flips the memory scope to private, overriding the spaceId heuristic", async () => {
     const store = new FakeStore();
     let seenScope: MemoryScope | undefined;

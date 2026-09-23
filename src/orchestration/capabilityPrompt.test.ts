@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderRunnerSection } from "./promptSection.ts";
+import { renderRunnerSection } from "./capabilityPrompt.ts";
 
 describe("renderRunnerSection", () => {
   test("lists online runners with their capabilities and tells the model to dispatch browser work", () => {
@@ -11,6 +11,11 @@ describe("renderRunnerSection", () => {
     expect(text).toContain("- desktop (claude-code): projects: sushii-agent");
     expect(text).toContain("Never tell the user you can't browse");
     expect(text).toContain("browser=true");
+  });
+
+  test("tells a non-owner that dispatches need confirmation", () => {
+    expect(renderRunnerSection([], { needsConfirmation: true })).toContain("Your dispatches need confirmation");
+    expect(renderRunnerSection([])).not.toContain("need confirmation");
   });
 
   test("says so when no runner is online", () => {

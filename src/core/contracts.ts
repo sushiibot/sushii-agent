@@ -537,4 +537,7 @@ export interface AgentCoreDeps {
   compactor?: Compactor;
   /** Durable cross-session memory, proactively injected each turn. When absent, none injected. */
   memoryProvider?: MemoryProvider;
+  /** What the turn's initiator can have the agent do beyond its tools (runners, ops), as system prompt
+   *  text. Gated per initiator + space, so it matches the tools that check the same thing. */
+  capabilitySections?: (turn: { surface: string; spaceId: string; userId: string; isPrivate: boolean }) => string | undefined;
 }
