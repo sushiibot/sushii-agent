@@ -19,6 +19,12 @@ Discord moderation intelligence bot. Mention it in a whitelisted channel with a 
 - **Multi-guild** — single process, per-guild config
 - **Provider-agnostic** — any OpenAI-compatible API (Anthropic, OpenRouter, local)
 
+## Cloud runner
+
+Dispatch coding tasks from Discord to clone a repository, make changes, and open a pull request.
+Pull requests are opened automatically.
+Pull requests need approval to merge.
+
 ## Agent tools
 
 | Tool | Description |
