@@ -8,6 +8,7 @@ import { getActivityHub } from "./activityHub.ts";
 import { OrchestrationServer } from "./transport/server.ts";
 import { getDb } from "../db/index.ts";
 import { can } from "./authz.ts";
+import { TaskMessageStore, type TaskMessage } from "./taskMessages.ts";
 
 const logger = getLogger("orchestration:dispatcher");
 
@@ -73,6 +74,7 @@ export class Dispatcher {
   private readonly settledListeners: ((task: TaskRow) => void)[] = [];
   private readonly startedListeners: ((task: TaskRow) => void)[] = [];
   private readonly runnerStatusListeners: ((e: { runnerId: string; status: "connected" | "disconnected" }) => void)[] = [];
+  private readonly taskMessageListeners: ((message: TaskMessage) => void)[] = [];
   private listening = false;
   private listenFailed = false;
 
@@ -80,6 +82,7 @@ export class Dispatcher {
     private readonly registry: TaskRegistry,
     private readonly canFn: CanFn,
     options: DispatcherOptions = {},
+    private readonly taskMessages?: TaskMessageStore,
   ) {
     this.server = new OrchestrationServer({
       port: options.port,
@@ -407,6 +410,97 @@ export class Dispatcher {
     }
   }
 
+  /** Runner-side SendMessage event. The runner supplied a stable ID so persistence/delivery retries
+   * can be correlated to that exact call. */
+  /** Persist before a surface attempts external delivery. */
+  storeAgentMessage(taskId: string, text: string, messageId?: string): TaskMessage {
+    const task = this.registry.get(taskId);
+    if (!task || !this.taskMessages) throw new Error("task messaging unavailable");
+    const existing = messageId ? this.taskMessages.get(messageId) : undefined;
+    if (existing) {
+      if (existing.taskId !== taskId || existing.direction !== "agent_to_owner" || existing.content !== text) {
+        throw new Error("task message id collision");
+      }
+      if (existing.status === "pending") this.emitTaskMessage(existing);
+      return existing;
+    }
+    const message = this.taskMessages.create({ id: messageId, taskId, direction: "agent_to_owner", content: text });
+    this.emitTaskMessage(message);
+    return message;
+  }
+
+  onTaskMessage(listener: (message: TaskMessage) => void): void {
+    this.taskMessageListeners.push(listener);
+  }
+
+  pendingTaskMessages(): TaskMessage[] {
+    return this.taskMessages?.listPendingAgentMessages() ?? [];
+  }
+
+  markTaskMessageDelivered(id: string, discordMessageId: string | null): TaskMessage | undefined {
+    if (!this.taskMessages) return undefined;
+    this.taskMessages.markDelivered(id, discordMessageId);
+    return this.taskMessages.get(id);
+  }
+
+  markTaskMessageFailed(id: string, failure: string): void {
+    this.taskMessages?.markFailed(id, failure);
+  }
+
+  taskMessageForDiscordId(id: string): TaskMessage | undefined {
+    return this.taskMessages?.findByDiscordMessageId(id);
+  }
+
+  private emitTaskMessage(message: TaskMessage): void {
+    for (const listener of this.taskMessageListeners) {
+      try { listener(message); } catch (err) { logger.error({ err, messageId: message.id }, "onTaskMessage listener threw"); }
+    }
+  }
+
+  /** Owner reply delivered as ordinary inbound context, never through steer()/cancel(). */
+  async replyToTaskMessage(input: { principal: string; messageId: string; text: string; space: string; isPrivate?: boolean }): Promise<TaskMessage> {
+    const original = this.taskMessages?.get(input.messageId);
+    const task = original && this.registry.get(original.taskId);
+    if (!input.text.trim() || !original || original.direction !== "agent_to_owner" || original.status !== "delivered" || !task || task.createdBy !== input.principal) {
+      throw new AuthzError("task message reply denied");
+    }
+    const allowed = this.canFn({ principal: input.principal, capability: "session.resume", resource: task.id, space: input.space, isPrivate: input.isPrivate });
+    if (!allowed) throw new AuthzError("task message reply denied");
+    const reply = this.taskMessages!.create({ taskId: task.id, direction: "owner_to_agent", content: input.text });
+    if (task.status === "running") {
+      try {
+        if (!this.isRunnerLive(task.runnerId)) throw new Error(`runner "${task.runnerId}" is not connected`);
+        const result = await this.server.followUp(task.runnerId, { taskId: task.id, text: input.text }) as { delivered?: boolean };
+        if (!result?.delivered) throw new Error("runner cannot accept an ordinary follow-up while this task is running");
+      } catch (err) {
+        this.taskMessages!.markFailed(reply.id, err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      this.taskMessages!.markDelivered(reply.id);
+      return this.taskMessages!.get(reply.id)!;
+    }
+    if (task.status === "needs_input") {
+      const reason = "task is waiting for an ask_owner answer; reply to its needs-input prompt instead";
+      this.taskMessages!.markFailed(reply.id, reason);
+      throw new Error(reason);
+    }
+    if (task.status === "idle") {
+      // Resume internally—the message is already durably recorded as pending and will transition
+      // once the runner accepts the normal inbound prompt.
+      try {
+        await this.resumeInternal(task, input.text);
+        this.taskMessages!.markDelivered(reply.id);
+        return this.taskMessages!.get(reply.id)!;
+      } catch (err) {
+        this.taskMessages!.markFailed(reply.id, err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    }
+    const reason = `task is ${task.status} and cannot receive a reply`;
+    this.taskMessages!.markFailed(reply.id, reason);
+    throw new Error(reason);
+  }
+
   /** Registers a callback invoked once per task turn SETTLING — {idle, done, failed} (per
    *  ARCHITECTURE.md's status model, a successful turn rests at idle, not done; done is reserved
    *  for explicit close). The Discord surface uses this to post a status line WITHOUT the
@@ -499,6 +593,10 @@ export class Dispatcher {
       case "ask":
         getActivityHub().setAsk(event.taskId, { askId: event.askId, question: event.question, choices: event.choices });
         return;
+      case "owner_message":
+        try { this.storeAgentMessage(event.taskId, event.text, event.messageId); }
+        catch (err) { logger.error({ err, taskId: event.taskId, messageId: event.messageId }, "failed to persist agent task message"); }
+        return;
       case "browser": {
         const { kind: _kind, taskId, ...update } = event;
         getActivityHub().pushBrowser(taskId, update);
@@ -554,7 +652,8 @@ export function getDispatcher(): Dispatcher {
   if (!singleton) {
     try {
       const port = Number(process.env["ORCH_PORT"] ?? "8788");
-      singleton = new Dispatcher(new TaskRegistry(getDb()), can, { port });
+      const db = getDb();
+      singleton = new Dispatcher(new TaskRegistry(db), can, { port }, new TaskMessageStore(db));
     } catch (err) {
       startupFailed = true;
       logger.error({ err }, "orchestration dispatcher failed to start; runner tools disabled for this process");

@@ -29,6 +29,16 @@ Discord moderation intelligence bot. Mention it in a whitelisted channel with a 
 | `get_recent_activity` | Most recent N messages from a user across all channels |
 | `get_current_member_info` | Live Discord API — roles, join date, membership status |
 
+## Background task messaging
+
+The Pi runner exposes `send_owner_message` to a running background agent. It writes a durable, task-addressed mailbox record, then DM-notifies the task owner without waiting; the runner continues its current task. The owner can reply to that specific Discord DM message. Replies are recorded and sent to the same task via the runner's ordinary `followUp` queue (not `steer_task`, `ask_owner`, cancellation, or interrupt), so they wait until current work finishes. If the task is idle, the reply resumes that task. Failure to send/route is reflected in the mailbox status and owner-facing error.
+
+Delivery records are stored in SQLite (`task_messages`) with `pending`, `delivered`, or `failed` status. Pending agent messages are retried after bot restart. Discord delivery is deliberately limited to tasks created from the Discord surface; other task origins currently have no notification/reply surface. A crash between Discord accepting a DM and persisting its message ID can cause a duplicate notification on retry.
+
+This differs from `ask_owner`: that tool intentionally blocks a task and routes the reply as an answer. `steer_task` intentionally redirects/supersedes work. Use the mailbox only for non-blocking communication.
+
+Current runner support: Pi supports the complete send/reply path. Claude Code is a one-shot CLI adapter and does not expose an in-progress agent tool or non-superseding follow-up queue; its replies are therefore rejected while running rather than falling back to a steer. It can accept an owner reply only after it has settled idle, when the orchestrator resumes the native session normally.
+
 ## Setup
 
 **Prerequisites:** [Bun](https://bun.sh) v1.0+, a Discord bot token with **Message Content** and **Server Members** privileged intents, and bot permissions: Read Messages, Send Messages, Create/Send in Threads, Read Message History.

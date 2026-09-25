@@ -19,6 +19,7 @@ export type StreamLineEvent =
   // The agent asked the owner and is now blocked (Pi ask_owner). Reducer → needs_input + an `ask` event.
   | { type: "ask"; askId: string; question: string; choices?: string[] }
   | { type: "ask_resolved"; askId: string }
+  | { type: "owner_message"; messageId: string; text: string }
   | {
       type: "result";
       success: boolean;
@@ -239,6 +240,9 @@ export class RunnerEventReducer {
         break;
       case "ask_resolved":
         out.push({ kind: "status", taskId: this.taskId, status: "running" });
+        break;
+      case "owner_message":
+        out.push({ kind: "owner_message", taskId: this.taskId, messageId: sig.messageId, text: sig.text });
         break;
       case "init":
         break;
@@ -478,6 +482,11 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
   // Claude Code runs `-p` one-shot — there's no live session to inject into, so steering always falls
   // back to interrupt+resume (the dispatcher does that when delivered:false).
   async steer(_input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    return { delivered: false };
+  }
+
+  async followUp(_input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    // Claude Code's current one-shot CLI adapter has no safe, non-superseding live message channel.
     return { delivered: false };
   }
 

@@ -52,6 +52,12 @@ const runnerEventSchema = z.discriminatedUnion("kind", [
     choices: z.array(z.string()).optional(),
   }),
   z.object({
+    kind: z.literal("owner_message"),
+    taskId: z.string(),
+    messageId: z.string(),
+    text: z.string(),
+  }),
+  z.object({
     kind: z.literal("browser"),
     taskId: z.string(),
     supported: z.boolean().optional(),
@@ -259,6 +265,10 @@ export class OrchestrationServer {
 
   message(runnerId: string, input: { taskId: string; text: string }): Promise<unknown> {
     return this.call(runnerId, RPC_METHODS.message, input);
+  }
+
+  followUp(runnerId: string, input: { taskId: string; text: string }): Promise<unknown> {
+    return this.call(runnerId, RPC_METHODS.followUp, input);
   }
 
   watchBrowser(runnerId: string, input: { taskId: string; watch: boolean }): Promise<unknown> {

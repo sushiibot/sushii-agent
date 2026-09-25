@@ -129,6 +129,33 @@ describe("orchestration transport round-trip", () => {
     }
   });
 
+  test("ordinary follow-up has its own RPC path and does not call steer", async () => {
+    class SeparateMessagesRunner extends MockRunnerAdapter {
+      steers = 0;
+      followUps: string[] = [];
+      override async steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+        this.steers++;
+        return super.steer(input);
+      }
+      override async followUp(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+        this.followUps.push(input.text);
+        return { delivered: true };
+      }
+    }
+    const server = new OrchestrationServer({ onEvent: () => {} });
+    server.listen();
+    const adapter = new SeparateMessagesRunner();
+    const client = new OrchestrationClient({ url: server.url, runnerId: "message-runner", kind: "mock", adapter });
+    try {
+      await client.connect(); client.listen();
+      expect(await server.followUp("message-runner", { taskId: "task-1", text: "normal reply" })).toEqual({ delivered: true });
+      expect(adapter.followUps).toEqual(["normal reply"]);
+      expect(adapter.steers).toBe(0);
+    } finally {
+      client.close(); server.stop();
+    }
+  });
+
   test("malformed register payload gets a JSON-RPC error, not a crash", async () => {
     const server = new OrchestrationServer({ onEvent: () => {} });
     server.listen();
@@ -177,6 +204,9 @@ describe("orchestration transport round-trip", () => {
       async interrupt(): Promise<void> {}
       async stop(): Promise<void> {}
       async steer(): Promise<{ delivered: boolean }> {
+        return { delivered: false };
+      }
+      async followUp(): Promise<{ delivered: boolean }> {
         return { delivered: false };
       }
       async stream(): Promise<void> {
