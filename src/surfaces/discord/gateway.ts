@@ -399,9 +399,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-settled DM"));
   }
 
-  /** Owner-only ops notice (startup, runner connect/disconnect). Best-effort — a failed DM never
-   *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. Sent silently
-   *  (SuppressNotifications) — these are routine status pings, not something to buzz the owner for. */
   const deliveringTaskMessages = new Set<string>();
   async function deliverTaskMessage(message: import("../../orchestration/taskMessages.ts").TaskMessage): Promise<void> {
     if (deliveringTaskMessages.has(message.id)) return;
@@ -459,6 +456,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     return true;
   }
 
+  /** Owner-only ops notice (startup, runner connect/disconnect). Best-effort — a failed DM never
+   *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. Sent silently
+   *  (SuppressNotifications) — these are routine status pings, not something to buzz the owner for. */
   async function notifyOwner(text: string): Promise<void> {
     if (!config.ownerDiscordId) return;
     const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);

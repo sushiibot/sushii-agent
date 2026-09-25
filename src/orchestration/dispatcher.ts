@@ -410,9 +410,8 @@ export class Dispatcher {
     }
   }
 
-  /** Runner-side SendMessage event. The runner supplied a stable ID so persistence/delivery retries
-   * can be correlated to that exact call. */
-  /** Persist before a surface attempts external delivery. */
+  /** Persisted before any surface attempts delivery. The runner-supplied id makes a re-sent event
+   *  idempotent. */
   storeAgentMessage(taskId: string, text: string, messageId?: string): TaskMessage {
     const task = this.registry.get(taskId);
     if (!task || !this.taskMessages) throw new Error("task messaging unavailable");
