@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import simpleGit from "simple-git";
@@ -67,6 +67,20 @@ function makeAskBridge(): AskBridge {
   return bridge;
 }
 
+function createSendOwnerMessageTool(taskId: string, emit: (sig: StreamLineEvent) => void): ToolDefinition {
+  return defineTool({
+    name: "send_owner_message",
+    label: "Send owner message",
+    description: "Send the owner a non-blocking update or question about this task. The owner will be notified and can reply to this message; the reply will be delivered to this same task as an ordinary follow-up. This does NOT wait for a reply, steer, pause, or cancel the task. Continue your work immediately after calling this tool.",
+    parameters: Type.Object({ text: Type.String({ description: "A concise update or question for the owner." }) }),
+    execute: async (_toolCallId, params) => {
+      const messageId = randomUUID();
+      emit({ type: "owner_message", messageId, text: params.text });
+      return { content: [{ type: "text", text: `Owner message queued (${messageId}). Continue the task; do not wait for a reply.` }], details: { messageId, taskId } };
+    },
+  }) as unknown as ToolDefinition;
+}
+
 function createAskOwnerTool(bridge: AskBridge): ToolDefinition {
   return defineTool({
     name: "ask_owner",
@@ -91,7 +105,7 @@ const RUNNER_SYSTEM_PROMPT = `You are an autonomous agent. Carry out the request
 
 Git & GitHub (repository tasks): use git/gh yourself, and only when the task calls for it — not every task needs a commit or a PR. When you have changes to publish: commit them, push the current branch with \`git push -u origin HEAD\`, and open a pull request with \`gh pr create\` (use --draft unless told otherwise). Do not create another branch, and never push to the default branch (it is blocked). If the task is exploratory, a question, or needs no change, do none of that. When you finish, end your turn with a concise one- or two-sentence summary of what you did — including the PR link if you opened one — or state plainly that nothing needed changing.
 
-Asking the owner: you have an \`ask_owner\` tool that BLOCKS until the owner replies. Use it ONLY when genuinely blocked and you cannot safely proceed — a decision only the owner can make, a truly ambiguous requirement, or a destructive/irreversible choice. Do NOT use it for things you can decide yourself or to ask permission for routine work; prefer a reasonable assumption noted in your summary over stopping. Make the question specific, and pass \`choices\` when the answer is one of a few options.`;
+Task messaging: you have a \`send_owner_message\` tool for non-blocking updates/questions. It notifies the owner, who can reply to the message; their reply arrives as an ordinary follow-up. Sending does not pause or supersede your task — keep working. Use \`ask_owner\` only when genuinely blocked. Asking the owner: you have an \`ask_owner\` tool that BLOCKS until the owner replies. Use it ONLY when genuinely blocked and you cannot safely proceed — a decision only the owner can make, a truly ambiguous requirement, or a destructive/irreversible choice. Do NOT use it for things you can decide yourself or to ask permission for routine work; prefer a reasonable assumption noted in your summary over stopping. Make the question specific, and pass \`choices\` when the answer is one of a few options.`;
 
 export interface PiRunnerOptions {
   model: string;
@@ -532,6 +546,14 @@ export class PiRunnerAdapter implements RunnerAdapter {
     return { delivered: true };
   }
 
+  async followUp(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    const task = this.tasks.get(input.taskId);
+    if (!task) return { delivered: false };
+    // Unlike steer, this appends a normal user message; it does not resolve ask_owner or replace work.
+    await task.session.sendUserMessage(input.text, { deliverAs: "followUp" });
+    return { delivered: true };
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task ${taskId}`);
@@ -660,6 +682,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
 
     const askBridge = makeAskBridge();
     const askTool = createAskOwnerTool(askBridge);
+    const ownerMessageTool = createSendOwnerMessageTool(taskId, (sig) => askBridge.emit?.(sig));
 
     const { session } = await createAgentSession({
       cwd,
@@ -671,9 +694,9 @@ export class PiRunnerAdapter implements RunnerAdapter {
       // Custom tools MUST be in this allowlist too: Pi filters customTools by isAllowedTool(name). "bash"
       // (a same-named override of the built-in — our credential-injecting shell) and "ask_owner" both
       // have to be listed or they're dropped. Pi's own interactive ask_question stays excluded.
-      tools: ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_owner"],
+      tools: ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_owner", "send_owner_message"],
       // Cast: the bash factory returns a specialized ToolDefinition; customTools wants the generic one.
-      customTools: [bashTool as unknown as ToolDefinition, askTool],
+      customTools: [bashTool as unknown as ToolDefinition, askTool, ownerMessageTool],
       excludeTools: ["ask_question"],
       sessionManager,
     });

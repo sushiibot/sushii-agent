@@ -5,7 +5,8 @@ import { TaskRegistry } from "./registry.ts";
 import { MockRunnerAdapter } from "./mockRunner.ts";
 import { OrchestrationClient } from "./transport/client.ts";
 import { AuthzError, Dispatcher } from "./dispatcher.ts";
-import type { AuthzInput } from "./contracts.ts";
+import { TaskMessageStore } from "./taskMessages.ts";
+import type { AuthzInput, RunnerEvent } from "./contracts.ts";
 
 function testRegistry(): TaskRegistry {
   const db = new Database(":memory:");
@@ -21,6 +22,69 @@ async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe("Dispatcher", () => {
+  test("task-message reply persists and uses normal follow-up without steering or changing running status", async () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const registry = new TaskRegistry(db);
+    const messageStore = new TaskMessageStore(db);
+    const dispatcher = new Dispatcher(registry, () => true, {}, messageStore);
+    dispatcher.listen();
+    class FollowUpRunner extends MockRunnerAdapter {
+      followUps: Array<{ taskId: string; text: string }> = [];
+      override async followUp(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+        this.followUps.push(input);
+        return { delivered: true };
+      }
+      override async stream(taskId: string, onEvent: (event: RunnerEvent) => void): Promise<void> {
+        onEvent({ kind: "status", taskId, status: "running" });
+        await new Promise<void>(() => {}); // keep a realistic active session until the test closes it
+      }
+    }
+    const adapter = new FollowUpRunner();
+    const runner = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "messaging-runner", kind: "mock", adapter });
+    try {
+      await runner.connect(); runner.listen();
+      await waitFor(() => dispatcher.isRunnerLive("messaging-runner"));
+      const task = await dispatcher.dispatch({ principal: "owner", runnerId: "messaging-runner", cwd: "/tmp", project: null, prompt: "work", space: "discord:dm", spawnedFromSurface: "discord" });
+      const agentMessage = dispatcher.storeAgentMessage(task.id, "Need a preference?", "agent-message-1");
+      dispatcher.markTaskMessageDelivered(agentMessage.id, "discord-message-1");
+      const reply = await dispatcher.replyToTaskMessage({ principal: "owner", messageId: agentMessage.id, text: "Use the smaller option", space: "discord:dm", isPrivate: true });
+      expect(reply).toMatchObject({ direction: "owner_to_agent", status: "delivered", content: "Use the smaller option" });
+      expect(adapter.followUps).toEqual([{ taskId: task.id, text: "Use the smaller option" }]);
+      expect(adapter.lastSteer).toBeNull();
+      expect(dispatcher.readTask(task.id)?.status).toBe("running");
+    } finally {
+      runner.close(); dispatcher.stop(); db.close();
+    }
+  });
+
+  test("idle task reply resumes that task using the message content", async () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const registry = new TaskRegistry(db);
+    const store = new TaskMessageStore(db);
+    const dispatcher = new Dispatcher(registry, () => true, {}, store);
+    dispatcher.listen();
+    class ResumeRunner extends MockRunnerAdapter {
+      resumes: string[] = [];
+      override async resume(input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string }): Promise<void> { this.resumes.push(input.prompt); }
+    }
+    const adapter = new ResumeRunner();
+    const runner = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "resume-message-runner", kind: "mock", adapter });
+    try {
+      await runner.connect(); runner.listen();
+      await waitFor(() => dispatcher.isRunnerLive("resume-message-runner"));
+      const task = registry.create({ createdBy: "owner", runnerId: "resume-message-runner", project: null, cwd: "/tmp", nativeSessionId: "native", resumeCursor: null, status: "idle", statusReason: null, summary: null, spawnedFromSurface: "discord", threadRefs: [] });
+      const source = store.create({ taskId: task.id, direction: "agent_to_owner", content: "Question?" });
+      store.markDelivered(source.id, "discord-message-id");
+      const reply = await dispatcher.replyToTaskMessage({ principal: "owner", messageId: source.id, text: "Proceed with A", space: "discord:dm", isPrivate: true });
+      expect(reply.status).toBe("delivered");
+      expect(adapter.resumes).toEqual(["Proceed with A"]);
+      expect(registry.get(task.id)?.status).toBe("idle"); // status changes only when runner reports it
+      expect(store.list(task.id).map((m) => m.status)).toEqual(["delivered", "delivered"]);
+    } finally { runner.close(); dispatcher.stop(); db.close(); }
+  });
+
   test("dispatch is authz-gated first — denied before any task row is created", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => false);
     dispatcher.listen();

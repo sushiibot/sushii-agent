@@ -25,6 +25,11 @@ export class MockRunnerAdapter implements RunnerAdapter {
     return { delivered: this.steerDelivers };
   }
 
+  async followUp(input: { taskId: string; text: string }): Promise<{ delivered: boolean }> {
+    this.lastSteer = input;
+    return { delivered: this.steerDelivers };
+  }
+
   async stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void> {
     const events: RunnerEvent[] = [
       { kind: "status", taskId, status: "running" },

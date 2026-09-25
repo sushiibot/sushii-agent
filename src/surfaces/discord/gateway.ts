@@ -399,6 +399,63 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-settled DM"));
   }
 
+  const deliveringTaskMessages = new Set<string>();
+  async function deliverTaskMessage(message: import("../../orchestration/taskMessages.ts").TaskMessage): Promise<void> {
+    if (deliveringTaskMessages.has(message.id)) return;
+    deliveringTaskMessages.add(message.id);
+    try {
+      let dispatcher;
+      try { dispatcher = getDispatcher(); } catch { return; }
+      const task = dispatcher.readTask(message.taskId);
+      if (!task || task.spawnedFromSurface !== SURFACE) {
+        dispatcher.markTaskMessageFailed(message.id, "task has no Discord owner delivery surface");
+        return;
+      }
+      const user = await client.users.fetch(task.createdBy).catch(() => null);
+      if (!user) {
+        dispatcher.markTaskMessageFailed(message.id, "could not resolve Discord owner");
+        return;
+      }
+      const sent = await user.send({
+        content: `✉️ **Task #${task.id}** · agent message\n${message.content.slice(0, 1700)}\n-# Reply to this message to send a normal follow-up to this task (does not steer or cancel it).`,
+        allowedMentions: { parse: [] },
+      });
+      dispatcher.markTaskMessageDelivered(message.id, sent.id);
+    } catch (err) {
+      logger.warn({ err, messageId: message.id }, "failed to deliver agent task message");
+    } finally {
+      deliveringTaskMessages.delete(message.id);
+    }
+  }
+
+  async function maybeReplyToTaskMessage(message: Message): Promise<boolean> {
+    const replyId = message.reference?.messageId;
+    if (!replyId || !isOwnerDm(message, config.ownerDiscordId)) return false;
+    let dispatcher;
+    try { dispatcher = getDispatcher(); } catch { return false; }
+    const original = dispatcher.taskMessageForDiscordId(replyId);
+    if (!original || original.direction !== "agent_to_owner") return false;
+    const text = message.content.trim();
+    if (!text) {
+      if (message.channel.isSendable()) await message.channel.send("Please include text in your task reply.").catch(() => {});
+      return true;
+    }
+    try {
+      const reply = await dispatcher.replyToTaskMessage({
+        principal: message.author.id,
+        messageId: original.id,
+        text,
+        space: "discord:dm",
+        isPrivate: true,
+      });
+      if (message.channel.isSendable()) await message.react("✅").catch(() => {});
+      logger.info({ taskId: original.taskId, messageId: reply.id }, "delivered owner task follow-up");
+    } catch (err) {
+      if (message.channel.isSendable()) await message.channel.send(`Could not deliver reply to task #${original.taskId}: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+    }
+    return true;
+  }
+
   /** Owner-only ops notice (startup, runner connect/disconnect). Best-effort — a failed DM never
    *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. Sent silently
    *  (SuppressNotifications) — these are routine status pings, not something to buzz the owner for. */
@@ -413,6 +470,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
 
   try {
     const dispatcher = getDispatcher();
+    dispatcher.onTaskMessage((message) => { void deliverTaskMessage(message); });
+    // Retry durable undelivered agent messages after restart. Delivery is idempotence-limited by
+    // persisted state; a crash after Discord send but before status update can create one duplicate.
+    for (const message of dispatcher.pendingTaskMessages()) void deliverTaskMessage(message);
     dispatcher.onTaskSettled((task) => {
       void notifyTaskSettled(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task settled"));
     });
@@ -451,6 +512,8 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   client.on(Events.MessageCreate, async (message: Message) => {
     if (!message.guildId) {
       if (message.author.bot) return;
+      // Replies to non-blocking runner messages are durable ordinary follow-ups, never steer/ask answers.
+      if (await maybeReplyToTaskMessage(message)) return;
       // A reply to a needs_input ping is the ANSWER to that task's ask — route it, don't treat it as a
       // fresh agent message.
       if (await maybeAnswerAsk(message)) return;

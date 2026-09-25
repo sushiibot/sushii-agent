@@ -37,6 +37,9 @@ export type RunnerEvent =
   // The agent is blocked and asking the owner (ask_owner tool). The task pauses at needs_input until an
   // answer is routed back (via the steer channel). choices, when present, are offered as buttons.
   | { kind: "ask"; taskId: string; askId: string; question: string; choices?: string[] }
+  // Agent-initiated, non-blocking owner message. The orchestrator persists and delivers it separately
+  // from task control; it never steers or pauses the task.
+  | { kind: "owner_message"; taskId: string; messageId: string; text: string }
   | { kind: "handback"; taskId: string; summary: string; meta?: HandbackMeta }
   // Live browser view, only sent while a viewer watches (see RPC_METHODS.browserWatch). Every field
   // but taskId is optional: a message carries a new frame, a navigation, or a state change.
@@ -88,6 +91,9 @@ export interface RunnerAdapter {
   // no live session to inject into (task not running, or the runner kind is one-shot) — the caller then
   // falls back to resume. Adapters that can't inject always return delivered:false.
   steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }>;
+  // Append an ordinary user follow-up without superseding/cancelling the active turn. False means
+  // the runner cannot safely accept it live; an idle task may instead be resumed by the dispatcher.
+  followUp(input: { taskId: string; text: string }): Promise<{ delivered: boolean }>;
   // Start/stop relaying the task's live browser view as "browser" events. Optional: kinds without a
   // browser omit it and the client answers supported:false.
   watchBrowser?(input: { taskId: string; watch: boolean }): Promise<{ supported: boolean }>;
@@ -103,6 +109,7 @@ export const RPC_METHODS = {
   interrupt: "session/cancel",
   stop: "session/stop", // halt but keep resumable (params: { taskId, discard? })
   message: "session/message", // live steer into a running session (params: { taskId, text }) → { delivered }
+  followUp: "session/follow-up", // append an ordinary inbound message; never supersedes the current turn
   event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
   browserWatch: "session/browser", // start/stop the live browser relay (params: { taskId, watch }) → { supported }
   heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)

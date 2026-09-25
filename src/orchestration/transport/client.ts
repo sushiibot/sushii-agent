@@ -235,6 +235,9 @@ export class OrchestrationClient {
       } else if (method === RPC_METHODS.message) {
         const input = params as { taskId: string; text: string };
         this.respond(ws, id, await adapter.steer(input));
+      } else if (method === RPC_METHODS.followUp) {
+        const input = params as { taskId: string; text: string };
+        this.respond(ws, id, await adapter.followUp(input));
       } else if (method === RPC_METHODS.browserWatch) {
         const input = params as { taskId: string; watch: boolean };
         this.respond(ws, id, adapter.watchBrowser ? await adapter.watchBrowser(input) : { supported: false });

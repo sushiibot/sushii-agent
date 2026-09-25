@@ -163,6 +163,22 @@ export const tasks = sqliteTable(
 /** Remembered runner choice per (principal, project) — so dispatch only asks which runner once,
  *  then routes automatically. A lightweight routing memory; a future general memory system can
  *  subsume it. projectKey = "owner/repo" for clone-on-demand, else the project name / cwd. */
+export const taskMessages = sqliteTable(
+  "task_messages",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+    direction: text("direction", { enum: ["agent_to_owner", "owner_to_agent"] }).notNull(),
+    content: text("content").notNull(),
+    status: text("status", { enum: ["pending", "delivered", "failed"] }).notNull(),
+    discordMessageId: text("discord_message_id").unique(),
+    failure: text("failure"),
+    createdAt: integer("created_at").notNull(),
+    deliveredAt: integer("delivered_at"),
+  },
+  (table) => [index("idx_task_messages_task_status").on(table.taskId, table.status, table.createdAt)],
+);
+
 export const runnerRouting = sqliteTable(
   "runner_routing",
   {

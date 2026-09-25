@@ -90,15 +90,13 @@ describe("wiki-sync watermark", () => {
 // drizzle's own journal, then 0007 applied on top — not a hand-run INSERT.
 describe("wiki_sync_state → wiki_sync_source_state migration", () => {
   test("preserves an existing discord watermark value through the real 0006 → 0007 upgrade", () => {
-    // Build a migrations folder frozen at the pre-0007 state (strip 0007's sql, snapshot, and
-    // journal entry) so drizzle writes its own 0000–0006 journal, exactly as prod's DB has it.
+    // Build a migrations folder frozen at the pre-0007 state (drop the journal entries for 0007
+    // and later) so drizzle writes its own 0000–0006 journal, exactly as prod's DB had it.
     const scratch = mkdtempSync(join(tmpdir(), "wiki-sync-pre0007-"));
     cpSync(realMigrationsDir, scratch, { recursive: true });
-    rmSync(join(scratch, "0007_green_betty_ross.sql"));
-    rmSync(join(scratch, "meta", "0007_snapshot.json"));
     const journalPath = join(scratch, "meta", "_journal.json");
-    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { tag: string }[] };
-    journal.entries = journal.entries.filter((e) => !e.tag.startsWith("0007"));
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { idx: number }[] };
+    journal.entries = journal.entries.filter((e) => e.idx < 7);
     writeFileSync(journalPath, JSON.stringify(journal));
 
     const db = new Database(":memory:");
@@ -107,7 +105,7 @@ describe("wiki_sync_state → wiki_sync_source_state migration", () => {
       migrate(orm, { migrationsFolder: scratch }); // 0000–0006, drizzle-written journal
       db.run("INSERT INTO wiki_sync_state (guild_id, last_processed_at) VALUES ('G1', 12345)");
 
-      applySchema(db); // applies only 0007 on top
+      applySchema(db); // applies 0007 onward
 
       expect(getWikiSyncWatermark(db, "G1", "discord", "G1")).toBe(12345);
       expect(db.query("SELECT name FROM sqlite_master WHERE name = 'wiki_sync_state'").all()).toHaveLength(0);
