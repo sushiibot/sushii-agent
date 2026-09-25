@@ -63,6 +63,12 @@ function spaceIdOf(space: string): string {
   return i === -1 ? "" : space.slice(i + 1);
 }
 
+/** Whether the caller is the owner — the only principal a personal (ownerOnly) runner serves. */
+export function isOwnerCaller(principal: string, space: string): boolean {
+  if (principalsConfigured()) return resolvePrincipal(surfaceOf(space), principal)?.isOwner === true;
+  return principal === legacyOwner();
+}
+
 /** The single authorization predicate (CONFIGURED regime): the caller is authorized when they resolve
  *  to the owner principal (superset, any space) OR to a principal listed as trusted in the community
  *  that owns `space`. Default-deny: an unresolved caller, or a trusted-but-not-owner principal in a

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,5 +131,18 @@ describe("pruneWorktrees", () => {
     expect(existsSync(`${repoHome}.wt/expired`)).toBe(false);
     expect(existsSync(`${repoHome}.wt/active`)).toBe(true); // active task never touched
     expect(existsSync(`${repoHome}.wt/fresh`)).toBe(true); // recent + unmerged → kept
+  });
+
+  test("ttl 0 never expires; a merged worktree with uncommitted changes is kept", async () => {
+    const fetchImpl = (async () => ({ ok: true, json: async () => [{ merged_at: "2026-09-20T00:00:00Z" }] })) as unknown as typeof fetch;
+    const deps: RepoOpsDeps = { provider: stubDeps.provider, bot: stubDeps.bot, fetchImpl };
+    writeFileSync(`${repoHome}.wt/merged/notes.txt`, "unsaved");
+    const unmerged = (async () => ({ ok: true, json: async () => [] })) as unknown as typeof fetch;
+
+    expect(await pruneWorktrees({ workspaceRoot: ws, ttlMs: 0, activeTaskIds: new Set(), deps: { ...deps, fetchImpl: unmerged } })).toEqual([]);
+
+    const removed = await pruneWorktrees({ workspaceRoot: ws, ttlMs: 0, activeTaskIds: new Set(["active"]), deps });
+    expect(removed.sort()).toEqual([`${repoHome}.wt/expired`, `${repoHome}.wt/fresh`].sort());
+    expect(existsSync(`${repoHome}.wt/merged/notes.txt`)).toBe(true);
   });
 });

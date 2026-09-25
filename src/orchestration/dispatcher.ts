@@ -7,7 +7,7 @@ import { TaskRegistry } from "./registry.ts";
 import { getActivityHub } from "./activityHub.ts";
 import { OrchestrationServer } from "./transport/server.ts";
 import { getDb } from "../db/index.ts";
-import { can } from "./authz.ts";
+import { can, isOwnerCaller } from "./authz.ts";
 import { TaskMessageStore, type TaskMessage } from "./taskMessages.ts";
 
 const logger = getLogger("orchestration:dispatcher");
@@ -22,6 +22,7 @@ interface LiveRunner {
   workspaceRoot: string | null;
   location: string | null;
   capabilities: string[];
+  ownerOnly: boolean;
 }
 
 export interface DispatchInput {
@@ -64,8 +65,17 @@ export interface SteerInput {
   text: string;
 }
 
+export interface RunnerIntent {
+  repo?: RepoSpec | null;
+  cwd?: string;
+  scratch?: boolean;
+  capability?: string;
+  owner?: boolean;
+}
+
 export interface DispatcherOptions {
   port?: number;
+  isOwner?: (principal: string, space: string) => boolean;
 }
 
 export class Dispatcher {
@@ -77,6 +87,7 @@ export class Dispatcher {
   private readonly taskMessageListeners: ((message: TaskMessage) => void)[] = [];
   private listening = false;
   private listenFailed = false;
+  private readonly isOwner: (principal: string, space: string) => boolean;
 
   constructor(
     private readonly registry: TaskRegistry,
@@ -84,10 +95,11 @@ export class Dispatcher {
     options: DispatcherOptions = {},
     private readonly taskMessages?: TaskMessageStore,
   ) {
+    this.isOwner = options.isOwner ?? isOwnerCaller;
     this.server = new OrchestrationServer({
       port: options.port,
-      onRegister: (runnerId, kind, projects, workspaceRoot, location, capabilities) => {
-        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot, location, capabilities });
+      onRegister: (runnerId, kind, projects, workspaceRoot, location, capabilities, ownerOnly = false) => {
+        this.liveRunners.set(runnerId, { kind, projects, workspaceRoot, location, capabilities, ownerOnly });
         // A fresh connection means we can't observe any turn that was mid-flight on this runner
         // before (e.g. across an orchestrator restart), so clear stale "running" phantoms.
         const reconciled = this.registry.failRunningForRunner(
@@ -149,13 +161,14 @@ export class Dispatcher {
 
   /** Live runners + the git repos each declared, for a "what can you work on" listing and for the
    *  agent to resolve a project name → cwd. */
-  listRunners(): { runnerId: string; kind: string; projects: string[]; workspaceRoot: string | null; capabilities: string[] }[] {
+  listRunners(): { runnerId: string; kind: string; projects: string[]; workspaceRoot: string | null; capabilities: string[]; ownerOnly: boolean }[] {
     return [...this.liveRunners.entries()].map(([runnerId, r]) => ({
       runnerId,
       kind: r.kind,
       projects: r.projects,
       workspaceRoot: r.workspaceRoot,
       capabilities: r.capabilities,
+      ownerOnly: r.ownerOnly,
     }));
   }
 
@@ -199,11 +212,13 @@ export class Dispatcher {
   }
 
   /** Runners that are online AND can service this request: for a clone-on-demand `repo`, any runner
-   *  that declared a workspace root; for an existing `cwd`, any runner that declares that path. */
-  eligibleRunners(intent: { repo?: RepoSpec | null; cwd?: string; scratch?: boolean; capability?: string }): string[] {
+   *  that declared a workspace root; for an existing `cwd`, any runner that declares that path.
+   *  Owner-only runners are offered only when `owner` is set. */
+  eligibleRunners(intent: RunnerIntent): string[] {
     return [...this.liveRunners.keys()].filter((id) => {
       if (!this.isRunnerLive(id)) return false;
       const runner = this.liveRunners.get(id);
+      if (runner?.ownerOnly && !intent.owner) return false;
       if (intent.capability && !runner?.capabilities.includes(intent.capability)) return false;
       if (intent.repo || intent.scratch) return runner?.workspaceRoot != null;
       return intent.cwd ? this.cwdInScope(id, intent.cwd) : false;
@@ -215,7 +230,7 @@ export class Dispatcher {
   selectRunner(
     principal: string,
     projectKey: string,
-    intent: { repo?: RepoSpec | null; cwd?: string; scratch?: boolean; capability?: string },
+    intent: RunnerIntent,
   ): { runnerId: string; viaPref: boolean } | { ambiguous: string[] } | { none: true } {
     const eligible = this.eligibleRunners(intent);
     if (eligible.length === 0) return { none: true };
@@ -241,6 +256,9 @@ export class Dispatcher {
       isPrivate: input.isPrivate,
     });
     if (!allowed) throw new AuthzError("runner.dispatch denied");
+    if (this.liveRunners.get(input.runnerId)?.ownerOnly && !this.isOwner(input.principal, input.space)) {
+      throw new AuthzError(`runner "${input.runnerId}" is owner-only`);
+    }
 
     this.ensureListening();
 

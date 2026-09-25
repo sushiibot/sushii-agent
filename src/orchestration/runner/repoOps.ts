@@ -161,8 +161,9 @@ async function isPrMerged(spec: RepoSpec, branch: string, deps: RepoOpsDeps): Pr
 }
 
 /** GC task worktrees under `workspaceRoot`: remove one whose PR has already merged (eager), or that
- *  has been idle past `ttlMs`. Never touches a worktree whose task is still active. Returns the paths
- *  removed. The shared clones + object stores stay; only the per-task working trees are reclaimed. */
+ *  has been idle past `ttlMs` (0 = never expire). Never touches an active task's worktree, nor a
+ *  merged one with uncommitted changes. Returns the paths removed. The shared clones + object stores
+ *  stay; only the per-task working trees are reclaimed. */
 export async function pruneWorktrees(opts: {
   workspaceRoot: string;
   ttlMs: number;
@@ -198,9 +199,11 @@ export async function pruneWorktrees(opts: {
         const taskId = wt.name;
         if (activeTaskIds.has(taskId)) continue;
         const wtPath = join(wtContainer, taskId);
-        const expired = now() - statSync(wtPath).mtimeMs > ttlMs;
-        const remove = expired || (spec ? await isPrMerged(spec, `sushii-runner/${taskId}`, deps) : false);
-        if (!remove) continue;
+        const expired = ttlMs > 0 && now() - statSync(wtPath).mtimeMs > ttlMs;
+        if (!expired) {
+          const merged = spec ? await isPrMerged(spec, `sushii-runner/${taskId}`, deps) : false;
+          if (!merged || (await isDirty(factory(wtPath)))) continue;
+        }
         await git.raw(["worktree", "remove", "--force", wtPath]).catch(() => rmSync(wtPath, { recursive: true, force: true }));
         removed.push(wtPath);
         prunedAny = true;
@@ -209,6 +212,14 @@ export async function pruneWorktrees(opts: {
     }
   }
   return removed;
+}
+
+async function isDirty(git: SimpleGit): Promise<boolean> {
+  try {
+    return (await git.raw(["status", "--porcelain"])).trim() !== "";
+  } catch {
+    return true; // can't tell → keep it
+  }
 }
 
 /** (Re)write the askpass helper + pre-push guard into a checkout. Idempotent — also called on resume

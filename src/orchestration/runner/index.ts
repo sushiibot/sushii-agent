@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getLogger } from "../../logger.ts";
 import type { RunnerAdapter } from "../contracts.ts";
@@ -36,7 +36,7 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
     if (!model) throw new Error("RUNNER_KIND=pi requires RUNNER_MODEL");
     if (!apiKey) throw new Error("RUNNER_KIND=pi requires OPENAI_API_KEY");
     const rawTtl = Number(process.env.RUNNER_WORKTREE_TTL_HOURS ?? "24");
-    const ttlHours = Number.isFinite(rawTtl) ? rawTtl : 24;
+    const ttlHours = Number.isFinite(rawTtl) && rawTtl >= 0 ? rawTtl : 24;
     const repoOps = buildRepoOps();
     // Probed once at startup: the image is fixed for the process lifetime.
     const tools = probeTools();
@@ -45,6 +45,7 @@ const ADAPTERS: Record<string, (ctx: AdapterContext) => RunnerAdapter> = {
         ...ctx,
         workspaceRoot: repoOps ? ctx.workspaceRoot : null,
         worktreeTtlHours: ttlHours,
+        persistentHome: persistentHome(ctx.workspaceRoot),
         cloudBrowser: Boolean(process.env.BROWSER_USE_API_KEY?.trim()),
       },
       tools,
@@ -104,6 +105,12 @@ function discoverProjects(): string[] {
   return [...found];
 }
 
+/** HOME, when it holds the (persistent) workspace — i.e. HOME is the runner's volume root. */
+function persistentHome(workspaceRoot: string | null): string | null {
+  const home = process.env.HOME?.replace(/\/+$/, "");
+  return home && workspaceRoot?.startsWith(`${home}/`) ? home : null;
+}
+
 async function main(): Promise<void> {
   const url = process.env.ORCH_URL ?? "ws://localhost:8788";
   const kind = process.env.RUNNER_KIND ?? "claude-code";
@@ -115,14 +122,20 @@ async function main(): Promise<void> {
   const workspaceRoot = process.env.RUNNER_WORKSPACE?.trim() || null;
 
   const location = process.env.RUNNER_LOCATION?.trim() || null;
+  const ownerOnly = process.env.RUNNER_OWNER_ONLY === "true";
+  const home = persistentHome(workspaceRoot);
+  if (home) {
+    mkdirSync(`${home}/.local/bin`, { recursive: true });
+    process.env.PATH = `${home}/.local/bin:${home}/.bun/bin:${process.env.PATH ?? ""}`;
+  }
   const factory = ADAPTERS[kind];
   if (!factory) throw new Error(`unknown RUNNER_KIND "${kind}" (known: ${Object.keys(ADAPTERS).join(", ")})`);
   const adapter = factory({ runnerId, location, workspaceRoot });
   const capabilities = adapter instanceof PiRunnerAdapter && adapter.hasBrowser ? ["browser"] : [];
 
-  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, capabilities, adapter });
+  const client = new OrchestrationClient({ url, runnerId, kind, projects, workspaceRoot, location, capabilities, ownerOnly, adapter });
 
-  log.info({ url, runnerId, kind, projects, workspaceRoot, location, capabilities }, "runner starting (auto-reconnect)");
+  log.info({ url, runnerId, kind, projects, workspaceRoot, location, capabilities, ownerOnly, home }, "runner starting (auto-reconnect)");
   // Deploys and `docker stop` send SIGTERM: stop billed cloud browsers before exiting, bounded so a
   // slow API can't hold the container past Docker's kill timeout.
   const shutdown = async (signal: string) => {

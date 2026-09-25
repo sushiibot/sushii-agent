@@ -39,6 +39,18 @@ describe("buildEnvironmentContext", () => {
     expect(buildEnvironmentContext(facts, withBrowser)).toContain("## Browser");
   });
 
+  test("a persistent home with no TTL keeps worktrees and documents ~/AGENTS.md", () => {
+    const doc = buildEnvironmentContext(
+      { runnerId: "cloud", location: null, workspaceRoot: "/data/workspace", worktreeTtlHours: 0, persistentHome: "/data" },
+      tools,
+    );
+    expect(doc).toContain("Task worktrees are kept");
+    expect(doc).not.toContain("h idle");
+    expect(doc).toContain("## Home");
+    expect(doc).toContain("`~/AGENTS.md` is loaded into every task");
+    expect(doc).not.toContain("Only the workspace persists");
+  });
+
   test("omits the workspace section on a runner without clone-on-demand", () => {
     const doc = buildEnvironmentContext({ runnerId: "r", location: null, workspaceRoot: null, worktreeTtlHours: 24 }, tools);
     expect(doc).not.toContain("## Workspace");

@@ -5,7 +5,7 @@ import type { ToolEntry, ToolContext } from "../../contracts.ts";
 import type { Capability, RepoSpec } from "../../../orchestration/contracts.ts";
 import { AuthzError, DispatcherUnavailableError, getDispatcher } from "../../../orchestration/dispatcher.ts";
 import { getActivityHub, taskViewUrl } from "../../../orchestration/activityHub.ts";
-import { can, spaceKey } from "../../../orchestration/authz.ts";
+import { can, isOwnerCaller, spaceKey } from "../../../orchestration/authz.ts";
 import { principalsConfigured, resolvePrincipal } from "../../../orchestration/principals.ts";
 import { parkDispatch, redeemDispatch, type ParkedDispatch } from "./confirmGate.ts";
 import { config } from "../../../config.ts";
@@ -101,7 +101,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
     let runnerId = input.runner_id as string | undefined;
     let viaPref = false;
     if (!runnerId) {
-      const sel = dispatcher.selectRunner(principal, projectKey, { repo, cwd, scratch, capability });
+      const sel = dispatcher.selectRunner(principal, projectKey, { repo, cwd, scratch, capability, owner: isOwnerCaller(principal, spaceOf(ctx)) });
       if ("none" in sel) {
         const need = capability ? " with the `browser` capability" : "";
         return { content: `No connected runner${need} can handle this — need one online with a workspace (for \`repo\` or a scratch task) or that declares this project (for \`cwd\`).` };
@@ -226,12 +226,13 @@ export const listRunnersEntry: ToolEntry = {
       throw err;
     }
 
-    const runners = dispatcher.listRunners();
+    const owner = isOwnerCaller(principal, spaceOf(ctx));
+    const runners = dispatcher.listRunners().filter((r) => owner || !r.ownerOnly);
     if (runners.length === 0) return { content: "(no runners connected)" };
     return {
       content: runners
         .map((r) => {
-          const lines = [`${r.runnerId} [${r.kind}]`];
+          const lines = [`${r.runnerId} [${r.kind}]${r.ownerOnly ? " (your personal runner)" : ""}`];
           lines.push(`  capabilities: ${r.capabilities.length ? r.capabilities.join(", ") : "coding only"}`);
           if (r.workspaceRoot) lines.push("  can clone any repo (repo=owner/name) and run scratch tasks (no repo)");
           for (const p of r.projects) lines.push(`  project ${p.split("/").pop()} → ${p}`);

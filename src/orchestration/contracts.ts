@@ -148,6 +148,8 @@ export const registerParams = z.object({
   location: z.string().nullable().default(null),
   // What the runner's agent can do beyond coding, e.g. "browser" (headless Chromium via agent-browser).
   capabilities: z.array(z.string()).default([]),
+  // A personal runner: the orchestrator only lets the owner dispatch to it.
+  ownerOnly: z.boolean().default(false),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
 

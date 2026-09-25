@@ -53,7 +53,8 @@ export interface EnvironmentFacts {
   runnerId: string;
   location: string | null;
   workspaceRoot: string | null;
-  worktreeTtlHours: number;
+  worktreeTtlHours: number; // 0 = kept until their PR merges
+  persistentHome?: string | null; // HOME on the persistent volume
   cloudBrowser?: boolean; // agent-browser-web (Browser Use) is configured
   platform?: string;
   arch?: string;
@@ -70,7 +71,9 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
     "",
     ...tools.map((t) => `- \`${t.name}\`${t.version ? ` ${t.version}` : ""} — ${t.purpose}`),
     "",
-    "Tools not listed here are not installed.",
+    facts.persistentHome
+      ? "Tools not listed here were not installed at startup; check `~/.local/bin` for ones added since."
+      : "Tools not listed here are not installed.",
   ];
   if (tools.some((t) => t.name === "agent-browser")) {
     lines.push(
@@ -94,9 +97,21 @@ export function buildEnvironmentContext(facts: EnvironmentFacts, tools: ToolInfo
       "",
       `- Repositories are cloned under \`${facts.workspaceRoot}\`. Each task runs in its own git worktree (\`<clone>.wt/<taskId>\`) on its own branch \`sushii-runner/<taskId>\`, cut from the latest default branch. That worktree is your working directory.`,
       "- The shared clone stays on a detached HEAD. Do not check out branches there.",
-      `- A task worktree is deleted once its PR merges or after ${facts.worktreeTtlHours}h idle. Commit anything worth keeping.`,
+      facts.worktreeTtlHours > 0
+        ? `- A task worktree is deleted once its PR merges or after ${facts.worktreeTtlHours}h idle. Commit anything worth keeping.`
+        : "- Task worktrees are kept. One is removed only after its PR merges and it has no uncommitted changes.",
       "- When a task targets a repository, git push and `gh` are already authenticated for that repository only.",
-      "- Only the workspace persists. Anything installed elsewhere is lost when the runner restarts.",
+    );
+    if (!facts.persistentHome) lines.push("- Only the workspace persists. Anything installed elsewhere is lost when the runner restarts.");
+  }
+  if (facts.persistentHome) {
+    lines.push(
+      "",
+      "## Home",
+      "",
+      `- This is the owner's personal runner. Your home \`~\` (\`${facts.persistentHome}\`) persists across tasks and restarts; everything outside it is reset whenever the runner restarts.`,
+      "- Install CLIs user-space so they persist: `uv tool install`, `bun add -g` (lands in `~/.bun/bin`), or a binary in `~/.local/bin`. Both bin dirs are on PATH. Do not use apt.",
+      "- `~/AGENTS.md` is loaded into every task. Keep it short, and record durable facts there: the owner's preferences, how their setup works, and anything you installed. Do not record task progress.",
     );
   }
   return lines.join("\n");

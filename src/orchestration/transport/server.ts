@@ -96,6 +96,7 @@ export interface OrchestrationServerOptions {
     workspaceRoot: string | null,
     location: string | null,
     capabilities: string[],
+    ownerOnly?: boolean,
   ) => void;
   onDisconnect?: (runnerId: string) => void;
 }
@@ -215,7 +216,7 @@ export class OrchestrationServer {
       }
       ws.data.runnerId = params.runnerId;
       this.sockets.set(params.runnerId, ws);
-      this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location, params.capabilities);
+      this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location, params.capabilities, params.ownerOnly);
       ws.send(
         JSON.stringify({ jsonrpc: "2.0", id: req.data.id, result: { ok: true } }),
       );

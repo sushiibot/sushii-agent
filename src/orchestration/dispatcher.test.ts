@@ -283,6 +283,24 @@ describe("Dispatcher", () => {
     }
   });
 
+  test("an owner-only runner is hidden from and refuses non-owners", async () => {
+    const dispatcher = new Dispatcher(testRegistry(), () => true, { isOwner: (p) => p === "owner-1" });
+    dispatcher.listen();
+    const client = new OrchestrationClient({ url: dispatcher.server.url, runnerId: "cloud", kind: "mock", workspaceRoot: "/w", ownerOnly: true, adapter: new MockRunnerAdapter() });
+    try {
+      await client.connect(); client.listen();
+      await waitFor(() => dispatcher.isRunnerLive("cloud"));
+      expect(dispatcher.listRunners()[0]?.ownerOnly).toBe(true);
+      expect(dispatcher.selectRunner("guest", "scratch", { scratch: true })).toEqual({ none: true });
+      expect(dispatcher.selectRunner("owner-1", "scratch", { scratch: true, owner: true })).toEqual({ runnerId: "cloud", viaPref: false });
+      const input = { runnerId: "cloud", cwd: "", project: null, prompt: "hi", space: "discord:dm", spawnedFromSurface: "discord" };
+      await expect(dispatcher.dispatch({ ...input, principal: "guest" })).rejects.toBeInstanceOf(AuthzError);
+      expect((await dispatcher.dispatch({ ...input, principal: "owner-1" })).runnerId).toBe("cloud");
+    } finally {
+      client.close(); dispatcher.stop();
+    }
+  });
+
   test("clone-on-demand is rejected on a runner with no workspace root", async () => {
     const dispatcher = new Dispatcher(testRegistry(), () => true);
     dispatcher.listen();

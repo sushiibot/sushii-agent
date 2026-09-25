@@ -354,11 +354,12 @@ export class PiRunnerAdapter implements RunnerAdapter {
     return Boolean(this.options.browser);
   }
 
-  // Scratch folders (tasks with no repo) hold nothing worth keeping past the worktree TTL.
+  // Scratch folders (tasks with no repo) hold nothing worth keeping past the worktree TTL; a TTL of
+  // 0 (persistent workspace) keeps them.
   private startScratchGc(): void {
     const { workspaceRoot } = this.options;
-    if (!workspaceRoot) return;
     const ttlMs = this.options.worktreeTtlMs ?? 24 * 3600_000;
+    if (!workspaceRoot || ttlMs <= 0) return;
     const run = () => {
       const active = new Set([...this.tasks.values()].map((t) => t.cwd));
       const removed = pruneScratch(workspaceRoot, ttlMs, active, this.now());
