@@ -27,7 +27,7 @@ const { runWikiSyncSweep } = await import("./sweep.ts");
 
 const saved = {
   guildConfig: config.guildConfig,
-  sources: config.wikiSync.sources,
+  teams: config.teams,
   inboxDir: config.wikiSync.inboxDir,
   databasePath: config.databasePath,
 };
@@ -44,7 +44,7 @@ beforeAll(async () => {
 afterAll(async () => {
   closeDb();
   config.guildConfig = saved.guildConfig;
-  config.wikiSync.sources = saved.sources;
+  config.teams = saved.teams;
   config.wikiSync.inboxDir = saved.inboxDir;
   config.databasePath = saved.databasePath;
   await rm(tmp, { recursive: true, force: true });
@@ -52,7 +52,7 @@ afterAll(async () => {
 
 afterEach(() => {
   config.guildConfig = saved.guildConfig;
-  config.wikiSync.sources = saved.sources;
+  config.teams = saved.teams;
 });
 
 function contextFor(source: WikiSource, createdAt: number): WikiSyncContext {
@@ -84,11 +84,12 @@ function contextFor(source: WikiSource, createdAt: number): WikiSyncContext {
 describe("runWikiSyncSweep (multi-source)", () => {
   test("advances each source's watermark independently to its own last message", async () => {
     config.guildConfig = {};
-    config.wikiSync.sources = {
-      w1: {
-        sources: [
-          { surface: "discord", spaceId: "a" },
-          { surface: "discord", spaceId: "b" },
+    config.teams = {
+      w1team: {
+        wiki: { wikiId: "w1" },
+        spaces: [
+          { surface: "discord", spaceId: "a", wiki: "source" },
+          { surface: "discord", spaceId: "b", wiki: "source" },
         ],
       },
     };

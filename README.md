@@ -57,19 +57,25 @@ OPENAI_API_KEY=your_api_key_here
 OPENAI_BASE_URL=https://api.anthropic.com/v1   # or OpenRouter, Ollama, etc.
 OPENAI_MODEL=claude-opus-4-6
 DATABASE_PATH=./data/sushii-agent.db
-GUILD_CONFIG_PATH=./guild-config.json
 ```
 
-Create `guild-config.json`:
+Create `teams.json` from `teams.example.json` — it's the only source of per-space configuration:
 
 ```json
 {
-  "YOUR_GUILD_ID": {
-    "allowedRoles": ["MOD_ROLE_ID"],
-    "emojis": ["<:blobheart:123456789012345678>"],
-    "promptTemplate": "general",
-    "enabledModules": ["moderation", "wiki-sync"],
-    "wiki": { "statusChannelId": "STATUS_CHANNEL_ID" }
+  "your-team": {
+    "spaces": [
+      {
+        "surface": "discord",
+        "spaceId": "YOUR_GUILD_ID",
+        "discord": {
+          "allowedRoles": ["MOD_ROLE_ID"],
+          "emojis": ["<:blobheart:123456789012345678>"],
+          "promptTemplate": "general",
+          "enabledModules": ["moderation"]
+        }
+      }
+    ]
   }
 }
 ```
@@ -90,35 +96,12 @@ docker compose up -d      # or Docker (./data volume for SQLite)
 | `OPENAI_BASE_URL` | no | `https://api.anthropic.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | no | `claude-opus-4-6` | Model name |
 | `DATABASE_PATH` | no | `./data/sushii-agent.db` | SQLite path |
-| `GUILD_CONFIG_PATH` | no | `./guild-config.json` | Path to the per-guild config JSON (`allowedRoles`, `emojis`, `promptTemplate`, `enabledModules`, `wiki.statusChannelId`, ...) |
 | `PRINCIPALS_PATH` | no | `./principals.json` | Path to the manual cross-platform identity registry; missing file = unconfigured |
-| `TEAMS_PATH` | no | `./teams.json` | Path to the team grouping config; missing file falls back to the deprecated `COMMUNITIES_PATH`/`./communities.json`, then unconfigured |
-| `COMMUNITIES_PATH` | no | `./communities.json` | **Deprecated** — legacy fallback for `TEAMS_PATH`; setting both throws |
+| `TEAMS_PATH` | no | `./teams.json` | Path to the team grouping config — the only source of per-space configuration; missing file = unconfigured |
 
 A `teams.json` entry groups a team's spaces (Discord guild, Slack workspace, buzz relay) plus its
-own wiki/Linear scoping and trusted members:
-
-```json
-{
-  "dreamcatcher": {
-    "spaces": [
-      { "surface": "discord", "spaceId": "123456789012345678", "wiki": "source", "statusChannelId": "234567890123456789" },
-      { "surface": "slack", "spaceId": "T000TEAMA0", "wiki": "read" }
-    ],
-    "wiki": { "wikiId": "123456789012345678" },
-    "members": { "some-principal-id": { "trusted": true } },
-    "linear": { "teamId": "DREAM", "apiKeyEnv": "DREAMCATCHER_LINEAR_API_KEY" }
-  }
-}
-```
-
-`linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time (a
-literal `linear.apiKey` is still accepted but deprecated).
-
-### Inline per-surface settings
-
-A team space can carry its surface-specific settings directly, instead of splitting them across
-`guild-config.json` or the `BUZZ_AVATAR_MAP` env var:
+own wiki/Linear scoping, trusted members, and each space's own settings. See `teams.example.json`
+for a full worked entry.
 
 ```json
 {
@@ -133,35 +116,37 @@ A team space can carry its surface-specific settings directly, instead of splitt
           "allowedRoles": ["MOD_ROLE_ID"],
           "emojis": ["<:blobheart:123456789012345678>"],
           "promptTemplate": "general",
-          "enabledModules": ["moderation", "wiki-sync"]
+          "enabledModules": ["moderation"]
         }
       },
+      { "surface": "slack", "spaceId": "T000TEAMA0", "wiki": "read" },
       {
         "surface": "buzz",
         "spaceId": "buzz:https://relay.example",
         "wiki": "read",
         "buzz": { "avatarUrl": "https://relay.example/avatar.png" }
       }
-    ]
+    ],
+    "wiki": { "wikiId": "123456789012345678" },
+    "members": { "some-principal-id": { "trusted": true } },
+    "linear": { "teamId": "DREAM", "apiKeyEnv": "DREAMCATCHER_LINEAR_API_KEY" },
+    "trustSpaceMembers": false
   }
 }
 ```
 
-- `discord` takes the same shape as a `guild-config.json` entry (`allowedRoles` required) and is
-  only allowed on a `surface: "discord"` space. It's folded into `config.guildConfig` at load,
-  keyed by the space's `spaceId` — every existing consumer of `config.guildConfig` sees it exactly
-  as if it had been written to `guild-config.json`. Use the space-level `statusChannelId` for the
-  wiki status channel, not `discord.wiki.statusChannelId` — the latter is rejected at load.
-- The space-level `statusChannelId` always wins as the wiki status channel for a team space, even
-  when the guild's config comes entirely from `guild-config.json` (no inline `discord` block) — it's
-  applied as an override onto whichever entry exists in `config.guildConfig`, not merged as a plain
-  field. It has no effect on a guild with no `config.guildConfig` entry at all (it never synthesizes
-  a bare entry lacking `allowedRoles`).
-- `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over
-  `BUZZ_AVATAR_MAP` and `BUZZ_AVATAR_URL` for that relay.
-- A guild id can still appear in both `guild-config.json` and a team's `discord` block. Matching
-  fields merge (with a one-time warning suggesting the `guild-config.json` entry be removed);
-  conflicting fields throw at load.
+- `wiki.wikiId` names the wiki this team owns; a space feeds it (`wiki: "source"`) and/or reads it
+  (`wiki: "read"`). Wiki participation is entirely determined by these two fields — there's no
+  other way for a space to feed or read a wiki.
+- `discord` takes the same shape as `GuildConfig` (`allowedRoles` required) and is only allowed on
+  a `surface: "discord"` space. It's the sole source of `config.guildConfig`, keyed by the space's
+  `spaceId`, with the space's own `statusChannelId` folded in as `wiki.statusChannelId` — set
+  `statusChannelId` on the space itself, not `discord.wiki.statusChannelId` (rejected at load).
+- `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over the
+  global `BUZZ_AVATAR_URL` fallback for that relay.
+- `linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time.
+- `trustSpaceMembers` extends trust to anyone posting from this team's non-Discord spaces (see the
+  entry-gate docs for the exact semantics).
 
 ## Architecture
 

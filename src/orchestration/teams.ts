@@ -15,13 +15,12 @@ export interface TeamSpace {
   surface: string;
   spaceId: string;
   /** This space's role in the team's wiki (`team.wiki.wikiId`): "source" feeds and reads it,
-   *  "read" only reads it. Absent → this space has no wiki via the team (legacy env-map fallbacks
-   *  in wiki-sync/sources.ts may still apply). */
+   *  "read" only reads it. Absent → this space has no wiki. */
   wiki?: "source" | "read";
-  /** This space's own wiki-sync status channel, overriding the guild-config fallback. */
+  /** This space's own wiki-sync status channel. */
   statusChannelId?: string;
   /** Inline Discord guild config, only on a `surface: "discord"` space. Folded into
-   *  `config.guildConfig` at load (config.ts's mergeGuildConfigs) — its own `wiki.statusChannelId`
+   *  `config.guildConfig` at load (config.ts's teamGuildConfigs) — its own `wiki.statusChannelId`
    *  is rejected at parse since the space-level `statusChannelId` above is the one wiki-sync uses. */
   discord?: GuildConfig;
   /** Inline buzz relay settings, only on a `surface: "buzz"` space. */
@@ -32,12 +31,10 @@ export interface TeamSpace {
  *  scoped to this team's spaces. Deliberately flat — no per-capability granularity. */
 export type TeamMembers = Record<string, { trusted?: boolean }>;
 
-/** A team's Linear account. `apiKeyEnv` names the env var read at resolve time (linear.ts); a
- *  literal `apiKey` is still accepted but deprecated (warns at load). */
+/** A team's Linear account. `apiKeyEnv` names the env var read at resolve time (linear.ts). */
 export interface TeamLinear {
   teamId: string;
   apiKeyEnv?: string;
-  apiKey?: string;
 }
 
 /** Raw per-team entry as it appears in teams.json (keyed by team id). */
@@ -49,6 +46,9 @@ export interface TeamConfig {
   linear?: TeamLinear;
   /** Authorized principals in this team, keyed by principalId. */
   members?: TeamMembers;
+  /** Extends trust (same as a `members[...].trusted` principal) to anyone posting from this team's
+   *  non-Discord spaces, gated per space in the entry gate rather than parsed here. */
+  trustSpaceMembers?: boolean;
 }
 
 export interface Team {
@@ -57,6 +57,7 @@ export interface Team {
   wiki?: { wikiId: string };
   linear?: TeamLinear;
   members?: TeamMembers;
+  trustSpaceMembers?: boolean;
 }
 
 interface TeamIndex {
@@ -79,7 +80,7 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((s) => typeof s === "string");
 }
 
-const MODULE_IDS: ModuleId[] = ["moderation", "wiki-sync", "mcp", "ops-triage"];
+const MODULE_IDS: ModuleId[] = ["moderation", "mcp", "ops-triage"];
 
 /** Validate + narrow a space's inline `discord` block to the `GuildConfig` shape. Rejects
  *  `wiki.statusChannelId` — that field belongs on the space itself (see TeamSpace.statusChannelId)
@@ -109,8 +110,14 @@ function parseDiscordBlock(id: string, i: number, raw: unknown): GuildConfig {
     throw new Error(`${prefix}.promptTemplate must be "moderation" or "general"`);
   }
   const enabledModules = raw["enabledModules"];
-  if (enabledModules !== undefined && (!Array.isArray(enabledModules) || !enabledModules.every((m) => MODULE_IDS.includes(m as ModuleId)))) {
-    throw new Error(`${prefix}.enabledModules must be an array drawn from ${MODULE_IDS.join(", ")}`);
+  if (enabledModules !== undefined) {
+    if (!Array.isArray(enabledModules)) throw new Error(`${prefix}.enabledModules must be an array drawn from ${MODULE_IDS.join(", ")}`);
+    if (enabledModules.includes("wiki-sync")) {
+      throw new Error(`${prefix}.enabledModules must not include "wiki-sync" — wiki participation is set via the space's own \`wiki\` role, not a module`);
+    }
+    if (!enabledModules.every((m) => MODULE_IDS.includes(m as ModuleId))) {
+      throw new Error(`${prefix}.enabledModules must be an array drawn from ${MODULE_IDS.join(", ")}`);
+    }
   }
   const wiki = raw["wiki"];
   if (wiki !== undefined) {
@@ -154,17 +161,16 @@ function normalizeSpaceId(surface: string, spaceId: string): string {
 function parseLinear(id: string, linearRaw: unknown): TeamLinear | undefined {
   if (linearRaw === undefined) return undefined;
   if (!isPlainObject(linearRaw) || !isNonEmptyString(linearRaw["teamId"])) {
-    throw new Error(`teams: "${id}".linear must be {teamId: string, apiKeyEnv?: string, apiKey?: string}`);
+    throw new Error(`teams: "${id}".linear must be {teamId: string, apiKeyEnv?: string}`);
+  }
+  if (linearRaw["apiKey"] !== undefined) {
+    throw new Error(`teams: "${id}".linear.apiKey is not allowed — use linear.apiKeyEnv instead`);
   }
   const apiKeyEnvRaw = linearRaw["apiKeyEnv"];
   if (apiKeyEnvRaw !== undefined && !isNonEmptyString(apiKeyEnvRaw)) {
     throw new Error(`teams: "${id}".linear.apiKeyEnv must be a string`);
   }
-  const apiKeyRaw = linearRaw["apiKey"];
-  if (apiKeyRaw !== undefined && !isNonEmptyString(apiKeyRaw)) {
-    throw new Error(`teams: "${id}".linear.apiKey must be a string`);
-  }
-  return { teamId: linearRaw["teamId"], apiKeyEnv: apiKeyEnvRaw, apiKey: apiKeyRaw };
+  return { teamId: linearRaw["teamId"], apiKeyEnv: apiKeyEnvRaw };
 }
 
 /** Validate + normalize the raw teams.json shape, called at config load. Buzz spaceIds are
@@ -223,14 +229,34 @@ export function parseTeams(raw: unknown): Record<string, TeamConfig> {
       members = membersRaw as TeamMembers;
     }
 
+    const trustSpaceMembersRaw = entryRaw["trustSpaceMembers"];
+    if (trustSpaceMembersRaw !== undefined && typeof trustSpaceMembersRaw !== "boolean") {
+      throw new Error(`teams: "${id}".trustSpaceMembers must be a boolean`);
+    }
+
     out[id] = {
       spaces,
       wiki: entryRaw["wiki"] as TeamConfig["wiki"],
       linear: parseLinear(id, entryRaw["linear"]),
       members,
+      trustSpaceMembers: trustSpaceMembersRaw as boolean | undefined,
     };
   }
   return out;
+}
+
+/** Narrows a raw teams.json entry into a `Team`, filling every field a `Team` carries — the single
+ *  place all three lookup paths (index, listTeams, getTeam) build one, so adding a field can't be
+ *  missed in one of them. */
+function toTeam(id: string, entry: TeamConfig | undefined): Team {
+  return {
+    id,
+    spaces: entry?.spaces ?? [],
+    wiki: entry?.wiki,
+    linear: entry?.linear,
+    members: entry?.members,
+    trustSpaceMembers: entry?.trustSpaceMembers,
+  };
 }
 
 /** Build the reverse (surface, spaceId) → team index, enforcing that no space is claimed by two
@@ -238,7 +264,7 @@ export function parseTeams(raw: unknown): Record<string, TeamConfig> {
 export function buildTeamIndex(teams: Record<string, TeamConfig>): TeamIndex {
   const bySpace = new Map<string, Team>();
   for (const [id, entry] of Object.entries(teams)) {
-    const team: Team = { id, spaces: entry?.spaces ?? [], wiki: entry?.wiki, linear: entry?.linear, members: entry?.members };
+    const team = toTeam(id, entry);
     for (const s of team.spaces) {
       const k = keyOf(s.surface, s.spaceId);
       const existing = bySpace.get(k);
@@ -275,31 +301,20 @@ export function isTeamMember(principalId: string, surface: string, spaceId: stri
   return resolveTeam(surface, spaceId)?.members?.[principalId]?.trusted === true;
 }
 
-/** Buzz kind:0 profile avatar for a relay space (`spaceId` as `buzz:<relay url>`, or the bare
- *  `"buzz"` spaceId for the no-relay default connection): a team space's inline `buzz.avatarUrl`
- *  first, then `BUZZ_AVATAR_MAP` (config.buzz.avatarMap, keyed by the bare relay url, or "default"
- *  for the no-relay connection — matching the pre-team-fold `key ?? "default"` lookup in
- *  src/index.ts), then the global `BUZZ_AVATAR_URL` fallback. */
+/** Buzz kind:0 profile avatar for a relay space: a team space's inline `buzz.avatarUrl` first, then
+ *  the global `BUZZ_AVATAR_URL` fallback. */
 export function buzzAvatarFor(spaceId: string): string | undefined {
   const teamAvatar = resolveTeam("buzz", spaceId)?.spaces.find((s) => s.surface === "buzz" && s.spaceId === spaceId)?.buzz?.avatarUrl;
-  if (teamAvatar) return teamAvatar;
-  const relay = spaceId.startsWith("buzz:") ? spaceId.slice("buzz:".length) : "default";
-  return config.buzz.avatarMap[relay] ?? config.buzz.avatarUrl;
+  return teamAvatar ?? config.buzz.avatarUrl;
 }
 
 /** All teams, by id — for a DM listing where there's no (surface, spaceId) to resolve from. */
 export function listTeams(): Team[] {
-  return Object.entries(config.teams).map(([id, entry]) => ({
-    id,
-    spaces: entry.spaces ?? [],
-    wiki: entry.wiki,
-    linear: entry.linear,
-    members: entry.members,
-  }));
+  return Object.entries(config.teams).map(([id, entry]) => toTeam(id, entry));
 }
 
 /** A team by its own id, independent of any space — for a DM's `team` lookup. */
 export function getTeam(teamId: string): Team | undefined {
   const entry = Object.hasOwn(config.teams, teamId) ? config.teams[teamId] : undefined;
-  return entry ? { id: teamId, spaces: entry.spaces ?? [], wiki: entry.wiki, linear: entry.linear, members: entry.members } : undefined;
+  return entry ? toTeam(teamId, entry) : undefined;
 }

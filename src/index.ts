@@ -129,7 +129,7 @@ async function main() {
       // buzz media is auth-gated per relay, so each relay's profile points at its own avatar copy.
       const avatarUrl = buzzAvatarFor(spaceId);
       const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag, avatarUrl }, key);
-      // A community reads a wiki only if this relay's space is mapped to one (team or legacy).
+      // A community reads a wiki only if its team space has a `wiki` role.
       const wiki = wikiFor("buzz", spaceId);
       if (wiki?.reads && !wikiSources.has(wiki.wikiId)) {
         logger.warn({ relay: key, wikiId: wiki.wikiId }, "buzz wiki has no configured source — its clone may be empty");

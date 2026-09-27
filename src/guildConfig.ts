@@ -1,7 +1,8 @@
 import { config } from "./config.ts";
 
-/** Agent modules a guild can enable. */
-export type ModuleId = "moderation" | "wiki-sync" | "mcp" | "ops-triage";
+/** Agent modules a guild can enable. Wiki participation is not a module — it's driven by a
+ *  team's `wiki.wikiId` plus the space's `wiki: "source"|"read"` role (see orchestration/teams.ts). */
+export type ModuleId = "moderation" | "mcp" | "ops-triage";
 
 export interface GuildConfig {
   allowedRoles: string[];

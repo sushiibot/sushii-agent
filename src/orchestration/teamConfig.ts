@@ -1,7 +1,6 @@
 // Read-only view of a team's configuration (teams.ts): one config owner spanning its Discord
-// guild, Slack workspace and buzz relays. Settings still live where they always have
-// (guild-config.json, env maps, the DB); this only gathers them per space so a team can see what
-// applies to it.
+// guild, Slack workspace and buzz relays, all defined in teams.json. This only gathers them per
+// space so a team can see what applies to it.
 import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
 import { wikiFor } from "../modules/wiki-sync/sources.ts";
@@ -15,7 +14,7 @@ export interface SpaceConfigView {
 }
 
 export interface TeamConfigView {
-  team?: { id: string; owner?: string; trustedMembers: string[]; linear: string; wiki?: string };
+  team?: { id: string; owner?: string; trustedMembers: string[]; linear: string; wiki?: string; trustSpaceMembers: boolean };
   spaces: SpaceConfigView[];
 }
 
@@ -30,7 +29,7 @@ function list(values: string[] | undefined): string {
 function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [string, string][] {
   if (surface === "discord") {
     const cfg = config.guildConfig[spaceId];
-    if (!cfg) return [["guild config", "(none — not in guild-config.json)"]];
+    if (!cfg) return [["guild config", "(none — no discord block for this space in teams.json)"]];
     const out: [string, string][] = [
       ["persona", cfg.promptTemplate ?? "moderation"],
       ["modules", resolvedModules(cfg).join(", ")],
@@ -91,6 +90,7 @@ function buildTeamView(team: Team, stats: SpaceStats, detailed: boolean): TeamCo
         .map(([id]) => id),
       linear: team.linear ? `team ${team.linear.teamId}` : "(default)",
       wiki: team.wiki?.wikiId,
+      trustSpaceMembers: team.trustSpaceMembers === true,
     },
     spaces: team.spaces.map((s) => spaceView(s, stats, detailed)),
   };
@@ -134,6 +134,7 @@ export function renderTeamConfig(view: TeamConfigView, current: { surface: strin
     lines.push(`- trusted members (besides owner): ${list(view.team.trustedMembers)}`);
     lines.push(`- linear: ${view.team.linear}`);
     if (view.team.wiki) lines.push(`- wiki: ${view.team.wiki}`);
+    lines.push(`- trust space members (slack/buzz): ${view.team.trustSpaceMembers ? "yes" : "no"}`);
   } else {
     lines.push("This space is not part of a team (no teams.json entry).");
   }

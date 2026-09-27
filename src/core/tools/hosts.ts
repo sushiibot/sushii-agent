@@ -127,7 +127,7 @@ export interface DiscordSendAlertResult {
   messageId: string;
 }
 
-/** Guild-scoped moderation settings, resolved by the surface from guild-config.json. */
+/** Guild-scoped moderation settings, resolved by the surface from config.guildConfig. */
 export interface DiscordModerationConfig {
   modImmuneRoleIds: string[];
   alertsChannelId?: string;

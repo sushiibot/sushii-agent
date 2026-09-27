@@ -11,7 +11,7 @@ const TEAMS: Record<string, TeamConfig> = {
       { surface: "slack", spaceId: "T000TEAMA0" },
     ],
     wiki: { wikiId: "1000000000000000001" },
-    linear: { apiKey: "dc-key", teamId: "DREAM" },
+    linear: { apiKeyEnv: "DREAM_LINEAR_API_KEY", teamId: "DREAM" },
     members: { "member-a": { trusted: true }, "member-b": { trusted: false } },
   },
   other: {
@@ -117,12 +117,13 @@ describe("parseTeams: space wiki fields", () => {
 describe("parseTeams: linear shape", () => {
   test("accepts {teamId, apiKeyEnv}", () => {
     const out = parseTeams({ a: { spaces: [], linear: { teamId: "ENG", apiKeyEnv: "ENG_LINEAR_API_KEY" } } });
-    expect(out["a"]?.linear).toEqual({ teamId: "ENG", apiKeyEnv: "ENG_LINEAR_API_KEY", apiKey: undefined });
+    expect(out["a"]?.linear).toEqual({ teamId: "ENG", apiKeyEnv: "ENG_LINEAR_API_KEY" });
   });
 
-  test("accepts a legacy literal {teamId, apiKey}", () => {
-    const out = parseTeams({ a: { spaces: [], linear: { teamId: "ENG", apiKey: "literal-key" } } });
-    expect(out["a"]?.linear).toEqual({ teamId: "ENG", apiKeyEnv: undefined, apiKey: "literal-key" });
+  test("rejects a literal apiKey", () => {
+    expect(() => parseTeams({ a: { spaces: [], linear: { teamId: "ENG", apiKey: "literal-key" } } })).toThrow(
+      /linear\.apiKey is not allowed — use linear\.apiKeyEnv instead/,
+    );
   });
 
   test("rejects linear missing teamId", () => {
@@ -210,51 +211,60 @@ describe("parseTeams: inline buzz block", () => {
 
 describe("buzzAvatarFor", () => {
   const prev = config.teams;
-  const prevAvatarMap = config.buzz.avatarMap;
   const prevAvatarUrl = config.buzz.avatarUrl;
   afterEach(() => {
     config.teams = prev;
-    config.buzz.avatarMap = prevAvatarMap;
     config.buzz.avatarUrl = prevAvatarUrl;
   });
 
-  test("a team space's inline avatarUrl wins over the env avatar map and fallback", () => {
+  test("a team space's inline avatarUrl wins over the global fallback", () => {
     config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "buzz", spaceId: "buzz:https://relay.example", buzz: { avatarUrl: "https://team-avatar" } }],
       },
     };
-    config.buzz.avatarMap = { "https://relay.example": "https://env-avatar" };
     config.buzz.avatarUrl = "https://fallback-avatar";
     expect(buzzAvatarFor("buzz:https://relay.example")).toBe("https://team-avatar");
   });
 
-  test("falls back to BUZZ_AVATAR_MAP when no team avatar is set", () => {
+  test("falls back to BUZZ_AVATAR_URL when no team avatar is set", () => {
     config.teams = {};
-    config.buzz.avatarMap = { "https://relay.example": "https://env-avatar" };
-    config.buzz.avatarUrl = "https://fallback-avatar";
-    expect(buzzAvatarFor("buzz:https://relay.example")).toBe("https://env-avatar");
-  });
-
-  test("falls back to BUZZ_AVATAR_URL when neither a team avatar nor a map entry exists", () => {
-    config.teams = {};
-    config.buzz.avatarMap = {};
     config.buzz.avatarUrl = "https://fallback-avatar";
     expect(buzzAvatarFor("buzz:https://relay.example")).toBe("https://fallback-avatar");
   });
 
-  test("the no-relay 'buzz' spaceId looks up BUZZ_AVATAR_MAP's 'default' key, not 'buzz'", () => {
+  test("the no-relay 'buzz' spaceId also falls back to BUZZ_AVATAR_URL with no team avatar", () => {
     config.teams = {};
-    config.buzz.avatarMap = { default: "https://default-avatar", buzz: "https://wrong-avatar" };
-    config.buzz.avatarUrl = "https://fallback-avatar";
-    expect(buzzAvatarFor("buzz")).toBe("https://default-avatar");
-  });
-
-  test("the no-relay 'buzz' spaceId falls back to BUZZ_AVATAR_URL when 'default' isn't in the map", () => {
-    config.teams = {};
-    config.buzz.avatarMap = {};
     config.buzz.avatarUrl = "https://fallback-avatar";
     expect(buzzAvatarFor("buzz")).toBe("https://fallback-avatar");
+  });
+});
+
+describe("parseTeams: trustSpaceMembers", () => {
+  test("accepts a boolean", () => {
+    const out = parseTeams({ a: { spaces: [], trustSpaceMembers: true } });
+    expect(out["a"]?.trustSpaceMembers).toBe(true);
+  });
+
+  test("absent parses as undefined", () => {
+    const out = parseTeams({ a: { spaces: [] } });
+    expect(out["a"]?.trustSpaceMembers).toBeUndefined();
+  });
+
+  test("rejects a non-boolean", () => {
+    expect(() => parseTeams({ a: { spaces: [], trustSpaceMembers: "yes" } })).toThrow(/trustSpaceMembers must be a boolean/);
+  });
+});
+
+describe("parseTeams: rejects the wiki-sync module", () => {
+  test("rejects \"wiki-sync\" in a discord block's enabledModules, pointing to the space wiki role", () => {
+    expect(() =>
+      parseTeams({
+        a: {
+          spaces: [{ surface: "discord", spaceId: "g1", discord: { allowedRoles: [], enabledModules: ["wiki-sync"] } }],
+        },
+      }),
+    ).toThrow(/enabledModules must not include "wiki-sync"/);
   });
 });
 

@@ -30,16 +30,16 @@ describe("getPermittedGuildIds", () => {
 
 // Regression guard for the modular-architecture refactor: every guild configured before
 // enabledModules existed must keep exactly today's (moderation-only) behavior on deploy,
-// with zero changes to guild-config.json required.
+// with zero changes to teams.json required.
 describe("resolvedModules", () => {
   test("guild config with no enabledModules field defaults to moderation-only", () => {
     expect(resolvedModules({ allowedRoles: [] })).toEqual(["moderation"]);
   });
 
   test("explicit enabledModules is honored as-is", () => {
-    expect(resolvedModules({ allowedRoles: [], enabledModules: ["moderation", "wiki-sync"] })).toEqual([
+    expect(resolvedModules({ allowedRoles: [], enabledModules: ["moderation", "mcp"] })).toEqual([
       "moderation",
-      "wiki-sync",
+      "mcp",
     ]);
   });
 
@@ -53,7 +53,7 @@ describe("moderationEnabled", () => {
   beforeEach(() => {
     config.guildConfig = {
       G1: cfg(undefined), // defaults to moderation-only
-      G2: { allowedRoles: [], enabledModules: ["wiki-sync"] },
+      G2: { allowedRoles: [], enabledModules: ["mcp"] },
     };
   });
   afterEach(() => {

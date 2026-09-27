@@ -23,22 +23,19 @@ export function __resetLinearWarnDedup(): void {
 
 /** `linear.apiKeyEnv` names the env var to read for this team's key. Unset/empty → the team's
  *  Linear is treated as fully unconfigured (falls through to the default account, same as when
- *  `linear` is absent) — it does NOT fall back to a legacy literal `apiKey` on the same entry.
- *  Only when `apiKeyEnv` is absent entirely does the (deprecated) literal `apiKey` apply. */
+ *  `linear` is absent). Absent entirely → no key, same fallthrough. */
 function resolveApiKey(teamId: string, linear: TeamLinear): string | undefined {
-  if (linear.apiKeyEnv) {
-    const fromEnv = process.env[linear.apiKeyEnv];
-    if (fromEnv) return fromEnv;
-    if (!warnedUnsetEnv.has(teamId)) {
-      warnedUnsetEnv.add(teamId);
-      logger.warn(
-        { teamId, apiKeyEnv: linear.apiKeyEnv },
-        "team's linear.apiKeyEnv names an unset/empty env var — falling back to the default Linear account",
-      );
-    }
-    return undefined;
+  if (!linear.apiKeyEnv) return undefined;
+  const fromEnv = process.env[linear.apiKeyEnv];
+  if (fromEnv) return fromEnv;
+  if (!warnedUnsetEnv.has(teamId)) {
+    warnedUnsetEnv.add(teamId);
+    logger.warn(
+      { teamId, apiKeyEnv: linear.apiKeyEnv },
+      "team's linear.apiKeyEnv names an unset/empty env var — falling back to the default Linear account",
+    );
   }
-  return linear.apiKey;
+  return undefined;
 }
 
 /** Pure account resolution (offline, no network). The space's team wins with its own Linear;

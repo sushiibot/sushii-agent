@@ -46,9 +46,15 @@ const TEAMS: Record<string, TeamConfig> = {
     spaces: [
       { surface: "discord", spaceId: "G1" },
       { surface: "slack", spaceId: "T1" },
-      { surface: "buzz", spaceId: "buzz:https://relay.example" },
+      {
+        surface: "buzz",
+        spaceId: "buzz:https://relay.example",
+        wiki: "read",
+        buzz: { avatarUrl: "https://relay.example/avatar.png" },
+      },
     ],
-    linear: { apiKey: "lin_secret_key", teamId: "DREAM" },
+    wiki: { wikiId: "G1" },
+    linear: { apiKeyEnv: "DREAM_LINEAR_API_KEY", teamId: "DREAM" },
     members: { drk: { trusted: true }, alice: { trusted: true }, bob: {} },
   },
   other: { spaces: [{ surface: "slack", spaceId: "T2" }], members: { bob: { trusted: true } } },
@@ -59,8 +65,6 @@ describe("team_config", () => {
     principals: config.principals,
     teams: config.teams,
     guildConfig: config.guildConfig,
-    avatarMap: config.buzz.avatarMap,
-    wikiMap: config.buzz.wikiMap,
   };
   beforeEach(() => {
     config.principals = PRINCIPALS;
@@ -69,21 +73,17 @@ describe("team_config", () => {
       G1: {
         allowedRoles: ["R1"],
         promptTemplate: "general",
-        enabledModules: ["wiki-sync"],
+        enabledModules: ["mcp"],
         modRoleId: "MODROLE1",
         alertsChannelId: "ALERTS1",
         mcpBridgeAllowedUserIds: ["999"],
       },
     };
-    config.buzz.avatarMap = { "https://relay.example": "https://relay.example/avatar.png" };
-    config.buzz.wikiMap = { "https://relay.example": "G1" };
   });
   afterEach(() => {
     config.principals = prev.principals;
     config.teams = prev.teams;
     config.guildConfig = prev.guildConfig;
-    config.buzz.avatarMap = prev.avatarMap;
-    config.buzz.wikiMap = prev.wikiMap;
   });
 
   test("resolves every space of the team from any one of its spaces", () => {
@@ -95,7 +95,7 @@ describe("team_config", () => {
 
     const discord = Object.fromEntries(view.spaces[0]!.settings);
     expect(discord["persona"]).toBe("general");
-    expect(discord["modules"]).toBe("wiki-sync");
+    expect(discord["modules"]).toBe("mcp");
     expect(discord["memory entries"]).toBe("3");
 
     const buzz = Object.fromEntries(view.spaces[2]!.settings);
@@ -255,9 +255,9 @@ describe("parseTeams", () => {
 
   test("keeps linear and wiki through parsing", () => {
     const out = parseTeams({
-      a: { spaces: [{ surface: "discord", spaceId: "G1" }], linear: { apiKey: "k", teamId: "T" }, wiki: { wikiId: "G1" } },
+      a: { spaces: [{ surface: "discord", spaceId: "G1" }], linear: { apiKeyEnv: "K", teamId: "T" }, wiki: { wikiId: "G1" } },
     });
-    expect(out["a"]!.linear).toEqual({ apiKey: "k", apiKeyEnv: undefined, teamId: "T" });
+    expect(out["a"]!.linear).toEqual({ apiKeyEnv: "K", teamId: "T" });
     expect(out["a"]!.wiki).toEqual({ wikiId: "G1" });
   });
 

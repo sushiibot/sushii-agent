@@ -1,0 +1,32 @@
+{
+  "dreamcatcher": {
+    "spaces": [
+      {
+        "surface": "discord",
+        "spaceId": "123456789012345678",
+        "wiki": "source",
+        "statusChannelId": "234567890123456789",
+        "discord": {
+          "allowedRoles": ["345678901234567890"],
+          "promptTemplate": "general",
+          "enabledModules": ["moderation", "mcp"]
+        }
+      },
+      {
+        "surface": "slack",
+        "spaceId": "T000TEAMA0",
+        "wiki": "read"
+      },
+      {
+        "surface": "buzz",
+        "spaceId": "buzz:https://relay.example",
+        "wiki": "read",
+        "buzz": { "avatarUrl": "https://relay.example/avatar.png" }
+      }
+    ],
+    "wiki": { "wikiId": "123456789012345678" },
+    "linear": { "teamId": "DREAM", "apiKeyEnv": "DREAMCATCHER_LINEAR_API_KEY" },
+    "members": { "some-principal-id": { "trusted": true } },
+    "trustSpaceMembers": false
+  }
+}

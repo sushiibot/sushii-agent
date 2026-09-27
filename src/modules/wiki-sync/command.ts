@@ -1,8 +1,7 @@
 import { REST, Routes, SlashCommandBuilder, type ChatInputCommandInteraction, type Client } from "discord.js";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
-import { getWikiSyncEnabledGuildIds } from "./guilds.ts";
-import { resolveWikiIdForGuild } from "./sources.ts";
+import { resolveWikiIdForGuild, wikiFor } from "./sources.ts";
 import type { MakeWikiSourceContext } from "./scheduler.ts";
 import { isSweepInFlight, runWikiSyncSweep } from "./sweep.ts";
 
@@ -15,10 +14,17 @@ const WIKI_SYNC_COMMAND = new SlashCommandBuilder()
   .setDescription("Force an early wiki-sync sweep of recent channel activity")
   .toJSON();
 
-/** Registers /wiki-sync as a guild command for every guild that has wiki-sync enabled. Guild-scoped (not global) so it's available immediately, no propagation delay. */
+/** Every discord guild id whose team space feeds a wiki (`wiki: "source"`) — the guilds
+ *  `/wiki-sync` should be registered on, since that command is meaningless for a guild with
+ *  nothing to sweep. */
+export function wikiSyncCommandGuildIds(): string[] {
+  return Object.keys(config.guildConfig).filter((guildId) => wikiFor("discord", guildId)?.feeds);
+}
+
+/** Registers /wiki-sync as a guild command for every guild whose team space feeds a wiki. Guild-scoped (not global) so it's available immediately, no propagation delay. */
 export async function registerWikiSyncCommands(client: Client<true>): Promise<void> {
-  const guildIds = getWikiSyncEnabledGuildIds();
-  if (guildIds.size === 0) return;
+  const guildIds = wikiSyncCommandGuildIds();
+  if (guildIds.length === 0) return;
 
   const rest = new REST().setToken(config.discordBotToken);
   for (const guildId of guildIds) {
@@ -44,9 +50,13 @@ export async function handleWikiSyncCommand(
     return;
   }
 
-  // A guild's /wiki-sync targets whichever wiki this guild feeds (its own by default), sweeping
-  // every source of that wiki — correct even when the wiki is shared across surfaces.
+  // A guild's /wiki-sync targets whichever wiki this guild feeds, sweeping every source of that
+  // wiki — correct even when the wiki is shared across surfaces.
   const wikiId = resolveWikiIdForGuild(interaction.guildId);
+  if (!wikiId) {
+    await interaction.reply({ content: "This server doesn't feed a wiki.", ephemeral: true });
+    return;
+  }
 
   if (isSweepInFlight(wikiId)) {
     await interaction.reply({ content: "A sweep is already running for this server — hang tight.", ephemeral: true });

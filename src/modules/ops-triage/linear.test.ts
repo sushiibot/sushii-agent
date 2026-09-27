@@ -8,14 +8,6 @@ const DEFAULT_KEY = "sushi-default-key";
 const DEFAULT_TEAM = "SUSHI";
 
 const TEAMS: Record<string, TeamConfig> = {
-  dreamcatcher: {
-    spaces: [{ surface: "discord", spaceId: "1000000000000000001" }],
-    linear: { apiKey: "dreamcatcher-key", teamId: "DREAM" },
-  },
-  teamx: {
-    spaces: [{ surface: "slack", spaceId: "T000TEAMX0" }],
-    linear: { apiKey: "teamx-key", teamId: "TEAMX" },
-  },
   // A team with NO linear must fall through to the default, never throw.
   nolinear: {
     spaces: [{ surface: "discord", spaceId: "1000000000000000009" }],
@@ -27,6 +19,10 @@ const TEAMS: Record<string, TeamConfig> = {
   unsetenvkey: {
     spaces: [{ surface: "discord", spaceId: "1000000000000000011" }],
     linear: { apiKeyEnv: "TEST_UNSET_LINEAR_API_KEY", teamId: "UNSETENVKEY" },
+  },
+  teamx: {
+    spaces: [{ surface: "slack", spaceId: "T000TEAMX0" }],
+    linear: { apiKeyEnv: "TEST_TEAMX_LINEAR_API_KEY", teamId: "TEAMX" },
   },
 };
 
@@ -40,6 +36,7 @@ describe("resolveLinearAccount", () => {
     config.linearTeamId = DEFAULT_TEAM;
     process.env["TEST_ENVKEY_LINEAR_API_KEY"] = "envkey-key";
     delete process.env["TEST_UNSET_LINEAR_API_KEY"];
+    delete process.env["TEST_TEAMX_LINEAR_API_KEY"];
     __resetLinearWarnDedup();
   });
   afterEach(() => {
@@ -48,10 +45,7 @@ describe("resolveLinearAccount", () => {
     config.linearTeamId = prevTeam;
     delete process.env["TEST_ENVKEY_LINEAR_API_KEY"];
     delete process.env["TEST_UNSET_LINEAR_API_KEY"];
-  });
-
-  test("a team with its own literal Linear key resolves to that account", () => {
-    expect(resolveLinearAccount("discord", "1000000000000000001")).toEqual({ apiKey: "dreamcatcher-key", teamId: "DREAM" });
+    delete process.env["TEST_TEAMX_LINEAR_API_KEY"];
   });
 
   test("a team with apiKeyEnv resolves the key from the named env var", () => {
@@ -86,21 +80,25 @@ describe("linearFor — per-account caching", () => {
     config.teams = TEAMS;
     config.linearApiKey = DEFAULT_KEY;
     config.linearTeamId = DEFAULT_TEAM;
+    process.env["TEST_ENVKEY_LINEAR_API_KEY"] = "envkey-key";
+    process.env["TEST_TEAMX_LINEAR_API_KEY"] = "teamx-key";
   });
   afterEach(() => {
     config.teams = prevC;
     config.linearApiKey = prevKey;
     config.linearTeamId = prevTeam;
+    delete process.env["TEST_ENVKEY_LINEAR_API_KEY"];
+    delete process.env["TEST_TEAMX_LINEAR_API_KEY"];
   });
 
   test("two teams get distinct clients (no cross-account contamination)", () => {
-    const dc = linearFor("discord", "1000000000000000001");
-    const tx = linearFor("slack", "T000TEAMX0");
-    expect(dc).not.toBe(tx);
+    const envkey = linearFor("discord", "1000000000000000010");
+    const teamx = linearFor("slack", "T000TEAMX0");
+    expect(envkey).not.toBe(teamx);
   });
 
   test("repeated calls for the same account return the cached instance", () => {
-    expect(linearFor("discord", "1000000000000000001")).toBe(linearFor("discord", "1000000000000000001"));
+    expect(linearFor("discord", "1000000000000000010")).toBe(linearFor("discord", "1000000000000000010"));
   });
 
   test("a team without linear and a no-team space share the default instance", () => {
