@@ -1,3 +1,4 @@
+import { stripStamp } from "../../core/turnStamp.ts";
 import type { Message, ThreadChannel } from "discord.js";
 import type { ModelMessage, TextPart } from "ai";
 import { generateText } from "ai";
@@ -58,7 +59,7 @@ async function defaultGenerateTitle(history: ModelMessage[]): Promise<string | n
   const textHistory = history
     .filter((m): m is ModelMessage & { role: "user" | "assistant" } => m.role === "user" || m.role === "assistant")
     .flatMap((m) => {
-      const text = extractText(m.content);
+      const text = stripStamp(extractText(m.content));
       return text ? [{ role: m.role, content: text.slice(0, 500) }] : [];
     })
     .slice(-6);

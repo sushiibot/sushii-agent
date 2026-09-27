@@ -8,7 +8,8 @@ const logger = getLogger("agent/summarizer");
 const SUMMARIZE_SYSTEM =
   "You are compacting a long assistant conversation so it fits the context window. Write a concise but " +
   "faithful summary of the messages below: preserve decisions made, facts established, the user's stated " +
-  "preferences, unresolved threads, and any context needed to continue the conversation naturally. Do not " +
+  "preferences, unresolved threads, and any context needed to continue the conversation naturally. User " +
+  "messages start with a [UTC timestamp]; keep the dates of events in the summary. Do not " +
   "invent anything and do not add commentary — output only the summary.";
 
 /** Model-backed summarize function for the compaction fold. Uses COMPACTION_MODEL when set (pick a

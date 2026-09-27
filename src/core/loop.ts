@@ -1,3 +1,4 @@
+import { lastUserStamp, stampUserText } from "./turnStamp.ts";
 import type { ModelMessage } from "ai";
 import { generateText, jsonSchema } from "ai";
 import {
@@ -285,7 +286,7 @@ export async function runLoop(
       if (!ctx.knownUsers.has(queued.author.userId)) {
         ctx.knownUsers.set(queued.author.userId, queued.author);
       }
-      messages.push({ role: "user", content: queued.text });
+      messages.push({ role: "user", content: stampUserText(queued.text, new Date(), lastUserStamp(messages)) });
     }
 
     if (lastInputTokens > deps.model.contextLimit * contextRatio) {

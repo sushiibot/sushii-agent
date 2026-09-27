@@ -1,3 +1,4 @@
+import { lastUserStamp, stampUserText } from "./turnStamp.ts";
 import { generateText } from "ai";
 import type {
   AgentCore,
@@ -113,7 +114,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     if (initialMentions?.length) {
       messages.push({ role: "system", content: buildUserNote(initialMentions) });
     }
-    messages.push({ role: "user", content: firstUserText });
+    messages.push({ role: "user", content: stampUserText(firstUserText, new Date(), lastUserStamp(messages)) });
 
     // C8: core owns slot ORDER; the surface fills per-turn content via promptContext(). The
     // triggering-user section is suppressed for the autonomous auto-mod driver — it has no

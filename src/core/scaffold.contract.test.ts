@@ -370,3 +370,20 @@ describe("scaffold contract — compaction + memory hook sites", () => {
     expect(JSON.stringify(store.data.messages)).toContain("keep-me");
   });
 });
+
+describe("user turns carry a send-time stamp", () => {
+  test("the persisted user turn is stamped; a resumed conversation notes the gap", async () => {
+    const store = new FakeStore();
+    store.data = {
+      messages: [
+        { role: "user", content: "[Mon 2020-01-06 9:00 AM UTC] remind me to call the plumber" },
+        { role: "assistant", content: "will do" },
+      ],
+      initialThreadContext: null,
+    };
+    const core = createAgentCore(baseDeps(store));
+    await core.handleInbound(inbound("did that get done?"), fakeSession());
+    const users = store.data.messages.filter((m) => m.role === "user").map((m) => m.content as string);
+    expect(users[1]).toMatch(/^\[(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (AM|PM) UTC · \d+ days later\] did that get done\?$/);
+  });
+});

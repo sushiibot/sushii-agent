@@ -1,3 +1,4 @@
+import { stripStamp } from "../core/turnStamp.ts";
 import { generateText, type ModelMessage } from "ai";
 import { openaiProvider } from "./client.ts";
 import { config } from "../config.ts";
@@ -77,7 +78,7 @@ export function createMemoryDeriver(memoryProvider: MemoryProvider): (ctx: TurnE
 export function lastUserText(history: readonly ModelMessage[]): string {
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
-    if (m.role === "user" && typeof m.content === "string") return m.content.trim();
+    if (m.role === "user" && typeof m.content === "string") return stripStamp(m.content).trim();
   }
   return "";
 }
