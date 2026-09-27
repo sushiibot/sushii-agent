@@ -210,15 +210,17 @@ function parseTeamsJson(content: string, filePath: string): Record<string, TeamC
   return teams;
 }
 
-/** Load + validate the team grouping. TEAMS_PATH (default ./teams.json) is primary; when it's unset
- *  and the default file doesn't exist, falls back to the legacy COMMUNITIES_PATH (default
- *  ./communities.json), warning once. Setting BOTH env vars is a misconfiguration and throws
- *  immediately, before either file is touched. An explicitly-set path that can't be read or parsed
- *  throws; a missing DEFAULT path (with nothing to fall back to either) means "unconfigured" (empty).
- *  `readFile` is injectable so this is testable without real files (mirrors resolveOwnerPrincipals's
- *  injectable `warn`). Shape validation and buzz spaceId normalization live in parseTeams
- *  (teams.ts); buildTeamIndex then runs on the normalized output so two spellings of one relay
- *  collide as a duplicate at boot, not later. */
+/** Load + validate the team grouping. Explicit-before-default: TEAMS_PATH set → it wins outright; else
+ *  COMMUNITIES_PATH set → it wins outright (deprecation warn); either one failing to read/parse throws,
+ *  since an explicit path is a promise the file is there. Only when NEITHER env var is set does the
+ *  default-path guess kick in: ./teams.json if present, else ./communities.json if present (deprecation
+ *  warn), else "unconfigured" (empty). An explicit env var must never be shadowed by a default-path
+ *  guess — that was the bug: trying "./teams.json" first regardless of which env var was set let a
+ *  checked-in repo-root stub silently outrank a real COMMUNITIES_PATH. Setting BOTH env vars is a
+ *  misconfiguration and throws immediately, before either file is touched. `readFile` is injectable so
+ *  this is testable without real files (mirrors resolveOwnerPrincipals's injectable `warn`). Shape
+ *  validation and buzz spaceId normalization live in parseTeams (teams.ts); buildTeamIndex then runs on
+ *  the normalized output so two spellings of one relay collide as a duplicate at boot, not later. */
 export function resolveTeamsConfig(
   teamsPathEnv: string | undefined,
   communitiesPathEnv: string | undefined,
@@ -229,49 +231,110 @@ export function resolveTeamsConfig(
     throw new Error("Set only one of TEAMS_PATH or COMMUNITIES_PATH, not both");
   }
 
-  const primaryPath = teamsPathEnv ?? "./teams.json";
-  let content: string | undefined;
-  try {
-    content = readFile(primaryPath);
-  } catch (e) {
-    if (teamsPathEnv) throw new Error(`Failed to load teams from ${primaryPath}: ${e}`);
+  if (teamsPathEnv) {
+    let content: string;
+    try {
+      content = readFile(teamsPathEnv);
+    } catch (e) {
+      throw new Error(`Failed to load teams from ${teamsPathEnv}: ${e}`);
+    }
+    return parseTeamsJson(content, teamsPathEnv);
   }
-  if (content !== undefined) return parseTeamsJson(content, primaryPath);
 
-  const fallbackPath = communitiesPathEnv ?? "./communities.json";
+  const legacyWarn = (filePath: string) =>
+    warn({ filePath }, "loading teams from a legacy communities.json path — rename it to teams.json (or set TEAMS_PATH)");
+
+  if (communitiesPathEnv) {
+    let content: string;
+    try {
+      content = readFile(communitiesPathEnv);
+    } catch (e) {
+      throw new Error(`Failed to load teams from ${communitiesPathEnv}: ${e}`);
+    }
+    legacyWarn(communitiesPathEnv);
+    return parseTeamsJson(content, communitiesPathEnv);
+  }
+
   try {
-    content = readFile(fallbackPath);
-  } catch (e) {
-    if (communitiesPathEnv) throw new Error(`Failed to load teams from ${fallbackPath}: ${e}`);
+    const content = readFile("./teams.json");
+    return parseTeamsJson(content, "./teams.json");
+  } catch {
+    // No default teams.json — fall through to the legacy default path below.
+  }
+
+  try {
+    const content = readFile("./communities.json");
+    legacyWarn("./communities.json");
+    return parseTeamsJson(content, "./communities.json");
+  } catch {
     return {};
   }
-  warn(
-    { filePath: fallbackPath },
-    "loading teams from a legacy communities.json path — rename it to teams.json (or set TEAMS_PATH)",
-  );
-  return parseTeamsJson(content, fallbackPath);
 }
 
 function loadTeams(): Record<string, TeamConfig> {
   return resolveTeamsConfig(process.env["TEAMS_PATH"], process.env["COMMUNITIES_PATH"], (p) => readFileSync(p, "utf8"));
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+/** Fields whose value is used as a set (`.includes()`/`hasAny()`), never as an ordered list, so two
+ *  listings of the same ids in a different order are equivalent, not a conflict. */
+const SET_LIKE_FIELDS = new Set([
+  "allowedRoles",
+  "emojis",
+  "modImmuneRoleIds",
+  "autoModTriggerRoleIds",
+  "mcpBridgeAllowedUserIds",
+  "enabledModules",
+]);
+
+/** Sort object keys (recursively) so two objects with the same keys in a different order compare
+ *  equal under JSON.stringify. Leaves arrays' element order untouched — that's SET_LIKE_FIELDS'
+ *  job, one level up in fieldsEqual. */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = canonicalize((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
 }
 
-/** Discord guild configs carried inline on team spaces (space.discord), keyed by guild id, with
- *  the space-level statusChannelId folded into wiki.statusChannelId — a discord block's own
- *  wiki.statusChannelId is rejected at parse (teams.ts's parseDiscordBlock), so the space-level
- *  field is the only place it can come from. */
+/** Field-aware equality for the conflict check below: a SET_LIKE_FIELDS array compares as a set
+ *  (order-insensitive); everything else compares structurally with object keys order-insensitive. */
+function fieldsEqual(key: string, a: unknown, b: unknown): boolean {
+  if (SET_LIKE_FIELDS.has(key) && Array.isArray(a) && Array.isArray(b)) {
+    const sortedA = [...a].sort();
+    const sortedB = [...b].sort();
+    return JSON.stringify(sortedA) === JSON.stringify(sortedB);
+  }
+  return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
+}
+
+/** Discord guild configs carried inline on team spaces (space.discord), keyed by guild id, exactly
+ *  as parsed — the space-level statusChannelId is applied later, as an override onto the merged
+ *  result (see applyStatusChannelOverrides), not folded in here. */
 export function teamGuildConfigs(teams: Record<string, TeamConfig>): Record<string, GuildConfig> {
   const out: Record<string, GuildConfig> = {};
   for (const team of Object.values(teams)) {
     for (const space of team.spaces) {
       if (space.surface !== "discord" || !space.discord) continue;
-      out[space.spaceId] = space.statusChannelId
-        ? { ...space.discord, wiki: { statusChannelId: space.statusChannelId } }
-        : space.discord;
+      out[space.spaceId] = space.discord;
+    }
+  }
+  return out;
+}
+
+/** Every discord team space's own statusChannelId, keyed by guild id — the input to
+ *  applyStatusChannelOverrides. A space without one is omitted. */
+export function teamStatusChannelIds(teams: Record<string, TeamConfig>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const team of Object.values(teams)) {
+    for (const space of team.spaces) {
+      if (space.surface === "discord" && space.statusChannelId) {
+        out[space.spaceId] = space.statusChannelId;
+      }
     }
   }
   return out;
@@ -282,7 +345,8 @@ export function teamGuildConfigs(teams: Record<string, TeamConfig>): Record<stri
  *  different values on each side, throws — naming the guild and the conflicting field(s) — since
  *  there'd be no principled way to pick a winner. A guild id present in both with no such conflict
  *  merges (team-side fields fill in gaps) and logs one warn suggesting the guild-config.json entry
- *  be removed now that the team carries it. */
+ *  be removed now that the team carries it. `wiki` is excluded from this check entirely: it has its
+ *  own dedicated precedence rule (applyStatusChannelOverrides), not a plain must-match-or-throw field. */
 export function mergeGuildConfigs(
   fileConfig: Record<string, GuildConfig>,
   teamConfig: Record<string, GuildConfig>,
@@ -298,11 +362,11 @@ export function mergeGuildConfigs(
     const combined = { ...fileCfg } as unknown as Record<string, unknown>;
     const conflicts: string[] = [];
     for (const [key, value] of Object.entries(teamCfg as unknown as Record<string, unknown>)) {
-      if (value === undefined) continue;
+      if (key === "wiki" || value === undefined) continue;
       const existing = (fileCfg as unknown as Record<string, unknown>)[key];
       if (existing === undefined) {
         combined[key] = value;
-      } else if (!deepEqual(existing, value)) {
+      } else if (!fieldsEqual(key, existing, value)) {
         conflicts.push(key);
       }
     }
@@ -317,11 +381,41 @@ export function mergeGuildConfigs(
   return merged;
 }
 
+/** Apply each team discord space's own statusChannelId as an unconditional override onto
+ *  merged[spaceId].wiki.statusChannelId — never synthesizing a brand-new merged[spaceId] entry out
+ *  of just a statusChannelId with no allowedRoles (resolvedModules() defaulting to ["moderation"]
+ *  and command.ts's hasAny(...guildConfig.allowedRoles) would throw on undefined for a guild that
+ *  otherwise has no config at all). A guild-config.json entry that also sets a different
+ *  wiki.statusChannelId warns once (the team value wins, it isn't a conflict). */
+export function applyStatusChannelOverrides(
+  merged: Record<string, GuildConfig>,
+  statusChannelIds: Record<string, string>,
+  warn: (ctx: Record<string, unknown>, msg: string) => void = (ctx, msg) => logger.warn(ctx, msg),
+): Record<string, GuildConfig> {
+  const out: Record<string, GuildConfig> = { ...merged };
+  for (const [guildId, statusChannelId] of Object.entries(statusChannelIds)) {
+    const existing = out[guildId];
+    if (!existing) continue;
+    const fileStatusChannelId = existing.wiki?.statusChannelId;
+    if (fileStatusChannelId !== undefined && fileStatusChannelId !== statusChannelId) {
+      warn(
+        { guildId, fileStatusChannelId, teamStatusChannelId: statusChannelId },
+        "guild-config.json's wiki.statusChannelId differs from the team space's statusChannelId — the team space's value wins",
+      );
+    }
+    out[guildId] = { ...existing, wiki: { ...existing.wiki, statusChannelId } };
+  }
+  return out;
+}
+
 // Teams load first so any inline discord block is available to fold into guildConfig below —
 // config.ts ↔ teams.ts has a value-import cycle that's only safe because neither side dereferences
 // the other at module top level; this stays inside loader functions.
 const loadedTeams = loadTeams();
-const mergedGuildConfig = mergeGuildConfigs(loadGuildConfig(), teamGuildConfigs(loadedTeams));
+const mergedGuildConfig = applyStatusChannelOverrides(
+  mergeGuildConfigs(loadGuildConfig(), teamGuildConfigs(loadedTeams)),
+  teamStatusChannelIds(loadedTeams),
+);
 
 export const config: Config = {
   discordBotToken: required("DISCORD_BOT_TOKEN"),

@@ -152,6 +152,11 @@ A team space can carry its surface-specific settings directly, instead of splitt
   keyed by the space's `spaceId` — every existing consumer of `config.guildConfig` sees it exactly
   as if it had been written to `guild-config.json`. Use the space-level `statusChannelId` for the
   wiki status channel, not `discord.wiki.statusChannelId` — the latter is rejected at load.
+- The space-level `statusChannelId` always wins as the wiki status channel for a team space, even
+  when the guild's config comes entirely from `guild-config.json` (no inline `discord` block) — it's
+  applied as an override onto whichever entry exists in `config.guildConfig`, not merged as a plain
+  field. It has no effect on a guild with no `config.guildConfig` entry at all (it never synthesizes
+  a bare entry lacking `allowedRoles`).
 - `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over
   `BUZZ_AVATAR_MAP` and `BUZZ_AVATAR_URL` for that relay.
 - A guild id can still appear in both `guild-config.json` and a team's `discord` block. Matching

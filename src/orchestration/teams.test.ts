@@ -242,6 +242,20 @@ describe("buzzAvatarFor", () => {
     config.buzz.avatarUrl = "https://fallback-avatar";
     expect(buzzAvatarFor("buzz:https://relay.example")).toBe("https://fallback-avatar");
   });
+
+  test("the no-relay 'buzz' spaceId looks up BUZZ_AVATAR_MAP's 'default' key, not 'buzz'", () => {
+    config.teams = {};
+    config.buzz.avatarMap = { default: "https://default-avatar", buzz: "https://wrong-avatar" };
+    config.buzz.avatarUrl = "https://fallback-avatar";
+    expect(buzzAvatarFor("buzz")).toBe("https://default-avatar");
+  });
+
+  test("the no-relay 'buzz' spaceId falls back to BUZZ_AVATAR_URL when 'default' isn't in the map", () => {
+    config.teams = {};
+    config.buzz.avatarMap = {};
+    config.buzz.avatarUrl = "https://fallback-avatar";
+    expect(buzzAvatarFor("buzz")).toBe("https://fallback-avatar");
+  });
 });
 
 describe("buildTeamIndex", () => {

@@ -275,13 +275,15 @@ export function isTeamMember(principalId: string, surface: string, spaceId: stri
   return resolveTeam(surface, spaceId)?.members?.[principalId]?.trusted === true;
 }
 
-/** Buzz kind:0 profile avatar for a relay space (`spaceId` as `buzz:<relay url>`): a team space's
- *  inline `buzz.avatarUrl` first, then `BUZZ_AVATAR_MAP` (config.buzz.avatarMap, keyed by the bare
- *  relay url), then the global `BUZZ_AVATAR_URL` fallback. */
+/** Buzz kind:0 profile avatar for a relay space (`spaceId` as `buzz:<relay url>`, or the bare
+ *  `"buzz"` spaceId for the no-relay default connection): a team space's inline `buzz.avatarUrl`
+ *  first, then `BUZZ_AVATAR_MAP` (config.buzz.avatarMap, keyed by the bare relay url, or "default"
+ *  for the no-relay connection — matching the pre-team-fold `key ?? "default"` lookup in
+ *  src/index.ts), then the global `BUZZ_AVATAR_URL` fallback. */
 export function buzzAvatarFor(spaceId: string): string | undefined {
   const teamAvatar = resolveTeam("buzz", spaceId)?.spaces.find((s) => s.surface === "buzz" && s.spaceId === spaceId)?.buzz?.avatarUrl;
   if (teamAvatar) return teamAvatar;
-  const relay = spaceId.startsWith("buzz:") ? spaceId.slice("buzz:".length) : spaceId;
+  const relay = spaceId.startsWith("buzz:") ? spaceId.slice("buzz:".length) : "default";
   return config.buzz.avatarMap[relay] ?? config.buzz.avatarUrl;
 }
 
