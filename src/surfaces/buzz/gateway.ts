@@ -139,7 +139,15 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
     // leak, since the private bucket is per-pubkey and shares no legacy store with the community space.
     const chType = await client.channelType(channelId);
     const isDm = chType === "dm" || chType === "unknown";
-    const conversation: ConversationRef = { surface: SURFACE, spaceId, conversationId: threadRoot, isPrivate: isDm };
+    const conversation: ConversationRef = {
+      surface: SURFACE,
+      spaceId,
+      conversationId: threadRoot,
+      isPrivate: isDm,
+      // "unknown" makes isPrivate a fail-safe guess, not a confirmed private channel — a tool
+      // gating disclosure on privacy (team_config) must not trust it.
+      privacyUnverified: chType === "unknown",
+    };
     const session = new BuzzSurfaceSession({ client, ownPubkey: selfPubkey, channelId, replyToId: threadRoot, fsHost: deps.fsHost });
     const inbound: InboundMessage = {
       conversation,

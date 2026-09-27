@@ -191,6 +191,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     const toolContextBase: Omit<ToolContext, "owner"> = {
       space: { surface: conversation.surface, spaceId: conversation.spaceId },
       isPrivate,
+      privacyUnverified: conversation.privacyUnverified,
       store: deps.store,
       memory: deps.memory,
       log: undefined,

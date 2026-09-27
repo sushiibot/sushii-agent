@@ -21,10 +21,12 @@ function ctx(
   spaceId: string,
   userId: string | undefined,
   isPrivate?: boolean,
+  privacyUnverified?: boolean,
 ): ToolContext {
   return {
     space: { surface, spaceId },
     isPrivate,
+    privacyUnverified,
     owner: userId ? { userId, displayName: "x" } : null,
     memory: {
       count: (sid: string) => memoryCounts[sid]?.entries ?? 0,
@@ -34,8 +36,8 @@ function ctx(
 }
 
 const PRINCIPALS: Record<string, PrincipalConfig> = {
-  drk: { owner: true, identities: { discord: "100", slack: "U100" } },
-  alice: { identities: { slack: "U200" } },
+  drk: { owner: true, identities: { discord: "100", slack: "U100", buzz: "PUBKEY1" } },
+  alice: { identities: { slack: "U200", discord: "200" } },
   bob: { identities: { slack: "U300" } },
 };
 
@@ -152,9 +154,47 @@ describe("team_config", () => {
     expect((await teamConfigEntry.execute({}, ctx("slack", "T1", undefined))).content).toContain("trusted team members");
   });
 
-  test("a Discord DM (placeholder spaceId, no team) gets the short DM message", async () => {
+  test("owner in a DM lists every team", async () => {
     const r = await teamConfigEntry.execute({}, ctx("discord", "dm", "100", true));
-    expect(r.content).toBe("DMs aren't part of a team; ask from a team channel.");
+    expect(r.content).toContain("Teams you can view:");
+    expect(r.content).toContain("- dreamcatcher");
+    expect(r.content).toContain("- other");
+  });
+
+  test("a trusted non-owner in a DM lists only the teams they're trusted in", async () => {
+    const r = await teamConfigEntry.execute({}, ctx("discord", "dm", "200", true));
+    expect(r.content).toContain("- dreamcatcher");
+    expect(r.content).not.toContain("- other");
+  });
+
+  test("a trusted non-owner in a DM gets a team's detailed view via the team param", async () => {
+    const r = await teamConfigEntry.execute({ team: "dreamcatcher" }, ctx("discord", "dm", "200", true));
+    expect(r.content).toContain("Team: dreamcatcher");
+    expect(r.content).toContain("MODROLE1"); // detailed=true in a DM
+    expect(r.content).not.toContain("lin_secret_key");
+  });
+
+  test("a DM team lookup denies a team the caller isn't trusted in, same message as a nonexistent team", async () => {
+    const notMember = await teamConfigEntry.execute({ team: "other" }, ctx("discord", "dm", "200", true));
+    const nonexistent = await teamConfigEntry.execute({ team: "nope" }, ctx("discord", "dm", "200", true));
+    expect(notMember.content).toBe("This tool is limited to trusted team members.");
+    expect(nonexistent.content).toBe(notMember.content);
+  });
+
+  test("outside a DM, the team param is ignored", async () => {
+    const r = await teamConfigEntry.execute({ team: "other" }, ctx("slack", "T1", "U200", false));
+    expect(r.content).toContain("Team: dreamcatcher");
+  });
+
+  test("an unverified private flag (buzz unknown channel type) does not unlock detail", async () => {
+    const r = await teamConfigEntry.execute(
+      {},
+      ctx("buzz", "buzz:https://relay.example", "PUBKEY1", true, true),
+    );
+    expect(r.content).toContain("Team: dreamcatcher");
+    expect(r.content).toContain("configured (details only in a DM)");
+    expect(r.content).not.toContain("MODROLE1");
+    expect(r.content).not.toContain("999");
   });
 
   test("a Slack DM shares the workspace teamId and still resolves its team", async () => {
@@ -210,6 +250,12 @@ describe("parseCommunities", () => {
   test("rejects members that isn't an object of objects", () => {
     expect(() => parseCommunities({ a: { spaces: [], members: "nope" } })).toThrow(/members/);
     expect(() => parseCommunities({ a: { spaces: [], members: { alice: "nope" } } })).toThrow(/members/);
+  });
+
+  test("rejects a non-boolean trusted flag", () => {
+    expect(() => parseCommunities({ a: { spaces: [], members: { alice: { trusted: "yes" } } } })).toThrow(/trusted/);
+    expect(() => parseCommunities({ a: { spaces: [], members: { alice: {} } } })).not.toThrow();
+    expect(() => parseCommunities({ a: { spaces: [], members: { alice: { trusted: true } } } })).not.toThrow();
   });
 
   test("normalizes a buzz spaceId the same way the relay poll loop does", () => {

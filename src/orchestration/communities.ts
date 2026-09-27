@@ -86,6 +86,9 @@ export function parseCommunities(raw: unknown): Record<string, CommunityConfig> 
       if (!isPlainObject(membersRaw)) throw new Error(`communities: "${id}".members must be an object`);
       for (const [principalId, m] of Object.entries(membersRaw)) {
         if (!isPlainObject(m)) throw new Error(`communities: "${id}".members["${principalId}"] must be an object`);
+        if (m["trusted"] !== undefined && typeof m["trusted"] !== "boolean") {
+          throw new Error(`communities: "${id}".members["${principalId}"].trusted must be a boolean`);
+        }
       }
       members = membersRaw as CommunityMembers;
     }
@@ -140,4 +143,33 @@ export function resolveCommunity(surface: string, spaceId: string): Community | 
  *  false when the space belongs to no community or the principal isn't listed as trusted there. */
 export function isCommunityMember(principalId: string, surface: string, spaceId: string): boolean {
   return resolveCommunity(surface, spaceId)?.members?.[principalId]?.trusted === true;
+}
+
+/** All communities, by id — for a DM listing where there's no (surface, spaceId) to resolve from. */
+export function listCommunities(): Community[] {
+  return Object.entries(config.communities).map(([id, entry]) => ({
+    id,
+    spaces: entry.spaces ?? [],
+    wiki: entry.wiki,
+    linear: entry.linear,
+    members: entry.members,
+  }));
+}
+
+/** A community by its own id, independent of any space — for a DM's `team` lookup. */
+export function getCommunity(teamId: string): Community | undefined {
+  const entry = config.communities[teamId];
+  return entry ? { id: teamId, spaces: entry.spaces ?? [], wiki: entry.wiki, linear: entry.linear, members: entry.members } : undefined;
+}
+
+/** Whether `principalId` is a trusted member of the community `teamId`, looked up by id rather than
+ *  by space — the DM-listing counterpart to isCommunityMember. */
+export function isTeamMember(principalId: string, teamId: string): boolean {
+  return getCommunity(teamId)?.members?.[principalId]?.trusted === true;
+}
+
+/** Whether `principalId` is a trusted member of at least one community — lets a DM caller who isn't
+ *  the owner still reach team_config to list the teams they belong to. */
+export function isMemberOfAnyTeam(principalId: string): boolean {
+  return listCommunities().some((c) => c.members?.[principalId]?.trusted === true);
 }

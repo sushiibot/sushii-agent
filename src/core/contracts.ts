@@ -27,6 +27,10 @@ export interface ConversationRef {
   /** Surface declares a private/DM conversation; overrides the spaceId-based personal-space heuristic
    *  for memory scoping. */
   isPrivate?: boolean;
+  /** Set when `isPrivate` is a fail-safe guess (e.g. buzz's channel-type lookup returned "unknown"),
+   *  not a surface-confirmed private space. Memory scoping may still trust the fail-safe `isPrivate`;
+   *  a tool deciding whether to disclose detail must not. */
+  privacyUnverified?: boolean;
 }
 
 /** Stable key for in-memory maps. Unique within a surface; space is a scoping attribute, not identity. */
@@ -352,6 +356,9 @@ export interface ToolContext {
    *  personal-space check (a Slack DM's spaceId is the teamId, not "dm", so a space-string test
    *  can't infer it). */
   isPrivate?: boolean;
+  /** Threaded from ConversationRef.privacyUnverified: `isPrivate` may be a fail-safe guess rather than
+   *  a surface-confirmed private space. A tool gating disclosure on privacy must check this too. */
+  privacyUnverified?: boolean;
   /** One per loop run (fresh inbound or resume) — lets a tool require that a confirmation came
    *  after the user saw the previous turn's reply. Mid-loop injections don't change it: the user
    *  hasn't seen this turn's reply yet. */

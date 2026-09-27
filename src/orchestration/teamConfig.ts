@@ -6,7 +6,7 @@ import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
 import { resolveWikiIdForSource } from "../modules/wiki-sync/sources.ts";
 import { ownerPrincipalId } from "./principals.ts";
-import { resolveCommunity, type CommunitySpace } from "./communities.ts";
+import { getCommunity, resolveCommunity, type Community, type CommunitySpace } from "./communities.ts";
 
 export interface SpaceConfigView {
   surface: string;
@@ -80,13 +80,7 @@ function spaceView(space: CommunitySpace, stats: SpaceStats, detailed: boolean):
   };
 }
 
-/** The config of the team owning (surface, spaceId), or of that space alone when it has no team.
- *  Never includes secrets: a Linear account shows only its team id. `detailed` gates auto-mod
- *  internals and MCP bridge user ids — false outside a private context, since an authorized caller
- *  may run this in a public channel where posting mod-evasion details to moderated users is unsafe. */
-export function resolveTeamConfig(surface: string, spaceId: string, stats: SpaceStats, detailed = false): TeamConfigView {
-  const community = resolveCommunity(surface, spaceId);
-  if (!community) return { spaces: [spaceView({ surface, spaceId }, stats, detailed)] };
+function buildTeamView(community: Community, stats: SpaceStats, detailed: boolean): TeamConfigView {
   const owner = ownerPrincipalId();
   return {
     team: {
@@ -100,6 +94,36 @@ export function resolveTeamConfig(surface: string, spaceId: string, stats: Space
     },
     spaces: community.spaces.map((s) => spaceView(s, stats, detailed)),
   };
+}
+
+/** The config of the team owning (surface, spaceId), or of that space alone when it has no team.
+ *  Never includes secrets: a Linear account shows only its team id. `detailed` gates auto-mod
+ *  internals and MCP bridge user ids — false outside a private context, since an authorized caller
+ *  may run this in a public channel where posting mod-evasion details to moderated users is unsafe. */
+export function resolveTeamConfig(surface: string, spaceId: string, stats: SpaceStats, detailed = false): TeamConfigView {
+  const community = resolveCommunity(surface, spaceId);
+  if (!community) return { spaces: [spaceView({ surface, spaceId }, stats, detailed)] };
+  return buildTeamView(community, stats, detailed);
+}
+
+/** The DM counterpart of resolveTeamConfig: looks a team up by id instead of by space, since a DM
+ *  has no space to resolve from. Returns undefined for an unknown id — the caller renders that the
+ *  same way as "not a member", so a probing caller can't distinguish the two. */
+export function resolveTeamConfigById(teamId: string, stats: SpaceStats, detailed: boolean): TeamConfigView | undefined {
+  const community = getCommunity(teamId);
+  return community ? buildTeamView(community, stats, detailed) : undefined;
+}
+
+/** The DM listing view: just the ids of the teams the caller may see (owner → all; otherwise the
+ *  ones they're a trusted member of). No settings — call again with `team` for detail. */
+export function renderTeamList(teamIds: string[]): string {
+  if (teamIds.length === 0) return "You aren't the owner or a trusted member of any team.";
+  return [
+    "Teams you can view:",
+    ...teamIds.map((id) => `- ${id}`),
+    "",
+    'Call team_config again with `team: "<id>"` to see one team\'s detail.',
+  ].join("\n");
 }
 
 export function renderTeamConfig(view: TeamConfigView, current: { surface: string; spaceId: string }): string {

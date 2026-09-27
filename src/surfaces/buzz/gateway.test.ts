@@ -94,7 +94,13 @@ describe("startBuzzSurface subscription", () => {
     surface.stop();
 
     expect(inbounds).toHaveLength(1);
-    expect(inbounds[0].inbound.conversation).toEqual({ surface: "buzz", spaceId: "buzz", conversationId: "evt1", isPrivate: false });
+    expect(inbounds[0].inbound.conversation).toEqual({
+      surface: "buzz",
+      spaceId: "buzz",
+      conversationId: "evt1",
+      isPrivate: false,
+      privacyUnverified: false,
+    });
     expect(inbounds[0].inbound.author).toMatchObject({ surface: "buzz", userId: "user1" });
     expect(inbounds[0].inbound.text).toBe("hey @sushii");
     expect(sends).toEqual([{ channelId: "chan-uuid", content: "hi there", replyToId: "evt1" }]);
@@ -170,6 +176,7 @@ describe("startBuzzSurface subscription", () => {
     await tick();
     surface.stop();
     expect(inbounds[0].inbound.conversation.isPrivate).toBe(true);
+    expect(inbounds[0].inbound.conversation.privacyUnverified).toBe(false);
   });
 
   test("routes a public channel turn to the shared per-space scope (not private)", async () => {
@@ -178,14 +185,16 @@ describe("startBuzzSurface subscription", () => {
     await tick();
     surface.stop();
     expect(inbounds[0].inbound.conversation.isPrivate).toBe(false);
+    expect(inbounds[0].inbound.conversation.privacyUnverified).toBe(false);
   });
 
-  test("fails closed to private when the channel type is unresolved", async () => {
+  test("fails closed to private when the channel type is unresolved, and flags the private flag as unverified", async () => {
     const inbounds: { inbound: InboundMessage; session: SurfaceSession }[] = [];
     const surface = startBuzzSurface({ core: fakeCore(inbounds), client: fakeClient([event()], [], { channelTypes: { "chan-uuid": "unknown" } }), cursor: memCursor(500), serverContext: memServerContext("scanned") });
     await tick();
     surface.stop();
     expect(inbounds[0].inbound.conversation.isPrivate).toBe(true);
+    expect(inbounds[0].inbound.conversation.privacyUnverified).toBe(true);
   });
 
   test("a fresh cursor (0) is initialized to ~now and used as the subscription since", async () => {
