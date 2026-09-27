@@ -87,8 +87,7 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
     }
     systemParts.push(lines.join("\n"));
 
-    // Owner-only ops-triage block — surface supplies it only for the owner, matching the old
-    // `if (config.ownerDiscordId && u.id === config.ownerDiscordId)` branch's position.
+    // Owner-only ops-triage block; the surface supplies it only for the owner, right after the caller block.
     if (inputs.ownerSection) systemParts.push(inputs.ownerSection);
   }
 

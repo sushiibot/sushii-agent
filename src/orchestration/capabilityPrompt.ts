@@ -1,5 +1,6 @@
 import { buildOpsTriagePromptSection } from "../modules/ops-triage/prompt.ts";
 import { resolveTeam } from "./teams.ts";
+import { wikiFor } from "../modules/wiki-sync/sources.ts";
 import { getDispatcher } from "./dispatcher.ts";
 
 interface RunnerSummary {
@@ -69,7 +70,7 @@ const SURFACE_KIND_LABELS: Record<string, string> = {
 };
 
 /** "## Team" section for a space that belongs to a team: what the other spaces are (kinds,
- *  never raw ids), whether a wiki is shared, and the caller's standing. Undefined outside a
+ *  never raw ids), whether this space can read the team wiki, and the caller's standing. Undefined outside a
  *  team. Text is stable per space (no timestamps, no member ids) so the prefix stays cacheable. */
 function buildTeamSection(t: CapabilityTurn): string | undefined {
   const team = resolveTeam(t.surface, t.spaceId);
@@ -83,7 +84,7 @@ function buildTeamSection(t: CapabilityTurn): string | undefined {
     `This space is part of the team "${team.id}", spanning ${kinds.join(", ")}.`,
     `You are speaking with ${standing} of this team.`,
   ];
-  if (team.wiki) lines.push("The team's wiki is shared across its spaces.");
+  if (wikiFor(t.surface, t.spaceId)?.reads) lines.push("This space can read the team's shared wiki.");
   return lines.join("\n");
 }
 

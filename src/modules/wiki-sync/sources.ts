@@ -127,7 +127,12 @@ export function getWikiSources(): Map<string, WikiSource[]> {
       const key = spaceKey(space.surface, space.spaceId);
       teamClaimed.set(key, wikiId);
       if (space.wiki === "source") {
-        bySpace.set(key, { wikiId, statusChannelId: space.statusChannelId });
+        bySpace.set(key, {
+          wikiId,
+          statusChannelId:
+            space.statusChannelId ??
+            (space.surface === "discord" ? config.guildConfig[space.spaceId]?.wiki?.statusChannelId : undefined),
+        });
       }
     }
   }

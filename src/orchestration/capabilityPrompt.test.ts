@@ -52,8 +52,8 @@ describe("Team section", () => {
       dreamcatcher: {
         spaces: [
           { surface: "discord", spaceId: "G1" },
-          { surface: "slack", spaceId: "T1" },
-          { surface: "buzz", spaceId: "buzz:wss://relay.example" },
+          { surface: "slack", spaceId: "T1", wiki: "read" },
+          { surface: "buzz", spaceId: "buzz:https://relay.example" },
         ],
         wiki: { wikiId: "G1" },
         members: { alice: { trusted: true }, bob: {} },
@@ -76,7 +76,13 @@ describe("Team section", () => {
     expect(text).toContain("Discord guild");
     expect(text).toContain("Slack workspace");
     expect(text).toContain("buzz relay");
-    expect(text).toContain("wiki is shared across its spaces");
+    expect(text).toContain("This space can read the team's shared wiki.");
+  });
+
+  test("no wiki line for a team space without wiki access", () => {
+    const text = buildCapabilitySections({ ...base, surface: "buzz", spaceId: "buzz:https://relay.example" }) ?? "";
+    expect(text).toContain("## Team");
+    expect(text).not.toContain("wiki");
   });
 
   test("standing reflects owner / authorized / plain member, and never leaks member ids", () => {
