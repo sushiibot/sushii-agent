@@ -8,6 +8,7 @@
 // memoryScope). A community groups multiple surfaces; if a memory spaceId resolved through it,
 // `sushii-space-<spaceId>` would merge public facts across Discord/Slack/buzz memberships.
 import { config } from "../config.ts";
+import { normalizeRelayUrl } from "../surfaces/buzz/relayUrl.ts";
 
 export interface CommunitySpace {
   surface: string;
@@ -43,6 +44,60 @@ interface CommunityIndex {
 
 function keyOf(surface: string, spaceId: string): string {
   return `${surface} ${spaceId}`;
+}
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function normalizeSpaceId(surface: string, spaceId: string): string {
+  return surface === "buzz" && spaceId.startsWith("buzz:")
+    ? `buzz:${normalizeRelayUrl(spaceId.slice("buzz:".length))}`
+    : spaceId;
+}
+
+/** Validate + normalize the raw communities.json shape, called at config load. Buzz spaceIds are
+ *  normalized the same way as the relay poll loop's cursor key, so `buzz:wss://Relay.Example/` and
+ *  `buzz:https://relay.example` collide as the same space instead of silently splitting one
+ *  community's config across two keys. Throws `Error("communities: <reason>")` on any shape violation. */
+export function parseCommunities(raw: unknown): Record<string, CommunityConfig> {
+  if (!isPlainObject(raw)) throw new Error("communities: top-level value must be an object");
+
+  const out: Record<string, CommunityConfig> = {};
+  for (const [id, entryRaw] of Object.entries(raw)) {
+    if (!isPlainObject(entryRaw)) throw new Error(`communities: entry "${id}" must be an object`);
+
+    const spacesRaw = entryRaw["spaces"];
+    if (!Array.isArray(spacesRaw)) throw new Error(`communities: "${id}".spaces must be an array`);
+    const spaces: CommunitySpace[] = spacesRaw.map((s, i) => {
+      if (!isPlainObject(s) || !isNonEmptyString(s["surface"]) || !isNonEmptyString(s["spaceId"])) {
+        throw new Error(`communities: "${id}".spaces[${i}] must be {surface: string, spaceId: string}`);
+      }
+      return { surface: s["surface"], spaceId: normalizeSpaceId(s["surface"], s["spaceId"]) };
+    });
+
+    const membersRaw = entryRaw["members"];
+    let members: CommunityMembers | undefined;
+    if (membersRaw !== undefined) {
+      if (!isPlainObject(membersRaw)) throw new Error(`communities: "${id}".members must be an object`);
+      for (const [principalId, m] of Object.entries(membersRaw)) {
+        if (!isPlainObject(m)) throw new Error(`communities: "${id}".members["${principalId}"] must be an object`);
+      }
+      members = membersRaw as CommunityMembers;
+    }
+
+    out[id] = {
+      spaces,
+      wiki: entryRaw["wiki"] as CommunityConfig["wiki"],
+      linear: entryRaw["linear"] as CommunityConfig["linear"],
+      members,
+    };
+  }
+  return out;
 }
 
 /** Build the reverse (surface, spaceId) → community index, enforcing that no space is claimed by two

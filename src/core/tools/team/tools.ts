@@ -1,8 +1,9 @@
 import type { ToolContext, ToolEntry } from "../../contracts.ts";
 import { config } from "../../../config.ts";
-import { isAuthorized, spaceKey } from "../../../orchestration/authz.ts";
+import { isAuthorized, isPersonalSpace, spaceKey } from "../../../orchestration/authz.ts";
 import { principalsConfigured } from "../../../orchestration/principals.ts";
-import { renderTeamConfig, resolveTeamConfig } from "../../../orchestration/teamConfig.ts";
+import { resolveCommunity } from "../../../orchestration/communities.ts";
+import { renderTeamConfig, resolveTeamConfig, type SpaceStats } from "../../../orchestration/teamConfig.ts";
 
 /** Denial string, or undefined when the caller is the owner or a trusted member of this space's team. */
 function requireAuthorized(ctx: ToolContext): string | undefined {
@@ -28,7 +29,21 @@ export const teamConfigEntry: ToolEntry = {
   async execute(_input, ctx) {
     const denied = requireAuthorized(ctx);
     if (denied) return { content: denied };
-    return { content: renderTeamConfig(resolveTeamConfig(ctx.space.surface, ctx.space.spaceId, ctx.memory), ctx.space) };
+
+    const { surface, spaceId } = ctx.space;
+    // A DM placeholder spaceId (discord "dm", buzz "dm") never appears in communities.json, so it
+    // never resolves to a team; a Slack DM's spaceId is its real teamId and DOES resolve, so it
+    // keeps showing that team below instead of hitting this early return.
+    if (isPersonalSpace(spaceKey(surface, spaceId)) && !resolveCommunity(surface, spaceId)) {
+      return { content: "DMs aren't part of a team; ask from a team channel." };
+    }
+
+    const stats: SpaceStats = (sid) => ({
+      memoryEntries: ctx.memory.count(sid),
+      // Only aggregate counts may cross a team (memory wall) — never the entries or context text.
+      contextChars: ctx.memory.getServerContext(sid)?.length ?? 0,
+    });
+    return { content: renderTeamConfig(resolveTeamConfig(surface, spaceId, stats, ctx.isPrivate === true), ctx.space) };
   },
 };
 

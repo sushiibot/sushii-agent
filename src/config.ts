@@ -2,6 +2,7 @@ export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules 
 import type { GuildConfig } from "./guildConfig.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
 import type { CommunityConfig } from "./orchestration/communities.ts";
+import { parseCommunities, buildCommunityIndex } from "./orchestration/communities.ts";
 import { parseRelayUrls, parseWikiMap, parseAvatarMap } from "./surfaces/buzz/relayUrl.ts";
 
 export interface Config {
@@ -158,8 +159,9 @@ function loadPrincipals(): Record<string, PrincipalConfig> {
 }
 
 /** Load + validate the community grouping. A missing DEFAULT file means "unconfigured" (empty); an
- *  explicitly-set COMMUNITIES_PATH that can't be read or parsed throws. Enforces the
- *  no-space-claimed-twice invariant at load (mirrors principals' at-load owner check). */
+ *  explicitly-set COMMUNITIES_PATH that can't be read or parsed throws. Shape validation and buzz
+ *  spaceId normalization live in parseCommunities (communities.ts); buildCommunityIndex then runs
+ *  on the normalized output so two spellings of one relay collide as a duplicate at boot, not later. */
 function loadCommunities(): Record<string, CommunityConfig> {
   const explicit = process.env["COMMUNITIES_PATH"];
   const filePath = explicit ?? "./communities.json";
@@ -170,22 +172,15 @@ function loadCommunities(): Record<string, CommunityConfig> {
     if (explicit) throw new Error(`Failed to load communities from ${filePath}: ${e}`);
     return {};
   }
-  let raw: Record<string, CommunityConfig>;
+  let raw: unknown;
   try {
     raw = JSON.parse(content);
   } catch (e) {
     throw new Error(`Invalid communities JSON in ${filePath}: ${e}`);
   }
-  const seen = new Map<string, string>();
-  for (const [id, entry] of Object.entries(raw)) {
-    for (const s of entry?.spaces ?? []) {
-      const k = `${s.surface} ${s.spaceId}`;
-      const owner = seen.get(k);
-      if (owner) throw new Error(`communities: space ${s.surface}/${s.spaceId} is claimed by both "${owner}" and "${id}"`);
-      seen.set(k, id);
-    }
-  }
-  return raw;
+  const communities = parseCommunities(raw);
+  buildCommunityIndex(communities);
+  return communities;
 }
 
 export const config: Config = {

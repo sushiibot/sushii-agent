@@ -5,7 +5,7 @@
 import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
 import { resolveWikiIdForSource } from "../modules/wiki-sync/sources.ts";
-import type { SpaceMemoryStore } from "../core/contracts.ts";
+import { ownerPrincipalId } from "./principals.ts";
 import { resolveCommunity, type CommunitySpace } from "./communities.ts";
 
 export interface SpaceConfigView {
@@ -15,17 +15,19 @@ export interface SpaceConfigView {
 }
 
 export interface TeamConfigView {
-  team?: { id: string; trustedMembers: string[]; linear: string; wiki?: string };
+  team?: { id: string; owner?: string; trustedMembers: string[]; linear: string; wiki?: string };
   spaces: SpaceConfigView[];
 }
 
-type MemoryCounts = Pick<SpaceMemoryStore, "count" | "getServerContext">;
+/** Per-space aggregate counts only, never memory content — the tool builds this from
+ *  ctx.memory.count/getServerContext so a count can't leak what a space actually stored. */
+export type SpaceStats = (spaceId: string) => { memoryEntries: number; contextChars: number };
 
 function list(values: string[] | undefined): string {
   return values && values.length > 0 ? values.join(", ") : "(none)";
 }
 
-function surfaceSettings(surface: string, spaceId: string): [string, string][] {
+function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [string, string][] {
   if (surface === "discord") {
     const cfg = config.guildConfig[spaceId];
     if (!cfg) return [["guild config", "(none — not in guild-config.json)"]];
@@ -36,15 +38,19 @@ function surfaceSettings(surface: string, spaceId: string): [string, string][] {
       ["emojis", cfg.emojis?.length ? `${cfg.emojis.length} configured` : "(none)"],
     ];
     if (cfg.modRoleId) {
-      out.push(
-        ["auto-mod", `mod role ${cfg.modRoleId}, alerts channel ${cfg.alertsChannelId ?? "(unset)"}${cfg.autoModDryRun ? ", dry run" : ""}`],
-        ["auto-mod immune roles", list(cfg.modImmuneRoleIds)],
-        ["auto-mod trigger roles", cfg.autoModTriggerRoleIds?.length ? cfg.autoModTriggerRoleIds.join(", ") : "(anyone)"],
-        ["new member threshold", `${cfg.newMemberThresholdDays ?? 3} days`],
-        ["auto-mod cooldown", `${cfg.autoModCooldownSeconds ?? 60}s`],
-      );
+      if (detailed) {
+        out.push(
+          ["auto-mod", `mod role ${cfg.modRoleId}, alerts channel ${cfg.alertsChannelId ?? "(unset)"}${cfg.autoModDryRun ? ", dry run" : ""}`],
+          ["auto-mod immune roles", list(cfg.modImmuneRoleIds)],
+          ["auto-mod trigger roles", cfg.autoModTriggerRoleIds?.length ? cfg.autoModTriggerRoleIds.join(", ") : "(anyone)"],
+          ["new member threshold", `${cfg.newMemberThresholdDays ?? 3} days`],
+          ["auto-mod cooldown", `${cfg.autoModCooldownSeconds ?? 60}s`],
+        );
+      } else {
+        out.push(["auto-mod", "configured (details only in a DM)"]);
+      }
     }
-    if (cfg.mcpBridgeAllowedUserIds?.length) out.push(["MCP bridge users", cfg.mcpBridgeAllowedUserIds.join(", ")]);
+    if (detailed && cfg.mcpBridgeAllowedUserIds?.length) out.push(["MCP bridge users", cfg.mcpBridgeAllowedUserIds.join(", ")]);
     if (cfg.wiki?.statusChannelId) out.push(["wiki status channel", cfg.wiki.statusChannelId]);
     return out;
   }
@@ -60,33 +66,39 @@ function surfaceSettings(surface: string, spaceId: string): [string, string][] {
   return [];
 }
 
-function spaceView(space: CommunitySpace, memory: MemoryCounts): SpaceConfigView {
-  const context = memory.getServerContext(space.spaceId);
+function spaceView(space: CommunitySpace, stats: SpaceStats, detailed: boolean): SpaceConfigView {
+  const { memoryEntries, contextChars } = stats(space.spaceId);
   return {
     surface: space.surface,
     spaceId: space.spaceId,
     settings: [
-      ...surfaceSettings(space.surface, space.spaceId),
+      ...surfaceSettings(space.surface, space.spaceId, detailed),
       ["feeds wiki", resolveWikiIdForSource(space.surface, space.spaceId) ?? "(none)"],
-      ["server context", context ? `${context.length} chars` : "(not scanned)"],
-      ["memory entries", String(memory.count(space.spaceId))],
+      ["server context", contextChars > 0 ? `${contextChars} chars` : "(not scanned)"],
+      ["memory entries", String(memoryEntries)],
     ],
   };
 }
 
 /** The config of the team owning (surface, spaceId), or of that space alone when it has no team.
- *  Never includes secrets: a Linear account shows only its team id. */
-export function resolveTeamConfig(surface: string, spaceId: string, memory: MemoryCounts): TeamConfigView {
+ *  Never includes secrets: a Linear account shows only its team id. `detailed` gates auto-mod
+ *  internals and MCP bridge user ids — false outside a private context, since an authorized caller
+ *  may run this in a public channel where posting mod-evasion details to moderated users is unsafe. */
+export function resolveTeamConfig(surface: string, spaceId: string, stats: SpaceStats, detailed = false): TeamConfigView {
   const community = resolveCommunity(surface, spaceId);
-  if (!community) return { spaces: [spaceView({ surface, spaceId }, memory)] };
+  if (!community) return { spaces: [spaceView({ surface, spaceId }, stats, detailed)] };
+  const owner = ownerPrincipalId();
   return {
     team: {
       id: community.id,
-      trustedMembers: Object.entries(community.members ?? {}).filter(([, m]) => m.trusted).map(([id]) => id),
+      owner,
+      trustedMembers: Object.entries(community.members ?? {})
+        .filter(([id, m]) => m.trusted && id !== owner)
+        .map(([id]) => id),
       linear: community.linear ? `team ${community.linear.teamId}` : "(default)",
       wiki: community.wiki?.wikiId,
     },
-    spaces: community.spaces.map((s) => spaceView(s, memory)),
+    spaces: community.spaces.map((s) => spaceView(s, stats, detailed)),
   };
 }
 
@@ -94,7 +106,8 @@ export function renderTeamConfig(view: TeamConfigView, current: { surface: strin
   const lines: string[] = [];
   if (view.team) {
     lines.push(`Team: ${view.team.id}`);
-    lines.push(`- trusted members: ${list(view.team.trustedMembers)}`);
+    if (view.team.owner) lines.push(`- owner: ${view.team.owner}`);
+    lines.push(`- trusted members (besides owner): ${list(view.team.trustedMembers)}`);
     lines.push(`- linear: ${view.team.linear}`);
     if (view.team.wiki) lines.push(`- wiki: ${view.team.wiki}`);
   } else {

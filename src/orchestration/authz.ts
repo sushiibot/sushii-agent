@@ -49,8 +49,10 @@ const OWNER_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "session.stop",
 ]);
 
-/** Surface prefix of a `surface:spaceId` key. spaceIds never contain ":", so the first segment is
- *  the surface. */
+/** Surface prefix of a `surface:spaceId` key. A spaceId itself CAN contain ":" (buzz's is
+ *  `buzz:https://relay.example`), so this only ever splits on the FIRST colon — the surface is
+ *  everything before it, the spaceId is everything after. Don't change the split to "no colons in
+ *  spaceId". */
 function surfaceOf(space: string): string {
   const i = space.indexOf(":");
   return i === -1 ? space : space.slice(0, i);
