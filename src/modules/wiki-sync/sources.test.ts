@@ -141,6 +141,19 @@ describe("getWikiSources", () => {
     expect(map.get("wiki1")).toEqual([{ surface: "discord", spaceId: "g1", statusChannelId: "team" }]);
   });
 
+  test("a team source space without its own statusChannelId falls back to guild-config's", () => {
+    config.guildConfig = { g1: wikiGuild({ wiki: { statusChannelId: "guild-config" } }) };
+    config.wikiSync.sources = {};
+    config.teams = {
+      dreamcatcher: {
+        spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
+        wiki: { wikiId: "wiki1" },
+      },
+    };
+
+    expect(getWikiSources().get("wiki1")).toEqual([{ surface: "discord", spaceId: "g1", statusChannelId: "guild-config" }]);
+  });
+
   test("a team READ space that disagrees with a conflicting explicit entry still warns once, even though it isn't itself swept", () => {
     config.guildConfig = {};
     config.wikiSync.sources = { "legacy-wiki": { sources: [{ surface: "slack", spaceId: "T1" }] } };
