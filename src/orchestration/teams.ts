@@ -1,0 +1,206 @@
+// Team concept: an admin-declared grouping of one team's spaces (a Discord guild, a Slack
+// team, a buzz relay) plus its per-team scoping (its own Linear account, its wiki reference),
+// hand-maintained in teams.json (path via TEAMS_PATH, mirroring PRINCIPALS_PATH). The
+// file IS the source of truth — no discovery. Resolves (surface, spaceId) → team for
+// per-scope ops-triage (Linear) routing.
+//
+// HARD WALL: this module MUST NOT be reachable from the memory-scope path (banks.ts / agentCore's
+// memoryScope). A team groups multiple surfaces; if a memory spaceId resolved through it,
+// `sushii-space-<spaceId>` would merge public facts across Discord/Slack/buzz memberships.
+import { config } from "../config.ts";
+import { normalizeRelayUrl } from "../surfaces/buzz/relayUrl.ts";
+
+export interface TeamSpace {
+  surface: string;
+  spaceId: string;
+  /** This space's role in the team's wiki (`team.wiki.wikiId`): "source" feeds and reads it,
+   *  "read" only reads it. Absent → this space has no wiki via the team (legacy env-map fallbacks
+   *  in wiki-sync/sources.ts may still apply). */
+  wiki?: "source" | "read";
+  /** This space's own wiki-sync status channel, overriding the guild-config fallback. */
+  statusChannelId?: string;
+}
+
+/** Vetted people beyond the owner. `trusted: true` = the elevated set (same tools the owner gets),
+ *  scoped to this team's spaces. Deliberately flat — no per-capability granularity. */
+export type TeamMembers = Record<string, { trusted?: boolean }>;
+
+/** A team's Linear account. `apiKeyEnv` names the env var read at resolve time (linear.ts); a
+ *  literal `apiKey` is still accepted but deprecated (warns at load). */
+export interface TeamLinear {
+  teamId: string;
+  apiKeyEnv?: string;
+  apiKey?: string;
+}
+
+/** Raw per-team entry as it appears in teams.json (keyed by team id). */
+export interface TeamConfig {
+  spaces: TeamSpace[];
+  /** Reference to an existing wiki (wikiId == guildId). Does NOT drive wiki-sync source derivation. */
+  wiki?: { wikiId: string };
+  /** This team's own Linear account. Absent → ops-triage falls through to the default (SUSHI). */
+  linear?: TeamLinear;
+  /** Authorized principals in this team, keyed by principalId. */
+  members?: TeamMembers;
+}
+
+export interface Team {
+  id: string;
+  spaces: TeamSpace[];
+  wiki?: { wikiId: string };
+  linear?: TeamLinear;
+  members?: TeamMembers;
+}
+
+interface TeamIndex {
+  bySpace: Map<string, Team>;
+}
+
+function keyOf(surface: string, spaceId: string): string {
+  return `${surface} ${spaceId}`;
+}
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function normalizeSpaceId(surface: string, spaceId: string): string {
+  return surface === "buzz" && spaceId.startsWith("buzz:")
+    ? `buzz:${normalizeRelayUrl(spaceId.slice("buzz:".length))}`
+    : spaceId;
+}
+
+function parseLinear(id: string, linearRaw: unknown): TeamLinear | undefined {
+  if (linearRaw === undefined) return undefined;
+  if (!isPlainObject(linearRaw) || !isNonEmptyString(linearRaw["teamId"])) {
+    throw new Error(`teams: "${id}".linear must be {teamId: string, apiKeyEnv?: string, apiKey?: string}`);
+  }
+  const apiKeyEnvRaw = linearRaw["apiKeyEnv"];
+  if (apiKeyEnvRaw !== undefined && !isNonEmptyString(apiKeyEnvRaw)) {
+    throw new Error(`teams: "${id}".linear.apiKeyEnv must be a string`);
+  }
+  const apiKeyRaw = linearRaw["apiKey"];
+  if (apiKeyRaw !== undefined && !isNonEmptyString(apiKeyRaw)) {
+    throw new Error(`teams: "${id}".linear.apiKey must be a string`);
+  }
+  return { teamId: linearRaw["teamId"], apiKeyEnv: apiKeyEnvRaw, apiKey: apiKeyRaw };
+}
+
+/** Validate + normalize the raw teams.json shape, called at config load. Buzz spaceIds are
+ *  normalized the same way as the relay poll loop's cursor key, so `buzz:wss://Relay.Example/` and
+ *  `buzz:https://relay.example` collide as the same space instead of silently splitting one
+ *  team's config across two keys. Throws `Error("teams: <reason>")` on any shape violation. */
+export function parseTeams(raw: unknown): Record<string, TeamConfig> {
+  if (!isPlainObject(raw)) throw new Error("teams: top-level value must be an object");
+
+  const out: Record<string, TeamConfig> = {};
+  for (const [id, entryRaw] of Object.entries(raw)) {
+    if (!isPlainObject(entryRaw)) throw new Error(`teams: entry "${id}" must be an object`);
+
+    const spacesRaw = entryRaw["spaces"];
+    if (!Array.isArray(spacesRaw)) throw new Error(`teams: "${id}".spaces must be an array`);
+    const spaces: TeamSpace[] = spacesRaw.map((s, i) => {
+      if (!isPlainObject(s) || !isNonEmptyString(s["surface"]) || !isNonEmptyString(s["spaceId"])) {
+        throw new Error(`teams: "${id}".spaces[${i}] must be {surface: string, spaceId: string}`);
+      }
+      const wikiRaw = s["wiki"];
+      if (wikiRaw !== undefined && wikiRaw !== "source" && wikiRaw !== "read") {
+        throw new Error(`teams: "${id}".spaces[${i}].wiki must be "source" or "read"`);
+      }
+      const statusChannelIdRaw = s["statusChannelId"];
+      if (statusChannelIdRaw !== undefined && !isNonEmptyString(statusChannelIdRaw)) {
+        throw new Error(`teams: "${id}".spaces[${i}].statusChannelId must be a string`);
+      }
+      return {
+        surface: s["surface"],
+        spaceId: normalizeSpaceId(s["surface"], s["spaceId"]),
+        wiki: wikiRaw as TeamSpace["wiki"],
+        statusChannelId: statusChannelIdRaw,
+      };
+    });
+
+    const membersRaw = entryRaw["members"];
+    let members: TeamMembers | undefined;
+    if (membersRaw !== undefined) {
+      if (!isPlainObject(membersRaw)) throw new Error(`teams: "${id}".members must be an object`);
+      for (const [principalId, m] of Object.entries(membersRaw)) {
+        if (!isPlainObject(m)) throw new Error(`teams: "${id}".members["${principalId}"] must be an object`);
+        if (m["trusted"] !== undefined && typeof m["trusted"] !== "boolean") {
+          throw new Error(`teams: "${id}".members["${principalId}"].trusted must be a boolean`);
+        }
+      }
+      members = membersRaw as TeamMembers;
+    }
+
+    out[id] = {
+      spaces,
+      wiki: entryRaw["wiki"] as TeamConfig["wiki"],
+      linear: parseLinear(id, entryRaw["linear"]),
+      members,
+    };
+  }
+  return out;
+}
+
+/** Build the reverse (surface, spaceId) → team index, enforcing that no space is claimed by two
+ *  teams. Throws on a duplicate — surfaced at config load (config.ts) and on the lazy rebuild. */
+export function buildTeamIndex(teams: Record<string, TeamConfig>): TeamIndex {
+  const bySpace = new Map<string, Team>();
+  for (const [id, entry] of Object.entries(teams)) {
+    const team: Team = { id, spaces: entry?.spaces ?? [], wiki: entry?.wiki, linear: entry?.linear, members: entry?.members };
+    for (const s of team.spaces) {
+      const k = keyOf(s.surface, s.spaceId);
+      const existing = bySpace.get(k);
+      if (existing) {
+        throw new Error(`teams: space ${s.surface}/${s.spaceId} is claimed by both "${existing.id}" and "${id}"`);
+      }
+      bySpace.set(k, team);
+    }
+  }
+  return { bySpace };
+}
+
+// Reference-identity cache: rebuilt only when `config.teams` is REASSIGNED (never mutate the
+// map in place — an in-place edit leaves this index stale). Lazy so config load order is irrelevant
+// and tests can swap the whole map between cases. Same pattern as principals.ts.
+let cache: { source: Record<string, TeamConfig>; index: TeamIndex } | null = null;
+
+function index(): TeamIndex {
+  if (!cache || cache.source !== config.teams) {
+    cache = { source: config.teams, index: buildTeamIndex(config.teams) };
+  }
+  return cache.index;
+}
+
+/** Resolve (surface, spaceId) → its team, or undefined when the space belongs to none. */
+export function resolveTeam(surface: string, spaceId: string): Team | undefined {
+  if (spaceId.length === 0) return undefined;
+  return index().bySpace.get(keyOf(surface, spaceId));
+}
+
+/** Whether `principalId` is a trusted member of the team that owns (surface, spaceId). Pure;
+ *  false when the space belongs to no team or the principal isn't listed as trusted there. */
+export function isTeamMember(principalId: string, surface: string, spaceId: string): boolean {
+  return resolveTeam(surface, spaceId)?.members?.[principalId]?.trusted === true;
+}
+
+/** All teams, by id — for a DM listing where there's no (surface, spaceId) to resolve from. */
+export function listTeams(): Team[] {
+  return Object.entries(config.teams).map(([id, entry]) => ({
+    id,
+    spaces: entry.spaces ?? [],
+    wiki: entry.wiki,
+    linear: entry.linear,
+    members: entry.members,
+  }));
+}
+
+/** A team by its own id, independent of any space — for a DM's `team` lookup. */
+export function getTeam(teamId: string): Team | undefined {
+  const entry = Object.hasOwn(config.teams, teamId) ? config.teams[teamId] : undefined;
+  return entry ? { id: teamId, spaces: entry.spaces ?? [], wiki: entry.wiki, linear: entry.linear, members: entry.members } : undefined;
+}

@@ -182,7 +182,7 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
     expect(privateNonAuth).not.toContain("update_profile");
   });
 
-  // A community-trusted member is authorized for runner + ops tools but must NOT reach update_profile
+  // A team-trusted member is authorized for runner + ops tools but must NOT reach update_profile
   // (that stays behind the owner-DM gate — a trusted member is not the owner).
   test("a trusted member (authorized, not owner) gets runner + ops tools but never update_profile", () => {
     const names = registry()

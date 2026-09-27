@@ -276,7 +276,7 @@ describe("runner tools: registry-level availability gate (authorized flag decide
 describe("dispatch_to_runner: confirm-before-dispatch for non-owner members", () => {
   const prevOwner = config.ownerDiscordId;
   const prevPrincipals = config.principals;
-  const prevCommunities = config.communities;
+  const prevTeams = config.teams;
   const DRK = "111";
   const MEMBER = "222";
   const GUILD = { surface: "discord", spaceId: "dc-guild" };
@@ -291,7 +291,7 @@ describe("dispatch_to_runner: confirm-before-dispatch for non-owner members", ()
   beforeEach(() => {
     config.ownerDiscordId = undefined;
     config.principals = { drk: { owner: true, identities: { discord: DRK } }, member: { identities: { discord: MEMBER } } };
-    config.communities = { dc: { spaces: [{ surface: "discord", spaceId: GUILD.spaceId }], members: { member: { trusted: true } } } };
+    config.teams = { dc: { spaces: [{ surface: "discord", spaceId: GUILD.spaceId }], members: { member: { trusted: true } } } };
     dispatched.length = 0;
     fakeDispatcher.dispatch = async (input) => {
       dispatched.push(input as never);
@@ -301,7 +301,7 @@ describe("dispatch_to_runner: confirm-before-dispatch for non-owner members", ()
   afterEach(() => {
     config.ownerDiscordId = prevOwner;
     config.principals = prevPrincipals;
-    config.communities = prevCommunities;
+    config.teams = prevTeams;
     fakeDispatcher.dispatch = realDispatch;
     _resetParkedDispatches();
   });

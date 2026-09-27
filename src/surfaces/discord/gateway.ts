@@ -313,7 +313,8 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
 
   /** Owner-only DM conductor turn: builds a personal `spaceId` ("dm") that authz.isPersonalSpace
    *  accepts, then runs the normal core loop — runner tools (dispatch_to_runner/resume_session/...)
-   *  become available via the tool registry's isPersonalSpace gate. Never touches the guild path. */
+   *  become available via the tool registry's `authorized` gate (owner OR a trusted team member).
+   *  Never touches the guild path. */
   async function handleOwnerDm(message: Message): Promise<void> {
     if (!message.channel.isSendable()) return;
     const channel = message.channel;

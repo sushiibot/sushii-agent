@@ -1,6 +1,6 @@
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
-import { resolveCommunity } from "../../orchestration/communities.ts";
+import { resolveTeam } from "../../orchestration/teams.ts";
 import { getWikiSyncEnabledGuildIds } from "./guilds.ts";
 
 const logger = getLogger("wiki-sync:sources");
@@ -29,13 +29,13 @@ function splitSpaceKey(key: string): [surface: string, spaceId: string] {
   return [key.slice(0, i), key.slice(i + 1)];
 }
 
-/** The team (community) assignment for a space, or undefined when the team either doesn't exist,
+/** The team's wiki assignment for a space, or undefined when the team either doesn't exist,
  *  has no `wiki.wikiId`, or this space has no `wiki` role in it. */
 function teamWikiFor(surface: string, spaceId: string): WikiAssignment | undefined {
-  const community = resolveCommunity(surface, spaceId);
-  const wikiId = community?.wiki?.wikiId;
+  const team = resolveTeam(surface, spaceId);
+  const wikiId = team?.wiki?.wikiId;
   if (!wikiId) return undefined;
-  const space = community.spaces.find((s) => s.surface === surface && s.spaceId === spaceId);
+  const space = team.spaces.find((s) => s.surface === surface && s.spaceId === spaceId);
   if (!space?.wiki) return undefined;
   return { wikiId, feeds: space.wiki === "source", reads: true };
 }
@@ -89,7 +89,7 @@ function warnOnceOnDisagreement(surface: string, spaceId: string, teamWikiId: st
 
 /**
  * The wiki a `(surface, spaceId)` space feeds and/or reads, or undefined when it has none.
- * The owning team's `wiki` fields (communities.json) are the source of truth; the legacy env
+ * The owning team's `wiki` fields (teams.json) are the source of truth; the legacy env
  * maps (`WIKI_SYNC_SOURCES`, `BUZZ_WIKI_MAP`, a Discord guild's own wiki-sync module) apply only
  * when the team says nothing. If both are configured for the same space and disagree, the team
  * wins and one warning is logged (not per call).
@@ -119,7 +119,7 @@ export function getWikiSources(): Map<string, WikiSource[]> {
   // of its own (only "source" spaces feed the sweep).
   const teamClaimed = new Map<string, string>();
 
-  for (const entry of Object.values(config.communities)) {
+  for (const entry of Object.values(config.teams)) {
     const wikiId = entry.wiki?.wikiId;
     if (!wikiId) continue;
     for (const space of entry.spaces) {

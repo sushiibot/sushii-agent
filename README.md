@@ -92,7 +92,28 @@ docker compose up -d      # or Docker (./data volume for SQLite)
 | `DATABASE_PATH` | no | `./data/sushii-agent.db` | SQLite path |
 | `GUILD_CONFIG_PATH` | no | `./guild-config.json` | Path to the per-guild config JSON (`allowedRoles`, `emojis`, `promptTemplate`, `enabledModules`, `wiki.statusChannelId`, ...) |
 | `PRINCIPALS_PATH` | no | `./principals.json` | Path to the manual cross-platform identity registry; missing file = unconfigured |
-| `COMMUNITIES_PATH` | no | `./communities.json` | Path to the community grouping config; missing file = unconfigured |
+| `TEAMS_PATH` | no | `./teams.json` | Path to the team grouping config; missing file falls back to the deprecated `COMMUNITIES_PATH`/`./communities.json`, then unconfigured |
+| `COMMUNITIES_PATH` | no | `./communities.json` | **Deprecated** — legacy fallback for `TEAMS_PATH`; setting both throws |
+
+A `teams.json` entry groups a team's spaces (Discord guild, Slack workspace, buzz relay) plus its
+own wiki/Linear scoping and trusted members:
+
+```json
+{
+  "dreamcatcher": {
+    "spaces": [
+      { "surface": "discord", "spaceId": "123456789012345678", "wiki": "source", "statusChannelId": "234567890123456789" },
+      { "surface": "slack", "spaceId": "T000TEAMA0", "wiki": "read" }
+    ],
+    "wiki": { "wikiId": "123456789012345678" },
+    "members": { "some-principal-id": { "trusted": true } },
+    "linear": { "teamId": "DREAM", "apiKeyEnv": "DREAMCATCHER_LINEAR_API_KEY" }
+  }
+}
+```
+
+`linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time (a
+literal `linear.apiKey` is still accepted but deprecated).
 
 ## Architecture
 

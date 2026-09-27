@@ -140,7 +140,7 @@ export const dispatchToRunnerEntry: ToolEntry = {
   },
 };
 
-/** Owners dispatch directly; a community-trusted non-owner must confirm first. */
+/** Owners dispatch directly; a team-trusted non-owner must confirm first. */
 function needsConfirmation(ctx: ToolContext): boolean {
   if (!ctx.owner) return false;
   return !resolvePrincipal(ctx.space.surface, ctx.owner.userId)?.isOwner;
@@ -179,7 +179,7 @@ export const listRunningSessionsEntry: ToolEntry = {
   name: "list_running_sessions",
   definition: {
     name: "list_running_sessions",
-    description: "List your currently running or idle background runner tasks. Owner-only, personal spaces only.",
+    description: "List your currently running or idle background runner tasks. Available to authorized callers (owner or a trusted team member) in any space.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   requiresHosts: [],
@@ -210,7 +210,7 @@ export const listRunnersEntry: ToolEntry = {
   name: "list_runners",
   definition: {
     name: "list_runners",
-    description: "List connected runners: what each can do (capabilities such as `browser`), whether it can clone repos / run scratch tasks, and the on-disk projects it declares. Use this to answer 'what can you work on' / 'can you use a browser', and to resolve a project name (e.g. 'sushii-sns') to its runner + path before dispatch_to_runner. Owner-only, personal spaces only.",
+    description: "List connected runners: what each can do (capabilities such as `browser`), whether it can clone repos / run scratch tasks, and the on-disk projects it declares. Use this to answer 'what can you work on' / 'can you use a browser', and to resolve a project name (e.g. 'sushii-sns') to its runner + path before dispatch_to_runner. Available to authorized callers (owner or a trusted team member) in any space.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   requiresHosts: [],
@@ -248,7 +248,7 @@ export const readSessionEntry: ToolEntry = {
   name: "read_session",
   definition: {
     name: "read_session",
-    description: "Read one of your background runner tasks by id — status and last handback summary. Owner-only, personal spaces only.",
+    description: "Read one of your background runner tasks by id — status and last handback summary. Available to authorized callers (owner or a trusted team member) in any space.",
     parameters: {
       type: "object",
       properties: { task_id: { type: "string", description: "The task id returned by dispatch_to_runner." } },
@@ -283,7 +283,7 @@ export const resumeSessionEntry: ToolEntry = {
   name: "resume_session",
   definition: {
     name: "resume_session",
-    description: "Continue ONE specific existing task with a follow-up prompt, in that task's SAME worktree/branch/PR. Owner-only, personal spaces only. Use this ONLY when the user explicitly refers to continuing a particular task ('continue that', 'follow up on the X task', 'the last one'). A new or separate change request — even on the same repo — is a fresh dispatch_to_runner, NOT a resume (resuming would fold unrelated work into the earlier task's PR). When the user names a task by description/recency rather than id, call list_running_sessions first to resolve the id — don't ask for the raw id.",
+    description: "Continue ONE specific existing task with a follow-up prompt, in that task's SAME worktree/branch/PR. Available to authorized callers (owner or a trusted team member) in any space. Use this ONLY when the user explicitly refers to continuing a particular task ('continue that', 'follow up on the X task', 'the last one'). A new or separate change request — even on the same repo — is a fresh dispatch_to_runner, NOT a resume (resuming would fold unrelated work into the earlier task's PR). When the user names a task by description/recency rather than id, call list_running_sessions first to resolve the id — don't ask for the raw id.",
     parameters: {
       type: "object",
       properties: {

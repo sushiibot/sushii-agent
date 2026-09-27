@@ -1,6 +1,9 @@
 import { LinearClient, LinearDocument, type Issue } from "@linear/sdk";
 import { config } from "../../config.ts";
-import { resolveCommunity } from "../../orchestration/communities.ts";
+import { getLogger } from "../../logger.ts";
+import { resolveTeam, type TeamLinear } from "../../orchestration/teams.ts";
+
+const logger = getLogger("ops-triage:linear");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -9,12 +12,45 @@ export interface LinearAccount {
   teamId: string;
 }
 
-/** Pure account resolution (offline, no network). The space's community wins with its own Linear;
- *  a community without `linear`, or a space in no community, falls through to the default (SUSHI).
+// Process-lifetime warn dedup: an unset apiKeyEnv is a static config mismatch, not a per-call
+// condition, so a caller hitting resolveLinearAccount repeatedly must not spam identical warnings.
+const warnedUnsetEnv = new Set<string>();
+
+/** Test-only: clears the warn-once cache between cases that reuse the same team id. */
+export function __resetLinearWarnDedup(): void {
+  warnedUnsetEnv.clear();
+}
+
+/** `linear.apiKeyEnv` names the env var to read for this team's key. Unset/empty → the team's
+ *  Linear is treated as fully unconfigured (falls through to the default account, same as when
+ *  `linear` is absent) — it does NOT fall back to a legacy literal `apiKey` on the same entry.
+ *  Only when `apiKeyEnv` is absent entirely does the (deprecated) literal `apiKey` apply. */
+function resolveApiKey(teamId: string, linear: TeamLinear): string | undefined {
+  if (linear.apiKeyEnv) {
+    const fromEnv = process.env[linear.apiKeyEnv];
+    if (fromEnv) return fromEnv;
+    if (!warnedUnsetEnv.has(teamId)) {
+      warnedUnsetEnv.add(teamId);
+      logger.warn(
+        { teamId, apiKeyEnv: linear.apiKeyEnv },
+        "team's linear.apiKeyEnv names an unset/empty env var — falling back to the default Linear account",
+      );
+    }
+    return undefined;
+  }
+  return linear.apiKey;
+}
+
+/** Pure account resolution (offline, no network). The space's team wins with its own Linear;
+ *  a team without `linear`, or a space in no team, falls through to the default (SUSHI).
  *  Never throws — an absent account surfaces only when a call actually needs credentials. */
 export function resolveLinearAccount(surface: string, spaceId: string): LinearAccount {
-  const own = resolveCommunity(surface, spaceId)?.linear;
-  if (own) return own;
+  const team = resolveTeam(surface, spaceId);
+  const own = team?.linear;
+  if (own) {
+    const apiKey = resolveApiKey(team!.id, own);
+    if (apiKey) return { apiKey, teamId: own.teamId };
+  }
   return { apiKey: config.linearApiKey ?? "", teamId: config.linearTeamId ?? "" };
 }
 
@@ -110,11 +146,11 @@ function accountKey(a: LinearAccount): string {
 }
 
 // Cached per account (apiKey+teamId), NOT a single module global — a per-account instance carries its
-// own client AND its own resolved team id, so two communities never share a team.
+// own client AND its own resolved team id, so two teams never share an account.
 const scopedCache = new Map<string, ScopedLinear>();
 
 /** Resolve the Linear client bound to the account for (surface, spaceId). Throws only when NEITHER
- *  the space's community NOR the default has an API key configured. */
+ *  the space's team NOR the default has an API key configured. */
 export function linearFor(surface: string, spaceId: string): ScopedLinear {
   const account = resolveLinearAccount(surface, spaceId);
   if (!account.apiKey) throw new Error("LINEAR_API_KEY is not configured.");

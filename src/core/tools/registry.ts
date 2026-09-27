@@ -72,7 +72,7 @@ export class CoreToolRegistry implements ToolRegistry {
     const a = this.availability();
 
     // Gating for runner/ops-triage + update_profile tools. Runner/session + ops-triage tools gate on
-    // `authorized` (owner OR a community-trusted member) but NOT on DM — authorized callers drive
+    // `authorized` (owner OR a team-trusted member) but NOT on DM — authorized callers drive
     // them from guild channels too; execution stays gated in can(). update_profile stays
     // owner-DM-first (editing the personal profile shouldn't surface in a shared channel, and a
     // trusted member must not reach it).

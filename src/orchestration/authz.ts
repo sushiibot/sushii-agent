@@ -1,10 +1,10 @@
 // Execution authz for runner/session capabilities. Default-deny; grant only when the caller is
-// authorized (the owner in any space, or a principal trusted in the community that owns the
+// authorized (the owner in any space, or a principal trusted in the team that owns the
 // space) and the capability is owner-grantable. NOT DM-restricted — authorized callers drive
 // runners from guild channels too; a shared space grants nothing to a caller not authorized for it.
 import type { AuthzInput, Capability, CanFn } from "./contracts.ts";
 import { ownerPrincipalId, resolvePrincipal } from "./principals.ts";
-import { isCommunityMember } from "./communities.ts";
+import { isTeamMember } from "./teams.ts";
 
 export function spaceKey(surface: string, spaceId: string): string {
   return `${surface}:${spaceId}`;
@@ -37,7 +37,7 @@ function surfaceOf(space: string): string {
 }
 
 /** spaceId suffix of a `surface:spaceId` key — the exact inverse of spaceKey(). No colon → "",
- *  which resolveCommunity rejects (default-deny for a malformed key). */
+ *  which resolveTeam rejects (default-deny for a malformed key). */
 function spaceIdOf(space: string): string {
   const i = space.indexOf(":");
   return i === -1 ? "" : space.slice(i + 1);
@@ -49,23 +49,23 @@ export function isOwnerCaller(principal: string, space: string): boolean {
 }
 
 /** The single authorization predicate (CONFIGURED regime): the caller is authorized when they resolve
- *  to the owner principal (superset, any space) OR to a principal listed as trusted in the community
+ *  to the owner principal (superset, any space) OR to a principal listed as trusted in the team
  *  that owns `space`. Default-deny: an unresolved caller, or a trusted-but-not-owner principal in a
- *  space belonging to no community / a different community, → false. Authorization is by principalId,
+ *  space belonging to no team / a different team, → false. Authorization is by principalId,
  *  so a member's grants span their linked identities across surfaces. */
 export function isAuthorized(surface: string, userId: string, space: string): boolean {
   const resolved = resolvePrincipal(surface, userId);
   if (!resolved) return false;
   if (resolved.isOwner) return true;
-  return isCommunityMember(resolved.principalId, surface, spaceIdOf(space));
+  return isTeamMember(resolved.principalId, surface, spaceIdOf(space));
 }
 
 /** Default-deny: three conjunctions (caller is authorized for this space · capability
  *  owner-grantable · an owner principal exists). Authorized = the owner (any space) OR a principal
- *  trusted in the community that owns the space; NOT space-restricted for the owner, since only the
+ *  trusted in the team that owns the space; NOT space-restricted for the owner, since only the
  *  owner's own principal ever resolves as owner. */
 export const can: CanFn = ({ principal, capability, space }: AuthzInput): boolean => {
-  if (!isAuthorized(surfaceOf(space), principal, space)) return false; // (1) owner OR community-trusted
+  if (!isAuthorized(surfaceOf(space), principal, space)) return false; // (1) owner OR team-trusted
   if (!OWNER_CAPABILITIES.has(capability)) return false; // (2) the capability is owner-grantable
   if (ownerPrincipalId() === undefined) return false; // (3) an owner principal exists at all
   return true;

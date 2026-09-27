@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { config } from "../config.ts";
-import type { CommunityConfig } from "./communities.ts";
+import type { TeamConfig } from "./teams.ts";
 import { buildCapabilitySections, renderCapabilityMap, renderRunnerSection } from "./capabilityPrompt.ts";
 
 describe("renderRunnerSection", () => {
@@ -45,10 +45,10 @@ describe("capability sections follow the resolved tools", () => {
 
 describe("Team section", () => {
   const base = { surface: "slack", spaceId: "T1", userId: "U1", isPrivate: false, isOwner: false, authorized: false, tools: [] };
-  const prevCommunities = config.communities;
+  const prevTeams = config.teams;
 
   beforeEach(() => {
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [
           { surface: "discord", spaceId: "G1" },
@@ -57,19 +57,19 @@ describe("Team section", () => {
         ],
         wiki: { wikiId: "G1" },
         members: { alice: { trusted: true }, bob: {} },
-      } satisfies CommunityConfig,
+      } satisfies TeamConfig,
     };
   });
   afterEach(() => {
-    config.communities = prevCommunities;
+    config.teams = prevTeams;
   });
 
-  test("absent when the space has no community", () => {
+  test("absent when the space has no team", () => {
     const text = buildCapabilitySections({ ...base, spaceId: "T-not-a-team" }) ?? "";
     expect(text).not.toContain("## Team");
   });
 
-  test("present with sibling space kinds and wiki note when the space belongs to a community", () => {
+  test("present with sibling space kinds and wiki note when the space belongs to a team", () => {
     const text = buildCapabilitySections(base) ?? "";
     expect(text).toContain("## Team");
     expect(text).toContain("dreamcatcher");
@@ -96,8 +96,8 @@ describe("Team section", () => {
     }
   });
 
-  test("no wiki note when the community has no wiki", () => {
-    config.communities = { other: { spaces: [{ surface: "slack", spaceId: "T1" }] } };
+  test("no wiki note when the team has no wiki", () => {
+    config.teams = { other: { spaces: [{ surface: "slack", spaceId: "T1" }] } };
     const text = buildCapabilitySections(base) ?? "";
     expect(text).toContain("## Team");
     expect(text).not.toContain("wiki");

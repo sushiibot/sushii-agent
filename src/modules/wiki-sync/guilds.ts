@@ -3,7 +3,7 @@ import { resolvedModules } from "../../guildConfig.ts";
 import type { GuildConfig } from "../../guildConfig.ts";
 
 // Reference-identity cache: rebuilt only when `config.guildConfig` is REASSIGNED (same pattern
-// as communities.ts's `index()`), so this stays O(1) per call on the hot per-message path
+// as teams.ts's `index()`), so this stays O(1) per call on the hot per-message path
 // instead of re-scanning every guild's resolvedModules() on each wikiFor() call.
 let cache: { source: Record<string, GuildConfig>; ids: Set<string> } | null = null;
 

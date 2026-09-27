@@ -1,5 +1,5 @@
 import { buildOpsTriagePromptSection } from "../modules/ops-triage/prompt.ts";
-import { resolveCommunity } from "./communities.ts";
+import { resolveTeam } from "./teams.ts";
 import { getDispatcher } from "./dispatcher.ts";
 
 interface RunnerSummary {
@@ -57,7 +57,7 @@ export interface CapabilityTurn {
   userId: string;
   isPrivate: boolean;
   isOwner: boolean;
-  /** Owner OR a trusted member of this space's community. */
+  /** Owner OR a trusted member of this space's team. */
   authorized: boolean;
   tools: string[];
 }
@@ -68,22 +68,22 @@ const SURFACE_KIND_LABELS: Record<string, string> = {
   buzz: "buzz relay",
 };
 
-/** "## Team" section for a space that belongs to a community: what the other spaces are (kinds,
+/** "## Team" section for a space that belongs to a team: what the other spaces are (kinds,
  *  never raw ids), whether a wiki is shared, and the caller's standing. Undefined outside a
- *  community. Text is stable per space (no timestamps, no member ids) so the prefix stays cacheable. */
+ *  team. Text is stable per space (no timestamps, no member ids) so the prefix stays cacheable. */
 function buildTeamSection(t: CapabilityTurn): string | undefined {
-  const community = resolveCommunity(t.surface, t.spaceId);
-  if (!community) return undefined;
+  const team = resolveTeam(t.surface, t.spaceId);
+  if (!team) return undefined;
 
-  const kinds = [...new Set(community.spaces.map((s) => SURFACE_KIND_LABELS[s.surface] ?? s.surface))];
+  const kinds = [...new Set(team.spaces.map((s) => SURFACE_KIND_LABELS[s.surface] ?? s.surface))];
   const standing = t.isOwner ? "the owner" : t.authorized ? "a trusted member" : "a member";
 
   const lines = [
     "## Team",
-    `This space is part of the team "${community.id}", spanning ${kinds.join(", ")}.`,
+    `This space is part of the team "${team.id}", spanning ${kinds.join(", ")}.`,
     `You are speaking with ${standing} of this team.`,
   ];
-  if (community.wiki) lines.push("The team's wiki is shared across its spaces.");
+  if (team.wiki) lines.push("The team's wiki is shared across its spaces.");
   return lines.join("\n");
 }
 

@@ -1,6 +1,6 @@
 import type { ToolContext, ToolEntry } from "../../contracts.ts";
 import { isAuthorized, isPersonalSpace, spaceKey } from "../../../orchestration/authz.ts";
-import { listCommunities, resolveCommunity } from "../../../orchestration/communities.ts";
+import { listTeams, resolveTeam } from "../../../orchestration/teams.ts";
 import {
   renderTeamConfig,
   renderTeamList,
@@ -51,9 +51,9 @@ export const teamConfigEntry: ToolEntry = {
     // A DM placeholder space (discord "dm") belongs to no team and only the owner is authorized
     // there, so it's the one place a Discord-only team's details can be read privately. A Slack DM's
     // spaceId is its real teamId, so it resolves to that team below instead.
-    if (isPersonalSpace(spaceKey(surface, spaceId)) && !resolveCommunity(surface, spaceId)) {
+    if (isPersonalSpace(spaceKey(surface, spaceId)) && !resolveTeam(surface, spaceId)) {
       const requestedTeam = typeof input.team === "string" ? input.team : undefined;
-      if (!requestedTeam) return { content: renderTeamList(listCommunities().map((c) => c.id)) };
+      if (!requestedTeam) return { content: renderTeamList(listTeams().map((c) => c.id)) };
       const view = resolveTeamConfigById(requestedTeam, stats, detailed);
       return { content: view ? renderTeamConfig(view, ctx.space) : `No team "${requestedTeam}".` };
     }

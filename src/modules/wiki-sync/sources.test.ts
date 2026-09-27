@@ -6,7 +6,7 @@ import { getWikiSources, resolveWikiIdForGuild, wikiFor, __resetWikiWarnDedup } 
 
 const savedGuildConfig = config.guildConfig;
 const savedSources = config.wikiSync.sources;
-const savedCommunities = config.communities;
+const savedTeams = config.teams;
 const savedBuzzWikiMap = config.buzz.wikiMap;
 
 function wikiGuild(overrides: Partial<GuildConfig> = {}): GuildConfig {
@@ -16,7 +16,7 @@ function wikiGuild(overrides: Partial<GuildConfig> = {}): GuildConfig {
 afterEach(() => {
   config.guildConfig = savedGuildConfig;
   config.wikiSync.sources = savedSources;
-  config.communities = savedCommunities;
+  config.teams = savedTeams;
   config.buzz.wikiMap = savedBuzzWikiMap;
   __resetWikiWarnDedup();
 });
@@ -80,7 +80,7 @@ describe("getWikiSources", () => {
   test("includes a team's source spaces, with the space's own statusChannelId", () => {
     config.guildConfig = {};
     config.wikiSync.sources = {};
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [
           { surface: "discord", spaceId: "g1", wiki: "source", statusChannelId: "s1" },
@@ -100,7 +100,7 @@ describe("getWikiSources", () => {
   test("a team source space is not also synthesized as its own single-source wiki", () => {
     config.guildConfig = { g1: wikiGuild() };
     config.wikiSync.sources = {};
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
         wiki: { wikiId: "wiki1" },
@@ -115,7 +115,7 @@ describe("getWikiSources", () => {
   test("a team source space is not also double-ingested via an explicit WIKI_SYNC_SOURCES entry", () => {
     config.guildConfig = {};
     config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
         wiki: { wikiId: "wiki1" },
@@ -130,7 +130,7 @@ describe("getWikiSources", () => {
   test("a team space's statusChannelId wins over an explicit entry's and guild-config's", () => {
     config.guildConfig = { g1: wikiGuild({ wiki: { statusChannelId: "guild-config" } }) };
     config.wikiSync.sources = {};
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1", wiki: "source", statusChannelId: "team" }],
         wiki: { wikiId: "wiki1" },
@@ -144,7 +144,7 @@ describe("getWikiSources", () => {
   test("a team READ space that disagrees with a conflicting explicit entry still warns once, even though it isn't itself swept", () => {
     config.guildConfig = {};
     config.wikiSync.sources = { "legacy-wiki": { sources: [{ surface: "slack", spaceId: "T1" }] } };
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "slack", spaceId: "T1", wiki: "read" }],
         wiki: { wikiId: "team-wiki" },
@@ -167,7 +167,7 @@ describe("getWikiSources", () => {
   test("a team SOURCE space that disagrees with a conflicting explicit entry warns once and keeps the team's wiki (no double ingest)", () => {
     config.guildConfig = {};
     config.wikiSync.sources = { "legacy-wiki": { sources: [{ surface: "discord", spaceId: "g1" }] } };
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
         wiki: { wikiId: "team-wiki" },
@@ -199,7 +199,7 @@ describe("getWikiSources", () => {
 
 describe("wikiFor", () => {
   test("team source space feeds and reads the team's wiki", () => {
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
         wiki: { wikiId: "wiki1" },
@@ -209,7 +209,7 @@ describe("wikiFor", () => {
   });
 
   test("team read space reads but does not feed", () => {
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "slack", spaceId: "T1", wiki: "read" }],
         wiki: { wikiId: "wiki1" },
@@ -218,8 +218,8 @@ describe("wikiFor", () => {
     expect(wikiFor("slack", "T1")).toEqual({ wikiId: "wiki1", feeds: false, reads: true });
   });
 
-  test("a team space with no wiki role has no wiki, even when the community has one", () => {
-    config.communities = {
+  test("a team space with no wiki role has no wiki, even when the team has one", () => {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1" }],
         wiki: { wikiId: "wiki1" },
@@ -229,32 +229,32 @@ describe("wikiFor", () => {
   });
 
   test("falls back to an explicit WIKI_SYNC_SOURCES entry when the team has no wiki fields", () => {
-    config.communities = {};
+    config.teams = {};
     config.guildConfig = { g1: wikiGuild() };
     config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
     expect(wikiFor("discord", "g1")).toEqual({ wikiId: "shared", feeds: true, reads: true });
   });
 
   test("falls back to BUZZ_WIKI_MAP (read-only) for a buzz relay", () => {
-    config.communities = {};
+    config.teams = {};
     config.buzz.wikiMap = { "relay.example": "g1" };
     expect(wikiFor("buzz", "buzz:relay.example")).toEqual({ wikiId: "g1", feeds: false, reads: true });
   });
 
   test("BUZZ_WIKI_MAP keys the bare 'buzz' spaceId as 'default'", () => {
-    config.communities = {};
+    config.teams = {};
     config.buzz.wikiMap = { default: "g1" };
     expect(wikiFor("buzz", "buzz")).toEqual({ wikiId: "g1", feeds: false, reads: true });
   });
 
   test("falls back to a Discord guild's own wiki-sync-enabled self-wiki", () => {
-    config.communities = {};
+    config.teams = {};
     config.guildConfig = { g1: wikiGuild() };
     expect(wikiFor("discord", "g1")).toEqual({ wikiId: "g1", feeds: true, reads: true });
   });
 
   test("a space with neither a team wiki nor a legacy mapping has none", () => {
-    config.communities = {};
+    config.teams = {};
     config.guildConfig = {};
     config.wikiSync.sources = {};
     config.buzz.wikiMap = {};
@@ -262,7 +262,7 @@ describe("wikiFor", () => {
   });
 
   test("team wins over a disagreeing legacy mapping, and warns exactly once across repeated calls", () => {
-    config.communities = {
+    config.teams = {
       dreamcatcher: {
         spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
         wiki: { wikiId: "team-wiki" },
@@ -283,7 +283,7 @@ describe("wikiFor", () => {
   });
 
   test("an explicit WIKI_SYNC_SOURCES entry for a Discord guild without wiki-sync enabled grants no fs host", () => {
-    config.communities = {};
+    config.teams = {};
     config.guildConfig = { g1: { allowedRoles: [] } };
     config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
 
@@ -291,7 +291,7 @@ describe("wikiFor", () => {
   });
 
   test("an explicit WIKI_SYNC_SOURCES entry for a Discord guild WITH wiki-sync enabled still grants an fs host", () => {
-    config.communities = {};
+    config.teams = {};
     config.guildConfig = { g1: wikiGuild() };
     config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
 

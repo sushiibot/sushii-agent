@@ -1,8 +1,8 @@
 export { type GuildConfig, getPermittedGuildIds, buildEmojiMap, resolvedModules } from "./guildConfig.ts";
 import type { GuildConfig } from "./guildConfig.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
-import type { CommunityConfig } from "./orchestration/communities.ts";
-import { parseCommunities, buildCommunityIndex } from "./orchestration/communities.ts";
+import type { TeamConfig } from "./orchestration/teams.ts";
+import { parseTeams, buildTeamIndex } from "./orchestration/teams.ts";
 import { parseRelayUrls, parseWikiMap, parseAvatarMap } from "./surfaces/buzz/relayUrl.ts";
 import { getLogger } from "./logger.ts";
 
@@ -30,10 +30,11 @@ export interface Config {
    *  a single owner principal is synthesized from it. Neither set → empty map, nobody is owner
    *  (default deny). See loadPrincipals below and orchestration/principals.ts. */
   principals: Record<string, PrincipalConfig>;
-  /** Community grouping (community id → its spaces + per-community scoping), hand-maintained in
-   *  communities.json (path via COMMUNITIES_PATH). Empty/unset → unconfigured; ops-triage Linear
-   *  routing falls through to the global default. See orchestration/communities.ts. */
-  communities: Record<string, CommunityConfig>;
+  /** Team grouping (team id → its spaces + per-team scoping), hand-maintained in teams.json
+   *  (path via TEAMS_PATH, falling back to the legacy COMMUNITIES_PATH). Empty/unset →
+   *  unconfigured; ops-triage Linear routing falls through to the global default. See
+   *  orchestration/teams.ts. */
+  teams: Record<string, TeamConfig>;
   sushiiMcpUrl: string | undefined;
   sushiiMcpToken: string | undefined;
   /** mnemosyne MCP server (streamable-http). Unset → the semantic memory backend is disabled and
@@ -41,7 +42,8 @@ export interface Config {
   mnemosyneMcpUrl: string | undefined;
   mnemosyneMcpToken: string | undefined;
   exaApiKey: string | undefined;
-  /** Discord user ID allowed to invoke ops-triage tools — gate is enforced at tool-execution time, not just list-assembly. */
+  /** Seeds the synthesized owner principal when principals.json is absent (see resolveOwnerPrincipals),
+   *  and drives owner-DM routing in the Discord gateway. Does not itself gate any tool. */
   ownerDiscordId: string | undefined;
   linearApiKey: string | undefined;
   linearTeamId: string | undefined;
@@ -191,29 +193,67 @@ function loadPrincipals(): Record<string, PrincipalConfig> {
   return resolveOwnerPrincipals(raw, process.env["OWNER_DISCORD_ID"]);
 }
 
-/** Load + validate the community grouping. A missing DEFAULT file means "unconfigured" (empty); an
- *  explicitly-set COMMUNITIES_PATH that can't be read or parsed throws. Shape validation and buzz
- *  spaceId normalization live in parseCommunities (communities.ts); buildCommunityIndex then runs
- *  on the normalized output so two spellings of one relay collide as a duplicate at boot, not later. */
-function loadCommunities(): Record<string, CommunityConfig> {
-  const explicit = process.env["COMMUNITIES_PATH"];
-  const filePath = explicit ?? "./communities.json";
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf8");
-  } catch (e) {
-    if (explicit) throw new Error(`Failed to load communities from ${filePath}: ${e}`);
-    return {};
-  }
+function parseTeamsJson(content: string, filePath: string): Record<string, TeamConfig> {
   let raw: unknown;
   try {
     raw = JSON.parse(content);
   } catch (e) {
-    throw new Error(`Invalid communities JSON in ${filePath}: ${e}`);
+    throw new Error(`Invalid teams JSON in ${filePath}: ${e}`);
   }
-  const communities = parseCommunities(raw);
-  buildCommunityIndex(communities);
-  return communities;
+  const teams = parseTeams(raw);
+  buildTeamIndex(teams);
+  for (const [id, entry] of Object.entries(teams)) {
+    if (entry.linear?.apiKey) {
+      logger.warn({ teamId: id }, "teams.json linear.apiKey is a literal key — deprecated, use linear.apiKeyEnv instead");
+    }
+  }
+  return teams;
+}
+
+/** Load + validate the team grouping. TEAMS_PATH (default ./teams.json) is primary; when it's unset
+ *  and the default file doesn't exist, falls back to the legacy COMMUNITIES_PATH (default
+ *  ./communities.json), warning once. Setting BOTH env vars is a misconfiguration and throws
+ *  immediately, before either file is touched. An explicitly-set path that can't be read or parsed
+ *  throws; a missing DEFAULT path (with nothing to fall back to either) means "unconfigured" (empty).
+ *  `readFile` is injectable so this is testable without real files (mirrors resolveOwnerPrincipals's
+ *  injectable `warn`). Shape validation and buzz spaceId normalization live in parseTeams
+ *  (teams.ts); buildTeamIndex then runs on the normalized output so two spellings of one relay
+ *  collide as a duplicate at boot, not later. */
+export function resolveTeamsConfig(
+  teamsPathEnv: string | undefined,
+  communitiesPathEnv: string | undefined,
+  readFile: (filePath: string) => string,
+  warn: (ctx: Record<string, unknown>, msg: string) => void = (ctx, msg) => logger.warn(ctx, msg),
+): Record<string, TeamConfig> {
+  if (teamsPathEnv && communitiesPathEnv) {
+    throw new Error("Set only one of TEAMS_PATH or COMMUNITIES_PATH, not both");
+  }
+
+  const primaryPath = teamsPathEnv ?? "./teams.json";
+  let content: string | undefined;
+  try {
+    content = readFile(primaryPath);
+  } catch (e) {
+    if (teamsPathEnv) throw new Error(`Failed to load teams from ${primaryPath}: ${e}`);
+  }
+  if (content !== undefined) return parseTeamsJson(content, primaryPath);
+
+  const fallbackPath = communitiesPathEnv ?? "./communities.json";
+  try {
+    content = readFile(fallbackPath);
+  } catch (e) {
+    if (communitiesPathEnv) throw new Error(`Failed to load teams from ${fallbackPath}: ${e}`);
+    return {};
+  }
+  warn(
+    { filePath: fallbackPath },
+    "loading teams from a legacy communities.json path — rename it to teams.json (or set TEAMS_PATH)",
+  );
+  return parseTeamsJson(content, fallbackPath);
+}
+
+function loadTeams(): Record<string, TeamConfig> {
+  return resolveTeamsConfig(process.env["TEAMS_PATH"], process.env["COMMUNITIES_PATH"], (p) => readFileSync(p, "utf8"));
 }
 
 export const config: Config = {
@@ -232,7 +272,7 @@ export const config: Config = {
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
   guildConfig: loadGuildConfig(),
   principals: loadPrincipals(),
-  communities: loadCommunities(),
+  teams: loadTeams(),
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],

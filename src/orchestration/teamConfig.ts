@@ -1,12 +1,12 @@
-// Read-only view of a team's configuration. "Team" is the user-facing name for a community
-// (communities.ts): one config owner spanning its Discord guild, Slack workspace and buzz relays.
-// Settings still live where they always have (guild-config.json, env maps, the DB); this only
-// gathers them per space so a team can see what applies to it.
+// Read-only view of a team's configuration (teams.ts): one config owner spanning its Discord
+// guild, Slack workspace and buzz relays. Settings still live where they always have
+// (guild-config.json, env maps, the DB); this only gathers them per space so a team can see what
+// applies to it.
 import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
 import { wikiFor } from "../modules/wiki-sync/sources.ts";
 import { ownerPrincipalId } from "./principals.ts";
-import { getCommunity, resolveCommunity, type Community, type CommunitySpace } from "./communities.ts";
+import { getTeam, resolveTeam, type Team, type TeamSpace } from "./teams.ts";
 
 export interface SpaceConfigView {
   surface: string;
@@ -65,7 +65,7 @@ function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [
   return [];
 }
 
-function spaceView(space: CommunitySpace, stats: SpaceStats, detailed: boolean): SpaceConfigView {
+function spaceView(space: TeamSpace, stats: SpaceStats, detailed: boolean): SpaceConfigView {
   const { memoryEntries, contextChars } = stats(space.spaceId);
   const wiki = wikiFor(space.surface, space.spaceId);
   return {
@@ -81,19 +81,19 @@ function spaceView(space: CommunitySpace, stats: SpaceStats, detailed: boolean):
   };
 }
 
-function buildTeamView(community: Community, stats: SpaceStats, detailed: boolean): TeamConfigView {
+function buildTeamView(team: Team, stats: SpaceStats, detailed: boolean): TeamConfigView {
   const owner = ownerPrincipalId();
   return {
     team: {
-      id: community.id,
+      id: team.id,
       owner,
-      trustedMembers: Object.entries(community.members ?? {})
+      trustedMembers: Object.entries(team.members ?? {})
         .filter(([id, m]) => m.trusted && id !== owner)
         .map(([id]) => id),
-      linear: community.linear ? `team ${community.linear.teamId}` : "(default)",
-      wiki: community.wiki?.wikiId,
+      linear: team.linear ? `team ${team.linear.teamId}` : "(default)",
+      wiki: team.wiki?.wikiId,
     },
-    spaces: community.spaces.map((s) => spaceView(s, stats, detailed)),
+    spaces: team.spaces.map((s) => spaceView(s, stats, detailed)),
   };
 }
 
@@ -102,17 +102,17 @@ function buildTeamView(community: Community, stats: SpaceStats, detailed: boolea
  *  internals and MCP bridge user ids — false outside a private context, since an authorized caller
  *  may run this in a public channel where posting mod-evasion details to moderated users is unsafe. */
 export function resolveTeamConfig(surface: string, spaceId: string, stats: SpaceStats, detailed = false): TeamConfigView {
-  const community = resolveCommunity(surface, spaceId);
-  if (!community) return { spaces: [spaceView({ surface, spaceId }, stats, detailed)] };
-  return buildTeamView(community, stats, detailed);
+  const team = resolveTeam(surface, spaceId);
+  if (!team) return { spaces: [spaceView({ surface, spaceId }, stats, detailed)] };
+  return buildTeamView(team, stats, detailed);
 }
 
 /** The DM counterpart of resolveTeamConfig: looks a team up by id instead of by space, since a DM
  *  has no space to resolve from. Returns undefined for an unknown id — the caller renders that the
  *  same way as "not a member", so a probing caller can't distinguish the two. */
 export function resolveTeamConfigById(teamId: string, stats: SpaceStats, detailed: boolean): TeamConfigView | undefined {
-  const community = getCommunity(teamId);
-  return community ? buildTeamView(community, stats, detailed) : undefined;
+  const team = getTeam(teamId);
+  return team ? buildTeamView(team, stats, detailed) : undefined;
 }
 
 /** The DM listing view: just the ids of the teams the caller may see (owner → all; otherwise the
@@ -136,7 +136,7 @@ export function renderTeamConfig(view: TeamConfigView, current: { surface: strin
     lines.push(`- linear: ${view.team.linear}`);
     if (view.team.wiki) lines.push(`- wiki: ${view.team.wiki}`);
   } else {
-    lines.push("This space is not part of a team (no communities.json entry).");
+    lines.push("This space is not part of a team (no teams.json entry).");
   }
   for (const s of view.spaces) {
     const here = s.surface === current.surface && s.spaceId === current.spaceId ? " (this space)" : "";

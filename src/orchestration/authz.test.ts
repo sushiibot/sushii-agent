@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { config } from "../config.ts";
 import type { PrincipalConfig } from "./principals.ts";
-import type { CommunityConfig } from "./communities.ts";
+import type { TeamConfig } from "./teams.ts";
 import { can, isAuthorized, isPersonalSpace, spaceKey } from "./authz.ts";
 
 const OWNER = "owner-123";
@@ -90,24 +90,24 @@ describe("authz.can — principal registry (principal-aware, owner-only, NOT DM-
   });
 });
 
-// Per-community authorization: the owner is authorized everywhere; a community-trusted member is
-// authorized only within that community's spaces. All ids are placeholders (public repo).
+// Per-team authorization: the owner is authorized everywhere; a team-trusted member is
+// authorized only within that team's spaces. All ids are placeholders (public repo).
 const MEMBER_A_DISCORD = "200000000000000000";
 const MEMBER_A_SLACK = "U0MEMBERA00";
 const GUEST_DISCORD = "300000000000000000";
 const DC_DISCORD = "2000000000000000001"; // dreamcatcher's discord guild space
 const DC_SLACK = "T00TEAMDC0"; // dreamcatcher's slack team space
-const OTHER_DISCORD = "2000000000000000002"; // a different community's space
+const OTHER_DISCORD = "2000000000000000002"; // a different team's space
 
 const AUTHZ_REGISTRY: Record<string, PrincipalConfig> = {
   drk: { owner: true, identities: { discord: DRK_DISCORD, slack: DRK_SLACK, buzz: DRK_BUZZ } },
   // member-a is a vetted person, NOT the owner, linked across discord + slack.
   "member-a": { identities: { discord: MEMBER_A_DISCORD, slack: MEMBER_A_SLACK } },
-  // guest resolves to a principal but is trusted in no community → authorized nowhere.
+  // guest resolves to a principal but is trusted in no team → authorized nowhere.
   guest: { identities: { discord: GUEST_DISCORD } },
 };
 
-const AUTHZ_COMMUNITIES: Record<string, CommunityConfig> = {
+const AUTHZ_TEAMS: Record<string, TeamConfig> = {
   dreamcatcher: {
     spaces: [
       { surface: "discord", spaceId: DC_DISCORD },
@@ -115,37 +115,37 @@ const AUTHZ_COMMUNITIES: Record<string, CommunityConfig> = {
     ],
     members: { "member-a": { trusted: true } },
   },
-  // A different community with no members — member-a is a stranger here.
+  // A different team with no members — member-a is a stranger here.
   other: { spaces: [{ surface: "discord", spaceId: OTHER_DISCORD }] },
 };
 
-describe("authz.isAuthorized + can() — per-community trusted members", () => {
+describe("authz.isAuthorized + can() — per-team trusted members", () => {
   const prevPrincipals = config.principals;
-  const prevCommunities = config.communities;
+  const prevTeams = config.teams;
 
   beforeEach(() => {
     config.principals = AUTHZ_REGISTRY;
-    config.communities = AUTHZ_COMMUNITIES;
+    config.teams = AUTHZ_TEAMS;
   });
   afterEach(() => {
     config.principals = prevPrincipals;
-    config.communities = prevCommunities;
+    config.teams = prevTeams;
   });
 
   test("the owner is authorized in ANY space (DM + guild, any surface)", () => {
     expect(isAuthorized("discord", DRK_DISCORD, DM_SPACE)).toBe(true);
     expect(isAuthorized("discord", DRK_DISCORD, spaceKey("discord", "any-guild"))).toBe(true);
     expect(isAuthorized("slack", DRK_SLACK, spaceKey("slack", "C-public"))).toBe(true);
-    // even a space that belongs to no community.
+    // even a space that belongs to no team.
     expect(isAuthorized("discord", DRK_DISCORD, spaceKey("discord", "9999999999999999999"))).toBe(true);
   });
 
-  test("a trusted member is authorized within their community's spaces, across linked identities", () => {
+  test("a trusted member is authorized within their team's spaces, across linked identities", () => {
     expect(isAuthorized("discord", MEMBER_A_DISCORD, spaceKey("discord", DC_DISCORD))).toBe(true);
     expect(isAuthorized("slack", MEMBER_A_SLACK, spaceKey("slack", DC_SLACK))).toBe(true);
   });
 
-  test("a trusted member is DENIED in a different community's space and in a space with no community", () => {
+  test("a trusted member is DENIED in a different team's space and in a space with no team", () => {
     expect(isAuthorized("discord", MEMBER_A_DISCORD, spaceKey("discord", OTHER_DISCORD))).toBe(false);
     expect(isAuthorized("discord", MEMBER_A_DISCORD, spaceKey("discord", "9999999999999999999"))).toBe(false);
   });
@@ -157,11 +157,11 @@ describe("authz.isAuthorized + can() — per-community trusted members", () => {
     expect(isAuthorized("discord", MEMBER_A_SLACK, spaceKey("discord", DC_DISCORD))).toBe(false);
   });
 
-  test("can() grants an owner-capability to a trusted member in-community, denies it out-of-community", () => {
+  test("can() grants an owner-capability to a trusted member in-team, denies it out-of-team", () => {
     expect(can({ principal: MEMBER_A_DISCORD, capability: "runner.dispatch", space: spaceKey("discord", DC_DISCORD) })).toBe(true);
     expect(can({ principal: MEMBER_A_SLACK, capability: "session.stop", space: spaceKey("slack", DC_SLACK) })).toBe(true);
     expect(can({ principal: MEMBER_A_DISCORD, capability: "runner.dispatch", space: spaceKey("discord", OTHER_DISCORD) })).toBe(false);
-    // a resolved-but-untrusted principal gets nothing even in a community space.
+    // a resolved-but-untrusted principal gets nothing even in a team space.
     expect(can({ principal: GUEST_DISCORD, capability: "runner.dispatch", space: spaceKey("discord", DC_DISCORD) })).toBe(false);
   });
 });

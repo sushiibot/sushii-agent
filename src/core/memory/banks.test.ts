@@ -75,13 +75,13 @@ describe("memoryBanks", () => {
     });
   });
 
-  // Hard wall: a community groups multiple surfaces. If a memory spaceId ever resolved through a
-  // community, `sushii-space-<spaceId>` would merge public facts across Discord/Slack/buzz. The
-  // banks are a pure function of the raw spaceId — a space that happens to belong to a community
+  // Hard wall: a team groups multiple surfaces. If a memory spaceId ever resolved through a
+  // team, `sushii-space-<spaceId>` would merge public facts across Discord/Slack/buzz. The
+  // banks are a pure function of the raw spaceId — a space that happens to belong to a team
   // keys identically to one that doesn't.
-  test("a community-member space keys exactly like any other raw spaceId (no community merge)", () => {
-    // "1000000000000000001" is dreamcatcher's discord space in the community fixture; its banks must
-    // NOT collapse into a shared community id.
+  test("a team-member space keys exactly like any other raw spaceId (no team merge)", () => {
+    // "1000000000000000001" is dreamcatcher's discord space in the team fixture; its banks must
+    // NOT collapse into a shared team id.
     expect(memoryBanks({ spaceId: "1000000000000000001", userId: "u1", isPrivate: false })).toEqual({
       read: ["sushii-space-1000000000000000001-user-u1", "sushii-space-1000000000000000001"],
       write: "sushii-space-1000000000000000001-user-u1",
@@ -89,15 +89,15 @@ describe("memoryBanks", () => {
   });
 
   // Source-level guard: the behavioral test above stays green even if a future edit wires
-  // resolveCommunity into agentCore's memoryScope. The real regression fails HERE — neither the
-  // pure keying function nor the memory-scope owner may reach the community resolver.
-  test("banks.ts and agentCore.ts never reference the community resolver", () => {
+  // resolveTeam into agentCore's memoryScope. The real regression fails HERE — neither the
+  // pure keying function nor the memory-scope owner may reach the team resolver.
+  test("banks.ts and agentCore.ts never reference the team resolver", () => {
     const here = fileURLToPath(import.meta.url);
     const banksSrc = readFileSync(here.replace(/\.test\.ts$/, ".ts"), "utf8");
     const coreSrc = readFileSync(here.replace(/memory\/banks\.test\.ts$/, "agentCore.ts"), "utf8");
     for (const src of [banksSrc, coreSrc]) {
-      expect(src).not.toContain("communities");
-      expect(src).not.toContain("resolveCommunity");
+      expect(src).not.toContain("teams");
+      expect(src).not.toContain("resolveTeam");
     }
   });
 });

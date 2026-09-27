@@ -1,6 +1,14 @@
 import { describe, expect, mock, test } from "bun:test";
-import { resolveOwnerPrincipals } from "./config.ts";
+import { resolveOwnerPrincipals, resolveTeamsConfig } from "./config.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
+
+function fakeReadFile(files: Record<string, string>): (filePath: string) => string {
+  return (filePath) => {
+    const content = files[filePath];
+    if (content === undefined) throw new Error(`ENOENT: no such file, open '${filePath}'`);
+    return content;
+  };
+}
 
 describe("resolveOwnerPrincipals", () => {
   test("missing/empty registry + OWNER_DISCORD_ID set synthesizes a single owner principal", () => {
@@ -49,5 +57,66 @@ describe("resolveOwnerPrincipals", () => {
       fileOwnerDiscord: "100000000000000000",
       ownerDiscordId: "999999999999999999",
     });
+  });
+});
+
+describe("resolveTeamsConfig", () => {
+  test("loads teams.json from the default path when TEAMS_PATH is unset", () => {
+    const readFile = fakeReadFile({ "./teams.json": JSON.stringify({ a: { spaces: [] } }) });
+    const warn = mock();
+    expect(resolveTeamsConfig(undefined, undefined, readFile, warn)).toEqual({ a: { spaces: [], wiki: undefined, linear: undefined, members: undefined } });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("loads teams.json from an explicit TEAMS_PATH", () => {
+    const readFile = fakeReadFile({ "/custom/teams.json": JSON.stringify({ a: { spaces: [] } }) });
+    const warn = mock();
+    expect(resolveTeamsConfig("/custom/teams.json", undefined, readFile, warn)).toEqual({
+      a: { spaces: [], wiki: undefined, linear: undefined, members: undefined },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("an explicit TEAMS_PATH that can't be read throws", () => {
+    const readFile = fakeReadFile({});
+    expect(() => resolveTeamsConfig("/custom/teams.json", undefined, readFile)).toThrow(/Failed to load teams from \/custom\/teams\.json/);
+  });
+
+  test("TEAMS_PATH unset + default teams.json missing falls back to the default communities.json, warning once", () => {
+    const readFile = fakeReadFile({ "./communities.json": JSON.stringify({ a: { spaces: [] } }) });
+    const warn = mock();
+    expect(resolveTeamsConfig(undefined, undefined, readFile, warn)).toEqual({ a: { spaces: [], wiki: undefined, linear: undefined, members: undefined } });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toEqual({ filePath: "./communities.json" });
+  });
+
+  test("TEAMS_PATH unset + default teams.json missing falls back to an explicit COMMUNITIES_PATH, warning once", () => {
+    const readFile = fakeReadFile({ "/legacy/communities.json": JSON.stringify({ a: { spaces: [] } }) });
+    const warn = mock();
+    expect(resolveTeamsConfig(undefined, "/legacy/communities.json", readFile, warn)).toEqual({
+      a: { spaces: [], wiki: undefined, linear: undefined, members: undefined },
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test("both TEAMS_PATH and COMMUNITIES_PATH set explicitly throws, before touching either file", () => {
+    const readFile = fakeReadFile({});
+    expect(() => resolveTeamsConfig("/a/teams.json", "/b/communities.json", readFile)).toThrow(
+      /Set only one of TEAMS_PATH or COMMUNITIES_PATH/,
+    );
+  });
+
+  test("neither path readable and neither set explicitly → empty, no warning", () => {
+    const readFile = fakeReadFile({});
+    const warn = mock();
+    expect(resolveTeamsConfig(undefined, undefined, readFile, warn)).toEqual({});
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("an explicit COMMUNITIES_PATH (TEAMS_PATH unset, default teams.json missing) that can't be read throws", () => {
+    const readFile = fakeReadFile({});
+    expect(() => resolveTeamsConfig(undefined, "/legacy/communities.json", readFile)).toThrow(
+      /Failed to load teams from \/legacy\/communities\.json/,
+    );
   });
 });

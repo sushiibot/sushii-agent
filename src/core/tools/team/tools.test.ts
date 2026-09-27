@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ToolContext } from "../../contracts.ts";
 import { config } from "../../../config.ts";
-import { buildCommunityIndex, parseCommunities, type CommunityConfig } from "../../../orchestration/communities.ts";
+import { buildTeamIndex, parseTeams, type TeamConfig } from "../../../orchestration/teams.ts";
 import type { PrincipalConfig } from "../../../orchestration/principals.ts";
 import { resolveTeamConfig, type SpaceStats } from "../../../orchestration/teamConfig.ts";
 import { teamConfigEntry } from "./tools.ts";
@@ -41,7 +41,7 @@ const PRINCIPALS: Record<string, PrincipalConfig> = {
   bob: { identities: { slack: "U300" } },
 };
 
-const COMMUNITIES: Record<string, CommunityConfig> = {
+const TEAMS: Record<string, TeamConfig> = {
   dreamcatcher: {
     spaces: [
       { surface: "discord", spaceId: "G1" },
@@ -57,14 +57,14 @@ const COMMUNITIES: Record<string, CommunityConfig> = {
 describe("team_config", () => {
   const prev = {
     principals: config.principals,
-    communities: config.communities,
+    teams: config.teams,
     guildConfig: config.guildConfig,
     avatarMap: config.buzz.avatarMap,
     wikiMap: config.buzz.wikiMap,
   };
   beforeEach(() => {
     config.principals = PRINCIPALS;
-    config.communities = COMMUNITIES;
+    config.teams = TEAMS;
     config.guildConfig = {
       G1: {
         allowedRoles: ["R1"],
@@ -80,7 +80,7 @@ describe("team_config", () => {
   });
   afterEach(() => {
     config.principals = prev.principals;
-    config.communities = prev.communities;
+    config.teams = prev.teams;
     config.guildConfig = prev.guildConfig;
     config.buzz.avatarMap = prev.avatarMap;
     config.buzz.wikiMap = prev.wikiMap;
@@ -214,58 +214,58 @@ describe("team_config", () => {
   });
 });
 
-describe("parseCommunities", () => {
+describe("parseTeams", () => {
   test("rejects a non-object top level", () => {
-    expect(() => parseCommunities(null)).toThrow(/communities:/);
-    expect(() => parseCommunities([])).toThrow(/communities:/);
-    expect(() => parseCommunities("nope")).toThrow(/communities:/);
+    expect(() => parseTeams(null)).toThrow(/teams:/);
+    expect(() => parseTeams([])).toThrow(/teams:/);
+    expect(() => parseTeams("nope")).toThrow(/teams:/);
   });
 
   test("rejects an entry that isn't an object", () => {
-    expect(() => parseCommunities({ a: "nope" })).toThrow(/"a"/);
+    expect(() => parseTeams({ a: "nope" })).toThrow(/"a"/);
   });
 
   test("rejects spaces that isn't an array", () => {
-    expect(() => parseCommunities({ a: { spaces: "nope" } })).toThrow(/spaces/);
+    expect(() => parseTeams({ a: { spaces: "nope" } })).toThrow(/spaces/);
   });
 
   test("rejects a space missing surface or spaceId", () => {
-    expect(() => parseCommunities({ a: { spaces: [{ spaceId: "G1" }] } })).toThrow(/surface/);
-    expect(() => parseCommunities({ a: { spaces: [{ surface: "discord" }] } })).toThrow(/spaceId/);
-    expect(() => parseCommunities({ a: { spaces: [{ surface: "", spaceId: "G1" }] } })).toThrow(/spaces/);
+    expect(() => parseTeams({ a: { spaces: [{ spaceId: "G1" }] } })).toThrow(/surface/);
+    expect(() => parseTeams({ a: { spaces: [{ surface: "discord" }] } })).toThrow(/spaceId/);
+    expect(() => parseTeams({ a: { spaces: [{ surface: "", spaceId: "G1" }] } })).toThrow(/spaces/);
   });
 
   test("rejects members that isn't an object of objects", () => {
-    expect(() => parseCommunities({ a: { spaces: [], members: "nope" } })).toThrow(/members/);
-    expect(() => parseCommunities({ a: { spaces: [], members: { alice: "nope" } } })).toThrow(/members/);
+    expect(() => parseTeams({ a: { spaces: [], members: "nope" } })).toThrow(/members/);
+    expect(() => parseTeams({ a: { spaces: [], members: { alice: "nope" } } })).toThrow(/members/);
   });
 
   test("rejects a non-boolean trusted flag", () => {
-    expect(() => parseCommunities({ a: { spaces: [], members: { alice: { trusted: "yes" } } } })).toThrow(/trusted/);
-    expect(() => parseCommunities({ a: { spaces: [], members: { alice: {} } } })).not.toThrow();
-    expect(() => parseCommunities({ a: { spaces: [], members: { alice: { trusted: true } } } })).not.toThrow();
+    expect(() => parseTeams({ a: { spaces: [], members: { alice: { trusted: "yes" } } } })).toThrow(/trusted/);
+    expect(() => parseTeams({ a: { spaces: [], members: { alice: {} } } })).not.toThrow();
+    expect(() => parseTeams({ a: { spaces: [], members: { alice: { trusted: true } } } })).not.toThrow();
   });
 
   test("normalizes a buzz spaceId the same way the relay poll loop does", () => {
-    const out = parseCommunities({
+    const out = parseTeams({
       a: { spaces: [{ surface: "buzz", spaceId: "buzz:wss://Relay.Example/" }] },
     });
     expect(out["a"]!.spaces[0]!.spaceId).toBe("buzz:https://relay.example");
   });
 
   test("keeps linear and wiki through parsing", () => {
-    const out = parseCommunities({
+    const out = parseTeams({
       a: { spaces: [{ surface: "discord", spaceId: "G1" }], linear: { apiKey: "k", teamId: "T" }, wiki: { wikiId: "G1" } },
     });
-    expect(out["a"]!.linear).toEqual({ apiKey: "k", teamId: "T" });
+    expect(out["a"]!.linear).toEqual({ apiKey: "k", apiKeyEnv: undefined, teamId: "T" });
     expect(out["a"]!.wiki).toEqual({ wikiId: "G1" });
   });
 
   test("two differently-spelled buzz spaceIds normalize to the same space and collide as a duplicate", () => {
-    const out = parseCommunities({
+    const out = parseTeams({
       a: { spaces: [{ surface: "buzz", spaceId: "buzz:wss://Relay.Example/" }] },
       b: { spaces: [{ surface: "buzz", spaceId: "buzz:https://relay.example" }] },
     });
-    expect(() => buildCommunityIndex(out)).toThrow(/claimed by both/);
+    expect(() => buildTeamIndex(out)).toThrow(/claimed by both/);
   });
 });
