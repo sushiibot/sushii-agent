@@ -18,7 +18,7 @@ const WIKI_SYNC_COMMAND = new SlashCommandBuilder()
 /** Registers /wiki-sync as a guild command for every guild that has wiki-sync enabled. Guild-scoped (not global) so it's available immediately, no propagation delay. */
 export async function registerWikiSyncCommands(client: Client<true>): Promise<void> {
   const guildIds = getWikiSyncEnabledGuildIds();
-  if (guildIds.length === 0) return;
+  if (guildIds.size === 0) return;
 
   const rest = new REST().setToken(config.discordBotToken);
   for (const guildId of guildIds) {

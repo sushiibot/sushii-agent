@@ -50,21 +50,23 @@ function buzzRelayKey(spaceId: string): string {
  *  `BUZZ_WIKI_MAP` (buzz, read-only), then a Discord guild's own wiki-sync-enabled self-wiki. */
 function legacyWikiFor(surface: string, spaceId: string): WikiAssignment | undefined {
   for (const [wikiId, entry] of Object.entries(config.wikiSync.sources)) {
-    if (entry.sources.some((s) => s.surface === surface && s.spaceId === spaceId)) {
-      return { wikiId, feeds: true, reads: true };
-    }
+    if (!entry.sources.some((s) => s.surface === surface && s.spaceId === spaceId)) continue;
+    // A Discord entry still needs wiki-sync enabled on the guild — an explicit source list
+    // must not bypass the module gate that guards fs-tool access to the wiki.
+    if (surface === "discord" && !getWikiSyncEnabledGuildIds().has(spaceId)) continue;
+    return { wikiId, feeds: true, reads: true };
   }
   if (surface === "buzz") {
     const wikiId = config.buzz.wikiMap[buzzRelayKey(spaceId)];
     if (wikiId) return { wikiId, feeds: false, reads: true };
   }
-  if (surface === "discord" && getWikiSyncEnabledGuildIds().includes(spaceId)) {
+  if (surface === "discord" && getWikiSyncEnabledGuildIds().has(spaceId)) {
     return { wikiId: spaceId, feeds: true, reads: true };
   }
   return undefined;
 }
 
-// Startup-time warn dedup: the team/legacy disagreement is a static config mismatch, not a
+// Process-lifetime warn dedup: the team/legacy disagreement is a static config mismatch, not a
 // per-call condition, so a caller hitting wikiFor a thousand times in a sweep must not spam a
 // thousand identical warnings.
 const warnedDisagreements = new Set<string>();
@@ -72,6 +74,17 @@ const warnedDisagreements = new Set<string>();
 /** Test-only: clears the warn-once cache between cases that reuse the same (surface, spaceId). */
 export function __resetWikiWarnDedup(): void {
   warnedDisagreements.clear();
+}
+
+function warnOnceOnDisagreement(surface: string, spaceId: string, teamWikiId: string, legacyWikiId: string): void {
+  if (teamWikiId === legacyWikiId) return;
+  const key = spaceKey(surface, spaceId);
+  if (warnedDisagreements.has(key)) return;
+  warnedDisagreements.add(key);
+  logger.warn(
+    { surface, spaceId, teamWikiId, legacyWikiId },
+    "team wiki disagrees with a legacy wiki-sync env mapping for this space — the team definition wins",
+  );
 }
 
 /**
@@ -86,16 +99,7 @@ export function wikiFor(surface: string, spaceId: string): WikiAssignment | unde
   const legacy = legacyWikiFor(surface, spaceId);
 
   if (team) {
-    if (legacy && legacy.wikiId !== team.wikiId) {
-      const key = spaceKey(surface, spaceId);
-      if (!warnedDisagreements.has(key)) {
-        warnedDisagreements.add(key);
-        logger.warn(
-          { surface, spaceId, teamWikiId: team.wikiId, legacyWikiId: legacy.wikiId },
-          "team wiki disagrees with a legacy wiki-sync env mapping for this space — the team definition wins",
-        );
-      }
-    }
+    if (legacy) warnOnceOnDisagreement(surface, spaceId, team.wikiId, legacy.wikiId);
     return team;
   }
   return legacy;
@@ -110,39 +114,45 @@ export function wikiFor(surface: string, spaceId: string): WikiAssignment | unde
  */
 export function getWikiSources(): Map<string, WikiSource[]> {
   const bySpace = new Map<string, { wikiId: string; statusChannelId?: string }>();
+  // Every space with a team `wiki` role (source or read), not only "source" — used below to warn
+  // on a legacy disagreement even for a read-only team space, which never gets a `bySpace` entry
+  // of its own (only "source" spaces feed the sweep).
+  const teamClaimed = new Map<string, string>();
 
   for (const entry of Object.values(config.communities)) {
     const wikiId = entry.wiki?.wikiId;
     if (!wikiId) continue;
     for (const space of entry.spaces) {
-      if (space.wiki !== "source") continue;
-      bySpace.set(spaceKey(space.surface, space.spaceId), { wikiId, statusChannelId: space.statusChannelId });
+      if (!space.wiki) continue;
+      const key = spaceKey(space.surface, space.spaceId);
+      teamClaimed.set(key, wikiId);
+      if (space.wiki === "source") {
+        bySpace.set(key, { wikiId, statusChannelId: space.statusChannelId });
+      }
     }
   }
 
   for (const [wikiId, entry] of Object.entries(config.wikiSync.sources)) {
     for (const s of entry.sources) {
       const key = spaceKey(s.surface, s.spaceId);
-      const claimed = bySpace.get(key);
-      if (claimed) {
-        if (claimed.wikiId !== wikiId && !warnedDisagreements.has(key)) {
-          warnedDisagreements.add(key);
-          logger.warn(
-            { surface: s.surface, spaceId: s.spaceId, teamWikiId: claimed.wikiId, legacyWikiId: wikiId },
-            "team wiki disagrees with a legacy wiki-sync env mapping for this space — the team definition wins",
-          );
-        }
-        continue;
-      }
+      const teamWikiId = teamClaimed.get(key);
+      if (teamWikiId !== undefined) warnOnceOnDisagreement(s.surface, s.spaceId, teamWikiId, wikiId);
+      if (bySpace.has(key)) continue;
       const statusChannelId =
         s.statusChannelId ?? (s.surface === "discord" ? config.guildConfig[s.spaceId]?.wiki?.statusChannelId : undefined);
       bySpace.set(key, { wikiId, statusChannelId });
     }
   }
 
+  // A wikiId already claimed by a team/explicit space (any spaceId) must not also get a
+  // synthesized self-wiki of the same id from an unrelated guild — this only differs from the
+  // per-(surface,spaceId) `bySpace.has(key)` check above when an explicit entry's wikiId happens
+  // to equal some other wiki-sync-enabled guild's own id without listing that guild as a source.
+  const usedWikiIds = new Set(Array.from(bySpace.values(), (v) => v.wikiId));
+
   for (const guildId of getWikiSyncEnabledGuildIds()) {
     const key = spaceKey("discord", guildId);
-    if (bySpace.has(key)) continue;
+    if (bySpace.has(key) || usedWikiIds.has(guildId)) continue;
     bySpace.set(key, { wikiId: guildId, statusChannelId: config.guildConfig[guildId]?.wiki?.statusChannelId });
   }
 

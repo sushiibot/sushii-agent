@@ -140,6 +140,61 @@ describe("getWikiSources", () => {
     const map = getWikiSources();
     expect(map.get("wiki1")).toEqual([{ surface: "discord", spaceId: "g1", statusChannelId: "team" }]);
   });
+
+  test("a team READ space that disagrees with a conflicting explicit entry still warns once, even though it isn't itself swept", () => {
+    config.guildConfig = {};
+    config.wikiSync.sources = { "legacy-wiki": { sources: [{ surface: "slack", spaceId: "T1" }] } };
+    config.communities = {
+      dreamcatcher: {
+        spaces: [{ surface: "slack", spaceId: "T1", wiki: "read" }],
+        wiki: { wikiId: "team-wiki" },
+      },
+    };
+
+    const warnSpy = spyOn(rootLogger, "warn");
+    try {
+      const map = getWikiSources();
+      // The read space isn't a sweep source itself, so the legacy entry is still swept into its
+      // own wikiId — but the disagreement is still surfaced from this code path.
+      expect(map.get("legacy-wiki")).toEqual([{ surface: "slack", spaceId: "T1", statusChannelId: undefined }]);
+      expect(map.has("team-wiki")).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("a team SOURCE space that disagrees with a conflicting explicit entry warns once and keeps the team's wiki (no double ingest)", () => {
+    config.guildConfig = {};
+    config.wikiSync.sources = { "legacy-wiki": { sources: [{ surface: "discord", spaceId: "g1" }] } };
+    config.communities = {
+      dreamcatcher: {
+        spaces: [{ surface: "discord", spaceId: "g1", wiki: "source" }],
+        wiki: { wikiId: "team-wiki" },
+      },
+    };
+
+    const warnSpy = spyOn(rootLogger, "warn");
+    try {
+      const map = getWikiSources();
+      expect(map.get("team-wiki")).toEqual([{ surface: "discord", spaceId: "g1", statusChannelId: undefined }]);
+      expect(map.has("legacy-wiki")).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not synthesize a wiki-sync-enabled guild's self-wiki when its own guild id is already used as a wikiId by an unrelated explicit entry", () => {
+    // Explicit entry "g1" feeds g2, not g1 itself — g1 is wiki-sync enabled but not listed as a
+    // source anywhere. A wikiId collision (entry key "g1" == guild id "g1") must still suppress
+    // g1's self-wiki synthesis, matching the pre-team-resolver behavior.
+    config.guildConfig = { g1: wikiGuild(), g2: wikiGuild() };
+    config.wikiSync.sources = { g1: { sources: [{ surface: "discord", spaceId: "g2" }] } };
+
+    const map = getWikiSources();
+    expect(map.get("g1")).toEqual([{ surface: "discord", spaceId: "g2", statusChannelId: undefined }]);
+  });
 });
 
 describe("wikiFor", () => {
@@ -175,6 +230,7 @@ describe("wikiFor", () => {
 
   test("falls back to an explicit WIKI_SYNC_SOURCES entry when the team has no wiki fields", () => {
     config.communities = {};
+    config.guildConfig = { g1: wikiGuild() };
     config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
     expect(wikiFor("discord", "g1")).toEqual({ wikiId: "shared", feeds: true, reads: true });
   });
@@ -212,13 +268,34 @@ describe("wikiFor", () => {
         wiki: { wikiId: "team-wiki" },
       },
     };
+    config.guildConfig = { g1: wikiGuild() };
     config.wikiSync.sources = { "legacy-wiki": { sources: [{ surface: "discord", spaceId: "g1" }] } };
 
     const warnSpy = spyOn(rootLogger, "warn");
-    expect(wikiFor("discord", "g1")).toEqual({ wikiId: "team-wiki", feeds: true, reads: true });
-    expect(wikiFor("discord", "g1")).toEqual({ wikiId: "team-wiki", feeds: true, reads: true });
-    expect(wikiFor("discord", "g1")).toEqual({ wikiId: "team-wiki", feeds: true, reads: true });
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    try {
+      expect(wikiFor("discord", "g1")).toEqual({ wikiId: "team-wiki", feeds: true, reads: true });
+      expect(wikiFor("discord", "g1")).toEqual({ wikiId: "team-wiki", feeds: true, reads: true });
+      expect(wikiFor("discord", "g1")).toEqual({ wikiId: "team-wiki", feeds: true, reads: true });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("an explicit WIKI_SYNC_SOURCES entry for a Discord guild without wiki-sync enabled grants no fs host", () => {
+    config.communities = {};
+    config.guildConfig = { g1: { allowedRoles: [] } };
+    config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
+
+    expect(wikiFor("discord", "g1")).toBeUndefined();
+  });
+
+  test("an explicit WIKI_SYNC_SOURCES entry for a Discord guild WITH wiki-sync enabled still grants an fs host", () => {
+    config.communities = {};
+    config.guildConfig = { g1: wikiGuild() };
+    config.wikiSync.sources = { shared: { sources: [{ surface: "discord", spaceId: "g1" }] } };
+
+    expect(wikiFor("discord", "g1")).toEqual({ wikiId: "shared", feeds: true, reads: true });
   });
 });
 
