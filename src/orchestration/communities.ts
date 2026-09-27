@@ -161,15 +161,3 @@ export function getCommunity(teamId: string): Community | undefined {
   const entry = config.communities[teamId];
   return entry ? { id: teamId, spaces: entry.spaces ?? [], wiki: entry.wiki, linear: entry.linear, members: entry.members } : undefined;
 }
-
-/** Whether `principalId` is a trusted member of the community `teamId`, looked up by id rather than
- *  by space — the DM-listing counterpart to isCommunityMember. */
-export function isTeamMember(principalId: string, teamId: string): boolean {
-  return getCommunity(teamId)?.members?.[principalId]?.trusted === true;
-}
-
-/** Whether `principalId` is a trusted member of at least one community — lets a DM caller who isn't
- *  the owner still reach team_config to list the teams they belong to. */
-export function isMemberOfAnyTeam(principalId: string): boolean {
-  return listCommunities().some((c) => c.members?.[principalId]?.trusted === true);
-}

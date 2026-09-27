@@ -161,24 +161,17 @@ describe("team_config", () => {
     expect(r.content).toContain("- other");
   });
 
-  test("a trusted non-owner in a DM lists only the teams they're trusted in", async () => {
-    const r = await teamConfigEntry.execute({}, ctx("discord", "dm", "200", true));
-    expect(r.content).toContain("- dreamcatcher");
-    expect(r.content).not.toContain("- other");
-  });
-
-  test("a trusted non-owner in a DM gets a team's detailed view via the team param", async () => {
-    const r = await teamConfigEntry.execute({ team: "dreamcatcher" }, ctx("discord", "dm", "200", true));
+  test("owner in a DM gets a team's detailed view via the team param", async () => {
+    const r = await teamConfigEntry.execute({ team: "dreamcatcher" }, ctx("discord", "dm", "100", true));
     expect(r.content).toContain("Team: dreamcatcher");
-    expect(r.content).toContain("MODROLE1"); // detailed=true in a DM
+    expect(r.content).toContain("MODROLE1");
     expect(r.content).not.toContain("lin_secret_key");
+    expect((await teamConfigEntry.execute({ team: "nope" }, ctx("discord", "dm", "100", true))).content).toBe('No team "nope".');
   });
 
-  test("a DM team lookup denies a team the caller isn't trusted in, same message as a nonexistent team", async () => {
-    const notMember = await teamConfigEntry.execute({ team: "other" }, ctx("discord", "dm", "200", true));
-    const nonexistent = await teamConfigEntry.execute({ team: "nope" }, ctx("discord", "dm", "200", true));
-    expect(notMember.content).toBe("This tool is limited to trusted team members.");
-    expect(nonexistent.content).toBe(notMember.content);
+  test("a trusted non-owner in a DM is denied (no team owns the DM space)", async () => {
+    const r = await teamConfigEntry.execute({ team: "dreamcatcher" }, ctx("discord", "dm", "200", true));
+    expect(r.content).toBe("This tool is limited to trusted team members.");
   });
 
   test("outside a DM, the team param is ignored", async () => {
