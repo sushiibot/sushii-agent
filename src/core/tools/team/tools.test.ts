@@ -196,25 +196,20 @@ describe("team_config", () => {
     expect(r.content).not.toContain("aren't part of a team");
   });
 
-  describe("legacy (principals unconfigured) branch", () => {
-    const prevOwner = config.ownerDiscordId;
+  describe("a synthesized owner (no principals.json, OWNER_DISCORD_ID set)", () => {
     beforeEach(() => {
-      config.principals = {};
-      config.ownerDiscordId = "100";
-    });
-    afterEach(() => {
-      config.ownerDiscordId = prevOwner;
+      config.principals = { owner: { owner: true, identities: { discord: "100" } } };
     });
 
-    test("the legacy owner id is authorized and sees its team, with no owner: line (ownerPrincipalId unset)", async () => {
+    test("the synthesized owner is authorized and sees its team, with the owner: line present", async () => {
       const r = await teamConfigEntry.execute({}, ctx("discord", "G1", "100"));
       expect(r.content).toContain("Team: dreamcatcher");
-      expect(r.content).not.toContain("- owner:");
+      expect(r.content).toContain("- owner:");
     });
 
-    test("anyone else is denied as owner-only", async () => {
+    test("anyone else is denied as not a trusted team member", async () => {
       const r = await teamConfigEntry.execute({}, ctx("discord", "G1", "200"));
-      expect(r.content).toBe("This tool is owner-only.");
+      expect(r.content).toBe("This tool is limited to trusted team members.");
     });
   });
 });

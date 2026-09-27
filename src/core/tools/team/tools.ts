@@ -1,7 +1,5 @@
 import type { ToolContext, ToolEntry } from "../../contracts.ts";
-import { config } from "../../../config.ts";
 import { isAuthorized, isPersonalSpace, spaceKey } from "../../../orchestration/authz.ts";
-import { principalsConfigured } from "../../../orchestration/principals.ts";
 import { listCommunities, resolveCommunity } from "../../../orchestration/communities.ts";
 import {
   renderTeamConfig,
@@ -18,10 +16,7 @@ function requireAuthorized(ctx: ToolContext): string | undefined {
   const userId = ctx.owner?.userId;
   if (!userId) return DENIED;
   const { surface, spaceId } = ctx.space;
-  if (principalsConfigured()) {
-    return isAuthorized(surface, userId, spaceKey(surface, spaceId)) ? undefined : DENIED;
-  }
-  return userId === config.ownerDiscordId ? undefined : "This tool is owner-only.";
+  return isAuthorized(surface, userId, spaceKey(surface, spaceId)) ? undefined : DENIED;
 }
 
 export const teamConfigEntry: ToolEntry = {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { config } from "../config.ts";
 import type { PrincipalConfig } from "./principals.ts";
-import { buildPrincipalIndex, ownerPrincipalId, principalAliasUserIds, principalsConfigured, resolvePrincipal } from "./principals.ts";
+import { buildPrincipalIndex, ownerPrincipalId, principalAliasUserIds, resolvePrincipal } from "./principals.ts";
 
 const DRK: Record<string, PrincipalConfig> = {
   drk: {
@@ -38,9 +38,8 @@ describe("resolvePrincipal", () => {
     expect(resolvePrincipal("slack", "100000000000000000")).toBeUndefined();
   });
 
-  test("an empty registry resolves everything to undefined and reports unconfigured", () => {
+  test("an empty registry resolves everything to undefined and has no owner", () => {
     config.principals = {};
-    expect(principalsConfigured()).toBe(false);
     expect(resolvePrincipal("discord", "100000000000000000")).toBeUndefined();
     expect(ownerPrincipalId()).toBeUndefined();
   });
@@ -70,9 +69,8 @@ describe("resolvePrincipal", () => {
     expect(principalAliasUserIds("nobody", "slack", "x")).toEqual([]);
   });
 
-  test("principalsConfigured is true for a non-empty registry", () => {
+  test("ownerPrincipalId resolves for a non-empty registry", () => {
     config.principals = DRK;
-    expect(principalsConfigured()).toBe(true);
     expect(ownerPrincipalId()).toBe("drk");
   });
 });

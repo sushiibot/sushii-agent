@@ -13,8 +13,6 @@ import { deleteUserMessagesEntry } from "./discord/deleteUserMessages.ts";
 import { FS_TOOL_ENTRIES } from "./fs/tools.ts";
 import { RUNNER_TOOL_ENTRIES } from "./runners/index.ts";
 import { TEAM_TOOL_ENTRIES } from "./team/tools.ts";
-import { isPersonalSpace, spaceKey } from "../../orchestration/authz.ts";
-import { principalsConfigured } from "../../orchestration/principals.ts";
 
 export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...MESSAGE_CACHE_TOOL_ENTRIES,
@@ -33,9 +31,6 @@ const AUTO_MOD_ONLY_TOOLS = new Set(["timeout_member", "delete_user_messages", "
 const EXA_TOOLS = new Set(["web_search", "fetch_url_content"]);
 const GRAFANA_TOOLS = new Set(["search_logs", "get_trace"]);
 const LINEAR_TOOLS = new Set(["file_linear_issue", "get_issue_status", "list_triaged_issues"]);
-/** Mirrors ops-triage's config.ownerDiscordId gate below, plus a space check ops-triage doesn't
- *  need — runner tools must also stay hidden outside a personal/DM space (authz.isPersonalSpace),
- *  not just deny-at-call. The per-call can() check in runners/index.ts remains the real gate. */
 const RUNNER_TOOLS = new Set(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session", "stop_task", "discard_task", "steer_task"]);
 
 /** Config-key gates, resolved once per `resolve()` call rather than baked into the class — lets
@@ -43,7 +38,6 @@ const RUNNER_TOOLS = new Set(["dispatch_to_runner", "list_runners", "list_runnin
  *  into the global `config` singleton itself. */
 export interface ToolAvailability {
   exa: boolean;
-  owner: boolean;
   grafanaBaseUrl: boolean;
   linear: boolean;
 }
@@ -51,7 +45,6 @@ export interface ToolAvailability {
 function defaultAvailability(): ToolAvailability {
   return {
     exa: !!config.exaApiKey,
-    owner: !!config.ownerDiscordId,
     grafanaBaseUrl: !!config.grafanaBaseUrl,
     linear: !!(config.linearApiKey && config.linearTeamId),
   };
@@ -77,19 +70,15 @@ export class CoreToolRegistry implements ToolRegistry {
   ): ToolEntry<keyof ToolHosts>[] {
     const autoMod = space.autoMod ?? false;
     const a = this.availability();
-    const key = spaceKey(space.surface, space.spaceId);
 
-    // Gating for runner/ops-triage + update_profile tools. Configured registry → author-aware.
-    // Runner/session + ops-triage tools gate on `authorized` (owner OR a community-trusted member) but
-    // NOT on DM — authorized callers drive them from guild channels too; execution stays gated in
-    // can(). update_profile stays owner-DM-first (editing the personal profile shouldn't surface in a
-    // shared channel, and a trusted member must not reach it). Unconfigured → today's space-string
-    // heuristic (isPersonalSpace) + ownerDiscordId presence, unchanged.
-    const configured = principalsConfigured();
-    const ownerDm = space.isOwner === true && space.isPrivate === true;
-    const runnerAllowed = configured ? space.authorized === true : a.owner && isPersonalSpace(key);
-    const profileAllowed = configured ? ownerDm : isPersonalSpace(key);
-    const opsOwnerAllowed = configured ? space.authorized === true : a.owner;
+    // Gating for runner/ops-triage + update_profile tools. Runner/session + ops-triage tools gate on
+    // `authorized` (owner OR a community-trusted member) but NOT on DM — authorized callers drive
+    // them from guild channels too; execution stays gated in can(). update_profile stays
+    // owner-DM-first (editing the personal profile shouldn't surface in a shared channel, and a
+    // trusted member must not reach it).
+    const runnerAllowed = space.authorized === true;
+    const profileAllowed = space.isOwner === true && space.isPrivate === true;
+    const opsOwnerAllowed = space.authorized === true;
 
     return this.entries
       .filter((entry) => hostsSatisfied(entry, session.hosts) && capabilitiesSatisfied(entry, session))

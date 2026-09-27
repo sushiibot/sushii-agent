@@ -16,30 +16,27 @@ function ctx(surface: "discord" | "slack", userId: string | undefined): ToolCont
 const OWNER: Record<string, PrincipalConfig> = { drk: { owner: true, identities: { discord: "100000000000000000" } } };
 const NONOWNER: Record<string, PrincipalConfig> = { alice: { identities: { discord: "200000000000000000" } } };
 
-describe("ops-triage owner gate — UNCONFIGURED (legacy ownerDiscordId)", () => {
+describe("ops-triage owner gate — no owner configured", () => {
   const prevP = config.principals;
-  const prevOwner = config.ownerDiscordId;
   afterEach(() => {
     config.principals = prevP;
-    config.ownerDiscordId = prevOwner;
   });
 
-  test("no ownerDiscordId → reports unconfigured", async () => {
+  test("no owner at all → owner-only denial for anyone", async () => {
     config.principals = {};
-    config.ownerDiscordId = undefined;
     const r = await fileLinearIssueEntry.execute({ title: "t", description: "d", repo_label: "r" }, ctx("discord", "anyone"));
-    expect(r.content).toContain("not configured");
+    expect(r.content).toBe("This tool is owner-only.");
   });
 
-  test("wrong user → owner-only denial", async () => {
-    config.principals = {};
-    config.ownerDiscordId = "100000000000000000";
-    const r = await fileLinearIssueEntry.execute({ title: "t", description: "d", repo_label: "r" }, ctx("discord", "999"));
-    expect(r.content).toBe("This tool is owner-only.");
+  test("a synthesized owner (no principals.json, OWNER_DISCORD_ID set) is granted, others denied", async () => {
+    const SYNTHESIZED: Record<string, PrincipalConfig> = { owner: { owner: true, identities: { discord: "100000000000000000" } } };
+    config.principals = SYNTHESIZED;
+    const denied = await fileLinearIssueEntry.execute({ title: "t", description: "d", repo_label: "r" }, ctx("discord", "999"));
+    expect(denied.content).toBe("This tool is owner-only.");
   });
 });
 
-describe("ops-triage owner gate — CONFIGURED (principal registry)", () => {
+describe("ops-triage owner gate — principal registry", () => {
   const prevP = config.principals;
   afterEach(() => {
     config.principals = prevP;

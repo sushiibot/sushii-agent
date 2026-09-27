@@ -5,7 +5,7 @@ import type { PrincipalConfig } from "../../orchestration/principals.ts";
 import { ALL_TOOL_ENTRIES, createToolRegistry, type ToolAvailability } from "./registry.ts";
 import "./hosts.ts";
 
-const AVAILABLE: ToolAvailability = { exa: true, owner: true, grafanaBaseUrl: true, linear: true };
+const AVAILABLE: ToolAvailability = { exa: true, grafanaBaseUrl: true, linear: true };
 
 const ALL_CAPS: SurfaceCapabilities = {
   richComponents: true,
@@ -34,7 +34,9 @@ function fakeSession(hosts: ToolHosts, capabilities: SurfaceCapabilities = ALL_C
   };
 }
 
-const SPACE = { surface: "discord" as const, spaceId: "guild1" };
+// authorized: true so the exa/grafana/linear/host gates below can be tested independently of the
+// ops-triage authorization gate, which has its own dedicated tests further down.
+const SPACE = { surface: "discord" as const, spaceId: "guild1", authorized: true };
 
 function registry(availability: ToolAvailability = AVAILABLE) {
   return createToolRegistry(undefined, () => availability);
@@ -91,8 +93,8 @@ describe("CoreToolRegistry", () => {
     expect(names).not.toContain("fetch_url_content");
   });
 
-  test("ops-triage Grafana/Linear tools hidden without an owner id, even with credentials set", () => {
-    const names = registry({ ...AVAILABLE, owner: false }).resolve(fakeSession({}), SPACE).map((e) => e.name);
+  test("ops-triage Grafana/Linear tools hidden from an unauthorized caller, even with credentials set", () => {
+    const names = registry().resolve(fakeSession({}), { ...SPACE, authorized: false }).map((e) => e.name);
 
     expect(names).not.toContain("search_logs");
     expect(names).not.toContain("get_trace");
@@ -146,36 +148,7 @@ describe("CoreToolRegistry", () => {
   });
 });
 
-describe("owner-DM gating — UNCONFIGURED registry (legacy isPersonalSpace heuristic)", () => {
-  const prev = config.principals;
-  beforeEach(() => {
-    config.principals = {};
-  });
-  afterEach(() => {
-    config.principals = prev;
-  });
-
-  test("update_profile + runner tools hidden in a guild, offered in a discord DM (with owner set)", () => {
-    const guild = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "g1" }).map((e) => e.name);
-    expect(guild).not.toContain("update_profile");
-    expect(guild).not.toContain("dispatch_to_runner");
-
-    const dm = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "dm" }).map((e) => e.name);
-    expect(dm).toContain("update_profile");
-    expect(dm).toContain("dispatch_to_runner");
-  });
-
-  test("isOwner/isPrivate flags are ignored in the legacy regime (space string still decides)", () => {
-    // A Slack DM has no "dm" spaceId, so the legacy heuristic can't recognize it even with flags set.
-    const slackDm = registry()
-      .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: true, isPrivate: true })
-      .map((e) => e.name);
-    expect(slackDm).not.toContain("dispatch_to_runner");
-    expect(slackDm).not.toContain("update_profile");
-  });
-});
-
-describe("runner/ops gating — CONFIGURED registry (author-aware authorized; update_profile stays owner-DM)", () => {
+describe("runner/ops gating (author-aware authorized; update_profile stays owner-DM)", () => {
   const prev = config.principals;
   const DRK: Record<string, PrincipalConfig> = { drk: { owner: true, identities: { slack: "U0OWNERTEST0" } } };
   beforeEach(() => {
@@ -221,7 +194,7 @@ describe("runner/ops gating — CONFIGURED registry (author-aware authorized; up
     expect(names).not.toContain("update_profile");
   });
 
-  test("in the configured regime the legacy discord:dm space alone no longer suffices (needs the flags)", () => {
+  test("the discord:dm space string alone no longer suffices — the authorized/isOwner/isPrivate flags decide", () => {
     const noFlags = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "dm" }).map((e) => e.name);
     expect(noFlags).not.toContain("dispatch_to_runner");
     expect(noFlags).not.toContain("update_profile");

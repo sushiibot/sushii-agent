@@ -6,7 +6,7 @@ import type { Capability, RepoSpec } from "../../../orchestration/contracts.ts";
 import { AuthzError, DispatcherUnavailableError, getDispatcher } from "../../../orchestration/dispatcher.ts";
 import { getActivityHub, taskViewUrl } from "../../../orchestration/activityHub.ts";
 import { can, isOwnerCaller, spaceKey } from "../../../orchestration/authz.ts";
-import { principalsConfigured, resolvePrincipal } from "../../../orchestration/principals.ts";
+import { resolvePrincipal } from "../../../orchestration/principals.ts";
 import { parkDispatch, redeemDispatch, type ParkedDispatch } from "./confirmGate.ts";
 import { config } from "../../../config.ts";
 
@@ -140,9 +140,9 @@ export const dispatchToRunnerEntry: ToolEntry = {
   },
 };
 
-/** Owners dispatch directly. In the legacy (unconfigured) regime only the owner can reach this tool. */
+/** Owners dispatch directly; a community-trusted non-owner must confirm first. */
 function needsConfirmation(ctx: ToolContext): boolean {
-  if (!principalsConfigured() || !ctx.owner) return false;
+  if (!ctx.owner) return false;
   return !resolvePrincipal(ctx.space.surface, ctx.owner.userId)?.isOwner;
 }
 

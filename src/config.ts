@@ -4,6 +4,9 @@ import type { PrincipalConfig } from "./orchestration/principals.ts";
 import type { CommunityConfig } from "./orchestration/communities.ts";
 import { parseCommunities, buildCommunityIndex } from "./orchestration/communities.ts";
 import { parseRelayUrls, parseWikiMap, parseAvatarMap } from "./surfaces/buzz/relayUrl.ts";
+import { getLogger } from "./logger.ts";
+
+const logger = getLogger("config");
 
 export interface Config {
   discordBotToken: string;
@@ -23,8 +26,9 @@ export interface Config {
   feedbackPath: string;
   guildConfig: Record<string, GuildConfig>;
   /** Manual cross-platform identity registry (principal → identities), hand-maintained in
-   *  principals.json (path via PRINCIPALS_PATH). Empty/unset → the registry is unconfigured and
-   *  authz falls back to the legacy `ownerDiscordId` behavior. See orchestration/principals.ts. */
+   *  principals.json (path via PRINCIPALS_PATH). Missing/empty file + OWNER_DISCORD_ID set →
+   *  a single owner principal is synthesized from it. Neither set → empty map, nobody is owner
+   *  (default deny). See loadPrincipals below and orchestration/principals.ts. */
   principals: Record<string, PrincipalConfig>;
   /** Community grouping (community id → its spaces + per-community scoping), hand-maintained in
    *  communities.json (path via COMMUNITIES_PATH). Empty/unset → unconfigured; ops-triage Linear
@@ -132,30 +136,58 @@ function loadGuildConfig(): Record<string, GuildConfig> {
   return raw;
 }
 
-/** Load + validate the manual principal registry. A missing DEFAULT file means "unconfigured" (empty
- *  → legacy fallback); an explicitly-set PRINCIPALS_PATH that can't be read or parsed is a
- *  misconfiguration and throws. Enforces the at-most-one-owner invariant at load. */
+/** Reconciles a file-loaded principal registry with OWNER_DISCORD_ID. A non-empty registry is used
+ *  as-is — never merged — but a declared owner whose discord identity differs from the env var only
+ *  warns (the file wins). An empty registry (missing/empty file) with OWNER_DISCORD_ID set
+ *  synthesizes a single owner principal from it; with neither set, the registry stays empty and
+ *  nobody is owner (default deny). Pure — factored out of loadPrincipals so synthesis/mismatch
+ *  logic is testable without touching the filesystem. */
+export function resolveOwnerPrincipals(
+  raw: Record<string, PrincipalConfig>,
+  ownerDiscordId: string | undefined,
+): Record<string, PrincipalConfig> {
+  const ownerId = Object.keys(raw).find((id) => raw[id]?.owner === true);
+  if (ownerId) {
+    const fileOwnerDiscord = raw[ownerId]?.identities?.discord;
+    if (ownerDiscordId && fileOwnerDiscord && fileOwnerDiscord !== ownerDiscordId) {
+      logger.warn(
+        { principalId: ownerId, fileOwnerDiscord, ownerDiscordId },
+        "principals.json owner's discord identity differs from OWNER_DISCORD_ID; the file wins",
+      );
+    }
+    return raw;
+  }
+  if (Object.keys(raw).length === 0 && ownerDiscordId) {
+    return { owner: { owner: true, identities: { discord: ownerDiscordId } } };
+  }
+  return raw;
+}
+
+/** Load + validate the manual principal registry. A missing DEFAULT file means "empty" (subject to
+ *  OWNER_DISCORD_ID synthesis below); an explicitly-set PRINCIPALS_PATH that can't be read or parsed
+ *  is a misconfiguration and throws. Enforces the at-most-one-owner invariant at load. */
 function loadPrincipals(): Record<string, PrincipalConfig> {
   const explicit = process.env["PRINCIPALS_PATH"];
   const filePath = explicit ?? "./principals.json";
-  let content: string;
+  let content: string | undefined;
   try {
     content = readFileSync(filePath, "utf8");
   } catch (e) {
     if (explicit) throw new Error(`Failed to load principals from ${filePath}: ${e}`);
-    return {};
   }
-  let raw: Record<string, PrincipalConfig>;
-  try {
-    raw = JSON.parse(content);
-  } catch (e) {
-    throw new Error(`Invalid principals JSON in ${filePath}: ${e}`);
+  let raw: Record<string, PrincipalConfig> = {};
+  if (content !== undefined) {
+    try {
+      raw = JSON.parse(content);
+    } catch (e) {
+      throw new Error(`Invalid principals JSON in ${filePath}: ${e}`);
+    }
   }
   const owners = Object.keys(raw).filter((id) => raw[id]?.owner === true);
   if (owners.length > 1) {
     throw new Error(`principals: at most one principal may be owner (found ${owners.join(", ")})`);
   }
-  return raw;
+  return resolveOwnerPrincipals(raw, process.env["OWNER_DISCORD_ID"]);
 }
 
 /** Load + validate the community grouping. A missing DEFAULT file means "unconfigured" (empty); an

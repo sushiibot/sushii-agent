@@ -1,22 +1,15 @@
 // Owner-only observability/triage tools. Grafana/Loki/Tempo and Linear are plain HTTP — no
-// discord.js, no host needed. Owner-gating is a RUNTIME check, unified onto the principal registry
-// (any linked identity of the owner, on any surface) with a legacy ownerDiscordId fallback.
+// discord.js, no host needed. Owner-gating is a RUNTIME check against the principal registry (any
+// linked identity of the owner, on any surface).
 import type { ToolEntry, ToolContext } from "../../contracts.ts";
-import { config } from "../../../config.ts";
-import { principalsConfigured, resolvePrincipal } from "../../../orchestration/principals.ts";
+import { resolvePrincipal } from "../../../orchestration/principals.ts";
 import { queryLoki, queryTempo, getTraceById } from "../../../modules/ops-triage/grafana.ts";
 import { linearFor } from "../../../modules/ops-triage/linear.ts";
 
-/** Denial string, or undefined when the caller is the owner. Configured registry → the caller must
- *  resolve (on THIS surface) to the owner principal; unconfigured → today's ownerDiscordId check. */
+/** Denial string, or undefined when the caller resolves (on THIS surface) to the owner principal. */
 function requireOwner(ctx: ToolContext): string | undefined {
-  if (principalsConfigured()) {
-    const resolved = ctx.owner?.userId ? resolvePrincipal(ctx.space.surface, ctx.owner.userId) : undefined;
-    return resolved?.isOwner ? undefined : "This tool is owner-only.";
-  }
-  if (!config.ownerDiscordId) return "ops-triage is not configured (OWNER_DISCORD_ID unset).";
-  if (ctx.owner?.userId !== config.ownerDiscordId) return "This tool is owner-only.";
-  return undefined;
+  const resolved = ctx.owner?.userId ? resolvePrincipal(ctx.space.surface, ctx.owner.userId) : undefined;
+  return resolved?.isOwner ? undefined : "This tool is owner-only.";
 }
 
 export const searchLogsEntry: ToolEntry = {

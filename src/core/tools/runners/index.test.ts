@@ -100,26 +100,23 @@ function ctx(space: { surface: string; spaceId: string }, owner: AuthorRef | nul
   };
 }
 
-describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -> can())", () => {
-  const prevOwner = config.ownerDiscordId;
+describe("runner tools authz wiring — synthesized owner (no principals.json, OWNER_DISCORD_ID set)", () => {
   const prevPrincipals = config.principals;
 
   beforeEach(() => {
-    config.ownerDiscordId = OWNER;
-    config.principals = {}; // legacy regime — an empty registry falls back to the ownerDiscordId gate
+    config.principals = { owner: { owner: true, identities: { discord: OWNER } } };
   });
 
   afterEach(() => {
-    config.ownerDiscordId = prevOwner;
     config.principals = prevPrincipals;
   });
 
-  test("dispatch_to_runner: denied in a guild space", async () => {
+  test("dispatch_to_runner: allowed for the owner in a guild space too (not DM-restricted)", async () => {
     const result = await dispatchToRunnerEntry.execute(
       { runner_id: "r1", cwd: "/tmp", prompt: "go" },
       ctx(GUILD_SPACE, author(OWNER)),
     );
-    expect(result.content).toBe(DENIED);
+    expect(result.content).toContain("Dispatched task task-1");
   });
 
   test("dispatch_to_runner: allowed for the owner in a personal space", async () => {
@@ -143,8 +140,8 @@ describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -
     expect(result.content).toBe(DENIED);
   });
 
-  test("list_running_sessions: denied in a guild space, allowed in a personal space", async () => {
-    expect((await listRunningSessionsEntry.execute({}, ctx(GUILD_SPACE, author(OWNER)))).content).toBe(DENIED);
+  test("list_running_sessions: allowed for the owner in both a guild and a personal space", async () => {
+    expect((await listRunningSessionsEntry.execute({}, ctx(GUILD_SPACE, author(OWNER)))).content).toBe("(no running sessions)");
     expect((await listRunningSessionsEntry.execute({}, ctx(DM_SPACE, author(OWNER)))).content).toBe("(no running sessions)");
   });
 
@@ -152,18 +149,16 @@ describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -
     expect((await listRunningSessionsEntry.execute({}, ctx(DM_SPACE, author("not-the-owner")))).content).toBe(DENIED);
   });
 
-  test("read_session: denied in a guild space, allowed (past authz) in a personal space", async () => {
-    expect((await readSessionEntry.execute({ task_id: "t1" }, ctx(GUILD_SPACE, author(OWNER)))).content).toBe(DENIED);
-    expect((await readSessionEntry.execute({ task_id: "t1" }, ctx(DM_SPACE, author(OWNER)))).content).toBe("No such task: t1");
+  test("read_session: allowed (past authz) for the owner in a guild space", async () => {
+    expect((await readSessionEntry.execute({ task_id: "t1" }, ctx(GUILD_SPACE, author(OWNER)))).content).toBe("No such task: t1");
   });
 
   test("read_session: denied for a non-owner in a personal space", async () => {
     expect((await readSessionEntry.execute({ task_id: "t1" }, ctx(DM_SPACE, author("not-the-owner")))).content).toBe(DENIED);
   });
 
-  test("resume_session: denied in a guild space, allowed in a personal space", async () => {
-    expect((await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(GUILD_SPACE, author(OWNER)))).content).toBe(DENIED);
-    const result = await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(DM_SPACE, author(OWNER)));
+  test("resume_session: allowed for the owner in a guild space", async () => {
+    const result = await resumeSessionEntry.execute({ task_id: "t1", prompt: "go on" }, ctx(GUILD_SPACE, author(OWNER)));
     expect(result.content).toContain("Resumed task t1");
   });
 
@@ -172,18 +167,15 @@ describe("runner tools authz wiring (composed path: ctx -> principalOf/spaceOf -
   });
 });
 
-describe("runner tools authz wiring — CONFIGURED registry (principal + isPrivate)", () => {
-  const prevOwner = config.ownerDiscordId;
+describe("runner tools authz wiring — principal registry (principal + isPrivate)", () => {
   const prevPrincipals = config.principals;
   const DRK_SLACK = "U0OWNERTEST0";
   const SLACK_DM = { surface: "slack", spaceId: "T0AAA" };
 
   beforeEach(() => {
-    config.ownerDiscordId = undefined; // registry is the sole owner source
     config.principals = { drk: { owner: true, identities: { slack: DRK_SLACK } } };
   });
   afterEach(() => {
-    config.ownerDiscordId = prevOwner;
     config.principals = prevPrincipals;
   });
 
@@ -194,7 +186,7 @@ describe("runner tools authz wiring — CONFIGURED registry (principal + isPriva
     return { space, isPrivate, owner, store: {} as never, memory: {} as never, log: {} as never };
   }
 
-  test("owner principal in a private Slack DM dispatches (no legacy ownerDiscordId needed)", async () => {
+  test("owner principal in a private Slack DM dispatches", async () => {
     const result = await dispatchToRunnerEntry.execute(
       { runner_id: "r1", cwd: "/tmp", prompt: "go" },
       privCtx(SLACK_DM, slackAuthor(DRK_SLACK), true),
@@ -228,17 +220,14 @@ describe("runner tools authz wiring — CONFIGURED registry (principal + isPriva
 });
 
 describe("runner tools: dispatcher unavailable (getDispatcher listen failure)", () => {
-  const prevOwner = config.ownerDiscordId;
   const prevPrincipals = config.principals;
 
   beforeEach(() => {
-    config.ownerDiscordId = OWNER;
-    config.principals = {};
+    config.principals = { owner: { owner: true, identities: { discord: OWNER } } };
     dispatcherUnavailable = true;
   });
 
   afterEach(() => {
-    config.ownerDiscordId = prevOwner;
     config.principals = prevPrincipals;
     dispatcherUnavailable = false;
   });
@@ -264,34 +253,23 @@ describe("runner tools: dispatcher unavailable (getDispatcher listen failure)", 
   });
 });
 
-describe("runner tools: registry-level availability gate (mirrors ops-triage)", () => {
-  const prevOwner = config.ownerDiscordId;
-  const prevPrincipals = config.principals;
-
-  beforeEach(() => {
-    config.principals = {}; // legacy regime: gating falls back to owner-availability + isPersonalSpace
-  });
-
-  afterEach(() => {
-    config.ownerDiscordId = prevOwner;
-    config.principals = prevPrincipals;
-  });
-
-  function names(owner: boolean, spaceId: string): string[] {
-    const registry = createToolRegistry(RUNNER_TOOL_ENTRIES, () => ({ exa: true, owner, grafanaBaseUrl: true, linear: true }));
-    return registry.resolve(fakeSession(), { surface: "discord", spaceId }).map((e) => e.name);
+describe("runner tools: registry-level availability gate (authorized flag decides, not DM)", () => {
+  function names(authorized: boolean, spaceId: string): string[] {
+    const registry = createToolRegistry(RUNNER_TOOL_ENTRIES, () => ({ exa: true, grafanaBaseUrl: true, linear: true }));
+    return registry.resolve(fakeSession(), { surface: "discord", spaceId, authorized }).map((e) => e.name);
   }
 
-  test("hidden in a guild space even with an owner configured", () => {
-    expect(names(true, "guild-1")).toEqual([]);
+  test("offered in a guild space when authorized", () => {
+    expect(names(true, "guild-1")).toEqual(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session", "stop_task", "discard_task", "steer_task"]);
   });
 
-  test("offered in a personal/DM space with an owner configured", () => {
+  test("offered in a personal/DM space when authorized", () => {
     expect(names(true, "dm")).toEqual(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session", "stop_task", "discard_task", "steer_task"]);
   });
 
-  test("hidden in a personal/DM space when no owner is configured", () => {
+  test("hidden everywhere when not authorized", () => {
     expect(names(false, "dm")).toEqual([]);
+    expect(names(false, "guild-1")).toEqual([]);
   });
 });
 

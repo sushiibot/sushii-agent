@@ -1,7 +1,6 @@
 import { buildOpsTriagePromptSection } from "../modules/ops-triage/prompt.ts";
 import { resolveCommunity } from "./communities.ts";
 import { getDispatcher } from "./dispatcher.ts";
-import { principalsConfigured } from "./principals.ts";
 
 interface RunnerSummary {
   runnerId: string;
@@ -111,8 +110,8 @@ export function renderCapabilityMap(tools: Set<string>): string | undefined {
 export function buildCapabilitySections(t: CapabilityTurn): string | undefined {
   const tools = new Set(t.tools);
   const ops = tools.has("search_logs") || tools.has("file_linear_issue") ? buildOpsTriagePromptSection() : undefined;
-  // Mirrors the dispatch tool: with a principal registry, only the owner dispatches without confirming.
-  const runners = tools.has("dispatch_to_runner") ? buildRunnerSection(principalsConfigured() && !t.isOwner) : undefined;
+  // Mirrors the dispatch tool: only the owner dispatches without confirming.
+  const runners = tools.has("dispatch_to_runner") ? buildRunnerSection(!t.isOwner) : undefined;
   const team = buildTeamSection(t);
   const parts = [renderCapabilityMap(tools), team, ops, runners].filter((s): s is string => !!s);
   return parts.length ? parts.join("\n\n") : undefined;
