@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { config } from "../config.ts";
 import type { TeamConfig } from "./teams.ts";
-import { buildTeamIndex, buzzAvatarFor, isTeamMember, parseTeams, resolveTeam } from "./teams.ts";
+import { buildTeamIndex, buzzAvatarFor, getTeam, isTeamMember, parseTeams, resolveTeam } from "./teams.ts";
 
 // Placeholder ids only — never real guild/team ids in a public repo.
 const TEAMS: Record<string, TeamConfig> = {
@@ -265,6 +265,27 @@ describe("parseTeams: rejects the wiki-sync module", () => {
         },
       }),
     ).toThrow(/enabledModules must not include "wiki-sync"/);
+  });
+});
+
+describe("trustSpaceMembers propagation", () => {
+  const prev = config.teams;
+  afterEach(() => {
+    config.teams = prev;
+  });
+
+  test("carries through resolveTeam and getTeam", () => {
+    config.teams = {
+      a: { spaces: [{ surface: "buzz", spaceId: "buzz:https://relay.example" }], trustSpaceMembers: true },
+    };
+    expect(resolveTeam("buzz", "buzz:https://relay.example")?.trustSpaceMembers).toBe(true);
+    expect(getTeam("a")?.trustSpaceMembers).toBe(true);
+  });
+
+  test("absent stays undefined through both lookups", () => {
+    config.teams = { a: { spaces: [{ surface: "buzz", spaceId: "buzz:https://relay.example" }] } };
+    expect(resolveTeam("buzz", "buzz:https://relay.example")?.trustSpaceMembers).toBeUndefined();
+    expect(getTeam("a")?.trustSpaceMembers).toBeUndefined();
   });
 });
 

@@ -40,14 +40,13 @@ export interface TeamLinear {
 /** Raw per-team entry as it appears in teams.json (keyed by team id). */
 export interface TeamConfig {
   spaces: TeamSpace[];
-  /** Reference to an existing wiki (wikiId == guildId). Does NOT drive wiki-sync source derivation. */
+  /** The wiki this team owns; spaces feed and/or read it through their own `wiki` role. */
   wiki?: { wikiId: string };
   /** This team's own Linear account. Absent → ops-triage falls through to the default (SUSHI). */
   linear?: TeamLinear;
   /** Authorized principals in this team, keyed by principalId. */
   members?: TeamMembers;
-  /** Extends trust (same as a `members[...].trusted` principal) to anyone posting from this team's
-   *  non-Discord spaces, gated per space in the entry gate rather than parsed here. */
+  /** Applies only to this team's non-Discord spaces; enforced by the entry gate. */
   trustSpaceMembers?: boolean;
 }
 

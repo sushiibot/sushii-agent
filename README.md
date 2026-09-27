@@ -145,8 +145,8 @@ for a full worked entry.
 - `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over the
   global `BUZZ_AVATAR_URL` fallback for that relay.
 - `linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time.
-- `trustSpaceMembers` extends trust to anyone posting from this team's non-Discord spaces (see the
-  entry-gate docs for the exact semantics).
+- `trustSpaceMembers` applies only to this team's non-Discord spaces; the entry gate decides what
+  it grants.
 
 ## Architecture
 

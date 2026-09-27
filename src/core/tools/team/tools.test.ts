@@ -56,6 +56,7 @@ const TEAMS: Record<string, TeamConfig> = {
     wiki: { wikiId: "G1" },
     linear: { apiKeyEnv: "DREAM_LINEAR_API_KEY", teamId: "DREAM" },
     members: { drk: { trusted: true }, alice: { trusted: true }, bob: {} },
+    trustSpaceMembers: true,
   },
   other: { spaces: [{ surface: "slack", spaceId: "T2" }], members: { bob: { trusted: true } } },
 };
@@ -101,6 +102,15 @@ describe("team_config", () => {
     const buzz = Object.fromEntries(view.spaces[2]!.settings);
     expect(buzz["avatar"]).toBe("https://relay.example/avatar.png");
     expect(buzz["reads wiki"]).toBe("G1");
+  });
+
+  test("trust space members line reflects the team's trustSpaceMembers flag", async () => {
+    const r = await teamConfigEntry.execute({}, ctx("slack", "T1", "U200", false));
+    expect(r.content).toContain("trust space members (slack/buzz): yes");
+
+    // "other" has no trustSpaceMembers set at all.
+    const r2 = await teamConfigEntry.execute({}, ctx("slack", "T2", "U100"));
+    expect(r2.content).toContain("trust space members (slack/buzz): no");
   });
 
   test("a space outside any team shows only itself", () => {
