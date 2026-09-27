@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { getPermittedGuildIds, resolvedModules, type GuildConfig } from "./guildConfig.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { config } from "./config.ts";
+import { getPermittedGuildIds, moderationEnabled, resolvedModules, type GuildConfig } from "./guildConfig.ts";
 
 function cfg(mcpBridgeAllowedUserIds?: string[]): GuildConfig {
   return { allowedRoles: [], mcpBridgeAllowedUserIds };
@@ -44,5 +45,35 @@ describe("resolvedModules", () => {
 
   test("explicit empty enabledModules array is honored, not defaulted (?? only fires on undefined)", () => {
     expect(resolvedModules({ allowedRoles: [], enabledModules: [] })).toEqual([]);
+  });
+});
+
+describe("moderationEnabled", () => {
+  const prevGuildConfig = config.guildConfig;
+  beforeEach(() => {
+    config.guildConfig = {
+      G1: cfg(undefined), // defaults to moderation-only
+      G2: { allowedRoles: [], enabledModules: ["wiki-sync"] },
+    };
+  });
+  afterEach(() => {
+    config.guildConfig = prevGuildConfig;
+  });
+
+  test("true for a Discord guild with the moderation module resolved", () => {
+    expect(moderationEnabled("discord", "G1")).toBe(true);
+  });
+
+  test("false for a Discord guild without the moderation module", () => {
+    expect(moderationEnabled("discord", "G2")).toBe(false);
+  });
+
+  test("false for a non-Discord surface even if the spaceId collides with a configured guild", () => {
+    expect(moderationEnabled("slack", "G1")).toBe(false);
+    expect(moderationEnabled("buzz", "G1")).toBe(false);
+  });
+
+  test("false for a Discord guild that doesn't exist in config", () => {
+    expect(moderationEnabled("discord", "unknown")).toBe(false);
   });
 });

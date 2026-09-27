@@ -1,3 +1,5 @@
+import { config } from "./config.ts";
+
 /** Agent modules a guild can enable. */
 export type ModuleId = "moderation" | "wiki-sync" | "mcp" | "ops-triage";
 
@@ -36,6 +38,15 @@ export interface GuildConfig {
 /** Modules active for this guild — defaults to moderation-only, so configs written before this field existed keep exactly today's behavior. */
 export function resolvedModules(cfg: GuildConfig): ModuleId[] {
   return cfg.enabledModules ?? ["moderation"];
+}
+
+/** Whether the moderation module is active for this space — true only on Discord, and only when the
+ *  guild is configured and has "moderation" among its resolved modules. */
+export function moderationEnabled(surface: string, spaceId: string): boolean {
+  if (surface !== "discord") return false;
+  const cfg = config.guildConfig[spaceId];
+  if (!cfg) return false;
+  return resolvedModules(cfg).includes("moderation");
 }
 
 /** Every guild id whose mcpBridgeAllowedUserIds includes the given Discord user id. */

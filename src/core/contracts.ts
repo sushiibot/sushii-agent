@@ -547,6 +547,8 @@ export interface AgentCoreDeps {
     userId: string;
     isPrivate: boolean;
     isOwner: boolean;
+    /** Owner OR a trusted member of this space's community — same signal that gates runner/ops tools. */
+    authorized: boolean;
     /** Names of the tools resolved for this turn. */
     tools: string[];
   }) => string | undefined;

@@ -1,4 +1,5 @@
 import { buildOpsTriagePromptSection } from "../modules/ops-triage/prompt.ts";
+import { resolveCommunity } from "./communities.ts";
 import { getDispatcher } from "./dispatcher.ts";
 import { principalsConfigured } from "./principals.ts";
 
@@ -57,7 +58,34 @@ export interface CapabilityTurn {
   userId: string;
   isPrivate: boolean;
   isOwner: boolean;
+  /** Owner OR a trusted member of this space's community. */
+  authorized: boolean;
   tools: string[];
+}
+
+const SURFACE_KIND_LABELS: Record<string, string> = {
+  discord: "Discord guild",
+  slack: "Slack workspace",
+  buzz: "buzz relay",
+};
+
+/** "## Team" section for a space that belongs to a community: what the other spaces are (kinds,
+ *  never raw ids), whether a wiki is shared, and the caller's standing. Undefined outside a
+ *  community. Text is stable per space (no timestamps, no member ids) so the prefix stays cacheable. */
+function buildTeamSection(t: CapabilityTurn): string | undefined {
+  const community = resolveCommunity(t.surface, t.spaceId);
+  if (!community) return undefined;
+
+  const kinds = [...new Set(community.spaces.map((s) => SURFACE_KIND_LABELS[s.surface] ?? s.surface))];
+  const standing = t.isOwner ? "the owner" : t.authorized ? "a trusted member" : "a member";
+
+  const lines = [
+    "## Team",
+    `This space is part of the team "${community.id}", spanning ${kinds.join(", ")}.`,
+    `You are speaking with ${standing} of this team.`,
+  ];
+  if (community.wiki) lines.push("The team's wiki is shared across its spaces.");
+  return lines.join("\n");
 }
 
 // One line per capability, listed only when its tools resolved for this turn. The tool descriptions
@@ -70,6 +98,7 @@ const CAPABILITY_LINES: { tools: string[]; line: string }[] = [
   { tools: ["memory"], line: "Notes that persist for this space (memory): save durable facts and preferences worth keeping; skip one-off details." },
   { tools: ["update_profile"], line: "The user's profile (update_profile): refine it when you learn a lasting fact about them." },
   { tools: ["ask_question"], line: "Ask the user to pick between options (ask_question) when a choice is genuinely theirs." },
+  { tools: ["team_config"], line: "Your team's configuration across its Discord/Slack/buzz spaces (team_config) — check it before answering questions about setup, personas, modules, or who can do what." },
 ];
 
 export function renderCapabilityMap(tools: Set<string>): string | undefined {
@@ -84,6 +113,7 @@ export function buildCapabilitySections(t: CapabilityTurn): string | undefined {
   const ops = tools.has("search_logs") || tools.has("file_linear_issue") ? buildOpsTriagePromptSection() : undefined;
   // Mirrors the dispatch tool: with a principal registry, only the owner dispatches without confirming.
   const runners = tools.has("dispatch_to_runner") ? buildRunnerSection(principalsConfigured() && !t.isOwner) : undefined;
-  const parts = [renderCapabilityMap(tools), ops, runners].filter((s): s is string => !!s);
+  const team = buildTeamSection(t);
+  const parts = [renderCapabilityMap(tools), team, ops, runners].filter((s): s is string => !!s);
   return parts.length ? parts.join("\n\n") : undefined;
 }

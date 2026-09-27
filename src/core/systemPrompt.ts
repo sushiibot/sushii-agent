@@ -14,12 +14,18 @@ export interface SystemPromptInputs {
   behavior: string;
   selfId?: string;
   selfName?: string;
+  /** Surface the identity line names, e.g. "Your user ID on slack is …". Undefined keeps the
+   *  original Discord-only wording, matching the byte-golden parity fixtures. */
+  selfSurface?: string;
   channel?: ChannelRef;
   /** Triggering user (the turn initiator). Ports the old `triggeringUser`. */
   author?: AuthorRef;
   /** Owner-only ops-triage block, already gated + built by the surface. Positioned right after
    *  the triggeringUser section, matching the old prompt. */
   ownerSection?: string;
+  /** Whether to render the Moderator/Roles lines in the triggering-user section. Undefined (callers
+   *  that don't compute it) keeps them, matching the pre-existing Discord-only prompt text. */
+  showModeratorRoles?: boolean;
   serverContext?: string | null;
   /** Tier-A core memory: a small, stable, always-present profile about the user/space. Stable → lives
    *  in the cached system prompt (unlike per-turn recall). Opt-in; absent → prompt unchanged (parity). */
@@ -50,7 +56,11 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
   // Bot's own identity
   if (inputs.selfId) {
     const nameStr = inputs.selfName ? ` (${inputs.selfName})` : "";
-    systemParts.push(`Your identity: Your Discord user ID is ${inputs.selfId}${nameStr}. When you see u:${inputs.selfId} in messages, that is yourself. Never confuse your own messages with those of other users.`);
+    const idLine =
+      !inputs.selfSurface || inputs.selfSurface === "discord"
+        ? `Your Discord user ID is ${inputs.selfId}${nameStr}.`
+        : `Your user ID on ${inputs.selfSurface} is ${inputs.selfId}${nameStr}.`;
+    systemParts.push(`Your identity: ${idLine} When you see u:${inputs.selfId} in messages, that is yourself. Never confuse your own messages with those of other users.`);
   }
 
   // Current channel context
@@ -68,14 +78,13 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
   if (inputs.author) {
     const u = inputs.author;
     const displayStr = u.displayName && u.displayName !== u.username ? ` (display name: ${u.displayName})` : "";
-    const modStr = u.isModerator ? "yes — has moderation role" : "no";
-    const roles = u.roles ?? [];
-    const roleStr = roles.length > 0 ? roles.map((r) => `${r.name} (${r.id})`).join(", ") : "none";
-    const lines = [
-      `Request from: ${u.username}${displayStr} (u:${u.userId})`,
-      `Moderator: ${modStr}`,
-      `Roles: ${roleStr}`,
-    ];
+    const lines = [`Request from: ${u.username ?? u.userId}${displayStr} (u:${u.userId})`];
+    if (inputs.showModeratorRoles !== false) {
+      const modStr = u.isModerator ? "yes — has moderation role" : "no";
+      const roles = u.roles ?? [];
+      const roleStr = roles.length > 0 ? roles.map((r) => `${r.name} (${r.id})`).join(", ") : "none";
+      lines.push(`Moderator: ${modStr}`, `Roles: ${roleStr}`);
+    }
     systemParts.push(lines.join("\n"));
 
     // Owner-only ops-triage block — surface supplies it only for the owner, matching the old

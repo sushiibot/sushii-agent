@@ -17,6 +17,7 @@ import type {
 } from "./contracts.ts";
 import { conversationKey } from "./contracts.ts";
 import { isAuthorized, isPersonalSpace, spaceKey } from "../orchestration/authz.ts";
+import { moderationEnabled } from "../guildConfig.ts";
 import { principalAliasUserIds, resolvePrincipal } from "../orchestration/principals.ts";
 import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
@@ -164,14 +165,16 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     // Built from the resolved tool list, so the prompt only describes what this turn can actually use.
     const capabilities = autoMod
       ? undefined
-      : deps.capabilitySections?.({ surface: conversation.surface, spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate, isOwner, tools: toolEntries.map((e) => e.name) });
+      : deps.capabilitySections?.({ surface: conversation.surface, spaceId: conversation.spaceId, userId: turn.initiator.userId, isPrivate, isOwner, authorized, tools: toolEntries.map((e) => e.name) });
 
     const systemPrompt = assembleSystemPrompt({
       behavior: pc.behavior ?? deps.behavior,
       selfId: session.selfId,
       selfName: session.selfName,
+      selfSurface: conversation.surface,
       channel: pc.channel,
       author: autoMod ? undefined : turn.initiator,
+      showModeratorRoles: moderationEnabled(conversation.surface, conversation.spaceId),
       ownerSection: [pc.ownerSection, capabilities].filter((s): s is string => !!s).join("\n\n") || undefined,
       serverContext: deps.memory.getServerContext(conversation.spaceId),
       coreProfile: deps.memory.read(conversation.spaceId, CORE_PROFILE_TITLE)?.content ?? undefined,
