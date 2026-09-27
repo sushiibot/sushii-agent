@@ -140,17 +140,18 @@ function loadGuildConfig(): Record<string, GuildConfig> {
  *  as-is — never merged — but a declared owner whose discord identity differs from the env var only
  *  warns (the file wins). An empty registry (missing/empty file) with OWNER_DISCORD_ID set
  *  synthesizes a single owner principal from it; with neither set, the registry stays empty and
- *  nobody is owner (default deny). Pure — factored out of loadPrincipals so synthesis/mismatch
- *  logic is testable without touching the filesystem. */
+ *  nobody is owner (default deny). Factored out of loadPrincipals, with `warn` injectable, so
+ *  synthesis/mismatch logic is testable without touching the filesystem or the real logger. */
 export function resolveOwnerPrincipals(
   raw: Record<string, PrincipalConfig>,
   ownerDiscordId: string | undefined,
+  warn: (ctx: Record<string, unknown>, msg: string) => void = (ctx, msg) => logger.warn(ctx, msg),
 ): Record<string, PrincipalConfig> {
   const ownerId = Object.keys(raw).find((id) => raw[id]?.owner === true);
   if (ownerId) {
     const fileOwnerDiscord = raw[ownerId]?.identities?.discord;
     if (ownerDiscordId && fileOwnerDiscord && fileOwnerDiscord !== ownerDiscordId) {
-      logger.warn(
+      warn(
         { principalId: ownerId, fileOwnerDiscord, ownerDiscordId },
         "principals.json owner's discord identity differs from OWNER_DISCORD_ID; the file wins",
       );

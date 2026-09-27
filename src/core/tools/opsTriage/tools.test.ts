@@ -28,7 +28,7 @@ describe("ops-triage owner gate — no owner configured", () => {
     expect(r.content).toBe("This tool is owner-only.");
   });
 
-  test("a synthesized owner (no principals.json, OWNER_DISCORD_ID set) is granted, others denied", async () => {
+  test("with a synthesized owner (no principals.json, OWNER_DISCORD_ID set), a non-owner is still denied", async () => {
     const SYNTHESIZED: Record<string, PrincipalConfig> = { owner: { owner: true, identities: { discord: "100000000000000000" } } };
     config.principals = SYNTHESIZED;
     const denied = await fileLinearIssueEntry.execute({ title: "t", description: "d", repo_label: "r" }, ctx("discord", "999"));

@@ -18,7 +18,7 @@ const PERSONAL_SPACES: ReadonlySet<string> = new Set([spaceKey("discord", "dm")]
 /** The capabilities the OWNER may exercise, from any space (DM or guild
  *  channel — only the owner's own principal ever qualifies, so a shared space grants nothing to
  *  others). Keyed by capability alone, so it works across surfaces whose spaceId isn't literally
- *  "dm" (Slack's is the teamId). Includes `session.stop`, which the legacy allowlist omits. */
+ *  "dm" (Slack's is the teamId). */
 const OWNER_CAPABILITIES: ReadonlySet<Capability> = new Set<Capability>([
   "runner.dispatch",
   "session.read",
