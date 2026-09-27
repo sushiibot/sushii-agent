@@ -60,7 +60,7 @@ export function isAuthorized(surface: string, userId: string, space: string): bo
   if (resolved?.isOwner) return true;
   const spaceId = spaceIdOf(space);
   if (resolved && isTeamMember(resolved.principalId, surface, spaceId)) return true;
-  if (surface !== "discord" && userId.length > 0 && resolveTeam(surface, spaceId)?.trustSpaceMembers === true) return true;
+  if (surface !== "discord" && userId.trim().length > 0 && resolveTeam(surface, spaceId)?.trustSpaceMembers === true) return true;
   return false;
 }
 
