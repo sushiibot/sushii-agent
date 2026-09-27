@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ToolContext } from "../../contracts.ts";
 import { config } from "../../../config.ts";
-import { parseCommunities, type CommunityConfig } from "../../../orchestration/communities.ts";
+import { buildCommunityIndex, parseCommunities, type CommunityConfig } from "../../../orchestration/communities.ts";
 import type { PrincipalConfig } from "../../../orchestration/principals.ts";
 import { resolveTeamConfig, type SpaceStats } from "../../../orchestration/teamConfig.ts";
 import { teamConfigEntry } from "./tools.ts";
 
+const SERVER_CONTEXT_BODY = "SERVER_CONTEXT_BODY";
 const memoryCounts: Record<string, { entries: number; context: string | null }> = {
-  G1: { entries: 3, context: "ctx" },
+  G1: { entries: 3, context: SERVER_CONTEXT_BODY },
 };
 
 const stats: SpaceStats = (spaceId) => ({
@@ -129,6 +130,9 @@ describe("team_config", () => {
     expect(r.content).not.toContain("MODROLE1");
     expect(r.content).not.toContain("999");
     expect(r.content).toContain("details only in a DM");
+    // No memory content ever crosses the port — only the aggregate count/length.
+    expect(r.content).not.toContain(SERVER_CONTEXT_BODY);
+    expect(r.content).toContain(`${SERVER_CONTEXT_BODY.length} chars`);
   });
 
   test("trusted member in a DM (private) sees full auto-mod detail", async () => {
@@ -169,19 +173,15 @@ describe("team_config", () => {
       config.ownerDiscordId = prevOwner;
     });
 
-    test("the legacy owner id is authorized", async () => {
+    test("the legacy owner id is authorized and sees its team, with no owner: line (ownerPrincipalId unset)", async () => {
       const r = await teamConfigEntry.execute({}, ctx("discord", "G1", "100"));
-      expect(r.content).not.toContain("owner-only");
+      expect(r.content).toContain("Team: dreamcatcher");
+      expect(r.content).not.toContain("- owner:");
     });
 
     test("anyone else is denied as owner-only", async () => {
       const r = await teamConfigEntry.execute({}, ctx("discord", "G1", "200"));
       expect(r.content).toBe("This tool is owner-only.");
-    });
-
-    test("no owner: line when the principal registry is unconfigured", async () => {
-      const r = await teamConfigEntry.execute({}, ctx("discord", "G1", "100"));
-      expect(r.content).not.toContain("- owner:");
     });
   });
 });
@@ -225,5 +225,13 @@ describe("parseCommunities", () => {
     });
     expect(out["a"]!.linear).toEqual({ apiKey: "k", teamId: "T" });
     expect(out["a"]!.wiki).toEqual({ wikiId: "G1" });
+  });
+
+  test("two differently-spelled buzz spaceIds normalize to the same space and collide as a duplicate", () => {
+    const out = parseCommunities({
+      a: { spaces: [{ surface: "buzz", spaceId: "buzz:wss://Relay.Example/" }] },
+      b: { spaces: [{ surface: "buzz", spaceId: "buzz:https://relay.example" }] },
+    });
+    expect(() => buildCommunityIndex(out)).toThrow(/claimed by both/);
   });
 });
