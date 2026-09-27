@@ -4,7 +4,7 @@
 // gathers them per space so a team can see what applies to it.
 import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
-import { resolveWikiIdForSource } from "../modules/wiki-sync/sources.ts";
+import { wikiFor } from "../modules/wiki-sync/sources.ts";
 import { ownerPrincipalId } from "./principals.ts";
 import { getCommunity, resolveCommunity, type Community, type CommunitySpace } from "./communities.ts";
 
@@ -59,7 +59,6 @@ function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [
     return [
       ["persona", "buzz"],
       ["avatar", config.buzz.avatarMap[relay] ?? config.buzz.avatarUrl ?? "(none)"],
-      ["reads wiki of guild", config.buzz.wikiMap[relay] ?? "(none)"],
     ];
   }
   if (surface === "slack") return [["persona", "slack"]];
@@ -68,12 +67,14 @@ function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [
 
 function spaceView(space: CommunitySpace, stats: SpaceStats, detailed: boolean): SpaceConfigView {
   const { memoryEntries, contextChars } = stats(space.spaceId);
+  const wiki = wikiFor(space.surface, space.spaceId);
   return {
     surface: space.surface,
     spaceId: space.spaceId,
     settings: [
       ...surfaceSettings(space.surface, space.spaceId, detailed),
-      ["feeds wiki", resolveWikiIdForSource(space.surface, space.spaceId) ?? "(none)"],
+      ["feeds wiki", wiki?.feeds ? wiki.wikiId : "(none)"],
+      ["reads wiki", wiki?.reads ? wiki.wikiId : "(none)"],
       ["server context", contextChars > 0 ? `${contextChars} chars` : "(not scanned)"],
       ["memory entries", String(memoryEntries)],
     ],

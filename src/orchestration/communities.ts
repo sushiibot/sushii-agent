@@ -13,6 +13,12 @@ import { normalizeRelayUrl } from "../surfaces/buzz/relayUrl.ts";
 export interface CommunitySpace {
   surface: string;
   spaceId: string;
+  /** This space's role in the team's wiki (`community.wiki.wikiId`): "source" feeds and reads it,
+   *  "read" only reads it. Absent → this space has no wiki via the team (legacy env-map fallbacks
+   *  in wiki-sync/sources.ts may still apply). */
+  wiki?: "source" | "read";
+  /** This space's own wiki-sync status channel, overriding the guild-config fallback. */
+  statusChannelId?: string;
 }
 
 /** Vetted people beyond the owner. `trusted: true` = the elevated set (same tools the owner gets),
@@ -77,7 +83,20 @@ export function parseCommunities(raw: unknown): Record<string, CommunityConfig> 
       if (!isPlainObject(s) || !isNonEmptyString(s["surface"]) || !isNonEmptyString(s["spaceId"])) {
         throw new Error(`communities: "${id}".spaces[${i}] must be {surface: string, spaceId: string}`);
       }
-      return { surface: s["surface"], spaceId: normalizeSpaceId(s["surface"], s["spaceId"]) };
+      const wikiRaw = s["wiki"];
+      if (wikiRaw !== undefined && wikiRaw !== "source" && wikiRaw !== "read") {
+        throw new Error(`communities: "${id}".spaces[${i}].wiki must be "source" or "read"`);
+      }
+      const statusChannelIdRaw = s["statusChannelId"];
+      if (statusChannelIdRaw !== undefined && !isNonEmptyString(statusChannelIdRaw)) {
+        throw new Error(`communities: "${id}".spaces[${i}].statusChannelId must be a string`);
+      }
+      return {
+        surface: s["surface"],
+        spaceId: normalizeSpaceId(s["surface"], s["spaceId"]),
+        wiki: wikiRaw as CommunitySpace["wiki"],
+        statusChannelId: statusChannelIdRaw,
+      };
     });
 
     const membersRaw = entryRaw["members"];

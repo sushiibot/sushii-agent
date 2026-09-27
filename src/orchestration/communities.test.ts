@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { config } from "../config.ts";
 import type { CommunityConfig } from "./communities.ts";
-import { buildCommunityIndex, isCommunityMember, resolveCommunity } from "./communities.ts";
+import { buildCommunityIndex, isCommunityMember, parseCommunities, resolveCommunity } from "./communities.ts";
 
 // Placeholder ids only — never real guild/team ids in a public repo.
 const COMMUNITIES: Record<string, CommunityConfig> = {
@@ -78,6 +78,39 @@ describe("isCommunityMember", () => {
   test("a space in no community has no members", () => {
     config.communities = COMMUNITIES;
     expect(isCommunityMember("member-a", "discord", "9999999999999999999")).toBe(false);
+  });
+});
+
+describe("parseCommunities: space wiki fields", () => {
+  test("accepts 'source' and 'read', with an optional statusChannelId", () => {
+    const out = parseCommunities({
+      a: {
+        spaces: [
+          { surface: "discord", spaceId: "g1", wiki: "source", statusChannelId: "s1" },
+          { surface: "slack", spaceId: "T1", wiki: "read" },
+        ],
+        wiki: { wikiId: "g1" },
+      },
+    });
+    expect(out["a"]?.spaces[0]).toEqual({ surface: "discord", spaceId: "g1", wiki: "source", statusChannelId: "s1" });
+    expect(out["a"]?.spaces[1]).toEqual({ surface: "slack", spaceId: "T1", wiki: "read", statusChannelId: undefined });
+  });
+
+  test("a space with no wiki field parses with wiki undefined", () => {
+    const out = parseCommunities({ a: { spaces: [{ surface: "discord", spaceId: "g1" }] } });
+    expect(out["a"]?.spaces[0]?.wiki).toBeUndefined();
+  });
+
+  test("rejects a wiki value other than 'source' or 'read'", () => {
+    expect(() =>
+      parseCommunities({ a: { spaces: [{ surface: "discord", spaceId: "g1", wiki: "both" }] } }),
+    ).toThrow(/\.wiki must be "source" or "read"/);
+  });
+
+  test("rejects a non-string statusChannelId", () => {
+    expect(() =>
+      parseCommunities({ a: { spaces: [{ surface: "discord", spaceId: "g1", statusChannelId: 123 }] } }),
+    ).toThrow(/statusChannelId must be a string/);
   });
 });
 

@@ -100,7 +100,7 @@ describe("team_config", () => {
 
     const buzz = Object.fromEntries(view.spaces[2]!.settings);
     expect(buzz["avatar"]).toBe("https://relay.example/avatar.png");
-    expect(buzz["reads wiki of guild"]).toBe("G1");
+    expect(buzz["reads wiki"]).toBe("G1");
   });
 
   test("a space outside any team shows only itself", () => {

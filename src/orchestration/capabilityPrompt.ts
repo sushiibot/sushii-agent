@@ -91,7 +91,7 @@ function buildTeamSection(t: CapabilityTurn): string | undefined {
 // carry the how-to; this tells the model the capability exists so it reaches for it.
 const CAPABILITY_LINES: { tools: string[]; line: string }[] = [
   { tools: ["web_search", "fetch_url_content"], line: "Search the web and read pages (web_search, fetch_url_content) for anything current or outside your knowledge." },
-  { tools: ["search_files", "read_file", "list_files"], line: "This space's knowledge base (search_files, read_file, list_files): check it first for documented background, and cite the link it gives." },
+  { tools: ["search_files", "read_file", "list_files"], line: "Your team's shared knowledge base (wiki) (search_files, read_file, list_files): check it first for documented background, and cite the link it gives." },
   { tools: ["search_messages", "get_conversation_context", "fetch_channel_messages", "get_recent_activity"], line: "This server's message history and members (search_messages, get_conversation_context, fetch_channel_messages, get_user_profile and related): look things up instead of guessing." },
   { tools: ["inspect_image"], line: "Look at images and attachments (inspect_image)." },
   { tools: ["memory"], line: "Notes that persist for this space (memory): save durable facts and preferences worth keeping; skip one-off details." },

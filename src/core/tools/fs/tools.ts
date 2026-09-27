@@ -9,7 +9,7 @@ export const listFilesEntry: ToolEntry<"fs"> = {
   definition: {
     name: "list_files",
     description:
-      "List the reference files and folders available to you for this space (its knowledge base). Call with no argument for the top level, or a folder path to browse into it.",
+      "List the reference files and folders available to you in your team's shared knowledge base (wiki). Call with no argument for the top level, or a folder path to browse into it.",
     parameters: {
       type: "object",
       properties: { dir: { type: "string", description: "Folder path to list (optional; omit for the top level)." } },
@@ -32,7 +32,7 @@ export const searchFilesEntry: ToolEntry<"fs"> = {
   definition: {
     name: "search_files",
     description:
-      "Search (grep) the reference files available to you for this space. Returns matching lines with their file, line number, and a citation link. Prefer this for documented background before live lookups; read_file the promising matches, and cite the link when you use one.",
+      "Search (grep) the reference files available to you in your team's shared knowledge base (wiki). Returns matching lines with their file, line number, and a citation link. Prefer this for documented background before live lookups; read_file the promising matches, and cite the link when you use one.",
     parameters: {
       type: "object",
       properties: {
@@ -59,7 +59,7 @@ export const readFileEntry: ToolEntry<"fs"> = {
     description: "Read the full content of a reference file by its path (from list_files or search_files).",
     parameters: {
       type: "object",
-      properties: { path: { type: "string", description: "File path within this space's files." } },
+      properties: { path: { type: "string", description: "File path within your team's shared knowledge base (wiki)." } },
       required: ["path"],
     },
   },

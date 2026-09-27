@@ -24,8 +24,7 @@ import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
 import { closeSharedSushiMcpClients } from "./surfaces/discord/hosts/sushiMcpHost.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
-import { resolveWikiIdForSource } from "./modules/wiki-sync/sources.ts";
-import { getWikiSyncEnabledGuildIds } from "./modules/wiki-sync/guilds.ts";
+import { getWikiSources, wikiFor } from "./modules/wiki-sync/sources.ts";
 import type { SlackWikiSyncClient } from "./surfaces/slack/wikiSync.ts";
 import { makeCombinedWikiSourceContext } from "./surfaces/wikiSyncFactory.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
@@ -122,19 +121,19 @@ async function main() {
     const buzzCore = createAgentCore({ model, store, memory, tools, hooks: buzzBus, behavior: BUZZ_BEHAVIOR_INSTRUCTIONS, compactor, memoryProvider, capabilitySections: buildCapabilitySections });
     // Empty list → one connection on the default relay (dev localhost), keyed "default".
     const relays = config.buzz.relayUrls.length ? config.buzz.relayUrls : [undefined];
-    const wikiEnabledGuilds = new Set(getWikiSyncEnabledGuildIds());
+    const wikiSources = getWikiSources();
     for (const relayUrl of relays) {
       const key = relayUrl ?? "default";
       const spaceId = relayUrl ? `buzz:${key}` : "buzz";
       // buzz media is auth-gated per relay, so each relay's profile points at its own avatar copy.
       const avatarUrl = config.buzz.avatarMap[key] ?? config.buzz.avatarUrl;
       const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag, avatarUrl }, key);
-      // A community reads a wiki only if its relay is mapped, and only that guild's synced wiki.
-      const wikiGuildId = config.buzz.wikiMap[key];
-      if (wikiGuildId && !wikiEnabledGuilds.has(wikiGuildId)) {
-        logger.warn({ relay: key, guildId: wikiGuildId }, "buzz wiki map points at a guild without wiki-sync enabled — its clone may be empty");
+      // A community reads a wiki only if this relay's space is mapped to one (team or legacy).
+      const wiki = wikiFor("buzz", spaceId);
+      if (wiki?.reads && !wikiSources.has(wiki.wikiId)) {
+        logger.warn({ relay: key, wikiId: wiki.wikiId }, "buzz wiki has no configured source — its clone may be empty");
       }
-      const fsHost = wikiGuildId ? createWikiFsHost(wikiGuildId) : undefined;
+      const fsHost = wiki?.reads ? createWikiFsHost(wiki.wikiId) : undefined;
       try {
         startBuzzSurface({
           core: buzzCore,
@@ -183,8 +182,8 @@ async function main() {
       if (auth.url) slackWiki = { client: slackApp.client as unknown as SlackWikiSyncClient, workspaceUrl: auth.url as string };
       // Expose read access to the wiki this workspace feeds (if any), mirroring buzz's per-community
       // wiki fs host — the Slack agent reads exactly the wiki it contributes to.
-      const slackWikiId = resolveWikiIdForSource("slack", teamId);
-      const slackFsHost = slackWikiId ? createWikiFsHost(slackWikiId) : undefined;
+      const slackWikiAssignment = wikiFor("slack", teamId);
+      const slackFsHost = slackWikiAssignment?.reads ? createWikiFsHost(slackWikiAssignment.wikiId) : undefined;
       startSlackAgentLoop(slackApp, {
         core: slackCore,
         client: slackApp.client as unknown as SlackAgentClient,
