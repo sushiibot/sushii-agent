@@ -28,6 +28,10 @@ export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
 
 /** Restricted to the autonomous auto-mod driver — a conversational request must never see these. */
 const AUTO_MOD_ONLY_TOOLS = new Set(["timeout_member", "delete_user_messages", "send_alert_message"]);
+/** Conversational moderation tools, gated on the moderation module now that the entry gate no
+ *  longer implies it — a guild that opts out of moderation loses these along with the auto-mod
+ *  trigger and prompt lines, not just chat access. */
+const MODERATION_MODULE_TOOLS = new Set(["list_automod_rules", "add_automod_keyword", "delete_automod_keyword", "search_audit_log"]);
 const EXA_TOOLS = new Set(["web_search", "fetch_url_content"]);
 const GRAFANA_TOOLS = new Set(["search_logs", "get_trace"]);
 const LINEAR_TOOLS = new Set(["file_linear_issue", "get_issue_status", "list_triaged_issues"]);
@@ -66,9 +70,10 @@ export class CoreToolRegistry implements ToolRegistry {
 
   resolve(
     session: SurfaceSession,
-    space: { surface: SurfaceId; spaceId: string; autoMod?: boolean; isOwner?: boolean; isPrivate?: boolean; authorized?: boolean },
+    space: { surface: SurfaceId; spaceId: string; autoMod?: boolean; isOwner?: boolean; isPrivate?: boolean; authorized?: boolean; moderationOn?: boolean },
   ): ToolEntry<keyof ToolHosts>[] {
     const autoMod = space.autoMod ?? false;
+    const moderationOn = space.moderationOn ?? false;
     const a = this.availability();
 
     // Gating for runner/ops-triage + update_profile tools. Runner/session + ops-triage tools gate on
@@ -83,6 +88,7 @@ export class CoreToolRegistry implements ToolRegistry {
     return this.entries
       .filter((entry) => hostsSatisfied(entry, session.hosts) && capabilitiesSatisfied(entry, session))
       .filter((entry) => autoMod || !AUTO_MOD_ONLY_TOOLS.has(entry.name))
+      .filter((entry) => moderationOn || autoMod || !MODERATION_MODULE_TOOLS.has(entry.name))
       .filter((entry) => a.exa || !EXA_TOOLS.has(entry.name))
       .filter((entry) => opsOwnerAllowed || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))

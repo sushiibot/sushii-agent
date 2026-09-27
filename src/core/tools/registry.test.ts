@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { SurfaceCapabilities, SurfaceSession, ToolHosts } from "../contracts.ts";
 import { config } from "../../config.ts";
 import type { PrincipalConfig } from "../../orchestration/principals.ts";
+import type { TeamConfig } from "../../orchestration/teams.ts";
+import { isAuthorized, spaceKey } from "../../orchestration/authz.ts";
 import { ALL_TOOL_ENTRIES, createToolRegistry, type ToolAvailability } from "./registry.ts";
 import "./hosts.ts";
 
@@ -146,6 +148,36 @@ describe("CoreToolRegistry", () => {
     const names = ALL_TOOL_ENTRIES.map((e) => e.name);
     expect(new Set(names).size).toBe(names.length);
   });
+
+  test("moderation-module tools hidden from a conversational discord turn when moderationOn is false", () => {
+    const names = registry()
+      .resolve(fakeSession({ discord: {} as never }), { ...SPACE, moderationOn: false })
+      .map((e) => e.name);
+    expect(names).not.toContain("list_automod_rules");
+    expect(names).not.toContain("add_automod_keyword");
+    expect(names).not.toContain("delete_automod_keyword");
+    expect(names).not.toContain("search_audit_log");
+    // non-moderation discord tools stay available — the entry gate/chat access is independent.
+    expect(names).toContain("get_guild_info");
+  });
+
+  test("moderation-module tools visible on a conversational discord turn when moderationOn is true", () => {
+    const names = registry()
+      .resolve(fakeSession({ discord: {} as never }), { ...SPACE, moderationOn: true })
+      .map((e) => e.name);
+    expect(names).toContain("list_automod_rules");
+    expect(names).toContain("add_automod_keyword");
+    expect(names).toContain("delete_automod_keyword");
+    expect(names).toContain("search_audit_log");
+  });
+
+  test("the autonomous auto-mod driver keeps moderation-module tools even if moderationOn is left unset", () => {
+    const names = registry()
+      .resolve(fakeSession({ discord: {} as never }), { ...SPACE, autoMod: true })
+      .map((e) => e.name);
+    expect(names).toContain("add_automod_keyword");
+    expect(names).toContain("delete_automod_keyword");
+  });
 });
 
 describe("runner/ops gating (author-aware authorized; update_profile stays owner-DM)", () => {
@@ -226,5 +258,29 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
       .map((e) => e.name);
     expect(names).not.toContain("search_logs");
     expect(names).not.toContain("file_linear_issue");
+  });
+
+  describe("trustSpaceMembers end-to-end: an unlisted slack caller in a trusting team's space", () => {
+    const prevTeams = config.teams;
+    const TRUSTING_TEAMS: Record<string, TeamConfig> = {
+      trusting: { spaces: [{ surface: "slack", spaceId: "T-TRUST" }], trustSpaceMembers: true },
+    };
+    beforeEach(() => {
+      config.teams = TRUSTING_TEAMS;
+    });
+    afterEach(() => {
+      config.teams = prevTeams;
+    });
+
+    test("resolves as authorized and the registry surfaces team_config + runner tools", () => {
+      const authorized = isAuthorized("slack", "U-WHOEVER", spaceKey("slack", "T-TRUST"));
+      expect(authorized).toBe(true);
+
+      const names = registry()
+        .resolve(fakeSession({}), { surface: "slack", spaceId: "T-TRUST", authorized })
+        .map((e) => e.name);
+      expect(names).toContain("team_config");
+      expect(names).toContain("dispatch_to_runner");
+    });
   });
 });

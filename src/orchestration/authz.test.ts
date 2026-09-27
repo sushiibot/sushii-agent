@@ -166,6 +166,61 @@ describe("authz.isAuthorized + can() — per-team trusted members", () => {
   });
 });
 
+// trustSpaceMembers: a team may vet its private (non-Discord) spaces by membership alone —
+// anyone present in them counts as trusted, since the space itself is invite-only. Discord guilds
+// are public, so they never get this shortcut regardless of the flag.
+const TRUST_TEAMS: Record<string, TeamConfig> = {
+  trusting: {
+    spaces: [
+      { surface: "discord", spaceId: DC_DISCORD },
+      { surface: "slack", spaceId: DC_SLACK },
+      { surface: "buzz", spaceId: "buzz:https://relay.example" },
+    ],
+    trustSpaceMembers: true,
+  },
+  untrusting: {
+    spaces: [{ surface: "slack", spaceId: "T00UNTRUSTING" }],
+    // trustSpaceMembers absent — defaults to off.
+  },
+};
+
+describe("authz.isAuthorized — trustSpaceMembers", () => {
+  const prevPrincipals = config.principals;
+  const prevTeams = config.teams;
+
+  beforeEach(() => {
+    config.principals = {}; // no principals.json needed — that's the point of the flag.
+    config.teams = TRUST_TEAMS;
+  });
+  afterEach(() => {
+    config.principals = prevPrincipals;
+    config.teams = prevTeams;
+  });
+
+  test("any non-empty caller is authorized on a trusting team's slack/buzz spaces", () => {
+    expect(isAuthorized("slack", "whoever-U1", spaceKey("slack", DC_SLACK))).toBe(true);
+    expect(isAuthorized("buzz", "some-pubkey", spaceKey("buzz", "buzz:https://relay.example"))).toBe(true);
+  });
+
+  test("a Discord space on the same trusting team still requires an explicit trusted member or owner", () => {
+    expect(isAuthorized("discord", "whoever-U1", spaceKey("discord", DC_DISCORD))).toBe(false);
+  });
+
+  test("an empty userId is never authorized, even on a trusting team's space", () => {
+    expect(isAuthorized("slack", "", spaceKey("slack", DC_SLACK))).toBe(false);
+  });
+
+  test("trustSpaceMembers absent/false denies an unlisted caller on that team's space", () => {
+    expect(isAuthorized("slack", "whoever-U1", spaceKey("slack", "T00UNTRUSTING"))).toBe(false);
+  });
+
+  test("the owner is still authorized on a trusting team's spaces when a registry exists", () => {
+    config.principals = DRK_REGISTRY;
+    expect(isAuthorized("slack", DRK_SLACK, spaceKey("slack", DC_SLACK))).toBe(true);
+    expect(isAuthorized("discord", DRK_DISCORD, spaceKey("discord", DC_DISCORD))).toBe(true);
+  });
+});
+
 describe("authz.isPersonalSpace", () => {
   test("the known personal/DM space", () => {
     expect(isPersonalSpace(DM_SPACE)).toBe(true);

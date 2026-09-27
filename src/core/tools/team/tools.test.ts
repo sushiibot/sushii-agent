@@ -158,10 +158,23 @@ describe("team_config", () => {
     expect(r.content).toContain("Team: other");
   });
 
-  test("untrusted member and a member of another team are denied", async () => {
-    expect((await teamConfigEntry.execute({}, ctx("slack", "T1", "U300"))).content).toContain("trusted team members");
-    expect((await teamConfigEntry.execute({}, ctx("slack", "T1", "U999"))).content).toContain("trusted team members");
+  test("dreamcatcher's trustSpaceMembers covers any caller on its slack space (non-discord)", async () => {
+    // bob (untrusted per members) and a wholly unlisted id both resolve as authorized here — the
+    // private slack space itself is the vetting, per trustSpaceMembers.
+    expect((await teamConfigEntry.execute({}, ctx("slack", "T1", "U300"))).content).toContain("Team: dreamcatcher");
+    expect((await teamConfigEntry.execute({}, ctx("slack", "T1", "U999"))).content).toContain("Team: dreamcatcher");
+  });
+
+  test("trustSpaceMembers never covers dreamcatcher's discord space — an unlisted caller is still denied", async () => {
+    expect((await teamConfigEntry.execute({}, ctx("discord", "G1", "555"))).content).toContain("trusted team members");
+  });
+
+  test("a caller with no userId at all is denied regardless of trustSpaceMembers", async () => {
     expect((await teamConfigEntry.execute({}, ctx("slack", "T1", undefined))).content).toContain("trusted team members");
+  });
+
+  test("a team without trustSpaceMembers set still denies an unlisted caller on its slack space", async () => {
+    expect((await teamConfigEntry.execute({}, ctx("slack", "T2", "U999"))).content).toContain("trusted team members");
   });
 
   test("owner in a DM lists every team", async () => {

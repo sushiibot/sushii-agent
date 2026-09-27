@@ -50,6 +50,23 @@ export function moderationEnabled(surface: string, spaceId: string): boolean {
   return resolvedModules(cfg).includes("moderation");
 }
 
+/** Whether the auto-mod trigger path is even in play for this guild — factored out of the gateway's
+ *  MessageCreate handler so it's unit-testable without a discord.js Client. The moderation module
+ *  gates this; it no longer doubles as the conversational entry gate below. */
+export function autoModGateOpen(cfg: GuildConfig, autoModEligible: boolean): boolean {
+  return resolvedModules(cfg).includes("moderation") && autoModEligible;
+}
+
+/** The conversational entry gate: mention/reply + sender holds an allowedRoles role. Independent
+ *  of enabledModules — a guild with no modules enabled still gets chat as long as it's configured. */
+export function chatEntryGateOpen(
+  cfg: GuildConfig,
+  opts: { isMention: boolean; isReply: boolean; memberRoleIds: readonly string[] | null },
+): boolean {
+  if (!opts.isMention && !opts.isReply) return false;
+  return opts.memberRoleIds?.some((id) => cfg.allowedRoles.includes(id)) ?? false;
+}
+
 /** Every guild id whose mcpBridgeAllowedUserIds includes the given Discord user id. */
 export function getPermittedGuildIds(
   guildConfig: Record<string, GuildConfig>,

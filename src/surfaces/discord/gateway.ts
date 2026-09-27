@@ -16,7 +16,8 @@ import type { AgentCore, AuthorRef, ChannelRef, ConversationRef, HookBus, Inboun
 import { conversationKey } from "../../core/contracts.ts";
 import { SqliteConversationStore } from "../../core/stores/conversationStore.ts";
 import { DiscordSpaceMemoryStore } from "../../core/stores/memoryStore.ts";
-import { config, buildEmojiMap, resolvedModules } from "../../config.ts";
+import { config, buildEmojiMap } from "../../config.ts";
+import { autoModGateOpen, chatEntryGateOpen } from "../../guildConfig.ts";
 import { getLogger } from "../../logger.ts";
 import { getDb } from "../../db/index.ts";
 import { insertMessage, updateMessageContent, softDeleteMessage, deleteOldMessages } from "../../db/messages.ts";
@@ -190,8 +191,8 @@ async function resolveOrCreateThread(message: Message): Promise<{ thread: Thread
 function buildHosts(client: Client<true>, guildId: string): ToolHosts {
   const guildConfig = config.guildConfig[guildId];
   const mcp = config.sushiiMcpUrl && config.sushiiMcpToken ? new SushiMcpHost(config.sushiiMcpUrl, config.sushiiMcpToken, guildId) : undefined;
-  // The read/search/list_files tools are host-gated on `fs`: expose them only for a guild that
-  // reads a wiki (its own self-wiki, an explicit legacy source, or a team wiki), rooted at it.
+  // The read/search/list_files tools are host-gated on `fs`: expose them only for a guild whose
+  // team wiki this space reads, rooted at it.
   const wiki = wikiFor("discord", guildId);
   const fs = wiki?.reads ? createWikiFsHost(wiki.wikiId) : undefined;
   return {
@@ -532,10 +533,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     // Cache every message from configured guilds, including bots.
     insertMessage(message);
     if (message.author.bot) return;
-    if (!resolvedModules(guildConfig).includes("moderation")) return;
 
     // Auto-mod trigger: mod role pinged by an authorized role (no bot mention required).
-    if (isAutoModEligible(message, guildConfig)) {
+    if (autoModGateOpen(guildConfig, isAutoModEligible(message, guildConfig))) {
       if (!checkAndSetAutoModCooldown(message.guildId, message.channelId, guildConfig)) {
         logger.debug({ guildId: message.guildId, channelId: message.channelId }, "auto-mod trigger suppressed by cooldown");
         return;
@@ -544,10 +544,11 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
 
+    // Conversational entry gate: guild configured (checked above) + mention/reply + sender holds an
+    // allowedRoles role. Independent of enabledModules — moderation only gates moderation features.
     const isMention = message.mentions.has(client.user.id);
     const isReply = !isMention && (await isReplyToBot(message, client.user.id));
-    if (!isMention && !isReply) return;
-    if (!message.member?.roles.cache.hasAny(...guildConfig.allowedRoles)) return;
+    if (!chatEntryGateOpen(guildConfig, { isMention, isReply, memberRoleIds: message.member ? [...message.member.roles.cache.keys()] : null })) return;
 
     const guildId = message.guildId;
 

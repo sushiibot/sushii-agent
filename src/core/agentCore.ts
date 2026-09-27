@@ -160,6 +160,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       isOwner,
       isPrivate,
       authorized,
+      moderationOn: moderationEnabled(conversation.surface, conversation.spaceId),
     });
 
     // Built from the resolved tool list, so the prompt only describes what this turn can actually use.

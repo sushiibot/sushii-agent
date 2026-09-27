@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { config } from "./config.ts";
-import { getPermittedGuildIds, moderationEnabled, resolvedModules, type GuildConfig } from "./guildConfig.ts";
+import { autoModGateOpen, chatEntryGateOpen, getPermittedGuildIds, moderationEnabled, resolvedModules, type GuildConfig } from "./guildConfig.ts";
 
 function cfg(mcpBridgeAllowedUserIds?: string[]): GuildConfig {
   return { allowedRoles: [], mcpBridgeAllowedUserIds };
@@ -75,5 +75,47 @@ describe("moderationEnabled", () => {
 
   test("false for a Discord guild that doesn't exist in config", () => {
     expect(moderationEnabled("discord", "unknown")).toBe(false);
+  });
+});
+
+function gc(overrides: Partial<GuildConfig> = {}): GuildConfig {
+  return { allowedRoles: ["role-1"], ...overrides };
+}
+
+describe("autoModGateOpen", () => {
+  test("open when the moderation module is resolved (default) and the message is eligible", () => {
+    expect(autoModGateOpen(gc(), true)).toBe(true);
+  });
+
+  test("closed when the message isn't eligible, even with moderation resolved", () => {
+    expect(autoModGateOpen(gc(), false)).toBe(false);
+  });
+
+  test("closed when moderation isn't among the resolved modules, even if eligible", () => {
+    expect(autoModGateOpen(gc({ enabledModules: ["mcp"] }), true)).toBe(false);
+  });
+});
+
+describe("chatEntryGateOpen", () => {
+  test("open on a mention from a member holding an allowedRoles role, without the moderation module", () => {
+    expect(
+      chatEntryGateOpen(gc({ enabledModules: ["mcp"] }), { isMention: true, isReply: false, memberRoleIds: ["role-1"] }),
+    ).toBe(true);
+  });
+
+  test("open on a reply from a member holding an allowedRoles role", () => {
+    expect(chatEntryGateOpen(gc(), { isMention: false, isReply: true, memberRoleIds: ["role-1"] })).toBe(true);
+  });
+
+  test("closed when neither a mention nor a reply", () => {
+    expect(chatEntryGateOpen(gc(), { isMention: false, isReply: false, memberRoleIds: ["role-1"] })).toBe(false);
+  });
+
+  test("closed when the sender holds none of the guild's allowedRoles", () => {
+    expect(chatEntryGateOpen(gc(), { isMention: true, isReply: false, memberRoleIds: ["role-2"] })).toBe(false);
+  });
+
+  test("closed when the member has no roles at all (unavailable/partial member)", () => {
+    expect(chatEntryGateOpen(gc(), { isMention: true, isReply: false, memberRoleIds: null })).toBe(false);
   });
 });

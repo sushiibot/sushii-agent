@@ -46,7 +46,7 @@ export interface TeamConfig {
   linear?: TeamLinear;
   /** Authorized principals in this team, keyed by principalId. */
   members?: TeamMembers;
-  /** Applies only to this team's non-Discord spaces; enforced by the entry gate. */
+  /** Applies only to this team's non-Discord spaces; enforced by isAuthorized (trust, not entry). */
   trustSpaceMembers?: boolean;
 }
 

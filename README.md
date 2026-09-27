@@ -145,8 +145,26 @@ for a full worked entry.
 - `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over the
   global `BUZZ_AVATAR_URL` fallback for that relay.
 - `linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time.
-- `trustSpaceMembers` applies only to this team's non-Discord spaces; the entry gate decides what
-  it grants.
+- `trustSpaceMembers` — see [Permissions](#permissions).
+
+## Permissions
+
+Two independent layers.
+
+**Entry gate — who can trigger the bot at all, per surface.** Discord guilds are public spaces:
+only a member holding one of the guild's `allowedRoles` can mention/reply to trigger the bot — this
+applies to everyone, including the owner. Slack workspaces and buzz relays are private and
+invite-only, so being in the space is itself the gate; there's no role check there.
+`enabledModules`/`moderation` never gates this — a guild with no modules enabled still gets chat as
+long as it's configured. `moderation` only turns on moderation features: the auto-mod trigger
+(pinging `modRoleId`), moderation-only tools, and the "Moderator:/Roles:" prompt lines.
+
+**Trust — which tools.** The owner, or a member listed as `trusted` in the space's team
+(`members` above), gets `team_config`, runner dispatch, and ops-triage tools. `trustSpaceMembers`
+extends this: set it `true` on a team whose Slack/buzz spaces are already invite-only vetting, and
+any caller present in one of those spaces is trusted — no `members` entry needed. It never applies
+to a Discord space, since Discord guilds are public and need an explicit trusted member or the
+owner.
 
 ## Architecture
 

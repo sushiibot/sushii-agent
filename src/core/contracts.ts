@@ -421,6 +421,10 @@ export interface ToolRegistry {
       /** Whether the caller is authorized for this space (owner OR a team-trusted member). Gates
        *  runner + ops-triage tool visibility in the configured regime; update_profile stays isOwner. */
       authorized?: boolean;
+      /** Whether the moderation module is resolved for this space. Gates conversational moderation
+       *  tools (list/add/delete automod keyword, search_audit_log) — independent of the chat entry
+       *  gate, which no longer implies moderation is on. */
+      moderationOn?: boolean;
     },
   ): ToolEntry<keyof ToolHosts>[];
 }

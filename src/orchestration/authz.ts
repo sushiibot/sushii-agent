@@ -4,7 +4,7 @@
 // runners from guild channels too; a shared space grants nothing to a caller not authorized for it.
 import type { AuthzInput, Capability, CanFn } from "./contracts.ts";
 import { ownerPrincipalId, resolvePrincipal } from "./principals.ts";
-import { isTeamMember } from "./teams.ts";
+import { isTeamMember, resolveTeam } from "./teams.ts";
 
 export function spaceKey(surface: string, spaceId: string): string {
   return `${surface}:${spaceId}`;
@@ -49,15 +49,19 @@ export function isOwnerCaller(principal: string, space: string): boolean {
 }
 
 /** The single authorization predicate (CONFIGURED regime): the caller is authorized when they resolve
- *  to the owner principal (superset, any space) OR to a principal listed as trusted in the team
- *  that owns `space`. Default-deny: an unresolved caller, or a trusted-but-not-owner principal in a
- *  space belonging to no team / a different team, → false. Authorization is by principalId,
- *  so a member's grants span their linked identities across surfaces. */
+ *  to the owner principal (superset, any space), OR to a principal listed as trusted in the team
+ *  that owns `space`, OR — on a non-Discord space whose team sets `trustSpaceMembers` — when they
+ *  present any non-empty userId at all (that space is private/invite-only, so being in it already
+ *  vetted them; Discord guilds are public, so they always need an explicit trusted member or the
+ *  owner). Default-deny otherwise. Authorization by principalId spans a member's linked identities
+ *  across surfaces; the trustSpaceMembers path needs no principal at all. */
 export function isAuthorized(surface: string, userId: string, space: string): boolean {
   const resolved = resolvePrincipal(surface, userId);
-  if (!resolved) return false;
-  if (resolved.isOwner) return true;
-  return isTeamMember(resolved.principalId, surface, spaceIdOf(space));
+  if (resolved?.isOwner) return true;
+  const spaceId = spaceIdOf(space);
+  if (resolved && isTeamMember(resolved.principalId, surface, spaceId)) return true;
+  if (surface !== "discord" && userId.length > 0 && resolveTeam(surface, spaceId)?.trustSpaceMembers === true) return true;
+  return false;
 }
 
 /** Default-deny: three conjunctions (caller is authorized for this space · capability
