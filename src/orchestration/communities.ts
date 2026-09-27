@@ -158,6 +158,6 @@ export function listCommunities(): Community[] {
 
 /** A community by its own id, independent of any space — for a DM's `team` lookup. */
 export function getCommunity(teamId: string): Community | undefined {
-  const entry = config.communities[teamId];
+  const entry = Object.hasOwn(config.communities, teamId) ? config.communities[teamId] : undefined;
   return entry ? { id: teamId, spaces: entry.spaces ?? [], wiki: entry.wiki, linear: entry.linear, members: entry.members } : undefined;
 }
