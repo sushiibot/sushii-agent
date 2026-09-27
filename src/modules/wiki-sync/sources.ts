@@ -20,7 +20,13 @@ export function getWikiSources(): Map<string, WikiSource[]> {
   const claimedDiscordSpaces = new Set<string>();
 
   for (const [wikiId, entry] of Object.entries(config.wikiSync.sources)) {
-    const sources = entry.sources.map((s) => ({ surface: s.surface, spaceId: s.spaceId, statusChannelId: s.statusChannelId }));
+    const sources = entry.sources.map((s) => ({
+      surface: s.surface,
+      spaceId: s.spaceId,
+      statusChannelId:
+        s.statusChannelId ??
+        (s.surface === "discord" ? config.guildConfig[s.spaceId]?.wiki?.statusChannelId : undefined),
+    }));
     map.set(wikiId, sources);
     for (const s of sources) {
       if (s.surface === "discord") claimedDiscordSpaces.add(s.spaceId);

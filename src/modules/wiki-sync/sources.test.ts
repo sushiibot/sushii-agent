@@ -39,6 +39,29 @@ describe("getWikiSources", () => {
     ]);
   });
 
+  test("an explicit discord source without statusChannelId inherits guild-config's", () => {
+    config.guildConfig = { g1: wikiGuild({ wiki: { statusChannelId: "s1" } }) };
+    config.wikiSync.sources = {
+      shared: { sources: [{ surface: "discord", spaceId: "g1" }, { surface: "slack", spaceId: "T1" }] },
+    };
+
+    const map = getWikiSources();
+    expect(map.get("shared")).toEqual([
+      { surface: "discord", spaceId: "g1", statusChannelId: "s1" },
+      { surface: "slack", spaceId: "T1", statusChannelId: undefined },
+    ]);
+  });
+
+  test("an explicit statusChannelId still wins over guild-config's", () => {
+    config.guildConfig = { g1: wikiGuild({ wiki: { statusChannelId: "s1" } }) };
+    config.wikiSync.sources = {
+      shared: { sources: [{ surface: "discord", spaceId: "g1", statusChannelId: "explicit" }] },
+    };
+
+    const map = getWikiSources();
+    expect(map.get("shared")).toEqual([{ surface: "discord", spaceId: "g1", statusChannelId: "explicit" }]);
+  });
+
   test("ignores guilds that don't have wiki-sync enabled", () => {
     config.guildConfig = { g1: wikiGuild(), g2: { allowedRoles: [] } };
     config.wikiSync.sources = {};

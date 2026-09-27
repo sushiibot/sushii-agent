@@ -57,7 +57,21 @@ OPENAI_API_KEY=your_api_key_here
 OPENAI_BASE_URL=https://api.anthropic.com/v1   # or OpenRouter, Ollama, etc.
 OPENAI_MODEL=claude-opus-4-6
 DATABASE_PATH=./data/sushii-agent.db
-GUILD_CONFIG={"YOUR_GUILD_ID": {"allowedRoles": ["MOD_ROLE_ID"]}}
+GUILD_CONFIG_PATH=./guild-config.json
+```
+
+Create `guild-config.json`:
+
+```json
+{
+  "YOUR_GUILD_ID": {
+    "allowedRoles": ["MOD_ROLE_ID"],
+    "emojis": ["<:blobheart:123456789012345678>"],
+    "promptTemplate": "general",
+    "enabledModules": ["moderation", "wiki-sync"],
+    "wiki": { "statusChannelId": "STATUS_CHANNEL_ID" }
+  }
+}
 ```
 
 **Finding IDs:** Enable Developer Mode (Settings → Advanced), then right-click any server/user/channel to copy its ID.
@@ -76,8 +90,9 @@ docker compose up -d      # or Docker (./data volume for SQLite)
 | `OPENAI_BASE_URL` | no | `https://api.anthropic.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | no | `claude-opus-4-6` | Model name |
 | `DATABASE_PATH` | no | `./data/sushii-agent.db` | SQLite path |
-| `GUILD_CONFIG` | yes | — | JSON mapping guild IDs to access config |
-| `GUILD_CONFIG_PATH` | no | — | Path to a JSON file instead of inline JSON |
+| `GUILD_CONFIG_PATH` | no | `./guild-config.json` | Path to the per-guild config JSON (`allowedRoles`, `emojis`, `promptTemplate`, `enabledModules`, `wiki.statusChannelId`, ...) |
+| `PRINCIPALS_PATH` | no | `./principals.json` | Path to the manual cross-platform identity registry; missing file = unconfigured |
+| `COMMUNITIES_PATH` | no | `./communities.json` | Path to the community grouping config; missing file = unconfigured |
 
 ## Architecture
 
