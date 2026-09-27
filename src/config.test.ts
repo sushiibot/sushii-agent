@@ -1,6 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
-import { resolveOwnerPrincipals, resolveTeamsConfig } from "./config.ts";
+import { mergeGuildConfigs, resolveOwnerPrincipals, resolveTeamsConfig, teamGuildConfigs } from "./config.ts";
+import type { GuildConfig } from "./guildConfig.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
+import type { TeamConfig } from "./orchestration/teams.ts";
 
 function fakeReadFile(files: Record<string, string>): (filePath: string) => string {
   return (filePath) => {
@@ -118,5 +120,72 @@ describe("resolveTeamsConfig", () => {
     expect(() => resolveTeamsConfig(undefined, "/legacy/communities.json", readFile)).toThrow(
       /Failed to load teams from \/legacy\/communities\.json/,
     );
+  });
+});
+
+describe("teamGuildConfigs", () => {
+  test("derives a guild config from a discord block, folding the space-level statusChannelId into wiki", () => {
+    const teams: Record<string, TeamConfig> = {
+      dreamcatcher: {
+        spaces: [
+          {
+            surface: "discord",
+            spaceId: "1000000000000000001",
+            statusChannelId: "s1",
+            discord: { allowedRoles: ["r1"], promptTemplate: "general" },
+          },
+        ],
+      },
+    };
+    expect(teamGuildConfigs(teams)).toEqual({
+      "1000000000000000001": { allowedRoles: ["r1"], promptTemplate: "general", wiki: { statusChannelId: "s1" } },
+    });
+  });
+
+  test("a space with no discord block contributes nothing", () => {
+    const teams: Record<string, TeamConfig> = {
+      dreamcatcher: { spaces: [{ surface: "discord", spaceId: "1000000000000000001" }] },
+    };
+    expect(teamGuildConfigs(teams)).toEqual({});
+  });
+
+  test("a discord block with no space-level statusChannelId passes through untouched", () => {
+    const teams: Record<string, TeamConfig> = {
+      dreamcatcher: {
+        spaces: [{ surface: "discord", spaceId: "g1", discord: { allowedRoles: ["r1"] } }],
+      },
+    };
+    expect(teamGuildConfigs(teams)).toEqual({ g1: { allowedRoles: ["r1"] } });
+  });
+});
+
+describe("mergeGuildConfigs", () => {
+  test("a guild present only in the team config passes through", () => {
+    const teamConfig: Record<string, GuildConfig> = { g1: { allowedRoles: ["r1"] } };
+    expect(mergeGuildConfigs({}, teamConfig)).toEqual({ g1: { allowedRoles: ["r1"] } });
+  });
+
+  test("a guild present only in guild-config.json passes through, no warning", () => {
+    const warn = mock();
+    const fileConfig: Record<string, GuildConfig> = { g1: { allowedRoles: ["r1"] } };
+    expect(mergeGuildConfigs(fileConfig, {}, warn)).toEqual({ g1: { allowedRoles: ["r1"] } });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("a guild in both, with conflicting fields, throws naming the guild and field", () => {
+    const fileConfig: Record<string, GuildConfig> = { g1: { allowedRoles: ["r1"] } };
+    const teamConfig: Record<string, GuildConfig> = { g1: { allowedRoles: ["r2"] } };
+    expect(() => mergeGuildConfigs(fileConfig, teamConfig)).toThrow(/g1.*allowedRoles/s);
+  });
+
+  test("a guild in both, with non-conflicting fields, merges and warns once", () => {
+    const warn = mock();
+    const fileConfig: Record<string, GuildConfig> = { g1: { allowedRoles: ["r1"] } };
+    const teamConfig: Record<string, GuildConfig> = { g1: { allowedRoles: ["r1"], promptTemplate: "general" } };
+    expect(mergeGuildConfigs(fileConfig, teamConfig, warn)).toEqual({
+      g1: { allowedRoles: ["r1"], promptTemplate: "general" },
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toEqual({ guildId: "g1" });
   });
 });

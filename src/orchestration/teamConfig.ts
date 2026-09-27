@@ -6,7 +6,7 @@ import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
 import { wikiFor } from "../modules/wiki-sync/sources.ts";
 import { ownerPrincipalId } from "./principals.ts";
-import { getTeam, resolveTeam, type Team, type TeamSpace } from "./teams.ts";
+import { buzzAvatarFor, getTeam, resolveTeam, type Team, type TeamSpace } from "./teams.ts";
 
 export interface SpaceConfigView {
   surface: string;
@@ -55,10 +55,9 @@ function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [
     return out;
   }
   if (surface === "buzz") {
-    const relay = spaceId.startsWith("buzz:") ? spaceId.slice("buzz:".length) : "default";
     return [
       ["persona", "buzz"],
-      ["avatar", config.buzz.avatarMap[relay] ?? config.buzz.avatarUrl ?? "(none)"],
+      ["avatar", buzzAvatarFor(spaceId) ?? "(none)"],
     ];
   }
   if (surface === "slack") return [["persona", "slack"]];

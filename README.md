@@ -115,6 +115,49 @@ own wiki/Linear scoping and trusted members:
 `linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time (a
 literal `linear.apiKey` is still accepted but deprecated).
 
+### Inline per-surface settings
+
+A team space can carry its surface-specific settings directly, instead of splitting them across
+`guild-config.json` or the `BUZZ_AVATAR_MAP` env var:
+
+```json
+{
+  "dreamcatcher": {
+    "spaces": [
+      {
+        "surface": "discord",
+        "spaceId": "123456789012345678",
+        "wiki": "source",
+        "statusChannelId": "234567890123456789",
+        "discord": {
+          "allowedRoles": ["MOD_ROLE_ID"],
+          "emojis": ["<:blobheart:123456789012345678>"],
+          "promptTemplate": "general",
+          "enabledModules": ["moderation", "wiki-sync"]
+        }
+      },
+      {
+        "surface": "buzz",
+        "spaceId": "buzz:https://relay.example",
+        "wiki": "read",
+        "buzz": { "avatarUrl": "https://relay.example/avatar.png" }
+      }
+    ]
+  }
+}
+```
+
+- `discord` takes the same shape as a `guild-config.json` entry (`allowedRoles` required) and is
+  only allowed on a `surface: "discord"` space. It's folded into `config.guildConfig` at load,
+  keyed by the space's `spaceId` — every existing consumer of `config.guildConfig` sees it exactly
+  as if it had been written to `guild-config.json`. Use the space-level `statusChannelId` for the
+  wiki status channel, not `discord.wiki.statusChannelId` — the latter is rejected at load.
+- `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over
+  `BUZZ_AVATAR_MAP` and `BUZZ_AVATAR_URL` for that relay.
+- A guild id can still appear in both `guild-config.json` and a team's `discord` block. Matching
+  fields merge (with a one-time warning suggesting the `guild-config.json` entry be removed);
+  conflicting fields throw at load.
+
 ## Architecture
 
 ```

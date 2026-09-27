@@ -256,6 +256,73 @@ function loadTeams(): Record<string, TeamConfig> {
   return resolveTeamsConfig(process.env["TEAMS_PATH"], process.env["COMMUNITIES_PATH"], (p) => readFileSync(p, "utf8"));
 }
 
+function deepEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Discord guild configs carried inline on team spaces (space.discord), keyed by guild id, with
+ *  the space-level statusChannelId folded into wiki.statusChannelId — a discord block's own
+ *  wiki.statusChannelId is rejected at parse (teams.ts's parseDiscordBlock), so the space-level
+ *  field is the only place it can come from. */
+export function teamGuildConfigs(teams: Record<string, TeamConfig>): Record<string, GuildConfig> {
+  const out: Record<string, GuildConfig> = {};
+  for (const team of Object.values(teams)) {
+    for (const space of team.spaces) {
+      if (space.surface !== "discord" || !space.discord) continue;
+      out[space.spaceId] = space.statusChannelId
+        ? { ...space.discord, wiki: { statusChannelId: space.statusChannelId } }
+        : space.discord;
+    }
+  }
+  return out;
+}
+
+/** Merge guild-config.json with team-derived discord blocks (teamGuildConfigs). A guild id present
+ *  in only one side passes through untouched. A guild id present in both, with some field set to
+ *  different values on each side, throws — naming the guild and the conflicting field(s) — since
+ *  there'd be no principled way to pick a winner. A guild id present in both with no such conflict
+ *  merges (team-side fields fill in gaps) and logs one warn suggesting the guild-config.json entry
+ *  be removed now that the team carries it. */
+export function mergeGuildConfigs(
+  fileConfig: Record<string, GuildConfig>,
+  teamConfig: Record<string, GuildConfig>,
+  warn: (ctx: Record<string, unknown>, msg: string) => void = (ctx, msg) => logger.warn(ctx, msg),
+): Record<string, GuildConfig> {
+  const merged: Record<string, GuildConfig> = { ...fileConfig };
+  for (const [guildId, teamCfg] of Object.entries(teamConfig)) {
+    const fileCfg = fileConfig[guildId];
+    if (!fileCfg) {
+      merged[guildId] = teamCfg;
+      continue;
+    }
+    const combined = { ...fileCfg } as unknown as Record<string, unknown>;
+    const conflicts: string[] = [];
+    for (const [key, value] of Object.entries(teamCfg as unknown as Record<string, unknown>)) {
+      if (value === undefined) continue;
+      const existing = (fileCfg as unknown as Record<string, unknown>)[key];
+      if (existing === undefined) {
+        combined[key] = value;
+      } else if (!deepEqual(existing, value)) {
+        conflicts.push(key);
+      }
+    }
+    if (conflicts.length > 0) {
+      throw new Error(
+        `guild config conflict for guild ${guildId}: field(s) ${conflicts.join(", ")} differ between guild-config.json and a team's discord block`,
+      );
+    }
+    merged[guildId] = combined as unknown as GuildConfig;
+    warn({ guildId }, "guild is configured in both guild-config.json and a team's discord block — consider removing it from guild-config.json");
+  }
+  return merged;
+}
+
+// Teams load first so any inline discord block is available to fold into guildConfig below —
+// config.ts ↔ teams.ts has a value-import cycle that's only safe because neither side dereferences
+// the other at module top level; this stays inside loader functions.
+const loadedTeams = loadTeams();
+const mergedGuildConfig = mergeGuildConfigs(loadGuildConfig(), teamGuildConfigs(loadedTeams));
+
 export const config: Config = {
   discordBotToken: required("DISCORD_BOT_TOKEN"),
   openaiApiKey: required("OPENAI_API_KEY"),
@@ -270,9 +337,9 @@ export const config: Config = {
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
-  guildConfig: loadGuildConfig(),
+  guildConfig: mergedGuildConfig,
   principals: loadPrincipals(),
-  teams: loadTeams(),
+  teams: loadedTeams,
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
   sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],

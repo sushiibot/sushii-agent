@@ -7,6 +7,7 @@
 // HARD WALL: this module MUST NOT be reachable from the memory-scope path (banks.ts / agentCore's
 // memoryScope). A team groups multiple surfaces; if a memory spaceId resolved through it,
 // `sushii-space-<spaceId>` would merge public facts across Discord/Slack/buzz memberships.
+import type { GuildConfig, ModuleId } from "../guildConfig.ts";
 import { config } from "../config.ts";
 import { normalizeRelayUrl } from "../surfaces/buzz/relayUrl.ts";
 
@@ -19,6 +20,12 @@ export interface TeamSpace {
   wiki?: "source" | "read";
   /** This space's own wiki-sync status channel, overriding the guild-config fallback. */
   statusChannelId?: string;
+  /** Inline Discord guild config, only on a `surface: "discord"` space. Folded into
+   *  `config.guildConfig` at load (config.ts's mergeGuildConfigs) — its own `wiki.statusChannelId`
+   *  is rejected at parse since the space-level `statusChannelId` above is the one wiki-sync uses. */
+  discord?: GuildConfig;
+  /** Inline buzz relay settings, only on a `surface: "buzz"` space. */
+  buzz?: { avatarUrl?: string };
 }
 
 /** Vetted people beyond the owner. `trusted: true` = the elevated set (same tools the owner gets),
@@ -68,6 +75,76 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((s) => typeof s === "string");
+}
+
+const MODULE_IDS: ModuleId[] = ["moderation", "wiki-sync", "mcp", "ops-triage"];
+
+/** Validate + narrow a space's inline `discord` block to the `GuildConfig` shape. Rejects
+ *  `wiki.statusChannelId` — that field belongs on the space itself (see TeamSpace.statusChannelId)
+ *  so wiki-sync has one place to look, not two that could disagree. */
+function parseDiscordBlock(id: string, i: number, raw: unknown): GuildConfig {
+  const prefix = `teams: "${id}".spaces[${i}].discord`;
+  if (!isPlainObject(raw)) throw new Error(`${prefix} must be an object`);
+  if (!isStringArray(raw["allowedRoles"])) throw new Error(`${prefix}.allowedRoles must be a string array`);
+
+  const stringArrayFields = ["emojis", "modImmuneRoleIds", "autoModTriggerRoleIds", "mcpBridgeAllowedUserIds"] as const;
+  for (const field of stringArrayFields) {
+    if (raw[field] !== undefined && !isStringArray(raw[field])) throw new Error(`${prefix}.${field} must be a string array`);
+  }
+  const stringFields = ["modRoleId", "alertsChannelId"] as const;
+  for (const field of stringFields) {
+    if (raw[field] !== undefined && typeof raw[field] !== "string") throw new Error(`${prefix}.${field} must be a string`);
+  }
+  const numberFields = ["newMemberThresholdDays", "autoModCooldownSeconds"] as const;
+  for (const field of numberFields) {
+    if (raw[field] !== undefined && typeof raw[field] !== "number") throw new Error(`${prefix}.${field} must be a number`);
+  }
+  if (raw["autoModDryRun"] !== undefined && typeof raw["autoModDryRun"] !== "boolean") {
+    throw new Error(`${prefix}.autoModDryRun must be a boolean`);
+  }
+  const promptTemplate = raw["promptTemplate"];
+  if (promptTemplate !== undefined && promptTemplate !== "moderation" && promptTemplate !== "general") {
+    throw new Error(`${prefix}.promptTemplate must be "moderation" or "general"`);
+  }
+  const enabledModules = raw["enabledModules"];
+  if (enabledModules !== undefined && (!Array.isArray(enabledModules) || !enabledModules.every((m) => MODULE_IDS.includes(m as ModuleId)))) {
+    throw new Error(`${prefix}.enabledModules must be an array drawn from ${MODULE_IDS.join(", ")}`);
+  }
+  const wiki = raw["wiki"];
+  if (wiki !== undefined) {
+    if (!isPlainObject(wiki)) throw new Error(`${prefix}.wiki must be an object`);
+    if (wiki["statusChannelId"] !== undefined) {
+      throw new Error(`${prefix}.wiki.statusChannelId is not allowed — use the space-level statusChannelId field instead`);
+    }
+  }
+
+  return {
+    allowedRoles: raw["allowedRoles"] as string[],
+    emojis: raw["emojis"] as string[] | undefined,
+    modRoleId: raw["modRoleId"] as string | undefined,
+    alertsChannelId: raw["alertsChannelId"] as string | undefined,
+    modImmuneRoleIds: raw["modImmuneRoleIds"] as string[] | undefined,
+    newMemberThresholdDays: raw["newMemberThresholdDays"] as number | undefined,
+    autoModDryRun: raw["autoModDryRun"] as boolean | undefined,
+    autoModTriggerRoleIds: raw["autoModTriggerRoleIds"] as string[] | undefined,
+    autoModCooldownSeconds: raw["autoModCooldownSeconds"] as number | undefined,
+    mcpBridgeAllowedUserIds: raw["mcpBridgeAllowedUserIds"] as string[] | undefined,
+    promptTemplate: promptTemplate as GuildConfig["promptTemplate"],
+    enabledModules: enabledModules as ModuleId[] | undefined,
+  };
+}
+
+/** Validate + narrow a space's inline `buzz` block. */
+function parseBuzzBlock(id: string, i: number, raw: unknown): { avatarUrl?: string } {
+  const prefix = `teams: "${id}".spaces[${i}].buzz`;
+  if (!isPlainObject(raw)) throw new Error(`${prefix} must be an object`);
+  const avatarUrl = raw["avatarUrl"];
+  if (avatarUrl !== undefined && !isNonEmptyString(avatarUrl)) throw new Error(`${prefix}.avatarUrl must be a string`);
+  return { avatarUrl };
+}
+
 function normalizeSpaceId(surface: string, spaceId: string): string {
   return surface === "buzz" && spaceId.startsWith("buzz:")
     ? `buzz:${normalizeRelayUrl(spaceId.slice("buzz:".length))}`
@@ -115,11 +192,21 @@ export function parseTeams(raw: unknown): Record<string, TeamConfig> {
       if (statusChannelIdRaw !== undefined && !isNonEmptyString(statusChannelIdRaw)) {
         throw new Error(`teams: "${id}".spaces[${i}].statusChannelId must be a string`);
       }
+      const discordRaw = s["discord"];
+      if (discordRaw !== undefined && s["surface"] !== "discord") {
+        throw new Error(`teams: "${id}".spaces[${i}].discord is only allowed on a "discord" surface space`);
+      }
+      const buzzRaw = s["buzz"];
+      if (buzzRaw !== undefined && s["surface"] !== "buzz") {
+        throw new Error(`teams: "${id}".spaces[${i}].buzz is only allowed on a "buzz" surface space`);
+      }
       return {
         surface: s["surface"],
         spaceId: normalizeSpaceId(s["surface"], s["spaceId"]),
         wiki: wikiRaw as TeamSpace["wiki"],
         statusChannelId: statusChannelIdRaw,
+        discord: discordRaw !== undefined ? parseDiscordBlock(id, i, discordRaw) : undefined,
+        buzz: buzzRaw !== undefined ? parseBuzzBlock(id, i, buzzRaw) : undefined,
       };
     });
 
@@ -186,6 +273,16 @@ export function resolveTeam(surface: string, spaceId: string): Team | undefined 
  *  false when the space belongs to no team or the principal isn't listed as trusted there. */
 export function isTeamMember(principalId: string, surface: string, spaceId: string): boolean {
   return resolveTeam(surface, spaceId)?.members?.[principalId]?.trusted === true;
+}
+
+/** Buzz kind:0 profile avatar for a relay space (`spaceId` as `buzz:<relay url>`): a team space's
+ *  inline `buzz.avatarUrl` first, then `BUZZ_AVATAR_MAP` (config.buzz.avatarMap, keyed by the bare
+ *  relay url), then the global `BUZZ_AVATAR_URL` fallback. */
+export function buzzAvatarFor(spaceId: string): string | undefined {
+  const teamAvatar = resolveTeam("buzz", spaceId)?.spaces.find((s) => s.surface === "buzz" && s.spaceId === spaceId)?.buzz?.avatarUrl;
+  if (teamAvatar) return teamAvatar;
+  const relay = spaceId.startsWith("buzz:") ? spaceId.slice("buzz:".length) : spaceId;
+  return config.buzz.avatarMap[relay] ?? config.buzz.avatarUrl;
 }
 
 /** All teams, by id — for a DM listing where there's no (surface, spaceId) to resolve from. */

@@ -25,6 +25,7 @@ import { closeSharedSushiMcpClients } from "./surfaces/discord/hosts/sushiMcpHos
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
 import { getWikiSources, wikiFor } from "./modules/wiki-sync/sources.ts";
+import { buzzAvatarFor } from "./orchestration/teams.ts";
 import type { SlackWikiSyncClient } from "./surfaces/slack/wikiSync.ts";
 import { makeCombinedWikiSourceContext } from "./surfaces/wikiSyncFactory.ts";
 import { BUZZ_BEHAVIOR_INSTRUCTIONS } from "./surfaces/buzz/prompt.ts";
@@ -126,7 +127,7 @@ async function main() {
       const key = relayUrl ?? "default";
       const spaceId = relayUrl ? `buzz:${key}` : "buzz";
       // buzz media is auth-gated per relay, so each relay's profile points at its own avatar copy.
-      const avatarUrl = config.buzz.avatarMap[key] ?? config.buzz.avatarUrl;
+      const avatarUrl = buzzAvatarFor(spaceId);
       const buzzClient = new NostrBuzzClient({ privateKey, relayUrl, authTag: config.buzz.authTag, avatarUrl }, key);
       // A community reads a wiki only if this relay's space is mapped to one (team or legacy).
       const wiki = wikiFor("buzz", spaceId);
