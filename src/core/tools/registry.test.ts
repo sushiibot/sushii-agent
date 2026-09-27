@@ -227,6 +227,14 @@ describe("runner/ops gating — CONFIGURED registry (author-aware authorized; up
     expect(noFlags).not.toContain("update_profile");
   });
 
+  test("team_config is visible only to an authorized, non-auto-mod caller", () => {
+    const names = (space: { authorized?: boolean; autoMod?: boolean }) =>
+      registry().resolve(fakeSession({}), { surface: "slack", spaceId: "T1", ...space }).map((e) => e.name);
+    expect(names({ authorized: true })).toContain("team_config");
+    expect(names({ authorized: false })).not.toContain("team_config");
+    expect(names({ authorized: true, autoMod: true })).not.toContain("team_config");
+  });
+
   // ops-triage gates on `authorized` but NOT DM — it stays available in a guild channel.
   test("ops-triage tools visible to an authorized caller in a NON-private (guild) space", () => {
     const names = registry()

@@ -1,0 +1,109 @@
+// Read-only view of a team's configuration. "Team" is the user-facing name for a community
+// (communities.ts): one config owner spanning its Discord guild, Slack workspace and buzz relays.
+// Settings still live where they always have (guild-config.json, env maps, the DB); this only
+// gathers them per space so a team can see what applies to it.
+import { config } from "../config.ts";
+import { resolvedModules } from "../guildConfig.ts";
+import { resolveWikiIdForSource } from "../modules/wiki-sync/sources.ts";
+import type { SpaceMemoryStore } from "../core/contracts.ts";
+import { resolveCommunity, type CommunitySpace } from "./communities.ts";
+
+export interface SpaceConfigView {
+  surface: string;
+  spaceId: string;
+  settings: [label: string, value: string][];
+}
+
+export interface TeamConfigView {
+  team?: { id: string; trustedMembers: string[]; linear: string; wiki?: string };
+  spaces: SpaceConfigView[];
+}
+
+type MemoryCounts = Pick<SpaceMemoryStore, "count" | "getServerContext">;
+
+function list(values: string[] | undefined): string {
+  return values && values.length > 0 ? values.join(", ") : "(none)";
+}
+
+function surfaceSettings(surface: string, spaceId: string): [string, string][] {
+  if (surface === "discord") {
+    const cfg = config.guildConfig[spaceId];
+    if (!cfg) return [["guild config", "(none — not in guild-config.json)"]];
+    const out: [string, string][] = [
+      ["persona", cfg.promptTemplate ?? "moderation"],
+      ["modules", resolvedModules(cfg).join(", ")],
+      ["allowed roles", list(cfg.allowedRoles)],
+      ["emojis", cfg.emojis?.length ? `${cfg.emojis.length} configured` : "(none)"],
+    ];
+    if (cfg.modRoleId) {
+      out.push(
+        ["auto-mod", `mod role ${cfg.modRoleId}, alerts channel ${cfg.alertsChannelId ?? "(unset)"}${cfg.autoModDryRun ? ", dry run" : ""}`],
+        ["auto-mod immune roles", list(cfg.modImmuneRoleIds)],
+        ["auto-mod trigger roles", cfg.autoModTriggerRoleIds?.length ? cfg.autoModTriggerRoleIds.join(", ") : "(anyone)"],
+        ["new member threshold", `${cfg.newMemberThresholdDays ?? 3} days`],
+        ["auto-mod cooldown", `${cfg.autoModCooldownSeconds ?? 60}s`],
+      );
+    }
+    if (cfg.mcpBridgeAllowedUserIds?.length) out.push(["MCP bridge users", cfg.mcpBridgeAllowedUserIds.join(", ")]);
+    if (cfg.wiki?.statusChannelId) out.push(["wiki status channel", cfg.wiki.statusChannelId]);
+    return out;
+  }
+  if (surface === "buzz") {
+    const relay = spaceId.startsWith("buzz:") ? spaceId.slice("buzz:".length) : "default";
+    return [
+      ["persona", "buzz"],
+      ["avatar", config.buzz.avatarMap[relay] ?? config.buzz.avatarUrl ?? "(none)"],
+      ["reads wiki of guild", config.buzz.wikiMap[relay] ?? "(none)"],
+    ];
+  }
+  if (surface === "slack") return [["persona", "slack"]];
+  return [];
+}
+
+function spaceView(space: CommunitySpace, memory: MemoryCounts): SpaceConfigView {
+  const context = memory.getServerContext(space.spaceId);
+  return {
+    surface: space.surface,
+    spaceId: space.spaceId,
+    settings: [
+      ...surfaceSettings(space.surface, space.spaceId),
+      ["feeds wiki", resolveWikiIdForSource(space.surface, space.spaceId) ?? "(none)"],
+      ["server context", context ? `${context.length} chars` : "(not scanned)"],
+      ["memory entries", String(memory.count(space.spaceId))],
+    ],
+  };
+}
+
+/** The config of the team owning (surface, spaceId), or of that space alone when it has no team.
+ *  Never includes secrets: a Linear account shows only its team id. */
+export function resolveTeamConfig(surface: string, spaceId: string, memory: MemoryCounts): TeamConfigView {
+  const community = resolveCommunity(surface, spaceId);
+  if (!community) return { spaces: [spaceView({ surface, spaceId }, memory)] };
+  return {
+    team: {
+      id: community.id,
+      trustedMembers: Object.entries(community.members ?? {}).filter(([, m]) => m.trusted).map(([id]) => id),
+      linear: community.linear ? `team ${community.linear.teamId}` : "(default)",
+      wiki: community.wiki?.wikiId,
+    },
+    spaces: community.spaces.map((s) => spaceView(s, memory)),
+  };
+}
+
+export function renderTeamConfig(view: TeamConfigView, current: { surface: string; spaceId: string }): string {
+  const lines: string[] = [];
+  if (view.team) {
+    lines.push(`Team: ${view.team.id}`);
+    lines.push(`- trusted members: ${list(view.team.trustedMembers)}`);
+    lines.push(`- linear: ${view.team.linear}`);
+    if (view.team.wiki) lines.push(`- wiki: ${view.team.wiki}`);
+  } else {
+    lines.push("This space is not part of a team (no communities.json entry).");
+  }
+  for (const s of view.spaces) {
+    const here = s.surface === current.surface && s.spaceId === current.spaceId ? " (this space)" : "";
+    lines.push("", `${s.surface} ${s.spaceId}${here}`);
+    for (const [label, value] of s.settings) lines.push(`- ${label}: ${value}`);
+  }
+  return lines.join("\n");
+}

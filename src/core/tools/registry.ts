@@ -12,6 +12,7 @@ import { DISCORD_TOOL_ENTRIES } from "./discord/tools.ts";
 import { deleteUserMessagesEntry } from "./discord/deleteUserMessages.ts";
 import { FS_TOOL_ENTRIES } from "./fs/tools.ts";
 import { RUNNER_TOOL_ENTRIES } from "./runners/index.ts";
+import { TEAM_TOOL_ENTRIES } from "./team/tools.ts";
 import { isPersonalSpace, spaceKey } from "../../orchestration/authz.ts";
 import { principalsConfigured } from "../../orchestration/principals.ts";
 
@@ -23,6 +24,7 @@ export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...DISCORD_TOOL_ENTRIES,
   ...FS_TOOL_ENTRIES,
   ...RUNNER_TOOL_ENTRIES,
+  ...TEAM_TOOL_ENTRIES,
   deleteUserMessagesEntry,
 ];
 
@@ -97,6 +99,7 @@ export class CoreToolRegistry implements ToolRegistry {
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
       .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name))
       .filter((entry) => !RUNNER_TOOLS.has(entry.name) || runnerAllowed)
+      .filter((entry) => entry.name !== "team_config" || (!autoMod && opsOwnerAllowed))
       // Core-profile editing is DM-first: available only in a personal/DM space (owner-only once the
       // registry is configured); per-environment / per-user guild profiles are a deferred follow-up.
       .filter((entry) => entry.name !== "update_profile" || profileAllowed);
