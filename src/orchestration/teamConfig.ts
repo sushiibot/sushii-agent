@@ -4,6 +4,7 @@
 import { config } from "../config.ts";
 import { resolvedModules } from "../guildConfig.ts";
 import { wikiFor } from "../modules/wiki-sync/sources.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../modules/screening/rules.ts";
 import { ownerPrincipalId } from "./principals.ts";
 import { buzzAvatarFor, getTeam, resolveTeam, type Team, type TeamSpace } from "./teams.ts";
 
@@ -55,7 +56,7 @@ function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [
       out.push([
         "screening",
         detailed
-          ? `window ${sc?.windowDays ?? 7} days, threshold ${sc?.reviewThreshold ?? 0.35}, rules ${sc?.rules?.join(", ") ?? "all"}, posts to ${channel ?? "(nowhere — log only)"}`
+          ? `window ${sc?.windowDays ?? 7} days, threshold ${sc?.reviewThreshold ?? DEFAULT_REVIEW_THRESHOLD}, rules ${sc?.rules?.join(", ") ?? "default"}, posts to ${channel ?? "(nowhere — log only)"}`
           : "on",
       ]);
     }

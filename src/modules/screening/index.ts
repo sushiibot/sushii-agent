@@ -4,10 +4,10 @@ import { resolvedModules, type GuildConfig } from "../../guildConfig.ts";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
-import { classifyImage, classifyText, type ImageVerdict, type StateMessage, type TextVerdict } from "./classify.ts";
+import { classifyImage, classifyText, type ImageVerdict, type TextState, type TextVerdict } from "./classify.ts";
 import { extractImageLinks } from "./images.ts";
 import { buildVerdictPost, topRule, verdictRef } from "./render.ts";
-import { SCREENING_RULES, type ScreeningRule } from "./rules.ts";
+import { DEFAULT_REVIEW_THRESHOLD, SCREENING_RULES, type ScreeningRule } from "./rules.ts";
 import {
   automodSummary,
   hasImageVerdict,
@@ -26,14 +26,16 @@ import {
 } from "./store.ts";
 
 export { SCREENING_IGNORE_PREFIX } from "./render.ts";
+export { DEFAULT_REVIEW_THRESHOLD } from "./rules.ts";
 
 const logger = getLogger("screening");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_WINDOW_DAYS = 7;
-export const DEFAULT_REVIEW_THRESHOLD = 0.35;
 const CONTEXT_MESSAGES = 20;
 const TARGET_LINES = 5;
+/** Earlier lines from the member sent as context, so a split-up scam still reads as one. */
+const EARLIER_LINES = 4;
 const CONTEXT_LINES = 2;
 const STATE_TEXT_MAX = 500;
 /** A burst of flagged messages from one user edits the same post instead of posting per message. */
@@ -59,8 +61,8 @@ export interface ScreenedMessage {
 export interface ScreeningDeps {
   db: Database;
   now?: () => number;
-  classifyText?: (messages: StateMessage[], rules: readonly ScreeningRule[]) => Promise<TextVerdict>;
-  classifyImage?: (url: string) => Promise<ImageVerdict>;
+  classifyText?: (state: TextState, rules: readonly ScreeningRule[]) => Promise<TextVerdict>;
+  classifyImage?: (url: string, kind: "pfp" | "image") => Promise<ImageVerdict>;
   post: (channelId: string, container: ContainerBuilder) => Promise<string>;
   edit: (channelId: string, messageId: string, container: ContainerBuilder) => Promise<void>;
 }
@@ -149,7 +151,7 @@ function thresholdFor(cfg: GuildConfig): number {
 
 function rulesFor(cfg: GuildConfig): readonly ScreeningRule[] {
   const ids = cfg.screening?.rules;
-  return ids ? SCREENING_RULES.filter((r) => ids.includes(r.id)) : SCREENING_RULES;
+  return ids ? SCREENING_RULES.filter((r) => ids.includes(r.id)) : SCREENING_RULES.filter((r) => !r.optIn);
 }
 
 /** Whether this message's author is still inside the screening window. Rejoining resets
@@ -217,12 +219,14 @@ async function screenText(message: ScreenedMessage, cfg: GuildConfig, deps: Scre
       )
       .get(message.guildId, userId, joinedAt, message.createdTimestamp)?.n ?? null;
 
-  const state: StateMessage[] = rows.map((r, i) => ({
-    id: `m${i + 1}`,
-    author: authorName(r),
-    target: r.author_id === userId,
-    text: r.content.slice(0, STATE_TEXT_MAX),
-  }));
+  const earlier = rows
+    .filter((r) => r.author_id === userId && r.discord_id !== message.id && r.content.trim())
+    .slice(-EARLIER_LINES)
+    .map((r) => r.content.slice(0, STATE_TEXT_MAX));
+  const state: TextState = {
+    new_message: { text: message.content.slice(0, STATE_TEXT_MAX) },
+    ...(earlier.length ? { earlier_messages_from_same_member: earlier } : {}),
+  };
 
   const rules = rulesFor(cfg);
   const base: NewVerdict = {
@@ -328,7 +332,7 @@ async function screenImage(
   };
   let verdict: ImageVerdict;
   try {
-    verdict = await (deps.classifyImage ?? classifyImage)(target.url);
+    verdict = await (deps.classifyImage ?? classifyImage)(target.url, target.kind);
   } catch (err) {
     // Recorded so an expired/unreachable link isn't retried on every edit.
     saveVerdict(deps.db, { ...base, error: String(err) });
@@ -446,10 +450,7 @@ async function recordAutomodBlockInner(block: AutomodBlock, cfg: GuildConfig, de
   let error: string | null = null;
   if (block.content.trim()) {
     try {
-      scores = await (deps.classifyText ?? classifyText)(
-        [{ id: "m1", author: block.authorName, target: true, text: block.content.slice(0, STATE_TEXT_MAX) }],
-        rulesFor(cfg),
-      );
+      scores = await (deps.classifyText ?? classifyText)({ new_message: { text: block.content.slice(0, STATE_TEXT_MAX) } }, rulesFor(cfg));
     } catch (err) {
       error = String(err);
       logger.warn({ err, guildId: block.guildId }, "screening automod scoring failed");

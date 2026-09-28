@@ -200,11 +200,11 @@ describe("parseTeams: inline discord block", () => {
         spaces: [{
           surface: "discord",
           spaceId: "g1",
-          discord: { allowedRoles: [], enabledModules: ["screening"], screening: { logChannelId: "c1", windowDays: 7, rules: ["scam", "nsfw"], reviewThreshold: 0.5 } },
+          discord: { allowedRoles: [], enabledModules: ["screening"], screening: { logChannelId: "c1", windowDays: 7, rules: ["scam", "sexual"], reviewThreshold: 0.5 } },
         }],
       },
     });
-    expect(out["a"]?.spaces[0]?.discord?.screening).toEqual({ logChannelId: "c1", windowDays: 7, rules: ["scam", "nsfw"], reviewThreshold: 0.5 });
+    expect(out["a"]?.spaces[0]?.discord?.screening).toEqual({ logChannelId: "c1", windowDays: 7, rules: ["scam", "sexual"], reviewThreshold: 0.5 });
   });
 
   test("rejects a screening window at or past the 30-day message cache retention", () => {

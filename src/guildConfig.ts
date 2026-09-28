@@ -44,7 +44,7 @@ export interface ScreeningConfig {
   logChannelId?: string;
   /** Members who joined within this many days are screened. Must stay under the 30-day message cache retention. */
   windowDays?: number;
-  /** Rules to check. Unset = all of SCREENING_RULE_IDS. */
+  /** Rules to check. Unset = every rule not marked optIn. */
   rules?: ScreeningRuleId[];
   /** A text verdict is posted when any rule's probability reaches this. */
   reviewThreshold?: number;

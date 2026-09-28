@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { ContainerBuilder } from "discord.js";
 import { applySchema } from "../../db/index.ts";
 import type { GuildConfig } from "../../guildConfig.ts";
-import { classifyText, parseSafetyOutput, type ImageVerdict, type TextVerdict } from "./classify.ts";
+import { classifyImage, classifyText, parseSafetyOutput, type ImageVerdict, type TextState, type TextVerdict } from "./classify.ts";
 import { discordImageLink, extractImageLinks } from "./images.ts";
 import { ignorePost, judgedLines, recordAutomodBlock, recordMessagesDeleted, recordModAction, screenMessage, type AutomodBlock, type ScreenedMessage, type ScreeningDeps } from "./index.ts";
 import { buildVerdictPost, scoreBars, topRule, verdictRef } from "./render.ts";
-import { SCREENING_RULES } from "./rules.ts";
+import { SCREENING_RULES, type ScreeningRule } from "./rules.ts";
 import { getVerdict } from "./store.ts";
 
 const HOUR = 60 * 60 * 1000;
@@ -46,19 +46,23 @@ interface Harness {
   posts: { channelId: string; container: ContainerBuilder }[];
   edits: { messageId: string; container: ContainerBuilder }[];
   textCalls: number;
+  textStates: TextState[];
+  textRules: (readonly ScreeningRule[])[];
   imageCalls: string[];
 }
 
-function harness(text: Partial<TextVerdict["scores"]> = { scam: 0.9, troll: 0.1 }, image: Partial<ImageVerdict> = {}): Harness {
+function harness(text: Partial<TextVerdict["scores"]> = { scam: 0.9, promo: 0.1 }, image: Partial<ImageVerdict> = {}): Harness {
   const db = new Database(":memory:");
   applySchema(db);
-  const h: Harness = { db, posts: [], edits: [], textCalls: 0, imageCalls: [], deps: undefined as unknown as ScreeningDeps };
+  const h: Harness = { db, posts: [], edits: [], textCalls: 0, textStates: [], textRules: [], imageCalls: [], deps: undefined as unknown as ScreeningDeps };
   let postId = 0;
   h.deps = {
     db,
     now: () => NOW,
-    classifyText: async () => {
+    classifyText: async (state, rules) => {
       h.textCalls++;
+      h.textStates.push(state);
+      h.textRules.push(rules);
       return { scores: text, model: "typesafe/jev-1.13-20260917", cost: 0.00002 };
     },
     classifyImage: async (url) => {
@@ -81,19 +85,27 @@ function postJson(c: ContainerBuilder): string {
 }
 
 describe("scoreBars", () => {
-  test("fixed-length track, color only at or over the threshold", () => {
-    const out = scoreBars({ scam: 0.91, spam: 0.47, troll: 0.1 }, 0.35);
+  test("fixed-length █/░ track, marker and color only at or over the threshold", () => {
+    const out = scoreBars({ scam: 0.91, promo: 0.72, hate: 0.1 }, 0.7);
     expect(out.startsWith("```ansi\n")).toBe(true);
     const lines = out.split("\n").slice(1, -1);
     expect(lines).toHaveLength(3);
     expect(lines[0]).toStartWith("\u001b[1;31mscam");
-    expect(lines[0]).toContain("0.91 " + "━".repeat(9));
-    expect(lines[1]).toStartWith("\u001b[1;33mspam");
-    expect(lines[2]).toStartWith("troll");
+    expect(lines[0]).toContain("0.91 " + "█".repeat(9) + "░ ◀");
+    expect(lines[1]).toStartWith("\u001b[1;33mpromo");
+    expect(lines[1]).toContain("◀");
+    expect(lines[2]).toStartWith("hate");
+    expect(lines[2]).not.toContain("◀");
     for (const l of lines) {
       const plain = l.replace(/\u001b\[[\d;]+m/g, "");
-      expect((plain.match(/[━─]/g) ?? []).length).toBe(10);
+      expect((plain.match(/[█░]/g) ?? []).length).toBe(10);
     }
+  });
+
+  test("verdict rows scored under retired rules still render their bars", () => {
+    const lines = scoreBars({ troll: 0.6, scam: 0.1 }, 0.7).split("\n").slice(1, -1);
+    expect(lines[0]).toStartWith("scam");
+    expect(lines[1]).toStartWith("troll");
   });
 
   test("verdictRef", () => {
@@ -101,7 +113,7 @@ describe("scoreBars", () => {
   });
 
   test("topRule picks the highest score", () => {
-    expect(topRule({ scam: 0.2, troll: 0.8 })).toBe("troll");
+    expect(topRule({ scam: 0.2, harassment: 0.8 })).toBe("harassment");
     expect(topRule({})).toBeNull();
   });
 });
@@ -139,11 +151,46 @@ describe("classify", () => {
       const answers = Object.fromEntries(SCREENING_RULES.map((r) => [r.id, { type: "noul", noul: r.id === "scam" ? 0.95 : 0.01 }]));
       return new Response(JSON.stringify({ model: "typesafe/jev-1.13-20260917", answers, usage: { cost: 0.00001 } }));
     }) as unknown as typeof fetch;
-    const v = await classifyText([{ id: "m1", author: "a", target: true, text: "x" }], SCREENING_RULES, fakeFetch);
+    const v = await classifyText({ new_message: { text: "x" } }, SCREENING_RULES, fakeFetch);
     expect(Object.keys(body!.questions)).toEqual(SCREENING_RULES.map((r) => r.id));
     expect(body!.questions["scam"]!.type).toBe("noul");
+    expect(body!.questions["scam"]).toHaveProperty("criteria.false.examples");
     expect(v.scores.scam).toBe(0.95);
     expect(v.cost).toBe(0.00001);
+  });
+
+  test("retries once on a 5xx, not on a 4xx", async () => {
+    let calls = 0;
+    const flaky = (async () => {
+      calls++;
+      if (calls === 1) return new Response("error code: 520", { status: 520 });
+      const answers = { scam: { noul: 0.2 } };
+      return new Response(JSON.stringify({ answers }));
+    }) as unknown as typeof fetch;
+    const v = await classifyText({ new_message: { text: "x" } }, SCREENING_RULES.filter((r) => r.id === "scam"), flaky);
+    expect(calls).toBe(2);
+    expect(v.scores.scam).toBe(0.2);
+
+    calls = 0;
+    const bad = (async () => {
+      calls++;
+      return new Response("bad request", { status: 400 });
+    }) as unknown as typeof fetch;
+    await expect(classifyText({ new_message: { text: "x" } }, SCREENING_RULES, bad)).rejects.toThrow("400");
+    expect(calls).toBe(1);
+  });
+
+  test("classifyImage is deterministic and captions by kind", async () => {
+    const bodies: { temperature: number; messages: { content: { type: string; text?: string }[] }[] }[] = [];
+    const fakeFetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "User Safety: safe" } }] }));
+    }) as unknown as typeof fetch;
+    await classifyImage("https://cdn.discordapp.com/a.png", "pfp", fakeFetch);
+    await classifyImage("https://cdn.discordapp.com/b.png", "image", fakeFetch);
+    expect(bodies[0]!.temperature).toBe(0);
+    expect(bodies[0]!.messages[0]!.content[1]!.text).toBe("Profile picture of a Discord user.");
+    expect(bodies[1]!.messages[0]!.content[1]!.text).toBe("Image shared in a Discord chat.");
   });
 });
 
@@ -181,6 +228,24 @@ describe("screenMessage", () => {
     const row = getVerdict(h.db, 1)!;
     expect(row.flagged).toBe(1);
     expect(row.postMessageId).toBe("post-1");
+  });
+
+  test("judges only the new message, with the member's earlier lines and no names", async () => {
+    cacheMessage(h.db, "m-early", NEWBIE, "hi im new", NOW - 30_000, "nitrodrops_");
+    await screenMessage(msg(), cfg, h.deps);
+    expect(h.textStates[0]).toEqual({
+      new_message: { text: "free nitro, claim at discord-gift.ru" },
+      earlier_messages_from_same_member: ["hi im new"],
+    });
+    expect(JSON.stringify(h.textStates[0])).not.toContain("nitrodrops_");
+    expect(JSON.stringify(h.textStates[0])).not.toContain("kevin");
+  });
+
+  test("opt-in rules run only when listed", async () => {
+    await screenMessage(msg(), cfg, h.deps);
+    expect(h.textRules[0]!.map((r) => r.id)).not.toContain("sale");
+    await screenMessage(msg(), { ...cfg, screening: { rules: ["scam", "sale"] } }, h.deps);
+    expect(h.textRules[1]!.map((r) => r.id)).toEqual(["scam", "sale"]);
   });
 
   test("skips members outside the window, mods, and disabled guilds", async () => {

@@ -15,7 +15,7 @@ import type { AutomodSummary, Judged, VerdictRow } from "./store.ts";
 
 export const SCREENING_IGNORE_PREFIX = "scr:ignore:";
 
-const ACTION_THRESHOLD = 0.7;
+const HIGH_THRESHOLD = 0.85;
 const BAR_CELLS = 10;
 const LINE_MAX = 300;
 const ACCENT_OPEN = 0xf0b232;
@@ -23,24 +23,28 @@ const ACCENT_ACTIONED = 0xf23f43;
 
 const ANSI_RED = "\u001b[1;31m";
 const ANSI_YELLOW = "\u001b[1;33m";
-const ANSI_GRAY = "\u001b[0;30m";
 const ANSI_RESET = "\u001b[0m";
 
-/** One aligned line per rule on a fixed 10-cell track (filled ━, empty ─) so the full 1.0 length
- *  is visible. Only rules at or over the review threshold get color; Discord's ANSI grey is nearly
- *  invisible on dark themes, so it's reserved for the empty track. Colors are desktop-only. */
-export function scoreBars(scores: Partial<Record<ScreeningRuleId, number>>, reviewThreshold: number): string {
-  const width = Math.max(...SCREENING_RULES.map((r) => r.id.length)) + 1;
-  const lines = SCREENING_RULES.filter((r) => scores[r.id] !== undefined).map((r) => {
-    const p = scores[r.id]!;
+/** One aligned line per rule on a fixed 10-cell track. █/░ keep full contrast without color
+ *  (Discord mobile renders no ANSI), and ◀ marks rules at or over the review threshold there.
+ *  Colors are a desktop-only extra. */
+export function scoreBars(scores: Record<string, number>, reviewThreshold: number): string {
+  const ids = orderedRuleIds(scores);
+  const width = Math.max(0, ...ids.map((id) => id.length)) + 1;
+  const lines = ids.map((id) => {
+    const p = scores[id]!;
     const filled = Math.round(p * BAR_CELLS);
-    const color = p >= ACTION_THRESHOLD ? ANSI_RED : p >= reviewThreshold ? ANSI_YELLOW : "";
-    const label = `${r.id.padEnd(width)}${p.toFixed(2)} `;
-    const bar = `${"━".repeat(filled)}`;
-    const track = `${ANSI_GRAY}${"─".repeat(BAR_CELLS - filled)}${ANSI_RESET}`;
-    return color ? `${color}${label}${bar}${ANSI_RESET}${track}` : `${label}${bar}${track}`;
+    const color = p >= Math.max(HIGH_THRESHOLD, reviewThreshold) ? ANSI_RED : p >= reviewThreshold ? ANSI_YELLOW : "";
+    const line = `${id.padEnd(width)}${p.toFixed(2)} ${"█".repeat(filled)}${"░".repeat(BAR_CELLS - filled)}${p >= reviewThreshold ? " ◀" : ""}`;
+    return color ? `${color}${line}${ANSI_RESET}` : line;
   });
   return "```ansi\n" + lines.join("\n") + "\n```";
+}
+
+/** Current rules in definition order, then ids only older verdict rows carry (retired rules). */
+function orderedRuleIds(scores: Record<string, number>): string[] {
+  const known = SCREENING_RULES.map((r) => r.id as string).filter((id) => scores[id] !== undefined);
+  return [...known, ...Object.keys(scores).filter((id) => !known.includes(id))];
 }
 
 export function topRule(scores: Partial<Record<ScreeningRuleId, number>>): ScreeningRuleId | null {
@@ -60,7 +64,7 @@ function oneLine(text: string): string {
 function titleFor(row: VerdictRow): string {
   if (row.kind === "text") {
     const rule = SCREENING_RULES.find((r) => r.id === row.topRule);
-    return `### ⚠️ Suspicious message · likely ${rule?.title ?? "rule violation"}`;
+    return `### ⚠️ Suspicious message · likely ${rule?.title ?? row.topRule ?? "rule violation"}`;
   }
   const cats = parseCategories(row);
   const what = row.kind === "pfp" ? "profile picture" : "image link";
@@ -136,7 +140,7 @@ export function buildVerdictPost(
     container.addSeparatorComponents(new SeparatorBuilder());
     container.addTextDisplayComponents(new TextDisplayBuilder({ content: lines.join("\n") || "-# (no text)" }));
     container.addSeparatorComponents(new SeparatorBuilder());
-    const scores = row.scores ? (JSON.parse(row.scores) as Partial<Record<ScreeningRuleId, number>>) : {};
+    const scores = row.scores ? (JSON.parse(row.scores) as Record<string, number>) : {};
     container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${scoreBars(scores, reviewThreshold)}\n${footer(row, ref)}` }));
   } else {
     if (row.kind === "image" && row.sourceUrl) {
