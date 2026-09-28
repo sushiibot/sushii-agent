@@ -162,6 +162,7 @@ describe("parseTeams: inline discord block", () => {
       mcpBridgeAllowedUserIds: undefined,
       promptTemplate: "general",
       enabledModules: ["moderation"],
+      screening: undefined,
     });
   });
 
@@ -191,6 +192,29 @@ describe("parseTeams: inline discord block", () => {
     expect(() =>
       parseTeams({ a: { spaces: [{ surface: "discord", spaceId: "g1", discord: { allowedRoles: [], enabledModules: ["bogus"] } }] } }),
     ).toThrow(/enabledModules must be an array/);
+  });
+
+  test("accepts the screening module and its config block", () => {
+    const out = parseTeams({
+      a: {
+        spaces: [{
+          surface: "discord",
+          spaceId: "g1",
+          discord: { allowedRoles: [], enabledModules: ["screening"], screening: { logChannelId: "c1", windowDays: 7, rules: ["scam", "nsfw"], reviewThreshold: 0.5 } },
+        }],
+      },
+    });
+    expect(out["a"]?.spaces[0]?.discord?.screening).toEqual({ logChannelId: "c1", windowDays: 7, rules: ["scam", "nsfw"], reviewThreshold: 0.5 });
+  });
+
+  test("rejects a screening window at or past the 30-day message cache retention", () => {
+    const discord = { allowedRoles: [], screening: { windowDays: 30 } };
+    expect(() => parseTeams({ a: { spaces: [{ surface: "discord", spaceId: "g1", discord }] } })).toThrow(/screening\.windowDays/);
+  });
+
+  test("rejects an unknown screening rule", () => {
+    const discord = { allowedRoles: [], screening: { rules: ["scam", "bogus"] } };
+    expect(() => parseTeams({ a: { spaces: [{ surface: "discord", spaceId: "g1", discord }] } })).toThrow(/screening\.rules must be an array/);
   });
 });
 

@@ -49,6 +49,7 @@ import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts"
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
 import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
+import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
 
 function behaviorFor(guildId: string): string {
   return guildBehavior(config.guildConfig[guildId] ?? {});
@@ -533,6 +534,8 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     // Cache every message from configured guilds, including bots.
     insertMessage(message);
     if (message.author.bot) return;
+    // Before the auto-mod branch, which returns early.
+    screenDiscordMessage(client, message as Message<true>);
 
     // Auto-mod trigger: mod role pinged by an authorized role (no bot mention required).
     if (autoModGateOpen(guildConfig, isAutoModEligible(message, guildConfig))) {
@@ -796,6 +799,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleStopButton(btn);
       return;
     }
+    if (btn.customId.startsWith(SCREENING_IGNORE_PREFIX)) {
+      await handleScreeningIgnore(client, btn);
+      return;
+    }
     if (btn.customId.startsWith(FEEDBACK_BTN_PREFIX)) {
       await handleFeedbackButton(btn);
       return;
@@ -1035,14 +1042,22 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   }
 
   // ── Message cache lifecycle ─────────────────────────────────────────────────
-  client.on(Events.MessageUpdate, (_old, newMsg) => {
+  client.on(Events.MessageUpdate, (oldMsg, newMsg) => {
     if (!newMsg.guildId || newMsg.partial) return;
     updateMessageContent(newMsg.id, buildMessageContent(newMsg as Message), newMsg.editedTimestamp ?? Date.now());
+    // Unfurled embeds arrive as an update with unchanged content: only the image checks need rerunning.
+    const contentChanged = oldMsg.partial || oldMsg.content !== newMsg.content;
+    if (!newMsg.author.bot) screenDiscordMessage(client, newMsg as Message<true>, { skipText: !contentChanged });
   });
   client.on(Events.MessageDelete, (message) => {
     if (!message.guildId) return;
     softDeleteMessage(message.id);
+    handleScreeningDeletes(client, message.guildId, [message.id]);
   });
+  client.on(Events.MessageBulkDelete, (messages, channel) => {
+    handleScreeningDeletes(client, channel.guildId, [...messages.keys()]);
+  });
+  client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => handleScreeningAuditEntry(client, entry, guild));
 
   client.once(Events.ClientReady, async (c) => {
     logger.info({ tag: c.user.tag }, "Logged in");

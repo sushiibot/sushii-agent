@@ -64,6 +64,13 @@
       "when": 1790308446627,
       "tag": "0008_task_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790566978663,
+      "tag": "0009_screening_verdicts",
+      "breakpoints": true
     }
   ]
 }

@@ -49,6 +49,16 @@ function surfaceSettings(surface: string, spaceId: string, detailed: boolean): [
         out.push(["auto-mod", "configured (details only in a DM)"]);
       }
     }
+    if (resolvedModules(cfg).includes("screening")) {
+      const sc = cfg.screening;
+      const channel = sc?.logChannelId ?? cfg.alertsChannelId;
+      out.push([
+        "screening",
+        detailed
+          ? `window ${sc?.windowDays ?? 7} days, threshold ${sc?.reviewThreshold ?? 0.35}, rules ${sc?.rules?.join(", ") ?? "all"}, posts to ${channel ?? "(nowhere — log only)"}`
+          : "on",
+      ]);
+    }
     if (detailed && cfg.mcpBridgeAllowedUserIds?.length) out.push(["MCP bridge users", cfg.mcpBridgeAllowedUserIds.join(", ")]);
     if (cfg.wiki?.statusChannelId) out.push(["wiki status channel", cfg.wiki.statusChannelId]);
     return out;

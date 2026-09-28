@@ -1,8 +1,9 @@
 import { config } from "./config.ts";
+import type { ScreeningRuleId } from "./modules/screening/rules.ts";
 
 /** Agent modules a guild can enable. Wiki participation is not a module — it's driven by a
  *  team's `wiki.wikiId` plus the space's `wiki: "source"|"read"` role (see orchestration/teams.ts). */
-export type ModuleId = "moderation" | "mcp" | "ops-triage";
+export type ModuleId = "moderation" | "mcp" | "ops-triage" | "screening";
 
 export interface GuildConfig {
   allowedRoles: string[];
@@ -29,11 +30,24 @@ export interface GuildConfig {
   promptTemplate?: "moderation" | "general";
   /** Which agent modules are active for this guild. Unset defaults to ["moderation"] — see resolvedModules(). */
   enabledModules?: ModuleId[];
+  /** New-member screening (the "screening" module). Needs the module enabled to do anything. */
+  screening?: ScreeningConfig;
   /** wiki-sync module settings for this guild. */
   wiki?: {
     /** Channel ID where wiki-sync posts a status update after each sweep that pushes a commit. Unset = no notification. */
     statusChannelId?: string;
   };
+}
+
+export interface ScreeningConfig {
+  /** Where flags are posted. Unset = alertsChannelId; neither set = verdicts are only logged. */
+  logChannelId?: string;
+  /** Members who joined within this many days are screened. Must stay under the 30-day message cache retention. */
+  windowDays?: number;
+  /** Rules to check. Unset = all of SCREENING_RULE_IDS. */
+  rules?: ScreeningRuleId[];
+  /** A text verdict is posted when any rule's probability reaches this. */
+  reviewThreshold?: number;
 }
 
 /** Modules active for this guild — defaults to moderation-only, so configs written before this field existed keep exactly today's behavior. */

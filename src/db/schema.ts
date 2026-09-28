@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
 import { TASK_STATUSES } from "../orchestration/contracts.ts";
 
 export const messages = sqliteTable(
@@ -188,4 +188,48 @@ export const runnerRouting = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [primaryKey({ columns: [table.principal, table.projectKey] })],
+);
+
+/** New-member screening verdicts (one row per text/pfp/image check). Also the PFP and image-link
+ *  dedupe cache, and the outcome log (ignored/actioned) used to tune thresholds. */
+export const screeningVerdicts = sqliteTable(
+  "screening_verdicts",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    guildId: text("guild_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    userId: text("user_id").notNull(),
+    messageId: text("message_id").notNull(),
+    kind: text("kind", { enum: ["text", "pfp", "image"] }).notNull(),
+    // text: {rule: probability}; pfp/image: {unsafe: 0|1}
+    scores: text("scores"),
+    categories: text("categories"),
+    topRule: text("top_rule"),
+    flagged: integer("flagged").notNull().default(0),
+    avatarHash: text("avatar_hash"),
+    imageKey: text("image_key"),
+    sourceUrl: text("source_url"),
+    joinedAt: integer("joined_at"),
+    ordinal: integer("ordinal"),
+    model: text("model"),
+    cost: real("cost"),
+    // snapshot of what was judged — the message cache drops content after 30 days
+    judged: text("judged"),
+    error: text("error"),
+    postChannelId: text("post_channel_id"),
+    postMessageId: text("post_message_id"),
+    outcome: text("outcome", { enum: ["ignored", "actioned"] }),
+    outcomeBy: text("outcome_by"),
+    outcomeAction: text("outcome_action"),
+    outcomeAt: integer("outcome_at"),
+    messageDeleted: integer("message_deleted").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_screening_guild_user").on(table.guildId, table.userId, table.createdAt),
+    index("idx_screening_pfp").on(table.userId, table.avatarHash),
+    index("idx_screening_image").on(table.imageKey),
+    index("idx_screening_message").on(table.messageId),
+    index("idx_screening_post").on(table.postMessageId),
+  ],
 );

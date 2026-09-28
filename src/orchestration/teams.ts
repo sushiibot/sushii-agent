@@ -7,7 +7,8 @@
 // HARD WALL: this module MUST NOT be reachable from the memory-scope path (banks.ts / agentCore's
 // memoryScope). A team groups multiple surfaces; if a memory spaceId resolved through it,
 // `sushii-space-<spaceId>` would merge public facts across Discord/Slack/buzz memberships.
-import type { GuildConfig, ModuleId } from "../guildConfig.ts";
+import type { GuildConfig, ModuleId, ScreeningConfig } from "../guildConfig.ts";
+import { SCREENING_RULE_IDS, type ScreeningRuleId } from "../modules/screening/rules.ts";
 import { config } from "../config.ts";
 import { normalizeRelayUrl } from "../surfaces/buzz/relayUrl.ts";
 
@@ -79,7 +80,7 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((s) => typeof s === "string");
 }
 
-const MODULE_IDS: ModuleId[] = ["moderation", "mcp", "ops-triage"];
+const MODULE_IDS: ModuleId[] = ["moderation", "mcp", "ops-triage", "screening"];
 
 /** Validate + narrow a space's inline `discord` block to the `GuildConfig` shape. Rejects
  *  `wiki.statusChannelId` — that field belongs on the space itself (see TeamSpace.statusChannelId)
@@ -126,6 +127,8 @@ function parseDiscordBlock(id: string, i: number, raw: unknown): GuildConfig {
     }
   }
 
+  const screening = raw["screening"] === undefined ? undefined : parseScreeningBlock(prefix, raw["screening"]);
+
   return {
     allowedRoles: raw["allowedRoles"] as string[],
     emojis: raw["emojis"] as string[] | undefined,
@@ -139,6 +142,29 @@ function parseDiscordBlock(id: string, i: number, raw: unknown): GuildConfig {
     mcpBridgeAllowedUserIds: raw["mcpBridgeAllowedUserIds"] as string[] | undefined,
     promptTemplate: promptTemplate as GuildConfig["promptTemplate"],
     enabledModules: enabledModules as ModuleId[] | undefined,
+    screening,
+  };
+}
+
+function parseScreeningBlock(parentPrefix: string, raw: unknown): ScreeningConfig {
+  const prefix = `${parentPrefix}.screening`;
+  if (!isPlainObject(raw)) throw new Error(`${prefix} must be an object`);
+  const { logChannelId, windowDays, rules, reviewThreshold } = raw;
+  if (logChannelId !== undefined && !isNonEmptyString(logChannelId)) throw new Error(`${prefix}.logChannelId must be a string`);
+  if (windowDays !== undefined && (typeof windowDays !== "number" || windowDays <= 0 || windowDays >= 30)) {
+    throw new Error(`${prefix}.windowDays must be a number between 0 and 30 (message cache retention)`);
+  }
+  if (rules !== undefined && (!isStringArray(rules) || !rules.every((r) => (SCREENING_RULE_IDS as readonly string[]).includes(r)))) {
+    throw new Error(`${prefix}.rules must be an array drawn from ${SCREENING_RULE_IDS.join(", ")}`);
+  }
+  if (reviewThreshold !== undefined && (typeof reviewThreshold !== "number" || reviewThreshold <= 0 || reviewThreshold > 1)) {
+    throw new Error(`${prefix}.reviewThreshold must be a number in (0, 1]`);
+  }
+  return {
+    logChannelId,
+    windowDays,
+    rules: rules as ScreeningRuleId[] | undefined,
+    reviewThreshold,
   };
 }
 
