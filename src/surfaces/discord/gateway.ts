@@ -357,7 +357,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
     const author: AuthorRef = { surface: SURFACE, userId: message.author.id, username: message.author.username };
     const session = new DmConductorSession(channel, { id: client.user.id, username: client.user.username });
-    const inbound: InboundMessage = { conversation, author, text: userText };
+    const inbound: InboundMessage = { conversation, author, text: userText, sentAt: message.createdAt };
 
     await tracer.startActiveSpan("discord.dm", {
       attributes: { "discord.user_id": author.userId, "discord.channel_id": message.channelId },
@@ -654,6 +654,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
           conversation,
           author,
           text: turnText,
+          sentAt: message.createdAt,
           mentionedUsers: mentioned.size ? [...mentioned.values()] : undefined,
           channel,
         };
@@ -753,6 +754,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
             conversation,
             author: { surface: SURFACE, userId: message.author.id, username: message.author.username },
             text: query,
+            sentAt: message.createdAt,
             platform: {
               surface: "discord",
               autoModTrigger: {

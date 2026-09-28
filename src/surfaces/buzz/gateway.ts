@@ -153,6 +153,7 @@ export function startBuzzSurface(deps: BuzzSurfaceDeps): { stop: () => void } {
       conversation,
       author: { surface: SURFACE, userId: event.pubkey, username: null },
       text: event.content,
+      sentAt: new Date(event.createdAt * 1000),
       platform: { surface: "buzz" },
     };
 

@@ -143,6 +143,7 @@ export function startSlackAgentLoop(app: App, deps: SlackAgentDeps): void {
       conversation,
       author: { surface: SURFACE, userId: user, username: displayName, displayName },
       text,
+      sentAt: new Date(Number(ts) * 1000),
       replyTo,
       attachments: mapAttachments(event.files, channel, ts),
       platform: { surface: SURFACE },

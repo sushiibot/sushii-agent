@@ -387,3 +387,10 @@ describe("user turns carry a send-time stamp", () => {
     expect(users[1]).toMatch(/^\[(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (AM|PM) UTC · \d+ days later\] did that get done\?$/);
   });
 });
+
+test("the stamp uses the platform send time when the surface supplies one", async () => {
+  const store = new FakeStore();
+  const core = createAgentCore(baseDeps(store));
+  await core.handleInbound({ ...inbound("hello"), sentAt: new Date(Date.UTC(2026, 8, 27, 14, 40)) }, fakeSession());
+  expect(store.data.messages[0]?.content).toBe("[Sun 2026-09-27 2:40 PM UTC] hello");
+});

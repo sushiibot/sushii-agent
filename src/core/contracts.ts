@@ -97,6 +97,8 @@ export interface InboundMessage {
   author: AuthorRef;
   /** Normalized text, bot-mention already stripped by the surface. */
   text: string;
+  /** When the platform says the message was sent; stamps the turn (falls back to processing time). */
+  sentAt?: Date;
   mentionedUsers?: AuthorRef[];
   replyTo?: { author: AuthorRef; text: string } | null;
   attachments?: InboundAttachment[];

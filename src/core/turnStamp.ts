@@ -23,7 +23,7 @@ export function formatStamp(at: Date): string {
 }
 
 function describeGap(ms: number): string {
-  if (ms >= DAY_MS) {
+  if (Math.round(ms / HOUR_MS) >= 24) {
     const days = Math.round(ms / DAY_MS);
     return `${days} day${days === 1 ? "" : "s"} later`;
   }

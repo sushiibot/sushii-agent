@@ -20,6 +20,7 @@ describe("turnStamp", () => {
     expect(stampUserText("hi", at, new Date(at.getTime() - 7 * 3600_000))).toBe("[Sun 2026-09-27 2:40 PM UTC · 7 hours later] hi");
     expect(stampUserText("hi", at, new Date(at.getTime() - 3 * 86400_000))).toBe("[Sun 2026-09-27 2:40 PM UTC · 3 days later] hi");
     expect(stampUserText("hi", at, new Date(at.getTime() - 26 * 3600_000))).toBe("[Sun 2026-09-27 2:40 PM UTC · 1 day later] hi");
+    expect(stampUserText("hi", at, new Date(at.getTime() - 23.6 * 3600_000))).toBe("[Sun 2026-09-27 2:40 PM UTC · 1 day later] hi");
   });
 
   test("parseStamp round-trips with and without a gap note, and ignores unstamped text", () => {

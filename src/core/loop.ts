@@ -89,7 +89,7 @@ export interface LoopRunContext {
    *  (variable per turn → must sit past the cache breakpoint, or it busts the prompt cache every turn). */
   memoryBlock?: string;
   /** Drains messages queued mid-loop; returns them so the loop can inject + re-taint ownership. */
-  dequeue: () => { author: AuthorRef; text: string }[];
+  dequeue: () => { author: AuthorRef; text: string; sentAt?: Date }[];
   isCancelled: () => boolean;
   onInterim?: (reply: AgentReply) => Promise<void>;
   onToolsDispatched?: (tools: ToolActivity[]) => void;
@@ -286,7 +286,7 @@ export async function runLoop(
       if (!ctx.knownUsers.has(queued.author.userId)) {
         ctx.knownUsers.set(queued.author.userId, queued.author);
       }
-      messages.push({ role: "user", content: stampUserText(queued.text, new Date(), lastUserStamp(messages)) });
+      messages.push({ role: "user", content: stampUserText(queued.text, queued.sentAt ?? new Date(), lastUserStamp(messages)) });
     }
 
     if (lastInputTokens > deps.model.contextLimit * contextRatio) {

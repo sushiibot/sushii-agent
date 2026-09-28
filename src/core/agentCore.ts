@@ -79,7 +79,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       // consume event (it was never queued), so it gets no reaction, matching the old path.
       return batch.map((inbound) => {
         fireHook(deps.hooks, "onConsumed", { conversation: inbound.conversation, inbound });
-        return { author: inbound.author, text: inbound.text };
+        return { author: inbound.author, text: inbound.text, sentAt: inbound.sentAt };
       });
     };
   }
@@ -91,6 +91,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     firstUserText: string,
     initialMentions: AuthorRef[] | undefined,
     autoMod: boolean,
+    sentAt?: Date,
   ): Promise<AgentTurnResult> {
     const data = deps.store.load(conversation);
     let messages = [...data.messages];
@@ -114,7 +115,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
     if (initialMentions?.length) {
       messages.push({ role: "system", content: buildUserNote(initialMentions) });
     }
-    messages.push({ role: "user", content: stampUserText(firstUserText, new Date(), lastUserStamp(messages)) });
+    messages.push({ role: "user", content: stampUserText(firstUserText, sentAt ?? new Date(), lastUserStamp(messages)) });
 
     // C8: core owns slot ORDER; the surface fills per-turn content via promptContext(). The
     // triggering-user section is suppressed for the autonomous auto-mod driver — it has no
@@ -306,6 +307,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
           inbound.text,
           inbound.mentionedUsers,
           autoMod,
+          inbound.sentAt,
         );
       } catch (err) {
         return { status: "error", message: err instanceof Error ? err.message : String(err) };

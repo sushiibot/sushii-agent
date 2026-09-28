@@ -49,8 +49,8 @@ export function assembleSystemPrompt(inputs: SystemPromptInputs): string {
   const systemParts = [
     inputs.behavior,
     inputs.plainTimestamps
-      ? `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). User messages begin with a [timestamp] (UTC) of when they were sent, and a "· N days later" note when time passed since the previous message — treat older topics as possibly stale after a gap, and never repeat the stamps in your replies.`
-      : `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). Do NOT use it to compute or write timestamp math in your responses — always use Discord timestamp format instead. User messages begin with a [timestamp] (UTC) of when they were sent, and a "· N days later" note when time passed since the previous message — treat older topics as possibly stale after a gap, and never repeat the stamps in your replies.`,
+      ? `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). User messages begin with a [timestamp] (UTC) of when they were sent, and a "· N hours/days later" note when time passed since the previous message — treat older topics as possibly stale after a gap, and never repeat the stamps in your replies.`
+      : `Current date: ${currentDate}. Use this only for interpreting relative time references in user messages (e.g. "yesterday", "last week"). Do NOT use it to compute or write timestamp math in your responses — always use Discord timestamp format instead. User messages begin with a [timestamp] (UTC) of when they were sent, and a "· N hours/days later" note when time passed since the previous message — treat older topics as possibly stale after a gap, and never repeat the stamps in your replies.`,
   ];
 
   // Bot's own identity
