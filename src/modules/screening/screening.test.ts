@@ -6,7 +6,7 @@ import type { GuildConfig } from "../../guildConfig.ts";
 import { classifyText, parseSafetyOutput, type ImageVerdict, type TextVerdict } from "./classify.ts";
 import { discordImageLink, extractImageLinks } from "./images.ts";
 import { ignorePost, judgedLines, recordAutomodBlock, recordMessagesDeleted, recordModAction, screenMessage, type AutomodBlock, type ScreenedMessage, type ScreeningDeps } from "./index.ts";
-import { buildVerdictPost, scoreBars, topRule } from "./render.ts";
+import { buildVerdictPost, scoreBars, topRule, verdictRef } from "./render.ts";
 import { SCREENING_RULES } from "./rules.ts";
 import { getVerdict } from "./store.ts";
 
@@ -96,6 +96,10 @@ describe("scoreBars", () => {
     }
   });
 
+  test("verdictRef", () => {
+    expect(verdictRef(1234)).toBe("scr-1234");
+  });
+
   test("topRule picks the highest score", () => {
     expect(topRule({ scam: 0.2, troll: 0.8 })).toBe("troll");
     expect(topRule({})).toBeNull();
@@ -173,7 +177,7 @@ describe("screenMessage", () => {
     expect(json).toContain("-# kevin: anyone know");
     expect(json).toContain("> **nitrodrops_:** free nitro");
     expect(json).toContain("scr:ignore:");
-    expect(json).toContain("$0.00002 · #1");
+    expect(json).toContain("$0.00002 · `scr-1`");
     const row = getVerdict(h.db, 1)!;
     expect(row.flagged).toBe(1);
     expect(row.postMessageId).toBe("post-1");

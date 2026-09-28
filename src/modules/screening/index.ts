@@ -6,7 +6,7 @@ import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
 import { classifyImage, classifyText, type ImageVerdict, type StateMessage, type TextVerdict } from "./classify.ts";
 import { extractImageLinks } from "./images.ts";
-import { buildVerdictPost, topRule } from "./render.ts";
+import { buildVerdictPost, topRule, verdictRef } from "./render.ts";
 import { SCREENING_RULES, type ScreeningRule } from "./rules.ts";
 import {
   automodSummary,
@@ -84,8 +84,8 @@ function withCheckSpan<T>(kind: string, message: { guildId: string; author: { id
   );
 }
 
-/** Inserts and logs the verdict. The footer shows `#<id>`, so a pasted id finds this log line in
- *  Loki (and its trace) with the full scores and judged text. */
+/** Inserts and logs the verdict. The footer shows its ref (`scr-<id>`), so a pasted ref finds
+ *  this log line in Loki (and its trace) with the full scores and judged text. */
 function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
   const row = insertVerdict(db, v);
   const judged = row.judged ? (JSON.parse(row.judged) as { target?: JudgedLine[] }) : null;
@@ -98,6 +98,7 @@ function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
   logger.info(
     {
       verdictId: row.id,
+      ref: verdictRef(row.id),
       kind: row.kind,
       guildId: row.guildId,
       channelId: row.channelId,
@@ -347,7 +348,9 @@ async function screenImage(
 /** Posts show the user's AutoMod blocks since joining, so mods see one combined picture instead of
  *  a screening flag and AutoMod alerts that don't know about each other. */
 function renderPost(db: Database, row: VerdictRow, cfg: GuildConfig): ContainerBuilder {
-  return buildVerdictPost(row, thresholdFor(cfg), automodSummary(db, row.guildId, row.userId, row.joinedAt ?? 0));
+  return buildVerdictPost(row, thresholdFor(cfg), {
+    automod: automodSummary(db, row.guildId, row.userId, row.joinedAt ?? 0),
+  });
 }
 
 async function postVerdict(row: VerdictRow, cfg: GuildConfig, deps: ScreeningDeps): Promise<void> {

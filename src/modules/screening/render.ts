@@ -90,15 +90,27 @@ function outcomeText(row: VerdictRow): string {
   return "";
 }
 
-function footer(row: VerdictRow): string {
+/** Verdict reference for the footer and logs, e.g. `scr-1234`: the autoincrement row id, unique
+ *  across every guild this bot instance screens. */
+export function verdictRef(id: number): string {
+  return `scr-${id}`;
+}
+
+function footer(row: VerdictRow, ref: string): string {
   const cost = row.cost != null ? ` · $${row.cost.toFixed(5)}` : "";
   const model = (row.model ?? "").replace(/^[^/]+\//, "").replace(/-\d{8}$/, "");
-  return `-# ${model}${cost} · #${row.id}${outcomeText(row)}`;
+  return `-# ${model}${cost} · \`${ref}\`${outcomeText(row)}`;
 }
 
 /** Rebuilt from the stored row on every edit (ignore, mod action, delete), so the post never
  *  depends on the original message still existing. */
-export function buildVerdictPost(row: VerdictRow, reviewThreshold: number, automod?: AutomodSummary): ContainerBuilder {
+export function buildVerdictPost(
+  row: VerdictRow,
+  reviewThreshold: number,
+  extras: { automod?: AutomodSummary } = {},
+): ContainerBuilder {
+  const { automod } = extras;
+  const ref = verdictRef(row.id);
   const container = new ContainerBuilder();
   if (row.outcome === "actioned") container.setAccentColor(ACCENT_ACTIONED);
   else if (row.outcome !== "ignored") container.setAccentColor(ACCENT_OPEN);
@@ -125,7 +137,7 @@ export function buildVerdictPost(row: VerdictRow, reviewThreshold: number, autom
     container.addTextDisplayComponents(new TextDisplayBuilder({ content: lines.join("\n") || "-# (no text)" }));
     container.addSeparatorComponents(new SeparatorBuilder());
     const scores = row.scores ? (JSON.parse(row.scores) as Partial<Record<ScreeningRuleId, number>>) : {};
-    container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${scoreBars(scores, reviewThreshold)}\n${footer(row)}` }));
+    container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${scoreBars(scores, reviewThreshold)}\n${footer(row, ref)}` }));
   } else {
     if (row.kind === "image" && row.sourceUrl) {
       container.addMediaGalleryComponents(
@@ -134,7 +146,7 @@ export function buildVerdictPost(row: VerdictRow, reviewThreshold: number, autom
     }
     const verdict = "```ansi\n" + `${ANSI_RED}unsafe${parseCategories(row).length ? ` · ${parseCategories(row).join(", ")}` : ""}${ANSI_RESET}` + "\n```";
     const source = row.kind === "image" && row.sourceUrl ? `-# ${new URL(row.sourceUrl).hostname}${new URL(row.sourceUrl).pathname}\n` : "";
-    container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${source}${verdict}\n${footer(row)}` }));
+    container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${source}${verdict}\n${footer(row, ref)}` }));
   }
 
   const jump = new ButtonBuilder()
