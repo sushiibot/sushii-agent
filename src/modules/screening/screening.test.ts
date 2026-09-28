@@ -81,19 +81,18 @@ function postJson(c: ContainerBuilder): string {
 }
 
 describe("scoreBars", () => {
-  test("fixed-length bars with grey remainder and threshold colors", () => {
+  test("fixed-length track, color only at or over the threshold", () => {
     const out = scoreBars({ scam: 0.91, spam: 0.47, troll: 0.1 }, 0.35);
     expect(out.startsWith("```ansi\n")).toBe(true);
     const lines = out.split("\n").slice(1, -1);
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toContain("\u001b[1;31mscam");
-    expect(lines[0]).toContain("0.91 " + "█".repeat(9));
-    expect(lines[0]).toContain("░".repeat(1));
-    expect(lines[1]).toContain("\u001b[1;33mspam");
-    expect(lines[2]).toContain("\u001b[0;30mtroll");
+    expect(lines[0]).toStartWith("\u001b[1;31mscam");
+    expect(lines[0]).toContain("0.91 " + "━".repeat(9));
+    expect(lines[1]).toStartWith("\u001b[1;33mspam");
+    expect(lines[2]).toStartWith("troll");
     for (const l of lines) {
       const plain = l.replace(/\u001b\[[\d;]+m/g, "");
-      expect((plain.match(/[█░]/g) ?? []).length).toBe(10);
+      expect((plain.match(/[━─]/g) ?? []).length).toBe(10);
     }
   });
 
@@ -174,6 +173,7 @@ describe("screenMessage", () => {
     expect(json).toContain("-# kevin: anyone know");
     expect(json).toContain("> **nitrodrops_:** free nitro");
     expect(json).toContain("scr:ignore:");
+    expect(json).toContain("$0.00002 · #1");
     const row = getVerdict(h.db, 1)!;
     expect(row.flagged).toBe(1);
     expect(row.postMessageId).toBe("post-1");

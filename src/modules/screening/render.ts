@@ -26,15 +26,19 @@ const ANSI_YELLOW = "\u001b[1;33m";
 const ANSI_GRAY = "\u001b[0;30m";
 const ANSI_RESET = "\u001b[0m";
 
-/** One aligned line per rule: filled cells in the score's color, the rest grey, so the full 1.0
- *  length is visible. Colors only render on desktop; the bar still reads uncolored on mobile. */
+/** One aligned line per rule on a fixed 10-cell track (filled ━, empty ─) so the full 1.0 length
+ *  is visible. Only rules at or over the review threshold get color; Discord's ANSI grey is nearly
+ *  invisible on dark themes, so it's reserved for the empty track. Colors are desktop-only. */
 export function scoreBars(scores: Partial<Record<ScreeningRuleId, number>>, reviewThreshold: number): string {
   const width = Math.max(...SCREENING_RULES.map((r) => r.id.length)) + 1;
   const lines = SCREENING_RULES.filter((r) => scores[r.id] !== undefined).map((r) => {
     const p = scores[r.id]!;
     const filled = Math.round(p * BAR_CELLS);
-    const color = p >= ACTION_THRESHOLD ? ANSI_RED : p >= reviewThreshold ? ANSI_YELLOW : ANSI_GRAY;
-    return `${color}${r.id.padEnd(width)}${p.toFixed(2)} ${"█".repeat(filled)}${ANSI_RESET}${ANSI_GRAY}${"░".repeat(BAR_CELLS - filled)}${ANSI_RESET}`;
+    const color = p >= ACTION_THRESHOLD ? ANSI_RED : p >= reviewThreshold ? ANSI_YELLOW : "";
+    const label = `${r.id.padEnd(width)}${p.toFixed(2)} `;
+    const bar = `${"━".repeat(filled)}`;
+    const track = `${ANSI_GRAY}${"─".repeat(BAR_CELLS - filled)}${ANSI_RESET}`;
+    return color ? `${color}${label}${bar}${ANSI_RESET}${track}` : `${label}${bar}${track}`;
   });
   return "```ansi\n" + lines.join("\n") + "\n```";
 }
@@ -89,7 +93,7 @@ function outcomeText(row: VerdictRow): string {
 function footer(row: VerdictRow): string {
   const cost = row.cost != null ? ` · $${row.cost.toFixed(5)}` : "";
   const model = (row.model ?? "").replace(/^[^/]+\//, "").replace(/-\d{8}$/, "");
-  return `-# ${model}${cost}${outcomeText(row)}`;
+  return `-# ${model}${cost} · #${row.id}${outcomeText(row)}`;
 }
 
 /** Rebuilt from the stored row on every edit (ignore, mod action, delete), so the post never

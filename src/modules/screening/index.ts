@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { ContainerBuilder } from "discord.js";
 import { resolvedModules, type GuildConfig } from "../../guildConfig.ts";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { getLogger } from "../../logger.ts";
+import { tracer } from "../../telemetry.ts";
 import { classifyImage, classifyText, type ImageVerdict, type StateMessage, type TextVerdict } from "./classify.ts";
 import { extractImageLinks } from "./images.ts";
 import { buildVerdictPost, topRule } from "./render.ts";
@@ -63,6 +65,60 @@ export interface ScreeningDeps {
   edit: (channelId: string, messageId: string, container: ContainerBuilder) => Promise<void>;
 }
 
+/** One span per check; the verdict log line inside it carries the trace id via the logger mixin. */
+function withCheckSpan<T>(kind: string, message: { guildId: string; author: { id: string } }, fn: () => Promise<T>): Promise<T> {
+  return tracer.startActiveSpan(
+    "screening.check",
+    { attributes: { "screening.kind": kind, "discord.guild_id": message.guildId, "discord.user_id": message.author.id } },
+    async (span) => {
+      try {
+        return await fn();
+      } catch (err) {
+        span.recordException(err as Error);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+        throw err;
+      } finally {
+        span.end();
+      }
+    },
+  );
+}
+
+/** Inserts and logs the verdict. The footer shows `#<id>`, so a pasted id finds this log line in
+ *  Loki (and its trace) with the full scores and judged text. */
+function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
+  const row = insertVerdict(db, v);
+  const judged = row.judged ? (JSON.parse(row.judged) as { target?: JudgedLine[] }) : null;
+  trace.getActiveSpan()?.setAttributes({
+    "screening.verdict_id": row.id,
+    "screening.flagged": row.flagged === 1,
+    ...(row.topRule ? { "screening.top_rule": row.topRule } : {}),
+    ...(row.cost != null ? { "screening.cost": row.cost } : {}),
+  });
+  logger.info(
+    {
+      verdictId: row.id,
+      kind: row.kind,
+      guildId: row.guildId,
+      channelId: row.channelId,
+      userId: row.userId,
+      messageId: row.messageId,
+      flagged: row.flagged === 1,
+      topRule: row.topRule,
+      scores: row.scores ? JSON.parse(row.scores) : null,
+      categories: row.categories ? JSON.parse(row.categories) : null,
+      ordinal: row.ordinal,
+      model: row.model,
+      cost: row.cost,
+      error: row.error,
+      sourceUrl: row.sourceUrl,
+      target: judged?.target?.map((l) => `${l.author}: ${l.text.slice(0, 300)}`),
+    },
+    "screening verdict",
+  );
+  return row;
+}
+
 const inflight = new Set<string>();
 /** Text checks run one at a time per user: concurrent checks would all miss each other's open post
  *  and a fast burst would get one post per message. */
@@ -118,9 +174,9 @@ export async function screenMessage(
   const results = await Promise.allSettled([
     opts.skipText
       ? Promise.resolve()
-      : serializeText(`${message.guildId}:${message.author.id}`, () => screenText(message, cfg, deps, now)),
-    screenAvatar(message, cfg, deps, now),
-    screenImages(message, cfg, deps, now),
+      : serializeText(`${message.guildId}:${message.author.id}`, () => withCheckSpan("text", message, () => screenText(message, cfg, deps, now))),
+    withCheckSpan("pfp", message, () => screenAvatar(message, cfg, deps, now)),
+    withCheckSpan("image", message, () => screenImages(message, cfg, deps, now)),
   ]);
   for (const r of results) {
     if (r.status === "rejected") logger.warn({ err: r.reason, guildId: message.guildId, messageId: message.id }, "screening check failed");
@@ -184,12 +240,12 @@ async function screenText(message: ScreenedMessage, cfg: GuildConfig, deps: Scre
   try {
     verdict = await (deps.classifyText ?? classifyText)(state, rules);
   } catch (err) {
-    insertVerdict(deps.db, { ...base, error: String(err) });
+    saveVerdict(deps.db, { ...base, error: String(err) });
     throw err;
   }
   const threshold = thresholdFor(cfg);
   const flagged = Object.values(verdict.scores).some((p) => p >= threshold);
-  const row = insertVerdict(deps.db, {
+  const row = saveVerdict(deps.db, {
     ...base,
     scores: JSON.stringify(verdict.scores),
     topRule: topRule(verdict.scores),
@@ -274,10 +330,10 @@ async function screenImage(
     verdict = await (deps.classifyImage ?? classifyImage)(target.url);
   } catch (err) {
     // Recorded so an expired/unreachable link isn't retried on every edit.
-    insertVerdict(deps.db, { ...base, error: String(err) });
+    saveVerdict(deps.db, { ...base, error: String(err) });
     throw err;
   }
-  const row = insertVerdict(deps.db, {
+  const row = saveVerdict(deps.db, {
     ...base,
     scores: JSON.stringify({ unsafe: verdict.unsafe ? 1 : 0 }),
     categories: JSON.stringify(verdict.categories),
@@ -365,6 +421,11 @@ export interface AutomodBlock {
  *  AutoMod already alerted the mods. */
 export async function recordAutomodBlock(block: AutomodBlock, cfg: GuildConfig, deps: ScreeningDeps): Promise<void> {
   if (!screeningEnabled(cfg) || !block.member?.joinedTimestamp) return;
+  await withCheckSpan("automod", { guildId: block.guildId, author: { id: block.userId } }, () => recordAutomodBlockInner(block, cfg, deps));
+}
+
+async function recordAutomodBlockInner(block: AutomodBlock, cfg: GuildConfig, deps: ScreeningDeps): Promise<void> {
+  if (!block.member?.joinedTimestamp) return;
   const now = deps.now?.() ?? Date.now();
   const screened: ScreenedMessage = {
     id: block.messageId ?? "",
@@ -391,7 +452,7 @@ export async function recordAutomodBlock(block: AutomodBlock, cfg: GuildConfig, 
       logger.warn({ err, guildId: block.guildId }, "screening automod scoring failed");
     }
   }
-  insertVerdict(deps.db, {
+  saveVerdict(deps.db, {
     guildId: block.guildId,
     channelId: block.channelId ?? "",
     userId: block.userId,
