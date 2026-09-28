@@ -7,12 +7,14 @@ import { extractImageLinks } from "./images.ts";
 import { buildVerdictPost, topRule } from "./render.ts";
 import { SCREENING_RULES, type ScreeningRule } from "./rules.ts";
 import {
+  automodSummary,
   hasImageVerdict,
   hasPfpVerdict,
   insertVerdict,
   latestForPost,
   markMessageDeleted,
   openTextPost,
+  postedForUser,
   setActioned,
   setIgnored,
   setPost,
@@ -200,7 +202,7 @@ async function screenText(message: ScreenedMessage, cfg: GuildConfig, deps: Scre
   const open = openTextPost(deps.db, message.guildId, userId, now - BURST_MS);
   if (open?.postChannelId && open.postMessageId) {
     setPost(deps.db, row.id, open.postChannelId, open.postMessageId);
-    await deps.edit(open.postChannelId, open.postMessageId, buildVerdictPost({ ...row, postMessageId: open.postMessageId }, threshold));
+    await deps.edit(open.postChannelId, open.postMessageId, renderPost(deps.db, { ...row, postMessageId: open.postMessageId }, cfg));
     return;
   }
   await postVerdict(row, cfg, deps);
@@ -286,10 +288,16 @@ async function screenImage(
   if (verdict.unsafe) await postVerdict(row, cfg, deps);
 }
 
+/** Posts show the user's AutoMod blocks since joining, so mods see one combined picture instead of
+ *  a screening flag and AutoMod alerts that don't know about each other. */
+function renderPost(db: Database, row: VerdictRow, cfg: GuildConfig): ContainerBuilder {
+  return buildVerdictPost(row, thresholdFor(cfg), automodSummary(db, row.guildId, row.userId, row.joinedAt ?? 0));
+}
+
 async function postVerdict(row: VerdictRow, cfg: GuildConfig, deps: ScreeningDeps): Promise<void> {
   const channelId = logChannelFor(cfg);
   if (!channelId) return;
-  const postId = await deps.post(channelId, buildVerdictPost(row, thresholdFor(cfg)));
+  const postId = await deps.post(channelId, renderPost(deps.db, row, cfg));
   setPost(deps.db, row.id, channelId, postId);
 }
 
@@ -299,7 +307,7 @@ async function refreshPosts(rows: VerdictRow[], cfg: GuildConfig, deps: Screenin
   for (const [postMessageId, postChannelId] of posts) {
     const latest = latestForPost(deps.db, postMessageId);
     if (!latest) continue;
-    await deps.edit(postChannelId, postMessageId, buildVerdictPost(latest, thresholdFor(cfg))).catch((err) => {
+    await deps.edit(postChannelId, postMessageId, renderPost(deps.db, latest, cfg)).catch((err) => {
       logger.warn({ err, postMessageId }, "failed to refresh screening post");
     });
   }
@@ -311,7 +319,7 @@ export function ignorePost(postMessageId: string, by: string, cfg: GuildConfig, 
   const changed = setIgnored(deps.db, postMessageId, by, deps.now?.() ?? Date.now());
   if (changed.length === 0) return null;
   const latest = latestForPost(deps.db, postMessageId);
-  return latest ? buildVerdictPost(latest, thresholdFor(cfg)) : null;
+  return latest ? renderPost(deps.db, latest, cfg) : null;
 }
 
 /** A ban/kick/timeout of a flagged user inside the window marks their verdicts as true positives. */
@@ -337,4 +345,72 @@ export async function recordMessagesDeleted(messageIds: string[], cfg: GuildConf
   if (!screeningEnabled(cfg)) return;
   const rows = markMessageDeleted(deps.db, messageIds);
   if (rows.length > 0) await refreshPosts(rows, cfg, deps);
+}
+
+export interface AutomodBlock {
+  guildId: string;
+  userId: string;
+  channelId: string | null;
+  /** Blocked messages never exist, so this is the alert message id when there is one. */
+  messageId: string | null;
+  ruleName: string;
+  content: string;
+  matchedKeyword: string | null;
+  authorName: string;
+  member: { joinedTimestamp: number | null; roleIds: readonly string[] } | null;
+}
+
+/** An AutoMod block by a new member: recorded, scored by Jev without posting (known-bad samples
+ *  for measuring recall), and shown on the user's existing flag posts. Never posts on its own —
+ *  AutoMod already alerted the mods. */
+export async function recordAutomodBlock(block: AutomodBlock, cfg: GuildConfig, deps: ScreeningDeps): Promise<void> {
+  if (!screeningEnabled(cfg) || !block.member?.joinedTimestamp) return;
+  const now = deps.now?.() ?? Date.now();
+  const screened: ScreenedMessage = {
+    id: block.messageId ?? "",
+    guildId: block.guildId,
+    channelId: block.channelId ?? "",
+    createdTimestamp: now,
+    content: block.content,
+    embeds: [],
+    author: { id: block.userId, bot: false, avatar: null },
+    member: { joinedTimestamp: block.member.joinedTimestamp, avatar: null, roleIds: block.member.roleIds, avatarUrl: "" },
+  };
+  if (!isScreenable(screened, cfg, now)) return;
+
+  let scores: TextVerdict | null = null;
+  let error: string | null = null;
+  if (block.content.trim()) {
+    try {
+      scores = await (deps.classifyText ?? classifyText)(
+        [{ id: "m1", author: block.authorName, target: true, text: block.content.slice(0, STATE_TEXT_MAX) }],
+        rulesFor(cfg),
+      );
+    } catch (err) {
+      error = String(err);
+      logger.warn({ err, guildId: block.guildId }, "screening automod scoring failed");
+    }
+  }
+  insertVerdict(deps.db, {
+    guildId: block.guildId,
+    channelId: block.channelId ?? "",
+    userId: block.userId,
+    messageId: block.messageId ?? `automod:${now}`,
+    kind: "automod",
+    scores: scores ? JSON.stringify(scores.scores) : null,
+    topRule: scores ? topRule(scores.scores) : null,
+    categories: JSON.stringify([block.ruleName]),
+    flagged: 0,
+    joinedAt: block.member.joinedTimestamp,
+    model: scores?.model ?? null,
+    cost: scores?.cost ?? null,
+    judged: JSON.stringify({
+      context: [],
+      target: [{ author: block.authorName, text: block.content }],
+      automod: { rule: block.ruleName, keyword: block.matchedKeyword },
+    }),
+    error,
+    createdAt: now,
+  });
+  await refreshPosts(postedForUser(deps.db, block.guildId, block.userId, block.member.joinedTimestamp), cfg, deps);
 }

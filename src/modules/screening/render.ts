@@ -11,7 +11,7 @@ import {
   ThumbnailBuilder,
 } from "discord.js";
 import { SCREENING_RULES, type ScreeningRuleId } from "./rules.ts";
-import type { Judged, VerdictRow } from "./store.ts";
+import type { AutomodSummary, Judged, VerdictRow } from "./store.ts";
 
 export const SCREENING_IGNORE_PREFIX = "scr:ignore:";
 
@@ -67,11 +67,14 @@ function parseCategories(row: VerdictRow): string[] {
   return row.categories ? (JSON.parse(row.categories) as string[]) : [];
 }
 
-function whoLines(row: VerdictRow): string {
+function whoLines(row: VerdictRow, automod?: AutomodSummary): string {
   const joined = row.joinedAt ? `joined <t:${Math.floor(row.joinedAt / 1000)}:R> · ` : "";
   const ordinal = row.ordinal ? `message #${row.ordinal} since join · ` : "";
   const deleted = row.messageDeleted ? " · **message deleted**" : "";
-  return `<@${row.userId}> (\`${row.userId}\`)\n-# ${joined}${ordinal}in <#${row.channelId}>${deleted}`;
+  const blocked = automod && automod.count > 0
+    ? `\n-# 🛡️ ${automod.count} ${automod.count === 1 ? "message" : "messages"} blocked by AutoMod${automod.rules.length ? ` (${automod.rules.join(", ")})` : ""}`
+    : "";
+  return `<@${row.userId}> (\`${row.userId}\`)\n-# ${joined}${ordinal}in <#${row.channelId}>${deleted}${blocked}`;
 }
 
 function outcomeText(row: VerdictRow): string {
@@ -91,12 +94,12 @@ function footer(row: VerdictRow): string {
 
 /** Rebuilt from the stored row on every edit (ignore, mod action, delete), so the post never
  *  depends on the original message still existing. */
-export function buildVerdictPost(row: VerdictRow, reviewThreshold: number): ContainerBuilder {
+export function buildVerdictPost(row: VerdictRow, reviewThreshold: number, automod?: AutomodSummary): ContainerBuilder {
   const container = new ContainerBuilder();
   if (row.outcome === "actioned") container.setAccentColor(ACCENT_ACTIONED);
   else if (row.outcome !== "ignored") container.setAccentColor(ACCENT_OPEN);
 
-  const header = `${titleFor(row)}\n${whoLines(row)}`;
+  const header = `${titleFor(row)}\n${whoLines(row, automod)}`;
 
   if (row.kind === "pfp" && row.sourceUrl) {
     container.addSectionComponents(

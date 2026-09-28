@@ -5,7 +5,7 @@ import { applySchema } from "../../db/index.ts";
 import type { GuildConfig } from "../../guildConfig.ts";
 import { classifyText, parseSafetyOutput, type ImageVerdict, type TextVerdict } from "./classify.ts";
 import { discordImageLink, extractImageLinks } from "./images.ts";
-import { ignorePost, judgedLines, recordMessagesDeleted, recordModAction, screenMessage, type ScreenedMessage, type ScreeningDeps } from "./index.ts";
+import { ignorePost, judgedLines, recordAutomodBlock, recordMessagesDeleted, recordModAction, screenMessage, type AutomodBlock, type ScreenedMessage, type ScreeningDeps } from "./index.ts";
 import { buildVerdictPost, scoreBars, topRule } from "./render.ts";
 import { SCREENING_RULES } from "./rules.ts";
 import { getVerdict } from "./store.ts";
@@ -296,5 +296,59 @@ describe("outcomes", () => {
     const json = postJson(buildVerdictPost(row, 0.35));
     expect(json).toContain("Suspicious profile picture · sexual");
     expect(json).toContain('"spoiler":true');
+  });
+});
+
+describe("AutoMod blocks", () => {
+  function block(overrides: Partial<AutomodBlock> = {}): AutomodBlock {
+    return {
+      guildId: GUILD,
+      userId: NEWBIE,
+      channelId: CHANNEL,
+      messageId: null,
+      ruleName: "Slurs",
+      content: "blocked words here",
+      matchedKeyword: "blocked",
+      authorName: "nitrodrops_",
+      member: { joinedTimestamp: NOW - 2 * HOUR, roleIds: [] },
+      ...overrides,
+    };
+  }
+
+  test("recorded and scored silently, never posted on its own", async () => {
+    const h = harness();
+    await recordAutomodBlock(block(), cfg, h.deps);
+    expect(h.posts).toHaveLength(0);
+    expect(h.textCalls).toBe(1);
+    const row = getVerdict(h.db, 1)!;
+    expect(row.kind).toBe("automod");
+    expect(row.flagged).toBe(0);
+    expect(JSON.parse(row.scores!).scam).toBe(0.9);
+    expect(JSON.parse(row.judged!).automod).toEqual({ rule: "Slurs", keyword: "blocked" });
+  });
+
+  test("blocks before a flag show up on the new post", async () => {
+    const h = harness();
+    await recordAutomodBlock(block(), cfg, h.deps);
+    await recordAutomodBlock(block({ ruleName: "Scam links" }), cfg, h.deps);
+    cacheMessage(h.db, "m-target", NEWBIE, "free nitro", NOW);
+    await screenMessage(msg(), cfg, h.deps);
+    expect(postJson(h.posts[0]!.container)).toContain("🛡️ 2 messages blocked by AutoMod (Slurs, Scam links)");
+  });
+
+  test("a block after a flag edits the existing post", async () => {
+    const h = harness();
+    cacheMessage(h.db, "m-target", NEWBIE, "free nitro", NOW);
+    await screenMessage(msg(), cfg, h.deps);
+    await recordAutomodBlock(block(), cfg, h.deps);
+    expect(h.posts).toHaveLength(1);
+    expect(h.edits).toHaveLength(1);
+    expect(postJson(h.edits[0]!.container)).toContain("🛡️ 1 message blocked by AutoMod (Slurs)");
+  });
+
+  test("members outside the window are ignored", async () => {
+    const h = harness();
+    await recordAutomodBlock(block({ member: { joinedTimestamp: NOW - 30 * 24 * HOUR, roleIds: [] } }), cfg, h.deps);
+    expect(getVerdict(h.db, 1)).toBeUndefined();
   });
 });

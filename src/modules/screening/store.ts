@@ -14,6 +14,7 @@ export interface JudgedLine {
 export interface Judged {
   context: JudgedLine[];
   target: JudgedLine[];
+  automod?: { rule: string; keyword: string | null };
 }
 
 function orm(db: Database) {
@@ -123,4 +124,43 @@ export function latestForPost(db: Database, postMessageId: string): VerdictRow |
     .where(eq(screeningVerdicts.postMessageId, postMessageId))
     .orderBy(desc(screeningVerdicts.id))
     .get();
+}
+
+export interface AutomodSummary {
+  count: number;
+  rules: string[];
+}
+
+export function automodSummary(db: Database, guildId: string, userId: string, since: number): AutomodSummary {
+  const rows = orm(db)
+    .select({ categories: screeningVerdicts.categories })
+    .from(screeningVerdicts)
+    .where(
+      and(
+        eq(screeningVerdicts.kind, "automod"),
+        eq(screeningVerdicts.guildId, guildId),
+        eq(screeningVerdicts.userId, userId),
+        gte(screeningVerdicts.createdAt, since),
+      ),
+    )
+    .all();
+  const rules = new Set<string>();
+  for (const r of rows) for (const c of r.categories ? (JSON.parse(r.categories) as string[]) : []) rules.add(c);
+  return { count: rows.length, rules: [...rules] };
+}
+
+/** Every verdict of this user that has a post, so a new AutoMod block can refresh them. */
+export function postedForUser(db: Database, guildId: string, userId: string, since: number): VerdictRow[] {
+  return orm(db)
+    .select()
+    .from(screeningVerdicts)
+    .where(
+      and(
+        eq(screeningVerdicts.guildId, guildId),
+        eq(screeningVerdicts.userId, userId),
+        gte(screeningVerdicts.createdAt, since),
+        isNotNull(screeningVerdicts.postMessageId),
+      ),
+    )
+    .all();
 }

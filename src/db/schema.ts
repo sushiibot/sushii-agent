@@ -190,7 +190,7 @@ export const runnerRouting = sqliteTable(
   (table) => [primaryKey({ columns: [table.principal, table.projectKey] })],
 );
 
-/** New-member screening verdicts (one row per text/pfp/image check). Also the PFP and image-link
+/** New-member screening verdicts (one row per text/pfp/image check, plus AutoMod blocks). Also the PFP and image-link
  *  dedupe cache, and the outcome log (ignored/actioned) used to tune thresholds. */
 export const screeningVerdicts = sqliteTable(
   "screening_verdicts",
@@ -200,7 +200,7 @@ export const screeningVerdicts = sqliteTable(
     channelId: text("channel_id").notNull(),
     userId: text("user_id").notNull(),
     messageId: text("message_id").notNull(),
-    kind: text("kind", { enum: ["text", "pfp", "image"] }).notNull(),
+    kind: text("kind", { enum: ["text", "pfp", "image", "automod"] }).notNull(),
     // text: {rule: probability}; pfp/image: {unsafe: 0|1}
     scores: text("scores"),
     categories: text("categories"),

@@ -49,7 +49,7 @@ import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts"
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
 import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
-import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
+import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningAutomod, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
 
 function behaviorFor(guildId: string): string {
   return guildBehavior(config.guildConfig[guildId] ?? {});
@@ -1058,6 +1058,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     handleScreeningDeletes(client, channel.guildId, [...messages.keys()]);
   });
   client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => handleScreeningAuditEntry(client, entry, guild));
+  client.on(Events.AutoModerationActionExecution, (execution) => handleScreeningAutomod(client, execution));
 
   client.once(Events.ClientReady, async (c) => {
     logger.info({ tag: c.user.tag }, "Logged in");

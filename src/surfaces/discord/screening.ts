@@ -1,6 +1,9 @@
 import {
   AuditLogEvent,
+  AutoModerationActionType,
   MessageFlags,
+  MessageType,
+  type AutoModerationActionExecution,
   PermissionFlagsBits,
   type ButtonInteraction,
   type Client,
@@ -14,6 +17,7 @@ import { getDb } from "../../db/index.ts";
 import { getLogger } from "../../logger.ts";
 import {
   ignorePost,
+  recordAutomodBlock,
   recordMessagesDeleted,
   recordModAction,
   screenMessage,
@@ -71,6 +75,9 @@ let loggedMemberShape = false;
 export function screenDiscordMessage(client: Client, message: Message<true>, opts: { skipText?: boolean } = {}): void {
   const cfg = config.guildConfig[message.guildId];
   if (!cfg || !screeningEnabled(cfg)) return;
+  // AutoMod alert (type 24) and other system messages are authored by the offending user but
+  // aren't something they posted; AutoMod blocks arrive via handleScreeningAutomod instead.
+  if (message.type !== MessageType.Default && message.type !== MessageType.Reply) return;
   if (!loggedMemberShape && message.member) {
     // Discord only documents MESSAGE_CREATE's member as "partial": confirm the fields screening needs arrive.
     loggedMemberShape = true;
@@ -133,5 +140,35 @@ export function handleScreeningDeletes(client: Client, guildId: string, messageI
   if (!cfg || !screeningEnabled(cfg)) return;
   void recordMessagesDeleted(messageIds, cfg, deps(client)).catch((err) => {
     logger.warn({ err, guildId }, "screening delete update failed");
+  });
+}
+
+/** Needs the AutoModerationExecution intent and Manage Server. One event fires per rule action,
+ *  so only the block action is recorded — a block+alert rule would otherwise count twice. */
+export function handleScreeningAutomod(client: Client, execution: AutoModerationActionExecution): void {
+  const cfg = config.guildConfig[execution.guild.id];
+  if (!cfg || !screeningEnabled(cfg)) return;
+  if (execution.action.type !== AutoModerationActionType.BlockMessage) return;
+  void (async () => {
+    const guild = execution.guild;
+    const member = execution.member ?? (await guild.members.fetch(execution.userId).catch(() => null));
+    const rule = execution.autoModerationRule ?? (await guild.autoModerationRules.fetch(execution.ruleId).catch(() => null));
+    await recordAutomodBlock(
+      {
+        guildId: guild.id,
+        userId: execution.userId,
+        channelId: execution.channelId,
+        messageId: execution.alertSystemMessageId,
+        ruleName: rule?.name ?? "AutoMod rule",
+        content: execution.content,
+        matchedKeyword: execution.matchedKeyword,
+        authorName: member?.displayName ?? execution.userId,
+        member: member ? { joinedTimestamp: member.joinedTimestamp, roleIds: [...member.roles.cache.keys()] } : null,
+      },
+      cfg,
+      deps(client),
+    );
+  })().catch((err) => {
+    logger.warn({ err, guildId: execution.guild.id }, "screening automod record failed");
   });
 }
