@@ -1,14 +1,21 @@
 import type { Server, ServerWebSocket } from "bun";
+import crypto from "node:crypto";
 import { z } from "zod";
 import {
+  ORCH_CLOSE,
   RPC_METHODS,
+  SUPPORTED_PROTOCOL_VERSIONS,
   jsonRpcNotification,
   jsonRpcRequest,
   jsonRpcResponse,
   registerParams,
+  type ConnectionRole,
+  type RegisterParams,
   type RepoSpec,
   type RunnerEvent,
 } from "../contracts.ts";
+import { config } from "../../config.ts";
+import { ownerPrincipalId } from "../principals.ts";
 import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("orchestration:server");
@@ -21,6 +28,38 @@ interface PendingCall {
 interface SocketState {
   runnerId: string | null;
   pending: Map<string | number, PendingCall>;
+  conn: ConnectionInfo | null;
+}
+
+export interface ConnectionInfo {
+  runnerId: string;
+  role: ConnectionRole;
+  /** null only for a task runner registered without a secret (no ORCH_SECRET configured). */
+  principalId: string | null;
+  protocolVersion: number;
+  state: "idle" | "streaming" | undefined;
+}
+
+/** Principal a valid ORCH_SECRET maps to when principals.json declares no owner. */
+export const DEFAULT_OWNER_PRINCIPAL_ID = "drk";
+
+/** secret → principal, built from config. One entry today; the map shape leaves room for more. */
+export function defaultSecretPrincipals(): Record<string, string> {
+  if (!config.orchSecret) return {};
+  return { [config.orchSecret]: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID };
+}
+
+/** Looks a presented secret up against every configured one without short-circuiting, so timing
+ *  doesn't reveal which (or how much of a) secret matched. */
+export function principalForSecret(secrets: Record<string, string>, secret: string): string | null {
+  const presented = Buffer.from(secret);
+  let match: string | null = null;
+  for (const [known, principalId] of Object.entries(secrets)) {
+    const expected = Buffer.from(known);
+    if (expected.length !== presented.length) continue;
+    if (crypto.timingSafeEqual(expected, presented)) match = principalId;
+  }
+  return match;
 }
 
 // Local wire-level validator for RunnerEvent — contracts.ts stays a plain
@@ -99,6 +138,9 @@ export interface OrchestrationServerOptions {
     ownerOnly?: boolean,
   ) => void;
   onDisconnect?: (runnerId: string) => void;
+  /** secret → principal for register auth. Defaults to defaultSecretPrincipals() (ORCH_SECRET);
+   *  empty means no secret is configured. */
+  secretPrincipals?: Record<string, string>;
 }
 
 // Orchestrator-side WS server. One connection per runner; requests are
@@ -106,11 +148,16 @@ export interface OrchestrationServerOptions {
 export class OrchestrationServer {
   private readonly options: OrchestrationServerOptions;
   private readonly sockets = new Map<string, ServerWebSocket<SocketState>>();
+  // principalId → its single live workspace connection.
+  private readonly workspaces = new Map<string, ServerWebSocket<SocketState>>();
+  private readonly secretPrincipals: Record<string, string>;
+  private warnedUnauthenticated = false;
   private server: Server<SocketState> | null = null;
   private nextId = 1;
 
   constructor(options: OrchestrationServerOptions) {
     this.options = options;
+    this.secretPrincipals = options.secretPrincipals ?? defaultSecretPrincipals();
   }
 
   listen(): Server<SocketState> {
@@ -118,7 +165,7 @@ export class OrchestrationServer {
       port: this.options.port ?? 0,
       fetch: (req, server) => {
         const success = server.upgrade(req, {
-          data: { runnerId: null, pending: new Map() },
+          data: { runnerId: null, pending: new Map(), conn: null },
         });
         if (success) return undefined;
         return new Response("Upgrade required", { status: 426 });
@@ -137,9 +184,13 @@ export class OrchestrationServer {
   }
 
   private cleanupSocket(ws: ServerWebSocket<SocketState>): void {
+    const conn = ws.data.conn;
+    if (conn?.role === "workspace" && conn.principalId && this.workspaces.get(conn.principalId) === ws) {
+      this.workspaces.delete(conn.principalId);
+    }
     if (ws.data.runnerId && this.sockets.get(ws.data.runnerId) === ws) {
       this.sockets.delete(ws.data.runnerId);
-      this.options.onDisconnect?.(ws.data.runnerId);
+      if (conn?.role !== "workspace") this.options.onDisconnect?.(ws.data.runnerId);
     }
     const closedErr = new Error("connection closed");
     for (const pending of ws.data.pending.values()) pending.reject(closedErr);
@@ -149,6 +200,7 @@ export class OrchestrationServer {
   stop(): void {
     this.server?.stop(true);
     this.sockets.clear();
+    this.workspaces.clear();
   }
 
   get url(): string {
@@ -209,14 +261,41 @@ export class OrchestrationServer {
         return;
       }
       const params = paramsResult.data;
+      // Authenticate before touching any existing connection, so a rejected register can't evict a live runner.
+      const auth = this.authenticate(params);
+      if (!auth.ok) {
+        logger.warn({ runnerId: params.runnerId, role: params.role, protocolVersion: params.protocolVersion, reason: auth.reason }, "rejected runner registration");
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.data.id, error: { code: -32001, message: auth.reason } }));
+        ws.close(auth.code, auth.reason);
+        return;
+      }
+      const conn: ConnectionInfo = {
+        runnerId: params.runnerId,
+        role: params.role,
+        principalId: auth.principalId,
+        protocolVersion: params.protocolVersion,
+        state: params.state,
+      };
       const existing = this.sockets.get(params.runnerId);
       if (existing && existing !== ws) {
         existing.data.runnerId = null;
         existing.close();
       }
+      if (conn.role === "workspace" && conn.principalId) {
+        const previous = this.workspaces.get(conn.principalId);
+        if (previous && previous !== ws) {
+          logger.info({ principalId: conn.principalId, runnerId: conn.runnerId }, "replacing previous workspace connection");
+          previous.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection");
+        }
+        this.workspaces.set(conn.principalId, ws);
+      }
       ws.data.runnerId = params.runnerId;
+      ws.data.conn = conn;
       this.sockets.set(params.runnerId, ws);
-      this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location, params.capabilities, params.ownerOnly);
+      // Workspaces aren't task runners: keep them out of the dispatcher's live-runner set.
+      if (conn.role === "task-runner") {
+        this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location, params.capabilities, params.ownerOnly);
+      }
       ws.send(
         JSON.stringify({ jsonrpc: "2.0", id: req.data.id, result: { ok: true } }),
       );
@@ -231,6 +310,29 @@ export class OrchestrationServer {
       if (res.data.error) pending.reject(new Error(res.data.error.message));
       else pending.resolve(res.data.result);
     }
+  }
+
+  private authenticate(
+    params: RegisterParams,
+  ): { ok: true; principalId: string | null } | { ok: false; code: number; reason: string } {
+    if (!SUPPORTED_PROTOCOL_VERSIONS.includes(params.protocolVersion)) {
+      return { ok: false, code: ORCH_CLOSE.unsupportedVersion, reason: "unsupported protocolVersion" };
+    }
+    const unauthorized = { ok: false as const, code: ORCH_CLOSE.unauthorized, reason: "unauthorized" };
+    if (Object.keys(this.secretPrincipals).length === 0) {
+      // DM traffic flows over workspace connections, so those always need a secret.
+      if (params.role === "workspace") return unauthorized;
+      if (!this.warnedUnauthenticated) {
+        this.warnedUnauthenticated = true;
+        logger.warn("ORCH_SECRET is not set; accepting task runners without authentication");
+      }
+      return { ok: true, principalId: null };
+    }
+    if (params.secret === undefined) return unauthorized;
+    const principalId = principalForSecret(this.secretPrincipals, params.secret);
+    if (principalId === null) return unauthorized;
+    if (params.principalId !== undefined && params.principalId !== principalId) return unauthorized;
+    return { ok: true, principalId };
   }
 
   private call(runnerId: string, method: string, params: unknown): Promise<unknown> {
@@ -278,5 +380,14 @@ export class OrchestrationServer {
 
   isConnected(runnerId: string): boolean {
     return this.sockets.has(runnerId);
+  }
+
+  getConnection(runnerId: string): ConnectionInfo | undefined {
+    return this.sockets.get(runnerId)?.data.conn ?? undefined;
+  }
+
+  /** The principal's live workspace connection, if one is registered. */
+  getWorkspaceConnection(principalId: string): ConnectionInfo | undefined {
+    return this.workspaces.get(principalId)?.data.conn ?? undefined;
   }
 }

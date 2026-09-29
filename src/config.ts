@@ -55,6 +55,9 @@ export interface Config {
   discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
   mcpBridgePort: number;
+  /** Shared secret runners and the workspace must present on `runner/register` (ORCH_SECRET).
+   *  Unset → task runners register unauthenticated and workspace registrations are refused. */
+  orchSecret: string | undefined;
   /** Public base URL of the bot's HTTP app (e.g. https://agent-mcp.sushii.bot), used to build the
    *  per-task live-stream viewer link. Unset → no web link is shown (Discord tail still works). */
   taskStreamBaseUrl: string | undefined;
@@ -280,6 +283,7 @@ export const config: Config = {
   discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
+  orchSecret: process.env["ORCH_SECRET"]?.trim() || undefined,
   buzz: {
     privateKey: process.env["BUZZ_PRIVATE_KEY"],
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),

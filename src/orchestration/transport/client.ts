@@ -1,8 +1,11 @@
 import {
+  ORCH_CLOSE,
+  PROTOCOL_VERSION,
   RPC_METHODS,
   jsonRpcNotification,
   jsonRpcRequest,
   jsonRpcResponse,
+  type ConnectionRole,
   type RepoSpec,
   type RunnerAdapter,
   type RunnerEvent,
@@ -25,6 +28,12 @@ export interface OrchestrationClientOptions {
   location?: string | null;
   capabilities?: string[];
   ownerOnly?: boolean;
+  /** Default "task-runner". */
+  role?: ConnectionRole;
+  /** Shared ORCH_SECRET; omitted from the register call when unset. */
+  secret?: string;
+  principalId?: string;
+  state?: "idle" | "streaming";
   adapter: RunnerAdapter;
   // Keep-alive interval (default 30s, under Bun.serve's 120s idle default). 0 disables.
   heartbeatMs?: number;
@@ -49,6 +58,7 @@ export class OrchestrationClient {
   private shouldRun = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private resolveClosed: (() => void) | null = null;
+  private lastCloseCode: number | null = null;
 
   constructor(options: OrchestrationClientOptions) {
     this.options = options;
@@ -75,7 +85,9 @@ export class OrchestrationClient {
         this.stopHeartbeat();
       }
       if (!this.shouldRun) break;
-      await new Promise((r) => setTimeout(r, backoff));
+      // Two live workspaces for one principal would evict each other on every reconnect; wait the cap.
+      const delay = this.lastCloseCode === ORCH_CLOSE.replaced ? cap : backoff;
+      await new Promise((r) => setTimeout(r, delay));
       backoff = Math.min(backoff * 2, cap);
     }
   }
@@ -106,7 +118,16 @@ export class OrchestrationClient {
       const ws = new WebSocket(this.options.url);
       this.ws = ws;
 
-      ws.addEventListener("close", () => {
+      ws.addEventListener("close", (event) => {
+        this.lastCloseCode = event.code;
+        if (event.code === ORCH_CLOSE.unauthorized || event.code === ORCH_CLOSE.unsupportedVersion) {
+          logger.error(
+            { runnerId: this.options.runnerId, code: event.code, reason: event.reason },
+            "orchestrator rejected registration; retrying with backoff",
+          );
+        } else if (event.code === ORCH_CLOSE.replaced) {
+          logger.warn({ runnerId: this.options.runnerId, reason: event.reason }, "connection replaced by a newer one for the same principal");
+        }
         this.rejectAllPending(new Error("connection closed"));
         this.ws = null;
         this.resolveClosed?.();
@@ -129,6 +150,11 @@ export class OrchestrationClient {
               location: this.options.location ?? null,
               capabilities: this.options.capabilities ?? [],
               ownerOnly: this.options.ownerOnly ?? false,
+              role: this.options.role ?? "task-runner",
+              protocolVersion: PROTOCOL_VERSION,
+              ...(this.options.secret ? { secret: this.options.secret } : {}),
+              ...(this.options.principalId ? { principalId: this.options.principalId } : {}),
+              ...(this.options.state ? { state: this.options.state } : {}),
             },
           }),
         );

@@ -1,8 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import type { RunnerAdapter, RunnerEvent } from "../contracts.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import crypto from "node:crypto";
+import { config } from "../../config.ts";
+import { ORCH_CLOSE, type RunnerAdapter, type RunnerEvent } from "../contracts.ts";
 import { MockRunnerAdapter } from "../mockRunner.ts";
+import { ownerPrincipalId } from "../principals.ts";
 import { OrchestrationClient } from "./client.ts";
-import { OrchestrationServer } from "./server.ts";
+import { DEFAULT_OWNER_PRINCIPAL_ID, OrchestrationServer, defaultSecretPrincipals, principalForSecret } from "./server.ts";
 
 describe("orchestration transport round-trip", () => {
   test("register, start, and receive events in order", async () => {
@@ -299,6 +302,239 @@ describe("orchestration transport round-trip", () => {
     } finally {
       client.close();
       server.stop();
+    }
+  });
+});
+
+describe("runner registration auth", () => {
+  const SECRET = "s3cret-value";
+  const PRINCIPAL = "drk";
+
+  function authServer(secretPrincipals: Record<string, string> = { [SECRET]: PRINCIPAL }) {
+    const registered: string[] = [];
+    const server = new OrchestrationServer({
+      onEvent: () => {},
+      onRegister: (runnerId) => registered.push(runnerId),
+      secretPrincipals,
+    });
+    server.listen();
+    return { server, registered };
+  }
+
+  // Registers over a raw socket and resolves with the ack, or with the close code if the server hangs up.
+  function rawRegister(
+    url: string,
+    params: Record<string, unknown>,
+  ): Promise<{ ws: WebSocket; ok: boolean; closeCode: number | null; closeReason: string | null }> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url);
+      let ok = false;
+      ws.addEventListener("open", () => {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "runner/register", params: { kind: "mock", ...params } }));
+      });
+      ws.addEventListener("message", (event) => {
+        const msg = JSON.parse(event.data.toString());
+        if (msg.id === 1 && msg.result) {
+          ok = true;
+          resolve({ ws, ok, closeCode: null, closeReason: null });
+        }
+      });
+      ws.addEventListener("close", (event) => resolve({ ws, ok, closeCode: event.code, closeReason: event.reason }));
+      ws.addEventListener("error", () => reject(new Error("ws error")));
+    });
+  }
+
+  function waitForClose(ws: WebSocket): Promise<number> {
+    if (ws.readyState === ws.CLOSED) return Promise.resolve(-1);
+    return new Promise((resolve) => ws.addEventListener("close", (e) => resolve(e.code)));
+  }
+
+  test("correct secret is accepted and the connection records role/principal/version", async () => {
+    const { server, registered } = authServer();
+    try {
+      const r = await rawRegister(server.url, { runnerId: "r1", secret: SECRET });
+      expect(r.ok).toBe(true);
+      expect(registered).toEqual(["r1"]);
+      expect(server.getConnection("r1")).toEqual({
+        runnerId: "r1",
+        role: "task-runner",
+        principalId: PRINCIPAL,
+        protocolVersion: 1,
+        state: undefined,
+      });
+      r.ws.close();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("OrchestrationClient sends its secret, role and protocolVersion", async () => {
+    const { server } = authServer();
+    const client = new OrchestrationClient({
+      url: server.url,
+      runnerId: "client-ws",
+      kind: "mock",
+      role: "workspace",
+      secret: SECRET,
+      state: "idle",
+      adapter: new MockRunnerAdapter(),
+    });
+    try {
+      await client.connect();
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toMatchObject({ runnerId: "client-ws", role: "workspace", state: "idle" });
+    } finally {
+      client.close();
+      server.stop();
+    }
+  });
+
+  test("wrong secret → 4401", async () => {
+    const { server, registered } = authServer();
+    try {
+      const r = await rawRegister(server.url, { runnerId: "r1", secret: "nope" });
+      expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+      expect(r.closeReason).toBe("unauthorized");
+      expect(registered).toEqual([]);
+      expect(server.isConnected("r1")).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("missing secret while one is configured → 4401", async () => {
+    const { server } = authServer();
+    try {
+      const r = await rawRegister(server.url, { runnerId: "r1" });
+      expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("no secret configured: legacy task runner is accepted", async () => {
+    const { server, registered } = authServer({});
+    try {
+      const r = await rawRegister(server.url, { runnerId: "legacy" });
+      expect(r.ok).toBe(true);
+      expect(registered).toEqual(["legacy"]);
+      expect(server.getConnection("legacy")).toMatchObject({ role: "task-runner", principalId: null, protocolVersion: 1 });
+      r.ws.close();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("no secret configured: workspace is always refused with 4401", async () => {
+    const { server } = authServer({});
+    try {
+      const r = await rawRegister(server.url, { runnerId: "ws", role: "workspace", secret: "anything" });
+      expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toBeUndefined();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("unsupported protocolVersion → 4426", async () => {
+    const { server } = authServer();
+    try {
+      const r = await rawRegister(server.url, { runnerId: "r1", secret: SECRET, protocolVersion: 2 });
+      expect(r.closeCode).toBe(ORCH_CLOSE.unsupportedVersion);
+      expect(r.closeReason).toBe("unsupported protocolVersion");
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("asserted principalId that differs from the secret's principal → 4401", async () => {
+    const { server } = authServer();
+    try {
+      const r = await rawRegister(server.url, { runnerId: "r1", role: "workspace", secret: SECRET, principalId: "someone-else" });
+      expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+      const ok = await rawRegister(server.url, { runnerId: "r2", role: "workspace", secret: SECRET, principalId: PRINCIPAL });
+      expect(ok.ok).toBe(true);
+      ok.ws.close();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a rejected register reusing a live runner's id does not evict it", async () => {
+    const { server, registered } = authServer();
+    try {
+      const live = await rawRegister(server.url, { runnerId: "r1", secret: SECRET });
+      expect(live.ok).toBe(true);
+      const bad = await rawRegister(server.url, { runnerId: "r1", secret: "wrong" });
+      expect(bad.closeCode).toBe(ORCH_CLOSE.unauthorized);
+      expect(server.isConnected("r1")).toBe(true);
+      expect(live.ws.readyState).toBe(live.ws.OPEN);
+      expect(registered).toEqual(["r1"]);
+      live.ws.close();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a second workspace register for the same principal replaces the first", async () => {
+    const disconnects: string[] = [];
+    const registered: string[] = [];
+    const server = new OrchestrationServer({
+      onEvent: () => {},
+      onRegister: (id) => registered.push(id),
+      onDisconnect: (id) => disconnects.push(id),
+      secretPrincipals: { [SECRET]: PRINCIPAL },
+    });
+    server.listen();
+    try {
+      const first = await rawRegister(server.url, { runnerId: "ws-a", role: "workspace", secret: SECRET });
+      expect(first.ok).toBe(true);
+      expect(server.getWorkspaceConnection(PRINCIPAL)?.runnerId).toBe("ws-a");
+      const firstClosed = waitForClose(first.ws);
+
+      const second = await rawRegister(server.url, { runnerId: "ws-b", role: "workspace", secret: SECRET, state: "streaming" });
+      expect(second.ok).toBe(true);
+      expect(await firstClosed).toBe(ORCH_CLOSE.replaced);
+      // Let the server run the first socket's close handler before re-checking the entry.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toMatchObject({ runnerId: "ws-b", state: "streaming" });
+      // Workspaces stay out of the dispatcher's task-runner lifecycle.
+      expect(registered).toEqual([]);
+      expect(disconnects).toEqual([]);
+
+      second.ws.close();
+      await waitForClose(second.ws);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toBeUndefined();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("principalForSecret compares in constant time and never on unequal lengths", () => {
+    const spy = spyOn(crypto, "timingSafeEqual");
+    try {
+      expect(principalForSecret({ [SECRET]: PRINCIPAL }, SECRET)).toBe(PRINCIPAL);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(principalForSecret({ [SECRET]: PRINCIPAL }, "short")).toBeNull();
+      expect(spy).toHaveBeenCalledTimes(1);
+      const sameLength = "x".repeat(SECRET.length);
+      expect(principalForSecret({ [SECRET]: PRINCIPAL }, sameLength)).toBeNull();
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(principalForSecret({}, SECRET)).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("defaultSecretPrincipals maps ORCH_SECRET to the owner principal", () => {
+    const saved = config.orchSecret;
+    try {
+      config.orchSecret = undefined;
+      expect(defaultSecretPrincipals()).toEqual({});
+      config.orchSecret = SECRET;
+      expect(defaultSecretPrincipals()).toEqual({ [SECRET]: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID });
+    } finally {
+      config.orchSecret = saved;
     }
   });
 });

@@ -136,6 +136,17 @@ export type JsonRpcRequest = z.infer<typeof jsonRpcRequest>;
 export type JsonRpcNotification = z.infer<typeof jsonRpcNotification>;
 export type JsonRpcResponse = z.infer<typeof jsonRpcResponse>;
 
+export const CONNECTION_ROLES = ["workspace", "task-runner"] as const;
+export type ConnectionRole = (typeof CONNECTION_ROLES)[number];
+export const PROTOCOL_VERSION = 1;
+export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [1];
+// WebSocket close codes the orchestrator uses to reject or evict a registration.
+export const ORCH_CLOSE = {
+  unauthorized: 4401,
+  replaced: 4409,
+  unsupportedVersion: 4426,
+} as const;
+
 export const registerParams = z.object({
   runnerId: z.string(),
   kind: z.string(), // "claude-code" | "mock" | ...
@@ -150,6 +161,13 @@ export const registerParams = z.object({
   capabilities: z.array(z.string()).default([]),
   // A personal runner: the orchestrator only lets the owner dispatch to it.
   ownerOnly: z.boolean().default(false),
+  // Absent on legacy runners, which are all task runners speaking v1.
+  role: z.enum(CONNECTION_ROLES).default("task-runner"),
+  protocolVersion: z.number().int().default(1),
+  secret: z.string().optional(),
+  // Assertion only: must match the principal the secret maps to.
+  principalId: z.string().optional(),
+  state: z.enum(["idle", "streaming"]).optional(),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
 
