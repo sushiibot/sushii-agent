@@ -13,6 +13,11 @@ export const LOOP_NUDGE =
 
 type Log = { warn: (obj: object, msg: string) => void };
 
+/** Whether this run's agent has been told to stop retrying; read by the verify gate. */
+export interface LoopGuardState {
+  nudged: boolean;
+}
+
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
   if (value && typeof value === "object") {
@@ -39,16 +44,16 @@ export function repeatReason(times: number): string {
  * Blocks the third identical tool call in a run. Counts reset when code changes, so an
  * edit-then-rerun-the-tests cycle is never blocked.
  */
-export function createLoopGuardExtension(opts: { log?: Log } = {}): ExtensionFactory {
+export function createLoopGuardExtension(opts: { log?: Log; state?: LoopGuardState } = {}): ExtensionFactory {
   return (pi) => {
     let counts = new Map<string, number>();
     let blocks = 0;
-    let nudged = false;
+    const state = opts.state ?? { nudged: false };
 
     pi.on("before_agent_start", () => {
       counts = new Map();
       blocks = 0;
-      nudged = false;
+      state.nudged = false;
     });
 
     pi.on("tool_call", (event): ToolCallEventResult | undefined => {
@@ -61,8 +66,8 @@ export function createLoopGuardExtension(opts: { log?: Log } = {}): ExtensionFac
       }
       blocks++;
       opts.log?.warn({ tool: event.toolName, times: prior, blocks }, "loop guard blocked a repeated call");
-      if (blocks >= NUDGE_AFTER_BLOCKS && !nudged) {
-        nudged = true;
+      if (blocks >= NUDGE_AFTER_BLOCKS && !state.nudged) {
+        state.nudged = true;
         pi.sendMessage({ customType: LOOP_GUARD_CUSTOM_TYPE, content: LOOP_NUDGE, display: false }, { deliverAs: "steer" });
       }
       return { block: true, reason: repeatReason(prior) };

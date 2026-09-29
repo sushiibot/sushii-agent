@@ -7,7 +7,7 @@ import { createAutoModeExtension, judgeCompletion, registerJudgeModel } from "./
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
 import { createMemoryGuardExtension } from "./memoryGuard.ts";
-import { createLoopGuardExtension } from "./loopGuard.ts";
+import { createLoopGuardExtension, type LoopGuardState } from "./loopGuard.ts";
 import { createVerifyGateExtension } from "./verifyGate.ts";
 import { createCompactionHandoffExtension } from "./memoryFlush.ts";
 import { RunLog, type RunRecorder } from "./runLog.ts";
@@ -130,6 +130,7 @@ export function createPiChatSessionFactory(
     const stubs = opts.toolStubs?.binding();
     const observerRef: { current: RunObserver | null } = { current: null };
     const delegate = opts.subagents?.offersDelegate(0) ? ["delegate"] : [];
+    const loopState: LoopGuardState = { nudged: false };
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: config.agentDir,
@@ -137,12 +138,13 @@ export function createPiChatSessionFactory(
       // Only the factories below: the agent can write ~/.pi and <cwd>/.pi, so discovered extensions would run its code in-process.
       noExtensions: true,
       extensionFactories: [
+        // First: tool_call stops at the first block, so a guard ahead of it would hide repeats from it.
+        { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log, state: loopState }) },
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
-        { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log }) },
-        { name: "sushii-verify-gate", factory: createVerifyGateExtension({ home: config.home, cwd, log }) },
+        { name: "sushii-verify-gate", factory: createVerifyGateExtension({ home: config.home, cwd, log, loopNudged: () => loopState.nudged }) },
         // After the deterministic guards, so their blocks cost no judge call or owner prompt.
         ...(judge
           ? [
@@ -158,10 +160,12 @@ export function createPiChatSessionFactory(
               },
             ]
           : []),
-        { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
+        // After every blocking guard (a blocked call never releases its write lease), and before the
+        // compaction handoff so main's memory lease is held when the handoff writes.
         ...(opts.subagents && delegate.length
           ? [{ name: "sushii-delegate", factory: opts.subagents.extension({ depth: 0, currentRunId: () => observerRef.current?.currentRunId() ?? null }) }]
           : []),
+        { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
       ],
     });
     await loader.reload();

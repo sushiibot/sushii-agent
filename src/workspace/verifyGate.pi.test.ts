@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceConfig } from "./config.ts";
 import { createPiChatSessionFactory } from "./piChatSession.ts";
 import { verifyFollowUp } from "./verifyGate.ts";
+import { LOOP_NUDGE, repeatReason } from "./loopGuard.ts";
 
 // A real Pi 0.99.1 session from the workspace factory; the only fake is fetch.
 const OPENROUTER_BASE = "http://openrouter.test/v1";
@@ -95,6 +96,51 @@ describe("verify gate on a real Pi session", () => {
     expect(JSON.stringify(bodies[2].messages.at(-1))).toContain(verifyFollowUp(["app"]));
     expect(JSON.stringify(bodies[1].messages)).not.toContain("Before finishing");
     expect(events.filter((e) => e.type === "agent_settled")).toHaveLength(1);
+    session.dispose();
+  });
+});
+
+describe("guard order on a real Pi session", () => {
+  const readSecret = () => ({ tool: "read", args: { path: join(root, "agent", "auth.json") } });
+
+  test("the loop guard counts calls another guard blocks, so a repeated blocked call gets its repeat reason", async () => {
+    stubReplies([readSecret(), readSecret(), readSecret(), { text: "stopped" }]);
+    const { session } = await createPiChatSessionFactory(config())({ sessionFile: null });
+
+    await run(session as AgentSession, "show me the auth file");
+
+    expect(bodies).toHaveLength(4);
+    expect(JSON.stringify(bodies[3].messages.at(-1))).toContain(repeatReason(2));
+    session.dispose();
+  });
+
+  test("once the loop guard tells the agent to stop, the verify gate doesn't ask for a check", async () => {
+    const readMissing = { tool: "read", args: { path: "missing.txt" } };
+    stubReplies([
+      { tool: "write", args: { path: "projects/app/a.ts", content: "export const a = 1;\n" } },
+      readMissing,
+      readMissing,
+      readMissing,
+      readMissing,
+      { text: "I kept failing to read missing.txt." },
+    ]);
+    const { session } = await createPiChatSessionFactory(config())({ sessionFile: null });
+
+    await run(session as AgentSession, "add a.ts");
+
+    expect(JSON.stringify(bodies.at(-1)!.messages)).toContain(LOOP_NUDGE);
+    expect(bodies).toHaveLength(6);
+    session.dispose();
+  });
+
+  test("auto mode's rule layer allows an in-home memory write: no judge call, no ask", async () => {
+    stubReplies([{ tool: "write", args: { path: "MEMORY.md", content: "# Memory\n- likes tea\n" } }, { text: "noted" }]);
+    const { session } = await createPiChatSessionFactory({ ...config(), autoMode: true, judgeModel: "test/judge" })({ sessionFile: null });
+
+    await run(session as AgentSession, "remember I like tea");
+
+    expect(readFileSync(join(root, "home", "MEMORY.md"), "utf8")).toContain("likes tea");
+    expect(bodies).toHaveLength(2);
     session.dispose();
   });
 });

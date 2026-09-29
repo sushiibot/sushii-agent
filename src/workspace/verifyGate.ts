@@ -18,6 +18,8 @@ export interface VerifyGateOptions {
   /** The session cwd; relative tool paths resolve against it. */
   cwd: string;
   log?: Log;
+  /** True once the loop guard has told the agent to stop retrying this run; the gate then stays quiet. */
+  loopNudged?: () => boolean;
 }
 
 const SEGMENT_SPLIT = /&&|\|\||[;|\n]/;
@@ -146,7 +148,7 @@ export function createVerifyGateExtension(opts: VerifyGateOptions): ExtensionFac
     });
 
     pi.on("agent_before_settle", (event): BoundaryResult | undefined => {
-      if (event.outcome !== "completed" || hidden || nudged || !unverified) return undefined;
+      if (event.outcome !== "completed" || hidden || nudged || !unverified || opts.loopNudged?.()) return undefined;
       if (explainsNoCheck(lastAssistantText(event.context))) return undefined;
       nudged = true;
       const content = verifyFollowUp([...repos]);
