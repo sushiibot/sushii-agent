@@ -58,11 +58,11 @@ class FakePi {
     if (this.isStreaming) {
       this.steers.push(text);
       this.queue.push(text);
-      options?.preflightResult?.(true);
+      options?.preflightResult?.("queued");
       return;
     }
     await new Promise((r) => setTimeout(r, 5));
-    options?.preflightResult?.(true);
+    options?.preflightResult?.("started");
     this.isStreaming = true;
     const done = new Promise<void>((r) => (this.runDone = r));
     this.emit({ type: "agent_start" });
