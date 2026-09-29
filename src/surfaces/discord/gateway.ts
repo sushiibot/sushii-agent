@@ -49,6 +49,11 @@ import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts"
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
 import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
+import { DEFAULT_OWNER_PRINCIPAL_ID } from "../../orchestration/transport/server.ts";
+import { ownerPrincipalId } from "../../orchestration/principals.ts";
+import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
+import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, type DmChannelPort } from "./workspaceLink.ts";
+import { OWNER_DM_CURSOR_KEY, catchUpOwnerDms, handleOwnerDm as routeOwnerDm, type DmCursor, type OwnerDmMessage } from "./ownerDm.ts";
 import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningAutomod, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
 
 function behaviorFor(guildId: string): string {
@@ -313,54 +318,59 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     }
   }
 
+  const linkStore = new WorkspaceLinkStore(getDb());
+  const dmCursor: DmCursor = {
+    get: () => linkStore.getKv(OWNER_DM_CURSOR_KEY),
+    set: (id) => linkStore.setKv(OWNER_DM_CURSOR_KEY, id),
+  };
+  const workspaceLink = new WorkspaceLink({
+    principalId: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID,
+    store: linkStore,
+    ownerChannel: async (): Promise<DmChannelPort | null> => {
+      if (!config.ownerDiscordId) return null;
+      const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
+      return user ? await user.createDM() : null;
+    },
+    owner: () => ({ id: config.ownerDiscordId ?? "", name: "owner" }),
+  });
+
+  function ownerDmMessage(message: Message): OwnerDmMessage | null {
+    if (!message.channel.isSendable()) return null;
+    const channel = message.channel;
+    return {
+      id: message.id,
+      content: message.content,
+      author: { id: message.author.id, name: message.author.globalName ?? message.author.username },
+      isVoice: message.flags.has(MessageFlags.IsVoiceMessage),
+      attachments: [...message.attachments.values()].map((a) => ({ url: a.url, name: a.name, contentType: a.contentType ?? "application/octet-stream" })),
+      react: (emoji) => message.react(emoji),
+      send: (options) => channel.send(options),
+    };
+  }
+
+  async function transcribeVoice(message: Message): Promise<string | null> {
+    const att = message.attachments.first();
+    const buf = att ? await fetch(att.url).then((r) => r.arrayBuffer()).catch(() => null) : null;
+    return buf ? await transcriber({ data: buf, mediaType: att!.contentType ?? "audio/ogg", filename: att!.name ?? "voice-message.ogg" }) : null;
+  }
+
   /** Owner-only DM conductor turn: builds a personal `spaceId` ("dm") that authz.isPersonalSpace
    *  accepts, then runs the normal core loop — runner tools (dispatch_to_runner/resume_session/...)
    *  become available via the tool registry's `authorized` gate (owner OR a trusted team member).
-   *  Never touches the guild path. */
-  async function handleOwnerDm(message: Message): Promise<void> {
-    if (!message.channel.isSendable()) return;
+   *  Never touches the guild path. Resolves to the reply text delivered, if any. */
+  async function runOwnerDmInProcess(message: Message, userText: string, notice: string | undefined): Promise<string | null> {
+    if (!message.channel.isSendable()) return null;
     const channel = message.channel;
-
-    // Deterministic DM session boundary. A DM has no threads (unlike guilds, where each thread is a
-    // fresh conversation), so this is the manual "start fresh" for the owner's one ever-growing DM.
-    // A `!` prefix (not `/`) avoids triggering Discord's slash-command autocomplete/registry.
-    const dmCommand = message.content.trim().toLowerCase();
-    if (dmCommand === "!new" || dmCommand === "!reset" || dmCommand === "!clear") {
-      const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
-      store.save(conversation, { messages: [], initialThreadContext: null });
-      await message.react("✅").catch(() => {});
-      await channel.send("Started a fresh conversation — this chat's history is cleared. Durable memory is unaffected.").catch(() => {});
-      return;
-    }
-
-    // Voice messages: transcribe the audio attachment to text and run the turn on the transcript.
-    // Empty content + IsVoiceMessage flag identifies one; the owner sees what was heard.
-    let userText = message.content;
-    if (config.transcriptionEnabled && message.flags.has(MessageFlags.IsVoiceMessage)) {
-      const att = message.attachments.first();
-      await message.react("🎙️").catch(() => {});
-      const buf = att ? await fetch(att.url).then((r) => r.arrayBuffer()).catch(() => null) : null;
-      const transcript = buf
-        ? await transcriber({ data: buf, mediaType: att!.contentType ?? "audio/ogg", filename: att!.name ?? "voice-message.ogg" })
-        : null;
-      if (!transcript) {
-        await channel.send("Sorry, I couldn't transcribe that voice message.").catch(() => {});
-        return;
-      }
-      userText = transcript;
-      await channel.send(`-# 🎙️ heard: ${transcript}`).catch(() => {});
-    }
-
-    // Immediate receipt ack — the turn (and any dispatch it kicks off) can take a while, so react
-    // right away so the owner knows the DM was seen and is being worked on.
-    await message.react("👀").catch(() => {});
-
     const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
     const author: AuthorRef = { surface: SURFACE, userId: message.author.id, username: message.author.username };
-    const session = new DmConductorSession(channel, { id: client.user.id, username: client.user.username });
+    const session = new DmConductorSession(
+      channel,
+      { id: client.user.id, username: client.user.username },
+      notice ? { notice, accentColor: ACCENT.warning } : {},
+    );
     const inbound: InboundMessage = { conversation, author, text: userText, sentAt: message.createdAt };
 
-    await tracer.startActiveSpan("discord.dm", {
+    return tracer.startActiveSpan("discord.dm", {
       attributes: { "discord.user_id": author.userId, "discord.channel_id": message.channelId },
     }, async (span) => {
       try {
@@ -380,7 +390,88 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       } finally {
         span.end();
       }
+      return session.deliveredText;
     });
+  }
+
+  async function handleOwnerDm(message: Message): Promise<void> {
+    const dm = ownerDmMessage(message);
+    if (!dm) return;
+    await routeOwnerDm(dm, {
+      workspaceEnabled: config.dmWorkspaceEnabled,
+      transcriptionEnabled: config.transcriptionEnabled,
+      link: workspaceLink,
+      transcribe: () => transcribeVoice(message),
+      runInProcess: (_dm, text, { notice }) => runOwnerDmInProcess(message, text, notice),
+      // Deterministic DM session boundary. A DM has no threads (unlike guilds, where each thread is a
+      // fresh conversation), so this is the manual "start fresh" for the owner's one ever-growing DM.
+      // A `!` prefix (not `/`) avoids triggering Discord's slash-command autocomplete/registry.
+      resetInProcess: async (dm) => {
+        const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
+        store.save(conversation, { messages: [], initialThreadContext: null });
+        await dm.react("✅").catch(() => {});
+        await dm.send("Started a fresh conversation — this chat's history is cleared. Durable memory is unaffected.").catch(() => {});
+      },
+      cursor: dmCursor,
+    });
+  }
+
+  /** Replays owner DMs sent while the bot was down. The workspace dedupes by message id. */
+  async function catchUpOwnerDmsOnReady(): Promise<void> {
+    if (!config.dmWorkspaceEnabled || !config.ownerDiscordId) return;
+    const ownerId = config.ownerDiscordId;
+    // The workspace reconnects with backoff after a bot restart; give it a moment so caught-up DMs
+    // don't all land on the offline fallback.
+    await workspaceLink.waitForConnection(15_000);
+    const user = await client.users.fetch(ownerId).catch(() => null);
+    const dmChannel = user ? await user.createDM().catch(() => null) : null;
+    if (!dmChannel) return;
+    const count = await catchUpOwnerDms({
+      cursor: dmCursor.get(),
+      ownerId,
+      now: Date.now(),
+      fetchAfter: async (after, limit) => [...(await dmChannel.messages.fetch({ after, limit })).values()],
+      handle: (m) => handleOwnerDm(m),
+    });
+    if (count > 0) logger.info({ count }, "caught up owner DMs sent while offline");
+  }
+
+  async function handleWorkspaceStopButton(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.user.id !== config.ownerDiscordId) {
+      await interaction.reply({ content: "Only the owner can stop this.", flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    try {
+      const res = await workspaceLink.abort();
+      await interaction.reply({ content: res.aborted ? "Stopping…" : "Nothing is running.", flags: MessageFlags.Ephemeral }).catch(() => {});
+    } catch (err) {
+      await interaction.reply({ content: `Couldn't stop: ${err instanceof Error ? err.message : String(err)}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+  }
+
+  async function handleWorkspaceAskButton(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.user.id !== config.ownerDiscordId) {
+      await interaction.reply({ content: "Only the owner can answer this.", flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    const [askId, idx] = interaction.customId.slice(WS_ASK_PREFIX.length).split(":");
+    const label = "label" in interaction.component ? interaction.component.label : null;
+    const answer = askId ? workspaceLink.askChoice(askId, Number(idx), label ?? null) : null;
+    if (!answer) {
+      await interaction.reply({ content: "This question is no longer active.", flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    try {
+      await workspaceLink.sendMessage({
+        messageId: `wsask:${interaction.id}`,
+        text: answer,
+        kind: "user",
+        author: { id: interaction.user.id, name: interaction.user.globalName ?? interaction.user.username },
+      });
+      await interaction.reply({ content: `Answered: ${answer}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    } catch (err) {
+      await interaction.reply({ content: `Couldn't deliver the answer: ${err instanceof Error ? err.message : String(err)}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
   }
 
   /** Posts a deterministic (LLM-free) status line to the task's originating DM when a turn
@@ -475,6 +566,8 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
 
   try {
     const dispatcher = getDispatcher();
+    // Before ensureListening() below, so a workspace registering at boot gets the register hook.
+    if (config.dmWorkspaceEnabled) workspaceLink.attach(dispatcher.server);
     dispatcher.onTaskMessage((message) => { void deliverTaskMessage(message); });
     // Retry durable undelivered agent messages after restart. Delivery is idempotence-limited by
     // persisted state; a crash after Discord send but before status update can create one duplicate.
@@ -823,6 +916,14 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleAnswerButton(btn);
       return;
     }
+    if (btn.customId.startsWith(WS_STOP_PREFIX)) {
+      await handleWorkspaceStopButton(btn);
+      return;
+    }
+    if (btn.customId.startsWith(WS_ASK_PREFIX)) {
+      await handleWorkspaceAskButton(btn);
+      return;
+    }
   });
 
   // Route a needs_input answer (button choice or a reply) back to the parked ask_owner via the token path.
@@ -1065,6 +1166,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
     void notifyOwner(`🟢 sushii-agent online — version \`${process.env["APP_VERSION"] ?? "unknown"}\``);
     await registerWikiSyncCommands(c).catch((err) => logger.error({ err }, "failed to register wiki-sync commands"));
+    await catchUpOwnerDmsOnReady().catch((err) => logger.error({ err }, "owner DM catch-up failed"));
   });
 
   // Startup cleanup schedules (ported from the old startBot()).
@@ -1074,6 +1176,8 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   setInterval(() => store.deleteStale(90 * 24 * 60 * 60 * 1000), 24 * 60 * 60 * 1000);
   deleteStalePendingQuestions(24 * 60 * 60 * 1000);
   setInterval(() => deleteStalePendingQuestions(24 * 60 * 60 * 1000), 60 * 60 * 1000);
+  workspaceLink.pruneOutboxSeen();
+  setInterval(() => workspaceLink.pruneOutboxSeen(), 24 * 60 * 60 * 1000);
 }
 
 // Helpers reused by the ask-button resume path.

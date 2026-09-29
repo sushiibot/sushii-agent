@@ -233,3 +233,25 @@ export const screeningVerdicts = sqliteTable(
     index("idx_screening_post").on(table.postMessageId),
   ],
 );
+
+/** Workspace outbox ids already rendered to Discord, so a resent chat/deliver is only re-acked. */
+export const workspaceOutboxSeen = sqliteTable("workspace_outbox_seen", {
+  outboxId: text("outbox_id").primaryKey(),
+  principalId: text("principal_id").notNull(),
+  seenAt: integer("seen_at").notNull(),
+});
+
+/** Owner-DM exchanges answered by the in-process fallback while the workspace was offline; replayed
+ *  to the workspace as context on its next register, then deleted. */
+export const workspaceInbox = sqliteTable("workspace_inbox", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  principalId: text("principal_id").notNull(),
+  userText: text("user_text").notNull(),
+  replyText: text("reply_text").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const kv = sqliteTable("kv", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});

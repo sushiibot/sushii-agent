@@ -71,6 +71,13 @@
       "when": 1790566978663,
       "tag": "0009_screening_verdicts",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790706242213,
+      "tag": "0010_workspace_link",
+      "breakpoints": true
     }
   ]
 }

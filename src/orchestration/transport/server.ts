@@ -25,6 +25,19 @@ interface PendingCall {
   reject: (reason: unknown) => void;
 }
 
+/** Receives traffic from workspace connections. Kept apart from the dispatcher's runner callbacks
+ *  so a workspace never touches task state. */
+export interface WorkspaceHandler {
+  onRegister?(conn: ConnectionInfo): void;
+  /** Fires only when the closing socket was still the principal's live workspace, not on a replace. */
+  onDisconnect?(conn: ConnectionInfo): void;
+  /** Returns the result; throwing answers with a JSON-RPC error. Unknown methods throw MethodNotFoundError. */
+  onRequest?(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown>;
+  onNotification?(conn: ConnectionInfo, method: string, params: unknown): void;
+}
+
+export class MethodNotFoundError extends Error {}
+
 interface SocketState {
   runnerId: string | null;
   pending: Map<string | number, PendingCall>;
@@ -170,6 +183,7 @@ export class OrchestrationServer {
   private readonly secretGrants: Record<string, SecretGrant>;
   private readonly refuseAllRegisters: boolean;
   private warnedUnauthenticated = false;
+  private workspaceHandler: WorkspaceHandler | null = null;
   private server: Server<SocketState> | null = null;
   private nextId = 1;
 
@@ -209,6 +223,11 @@ export class OrchestrationServer {
     const conn = ws.data.conn;
     if (conn?.role === "workspace" && conn.principalId && this.workspaces.get(conn.principalId) === ws) {
       this.workspaces.delete(conn.principalId);
+      try {
+        this.workspaceHandler?.onDisconnect?.(conn);
+      } catch (err) {
+        logger.warn({ err, runnerId: conn.runnerId }, "workspace disconnect hook failed");
+      }
     }
     if (ws.data.runnerId && this.sockets.get(ws.data.runnerId) === ws) {
       this.sockets.delete(ws.data.runnerId);
@@ -217,6 +236,11 @@ export class OrchestrationServer {
     const closedErr = new Error("connection closed");
     for (const pending of ws.data.pending.values()) pending.reject(closedErr);
     ws.data.pending.clear();
+  }
+
+  /** Install before listen() so a workspace that registers at boot gets the register hook. */
+  setWorkspaceHandler(handler: WorkspaceHandler | null): void {
+    this.workspaceHandler = handler;
   }
 
   stop(): void {
@@ -257,6 +281,7 @@ export class OrchestrationServer {
 
   private dispatch(ws: ServerWebSocket<SocketState>, parsed: unknown): void {
     const conn = ws.data.conn;
+    if (conn?.role === "workspace" && this.dispatchWorkspace(ws, conn, parsed)) return;
     const notif = jsonRpcNotification.safeParse(parsed);
     if (notif.success && notif.data.method === RPC_METHODS.event) {
       // Only task runners feed the dispatcher; a workspace must never touch task state.
@@ -317,18 +342,18 @@ export class OrchestrationServer {
         ws.close(ORCH_CLOSE.replaced, reason);
         return;
       }
+      // Point the principal at the new socket before closing the old one, so the old socket's close
+      // (which can run synchronously) isn't reported as the workspace disconnecting.
+      const previous = conn.role === "workspace" && conn.principalId ? this.workspaces.get(conn.principalId) : undefined;
+      if (conn.role === "workspace" && conn.principalId) this.workspaces.set(conn.principalId, ws);
       if (existing && existing !== ws) {
         existing.data.runnerId = null;
         if (conn.role === "workspace") existing.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection");
         else existing.close();
       }
-      if (conn.role === "workspace" && conn.principalId) {
-        const previous = this.workspaces.get(conn.principalId);
-        if (previous && previous !== ws && previous !== existing) {
-          logger.info({ principalId: conn.principalId, runnerId: conn.runnerId }, "replacing previous workspace connection");
-          previous.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection");
-        }
-        this.workspaces.set(conn.principalId, ws);
+      if (previous && previous !== ws && previous !== existing) {
+        logger.info({ principalId: conn.principalId, runnerId: conn.runnerId }, "replacing previous workspace connection");
+        previous.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection");
       }
       ws.data.runnerId = params.runnerId;
       ws.data.conn = conn;
@@ -340,11 +365,13 @@ export class OrchestrationServer {
       ws.send(
         JSON.stringify({ jsonrpc: "2.0", id: req.data.id, result: { ok: true } }),
       );
-      return;
-    }
-
-    if (conn?.role === "workspace" && (notif.success || req.success)) {
-      logger.debug({ runnerId: conn.runnerId, method: (parsed as { method?: unknown }).method }, "no workspace handler; dropping message");
+      if (conn.role === "workspace") {
+        try {
+          this.workspaceHandler?.onRegister?.(conn);
+        } catch (err) {
+          logger.warn({ err, runnerId: conn.runnerId }, "workspace register hook failed");
+        }
+      }
       return;
     }
 
@@ -356,6 +383,44 @@ export class OrchestrationServer {
       if (res.data.error) pending.reject(new Error(res.data.error.message));
       else pending.resolve(res.data.result);
     }
+  }
+
+  /** Routes a registered workspace's requests and notifications. False = not handled here (a response). */
+  private dispatchWorkspace(ws: ServerWebSocket<SocketState>, conn: ConnectionInfo, parsed: unknown): boolean {
+    // A request also parses as a notification (zod strips `id`), so check requests first.
+    const req = jsonRpcRequest.safeParse(parsed);
+    if (req.success && req.data.method === RPC_METHODS.register) return false;
+    if (req.success) {
+      const { id, method, params } = req.data;
+      const onRequest = this.workspaceHandler?.onRequest;
+      const reply = (body: { result: unknown } | { error: { code: number; message: string } }) => {
+        if (ws.readyState === 1) ws.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
+      };
+      if (!onRequest) {
+        reply({ error: { code: -32601, message: `method not found: ${method}` } });
+        return true;
+      }
+      onRequest(conn, method, params).then(
+        (result) => reply({ result: result ?? {} }),
+        (err) => {
+          const notFound = err instanceof MethodNotFoundError;
+          if (!notFound) logger.warn({ err, method, runnerId: conn.runnerId }, "workspace request failed");
+          reply({ error: { code: notFound ? -32601 : -32000, message: err instanceof Error ? err.message : String(err) } });
+        },
+      );
+      return true;
+    }
+    const notif = jsonRpcNotification.safeParse(parsed);
+    if (notif.success) {
+      if (notif.data.method === RPC_METHODS.heartbeat) return true;
+      try {
+        this.workspaceHandler?.onNotification?.(conn, notif.data.method, notif.data.params);
+      } catch (err) {
+        logger.warn({ err, method: notif.data.method, runnerId: conn.runnerId }, "workspace notification handler failed");
+      }
+      return true;
+    }
+    return false;
   }
 
   private authenticate(
@@ -387,13 +452,35 @@ export class OrchestrationServer {
   private call(runnerId: string, method: string, params: unknown): Promise<unknown> {
     const ws = this.sockets.get(runnerId);
     if (!ws) return Promise.reject(new Error(`runner not connected: ${runnerId}`));
+    return this.callSocket(ws, method, params);
+  }
 
+  private callSocket(ws: ServerWebSocket<SocketState>, method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
     const id = this.nextId++;
     const request = { jsonrpc: "2.0" as const, id, method, params };
     return new Promise((resolve, reject) => {
-      ws.data.pending.set(id, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = <T>(fn: (v: T) => void) => (v: T) => {
+        if (timer) clearTimeout(timer);
+        fn(v);
+      };
+      ws.data.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          ws.data.pending.delete(id);
+          reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
       ws.send(JSON.stringify(request));
     });
+  }
+
+  /** Sends a request to the principal's live workspace. Rejects when none is connected, on an error
+   *  reply, when the socket closes, or after `timeoutMs`. */
+  requestWorkspace(principalId: string, method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
+    const ws = this.workspaces.get(principalId);
+    if (!ws) return Promise.reject(new Error(`workspace not connected: ${principalId}`));
+    return this.callSocket(ws, method, params, timeoutMs);
   }
 
   start(runnerId: string, input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<unknown> {

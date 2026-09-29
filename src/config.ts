@@ -61,6 +61,8 @@ export interface Config {
   /** Secret task runners present on `runner/register` (ORCH_RUNNER_SECRET). Authorizes role
    *  "task-runner" only; unset → task runners register unauthenticated. */
   orchRunnerSecret: string | undefined;
+  /** Route owner DMs to the personal-agent workspace when it is connected (DM_WORKSPACE_ENABLED). Default off. */
+  dmWorkspaceEnabled: boolean;
   /** Public base URL of the bot's HTTP app (e.g. https://agent-mcp.sushii.bot), used to build the
    *  per-task live-stream viewer link. Unset → no web link is shown (Discord tail still works). */
   taskStreamBaseUrl: string | undefined;
@@ -288,6 +290,7 @@ export const config: Config = {
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
   orchSecret: process.env["ORCH_SECRET"]?.trim() || undefined,
   orchRunnerSecret: process.env["ORCH_RUNNER_SECRET"]?.trim() || undefined,
+  dmWorkspaceEnabled: ["1", "true", "yes"].includes(optional("DM_WORKSPACE_ENABLED", "false").toLowerCase()),
   buzz: {
     privateKey: process.env["BUZZ_PRIVATE_KEY"],
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),

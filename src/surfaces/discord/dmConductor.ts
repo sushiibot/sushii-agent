@@ -2,7 +2,7 @@
 // from a Discord DM. `DM_SPACE_ID` MUST match authz.ts's PERSONAL_SPACE_CAPABILITIES key exactly
 // (spaceKey("discord", DM_SPACE_ID) === "discord:dm") — that map is the pinned contract, not this file.
 import { PERSONAL_BEHAVIOR } from "./personas.ts";
-import type { MessageCreateOptions } from "discord.js";
+import type { ContainerBuilder, MessageCreateOptions } from "discord.js";
 import type { AgentReply, SurfaceCapabilities, SurfaceSession, ToolHosts, TurnPromptContext } from "../../core/contracts.ts";
 import { buildComponentMessages } from "./delivery.ts";
 import { renderFooter } from "./footer.ts";
@@ -45,13 +45,21 @@ export class DmConductorSession implements SurfaceSession {
   readonly selfId: string;
   readonly selfName: string;
   readonly hosts: ToolHosts = {};
+  /** Reply text of the last deliver() (without footer or notice). */
+  deliveredText: string | null = null;
+  private readonly notice: string | undefined;
+  private readonly accentColor: number | undefined;
 
   constructor(
     private readonly channel: SendableChannel,
     self: { id: string; username: string },
+    /** A subtext line prepended to the reply, e.g. the workspace-offline note. */
+    options: { notice?: string; accentColor?: number } = {},
   ) {
     this.selfId = self.id;
     this.selfName = self.username;
+    this.notice = options.notice;
+    this.accentColor = options.accentColor;
   }
 
   // Only the owner reaches this session (isOwnerDm).
@@ -63,12 +71,16 @@ export class DmConductorSession implements SurfaceSession {
     const text = reply.segments
       .map((s) => (s.kind === "separator" ? "\n---\n" : this.renderer.renderText(s.text, { spaceId: DM_SPACE_ID })))
       .join("");
+    this.deliveredText = text;
     const footer = renderFooter(reply.usage, reply.toolTrace);
-    const full = footer ? (text ? `${text}\n${footer}` : footer) : text;
-    if (!full) return {};
+    const body = footer ? (text ? `${text}\n${footer}` : footer) : text;
+    if (!body) return {};
+    const full = this.notice ? `${this.notice}\n${body}` : body;
 
     let lastId: string | undefined;
-    for (const msg of buildComponentMessages(full)) {
+    const messages = buildComponentMessages(full);
+    if (this.accentColor !== undefined) (messages[0]?.components?.[0] as ContainerBuilder | undefined)?.setAccentColor(this.accentColor);
+    for (const msg of messages) {
       const sent = await this.channel.send({ ...msg, allowedMentions: { parse: [] } });
       lastId = sent.id;
     }

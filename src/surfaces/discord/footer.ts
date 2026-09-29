@@ -1,4 +1,5 @@
 import type { ToolActivity, TurnUsage } from "../../core/contracts.ts";
+import type { ChatUsage } from "../../orchestration/contracts.ts";
 
 export function formatToolArg(value: unknown): string {
   if (typeof value === "string") {
@@ -37,4 +38,17 @@ export function renderFooter(usage: TurnUsage, tools: ToolActivity[]): string {
     return `-# - ${args ? `${name}(${args})` : name}`;
   });
   return `${statsLine}\n${toolLines.join("\n")}`;
+}
+
+/** Footer for a workspace reply. The workspace reports context as a percentage only, and cost only
+ *  when the provider priced it. */
+export function renderChatUsageFooter(usage: ChatUsage): string {
+  const parts = [usage.model];
+  if (usage.contextPct !== undefined) parts.push(`ctx ${Math.round(usage.contextPct)}%`);
+  parts.push(`${usage.outputTokens.toLocaleString()} out`);
+  const cacheRead = usage.cacheRead ?? 0;
+  const cacheWrite = usage.cacheWrite ?? 0;
+  if (cacheRead > 0 || cacheWrite > 0) parts.push(`cache ${cacheRead.toLocaleString()}r ${cacheWrite.toLocaleString()}w`);
+  if (usage.costUsd !== undefined) parts.push(`$${usage.costUsd.toFixed(4)}`);
+  return `-# ${parts.join(" · ")}`;
 }
