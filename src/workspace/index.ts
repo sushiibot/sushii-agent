@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   reauth = new ReauthNotifier({ stateDir: config.stateDir, deliver: (d) => personal.deliverOutOfBand(d), suppressed: () => authLogin.isPending });
   await personal.start();
   const scheduler = new Scheduler({ stateDir: config.stateDir, at: config.consolidateAt, tz: config.tz, log: getLogger("workspace.scheduler") });
-  scheduler.register(createConsolidationJob(config, { runs }));
+  scheduler.register(createConsolidationJob(config, { runs, live: personal }));
   void scheduler.start();
 
   client = new OrchestrationClient({

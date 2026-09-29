@@ -1132,6 +1132,24 @@ describe("PersonalSession memory upkeep", () => {
     }
   };
 
+  test("isIdle is false mid-turn; a context reload requested mid-turn waits for the settle", async () => {
+    const memory = memoryFake();
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    expect(host.isIdle()).toBe(true);
+    host.requestContextReload();
+    await until(() => memory.calls.includes("reload"));
+
+    await host.handleMessage(msg("m1", "one"));
+    expect(host.isIdle()).toBe(false);
+    host.requestContextReload();
+    await sleep(10);
+    expect(memory.calls.filter((c) => c === "reload")).toHaveLength(1);
+    sessions[0].finish("r1");
+    await until(() => memory.calls.filter((c) => c === "reload").length === 2);
+    await until(() => host.isIdle());
+  });
+
   test("chat/new runs a hidden flush on the old session, suppresses its reply, commits, then resets", async () => {
     const memory = memoryFake();
     let sessionsAtCommit = -1;

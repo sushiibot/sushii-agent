@@ -201,6 +201,9 @@ export class PersonalSession {
   private flushedThisCycle = false;
   private memorySignature: string | null = null;
   private turnCommit: Promise<void> = Promise.resolve();
+  // Tasks on the serial chain not yet finished.
+  private queued = 0;
+  private reloadDue = false;
 
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
@@ -211,6 +214,41 @@ export class PersonalSession {
 
   get state(): "idle" | "streaming" {
     return this.session?.isStreaming ? "streaming" : "idle";
+  }
+
+  /** Nothing in progress or waiting: no run, compaction, flush, chat/new, or inbound message still being handled. */
+  isIdle(): boolean {
+    const s = this.session;
+    if (!s || s.isStreaming || s.isCompacting || s.pendingMessageCount > 0) return false;
+    return (
+      !this.run &&
+      !this.resetting &&
+      this.pendingNew === 0 &&
+      this.queued === 0 &&
+      this.inFlight.size === 0 &&
+      this.pendingContext.length === 0 &&
+      this.hiddenNext === null &&
+      this.orphanFlush === null
+    );
+  }
+
+  /** Re-reads the home context files into the live session at its next idle point; a new session reads them anyway. */
+  requestContextReload(): void {
+    this.reloadDue = true;
+    this.scheduleReload();
+  }
+
+  private scheduleReload(): void {
+    const gen = this.generation;
+    void this.enqueue(async () => {
+      const session = this.session;
+      const reload = this.opts.memory?.reload;
+      if (!this.reloadDue || !session || !reload || gen !== this.generation) return;
+      // Still busy: the next settle or compaction_end schedules it again.
+      if (session.isStreaming || session.isCompacting || this.run) return;
+      this.reloadDue = false;
+      await reload(session);
+    }).catch((err) => log.warn({ err }, "context reload after consolidation failed"));
   }
 
   get isResetting(): boolean {
@@ -522,7 +560,8 @@ export class PersonalSession {
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.chain.then(fn);
+    this.queued++;
+    const next = this.chain.then(fn).finally(() => this.queued--);
     this.chain = next.catch(() => {});
     return next;
   }
@@ -666,6 +705,7 @@ export class PersonalSession {
 
   private attach(session: ChatSession, sessionFile: string): void {
     const gen = ++this.generation;
+    this.reloadDue = false;
     this.flushedThisCycle = this.opts.memory?.flushRanThisCycle?.(session) ?? false;
     this.lastFlushDoneAt = -1;
     this.session = session;
@@ -691,6 +731,7 @@ export class PersonalSession {
     if (event.type === "compaction_end") {
       if (event.result && !event.aborted) this.flushedThisCycle = false;
       this.releaseCompactionWaiters();
+      if (this.reloadDue) this.scheduleReload();
       return;
     }
     if (event.type === "message_start" && event.message.role === "user") {
@@ -743,6 +784,7 @@ export class PersonalSession {
     }
     if (session.pendingMessageCount > 0 && !session.isCompacting) this.requeueStranded(session);
     if (run && !run.hidden) this.afterTurn(session, run.turnId);
+    if (this.reloadDue) this.scheduleReload();
   }
 
   // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.
