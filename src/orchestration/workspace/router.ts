@@ -225,6 +225,7 @@ async function routeLogin<M extends InboundMessage>(
     if (res.status === "inactive") await notice({ type: "loginCallbackIgnored" });
     else if (res.status === "offline") await notice({ type: "loginOffline" });
     else if (res.status === "failed") await notice({ type: "loginFailed", error: res.error });
+    else if (res.status === "rejected") await notice({ type: "loginCallbackRejected", error: res.error });
     return true;
   }
 

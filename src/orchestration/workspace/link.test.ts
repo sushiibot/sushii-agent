@@ -822,6 +822,26 @@ describe("ChatGPT login from the surface", () => {
     expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginCallbackIgnored" }]);
   });
 
+  test("a paste the workspace turns away keeps the login pending, explains why, and a second paste still reaches it", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    const reason = "the path must be exactly /auth/callback (lowercase) — copy the address as the browser shows it";
+    t.rpc.replies[AUTH_METHODS.complete] = () => ({ ok: false, error: reason, retry: true });
+    await t.send(PASTE.replace("/auth/callback", "/AUTH/CALLBACK"));
+    expect(t.methods()).toEqual([AUTH_METHODS.start, AUTH_METHODS.complete]);
+    expect(t.rpc.calls[1]!.params).toEqual({ principalId: P, input: PASTE.replace("/auth/callback", "/AUTH/CALLBACK") });
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginCallbackRejected", error: reason }]);
+    expect(t.link.isLoginPending()).toBe(true);
+
+    t.rpc.replies[AUTH_METHODS.complete] = () => ({ ok: true, model: "gpt-6.1-sol" });
+    await t.send(PASTE);
+    expect(t.methods()).toEqual([AUTH_METHODS.start, AUTH_METHODS.complete, AUTH_METHODS.complete]);
+    expect(t.link.isLoginPending()).toBe(false);
+    expect(t.discord.of("fallbackReply")).toEqual([]);
+    expect(t.store.listInbox(P)).toEqual([]);
+    expect(JSON.stringify(t.logs)).not.toContain(CODE);
+  });
+
   test("owner-only: another user's !login is not a login, and their paste goes nowhere", async () => {
     const t = setupLogin({ isOwner: false });
     await t.send("!login chatgpt");

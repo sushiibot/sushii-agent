@@ -1,7 +1,7 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatEventPayload, ChatUsage } from "../orchestration/contracts.ts";
 import { summarizeToolArgs } from "../orchestration/runner/piShared.ts";
-import { CHATGPT_PROVIDER, modelLabel } from "./chatgptFallback.ts";
+import { CHATGPT_PROVIDER, modelLabel, publicAuthError } from "./chatgptFallback.ts";
 
 export const NO_REPLY = "NO_REPLY";
 
@@ -75,7 +75,8 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
       if (msg.provider !== CHATGPT_PROVIDER) acc.costUsd += u?.cost?.total ?? 0;
       if (msg.provider && msg.model) acc.model = modelLabel(msg.provider, msg.model);
       acc.lastStopReason = msg.stopReason;
-      acc.errorMessage = msg.stopReason === "error" ? (msg.errorMessage ?? "unknown error") : undefined;
+      // Shown in chat and recorded in the run log, so a failed token refresh must not carry the endpoint's body.
+      acc.errorMessage = msg.stopReason === "error" ? publicAuthError(msg.errorMessage ?? "unknown error") : undefined;
       acc.finalText = assistantText(msg);
       return [];
     }

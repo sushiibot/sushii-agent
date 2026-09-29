@@ -12,11 +12,12 @@ const PASTE = "http://127.0.0.1:1455/auth/callback?code=SECRET-CODE&state=s1&cli
 type Interaction = Parameters<LoginFn>[0];
 
 /** Pi's login shape: notify auth_url, wait on a manual_code prompt, then validate the pasted URL. */
-function fakePiLogin(record: { inputs: string[] }, opts: { fail?: string | ((input: string) => string) } = {}): LoginFn {
+function fakePiLogin(record: { inputs: string[] }, opts: { fail?: string | ((input: string) => string); promptDelay?: boolean } = {}): LoginFn {
   return async (interaction: Interaction) => {
     await Promise.resolve();
     interaction.notify({ type: "info", message: "Could not listen on http://127.0.0.1:1455/auth/callback" });
     interaction.notify({ type: "auth_url", url: "https://auth.openai.com/api/accounts/authorize?state=s1", instructions: "pi's own text" });
+    if (opts.promptDelay) await tick();
     let input: string;
     try {
       input = await interaction.prompt({ type: "manual_code", message: "paste", signal: interaction.signal });
@@ -32,7 +33,7 @@ function fakePiLogin(record: { inputs: string[] }, opts: { fail?: string | ((inp
   };
 }
 
-function setup(opts: { fail?: string | ((input: string) => string); timeoutMs?: number } = {}) {
+function setup(opts: { fail?: string | ((input: string) => string); timeoutMs?: number; promptDelay?: boolean } = {}) {
   const record = { inputs: [] as string[] };
   const delivered: OutOfBandDelivery[] = [];
   const logs: Array<{ level: string; obj: object; msg: string }> = [];
@@ -82,9 +83,21 @@ describe("AuthLogin", () => {
     expect(t.record.inputs).toEqual([PASTE]);
   });
 
-  test("a paste that arrives before Pi prompts for it is held for the prompt", async () => {
+  test("a paste before the sign-in link went out is turned away; the login stays open", async () => {
     const t = setup();
     t.auth.start(ORIGIN);
+    expect(await t.auth.complete(PASTE)).toMatchObject({ ok: false, retry: true });
+    expect(t.auth.isPending).toBe(true);
+    await tick();
+    expect(await t.auth.complete(PASTE)).toEqual({ ok: true, model: "gpt-6.1-sol" });
+  });
+
+  test("a paste that arrives after the link but before Pi prompts is held for the prompt", async () => {
+    const t = setup({ promptDelay: true });
+    t.auth.start(ORIGIN);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(t.delivered.map((d) => d.kind)).toEqual(["auth"]);
     expect(await t.auth.complete(PASTE)).toEqual({ ok: true, model: "gpt-6.1-sol" });
   });
 
@@ -96,11 +109,55 @@ describe("AuthLogin", () => {
     expect(await t.auth.complete(PASTE)).toMatchObject({ ok: true });
   });
 
-  test("a bad paste fails the login with Pi's error and frees the slot", async () => {
+  test("a bad paste is turned away before Pi sees it; the login stays pending and a good paste then succeeds", async () => {
     const t = setup();
     t.auth.start(ORIGIN);
     await tick();
-    const res = await t.auth.complete(PASTE.replace("state=s1", "state=other"));
+    const bad = await t.auth.complete(PASTE.replace("state=s1", "state=other"));
+    expect(bad).toEqual({ ok: false, error: expect.stringContaining("state mismatch"), retry: true });
+    expect(t.record.inputs).toEqual([]);
+    expect(t.auth.isPending).toBe(true);
+    expect(t.delivered.map((d) => d.kind)).toEqual(["auth"]);
+    expect(JSON.stringify([bad, t.logs])).not.toContain("SECRET-CODE");
+
+    expect(await t.auth.complete(PASTE)).toEqual({ ok: true, model: "gpt-6.1-sol" });
+    expect(t.record.inputs).toEqual([PASTE]);
+    expect(t.auth.isPending).toBe(false);
+  });
+
+  test.each([
+    ["an uppercase path", PASTE.replace("/auth/callback", "/AUTH/CALLBACK"), "lowercase"],
+    ["another host", PASTE.replace("127.0.0.1", "evil.test"), "must start with"],
+    ["https", PASTE.replace("http://", "https://"), "must start with"],
+    ["another port", PASTE.replace(":1455", ":14550"), "must start with"],
+    ["a truncated paste with no code", "http://127.0.0.1:1455/auth/callback?state=s1&client_id=c1", "no `code`"],
+    ["a paste cut before client_id", "http://127.0.0.1:1455/auth/callback?code=SECRET-CODE&state=s1", "no `client_id`"],
+    ["something that isn't a URL", "127.0.0.1:1455 auth callback SECRET-CODE", "full address"],
+  ])("%s is turned away with a reason and the login stays pending", async (_name, input, reason) => {
+    const t = setup();
+    t.auth.start(ORIGIN);
+    await tick();
+    const res = await t.auth.complete(input);
+    expect(res).toEqual({ ok: false, error: expect.stringContaining(reason), retry: true });
+    expect(JSON.stringify(res)).not.toContain("SECRET-CODE");
+    expect(t.record.inputs).toEqual([]);
+    expect(t.auth.isPending).toBe(true);
+    await t.auth.cancel();
+  });
+
+  test("an uppercase LOCALHOST origin is rewritten; only the path is case-sensitive", async () => {
+    const t = setup();
+    t.auth.start(ORIGIN);
+    await tick();
+    expect(await t.auth.complete(PASTE.replace("http://127.0.0.1", "HTTP://LOCALHOST"))).toEqual({ ok: true, model: "gpt-6.1-sol" });
+    expect(t.record.inputs).toEqual([PASTE]);
+  });
+
+  test("a paste Pi still rejects after the checks ends the login with Pi's error and frees the slot", async () => {
+    const t = setup({ fail: "OAuth state mismatch" });
+    t.auth.start(ORIGIN);
+    await tick();
+    const res = await t.auth.complete(PASTE);
     expect(res).toEqual({ ok: false, error: "OAuth state mismatch" });
     expect(t.delivered.at(-1)).toEqual({
       kind: "reply",
@@ -249,6 +306,21 @@ describe("ReauthNotifier", () => {
     now += 1;
     expect(make().notify()).toBe(true);
     expect(delivered).toHaveLength(2);
+  });
+
+  test("a last-sent time in the future (clock set back) doesn't silence the notice", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "ws-reauth-"));
+    dirs.push(stateDir);
+    let now = 1_000_000_000_000;
+    const delivered: OutOfBandDelivery[] = [];
+    const make = () => new ReauthNotifier({ stateDir, deliver: (d) => delivered.push(d), now: () => now });
+    expect(make().notify()).toBe(true);
+    now -= 60 * 60_000;
+    expect(make().notify()).toBe(true);
+    expect(delivered).toHaveLength(2);
+    // The rewritten time rate-limits from the corrected clock.
+    now += 60_000;
+    expect(make().notify()).toBe(false);
   });
 
   test("stays quiet while a login is in progress", () => {

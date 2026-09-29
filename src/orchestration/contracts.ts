@@ -241,7 +241,8 @@ export interface AuthStartResult {
 export const authCompleteParams = z.object({ principalId: z.string(), input: z.string().max(8192) });
 export type AuthCompleteParams = z.infer<typeof authCompleteParams>;
 /** `inactive`: no login was running, so no result delivery follows. */
-export type AuthCompleteResult = { ok: true; model?: string } | { ok: false; error: string; inactive?: true };
+// `retry`: the paste was turned away before reaching the login, which is still pending.
+export type AuthCompleteResult = { ok: true; model?: string } | { ok: false; error: string; inactive?: true; retry?: true };
 
 export const authCancelParams = z.object({ principalId: z.string() });
 export type AuthCancelParams = z.infer<typeof authCancelParams>;

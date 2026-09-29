@@ -165,6 +165,22 @@ describe("ChatGPT login from a chat surface, on real Pi", () => {
     s.dispose();
   });
 
+  test("bad pastes (uppercase path, wrong state, no client_id) leave Pi's login running; the good paste then signs in", async () => {
+    writeFileSync(join(root, "agent", "auth.json"), "{}");
+    const h = harness();
+    h.login.start({ surface: "discord", conversationId: "dm" });
+    await waitFor(() => h.delivered.some((d) => d.kind === "auth"), "the auth delivery");
+    const state = new URL(h.delivered.find((d) => d.kind === "auth")!.auth!.url).searchParams.get("state")!;
+    const good = `http://127.0.0.1:1455/auth/callback?code=the-code&state=${encodeURIComponent(state)}&client_id=issued-client`;
+    for (const bad of [good.replace("/auth/callback", "/AUTH/CALLBACK"), good.replace(`state=${encodeURIComponent(state)}`, "state=WRONG"), good.replace("&client_id=issued-client", "")]) {
+      expect(await h.login.complete(bad)).toMatchObject({ ok: false, retry: true });
+      expect(h.login.isPending).toBe(true);
+    }
+    expect(tokenGrants).toEqual([]);
+    expect(await h.login.complete(good)).toEqual({ ok: true, model: "gpt-6.1-sol" });
+    expect(tokenGrants).toEqual([expect.objectContaining({ grant_type: "authorization_code", code: "the-code" })]);
+  });
+
   test("a revoked refresh token cools down onto OpenRouter; a login ends the cool-down for the next turn", async () => {
     writeFileSync(
       join(root, "agent", "auth.json"),

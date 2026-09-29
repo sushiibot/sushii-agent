@@ -16,7 +16,7 @@ import {
   type ChatOrigin,
 } from "../orchestration/contracts.ts";
 import { getLogger } from "../logger.ts";
-import { CHATGPT_PROVIDER } from "./chatgptFallback.ts";
+import { CHATGPT_PROVIDER, publicAuthError } from "./chatgptFallback.ts";
 import { readJson, writeFileAtomic } from "./files.ts";
 
 type AuthInteraction = Parameters<ModelRuntime["login"]>[2];
@@ -27,7 +27,7 @@ export const REAUTH_NOTICE_INTERVAL_MS = 24 * 60 * 60_000;
 
 /** Pi's redirect URI; a pasted `localhost` callback is rewritten to it, since Pi compares origins exactly. */
 const REDIRECT_ORIGIN = "http://127.0.0.1:1455";
-const LOCALHOST_ORIGIN = /^http:\/\/localhost:1455(?=\/)/i;
+const CALLBACK_PATH = "/auth/callback";
 const CALLBACK_PORT = 1455;
 const CALLBACK_HOST = "127.0.0.1";
 // Pi's info line when its callback server can't bind; Pi then waits for the pasted URL only.
@@ -132,7 +132,39 @@ export function publicLoginError(message: string, secrets: readonly string[] = [
   if (token) return `ChatGPT token request failed (HTTP ${token[1]})`;
   let out = message;
   for (const secret of secrets) if (secret) out = out.split(secret).join("[redacted]");
-  return clip(out);
+  return clip(publicAuthError(out));
+}
+
+/**
+ * Checks a pasted callback the way Pi will, so a paste Pi would reject is turned away here and the login
+ * stays open for another try. Returns the URL to hand Pi, or a reason that never echoes the input.
+ */
+export function checkPastedCallback(input: string, expectedState: string | null): { url: string } | { problem: string } {
+  if (!expectedState) return { problem: "the sign-in link hasn't been sent yet — wait for it, sign in, then paste the address" };
+  let url: URL;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    return { problem: `that isn't a full address — paste the whole ${REDIRECT_ORIGIN}${CALLBACK_PATH}?… address from the browser` };
+  }
+  if (url.protocol === "http:" && url.hostname === "localhost" && url.port === String(CALLBACK_PORT)) url.hostname = CALLBACK_HOST;
+  if (url.origin !== REDIRECT_ORIGIN) return { problem: `the address must start with ${REDIRECT_ORIGIN}${CALLBACK_PATH}` };
+  // Pi compares the path case-sensitively.
+  if (url.pathname !== CALLBACK_PATH) return { problem: `the path must be exactly ${CALLBACK_PATH} (lowercase) — copy the address as the browser shows it` };
+  if (url.searchParams.get("state") !== expectedState) return { problem: "it's from a different sign-in (state mismatch) — use the address from the latest sign-in link" };
+  // An `error` callback is OpenAI declining the sign-in; Pi ends the login with that reason.
+  if (url.searchParams.get("error")) return { url: url.toString() };
+  if (!url.searchParams.get("code")) return { problem: "it has no `code` — copy the complete address" };
+  if (!url.searchParams.get("client_id")?.trim()) return { problem: "it has no `client_id` — copy the complete address" };
+  return { url: url.toString() };
+}
+
+function stateOf(authUrl: string): string | null {
+  try {
+    return new URL(authUrl).searchParams.get("state") || null;
+  } catch {
+    return null;
+  }
 }
 
 /** The pasted input and its `code` value, for scrubbing error text. */
@@ -151,6 +183,8 @@ interface PendingLogin {
   loginId: string;
   origin: ChatOrigin;
   secrets: string[];
+  /** The OAuth `state` from the delivered sign-in link; a paste must carry it. */
+  state: string | null;
   controller: AbortController;
   ending: "cancel" | "timeout" | null;
   timer: ReturnType<typeof setTimeout>;
@@ -211,6 +245,7 @@ export class AuthLogin {
       loginId: randomUUID(),
       origin,
       secrets: [],
+      state: null,
       controller,
       ending: null,
       timer: setTimeout(() => {
@@ -231,10 +266,14 @@ export class AuthLogin {
   async complete(input: string): Promise<AuthCompleteResult> {
     const pending = this.pending;
     if (!pending) return { ok: false, error: "No ChatGPT sign-in in progress — send `!login chatgpt` to start one.", inactive: true };
-    const normalized = input.trim().replace(LOCALHOST_ORIGIN, REDIRECT_ORIGIN);
-    pending.secrets.push(...secretsOf(input.trim()), ...secretsOf(normalized));
-    if (pending.code) pending.code.resolve(normalized);
-    else pending.earlyInput = normalized;
+    const checked = checkPastedCallback(input, pending.state);
+    if ("problem" in checked) {
+      this.log.info({ reason: checked.problem, loginId: pending.loginId }, "pasted ChatGPT callback rejected; login still pending");
+      return { ok: false, error: checked.problem, retry: true };
+    }
+    pending.secrets.push(...secretsOf(input.trim()), ...secretsOf(checked.url));
+    if (pending.code) pending.code.resolve(checked.url);
+    else pending.earlyInput = checked.url;
     return pending.done;
   }
 
@@ -252,6 +291,7 @@ export class AuthLogin {
       signal: pending.controller.signal,
       notify: (event) => {
         if (event.type === "auth_url") {
+          pending.state = stateOf(event.url);
           this.opts.deliver({
             kind: "auth",
             text: "Sign in with ChatGPT",
@@ -355,7 +395,8 @@ export class ReauthNotifier {
     if (this.opts.suppressed?.()) return false;
     const last = readJson<{ lastSentAt?: number }>(this.path)?.lastSentAt ?? 0;
     const now = this.now();
-    if (now - last < (this.opts.intervalMs ?? REAUTH_NOTICE_INTERVAL_MS)) return false;
+    // A `last` in the future means the clock was set back; don't stay silent until it catches up.
+    if (now >= last && now - last < (this.opts.intervalMs ?? REAUTH_NOTICE_INTERVAL_MS)) return false;
     writeFileAtomic(this.path, `${JSON.stringify({ lastSentAt: now })}\n`);
     this.opts.deliver({ kind: "proactive", text: REAUTH_NOTICE });
     return true;

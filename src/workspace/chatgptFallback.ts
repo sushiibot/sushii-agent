@@ -1,5 +1,6 @@
 import type { AgentBeforeSettleEvent, BoundaryResult, ExtensionFactory, InputEventResult } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceConfig } from "./config.ts";
+import { redact } from "./secretPatterns.ts";
 
 /** Pi's provider for Sign in with ChatGPT (not the legacy `openai-codex`). */
 export const CHATGPT_PROVIDER = "openai";
@@ -20,6 +21,20 @@ export interface ModelRef {
 /** How chat/deliver's usage names the model: ChatGPT turns are marked so they aren't read as OpenAI API spend. */
 export function modelLabel(provider: string, modelId: string): string {
   return provider === CHATGPT_PROVIDER ? `chatgpt/${modelId}` : modelId;
+}
+
+// Pi's token-endpoint error embeds the raw response body after the status.
+const TOKEN_ERROR_RE = /(OpenAI OAuth token request failed) \((\d{3})\)[\s\S]*/;
+const PUBLIC_ERROR_MAX = 300;
+
+/** Auth/refresh error text that is safe to log or show: the token endpoint's body dropped (status kept), token shapes redacted. */
+export function publicAuthError(message: string): string {
+  const out = redact(message.replace(TOKEN_ERROR_RE, "$1 ($2)"));
+  return out.length > PUBLIC_ERROR_MAX ? `${out.slice(0, PUBLIC_ERROR_MAX - 1)}…` : out;
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 const LIMIT_PATTERN = /subscription_sharing_usage_limit_exceeded|usage.?limit|insufficient_quota|quota|rate.?limit|too many requests|\(429\)/i;
@@ -133,8 +148,10 @@ export async function selectInitialModel<M extends ModelRef>(input: {
     // Refreshes an expired token now, so a dead refresh token falls back here instead of failing the first turn.
     await runtime.getAuth(CHATGPT_PROVIDER);
   } catch (err) {
-    const decision = selector.onChatGptFailure(`OAuth refresh failed: ${err instanceof Error ? err.message : String(err)}`);
-    log.warn({ err, until: decision && new Date(decision.until).toISOString() }, "ChatGPT credential unusable; using OpenRouter");
+    // Classified on the raw text; only the sanitized form is logged (a logged `err` would carry the body in its stack).
+    const message = `OAuth refresh failed: ${messageOf(err)}`;
+    const decision = selector.onChatGptFailure(message);
+    log.warn({ error: publicAuthError(message), until: decision && new Date(decision.until).toISOString() }, "ChatGPT credential unusable; using OpenRouter");
     return fallback;
   }
   log.info({ model: primary.id }, "using ChatGPT sign-in");
@@ -193,8 +210,9 @@ export function createModelFallbackExtension<M extends ModelRef>(deps: FallbackE
           log.warn({ model: fallback.id, until: selector.coolingDownUntil }, "ChatGPT unavailable; turn runs on OpenRouter");
         }
       } catch (err) {
-        const decision = selector.onChatGptFailure(`Authentication failed: ${err instanceof Error ? err.message : String(err)}`);
-        log.warn({ err, until: decision && new Date(decision.until).toISOString() }, "could not switch to ChatGPT; staying on OpenRouter");
+        const message = `Authentication failed: ${messageOf(err)}`;
+        const decision = selector.onChatGptFailure(message);
+        log.warn({ error: publicAuthError(message), until: decision && new Date(decision.until).toISOString() }, "could not switch to ChatGPT; staying on OpenRouter");
       }
       return { action: "continue" };
     });
@@ -214,11 +232,11 @@ export function createModelFallbackExtension<M extends ModelRef>(deps: FallbackE
       try {
         await deps.setModel(fallback);
       } catch (err) {
-        log.warn({ err }, "could not switch to OpenRouter after a ChatGPT failure");
+        log.warn({ error: publicAuthError(messageOf(err)) }, "could not switch to OpenRouter after a ChatGPT failure");
         return undefined;
       }
       log.warn(
-        { reason: decision.reason, until: new Date(decision.until).toISOString(), model: fallback.id, error: error.slice(0, 300) },
+        { reason: decision.reason, until: new Date(decision.until).toISOString(), model: fallback.id, error: publicAuthError(error) },
         "ChatGPT turn failed; retrying it on OpenRouter",
       );
       // Omitting the failed attempt leaves the context runnable, so `continue` re-requests the same turn.

@@ -96,8 +96,9 @@ export type AskChoice = { index: number; label?: string | null } | { text: strin
 export type InterceptResult = { handled: false } | { handled: true; ack?: AckKind; notice?: RouterNotice };
 
 export type StartLoginResult = { status: "started" | "alreadyPending" | "offline" } | { status: "failed"; error: string };
-/** "ended": the login finished (either way) and its result arrives as a delivery; "inactive": no login was running. */
-export type CompleteLoginResult = { status: "ok" | "ended" | "inactive" | "offline" } | { status: "failed"; error: string };
+/** "ended": the login finished (either way) and its result arrives as a delivery; "inactive": no login was running;
+ *  "rejected": the paste was turned away and the login is still pending. */
+export type CompleteLoginResult = { status: "ok" | "ended" | "inactive" | "offline" } | { status: "failed" | "rejected"; error: string };
 export type CancelLoginResult = { status: "cancelled" | "notPending" | "offline" } | { status: "failed"; error: string };
 
 /** Log sink for the login path; its callers never pass the pasted input. */
@@ -472,6 +473,10 @@ export class WorkspaceLink {
       const error = errorText(err);
       this.authLog.warn({ error }, "auth/complete failed");
       return { status: "failed", error };
+    }
+    if (!res.ok && res.retry) {
+      this.authLog.info({ reason: res.error }, "pasted ChatGPT callback rejected; login still pending");
+      return { status: "rejected", error: res.error };
     }
     this.clearLoginPending();
     if (res.ok) {

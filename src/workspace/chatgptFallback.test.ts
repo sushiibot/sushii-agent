@@ -7,6 +7,7 @@ import {
   classifyChatGptError,
   createModelFallbackExtension,
   parseResetAt,
+  publicAuthError,
   selectInitialModel,
   type ModelRef,
 } from "./chatgptFallback.ts";
@@ -14,6 +15,17 @@ import { mapSessionEvent, newRunAccumulator, runUsage } from "./events.ts";
 
 const NOW = Date.UTC(2026, 8, 29, 12, 0, 0);
 const USAGE_LIMIT = 'OpenAI API error (429): {"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"usage limit reached"}}';
+
+const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MX0.c2lnbmF0dXJlLXZhbHVlLWhlcmUtMTIz";
+const SK = "sk-proj-AbCdEf0123456789XyZ";
+// Pi's refresh error with the token endpoint's response body appended.
+const REFRESH_BODY_ERROR = `OpenAI OAuth token request failed (400): {\n  "error": "invalid_grant",\n  "refresh_token": "${JWT}",\n  "hint": "${SK}"\n}`;
+const LEAKS = ["invalid_grant", JWT, "eyJ", SK];
+
+function expectNoLeak(value: unknown) {
+  const text = JSON.stringify(value);
+  for (const leak of LEAKS) expect(text).not.toContain(leak);
+}
 
 const primary: ModelRef = { provider: "openai", id: "gpt-6.1-sol" };
 const fallback: ModelRef = { provider: "sushii-workspace-openrouter", id: "openai/gpt-6-luna" };
@@ -130,6 +142,14 @@ describe("BackendSelector", () => {
   });
 });
 
+describe("publicAuthError", () => {
+  test("keeps the token endpoint's status, drops its body, and redacts token shapes elsewhere", () => {
+    expect(publicAuthError(`OAuth refresh failed: ${REFRESH_BODY_ERROR}`)).toBe("OAuth refresh failed: OpenAI OAuth token request failed (400)");
+    expect(publicAuthError(`something else leaked ${JWT} and ${SK}`)).toBe("something else leaked [REDACTED] and [REDACTED]");
+    expect(publicAuthError("OpenAI API error (500): boom")).toBe("OpenAI API error (500): boom");
+  });
+});
+
 describe("selectInitialModel", () => {
   const config = { provider: "chatgpt" as const, chatgptModel: "gpt-6.1-sol" };
   const runtime = (stored: "oauth" | "api_key" | null, getAuth: () => Promise<unknown> = async () => ({})) => ({
@@ -165,6 +185,22 @@ describe("selectInitialModel", () => {
     const model = await selectInitialModel({ config, runtime: failing, selector, primary, fallback, log: recordingLog() });
     expect(model).toBe(fallback);
     expect(selector.coolingDownUntil).toBe(NOW + DEFAULT_COOLDOWN_MS);
+  });
+
+  test("a refresh failure's token-endpoint body never reaches the log; classification still sees it", async () => {
+    let authFailures = 0;
+    const selector = new BackendSelector({ primaryEnabled: true, now: clock().now, onAuthFailure: () => authFailures++ });
+    const log = recordingLog();
+    const failing = runtime("oauth", async () => {
+      throw new Error(REFRESH_BODY_ERROR);
+    });
+    expect(await selectInitialModel({ config, runtime: failing, selector, primary, fallback, log })).toBe(fallback);
+    expect(authFailures).toBe(1);
+    expect(selector.coolingDownUntil).toBe(NOW + DEFAULT_COOLDOWN_MS);
+    expect(log.lines).toEqual([
+      { level: "warn", obj: { error: "OAuth refresh failed: OpenAI OAuth token request failed (400)", until: expect.any(String) }, msg: "ChatGPT credential unusable; using OpenRouter" },
+    ]);
+    expectNoLeak(log.lines);
   });
 
   test("provider=openrouter never touches ChatGPT", async () => {
@@ -300,6 +336,30 @@ describe("model fallback extension", () => {
     expect(h.model).toBe(fallback);
   });
 
+  test("a turn failing on a token refresh falls back without logging the endpoint's body", async () => {
+    const h = harness();
+    await h.startRun();
+    expect(await h.settle({ provider: "openai", stopReason: "error", errorMessage: `OAuth refresh failed for openai: ${REFRESH_BODY_ERROR}` })).toMatchObject({ continue: true });
+    expect(h.selector.coolingDownUntil).toBe(NOW + DEFAULT_COOLDOWN_MS);
+    const warn = h.log.lines.find((l) => l.msg.includes("retrying it on OpenRouter"));
+    expect(warn?.obj).toMatchObject({ reason: "auth", error: "OAuth refresh failed for openai: OpenAI OAuth token request failed (400)" });
+    expectNoLeak(h.log.lines);
+  });
+
+  test("a failed switch back to ChatGPT logs only the sanitized reason", async () => {
+    const h = harness({ start: fallback, setModelError: new Error(REFRESH_BODY_ERROR) });
+    await h.input();
+    expect(h.selector.coolingDownUntil).toBe(NOW + DEFAULT_COOLDOWN_MS);
+    expect(h.log.lines).toEqual([
+      {
+        level: "warn",
+        obj: { error: "Authentication failed: OpenAI OAuth token request failed (400)", until: expect.any(String) },
+        msg: "could not switch to ChatGPT; staying on OpenRouter",
+      },
+    ]);
+    expectNoLeak(h.log.lines);
+  });
+
   test("a failed switch back to ChatGPT stays on OpenRouter and starts a cool-down", async () => {
     const h = harness({ start: fallback, setModelError: new Error("No API key for openai/gpt-6.1-sol") });
     expect(await h.input()).toEqual({ action: "continue" });
@@ -328,5 +388,16 @@ describe("usage for ChatGPT turns", () => {
     mapSessionEvent(end("openai", "gpt-6.1-sol", 0), acc);
     mapSessionEvent(end("sushii-workspace-openrouter", "openai/gpt-6-luna", 0), acc);
     expect(runUsage(acc, "unused", undefined).model).toBe("openai/gpt-6-luna");
+  });
+});
+
+describe("chat-visible run errors", () => {
+  test("a failed turn's error, shown in chat and the run log, has the token endpoint's body stripped", () => {
+    const acc = newRunAccumulator();
+    mapSessionEvent(
+      { type: "message_end", message: { role: "assistant", provider: "openai", model: "gpt-6.1-sol", stopReason: "error", errorMessage: `OAuth refresh failed for openai: ${REFRESH_BODY_ERROR}`, content: [] } } as never,
+      acc,
+    );
+    expect(acc.errorMessage).toBe("OAuth refresh failed for openai: OpenAI OAuth token request failed (400)");
   });
 });

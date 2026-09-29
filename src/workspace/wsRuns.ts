@@ -3,6 +3,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { latestRuns, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
 import { resolveStateDir, sessionRoots } from "./sessionPaths.ts";
 import { redact } from "./secretPatterns.ts";
+import { publicAuthError } from "./chatgptFallback.ts";
 
 export { redact };
 
@@ -189,7 +190,7 @@ function renderRaw(entry: Entry, full: boolean, hide?: Hide): string[] {
       const text = textOf(m.content).trim();
       if (text) lines.push(`assistant: ${text}`);
       lines.push(...toolCallsOf(m.content, !!hide));
-      if (m.stopReason === "error" || m.stopReason === "aborted") lines.push(`[${m.stopReason}${m.errorMessage ? `: ${oneLine(m.errorMessage)}` : ""}]`);
+      if (m.stopReason === "error" || m.stopReason === "aborted") lines.push(`[${m.stopReason}${m.errorMessage ? `: ${oneLine(publicAuthError(m.errorMessage))}` : ""}]`);
       return lines;
     }
     if (m.role === "toolResult") {

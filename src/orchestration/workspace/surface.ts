@@ -121,6 +121,8 @@ export type RouterNotice =
   | { type: "loginNotPending" }
   // A sign-in callback arrived with no login pending; it went nowhere.
   | { type: "loginCallbackIgnored" }
+  // The pasted callback can't finish the sign-in (wrong path case, other login's state, truncated); it stays open.
+  | { type: "loginCallbackRejected"; error: string }
   | { type: "loginFailed"; error: string }
   | { type: "loginUsage" };
 
