@@ -20,6 +20,8 @@ import { ACCENT, DiscordOwnerDmSurface, DiscordWorkspaceAdapter, OFFLINE_NOTICE,
 import { PersonalSession, type ChatSession, type ChatSessionFactory } from "./personalSession.ts";
 import { readWorkspaceState } from "./state.ts";
 import { ToolStubs } from "./toolStubs.ts";
+import { AuthLogin, type LoginFn } from "./authLogin.ts";
+import { BackendSelector } from "./chatgptFallback.ts";
 import type { ToolEntry, ToolHosts } from "../core/contracts.ts";
 import { WorkspaceTools, type AuditLog, type ToolCallAudit, type WorkspaceToolsOptions } from "../orchestration/workspace/tools.ts";
 
@@ -375,6 +377,10 @@ async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0, opts: {
 
 interface Workspace {
   personal: PersonalSession;
+  auth: AuthLogin;
+  selector: BackendSelector;
+  /** The Pi login the auth handlers run; tests replace it. */
+  login: LoginFn;
   toolStubs: ToolStubs;
   sessions: FakePi[];
   stateDir: string;
@@ -398,6 +404,11 @@ async function startWorkspace(): Promise<Workspace> {
   };
   const ws: Workspace = {
     personal: null as unknown as PersonalSession,
+    auth: null as unknown as AuthLogin,
+    selector: new BackendSelector({ primaryEnabled: true }),
+    login: async () => {
+      throw new Error("no login configured");
+    },
     toolStubs: new ToolStubs({
       principalId: P,
       request: (method, params, timeoutMs) => (ws.client ? ws.client.request(method, params, { timeoutMs }) : Promise.reject(new Error("not connected"))),
@@ -417,7 +428,7 @@ async function startWorkspace(): Promise<Workspace> {
         secret,
         principalId: P,
         state: () => ws.personal.state,
-        handlers: ws.personal.handlers(),
+        handlers: { ...ws.personal.handlers(), ...ws.auth.handlers() },
         onRegistered: (result) => {
           ws.toolStubs.update(result?.tools ?? []);
           ws.personal.onRegistered();
@@ -464,8 +475,16 @@ async function startWorkspace(): Promise<Workspace> {
     resendIntervalMs: 200,
     now: () => NOW,
   });
+  ws.auth = new AuthLogin({
+    principalId: P,
+    login: (interaction) => ws.login(interaction),
+    deliver: (d) => ws.personal.deliverOutOfBand(d),
+    model: "gpt-6.1-sol",
+    onLoggedIn: () => ws.selector.reset(),
+  });
   await ws.personal.start();
   cleanups.push(() => ws.personal.dispose());
+  cleanups.push(() => ws.auth.cancel());
   return ws;
 }
 
@@ -833,5 +852,47 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     expect(h.r.bot.tools.decide(nonce, "approve", { surface: "discord", userId: OWNER, name: "drk" })).toBe("expired");
     expect(h.r.bot.filed).toEqual([]);
     h.ws.pi().reply("Stopped.");
+  });
+});
+
+describe("ChatGPT login from the owner's DM", () => {
+  test("!login chatgpt → sign-in link → pasted callback → connected; the paste never reaches the agent", async () => {
+    const h = await linked();
+    await connected(h);
+    // A dead refresh token already sent the workspace onto OpenRouter.
+    h.ws.selector.onChatGptFailure("OAuth refresh failed: invalid_grant");
+    expect(h.ws.selector.select(true)).toBe("openrouter");
+    const stored: string[] = [];
+    h.ws.login = async (interaction) => {
+      interaction.notify({ type: "auth_url", url: "https://auth.openai.com/api/accounts/authorize?state=st4te" });
+      const input = await interaction.prompt({ type: "manual_code", message: "paste", signal: interaction.signal });
+      const url = new URL(input);
+      if (url.origin !== "http://127.0.0.1:1455" || url.searchParams.get("state") !== "st4te") throw new Error("OAuth state mismatch");
+      stored.push(url.searchParams.get("code")!);
+    };
+
+    await h.route.dm("100", "!login chatgpt");
+    await waitFor(() => h.dm.sent.some((s) => textOf(s.options).includes("Sign in with ChatGPT")), "the sign-in prompt");
+    const prompt = h.dm.sent.find((s) => textOf(s.options).includes("Sign in with ChatGPT"))!;
+    expect(textOf(prompt.options)).toContain("https://auth.openai.com/api/accounts/authorize?state=st4te");
+    expect(textOf(prompt.options)).toContain("`!login cancel` to abort");
+    expect(h.r.bot.link.isLoginPending()).toBe(true);
+
+    await h.route.dm("101", "http://localhost:1455/auth/callback?code=SECRET-CODE&state=st4te&client_id=c");
+    await waitFor(() => h.dm.sent.some((s) => textOf(s.options).includes("ChatGPT connected")), "the result reply");
+    expect(textOf(h.dm.sent.at(-1)!.options)).toContain("✅ ChatGPT connected · gpt-6.1-sol");
+    expect(stored).toEqual(["SECRET-CODE"]);
+
+    expect(h.r.bot.messages).toEqual([]);
+    expect(h.ws.pi().prompts.join("\n")).not.toContain("SECRET-CODE");
+    expect(h.store.listInbox(P)).toEqual([]);
+    expect(h.r.bot.link.isLoginPending()).toBe(false);
+    expect(h.dm.reactionsOn("101")).toEqual(["👀"]);
+    expect(h.ws.selector.select(true)).toBe("chatgpt");
+    await waitFor(() => h.ws.unacked().length === 0, "auth deliveries acked");
+
+    // Afterwards an ordinary message goes to the agent again.
+    await h.route.dm("102", "hi");
+    await waitFor(() => h.r.bot.messages.length === 1, "chat/message");
   });
 });

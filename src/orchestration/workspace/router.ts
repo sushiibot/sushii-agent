@@ -3,12 +3,15 @@ import { RpcConnectionClosedError, mayHaveBeenAccepted } from "../transport/serv
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { getLogger } from "../../logger.ts";
 import type { WorkspaceLink } from "./link.ts";
-import type { AckKind, InboundMessage, InboundSurface } from "./surface.ts";
+import type { AckKind, InboundMessage, InboundSurface, RouterNotice } from "./surface.ts";
 
 const log = getLogger("orchestration/workspace/router");
 
 const NEW_COMMANDS = new Set(["!new", "!reset", "!clear"]);
 const STOP_COMMAND = "!stop";
+const LOGIN_COMMAND_RE = /^!login(?:\s+(\S+))?$/i;
+/** Pi's ChatGPT redirect URI (or its localhost spelling), which carries the authorization code. */
+export const LOGIN_CALLBACK_RE = /^http:\/\/(?:127\.0\.0\.1|localhost):1455\/auth\/callback(?:[?#]|$)/i;
 
 /** The last message the router handled on one conversation; `advance` only ever moves it forward. */
 export interface MessageCursor {
@@ -23,7 +26,8 @@ export function kvCursor(store: Pick<WorkspaceLinkStore, "getKv" | "setKv">, key
 export interface OwnerRouterDeps<M extends InboundMessage> {
   workspaceEnabled: boolean;
   transcriptionEnabled: boolean;
-  link: Pick<WorkspaceLink, "isConnected" | "sendMessage" | "abort" | "newSession" | "recordOffline"> & Partial<Pick<WorkspaceLink, "interceptReply">>;
+  link: Pick<WorkspaceLink, "isConnected" | "sendMessage" | "abort" | "newSession" | "recordOffline"> &
+    Partial<Pick<WorkspaceLink, "interceptReply" | "isOwner" | "isLoginPending" | "startLogin" | "completeLogin" | "cancelLogin">>;
   /** The surface the message arrived on. */
   surface: InboundSurface<M>;
   cursor: MessageCursor;
@@ -52,6 +56,8 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
   const workspace = deps.workspaceEnabled && link.isConnected();
   const ack = (kind: AckKind) => surface.ack(message, kind).catch(() => {});
   const notice = (n: Parameters<InboundSurface<M>["notice"]>[1]) => surface.notice(message, n).catch(() => {});
+
+  if (await routeLogin(message, deps, ack, notice)) return;
 
   // Replies to a buttonless prompt answer the bot, not the agent: they reach neither the workspace nor the fallback.
   const intercepted = (await link.interceptReply?.(message)) ?? { handled: false };
@@ -156,6 +162,60 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
   }
   const reply = await surface.fallbackReply(message, text, { offline: true });
   deps.link.recordOffline(text, reply ?? "(no reply)", message.origin);
+}
+
+/** `!login …` and, while a login is pending, the pasted callback URL. The paste goes only to auth/complete:
+ *  never to the agent, the fallback, the inbox or a log line. True when the message was consumed. */
+async function routeLogin<M extends InboundMessage>(
+  message: M,
+  deps: OwnerRouterDeps<M>,
+  ack: (kind: AckKind) => Promise<void>,
+  notice: (n: RouterNotice) => Promise<void>,
+): Promise<boolean> {
+  const { link } = deps;
+  if (!link.isOwner || !link.isLoginPending || !link.startLogin || !link.completeLogin || !link.cancelLogin) return false;
+  if (!link.isOwner({ surface: message.origin.surface, userId: message.author.id, name: message.author.name })) return false;
+  const text = message.text.trim();
+  const online = deps.workspaceEnabled && link.isConnected();
+
+  if (LOGIN_CALLBACK_RE.test(text) && link.isLoginPending()) {
+    if (!online) {
+      await notice({ type: "loginOffline" });
+      return true;
+    }
+    await ack("accepted");
+    const res = await link.completeLogin(text);
+    if (res.status === "inactive") await notice({ type: "loginNotPending" });
+    else if (res.status === "offline") await notice({ type: "loginOffline" });
+    else if (res.status === "failed") await notice({ type: "loginFailed", error: res.error });
+    return true;
+  }
+
+  const command = LOGIN_COMMAND_RE.exec(text);
+  if (!command) return false;
+  const arg = command[1]?.toLowerCase();
+  if (arg !== "chatgpt" && arg !== "cancel") {
+    await notice({ type: "loginUsage" });
+    return true;
+  }
+  if (!online) {
+    await notice({ type: "loginOffline" });
+    return true;
+  }
+  if (arg === "chatgpt") {
+    const res = await link.startLogin(message.origin);
+    if (res.status === "started") await ack("accepted");
+    else if (res.status === "alreadyPending") await notice({ type: "loginAlreadyPending" });
+    else if (res.status === "offline") await notice({ type: "loginOffline" });
+    else if (res.status === "failed") await notice({ type: "loginFailed", error: res.error });
+    return true;
+  }
+  const res = await link.cancelLogin();
+  if (res.status === "cancelled") await ack("stopped");
+  else if (res.status === "notPending") await notice({ type: "loginNotPending" });
+  else if (res.status === "offline") await notice({ type: "loginOffline" });
+  else if (res.status === "failed") await notice({ type: "loginFailed", error: res.error });
+  return true;
 }
 
 /** One message, live or caught up: pre-checks (task replies, pending answers) consume it first; otherwise

@@ -1,6 +1,10 @@
 import {
+  AUTH_METHODS,
+  LOGIN_ALREADY_PENDING,
   RPC_METHODS,
   chatDeliverParams,
+  type AuthCancelResult,
+  type AuthCompleteResult,
   chatEventParams,
   type ChatDeliverParams,
   type ChatEventParams,
@@ -19,6 +23,7 @@ import {
   SurfaceUnavailableError,
   type AckKind,
   type AskView,
+  type AuthPromptView,
   type InboundMessage,
   type PageLedger,
   type ProgressFinal,
@@ -49,6 +54,12 @@ export const DELIVERY_MAX_FAILURES = 3;
 /** chat/message id of an ask's answer: one per ask, whichever surface or button answered it, so the
  *  workspace collapses a second answer as a duplicate. */
 export const ASK_ANSWER_ID_PREFIX = "wsask:";
+
+/** How long the bot treats a pasted callback URL as the login's; matches the workspace's login timeout. */
+export const LOGIN_PENDING_MS = 10 * 60_000;
+// The token exchange runs inside auth/complete.
+const AUTH_COMPLETE_TIMEOUT_MS = 60_000;
+const LOGIN_PENDING_KV_PREFIX = "workspace:login_pending:";
 
 const APPROVAL_REPLY_RE = /^(approve|deny)\s+(\S+)$/i;
 const CHOICE_REPLY_RE = /^\d{1,2}$/;
@@ -83,6 +94,17 @@ export type AskChoice = { index: number; label?: string | null } | { text: strin
 /** Whether the core consumed an inbound reply itself; a consumed one never reaches the workspace. */
 export type InterceptResult = { handled: false } | { handled: true; ack?: AckKind; notice?: RouterNotice };
 
+export type StartLoginResult = { status: "started" | "alreadyPending" | "offline" } | { status: "failed"; error: string };
+/** "ended": the login finished (either way) and its result arrives as a delivery; "inactive": no login was running. */
+export type CompleteLoginResult = { status: "ok" | "ended" | "inactive" | "offline" } | { status: "failed"; error: string };
+export type CancelLoginResult = { status: "cancelled" | "notPending" | "offline" } | { status: "failed"; error: string };
+
+/** Log sink for the login path; its callers never pass the pasted input. */
+export interface AuthLog {
+  info(obj: object, msg: string): void;
+  warn(obj: object, msg: string): void;
+}
+
 /** Runs once an action passed its checks and before its slow part, e.g. to defer an interaction. */
 export interface ActionHooks {
   onAccepted?: () => Promise<unknown>;
@@ -105,6 +127,8 @@ export interface WorkspaceLinkOptions {
   /** DM_WORKSPACE_ENABLED. When false the link still drains a connected workspace's deliveries (say, a
    *  reply outboxed before a rollback) but offers and serves no tools. Default true. */
   enabled?: boolean;
+  /** Where the login path logs; default the module logger. */
+  authLog?: AuthLog;
 }
 
 const MAIN_AGENT = "main";
@@ -139,7 +163,7 @@ interface TurnProgress {
   timer: unknown;
 }
 
-export type DeliveryView = { type: "reply"; view: ReplyView } | { type: "ask"; view: AskView };
+export type DeliveryView = { type: "reply"; view: ReplyView } | { type: "ask"; view: AskView } | { type: "auth"; view: AuthPromptView };
 
 /** The surface-neutral view of a delivery. Blank ask choices get a placeholder label, since the label is
  *  also the answer text. */
@@ -148,10 +172,11 @@ export function deliveryView(p: ChatDeliverParams, toolCount: number | null = nu
     const choices = (p.ask?.choices ?? []).map((c, i) => (c.trim() ? c : `(option ${i + 1})`));
     return { type: "ask", view: { askId: p.ask?.askId ?? null, question: p.ask?.question ?? p.text, choices } };
   }
+  if (p.kind === "auth" && p.auth) return { type: "auth", view: { url: p.auth.url, instructions: p.auth.instructions } };
   return {
     type: "reply",
     view: {
-      kind: p.kind,
+      kind: p.kind === "proactive" ? "proactive" : "reply",
       text: p.text,
       toolCount,
       ...(p.usage ? { usage: p.usage } : {}),
@@ -363,6 +388,84 @@ export class WorkspaceLink {
     }
   }
 
+  // ── ChatGPT sign-in ────────────────────────────────────────────────────────
+
+  private get authLog(): AuthLog {
+    return this.opts.authLog ?? log;
+  }
+
+  private loginKey(): string {
+    return `${LOGIN_PENDING_KV_PREFIX}${this.opts.principalId}`;
+  }
+
+  /** Persisted, so a callback pasted across a bot restart is still kept from the agent. */
+  isLoginPending(): boolean {
+    const until = Number(this.opts.store.getKv(this.loginKey()) ?? "0");
+    if (until > this.now()) return true;
+    if (until) this.clearLoginPending();
+    return false;
+  }
+
+  private setLoginPending(): void {
+    this.opts.store.setKv(this.loginKey(), String(this.now() + LOGIN_PENDING_MS));
+  }
+
+  private clearLoginPending(): void {
+    this.opts.store.deleteKv(this.loginKey());
+  }
+
+  async startLogin(origin: ChatOrigin): Promise<StartLoginResult> {
+    if (!this.isConnected()) return { status: "offline" };
+    try {
+      await this.request(AUTH_METHODS.start, { principalId: this.opts.principalId, provider: "openai", origin }, CONTROL_TIMEOUT_MS);
+    } catch (err) {
+      const error = errorText(err);
+      if (error.includes(LOGIN_ALREADY_PENDING)) {
+        this.setLoginPending();
+        return { status: "alreadyPending" };
+      }
+      this.authLog.warn({ error }, "auth/start failed");
+      return { status: "failed", error };
+    }
+    this.setLoginPending();
+    this.authLog.info({ surface: origin.surface }, "ChatGPT login started");
+    return { status: "started" };
+  }
+
+  /** Passes the pasted callback URL to the workspace's login. `input` is never logged. */
+  async completeLogin(input: string): Promise<CompleteLoginResult> {
+    if (!this.isConnected()) return { status: "offline" };
+    let res: AuthCompleteResult;
+    try {
+      res = (await this.request(AUTH_METHODS.complete, { principalId: this.opts.principalId, input }, AUTH_COMPLETE_TIMEOUT_MS)) as AuthCompleteResult;
+    } catch (err) {
+      const error = errorText(err);
+      this.authLog.warn({ error }, "auth/complete failed");
+      return { status: "failed", error };
+    }
+    this.clearLoginPending();
+    if (res.ok) {
+      this.authLog.info({ model: res.model }, "ChatGPT login completed");
+      return { status: "ok" };
+    }
+    this.authLog.warn({ inactive: res.inactive === true }, "ChatGPT login ended without a credential");
+    return { status: res.inactive ? "inactive" : "ended" };
+  }
+
+  async cancelLogin(): Promise<CancelLoginResult> {
+    if (!this.isConnected()) return { status: "offline" };
+    let res: AuthCancelResult;
+    try {
+      res = (await this.request(AUTH_METHODS.cancel, { principalId: this.opts.principalId }, CONTROL_TIMEOUT_MS)) as AuthCancelResult;
+    } catch (err) {
+      const error = errorText(err);
+      this.authLog.warn({ error }, "auth/cancel failed");
+      return { status: "failed", error };
+    }
+    this.clearLoginPending();
+    return { status: res.cancelled ? "cancelled" : "notPending" };
+  }
+
   pruneOutboxSeen(): void {
     this.opts.store.pruneOutboxSeen(OUTBOX_SEEN_TTL_MS, this.now());
   }
@@ -553,6 +656,7 @@ export class WorkspaceLink {
   async deliver(p: ChatDeliverParams): Promise<void> {
     if (this.delivering.has(p.outboxId)) return;
     this.delivering.add(p.outboxId);
+    if (p.authResult) this.clearLoginPending();
     try {
       if (!this.opts.store.hasSeenOutbox(p.outboxId)) {
         const toolCount = p.kind === "reply" && p.turnId ? this.closeTurnForReply(p.turnId) : null;
@@ -567,7 +671,11 @@ export class WorkspaceLink {
           markSent: (i) => this.opts.store.markOutboxSeen(`${p.outboxId}#${i}`, p.principalId, this.now()),
         };
         const send = (plain: boolean) =>
-          delivery.type === "ask" ? adapter.askPrompt(origin, delivery.view, { ledger, plain }) : adapter.sendReply(origin, delivery.view, { ledger, plain });
+          delivery.type === "ask"
+            ? adapter.askPrompt(origin, delivery.view, { ledger, plain })
+            : delivery.type === "auth"
+              ? adapter.authPrompt(origin, delivery.view, { ledger, plain })
+              : adapter.sendReply(origin, delivery.view, { ledger, plain });
         try {
           await send(false);
           this.opts.store.deleteKv(failureKey(p.outboxId));

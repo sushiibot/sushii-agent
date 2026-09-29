@@ -72,10 +72,13 @@ function restoreChatGptThinking(session: AgentSession): void {
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context
  *  files, settings.json and auth.json under agentDir. ChatGPT sign-in is the primary model when
  *  configured and signed in; OpenRouter is the fallback. */
-export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs?: RunRecorder; toolStubs?: ToolStubs } = {}): ChatSessionFactory {
+export function createPiChatSessionFactory(
+  config: WorkspaceConfig,
+  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector } = {},
+): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
   // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
-  const selector = new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
+  const selector = opts.selector ?? new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
 
   return async ({ sessionFile }) => {
     const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");

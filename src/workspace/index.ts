@@ -10,6 +10,8 @@ import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } fro
 import { scanMemoryForSecrets } from "./memoryGuard.ts";
 import { RunLog } from "./runLog.ts";
 import { ToolStubs } from "./toolStubs.ts";
+import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
+import { BackendSelector } from "./chatgptFallback.ts";
 
 const log = getLogger("workspace");
 
@@ -40,11 +42,23 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
   });
+  // Late-bound: the selector reports auth failures while the first session is built, before these exist.
+  let reauth: ReauthNotifier | null = null;
+  const selector = new BackendSelector({
+    primaryEnabled: config.provider === "chatgpt",
+    onAuthFailure: () => {
+      try {
+        reauth?.notify();
+      } catch (err) {
+        log.warn({ err }, "failed to send the ChatGPT re-auth notice");
+      }
+    },
+  });
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
-    factory: createPiChatSessionFactory(config, { runs, toolStubs }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -63,6 +77,14 @@ async function main(): Promise<void> {
       isConnected: () => client?.connected ?? false,
     },
   });
+  const authLogin = new AuthLogin({
+    principalId: config.principalId,
+    login: piChatGptLogin({ agentDir: config.agentDir, cwd: config.home }),
+    deliver: (d) => personal.deliverOutOfBand(d),
+    model: config.chatgptModel,
+    onLoggedIn: () => selector.reset(),
+  });
+  reauth = new ReauthNotifier({ stateDir: config.stateDir, deliver: (d) => personal.deliverOutOfBand(d), suppressed: () => authLogin.isPending });
   await personal.start();
 
   client = new OrchestrationClient({
@@ -75,7 +97,7 @@ async function main(): Promise<void> {
     secret: config.orchSecret,
     principalId: config.principalId,
     state: () => personal.state,
-    handlers: personal.handlers(),
+    handlers: { ...personal.handlers(), ...authLogin.handlers() },
     onRegistered: (result) => {
       toolStubs.update(result?.tools ?? []);
       personal.onRegistered();

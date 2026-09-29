@@ -58,6 +58,12 @@ export interface AskView {
   choices: string[];
 }
 
+/** A sign-in link for the principal to open; the result arrives later as an ordinary reply. */
+export interface AuthPromptView {
+  url: string;
+  instructions: string;
+}
+
 /** Which pages of a multi-page delivery already went out, so a resend skips them. */
 export interface PageLedger {
   isSent(page: number): boolean;
@@ -109,7 +115,12 @@ export type RouterNotice =
   | { type: "transcript"; text: string }
   | { type: "approvalExpired" }
   | { type: "askAlreadyAnswered" }
-  | { type: "askNotDelivered"; error: string };
+  | { type: "askNotDelivered"; error: string }
+  | { type: "loginOffline" }
+  | { type: "loginAlreadyPending" }
+  | { type: "loginNotPending" }
+  | { type: "loginFailed"; error: string }
+  | { type: "loginUsage" };
 
 /** A user's message as the core sees it; adapters extend it with whatever they need to answer it. */
 export interface InboundMessage {
@@ -146,6 +157,8 @@ export interface SurfaceAdapter<M extends InboundMessage = InboundMessage, H ext
   sendReply(origin: ChatOrigin | null, reply: ReplyView, attempt: SendAttempt): Promise<void>;
   /** Without `richButtons`, choices are answered by their number (1-based) in a reply. */
   askPrompt(origin: ChatOrigin | null, ask: AskView, attempt: SendAttempt): Promise<void>;
+  /** A sign-in link. With `attempt.plain`, the URL and instructions as plain text. */
+  authPrompt(origin: ChatOrigin | null, view: AuthPromptView, attempt: SendAttempt): Promise<void>;
   /** Minimum gap between progress updates of a turn `ageMs` old; 0 updates on every change. */
   progressEditGap(ageMs: number): number;
   progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<H>;

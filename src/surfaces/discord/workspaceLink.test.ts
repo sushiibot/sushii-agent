@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import type { MessageCreateOptions, MessageEditOptions } from "discord.js";
+import { ButtonStyle, ComponentType, MessageFlags, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
 import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { RPC_METHODS, chatEventParams, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
@@ -8,7 +8,7 @@ import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/trans
 import { DELIVERY_MAX_FAILURES, WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
 import { formatDuration, progressEditDelay, type Timers } from "../../orchestration/workspace/progress.ts";
 import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
-import { DiscordWorkspaceAdapter, answeredAsk, progressEditGap, renderDelivery, renderProgressFinal, type DmChannelPort } from "./workspaceAdapter.ts";
+import { ACCENT, DiscordWorkspaceAdapter, LOGIN_OFFLINE, answeredAsk, renderAuthPrompt, progressEditGap, renderDelivery, renderProgressFinal, type DmChannelPort } from "./workspaceAdapter.ts";
 
 const P = "drk";
 const ORIGIN = { surface: "discord", conversationId: "dm-1" };
@@ -714,5 +714,58 @@ describe("plain-text fallback", () => {
     expect(plain).toContain("section 2");
     expect(plain.length).toBeLessThan(text.length - 2000);
     expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+});
+
+describe("ChatGPT sign-in prompt", () => {
+  const INSTRUCTIONS = "After signing in … paste it here. `!login cancel` to abort.";
+  const json = (m: MessageCreateOptions) => (m.components ?? []).map((c) => ("toJSON" in c ? c.toJSON() : c)) as unknown as Array<Record<string, unknown>>;
+  type Node = { type?: number; style?: number; url?: string; label?: string; content?: string; components?: Node[] };
+  const walk = (nodes: Node[], out: Node[] = []): Node[] => {
+    for (const n of nodes) {
+      out.push(n);
+      walk(n.components ?? [], out);
+    }
+    return out;
+  };
+
+  test("renders a Components V2 container with a Link button and the instructions as subtext", () => {
+    const url = `https://auth.openai.com/api/accounts/authorize?${"a".repeat(400)}`;
+    const [msg] = renderDelivery({ outboxId: "a", principalId: P, kind: "auth", text: "Sign in with ChatGPT", auth: { url, instructions: INSTRUCTIONS } });
+    expect(msg!.flags).toBe(MessageFlags.IsComponentsV2);
+    const nodes = walk(json(msg!) as Node[]);
+    expect(nodes[0]).toMatchObject({ type: ComponentType.Container, accent_color: ACCENT.info });
+    const button = nodes.find((n) => n.type === ComponentType.Button);
+    expect(button).toMatchObject({ style: ButtonStyle.Link, url, label: "Sign in with ChatGPT" });
+    const text = nodes.filter((n) => n.type === ComponentType.TextDisplay).map((n) => n.content).join("\n");
+    expect(text).toContain(`-# ${INSTRUCTIONS}`);
+    expect(text).not.toContain(url);
+  });
+
+  test("a URL past Discord's 512-char button limit becomes a masked link instead", () => {
+    const url = `https://auth.openai.com/api/accounts/authorize?${"a".repeat(520)}`;
+    const nodes = walk(json(renderAuthPrompt({ url, instructions: INSTRUCTIONS })) as Node[]);
+    expect(nodes.some((n) => n.type === ComponentType.Button)).toBe(false);
+    const text = nodes.filter((n) => n.type === ComponentType.TextDisplay).map((n) => n.content).join("\n");
+    expect(text).toContain(`**[Sign in with ChatGPT](${url})**`);
+    expect(text).toContain(`-# ${INSTRUCTIONS}`);
+  });
+
+  test("the plain fallback sends the URL and instructions as text", async () => {
+    const sent: Array<MessageCreateOptions | string> = [];
+    const channel: DmChannelPort = { send: async (o) => (sent.push(o), { edit: async () => {} }) };
+    const adapter = new DiscordWorkspaceAdapter({ ownerChannel: async () => channel });
+    const ledger = { isSent: () => false, markSent: () => {} };
+    await adapter.authPrompt(null, { url: "https://auth.openai.com/x", instructions: INSTRUCTIONS }, { ledger, plain: true });
+    expect(sent).toEqual([{ content: `Sign in with ChatGPT: https://auth.openai.com/x\n${INSTRUCTIONS}`, allowedMentions: { parse: [] } }]);
+  });
+
+  test("the offline notice", async () => {
+    const sent: Array<MessageCreateOptions | string> = [];
+    const adapter = new DiscordWorkspaceAdapter({ ownerChannel: async () => null });
+    const port = { send: async (o: MessageCreateOptions | string) => void sent.push(o) } as unknown as Parameters<typeof adapter.notice>[0]["port"];
+    await adapter.notice({ port } as Parameters<typeof adapter.notice>[0], { type: "loginOffline" });
+    expect(sent).toEqual([LOGIN_OFFLINE]);
+    expect(LOGIN_OFFLINE).toBe("-# ⚠️ workspace offline — can't log in right now");
   });
 });

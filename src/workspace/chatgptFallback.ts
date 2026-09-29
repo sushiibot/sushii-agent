@@ -6,7 +6,7 @@ export const CHATGPT_PROVIDER = "openai";
 export const DEFAULT_COOLDOWN_MS = 60 * 60_000;
 const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
 
-export const NOT_SIGNED_IN_WARNING = "ChatGPT not signed in — run: docker exec -it sushii_agent_workspace pi, then /login openai";
+export const NOT_SIGNED_IN_WARNING = "ChatGPT not signed in — send `!login chatgpt` from a chat surface, or run: docker exec -it sushii_agent_workspace pi, then /login openai";
 
 export type Backend = "chatgpt" | "openrouter";
 export type FailureReason = "limit" | "unavailable" | "auth";
@@ -60,7 +60,7 @@ export class BackendSelector {
   private fallbackUntil = 0;
   private readonly now: () => number;
 
-  constructor(private readonly opts: { primaryEnabled: boolean; cooldownMs?: number; now?: () => number }) {
+  constructor(private readonly opts: { primaryEnabled: boolean; cooldownMs?: number; now?: () => number; onAuthFailure?: () => void }) {
     this.now = opts.now ?? (() => Date.now());
   }
 
@@ -80,7 +80,13 @@ export class BackendSelector {
     if (!failure) return null;
     const until = failure.resetAt ?? now + (this.opts.cooldownMs ?? DEFAULT_COOLDOWN_MS);
     this.fallbackUntil = Math.max(this.fallbackUntil, until);
+    if (failure.reason === "auth") this.opts.onAuthFailure?.();
     return { reason: failure.reason, until: this.fallbackUntil };
+  }
+
+  /** Ends the cool-down, e.g. after a fresh login. */
+  reset(): void {
+    this.fallbackUntil = 0;
   }
 }
 

@@ -23,6 +23,7 @@ import {
   type ApprovalField,
   type ApprovalView,
   type AskView,
+  type AuthPromptView,
   type InboundMessage,
   type InboundSurface,
   type PageLedger,
@@ -47,6 +48,10 @@ export const WS_APPROVE_PREFIX = "wsap:";
 export const ACCENT = { info: 0x5865f2, success: 0x23a55a, danger: 0xf23f43, warning: 0xf0b232 } as const;
 
 export const OFFLINE_NOTICE = "-# ⚠️ workspace offline — answering without workspace tools";
+export const LOGIN_OFFLINE = "-# ⚠️ workspace offline — can't log in right now";
+/** Discord's limit on a link button's url. */
+export const LINK_BUTTON_URL_MAX = 512;
+export const SIGN_IN_LABEL = "Sign in with ChatGPT";
 export const NEW_WHILE_OFFLINE = "-# ⚠️ workspace offline — its session is unchanged; send `!new` again once it's back";
 
 const PROGRESS_LINES = 8;
@@ -146,6 +151,16 @@ function noticeMessage(notice: RouterNotice): string | MessageCreateOptions {
       return "Already answered.";
     case "askNotDelivered":
       return `Couldn't deliver the answer: ${notice.error}`;
+    case "loginOffline":
+      return LOGIN_OFFLINE;
+    case "loginAlreadyPending":
+      return "A ChatGPT sign-in is already in progress — paste the callback URL here, or send `!login cancel`.";
+    case "loginNotPending":
+      return "No ChatGPT sign-in in progress — send `!login chatgpt` to start one.";
+    case "loginFailed":
+      return `Couldn't reach the ChatGPT sign-in: ${notice.error}`;
+    case "loginUsage":
+      return "Usage: `!login chatgpt` to sign in, `!login cancel` to abort.";
   }
 }
 
@@ -218,6 +233,12 @@ export class DiscordWorkspaceAdapter<P extends OwnerDmMessage = OwnerDmMessage> 
     const channel = await this.channel();
     if (attempt.plain) await sendPlain(channel, ask.question);
     else await channel.send(renderAsk(ask));
+  }
+
+  async authPrompt(_origin: ChatOrigin | null, view: AuthPromptView, attempt: SendAttempt): Promise<void> {
+    const channel = await this.channel();
+    if (attempt.plain) await sendPlain(channel, `${SIGN_IN_LABEL}: ${view.url}\n${view.instructions}`);
+    else await channel.send(renderAuthPrompt(view));
   }
 
   progressEditGap(ageMs: number): number {
@@ -318,10 +339,25 @@ export function renderAsk(ask: AskView): MessageCreateOptions {
   return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
 }
 
+/** The sign-in prompt: a link button to the URL, or a masked link when the URL is longer than a button allows. */
+export function renderAuthPrompt(view: AuthPromptView): MessageCreateOptions {
+  const https = /^https:\/\//i.test(view.url);
+  const fitsButton = https && view.url.length <= LINK_BUTTON_URL_MAX;
+  const link = !https ? `\`${codeBlockSafe(view.url)}\`` : fitsButton ? null : `**[${SIGN_IN_LABEL}](${view.url.replace(/[()]/g, (c) => (c === "(" ? "%28" : "%29"))})**`;
+  const instructions = view.instructions.replace(/\s+/g, " ").trim();
+  const container = new ContainerBuilder()
+    .setAccentColor(ACCENT.info)
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: ["### 🔑 ChatGPT sign-in", link, `-# ${instructions}`].filter(Boolean).join("\n") }));
+  if (fitsButton) {
+    container.addActionRowComponents(new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setLabel(SIGN_IN_LABEL).setStyle(ButtonStyle.Link).setURL(view.url)));
+  }
+  return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
+}
+
 /** A delivery as the Discord messages it becomes. */
 export function renderDelivery(p: ChatDeliverParams, toolCount: number | null = null): MessageCreateOptions[] {
   const d = deliveryView(p, toolCount);
-  return d.type === "ask" ? [renderAsk(d.view)] : renderReplyPages(d.view);
+  return d.type === "ask" ? [renderAsk(d.view)] : d.type === "auth" ? [renderAuthPrompt(d.view)] : renderReplyPages(d.view);
 }
 
 export function renderWorking(view: Pick<ProgressView, "turnId" | "startedAt" | "lines">): MessageCreateOptions & MessageEditOptions {

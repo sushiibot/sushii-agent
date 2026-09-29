@@ -3,9 +3,9 @@ import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import type { ToolEntry, ToolHosts } from "../../core/contracts.ts";
-import { RPC_METHODS, chatDeliverParams, chatEventParams, chatMessageParams, type ChatDeliverParams, type ChatEventPayload, type ChatOrigin } from "../contracts.ts";
+import { AUTH_METHODS, LOGIN_ALREADY_PENDING, RPC_METHODS, chatDeliverParams, chatEventParams, chatMessageParams, type ChatDeliverParams, type ChatEventPayload, type ChatOrigin } from "../contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../transport/server.ts";
-import { WorkspaceLink, type WorkspaceRpc } from "./link.ts";
+import { LOGIN_PENDING_MS, WorkspaceLink, type WorkspaceRpc } from "./link.ts";
 import type { Timers } from "./progress.ts";
 import { handleOwnerMessage } from "./router.ts";
 import {
@@ -15,6 +15,7 @@ import {
   type ApprovalDecision,
   type ApprovalView,
   type AskView,
+  type AuthPromptView,
   type InboundMessage,
   type ProgressFinal,
   type ProgressView,
@@ -67,6 +68,10 @@ class FakeAdapter implements SurfaceAdapter {
   }
   async askPrompt(origin: ChatOrigin | null, ask: AskView, _attempt: SendAttempt): Promise<void> {
     this.calls.push({ method: "askPrompt", origin, arg: ask });
+  }
+  async authPrompt(origin: ChatOrigin | null, view: AuthPromptView, _attempt: SendAttempt): Promise<void> {
+    this.check();
+    this.calls.push({ method: "authPrompt", origin, arg: view });
   }
   progressEditGap(): number {
     return this.gap;
@@ -691,5 +696,188 @@ describe("preferred surface", () => {
     expect(() => registry.assertPreferredRegistered()).not.toThrow();
     const typo = new SurfaceRegistry("discrod").register(new FakeAdapter("discord"));
     expect(() => typo.assertPreferredRegistered()).toThrow('WORKSPACE_PREFERRED_SURFACE "discrod" has no adapter; registered: discord');
+  });
+});
+
+describe("ChatGPT login from the surface", () => {
+  const CODE = "SECRET-CODE";
+  const PASTE = `http://127.0.0.1:1455/auth/callback?code=${CODE}&state=s1&client_id=c1`;
+
+  class AuthRpc extends FakeRpc {
+    replies: Record<string, (params: unknown) => unknown> = {
+      [AUTH_METHODS.start]: () => ({ started: true }),
+      [AUTH_METHODS.complete]: () => ({ ok: true, model: "gpt-6.1-sol" }),
+      [AUTH_METHODS.cancel]: () => ({ cancelled: true }),
+    };
+    override async requestWorkspace(p: string, method: string, params: unknown): Promise<unknown> {
+      const reply = this.replies[method];
+      if (!reply) return super.requestWorkspace(p, method, params);
+      this.calls.push({ method, params });
+      return reply(params);
+    }
+  }
+
+  function setupLogin(opts: { workspaceEnabled?: boolean; isOwner?: boolean } = {}) {
+    const discord = new FakeAdapter("discord", { richButtons: true });
+    const surfaces = new SurfaceRegistry("discord").register(discord);
+    const store = newStore();
+    const rpc = new AuthRpc();
+    let now = 1_000_000;
+    const logs: Array<{ obj: object; msg: string }> = [];
+    const link = new WorkspaceLink({
+      principalId: P,
+      store,
+      surfaces,
+      owner: () => ({ id: "owner-1", name: "drk" }),
+      timers: immediate,
+      now: () => now,
+      isOwner: () => opts.isOwner ?? true,
+      authLog: { info: (obj, msg) => logs.push({ obj, msg }), warn: (obj, msg) => logs.push({ obj, msg }) },
+    });
+    link.attach(rpc);
+    let seq = 0;
+    const send = (text: string) =>
+      handleOwnerMessage(
+        { origin: DISCORD, id: `m${++seq}`, text, author: { id: "owner-1", name: "drk" }, isVoice: false, attachments: [] },
+        { workspaceEnabled: opts.workspaceEnabled ?? true, transcriptionEnabled: false, link, surface: discord, cursor: { advance: () => {} } },
+      );
+    const methods = () => rpc.calls.map((c) => c.method);
+    const deliver = (p: Partial<ChatDeliverParams>) => rpc.handler!.onRequest!(CONN, RPC_METHODS.chatDeliver, deliverParams(p));
+    return { link, rpc, store, discord, send, methods, logs, deliver, advance: (ms: number) => (now += ms) };
+  }
+
+  test("!login chatgpt starts a login from the message's origin", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    expect(t.rpc.calls).toEqual([{ method: AUTH_METHODS.start, params: { principalId: P, provider: "openai", origin: DISCORD } }]);
+    expect(t.discord.of("ack").map((c) => c.arg)).toEqual(["accepted"]);
+    expect(t.link.isLoginPending()).toBe(true);
+  });
+
+  test("the pasted callback goes only to auth/complete: never chat/message, the inbox, the fallback or a log", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    await t.send(`  ${PASTE}  `);
+    expect(t.methods()).toEqual([AUTH_METHODS.start, AUTH_METHODS.complete]);
+    expect(t.rpc.calls[1]!.params).toEqual({ principalId: P, input: PASTE });
+    expect(t.store.listInbox(P)).toEqual([]);
+    expect(t.discord.of("fallbackReply")).toEqual([]);
+    expect(t.discord.of("notice")).toEqual([]);
+    expect(t.logs.length).toBeGreaterThan(0);
+    expect(JSON.stringify(t.logs)).not.toContain(CODE);
+    expect(t.link.isLoginPending()).toBe(false);
+  });
+
+  test("the localhost spelling is intercepted too", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    await t.send(PASTE.replace("127.0.0.1", "localhost"));
+    expect(t.methods()).toEqual([AUTH_METHODS.start, AUTH_METHODS.complete]);
+  });
+
+  test("any other message while pending routes normally, and the login stays pending", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    await t.send("what's the weather?");
+    await t.send("https://example.com/auth/callback?code=x");
+    expect(t.methods()).toEqual([AUTH_METHODS.start, RPC_METHODS.chatMessage, RPC_METHODS.chatMessage]);
+    expect(t.link.isLoginPending()).toBe(true);
+  });
+
+  test("a callback URL with no login pending is an ordinary message", async () => {
+    const t = setupLogin();
+    await t.send(PASTE);
+    expect(t.methods()).toEqual([RPC_METHODS.chatMessage]);
+  });
+
+  test("pending expires with the workspace's login timeout", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    t.advance(LOGIN_PENDING_MS);
+    expect(t.link.isLoginPending()).toBe(false);
+    await t.send(PASTE);
+    expect(t.methods()).toEqual([AUTH_METHODS.start, RPC_METHODS.chatMessage]);
+  });
+
+  test("owner-only: another user's !login and paste are not handled as a login", async () => {
+    const t = setupLogin({ isOwner: false });
+    await t.send("!login chatgpt");
+    expect(t.methods()).toEqual([RPC_METHODS.chatMessage]);
+    expect(t.link.isLoginPending()).toBe(false);
+  });
+
+  test("offline: the notice, and no request", async () => {
+    const t = setupLogin();
+    t.rpc.connected = false;
+    await t.send("!login chatgpt");
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginOffline" }]);
+    expect(t.rpc.calls).toEqual([]);
+
+    const disabled = setupLogin({ workspaceEnabled: false });
+    await disabled.send("!login chatgpt");
+    expect(disabled.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginOffline" }]);
+  });
+
+  test("a paste while pending but offline is still kept from the fallback agent", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    t.rpc.connected = false;
+    await t.send(PASTE);
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginOffline" }]);
+    expect(t.discord.of("fallbackReply")).toEqual([]);
+    expect(t.store.listInbox(P)).toEqual([]);
+    expect(t.link.isLoginPending()).toBe(true);
+  });
+
+  test("double start: the notice, and the paste is still intercepted", async () => {
+    const t = setupLogin();
+    t.rpc.replies[AUTH_METHODS.start] = () => {
+      throw new Error(LOGIN_ALREADY_PENDING);
+    };
+    await t.send("!login chatgpt");
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginAlreadyPending" }]);
+    expect(t.link.isLoginPending()).toBe(true);
+  });
+
+  test("!login cancel cancels and clears pending; with none running it says so", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    await t.send("!login cancel");
+    expect(t.methods()).toEqual([AUTH_METHODS.start, AUTH_METHODS.cancel]);
+    expect(t.discord.of("ack").map((c) => c.arg)).toEqual(["accepted", "stopped"]);
+    expect(t.link.isLoginPending()).toBe(false);
+
+    t.rpc.replies[AUTH_METHODS.cancel] = () => ({ cancelled: false });
+    await t.send("!login cancel");
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginNotPending" }]);
+  });
+
+  test("an unknown !login argument gets the usage line", async () => {
+    const t = setupLogin();
+    await t.send("!login claude");
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginUsage" }]);
+    expect(t.rpc.calls).toEqual([]);
+  });
+
+  test("a paste the workspace has no login for gets the not-pending notice", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    t.rpc.replies[AUTH_METHODS.complete] = () => ({ ok: false, error: "none", inactive: true });
+    await t.send(PASTE);
+    expect(t.discord.of("notice").map((c) => c.arg)).toEqual([{ type: "loginNotPending" }]);
+  });
+
+  test("the auth delivery renders the sign-in prompt; the result reply clears pending", async () => {
+    const t = setupLogin();
+    await t.send("!login chatgpt");
+    await t.deliver({ outboxId: "a1", kind: "auth", text: "Sign in with ChatGPT", origin: DISCORD, auth: { url: "https://auth.openai.com/x", instructions: "paste it" } });
+    await tick();
+    expect(t.discord.of("authPrompt")).toEqual([{ method: "authPrompt", origin: DISCORD, arg: { url: "https://auth.openai.com/x", instructions: "paste it" } }]);
+    expect(t.link.isLoginPending()).toBe(true);
+
+    await t.deliver({ outboxId: "a2", kind: "reply", text: "⌛ timed out", origin: DISCORD, authResult: "timeout" });
+    await tick();
+    expect(t.discord.of("sendReply").map((c) => (c.arg as ReplyView).text)).toEqual(["⌛ timed out"]);
+    expect(t.link.isLoginPending()).toBe(false);
   });
 });

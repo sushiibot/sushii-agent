@@ -72,6 +72,19 @@ describe("parseResetAt", () => {
 });
 
 describe("BackendSelector", () => {
+  test("reports only auth failures to onAuthFailure, and reset ends the cool-down", () => {
+    let authFailures = 0;
+    const s = new BackendSelector({ primaryEnabled: true, onAuthFailure: () => authFailures++ });
+    s.onChatGptFailure("usage limit reached");
+    expect(authFailures).toBe(0);
+    s.onChatGptFailure("OAuth refresh failed: invalid_grant");
+    expect(authFailures).toBe(1);
+    expect(s.select(true)).toBe("openrouter");
+    s.reset();
+    expect(s.coolingDownUntil).toBeNull();
+    expect(s.select(true)).toBe("chatgpt");
+  });
+
   test("uses OpenRouter when ChatGPT isn't configured or signed in", () => {
     expect(new BackendSelector({ primaryEnabled: false }).select(true)).toBe("openrouter");
     expect(new BackendSelector({ primaryEnabled: true }).select(false)).toBe("openrouter");

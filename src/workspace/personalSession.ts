@@ -784,6 +784,21 @@ export class PersonalSession {
     this.send(entry);
   }
 
+  /** A message outside any turn (a login prompt or result, a notice): outboxed like a reply, never added to the session. */
+  deliverOutOfBand(d: Pick<ChatDeliverParams, "kind" | "text" | "origin" | "auth" | "authResult">): void {
+    const entry: ChatDeliverParams = {
+      ...(d.origin ? { origin: d.origin } : {}),
+      outboxId: this.newId(),
+      principalId: this.opts.principalId,
+      kind: d.kind,
+      text: d.text,
+      ...(d.auth ? { auth: d.auth } : {}),
+      ...(d.authResult ? { authResult: d.authResult } : {}),
+    };
+    this.outbox.append(entry);
+    this.send(entry);
+  }
+
   private deliverFailure(err: unknown, replyTo: string | undefined, turnId: string | undefined, origin: ChatOrigin | undefined): void {
     this.deliver(failureNotice(err instanceof Error ? err.message : String(err)), replyTo || undefined, turnId, origin);
   }

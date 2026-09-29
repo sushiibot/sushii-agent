@@ -181,12 +181,16 @@ export const chatDeliverParams = z.object({
   origin: chatOrigin.optional(),
   outboxId: z.string(),
   principalId: z.string(),
-  kind: z.enum(["reply", "proactive", "ask"]),
+  kind: z.enum(["reply", "proactive", "ask", "auth"]),
   text: z.string(),
   replyTo: z.string().optional(),
   turnId: z.string().optional(),
   usage: chatUsage.optional(),
   ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
+  // kind "auth": a sign-in link to open.
+  auth: z.object({ url: z.string().url().max(4096), instructions: z.string() }).optional(),
+  // Set on the reply that ends a surface login, so the bot stops treating pastes as its callback.
+  authResult: z.enum(["ok", "failed", "cancelled", "timeout"]).optional(),
 });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
 
@@ -211,6 +215,36 @@ export const chatEventParams = z.object({
   ev: chatEventPayload,
 });
 export type ChatEventParams = z.infer<typeof chatEventParams>;
+
+// ── ChatGPT sign-in from a chat surface (bot → workspace requests). ──
+// The workspace answers auth/start, then sends the sign-in link as chat/deliver kind "auth" and, when the
+// login ends, a chat/deliver kind "reply" carrying authResult.
+export const AUTH_METHODS = {
+  start: "auth/start",
+  complete: "auth/complete",
+  cancel: "auth/cancel",
+} as const;
+
+/** auth/start's error message when a login is already running. */
+export const LOGIN_ALREADY_PENDING = "a ChatGPT sign-in is already in progress";
+
+export const authStartParams = z.object({ principalId: z.string(), provider: z.literal("openai"), origin: chatOrigin });
+export type AuthStartParams = z.infer<typeof authStartParams>;
+export interface AuthStartResult {
+  started: true;
+}
+
+/** `input` is the pasted callback URL; it carries the authorization code, so it is never logged. */
+export const authCompleteParams = z.object({ principalId: z.string(), input: z.string().max(8192) });
+export type AuthCompleteParams = z.infer<typeof authCompleteParams>;
+/** `inactive`: no login was running, so no result delivery follows. */
+export type AuthCompleteResult = { ok: true; model?: string } | { ok: false; error: string; inactive?: true };
+
+export const authCancelParams = z.object({ principalId: z.string() });
+export type AuthCancelParams = z.infer<typeof authCancelParams>;
+export interface AuthCancelResult {
+  cancelled: boolean;
+}
 
 // ── Bot-proxied tools (workspace → bot). ──
 export const TOOL_APPROVALS = ["none", "ask"] as const;
