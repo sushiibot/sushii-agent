@@ -364,6 +364,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     },
   });
   const workspaceSurfaces = new SurfaceRegistry(config.workspacePreferredSurface).register(discordWorkspace);
+  if (!workspaceSurfaces.get(config.workspacePreferredSurface)) {
+    logger.warn({ surface: config.workspacePreferredSurface }, "WORKSPACE_PREFERRED_SURFACE has no adapter; proactive messages and approvals will fail");
+  }
   const workspaceTools = new WorkspaceTools({
     principalId: resolveOwnerPrincipalId(),
     ownerUserId: () => config.ownerDiscordId,
