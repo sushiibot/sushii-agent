@@ -121,6 +121,8 @@ export const RPC_METHODS = {
   // Workspace → bot: deliver is a request (bot replies {} then later sends chat/ack); event is a notification.
   chatDeliver: "chat/deliver",
   chatEvent: "chat/event",
+  // Workspace → bot request: run one of the bot's secret-holding tools (manifest sent in the register result).
+  toolCall: "tool/call",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -196,6 +198,34 @@ export const chatEventParams = z.object({
   ev: chatEventPayload,
 });
 export type ChatEventParams = z.infer<typeof chatEventParams>;
+
+// ── Bot-proxied tools (workspace → bot). ──
+export const TOOL_APPROVALS = ["none", "ask"] as const;
+export type ToolApproval = (typeof TOOL_APPROVALS)[number];
+
+export const toolManifestEntry = z.object({
+  name: z.string(),
+  description: z.string(),
+  inputSchema: z.record(z.unknown()), // JSON Schema (draft 7 subset)
+  approval: z.enum(TOOL_APPROVALS),
+});
+export type ToolManifestEntry = z.infer<typeof toolManifestEntry>;
+
+/** The register result a `role: "workspace"` connection receives. */
+export const workspaceRegisterResult = z.object({ ok: z.literal(true), tools: z.array(toolManifestEntry) });
+export type WorkspaceRegisterResult = z.infer<typeof workspaceRegisterResult>;
+
+export const toolCallParams = z.object({
+  principalId: z.string(),
+  callId: z.string(),
+  name: z.string(),
+  args: z.unknown(),
+  agentId: z.string(), // "main" | <runId>
+  agentName: z.string(),
+  parentRunId: z.string().optional(),
+});
+export type ToolCallParams = z.infer<typeof toolCallParams>;
+export type ToolCallResult = { ok: true; result: string } | { ok: false; error: string; denied?: boolean };
 
 export const jsonRpcRequest = z.object({
   jsonrpc: z.literal("2.0"),

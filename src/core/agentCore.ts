@@ -7,12 +7,15 @@ import type {
   AuthorRef,
   CancelOutcome,
   ConversationRef,
+  ConversationStore,
   InboundMessage,
   MemoryProvider,
   MemoryScope,
   PendingInteraction,
+  SpaceMemoryStore,
   SurfaceSession,
   ToolContext,
+  ToolHosts,
   TurnEndContext,
   TurnResumption,
 } from "./contracts.ts";
@@ -24,6 +27,25 @@ import { buildUserNote, formatResumptionAsUserTurn } from "./prompt.ts";
 import { assembleSystemPrompt } from "./systemPrompt.ts";
 import { MEMORY_LIMIT, CORE_PROFILE_TITLE } from "./stores/index.ts";
 import { fireHook, runLoop } from "./loop.ts";
+
+/** The per-turn tool context every tool execution starts from (the loop adds owner, turnId and sinks). */
+export function buildToolContextBase(input: {
+  conversation: ConversationRef;
+  isPrivate: boolean;
+  store: ConversationStore;
+  memory: SpaceMemoryStore;
+  hosts: ToolHosts;
+}): Omit<ToolContext, "owner"> {
+  return {
+    space: { surface: input.conversation.surface, spaceId: input.conversation.spaceId },
+    isPrivate: input.isPrivate,
+    privacyUnverified: input.conversation.privacyUnverified,
+    store: input.store,
+    memory: input.memory,
+    log: undefined,
+    ...input.hosts,
+  };
+}
 
 function sameAuthor(a: AuthorRef, b: AuthorRef): boolean {
   return a.surface === b.surface && a.userId === b.userId;
@@ -191,15 +213,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
       moduleExtras: pc.moduleExtras,
     });
 
-    const toolContextBase: Omit<ToolContext, "owner"> = {
-      space: { surface: conversation.surface, spaceId: conversation.spaceId },
-      isPrivate,
-      privacyUnverified: conversation.privacyUnverified,
-      store: deps.store,
-      memory: deps.memory,
-      log: undefined,
-      ...session.hosts,
-    };
+    const toolContextBase = buildToolContextBase({ conversation, isPrivate, store: deps.store, memory: deps.memory, hosts: session.hosts });
 
     fireHook(deps.hooks, "onTurnStart", { conversation, author: turn.initiator });
 

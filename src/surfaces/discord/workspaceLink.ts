@@ -17,6 +17,8 @@ import {
   type ChatEventParams,
   type ChatMessageParams,
   type ChatMessageResult,
+  type ToolCallResult,
+  type ToolManifestEntry,
 } from "../../orchestration/contracts.ts";
 import { MethodNotFoundError, type ConnectionInfo, type WorkspaceHandler } from "../../orchestration/transport/server.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
@@ -101,6 +103,14 @@ export interface WorkspaceLinkOptions {
   owner: () => { id: string; name: string };
   now?: () => number;
   timers?: Timers;
+  /** Serves `tool/call` and the register result's tool manifest; absent → no tools offered. */
+  tools?: WorkspaceToolsPort;
+}
+
+export interface WorkspaceToolsPort {
+  manifest(): ToolManifestEntry[];
+  handleCall(conn: ConnectionInfo, params: unknown): Promise<ToolCallResult>;
+  onSocketClosed(conn: ConnectionInfo): void;
 }
 
 type ToolLine = { name: string; summary: string; state: "run" | "ok" | "err" };
@@ -158,6 +168,8 @@ export class WorkspaceLink {
       onDisconnect: (conn) => {
         if (conn.principalId === this.opts.principalId) log.info({ runnerId: conn.runnerId }, "workspace disconnected");
       },
+      onSocketClosed: (conn) => this.opts.tools?.onSocketClosed(conn),
+      toolManifest: (conn) => (conn.principalId === this.opts.principalId ? (this.opts.tools?.manifest() ?? []) : []),
       onRequest: (conn, method, params) => this.onRequest(conn, method, params),
       onNotification: (conn, method, params) => this.onNotification(conn, method, params),
     };
@@ -282,6 +294,7 @@ export class WorkspaceLink {
   }
 
   private async onRequest(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown> {
+    if (method === RPC_METHODS.toolCall && this.opts.tools) return this.opts.tools.handleCall(conn, params);
     if (method !== RPC_METHODS.chatDeliver) throw new MethodNotFoundError(`method not found: ${method}`);
     const p = chatDeliverParams.parse(params);
     if (p.principalId !== conn.principalId || p.principalId !== this.opts.principalId) throw new Error("principal mismatch");

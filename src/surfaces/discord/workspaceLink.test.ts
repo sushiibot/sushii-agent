@@ -449,3 +449,43 @@ describe("connection wait", () => {
     expect(await timingOut).toBe(false);
   });
 });
+
+describe("bot-proxied tools", () => {
+  function withTools() {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const seen: string[] = [];
+    const rpc = new FakeRpc([]);
+    const link = new WorkspaceLink({
+      principalId: P,
+      store: new WorkspaceLinkStore(db),
+      ownerChannel: async () => null,
+      owner: () => ({ id: "owner-1", name: "drk" }),
+      tools: {
+        manifest: () => [{ name: "web_search", description: "d", inputSchema: { type: "object" }, approval: "none" }],
+        handleCall: async (_conn, params) => {
+          seen.push(`call:${(params as { name: string }).name}`);
+          return { ok: true, result: "r" };
+        },
+        onSocketClosed: (conn) => void seen.push(`closed:${conn.runnerId}`),
+      },
+    });
+    link.attach(rpc);
+    return { handler: rpc.handler!, seen };
+  }
+
+  test("tool/call, the manifest and socket closes route to the tools port", async () => {
+    const { handler, seen } = withTools();
+    expect(await handler.onRequest!(CONN, RPC_METHODS.toolCall, { name: "web_search" })).toEqual({ ok: true, result: "r" });
+    expect(handler.toolManifest!(CONN).map((t) => t.name)).toEqual(["web_search"]);
+    expect(handler.toolManifest!({ ...CONN, principalId: "someone-else" })).toEqual([]);
+    handler.onSocketClosed!(CONN);
+    expect(seen).toEqual(["call:web_search", `closed:${CONN.runnerId}`]);
+  });
+
+  test("without a tools port, tool/call is method-not-found and the manifest is empty", async () => {
+    const { rpc } = setup();
+    await expect(rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCall, {})).rejects.toThrow("method not found");
+    expect(rpc.handler!.toolManifest!(CONN)).toEqual([]);
+  });
+});

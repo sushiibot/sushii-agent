@@ -52,7 +52,8 @@ import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 import { resolveOwnerPrincipalId } from "../../orchestration/transport/server.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, type DmChannelPort } from "./workspaceLink.ts";
-import { handleWorkspaceAskButton, handleWorkspaceStopButton } from "./workspaceButtons.ts";
+import { handleWorkspaceApprovalButton, handleWorkspaceAskButton, handleWorkspaceStopButton } from "./workspaceButtons.ts";
+import { WS_APPROVE_PREFIX, WorkspaceTools } from "./workspaceTools.ts";
 import {
   OWNER_DM_CURSOR_KEY,
   catchUpOwnerDms,
@@ -330,15 +331,24 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     get: () => linkStore.getKv(OWNER_DM_CURSOR_KEY),
     set: (id) => linkStore.setKv(OWNER_DM_CURSOR_KEY, id),
   };
+  const ownerChannel = async (): Promise<DmChannelPort | null> => {
+    if (!config.ownerDiscordId) return null;
+    const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
+    return user ? await user.createDM() : null;
+  };
+  const workspaceTools = new WorkspaceTools({
+    principalId: resolveOwnerPrincipalId(),
+    ownerUserId: () => config.ownerDiscordId,
+    ownerChannel,
+    store,
+    memory,
+  });
   const workspaceLink = new WorkspaceLink({
     principalId: resolveOwnerPrincipalId(),
     store: linkStore,
-    ownerChannel: async (): Promise<DmChannelPort | null> => {
-      if (!config.ownerDiscordId) return null;
-      const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
-      return user ? await user.createDM() : null;
-    },
+    ownerChannel,
     owner: () => ({ id: config.ownerDiscordId ?? "", name: "owner" }),
+    tools: workspaceTools,
   });
 
   function ownerDmMessage(message: Message): OwnerDmMessage | null {
@@ -902,6 +912,10 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     }
     if (btn.customId.startsWith(WS_ASK_PREFIX)) {
       await handleWorkspaceAskButton(btn, { ownerId: config.ownerDiscordId, link: workspaceLink });
+      return;
+    }
+    if (btn.customId.startsWith(WS_APPROVE_PREFIX)) {
+      await handleWorkspaceApprovalButton(btn, { ownerId: config.ownerDiscordId, tools: workspaceTools });
       return;
     }
   });

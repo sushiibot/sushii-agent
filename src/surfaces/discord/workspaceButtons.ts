@@ -1,11 +1,12 @@
 import { MessageFlags, type ButtonInteraction } from "discord.js";
 import { getLogger } from "../../logger.ts";
 import { WS_ASK_PREFIX, WS_STOP_PREFIX, answeredAsk, type WorkspaceLink } from "./workspaceLink.ts";
+import { parseApprovalId, type WorkspaceTools } from "./workspaceTools.ts";
 
 const log = getLogger("surfaces/discord/workspaceButtons");
 
 /** The ButtonInteraction surface these handlers use; tests pass a fake. */
-export type WorkspaceButtonInteraction = Pick<ButtonInteraction, "customId" | "id" | "user" | "component" | "message" | "reply" | "deferReply" | "editReply">;
+export type WorkspaceButtonInteraction = Pick<ButtonInteraction, "customId" | "id" | "user" | "component" | "message" | "reply" | "deferReply" | "editReply" | "deferUpdate">;
 
 export interface WorkspaceButtonDeps {
   ownerId: string | undefined;
@@ -69,4 +70,21 @@ export async function handleWorkspaceAskButton(interaction: WorkspaceButtonInter
   } catch (err) {
     await interaction.editReply(`Couldn't deliver the answer: ${errorText(err)}`).catch(() => {});
   }
+}
+
+/** Approve/Deny on a tool approval prompt. The pending tool/call edits the prompt itself once decided. */
+export async function handleWorkspaceApprovalButton(
+  interaction: WorkspaceButtonInteraction,
+  deps: { ownerId: string | undefined; tools: Pick<WorkspaceTools, "decide"> },
+): Promise<void> {
+  if (!deps.ownerId || interaction.user.id !== deps.ownerId) {
+    await interaction.reply({ content: "Only the owner can approve this.", flags: MessageFlags.Ephemeral }).catch(() => {});
+    return;
+  }
+  const parsed = parseApprovalId(interaction.customId);
+  if (!parsed || !deps.tools.decide(parsed.callId, parsed.decision)) {
+    await interaction.reply({ content: "This approval has expired.", flags: MessageFlags.Ephemeral }).catch(() => {});
+    return;
+  }
+  await interaction.deferUpdate().catch(() => {});
 }

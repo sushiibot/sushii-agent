@@ -157,4 +157,71 @@ describe("workspace handler routing", () => {
       server.stop();
     }
   });
+  test("socket-closed fires for every workspace socket, a replaced one included", async () => {
+    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const closed: string[] = [];
+    server.setWorkspaceHandler({ onSocketClosed: (conn) => closed.push(conn.runnerId) });
+    server.listen();
+    const first = workspaceClient(server.url, {}, "ws-a");
+    const second = workspaceClient(server.url, {}, "ws-b");
+    try {
+      await first.connect();
+      await second.connect();
+      await until(() => closed.length > 0);
+      expect(closed).toEqual(["ws-a"]);
+      second.close();
+      await until(() => closed.length > 1);
+      expect(closed).toEqual(["ws-a", "ws-b"]);
+    } finally {
+      first.close();
+      second.close();
+      server.stop();
+    }
+  });
+});
+
+describe("workspace register result", () => {
+  const TOOLS = [{ name: "web_search", description: "search", inputSchema: { type: "object" }, approval: "none" as const }];
+
+  async function registerRaw(url: string, role: "workspace" | "task-runner", secret: string | undefined): Promise<unknown> {
+    const ws = new WebSocket(url);
+    try {
+      await new Promise((resolve, reject) => {
+        ws.addEventListener("open", resolve);
+        ws.addEventListener("error", reject);
+      });
+      const reply = new Promise<unknown>((resolve) => ws.addEventListener("message", (e) => resolve(JSON.parse(String(e.data)))));
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: RPC_METHODS.register, params: { runnerId: `r-${role}`, kind: "pi", role, protocolVersion: 1, ...(secret ? { secret } : {}) } }));
+      return await reply;
+    } finally {
+      ws.close();
+    }
+  }
+
+  test("a workspace gets the tool manifest; a task runner gets the plain ok", async () => {
+    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    server.setWorkspaceHandler({ toolManifest: () => TOOLS });
+    server.listen();
+    try {
+      expect(await registerRaw(server.url, "workspace", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true, tools: TOOLS } });
+      expect(await registerRaw(server.url, "task-runner", undefined)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true } });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a failing manifest still registers, with no tools", async () => {
+    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    server.setWorkspaceHandler({
+      toolManifest: () => {
+        throw new Error("boom");
+      },
+    });
+    server.listen();
+    try {
+      expect(await registerRaw(server.url, "workspace", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true, tools: [] } });
+    } finally {
+      server.stop();
+    }
+  });
 });

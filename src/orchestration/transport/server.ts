@@ -13,6 +13,8 @@ import {
   type RegisterParams,
   type RepoSpec,
   type RunnerEvent,
+  type ToolManifestEntry,
+  type WorkspaceRegisterResult,
 } from "../contracts.ts";
 import { config } from "../../config.ts";
 import { ownerPrincipalId } from "../principals.ts";
@@ -31,6 +33,10 @@ export interface WorkspaceHandler {
   onRegister?(conn: ConnectionInfo): void;
   /** Fires only when the closing socket was still the principal's live workspace, not on a replace. */
   onDisconnect?(conn: ConnectionInfo): void;
+  /** Fires for every closed workspace socket, a replaced one included, with that socket's own conn. */
+  onSocketClosed?(conn: ConnectionInfo): void;
+  /** Tools advertised in the workspace's register result. */
+  toolManifest?(conn: ConnectionInfo): ToolManifestEntry[];
   /** Returns the result; throwing answers with a JSON-RPC error. Unknown methods throw MethodNotFoundError. */
   onRequest?(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown>;
   onNotification?(conn: ConnectionInfo, method: string, params: unknown): void;
@@ -253,6 +259,13 @@ export class OrchestrationServer {
         logger.warn({ err, runnerId: conn.runnerId }, "workspace disconnect hook failed");
       }
     }
+    if (conn?.role === "workspace") {
+      try {
+        this.workspaceHandler?.onSocketClosed?.(conn);
+      } catch (err) {
+        logger.warn({ err, runnerId: conn.runnerId }, "workspace socket-closed hook failed");
+      }
+    }
     if (ws.data.runnerId && this.sockets.get(ws.data.runnerId) === ws) {
       this.sockets.delete(ws.data.runnerId);
       if (conn?.role !== "workspace") this.options.onDisconnect?.(ws.data.runnerId);
@@ -386,9 +399,8 @@ export class OrchestrationServer {
       if (conn.role === "task-runner") {
         this.options.onRegister?.(params.runnerId, params.kind, params.projects, params.workspaceRoot, params.location, params.capabilities, params.ownerOnly);
       }
-      ws.send(
-        JSON.stringify({ jsonrpc: "2.0", id: req.data.id, result: { ok: true } }),
-      );
+      const result = conn.role === "workspace" ? this.workspaceRegisterResult(conn) : { ok: true };
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.data.id, result }));
       if (conn.role === "workspace") {
         try {
           this.workspaceHandler?.onRegister?.(conn);
@@ -406,6 +418,15 @@ export class OrchestrationServer {
       ws.data.pending.delete(res.data.id);
       if (res.data.error) pending.reject(new RpcErrorReply(res.data.error.message, res.data.error.code));
       else pending.resolve(res.data.result);
+    }
+  }
+
+  private workspaceRegisterResult(conn: ConnectionInfo): WorkspaceRegisterResult {
+    try {
+      return { ok: true, tools: this.workspaceHandler?.toolManifest?.(conn) ?? [] };
+    } catch (err) {
+      logger.warn({ err, runnerId: conn.runnerId }, "workspace tool manifest failed; registering with no tools");
+      return { ok: true, tools: [] };
     }
   }
 
