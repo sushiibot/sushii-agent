@@ -15,7 +15,7 @@ import { WorkspaceLink, type WorkspaceRpc } from "../orchestration/workspace/lin
 import type { Timers } from "../orchestration/workspace/progress.ts";
 import { SurfaceRegistry } from "../orchestration/workspace/surface.ts";
 import { handleOwnerDm, type DmCursor, type OwnerDmDeps, type OwnerDmMessage } from "../surfaces/discord/ownerDm.ts";
-import { handleWorkspaceStopButton, type WorkspaceButtonInteraction } from "../surfaces/discord/workspaceButtons.ts";
+import { handleWorkspaceAskButton, handleWorkspaceStopButton, type WorkspaceButtonInteraction } from "../surfaces/discord/workspaceButtons.ts";
 import { ACCENT, DiscordOwnerDmSurface, DiscordWorkspaceAdapter, OFFLINE_NOTICE, WS_STOP_PREFIX } from "../surfaces/discord/workspaceAdapter.ts";
 import { PersonalSession, type ChatSession, type ChatSessionFactory } from "./personalSession.ts";
 import { readWorkspaceState } from "./state.ts";
@@ -24,6 +24,11 @@ import { AuthLogin, type LoginFn } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import type { ToolEntry, ToolHosts } from "../core/contracts.ts";
 import { WorkspaceTools, type AuditLog, type ToolCallAudit, type WorkspaceToolsOptions } from "../orchestration/workspace/tools.ts";
+import { MainTurnTracker } from "./subagents/turnTracker.ts";
+import { Scheduler } from "./scheduler.ts";
+import { wireProactiveJobs } from "./proactive.ts";
+import { RunLog } from "./runLog.ts";
+import type { WorkspaceConfig } from "./config.ts";
 
 // One process: real OrchestrationServer + WorkspaceLink + owner-DM router on the bot side, real
 // OrchestrationClient + PersonalSession on the workspace side. Only Pi and Discord are faked.
@@ -382,6 +387,8 @@ interface Workspace {
   /** The Pi login the auth handlers run; tests replace it. */
   login: LoginFn;
   toolStubs: ToolStubs;
+  /** Follows main's turns from its outgoing chat/events, as index.ts does for subagent progress. */
+  turns: MainTurnTracker;
   sessions: FakePi[];
   stateDir: string;
   client: OrchestrationClient | null;
@@ -413,6 +420,7 @@ async function startWorkspace(): Promise<Workspace> {
       principalId: P,
       request: (method, params, timeoutMs) => (ws.client ? ws.client.request(method, params, { timeoutMs }) : Promise.reject(new Error("not connected"))),
     }),
+    turns: new MainTurnTracker(),
     sessions,
     stateDir,
     client: null,
@@ -469,7 +477,10 @@ async function startWorkspace(): Promise<Workspace> {
     textDeltaMs: null,
     transport: {
       request: (method, params) => (ws.client ? ws.client.request(method, params) : Promise.reject(new Error("not connected"))),
-      notify: (method, params) => ws.client?.notify(method, params),
+      notify: (method, params) => {
+        ws.turns.observe(method, params);
+        ws.client?.notify(method, params);
+      },
       isConnected: () => ws.client?.connected ?? false,
     },
     resendIntervalMs: 200,
@@ -852,6 +863,111 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     expect(h.r.bot.tools.decide(nonce, "approve", { surface: "discord", userId: OWNER, name: "drk" })).toBe("expired");
     expect(h.r.bot.filed).toEqual([]);
     h.ws.pi().reply("Stopped.");
+  });
+});
+
+describe("workspace e2e: delegate, scheduled jobs, auto-mode asks", () => {
+  test("11. a subagent's tool calls nest under the turn that delegated, and count toward its tools", async () => {
+    const h = await linked();
+    await connected(h);
+
+    await h.route.dm("1100", "research the outage");
+    h.ws.pi().toolStart("delegate", { agent: "researcher", task: "find the outage cause" });
+    await waitFor(() => h.dm.progress().length === 1, "progress message");
+    const progress = h.dm.progress()[0]!;
+    const turn = h.ws.turns.current();
+    expect(turn?.turnId).toBe(turnIdOf(progress));
+
+    // What SubagentHost.emit sends for the child's calls.
+    const child = (ev: { type: "tool_start"; name: string; summary: string } | { type: "tool_end"; name: string; ok: boolean }) =>
+      h.ws.client!.notify(RPC_METHODS.chatEvent, { principalId: P, turnId: turn!.turnId, agentId: "run-child-1", parentRunId: "run-main-1", ev });
+    child({ type: "tool_start", name: "read", summary: "incident.md" });
+    await waitFor(() => h.dm.current(progress).includes("↳"), "nested child line");
+    child({ type: "tool_end", name: "read", ok: true });
+    await waitFor(() => h.dm.current(progress).includes("↳ ✓ `read` incident.md"), "child line finished");
+
+    h.ws.pi().reply("The cert expired.");
+    await waitFor(() => h.dm.replies().length === 1, "reply");
+    await waitFor(() => h.dm.current(progress).includes("✓ done"), "progress finalized");
+    expect(h.dm.current(progress)).toContain("2 tools");
+  });
+
+  test("12. a scheduled job's reply reaches the DM as a proactive message and lands in the chat as context, with no turn", async () => {
+    const h = await linked();
+    await connected(h);
+    const home = tempDir();
+    const config = {
+      principalId: P,
+      home,
+      stateDir: h.ws.stateDir,
+      tz: "America/Los_Angeles",
+      heartbeat: { when: { kind: "every", minutes: 120 } },
+      proactiveDailyCap: 6,
+    } as unknown as WorkspaceConfig;
+    const scheduler = new Scheduler({ stateDir: h.ws.stateDir, at: "04:00", tz: config.tz });
+    cleanups.push(() => scheduler.stop());
+    const replies = ["Your passport renewal is due Friday.", "NO_REPLY"];
+    // The deliver and note wiring is index.ts's; only the job's model run is faked.
+    wireProactiveJobs(scheduler, {
+      config,
+      runs: new RunLog(h.ws.stateDir),
+      runner: async () => ({ text: replies.shift()! }) as Awaited<ReturnType<NonNullable<Parameters<typeof wireProactiveJobs>[1]["runner"]>>>,
+      deliver: (text) => h.ws.personal.deliverOutOfBand({ kind: "proactive", text }),
+      note: async (name, text) => {
+        await h.ws.personal.handleMessage({
+          origin: { surface: "workspace", conversationId: "schedule" },
+          principalId: P,
+          messageId: `job:${name}:1`,
+          text,
+          kind: "context",
+          author: { id: "workspace", name: "scheduler" },
+        });
+      },
+    });
+
+    expect(await scheduler.runJob("heartbeat", { trigger: "manual", force: true })).toMatchObject({ status: "sent" });
+    await waitFor(() => h.dm.replies().some((s) => textOf(s.options).includes("passport renewal")), "proactive DM");
+    expect(h.ws.pi().prompts).toEqual([]);
+    expect(JSON.stringify(h.ws.pi().customs)).toContain("You sent drk this proactive message: Your passport renewal is due Friday.");
+    await waitFor(() => h.ws.unacked().length === 0, "proactive delivery acked");
+
+    const before = h.dm.sent.length;
+    expect(await scheduler.runJob("heartbeat", { trigger: "manual", force: true })).toMatchObject({ status: "no_reply" });
+    expect(h.dm.sent).toHaveLength(before);
+  });
+
+  test("13. an auto-mode ask mid-turn becomes Yes/No buttons; the owner's click answers the dialog, not the agent", async () => {
+    const h = await linked();
+    await connected(h);
+
+    await h.route.dm("1300", "clean the build dir");
+    // What the auto-mode extension does on an "ask" verdict, through the session's bound UI context.
+    const allowed = h.ws.personal.ui.confirm("Auto mode: allow this tool call?", "bash: rm -rf build\n\nWhy it's asking: recursive delete");
+    const askOf = () => h.dm.sent.find((s) => textOf(s.options).includes("wsask:"));
+    await waitFor(() => askOf() !== undefined, "ask prompt");
+    const ask = askOf()!;
+    expect(textOf(ask.options)).toContain("rm -rf build");
+    const askId = /wsask:([A-Za-z0-9]+):0/.exec(textOf(ask.options))![1]!;
+
+    const editReplies: unknown[] = [];
+    const interaction = {
+      customId: `wsask:${askId}:0`,
+      id: "int-ask",
+      channelId: "dm",
+      user: { id: OWNER, username: "drk", globalName: "drk" },
+      component: { label: "Yes" },
+      message: { components: [], edit: async () => {} },
+      reply: async () => {},
+      deferReply: async () => {},
+      editReply: async (o: unknown) => void editReplies.push(o),
+    } as unknown as WorkspaceButtonInteraction;
+    await handleWorkspaceAskButton(interaction, { link: h.r.bot.link });
+
+    expect(await allowed).toBe(true);
+    expect(editReplies).toEqual(["Answered: Yes"]);
+    expect(h.ws.pi().prompts).toEqual([stamped("1300", "clean the build dir")]);
+    h.ws.pi().reply("Cleaned.");
+    await waitFor(() => h.dm.replies().some((s) => textOf(s.options).includes("Cleaned.")), "reply");
   });
 });
 
