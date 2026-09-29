@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { ContainerBuilder } from "discord.js";
 import { applySchema } from "../../db/index.ts";
 import type { GuildConfig } from "../../guildConfig.ts";
-import { classifyImage, classifyText, parseSafetyOutput, type ImageVerdict, type TextState, type TextVerdict } from "./classify.ts";
+import { classifyImage, classifyText, parseImageReview, type ImageVerdict, type TextState, type TextVerdict } from "./classify.ts";
 import { discordImageLink, extractImageLinks } from "./images.ts";
 import { ignorePost, judgedLines, recordAutomodBlock, recordMessagesDeleted, recordModAction, screenMessage, type AutomodBlock, type ScreenedMessage, type ScreeningDeps } from "./index.ts";
 import { buildVerdictPost, scoreBars, topRule, verdictRef } from "./render.ts";
@@ -67,7 +67,7 @@ function harness(text: Partial<TextVerdict["scores"]> = { scam: 0.9, promo: 0.1 
     },
     classifyImage: async (url) => {
       h.imageCalls.push(url);
-      return { unsafe: false, categories: [], model: "nvidia/nemotron-3.5-content-safety", cost: 0.0002, ...image };
+      return { unsafe: false, categories: [], reason: "A cat.", model: "google/gemini-2.5-flash-lite", cost: 0.0002, ...image };
     },
     post: async (channelId, container) => {
       h.posts.push({ channelId, container });
@@ -138,10 +138,11 @@ describe("image links", () => {
 });
 
 describe("classify", () => {
-  test("parseSafetyOutput", () => {
-    expect(parseSafetyOutput("User Safety: safe")).toEqual({ unsafe: false, categories: [] });
-    expect(parseSafetyOutput("User Safety: unsafe\nSafety Categories: Sexual, Violence")).toEqual({ unsafe: true, categories: ["Sexual", "Violence"] });
-    expect(() => parseSafetyOutput("I cannot help")).toThrow();
+  test("parseImageReview", () => {
+    expect(parseImageReview('{"category":"ok","reason":"A cat."}')).toEqual({ unsafe: false, categories: [], reason: "A cat." });
+    expect(parseImageReview('{"category":"hate","reason":"A swastika."}')).toEqual({ unsafe: true, categories: ["hate"], reason: "A swastika." });
+    expect(() => parseImageReview('{"category":"violence","reason":""}')).toThrow();
+    expect(() => parseImageReview("I cannot help")).toThrow();
   });
 
   test("classifyText sends one noul per rule and reads answers", async () => {
@@ -180,17 +181,24 @@ describe("classify", () => {
     expect(calls).toBe(1);
   });
 
-  test("classifyImage is deterministic and captions by kind", async () => {
-    const bodies: { temperature: number; messages: { content: { type: string; text?: string }[] }[] }[] = [];
+  test("classifyImage sends the policy, captions by kind", async () => {
+    const bodies: { temperature: number; messages: { role: string; content: string | { type: string; text?: string }[] }[] }[] = [];
     const fakeFetch = (async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(init.body as string));
-      return new Response(JSON.stringify({ choices: [{ message: { content: "User Safety: safe" } }] }));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"category":"ok","reason":"A cat."}' } }] }));
     }) as unknown as typeof fetch;
-    await classifyImage("https://cdn.discordapp.com/a.png", "pfp", fakeFetch);
+    expect(await classifyImage("https://cdn.discordapp.com/a.png", "pfp", fakeFetch)).toMatchObject({ unsafe: false, reason: "A cat." });
     await classifyImage("https://cdn.discordapp.com/b.png", "image", fakeFetch);
     expect(bodies[0]!.temperature).toBe(0);
-    expect(bodies[0]!.messages[0]!.content[1]!.text).toBe("Profile picture of a Discord user.");
-    expect(bodies[1]!.messages[0]!.content[1]!.text).toBe("Image shared in a Discord chat.");
+    expect(bodies[0]!.messages[0]!.role).toBe("system");
+    expect((bodies[0]!.messages[1]!.content as { text?: string }[])[1]!.text).toBe("Profile picture of a Discord user.");
+    expect((bodies[1]!.messages[1]!.content as { text?: string }[])[1]!.text).toBe("Image shared in a Discord chat.");
+  });
+
+  test("classifyImage flags images the provider refuses", async () => {
+    const fakeFetch = (async () =>
+      new Response(JSON.stringify({ choices: [{ finish_reason: "content_filter", native_finish_reason: "PROHIBITED_CONTENT", message: { content: "" } }] }))) as unknown as typeof fetch;
+    expect(await classifyImage("https://cdn.discordapp.com/a.png", "pfp", fakeFetch)).toMatchObject({ unsafe: true, categories: ["blocked"] });
   });
 });
 

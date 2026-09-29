@@ -90,7 +90,7 @@ function withCheckSpan<T>(kind: string, message: { guildId: string; author: { id
  *  this log line in Loki (and its trace) with the full scores and judged text. */
 function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
   const row = insertVerdict(db, v);
-  const judged = row.judged ? (JSON.parse(row.judged) as { target?: JudgedLine[] }) : null;
+  const judged = row.judged ? (JSON.parse(row.judged) as { target?: JudgedLine[]; reason?: string }) : null;
   trace.getActiveSpan()?.setAttributes({
     "screening.verdict_id": row.id,
     "screening.flagged": row.flagged === 1,
@@ -116,6 +116,7 @@ function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
       error: row.error,
       sourceUrl: row.sourceUrl,
       target: judged?.target?.map((l) => `${l.author}: ${l.text.slice(0, 300)}`),
+      reason: judged?.reason,
     },
     "screening verdict",
   );
@@ -342,6 +343,7 @@ async function screenImage(
     ...base,
     scores: JSON.stringify({ unsafe: verdict.unsafe ? 1 : 0 }),
     categories: JSON.stringify(verdict.categories),
+    judged: JSON.stringify({ reason: verdict.reason }),
     flagged: verdict.unsafe ? 1 : 0,
     model: verdict.model,
     cost: verdict.cost,

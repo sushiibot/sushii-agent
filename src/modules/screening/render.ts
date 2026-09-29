@@ -149,8 +149,10 @@ export function buildVerdictPost(
       );
     }
     const verdict = "```ansi\n" + `${ANSI_RED}unsafe${parseCategories(row).length ? ` · ${parseCategories(row).join(", ")}` : ""}${ANSI_RESET}` + "\n```";
+    const reason = row.judged ? (JSON.parse(row.judged) as { reason?: string }).reason : undefined;
     const source = row.kind === "image" && row.sourceUrl ? `-# ${new URL(row.sourceUrl).hostname}${new URL(row.sourceUrl).pathname}\n` : "";
-    container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${source}${verdict}\n${footer(row, ref)}` }));
+    const why = reason ? `> ${oneLine(reason)}\n` : "";
+    container.addTextDisplayComponents(new TextDisplayBuilder({ content: `${source}${verdict}\n${why}${footer(row, ref)}` }));
   }
 
   const jump = new ButtonBuilder()
