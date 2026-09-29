@@ -1,0 +1,14 @@
+pi-verdict 0.12.1, vendored from
+https://github.com/jesset/pi-verdict/tree/1b37e5f2dff6414f31a009592074ce528453f0e1
+License: MIT (LICENSE, verbatim). Copied: extensions/pi-verdict.ts, extensions/jev-adapter.ts, package.json,
+LICENSE, README.md (the npm package's file list minus README.zh-CN.md). Never installed; no install scripts run;
+its devDependencies are not installed.
+
+Local patches: none. Both files type-check unchanged against Pi 0.99.1 under this repo's strict tsconfig.
+
+Used by src/workspace/autoMode.ts: adjudicate, SessionState, buildProtectedSet, AuditLog and the
+CompletionFn type (the rule floor, the transcript builder and the <verdict> classifier call). The default
+export is not loaded: its flags, /automode command and shortcut are TUI-only, it reads and writes
+config/pi-verdict.json under ~/.pi/agent, its IntegrityWatch guards that file, it falls back to the session
+model, and it fails closed to deny where the workspace asks the owner instead. jev-adapter.ts is only
+imported for isDecisionsModel/parseJevConfidence; its provider is never registered.

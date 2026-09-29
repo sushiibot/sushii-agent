@@ -1,0 +1,63 @@
+{
+	"name": "pi-verdict",
+	"version": "0.12.1",
+	"description": "A minimal permission gate for Pi, inspired by Claude Code's auto mode",
+	"author": "Jesset (https://github.com/jesset)",
+	"type": "module",
+	"main": "extensions/pi-verdict.ts",
+	"files": [
+		"extensions/pi-verdict.ts",
+		"extensions/jev-adapter.ts",
+		"README.md",
+		"README.zh-CN.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"extension",
+		"pi-coding-agent",
+		"auto-mode",
+		"automode",
+		"permissions",
+		"security",
+		"tool-call",
+		"classifier",
+		"ai-agent",
+		"jev",
+		"typesafe",
+		"system-one",
+		"decisions",
+		"openrouter"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jesset/pi-verdict.git"
+	},
+	"homepage": "https://github.com/jesset/pi-verdict#readme",
+	"bugs": "https://github.com/jesset/pi-verdict/issues",
+	"license": "MIT",
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"test": "bun test"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": ">=0.84.0"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@types/node": "^26.3.0",
+		"typescript": "^7.0.2"
+	}
+}
