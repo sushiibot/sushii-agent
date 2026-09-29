@@ -261,3 +261,39 @@ describe("ClaudeCodeRunnerAdapter.resume (real process kill/exit, fixture binary
     }
   });
 });
+
+describe("ClaudeCodeRunnerAdapter spawn env", () => {
+  test("the spawned claude process gets no ORCH_* vars", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-runner-env-test-"));
+    const fixtureBin = join(dir, "fake-claude.sh");
+    const envDump = join(dir, "env.txt");
+    writeFileSync(
+      fixtureBin,
+      [
+        "#!/usr/bin/env bash",
+        `env > "${envDump}"`,
+        'echo \'{"type":"system","subtype":"init","session_id":"sess-env"}\'',
+        'echo \'{"type":"result","subtype":"success","is_error":false,"result":"ok"}\'',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fixtureBin, 0o755);
+    const saved = { ORCH_SECRET: process.env.ORCH_SECRET, ORCH_RUNNER_SECRET: process.env.ORCH_RUNNER_SECRET };
+    process.env.ORCH_SECRET = "ws-secret";
+    process.env.ORCH_RUNNER_SECRET = "runner-secret";
+    try {
+      const adapter = new ClaudeCodeRunnerAdapter({ claudeBin: fixtureBin, progressDebounceMs: 10 });
+      await adapter.start({ taskId: "task-env", cwd: dir, prompt: "go" });
+      await adapter.stream("task-env", () => {});
+      const dumped = await Bun.file(envDump).text();
+      expect(dumped).not.toContain("ORCH_");
+      expect(dumped).toContain("PATH=");
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

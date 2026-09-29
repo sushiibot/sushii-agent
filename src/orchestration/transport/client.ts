@@ -30,7 +30,7 @@ export interface OrchestrationClientOptions {
   ownerOnly?: boolean;
   /** Default "task-runner". */
   role?: ConnectionRole;
-  /** Shared ORCH_SECRET; omitted from the register call when unset. */
+  /** The role's secret (ORCH_SECRET for a workspace, ORCH_RUNNER_SECRET for a task runner); omitted when unset. */
   secret?: string;
   principalId?: string;
   state?: "idle" | "streaming";

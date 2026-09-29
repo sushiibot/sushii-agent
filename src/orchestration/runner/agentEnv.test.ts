@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildAgentEnv } from "./agentEnv.ts";
+import { buildAgentEnv, withoutOrchEnv } from "./agentEnv.ts";
 
 describe("buildAgentEnv", () => {
   const base = {
@@ -30,5 +30,19 @@ describe("buildAgentEnv", () => {
     expect(env.PATH).toBe("/opt/bin:/usr/bin");
     expect(env.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+});
+
+describe("orchestrator secrets never reach an agent", () => {
+  const base = { PATH: "/usr/bin", HOME: "/root", ORCH_SECRET: "ws-secret", ORCH_RUNNER_SECRET: "runner-secret", ORCH_URL: "ws://x", ANTHROPIC_API_KEY: "sk" };
+
+  test("buildAgentEnv drops ORCH_* even when passed as extra", () => {
+    const env = buildAgentEnv(base, { ORCH_SECRET: "leak", GH_TOKEN: "ghs" });
+    expect(Object.keys(env).filter((k) => k.startsWith("ORCH_"))).toEqual([]);
+    expect(env.GH_TOKEN).toBe("ghs");
+  });
+
+  test("withoutOrchEnv keeps everything else", () => {
+    expect(withoutOrchEnv(base)).toEqual({ PATH: "/usr/bin", HOME: "/root", ANTHROPIC_API_KEY: "sk" });
   });
 });

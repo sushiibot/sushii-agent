@@ -5,7 +5,7 @@ import { ORCH_CLOSE, type RunnerAdapter, type RunnerEvent } from "../contracts.t
 import { MockRunnerAdapter } from "../mockRunner.ts";
 import { ownerPrincipalId } from "../principals.ts";
 import { OrchestrationClient } from "./client.ts";
-import { DEFAULT_OWNER_PRINCIPAL_ID, OrchestrationServer, defaultSecretPrincipals, principalForSecret } from "./server.ts";
+import { DEFAULT_OWNER_PRINCIPAL_ID, OrchestrationServer, defaultSecretGrants, grantForSecret, type SecretGrant } from "./server.ts";
 
 describe("orchestration transport round-trip", () => {
   test("register, start, and receive events in order", async () => {
@@ -309,13 +309,14 @@ describe("orchestration transport round-trip", () => {
 describe("runner registration auth", () => {
   const SECRET = "s3cret-value";
   const PRINCIPAL = "drk";
+  const BOTH_ROLES: Record<string, SecretGrant> = { [SECRET]: { principalId: PRINCIPAL, roles: ["workspace", "task-runner"] } };
 
-  function authServer(secretPrincipals: Record<string, string> = { [SECRET]: PRINCIPAL }) {
+  function authServer(secretGrants: Record<string, SecretGrant> = BOTH_ROLES) {
     const registered: string[] = [];
     const server = new OrchestrationServer({
       onEvent: () => {},
       onRegister: (runnerId) => registered.push(runnerId),
-      secretPrincipals,
+      secretGrants,
     });
     server.listen();
     return { server, registered };
@@ -482,7 +483,7 @@ describe("runner registration auth", () => {
       onEvent: () => {},
       onRegister: (id) => registered.push(id),
       onDisconnect: (id) => disconnects.push(id),
-      secretPrincipals: { [SECRET]: PRINCIPAL },
+      secretGrants: BOTH_ROLES,
     });
     server.listen();
     try {
@@ -536,7 +537,7 @@ describe("runner registration auth", () => {
       onEvent: () => {},
       onRegister: (id) => registered.push(id),
       onDisconnect: (id) => disconnects.push(id),
-      secretPrincipals: { [SECRET]: PRINCIPAL },
+      secretGrants: BOTH_ROLES,
     });
     server.listen();
     try {
@@ -602,31 +603,119 @@ describe("runner registration auth", () => {
     }
   });
 
-  test("principalForSecret compares in constant time and never on unequal lengths", () => {
+  test("grantForSecret compares in constant time and never on unequal lengths", () => {
     const spy = spyOn(crypto, "timingSafeEqual");
     try {
-      expect(principalForSecret({ [SECRET]: PRINCIPAL }, SECRET)).toBe(PRINCIPAL);
+      expect(grantForSecret(BOTH_ROLES, SECRET)).toEqual(BOTH_ROLES[SECRET]!);
       expect(spy).toHaveBeenCalledTimes(1);
-      expect(principalForSecret({ [SECRET]: PRINCIPAL }, "short")).toBeNull();
+      expect(grantForSecret(BOTH_ROLES, "short")).toBeNull();
       expect(spy).toHaveBeenCalledTimes(1);
       const sameLength = "x".repeat(SECRET.length);
-      expect(principalForSecret({ [SECRET]: PRINCIPAL }, sameLength)).toBeNull();
+      expect(grantForSecret(BOTH_ROLES, sameLength)).toBeNull();
       expect(spy).toHaveBeenCalledTimes(2);
-      expect(principalForSecret({}, SECRET)).toBeNull();
+      expect(grantForSecret({}, SECRET)).toBeNull();
     } finally {
       spy.mockRestore();
     }
   });
 
-  test("defaultSecretPrincipals maps ORCH_SECRET to the owner principal", () => {
-    const saved = config.orchSecret;
+  test("defaultSecretGrants binds ORCH_SECRET to workspaces and ORCH_RUNNER_SECRET to task runners", () => {
+    const saved = { orchSecret: config.orchSecret, orchRunnerSecret: config.orchRunnerSecret };
+    const principalId = ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID;
     try {
       config.orchSecret = undefined;
-      expect(defaultSecretPrincipals()).toEqual({});
+      config.orchRunnerSecret = undefined;
+      expect(defaultSecretGrants()).toEqual({});
       config.orchSecret = SECRET;
-      expect(defaultSecretPrincipals()).toEqual({ [SECRET]: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID });
+      config.orchRunnerSecret = "runner-secret";
+      expect(defaultSecretGrants()).toEqual({
+        [SECRET]: { principalId, roles: ["workspace"] },
+        "runner-secret": { principalId, roles: ["task-runner"] },
+      });
     } finally {
-      config.orchSecret = saved;
+      Object.assign(config, saved);
+    }
+  });
+
+  describe("per-role secrets", () => {
+    const WORKSPACE_SECRET = "workspace-secret";
+    const RUNNER_SECRET = "runner-secret-x";
+    const PER_ROLE: Record<string, SecretGrant> = {
+      [WORKSPACE_SECRET]: { principalId: PRINCIPAL, roles: ["workspace"] },
+      [RUNNER_SECRET]: { principalId: PRINCIPAL, roles: ["task-runner"] },
+    };
+
+    test("the runner secret can't register a workspace", async () => {
+      const { server } = authServer(PER_ROLE);
+      try {
+        const r = await rawRegister(server.url, { runnerId: "ws", role: "workspace", secret: RUNNER_SECRET });
+        expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+        expect(server.getWorkspaceConnection(PRINCIPAL)).toBeUndefined();
+        const ok = await rawRegister(server.url, { runnerId: "ws", role: "workspace", secret: WORKSPACE_SECRET });
+        expect(ok.ok).toBe(true);
+        ok.ws.close();
+      } finally {
+        server.stop();
+      }
+    });
+
+    test("the workspace secret can't register a task runner", async () => {
+      const { server, registered } = authServer(PER_ROLE);
+      try {
+        const r = await rawRegister(server.url, { runnerId: "r1", secret: WORKSPACE_SECRET });
+        expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+        expect(registered).toEqual([]);
+        const ok = await rawRegister(server.url, { runnerId: "r1", secret: RUNNER_SECRET });
+        expect(ok.ok).toBe(true);
+        expect(server.getConnection("r1")).toMatchObject({ role: "task-runner", principalId: PRINCIPAL });
+        ok.ws.close();
+      } finally {
+        server.stop();
+      }
+    });
+
+    test("no runner secret configured: task runners register without one, workspaces still need theirs", async () => {
+      const { server, registered } = authServer({ [WORKSPACE_SECRET]: { principalId: PRINCIPAL, roles: ["workspace"] } });
+      try {
+        const legacy = await rawRegister(server.url, { runnerId: "legacy" });
+        expect(legacy.ok).toBe(true);
+        expect(registered).toEqual(["legacy"]);
+        expect(server.getConnection("legacy")).toMatchObject({ role: "task-runner", principalId: null });
+        // The workspace secret is still bound to its role, even on the unauthenticated runner path.
+        const misuse = await rawRegister(server.url, { runnerId: "r2", secret: WORKSPACE_SECRET });
+        expect(misuse.closeCode).toBe(ORCH_CLOSE.unauthorized);
+        const noSecretWs = await rawRegister(server.url, { runnerId: "ws", role: "workspace" });
+        expect(noSecretWs.closeCode).toBe(ORCH_CLOSE.unauthorized);
+        const ws = await rawRegister(server.url, { runnerId: "ws", role: "workspace", secret: WORKSPACE_SECRET });
+        expect(ws.ok).toBe(true);
+        legacy.ws.close();
+        ws.ws.close();
+      } finally {
+        server.stop();
+      }
+    });
+  });
+
+  test("a workspace socket's session/update never reaches the dispatcher's onEvent", async () => {
+    const events: [string, RunnerEvent][] = [];
+    const server = new OrchestrationServer({ onEvent: (id, e) => events.push([id, e]), secretGrants: BOTH_ROLES });
+    server.listen();
+    try {
+      const ws = await rawRegister(server.url, { runnerId: "r1", role: "workspace", secret: SECRET });
+      expect(ws.ok).toBe(true);
+      const update = { kind: "status", taskId: "t1", status: "done" };
+      ws.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: update }));
+      ws.ws.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/update", params: update }));
+      ws.ws.close();
+      await waitForClose(ws.ws);
+
+      const runner = await rawRegister(server.url, { runnerId: "r1", secret: SECRET });
+      runner.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: update }));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(events).toEqual([["r1", update as RunnerEvent]]);
+      runner.ws.close();
+    } finally {
+      server.stop();
     }
   });
 });

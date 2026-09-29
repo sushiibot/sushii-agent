@@ -133,7 +133,8 @@ async function main(): Promise<void> {
   const adapter = factory({ runnerId, location, workspaceRoot });
   const capabilities = adapter instanceof PiRunnerAdapter && adapter.hasBrowser ? ["browser"] : [];
 
-  const secret = process.env.ORCH_SECRET?.trim() || undefined;
+  // ORCH_SECRET (the workspace secret) never belongs on a task runner.
+  const secret = process.env.ORCH_RUNNER_SECRET?.trim() || undefined;
   const client = new OrchestrationClient({
     url,
     runnerId,
@@ -149,7 +150,7 @@ async function main(): Promise<void> {
   });
 
   log.info({ url, runnerId, kind, projects, workspaceRoot, location, capabilities, ownerOnly, home }, "runner starting (auto-reconnect)");
-  if (!secret) log.warn("ORCH_SECRET is not set; registering unauthenticated (rejected if the orchestrator requires a secret)");
+  if (!secret) log.warn("ORCH_RUNNER_SECRET is not set; registering unauthenticated (rejected if the orchestrator requires a secret)");
   // Deploys and `docker stop` send SIGTERM: stop billed cloud browsers before exiting, bounded so a
   // slow API can't hold the container past Docker's kill timeout.
   const shutdown = async (signal: string) => {

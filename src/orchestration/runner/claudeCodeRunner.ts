@@ -1,6 +1,7 @@
 import simpleGit from "simple-git";
 import { getLogger } from "../../logger.ts";
 import type { HandbackMeta, RunnerAdapter, RunnerEvent } from "../contracts.ts";
+import { withoutOrchEnv } from "./agentEnv.ts";
 
 const log = getLogger("orchestration.runner.claudeCode");
 
@@ -402,7 +403,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
       "--",
       input.prompt,
     ];
-    const proc = Bun.spawn({ cmd: args, cwd: input.cwd, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn({ cmd: args, cwd: input.cwd, env: withoutOrchEnv(process.env), stdout: "pipe", stderr: "pipe" });
     const channel = new LineChannel();
     void this.pumpStdout(proc, channel);
     void this.pumpStderr(proc);
@@ -452,7 +453,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
       "--",
       input.prompt,
     ];
-    const proc = Bun.spawn({ cmd: args, cwd, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn({ cmd: args, cwd, env: withoutOrchEnv(process.env), stdout: "pipe", stderr: "pipe" });
     const channel = new LineChannel();
     void this.pumpStdout(proc, channel);
     void this.pumpStderr(proc);

@@ -34,30 +34,50 @@ interface SocketState {
 export interface ConnectionInfo {
   runnerId: string;
   role: ConnectionRole;
-  /** null only for a task runner registered without a secret (no ORCH_SECRET configured). */
+  /** null only for a task runner registered without a secret (no ORCH_RUNNER_SECRET configured). */
   principalId: string | null;
   protocolVersion: number;
   state: "idle" | "streaming" | undefined;
 }
 
-/** Principal a valid ORCH_SECRET maps to when principals.json declares no owner. */
+/** Principal a valid secret maps to when principals.json declares no owner. */
 export const DEFAULT_OWNER_PRINCIPAL_ID = "drk";
 
-/** secret → principal, built from config. One entry today; the map shape leaves room for more. */
-export function defaultSecretPrincipals(): Record<string, string> {
-  if (!config.orchSecret) return {};
-  return { [config.orchSecret]: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID };
+/** What a secret authorizes: the principal it acts as, and the roles it may register as. */
+export interface SecretGrant {
+  principalId: string;
+  roles: ConnectionRole[];
+}
+
+/** secret → grant, built from config: ORCH_SECRET registers workspaces only, ORCH_RUNNER_SECRET
+ *  task runners only, so a task agent that reads its runner's secret can't pose as the workspace. */
+export function defaultSecretGrants(): Record<string, SecretGrant> {
+  const principalId = ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID;
+  const grants: Record<string, SecretGrant> = {};
+  const add = (secret: string | undefined, role: ConnectionRole) => {
+    if (!secret) return;
+    const existing = grants[secret];
+    if (existing) {
+      logger.error("ORCH_SECRET equals ORCH_RUNNER_SECRET; any task runner can register as the workspace");
+      existing.roles.push(role);
+    } else {
+      grants[secret] = { principalId, roles: [role] };
+    }
+  };
+  add(config.orchSecret, "workspace");
+  add(config.orchRunnerSecret, "task-runner");
+  return grants;
 }
 
 /** Looks a presented secret up against every configured one without short-circuiting, so timing
  *  doesn't reveal which (or how much of a) secret matched. */
-export function principalForSecret(secrets: Record<string, string>, secret: string): string | null {
+export function grantForSecret(secrets: Record<string, SecretGrant>, secret: string): SecretGrant | null {
   const presented = Buffer.from(secret);
-  let match: string | null = null;
-  for (const [known, principalId] of Object.entries(secrets)) {
+  let match: SecretGrant | null = null;
+  for (const [known, grant] of Object.entries(secrets)) {
     const expected = Buffer.from(known);
     if (expected.length !== presented.length) continue;
-    if (crypto.timingSafeEqual(expected, presented)) match = principalId;
+    if (crypto.timingSafeEqual(expected, presented)) match = grant;
   }
   return match;
 }
@@ -138,9 +158,9 @@ export interface OrchestrationServerOptions {
     ownerOnly?: boolean,
   ) => void;
   onDisconnect?: (runnerId: string) => void;
-  /** secret → principal for register auth. Defaults to defaultSecretPrincipals() (ORCH_SECRET);
-   *  empty means no secret is configured. */
-  secretPrincipals?: Record<string, string>;
+  /** secret → grant for register auth. Defaults to defaultSecretGrants(). A role no grant covers
+   *  is unsecured: task runners then register without a secret, workspaces never do. */
+  secretGrants?: Record<string, SecretGrant>;
 }
 
 // Orchestrator-side WS server. One connection per runner; requests are
@@ -150,14 +170,14 @@ export class OrchestrationServer {
   private readonly sockets = new Map<string, ServerWebSocket<SocketState>>();
   // principalId → its single live workspace connection.
   private readonly workspaces = new Map<string, ServerWebSocket<SocketState>>();
-  private readonly secretPrincipals: Record<string, string>;
+  private readonly secretGrants: Record<string, SecretGrant>;
   private warnedUnauthenticated = false;
   private server: Server<SocketState> | null = null;
   private nextId = 1;
 
   constructor(options: OrchestrationServerOptions) {
     this.options = options;
-    this.secretPrincipals = options.secretPrincipals ?? defaultSecretPrincipals();
+    this.secretGrants = options.secretGrants ?? defaultSecretGrants();
   }
 
   listen(): Server<SocketState> {
@@ -234,15 +254,19 @@ export class OrchestrationServer {
   }
 
   private dispatch(ws: ServerWebSocket<SocketState>, parsed: unknown): void {
+    const conn = ws.data.conn;
     const notif = jsonRpcNotification.safeParse(parsed);
     if (notif.success && notif.data.method === RPC_METHODS.event) {
-      if (ws.data.runnerId) {
+      // Only task runners feed the dispatcher; a workspace must never touch task state.
+      if (conn?.role === "task-runner") {
         const event = runnerEventSchema.safeParse(notif.data.params);
         if (event.success) {
-          this.options.onEvent(ws.data.runnerId, event.data);
+          this.options.onEvent(conn.runnerId, event.data);
         } else {
-          logger.warn({ error: event.error, runnerId: ws.data.runnerId }, "dropping malformed session/update event");
+          logger.warn({ error: event.error, runnerId: conn.runnerId }, "dropping malformed session/update event");
         }
+      } else if (conn) {
+        logger.debug({ runnerId: conn.runnerId, role: conn.role }, "dropping session/update from a non-task-runner connection");
       }
       return;
     }
@@ -317,6 +341,11 @@ export class OrchestrationServer {
       return;
     }
 
+    if (conn?.role === "workspace" && (notif.success || req.success)) {
+      logger.debug({ runnerId: conn.runnerId, method: (parsed as { method?: unknown }).method }, "no workspace handler; dropping message");
+      return;
+    }
+
     const res = jsonRpcResponse.safeParse(parsed);
     if (res.success) {
       const pending = ws.data.pending.get(res.data.id);
@@ -334,20 +363,22 @@ export class OrchestrationServer {
       return { ok: false, code: ORCH_CLOSE.unsupportedVersion, reason: "unsupported protocolVersion" };
     }
     const unauthorized = { ok: false as const, code: ORCH_CLOSE.unauthorized, reason: "unauthorized" };
-    if (Object.keys(this.secretPrincipals).length === 0) {
+    const grant = params.secret === undefined ? null : grantForSecret(this.secretGrants, params.secret);
+    const roleSecured = Object.values(this.secretGrants).some((g) => g.roles.includes(params.role));
+    if (!roleSecured) {
       // DM traffic flows over workspace connections, so those always need a secret.
       if (params.role === "workspace") return unauthorized;
+      // Legacy unauthenticated task runner, but a known secret for another role is still refused.
+      if (grant) return unauthorized;
       if (!this.warnedUnauthenticated) {
         this.warnedUnauthenticated = true;
-        logger.warn("ORCH_SECRET is not set; accepting task runners without authentication");
+        logger.warn("ORCH_RUNNER_SECRET is not set; accepting task runners without authentication");
       }
       return { ok: true, principalId: null };
     }
-    if (params.secret === undefined) return unauthorized;
-    const principalId = principalForSecret(this.secretPrincipals, params.secret);
-    if (principalId === null) return unauthorized;
-    if (params.principalId !== undefined && params.principalId !== principalId) return unauthorized;
-    return { ok: true, principalId };
+    if (!grant || !grant.roles.includes(params.role)) return unauthorized;
+    if (params.principalId !== undefined && params.principalId !== grant.principalId) return unauthorized;
+    return { ok: true, principalId: grant.principalId };
   }
 
   private call(runnerId: string, method: string, params: unknown): Promise<unknown> {
