@@ -637,6 +637,35 @@ describe("runner registration auth", () => {
     }
   });
 
+  test("identical ORCH_SECRET and ORCH_RUNNER_SECRET fail closed: no role registers, with or without it", async () => {
+    const saved = { orchSecret: config.orchSecret, orchRunnerSecret: config.orchRunnerSecret };
+    config.orchSecret = SECRET;
+    config.orchRunnerSecret = SECRET;
+    const registered: string[] = [];
+    const server = new OrchestrationServer({ onEvent: () => {}, onRegister: (id) => registered.push(id) });
+    try {
+      expect(defaultSecretGrants()).toEqual({});
+      server.listen();
+      const attempts: Record<string, unknown>[] = [
+        { runnerId: "w1", role: "workspace", secret: SECRET },
+        { runnerId: "w2", role: "workspace", secret: SECRET, principalId: PRINCIPAL },
+        { runnerId: "t1", role: "task-runner", secret: SECRET },
+        { runnerId: "t2", role: "task-runner" },
+        { runnerId: "t3" },
+      ];
+      for (const params of attempts) {
+        const r = await rawRegister(server.url, params);
+        expect(r.ok).toBe(false);
+        expect(r.closeCode).toBe(ORCH_CLOSE.unauthorized);
+      }
+      expect(registered).toEqual([]);
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toBeUndefined();
+    } finally {
+      server.stop();
+      Object.assign(config, saved);
+    }
+  });
+
   describe("per-role secrets", () => {
     const WORKSPACE_SECRET = "workspace-secret";
     const RUNNER_SECRET = "runner-secret-x";

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { withoutOrchEnv } from "./agentEnv.ts";
 import { arch, platform } from "node:os";
 
 export const ENV_CONTEXT_PATH = "sushii-runner://environment.md";
@@ -29,7 +30,7 @@ export interface ToolInfo {
 type Runner = (cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string } | null;
 
 const defaultRun: Runner = (cmd, args) => {
-  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 3000 });
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 3000, env: withoutOrchEnv(process.env) });
   if (r.error) return null; // ENOENT → not installed
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };

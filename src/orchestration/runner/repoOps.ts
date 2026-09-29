@@ -1,9 +1,10 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import simpleGit, { type SimpleGit } from "simple-git";
+import type { SimpleGit } from "simple-git";
 import { getLogger } from "../../logger.ts";
 import type { RepoSpec } from "../contracts.ts";
 import type { GitTokenProvider } from "./githubApp.ts";
+import { runnerGit } from "./runnerGit.ts";
 
 const log = getLogger("orchestration.runner.repoOps");
 
@@ -84,7 +85,7 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
   if (existsSync(join(cwd, ".git"))) return false;
   mkdirSync(dirname(cwd), { recursive: true });
   const { token } = await deps.provider.tokenFor(spec);
-  const factory = deps.gitFactory ?? simpleGit;
+  const factory = deps.gitFactory ?? runnerGit;
   await factory().clone(authUrl(spec, token), cwd);
   const wc = factory(cwd);
   await wc.remote(["set-url", "origin", cleanUrl(spec)]); // scrub the token out of persisted config
@@ -103,7 +104,7 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
  *  tasks on one repo never share state. Reused as-is on resume. Returns the worktree path. */
 export async function ensureWorktree(repoHome: string, taskId: string, deps: RepoOpsDeps): Promise<string> {
   const worktreePath = `${repoHome}.wt/${taskId}`;
-  const git = (deps.gitFactory ?? simpleGit)(repoHome);
+  const git = (deps.gitFactory ?? runnerGit)(repoHome);
   // Reuse only a worktree git actually knows about — a bare directory (crashed `worktree add`,
   // orphaned leftover) is not a valid resume target. `worktree list` is the source of truth.
   const list = await git.raw(["worktree", "list", "--porcelain"]).catch(() => "");
@@ -129,7 +130,7 @@ export async function ensureWorktree(repoHome: string, taskId: string, deps: Rep
  *  and prune bookkeeping. Only ever called for clone-on-demand worktrees under `<repoHome>.wt/`. */
 export async function removeWorktree(repoHome: string, taskId: string, deps: RepoOpsDeps): Promise<void> {
   const worktreePath = `${repoHome}.wt/${taskId}`;
-  const git = (deps.gitFactory ?? simpleGit)(repoHome);
+  const git = (deps.gitFactory ?? runnerGit)(repoHome);
   await git.raw(["worktree", "remove", "--force", worktreePath]).catch(() => {});
   if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
   await git.raw(["worktree", "prune"]).catch(() => {});
@@ -175,7 +176,7 @@ export async function pruneWorktrees(opts: {
   const now = opts.now ?? Date.now;
   const removed: string[] = [];
   if (!existsSync(workspaceRoot)) return removed;
-  const factory = deps.gitFactory ?? simpleGit;
+  const factory = deps.gitFactory ?? runnerGit;
 
   const dirs = (base: string) => {
     try {

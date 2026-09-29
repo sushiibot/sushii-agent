@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import simpleGit from "simple-git";
+import { runnerGit } from "./runnerGit.ts";
 import { defineTool, type AgentSession, type AgentSessionEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { BrowserUpdate, HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent } from "../contracts.ts";
@@ -641,7 +641,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
 
   private async readHeadSha(cwd: string): Promise<string | null> {
     try {
-      return (await simpleGit(cwd).revparse(["HEAD"])).trim();
+      return (await runnerGit(cwd).revparse(["HEAD"])).trim();
     } catch (err) {
       log.warn({ err, cwd }, "failed to read HEAD sha");
       return null;
@@ -652,7 +652,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
   // both https and ssh remote forms.
   private async repoFromRemote(cwd: string): Promise<RepoSpec | null> {
     try {
-      const url = (await simpleGit(cwd).remote(["get-url", "origin"]))?.trim();
+      const url = (await runnerGit(cwd).remote(["get-url", "origin"]))?.trim();
       const m = url?.match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?$/);
       return m ? { owner: m[1], repo: m[2] } : null;
     } catch {
@@ -662,7 +662,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
 
   private async computeGitMeta(cwd: string, startSha: string | null): Promise<Pick<HandbackMeta, "filesChanged" | "commits">> {
     try {
-      const git = simpleGit(cwd);
+      const git = runnerGit(cwd);
       const status = await git.status();
       let commits = 0;
       if (startSha) {

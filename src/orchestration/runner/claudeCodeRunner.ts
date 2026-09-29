@@ -1,4 +1,4 @@
-import simpleGit from "simple-git";
+import { runnerGit } from "./runnerGit.ts";
 import { getLogger } from "../../logger.ts";
 import type { HandbackMeta, RunnerAdapter, RunnerEvent } from "../contracts.ts";
 import { withoutOrchEnv } from "./agentEnv.ts";
@@ -627,7 +627,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
 
   private async readHeadSha(cwd: string): Promise<string | null> {
     try {
-      const sha = await simpleGit(cwd).revparse(["HEAD"]);
+      const sha = await runnerGit(cwd).revparse(["HEAD"]);
       return sha.trim();
     } catch (err) {
       log.error({ err, cwd }, "failed to read HEAD sha");
@@ -637,7 +637,7 @@ export class ClaudeCodeRunnerAdapter implements RunnerAdapter {
 
   private async computeGitMeta(cwd: string, startSha: string | null): Promise<Partial<HandbackMeta>> {
     try {
-      const git = simpleGit(cwd);
+      const git = runnerGit(cwd);
       const status = await git.status();
       const filesChanged = status.files.length;
       let commits = 0;

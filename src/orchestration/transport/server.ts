@@ -54,19 +54,16 @@ export interface SecretGrant {
 export function defaultSecretGrants(): Record<string, SecretGrant> {
   const principalId = ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID;
   const grants: Record<string, SecretGrant> = {};
-  const add = (secret: string | undefined, role: ConnectionRole) => {
-    if (!secret) return;
-    const existing = grants[secret];
-    if (existing) {
-      logger.error("ORCH_SECRET equals ORCH_RUNNER_SECRET; any task runner can register as the workspace");
-      existing.roles.push(role);
-    } else {
-      grants[secret] = { principalId, roles: [role] };
-    }
-  };
-  add(config.orchSecret, "workspace");
-  add(config.orchRunnerSecret, "task-runner");
+  if (orchSecretsCollide()) return grants;
+  if (config.orchSecret) grants[config.orchSecret] = { principalId, roles: ["workspace"] };
+  if (config.orchRunnerSecret) grants[config.orchRunnerSecret] = { principalId, roles: ["task-runner"] };
   return grants;
+}
+
+/** True when ORCH_SECRET and ORCH_RUNNER_SECRET share a value: the server then refuses every
+ *  register, since a shared value would let any task runner (or its agent) pose as the workspace. */
+export function orchSecretsCollide(): boolean {
+  return !!config.orchSecret && config.orchSecret === config.orchRunnerSecret;
 }
 
 /** Looks a presented secret up against every configured one without short-circuiting, so timing
@@ -171,6 +168,7 @@ export class OrchestrationServer {
   // principalId → its single live workspace connection.
   private readonly workspaces = new Map<string, ServerWebSocket<SocketState>>();
   private readonly secretGrants: Record<string, SecretGrant>;
+  private readonly refuseAllRegisters: boolean;
   private warnedUnauthenticated = false;
   private server: Server<SocketState> | null = null;
   private nextId = 1;
@@ -178,6 +176,10 @@ export class OrchestrationServer {
   constructor(options: OrchestrationServerOptions) {
     this.options = options;
     this.secretGrants = options.secretGrants ?? defaultSecretGrants();
+    this.refuseAllRegisters = !options.secretGrants && orchSecretsCollide();
+    if (this.refuseAllRegisters) {
+      logger.error("ORCH_SECRET equals ORCH_RUNNER_SECRET; refusing every runner/register until they differ");
+    }
   }
 
   listen(): Server<SocketState> {
@@ -363,6 +365,7 @@ export class OrchestrationServer {
       return { ok: false, code: ORCH_CLOSE.unsupportedVersion, reason: "unsupported protocolVersion" };
     }
     const unauthorized = { ok: false as const, code: ORCH_CLOSE.unauthorized, reason: "unauthorized" };
+    if (this.refuseAllRegisters) return unauthorized;
     const grant = params.secret === undefined ? null : grantForSecret(this.secretGrants, params.secret);
     const roleSecured = Object.values(this.secretGrants).some((g) => g.roles.includes(params.role));
     if (!roleSecured) {
