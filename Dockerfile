@@ -1,4 +1,4 @@
-FROM oven/bun:1
+FROM oven/bun:1 AS base
 
 # openssh-client: ssh-agent/ssh-add/ssh for wiki-sync's git push auth (docker-entrypoint.sh) and
 # git itself, for simple-git's clone/fetch/push. Neither ships in the base image.
@@ -69,3 +69,20 @@ EXPOSE 8787
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["bun", "src/index.ts"]
+
+# Personal-agent workspace: same toolchain, run as uid 1000 with user-space installs under HOME
+# (apt stays root-only). Deployed as its own compose project, independent of the bot.
+FROM base AS workspace
+RUN usermod -l agent -d /data/home bun && groupmod -n agent bun \
+    && mkdir -p /data/home && chown -R agent:agent /data
+ENV HOME=/data/home \
+    BUN_INSTALL=/data/home/.bun \
+    BUN_INSTALL_BIN=/data/home/.bun/bin \
+    NPM_CONFIG_PREFIX=/data/home/.npm-global \
+    PATH=/data/home/.bun/bin:/data/home/.local/bin:/data/home/.npm-global/bin:${PATH}
+USER agent
+ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
+CMD ["bun", "run", "workspace"]
+
+# Default target: the bot (and the runner, which overrides CMD).
+FROM base AS bot
