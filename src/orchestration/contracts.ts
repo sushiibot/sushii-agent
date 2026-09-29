@@ -140,7 +140,8 @@ export interface ChatMessageResult {
   mode: ChatMessageMode;
 }
 
-export const chatAbortParams = z.object({ principalId: z.string() });
+// With turnId, only that turn is aborted; a stale Stop from a finished turn is a no-op.
+export const chatAbortParams = z.object({ principalId: z.string(), turnId: z.string().optional() });
 export type ChatAbortParams = z.infer<typeof chatAbortParams>;
 export interface ChatAbortResult {
   aborted: boolean;
@@ -172,6 +173,7 @@ export const chatDeliverParams = z.object({
   kind: z.enum(["reply", "proactive", "ask"]),
   text: z.string(),
   replyTo: z.string().optional(),
+  turnId: z.string().optional(),
   usage: chatUsage.optional(),
   ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
 });
