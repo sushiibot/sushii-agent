@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { OrchestrationClient } from "./client.ts";
-import { MethodNotFoundError, OrchestrationServer, type ConnectionInfo, type SecretGrant } from "./server.ts";
+import {
+  MethodNotFoundError,
+  OrchestrationServer,
+  RpcConnectionClosedError,
+  RpcErrorReply,
+  RpcTimeoutError,
+  WorkspaceNotConnectedError,
+  mayHaveBeenAccepted,
+  type ConnectionInfo,
+  type SecretGrant,
+} from "./server.ts";
 import { RPC_METHODS } from "../contracts.ts";
 
 const SECRET = "ws-secret";
@@ -76,6 +86,42 @@ describe("workspace handler routing", () => {
       expect(await server.requestWorkspace(PRINCIPAL, RPC_METHODS.chatAbort, { principalId: PRINCIPAL })).toEqual({ aborted: true });
       await expect(server.requestWorkspace(PRINCIPAL, RPC_METHODS.chatNew, { principalId: PRINCIPAL }, 30)).rejects.toThrow("timed out");
       await expect(server.requestWorkspace("nobody", RPC_METHODS.chatAbort, {})).rejects.toThrow("not connected");
+    } finally {
+      client.close();
+      server.stop();
+    }
+  });
+
+  test("request failures are typed by whether the workspace may still have accepted the request", async () => {
+    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    server.listen();
+    const client = workspaceClient(server.url, {
+      [RPC_METHODS.chatMessage]: async () => {
+        throw new Error("personal session not started");
+      },
+      [RPC_METHODS.chatNew]: () => new Promise(() => {}),
+    });
+    const failure = (p: Promise<unknown>) => p.then(() => null, (err: unknown) => err);
+    try {
+      await client.connect();
+      client.listen();
+      const refused = await failure(server.requestWorkspace(PRINCIPAL, RPC_METHODS.chatMessage, {}));
+      expect(refused).toBeInstanceOf(RpcErrorReply);
+      expect(mayHaveBeenAccepted(refused)).toBe(false);
+
+      const timedOut = await failure(server.requestWorkspace(PRINCIPAL, RPC_METHODS.chatNew, {}, 30));
+      expect(timedOut).toBeInstanceOf(RpcTimeoutError);
+      expect(mayHaveBeenAccepted(timedOut)).toBe(true);
+
+      const absent = await failure(server.requestWorkspace("nobody", RPC_METHODS.chatMessage, {}));
+      expect(absent).toBeInstanceOf(WorkspaceNotConnectedError);
+      expect(mayHaveBeenAccepted(absent)).toBe(false);
+
+      const inFlight = failure(server.requestWorkspace(PRINCIPAL, RPC_METHODS.chatNew, {}));
+      client.close();
+      const closed = await inFlight;
+      expect(closed).toBeInstanceOf(RpcConnectionClosedError);
+      expect(mayHaveBeenAccepted(closed)).toBe(true);
     } finally {
       client.close();
       server.stop();

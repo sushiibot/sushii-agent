@@ -5,7 +5,7 @@ import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { RPC_METHODS, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/transport/server.ts";
-import { WorkspaceLink, answeredAsk, formatDuration, progressEditDelay, progressEditGap, type Timers, type WorkspaceRpc } from "./workspaceLink.ts";
+import { DELIVERY_MAX_FAILURES, WorkspaceLink, answeredAsk, formatDuration, progressEditDelay, progressEditGap, type Timers, type WorkspaceRpc } from "./workspaceLink.ts";
 
 const P = "drk";
 const CONN: ConnectionInfo = { runnerId: `workspace-${P}`, role: "workspace", principalId: P, protocolVersion: 1, state: "idle" };
@@ -42,9 +42,10 @@ class FakeChannel {
   sent: MessageCreateOptions[] = [];
   edits: MessageEditOptions[][] = [];
   failNext = false;
+  failWhen: ((options: MessageCreateOptions) => boolean) | null = null;
   constructor(private readonly log: string[]) {}
   async send(options: MessageCreateOptions) {
-    if (this.failNext) {
+    if (this.failNext || this.failWhen?.(options)) {
       this.failNext = false;
       throw new Error("discord down");
     }
@@ -200,6 +201,71 @@ describe("chat/deliver", () => {
     expect(edited).not.toContain("wsask:");
   });
 
+  test("a reply with a turnId finalizes that turn's open progress view and shows its tool count", async () => {
+    const { link, rpc, channel } = setup();
+    event(rpc, "t1", { type: "tool_start", name: "bash", summary: "" });
+    event(rpc, "t1", { type: "tool_end", name: "bash", ok: true });
+    event(rpc, "t1", { type: "tool_start", name: "read", summary: "" });
+    await tick();
+    await link.deliver(deliverParams({ turnId: "t1", usage: { model: "m", inputTokens: 1, outputTokens: 5 } }));
+    await link.settled();
+    expect(textOf(channel.edits[0]!.at(-1)!)).toContain("✓ done · 0s · 2 tools");
+    expect(link.hasTurn("t1")).toBe(false);
+    expect(textOf(channel.sent[1]!)).toContain("-# m · 5 out · 2 tools");
+  });
+
+  test("turn_end before the delivery: the reply footer still carries the count; none for a tool-less turn", async () => {
+    const { link, rpc, channel } = setup();
+    event(rpc, "t1", { type: "tool_start", name: "bash", summary: "" });
+    event(rpc, "t1", { type: "turn_end", aborted: false });
+    await tick();
+    await link.deliver(deliverParams({ outboxId: "o1", turnId: "t1" }));
+    expect(textOf(channel.sent.at(-1)!)).toContain("-# 1 tool");
+
+    event(rpc, "t2", { type: "turn_start" });
+    event(rpc, "t2", { type: "turn_end", aborted: false });
+    await link.deliver(deliverParams({ outboxId: "o2", turnId: "t2", usage: { model: "m", inputTokens: 1, outputTokens: 5 } }));
+    const last = textOf(channel.sent.at(-1)!);
+    expect(last).toContain("-# m · 5 out");
+    expect(last).not.toContain("tool");
+  });
+
+  test("a partial multi-page send resends only the missing pages", async () => {
+    const { link, rpc, channel } = setup();
+    const text = Array.from({ length: 3 }, (_, i) => `section ${i}\n${"x".repeat(3000)}`).join("\n\n");
+    let sends = 0;
+    channel.failWhen = () => ++sends === 2;
+    await link.deliver(deliverParams({ text }));
+    expect(channel.sent).toHaveLength(1);
+    expect(rpc.calls).toHaveLength(0);
+    await link.deliver(deliverParams({ text }));
+    const bodies = channel.sent.map((m) => textOf(m));
+    expect(bodies.filter((b) => b.includes("section 0"))).toHaveLength(1);
+    expect(bodies.some((b) => b.includes("section 2"))).toBe(true);
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+
+  test("a delivery Discord keeps rejecting goes out as plain text after repeated failures, then is acked", async () => {
+    const { link, rpc, channel } = setup();
+    channel.failWhen = (o) => o.content === undefined;
+    for (let i = 0; i < DELIVERY_MAX_FAILURES - 1; i++) await link.deliver(deliverParams());
+    expect(rpc.calls).toHaveLength(0);
+    await link.deliver(deliverParams());
+    expect(channel.sent.map((m) => m.content)).toEqual(["hello there"]);
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+
+  test("an ask with an overlong question or empty choice still renders valid components", async () => {
+    const { link } = setup();
+    const [ask] = link.renderDelivery(deliverParams({ kind: "ask", ask: { askId: "a", question: "q".repeat(5000), choices: ["", "  ", "ok"] } }));
+    const body = textOf(ask!);
+    const content = JSON.parse(body)[0].components[0].content as string;
+    expect(content.length).toBeLessThanOrEqual(4000);
+    expect(body).toContain('"label":"(option 1)"');
+    expect(body).toContain('"label":"(option 2)"');
+    expect(link.askChoice("a", 0, null)).toBe("(option 1)");
+  });
+
   test("a delivery for another principal is refused", async () => {
     const { rpc, channel } = setup();
     await expect(deliverViaServer(rpc, deliverParams({ principalId: "mallory" }))).rejects.toThrow("principal mismatch");
@@ -239,6 +305,24 @@ describe("inbox replay", () => {
     expect(rpc.calls).toHaveLength(1);
     expect(store.listInbox(P).map((r) => r.userText)).toEqual(["q1", "q2"]);
   });
+
+  test("a re-register while a replay is in flight on the old socket replays again on the new one", async () => {
+    const { link, rpc, store } = setup();
+    rpc.connected = false;
+    link.recordOffline("q1", "a1");
+    rpc.connected = true;
+    let rejectOld!: (err: Error) => void;
+    rpc.respond = () => new Promise((_, reject) => (rejectOld = reject));
+    rpc.handler!.onRegister!(CONN);
+    await tick();
+    // The socket is replaced: the new register fires before the old call dies with "connection closed".
+    rpc.respond = async () => ({ accepted: true, mode: "context" });
+    rpc.handler!.onRegister!(CONN);
+    rejectOld(new Error("connection closed"));
+    for (let i = 0; i < 5; i++) await tick();
+    expect(rpc.calls.filter((c) => c.method === RPC_METHODS.chatMessage)).toHaveLength(2);
+    expect(store.listInbox(P)).toHaveLength(0);
+  });
 });
 
 describe("live progress", () => {
@@ -253,7 +337,8 @@ describe("live progress", () => {
     expect(channel.sent).toHaveLength(1);
     const first = textOf(channel.sent[0]!);
     expect(first).toMatch(/⏳ working · started <t:\d+:R>/);
-    expect(first).toContain("… **bash** rg -n WIKI");
+    expect(first).toContain("-# ⏳ working");
+    expect(first).toContain("… `bash` rg -n WIKI");
     expect(first).toContain('"custom_id":"wsstop:t1"');
 
     advance(500);
@@ -265,8 +350,8 @@ describe("live progress", () => {
     await link.settled();
     expect(channel.edits[0]).toHaveLength(1);
     const edited = textOf(channel.edits[0]![0]!);
-    expect(edited).toContain("✓ **bash**");
-    expect(edited).toContain("… **edit** vars.yml");
+    expect(edited).toContain("✓ `bash`");
+    expect(edited).toContain("… `edit` vars.yml");
 
     advance(1_000);
     event(rpc, "t1", { type: "tool_end", name: "edit", ok: false });
@@ -315,6 +400,23 @@ describe("live progress", () => {
     await tick();
     await tick();
     expect(textOf(channel.edits[0]!.at(-1)!)).toContain("⚠️ interrupted");
+  });
+
+  test("abort carries the turnId", async () => {
+    const { link, rpc } = setup();
+    rpc.respond = async () => ({ aborted: true });
+    await link.abort("t9");
+    await link.abort();
+    expect(rpc.calls.map((c) => c.params)).toEqual([{ principalId: P, turnId: "t9" }, { principalId: P }]);
+  });
+
+  test("a turn a Stop button already finalized gets no second stopped message", async () => {
+    const { link, rpc, channel } = setup();
+    link.markTurnEnded("t7");
+    event(rpc, "t7", { type: "turn_end", aborted: true });
+    await tick();
+    expect(channel.sent).toHaveLength(0);
+    expect(textOf(link.renderFinal(null, "interrupted"))).toContain('"content":"⚠️ interrupted"');
   });
 
   test("events for another principal are ignored", async () => {

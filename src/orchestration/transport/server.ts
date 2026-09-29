@@ -38,6 +38,26 @@ export interface WorkspaceHandler {
 
 export class MethodNotFoundError extends Error {}
 
+/** The peer answered with a JSON-RPC error: the request was received and refused. */
+export class RpcErrorReply extends Error {
+  constructor(
+    message: string,
+    readonly code: number,
+  ) {
+    super(message);
+  }
+}
+/** No reply in time; the peer may still have accepted the request. */
+export class RpcTimeoutError extends Error {}
+/** The socket closed before a reply; the peer may have accepted the request. */
+export class RpcConnectionClosedError extends Error {}
+export class WorkspaceNotConnectedError extends Error {}
+
+/** True when a failed request may still have been accepted by the peer. */
+export function mayHaveBeenAccepted(err: unknown): boolean {
+  return err instanceof RpcTimeoutError || err instanceof RpcConnectionClosedError;
+}
+
 interface SocketState {
   runnerId: string | null;
   pending: Map<string | number, PendingCall>;
@@ -56,6 +76,10 @@ export interface ConnectionInfo {
 /** Principal a valid secret maps to when principals.json declares no owner. */
 export const DEFAULT_OWNER_PRINCIPAL_ID = "drk";
 
+export function resolveOwnerPrincipalId(): string {
+  return ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID;
+}
+
 /** What a secret authorizes: the principal it acts as, and the roles it may register as. */
 export interface SecretGrant {
   principalId: string;
@@ -65,7 +89,7 @@ export interface SecretGrant {
 /** secret → grant, built from config: ORCH_SECRET registers workspaces only, ORCH_RUNNER_SECRET
  *  task runners only, so a task agent that reads its runner's secret can't pose as the workspace. */
 export function defaultSecretGrants(): Record<string, SecretGrant> {
-  const principalId = ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID;
+  const principalId = resolveOwnerPrincipalId();
   const grants: Record<string, SecretGrant> = {};
   if (orchSecretsCollide()) return grants;
   if (config.orchSecret) grants[config.orchSecret] = { principalId, roles: ["workspace"] };
@@ -233,7 +257,7 @@ export class OrchestrationServer {
       this.sockets.delete(ws.data.runnerId);
       if (conn?.role !== "workspace") this.options.onDisconnect?.(ws.data.runnerId);
     }
-    const closedErr = new Error("connection closed");
+    const closedErr = new RpcConnectionClosedError("connection closed");
     for (const pending of ws.data.pending.values()) pending.reject(closedErr);
     ws.data.pending.clear();
   }
@@ -380,7 +404,7 @@ export class OrchestrationServer {
       const pending = ws.data.pending.get(res.data.id);
       if (!pending) return;
       ws.data.pending.delete(res.data.id);
-      if (res.data.error) pending.reject(new Error(res.data.error.message));
+      if (res.data.error) pending.reject(new RpcErrorReply(res.data.error.message, res.data.error.code));
       else pending.resolve(res.data.result);
     }
   }
@@ -468,7 +492,7 @@ export class OrchestrationServer {
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
           ws.data.pending.delete(id);
-          reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+          reject(new RpcTimeoutError(`${method} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
       }
       ws.send(JSON.stringify(request));
@@ -479,7 +503,7 @@ export class OrchestrationServer {
    *  reply, when the socket closes, or after `timeoutMs`. */
   requestWorkspace(principalId: string, method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
     const ws = this.workspaces.get(principalId);
-    if (!ws) return Promise.reject(new Error(`workspace not connected: ${principalId}`));
+    if (!ws) return Promise.reject(new WorkspaceNotConnectedError(`workspace not connected: ${principalId}`));
     return this.callSocket(ws, method, params, timeoutMs);
   }
 

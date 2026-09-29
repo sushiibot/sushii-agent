@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { MessageCreateOptions } from "discord.js";
 import type { ChatMessageMode, ChatMessageParams } from "../../orchestration/contracts.ts";
+import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import {
   CATCH_UP_LIMIT,
+  CATCH_UP_MAX_AGE_MS,
+  CATCH_UP_PAGE_SIZE,
   advanceCursor,
   catchUpOwnerDms,
   handleOwnerDm,
+  routeDirectMessage,
   selectCatchUp,
+  snowflakeAt,
   voiceEcho,
   type DmCursor,
   type OwnerDmDeps,
@@ -41,7 +46,8 @@ function memCursor(initial: string | null = null): DmCursor & { value: string | 
   return c;
 }
 
-function fakeDeps(opts: { enabled?: boolean; connected?: boolean; mode?: ChatMessageMode; sendFails?: boolean } = {}) {
+function fakeDeps(opts: { enabled?: boolean; connected?: boolean; mode?: ChatMessageMode; sendError?: Error; connectedAfterFailure?: boolean } = {}) {
+  let connected = opts.connected ?? true;
   const calls = {
     messages: [] as Array<Omit<ChatMessageParams, "principalId">>,
     aborts: 0,
@@ -54,10 +60,13 @@ function fakeDeps(opts: { enabled?: boolean; connected?: boolean; mode?: ChatMes
     workspaceEnabled: opts.enabled ?? true,
     transcriptionEnabled: true,
     link: {
-      isConnected: () => opts.connected ?? true,
+      isConnected: () => connected,
       sendMessage: async (input) => {
         calls.messages.push(input);
-        if (opts.sendFails) throw new Error("chat/message timed out after 10000ms");
+        if (opts.sendError) {
+          if (opts.connectedAfterFailure !== undefined) connected = opts.connectedAfterFailure;
+          throw opts.sendError;
+        }
         return { accepted: true, mode: opts.mode ?? "prompt" };
       },
       abort: async () => {
@@ -135,12 +144,37 @@ describe("owner DM routing", () => {
     expect(calls.inbox).toEqual([["check the wiki sync", "in-process reply"]]);
   });
 
-  test("a failed or timed-out chat/message falls back the same way", async () => {
-    const { deps, calls } = fakeDeps({ sendFails: true });
-    await handleOwnerDm(fakeMessage().msg, deps);
+  test("a timeout while the workspace is still connected leaves the DM to the workspace: ⏳, no fallback", async () => {
+    const { deps, calls } = fakeDeps({ sendError: new RpcTimeoutError("chat/message timed out after 10000ms") });
+    deps.cursor = memCursor("900");
+    const { msg, reactions, sent } = fakeMessage();
+    await handleOwnerDm(msg, deps);
     expect(calls.messages).toHaveLength(1);
-    expect(calls.inProcess).toEqual([{ text: "check the wiki sync", notice: OFFLINE_NOTICE }]);
-    expect(calls.inbox).toHaveLength(1);
+    expect(reactions).toEqual(["⏳"]);
+    expect(calls.inProcess).toHaveLength(0);
+    expect(calls.inbox).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+    expect(deps.cursor.get()).toBe("1000");
+  });
+
+  test("a timeout or closed socket after the workspace went away falls back", async () => {
+    for (const err of [new RpcTimeoutError("timed out"), new RpcConnectionClosedError("connection closed")]) {
+      const { deps, calls } = fakeDeps({ sendError: err, connectedAfterFailure: false });
+      const { msg, reactions } = fakeMessage();
+      await handleOwnerDm(msg, deps);
+      expect(reactions).toEqual(["👀"]);
+      expect(calls.inProcess).toEqual([{ text: "check the wiki sync", notice: OFFLINE_NOTICE }]);
+      expect(calls.inbox).toHaveLength(1);
+    }
+  });
+
+  test("an explicit RPC error or no connection means not accepted, so it falls back even while connected", async () => {
+    for (const err of [new RpcErrorReply("personal session not started", -32000), new WorkspaceNotConnectedError("workspace not connected: drk")]) {
+      const { deps, calls } = fakeDeps({ sendError: err });
+      await handleOwnerDm(fakeMessage().msg, deps);
+      expect(calls.inProcess).toEqual([{ text: "check the wiki sync", notice: OFFLINE_NOTICE }]);
+      expect(calls.inbox).toHaveLength(1);
+    }
   });
 
   test("!new → 🧠 + chat/new + ✅ New session.; !stop → chat/abort + ⏹", async () => {
@@ -233,7 +267,8 @@ describe("DM catch-up on ready", () => {
         handled.push(m.id);
       },
     });
-    expect(fetchedAfter!).toEqual(["1000", CATCH_UP_LIMIT]);
+    // The cursor is older than the 24h floor, so paging starts at the floor.
+    expect(fetchedAfter!).toEqual([snowflakeAt(NOW - CATCH_UP_MAX_AGE_MS), CATCH_UP_PAGE_SIZE]);
     expect(handled).toEqual(["1010", "1030"]);
     expect(count).toBe(2);
   });
@@ -271,6 +306,91 @@ describe("DM catch-up on ready", () => {
     });
     expect(calls.inProcess.map((c) => c.text)).toEqual(["live", "backlog 1001", "backlog 1002"]);
     expect(deps.cursor.get()).toBe("1005");
+  });
+
+  /** A DM channel that honours Discord's `after`/`limit`: the oldest `limit` messages after `after`, newest first. */
+  function fakeChannel(messages: Array<ReturnType<typeof owner>>) {
+    const calls: Array<[string, number]> = [];
+    return {
+      calls,
+      fetchAfter: async (after: string, limit: number) => {
+        calls.push([after, limit]);
+        return messages
+          .filter((m) => BigInt(m.id) > BigInt(after))
+          .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1))
+          .slice(0, limit)
+          .reverse();
+      },
+    };
+  }
+
+  test("pages past the bot's own messages to reach the owner's recent DMs, from the 24h floor", async () => {
+    const base = BigInt(snowflakeAt(NOW - 60 * 60 * 1000));
+    const bot = (i: number) => ({ id: (base + BigInt(i)).toString(), createdTimestamp: NOW - 3_000_000, author: { id: "bot", bot: true } });
+    const msgs = [
+      ...Array.from({ length: 150 }, (_, i) => bot(i)),
+      ...[200, 201, 202].map((i) => ({ ...owner((base + BigInt(i)).toString()) })),
+    ];
+    const ch = fakeChannel(msgs);
+    const handled: string[] = [];
+    const staleCursor = snowflakeAt(NOW - 3 * CATCH_UP_MAX_AGE_MS);
+    const count = await catchUpOwnerDms({ cursor: staleCursor, ownerId: "owner-1", now: NOW, fetchAfter: ch.fetchAfter, handle: async (m) => void handled.push(m.id) });
+    expect(count).toBe(3);
+    expect(handled).toEqual([200, 201, 202].map((i) => (base + BigInt(i)).toString()));
+    expect(ch.calls[0]).toEqual([snowflakeAt(NOW - CATCH_UP_MAX_AGE_MS), CATCH_UP_PAGE_SIZE]);
+    expect(ch.calls.length).toBe(2);
+  });
+
+  test("the cap counts owner DMs only, and stops paging once reached", async () => {
+    const base = BigInt(snowflakeAt(NOW - 60 * 60 * 1000));
+    const msgs = Array.from({ length: 250 }, (_, i) =>
+      i % 2 ? owner((base + BigInt(i)).toString()) : { id: (base + BigInt(i)).toString(), createdTimestamp: NOW - 1000, author: { id: "bot", bot: true } },
+    );
+    const ch = fakeChannel(msgs);
+    const handled: string[] = [];
+    await catchUpOwnerDms({ cursor: base.toString(), ownerId: "owner-1", now: NOW, fetchAfter: ch.fetchAfter, handle: async (m) => void handled.push(m.id) });
+    expect(handled).toHaveLength(CATCH_UP_LIMIT);
+    expect(handled[0]).toBe((base + 1n).toString());
+    expect(ch.calls.length).toBe(1);
+  });
+
+  test("a task reply in the backlog goes to its pre-check, not the agent, and still advances the cursor", async () => {
+    const { deps, calls } = fakeDeps({ connected: false });
+    deps.cursor = memCursor("1000");
+    const taskReplies: string[] = [];
+    const route = (id: string) =>
+      routeDirectMessage(fakeMessage({ id, content: `dm ${id}` }).msg, {
+        isOwner: true,
+        preChecks: [async (m) => (m.id === "1002" ? (taskReplies.push(m.id), true) : false)],
+        handleOwner: (m) => handleOwnerDm(m, deps),
+        cursor: deps.cursor,
+      });
+    await catchUpOwnerDms({
+      cursor: "1000",
+      ownerId: "owner-1",
+      now: NOW,
+      fetchAfter: async () => [owner("1003"), owner("1002"), owner("1001")],
+      handle: (m) => route(m.id),
+    });
+    expect(taskReplies).toEqual(["1002"]);
+    expect(calls.inProcess.map((c) => c.text)).toEqual(["dm 1001", "dm 1003"]);
+    expect(deps.cursor.get()).toBe("1003");
+  });
+
+  test("a live DM a pre-check consumes advances the cursor and is marked handled", async () => {
+    const cursor = memCursor("1000");
+    const seen: string[] = [];
+    let handledOwner = false;
+    await routeDirectMessage(
+      { id: "1004" },
+      { isOwner: true, preChecks: [async () => true], handleOwner: async () => void (handledOwner = true), cursor, onOwnerDm: (id) => seen.push(id) },
+    );
+    expect(handledOwner).toBe(false);
+    expect(cursor.get()).toBe("1004");
+    expect(seen).toEqual(["1004"]);
+    await routeDirectMessage({ id: "1009" }, { isOwner: false, preChecks: [async () => false], handleOwner: async () => void (handledOwner = true), cursor });
+    expect(handledOwner).toBe(false);
+    expect(cursor.get()).toBe("1004");
   });
 
   test("no cursor yet: nothing is fetched", async () => {

@@ -49,11 +49,18 @@ import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts"
 import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
 import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
-import { DEFAULT_OWNER_PRINCIPAL_ID } from "../../orchestration/transport/server.ts";
-import { ownerPrincipalId } from "../../orchestration/principals.ts";
+import { resolveOwnerPrincipalId } from "../../orchestration/transport/server.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
-import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, answeredAsk, type DmChannelPort } from "./workspaceLink.ts";
-import { OWNER_DM_CURSOR_KEY, catchUpOwnerDms, handleOwnerDm as routeOwnerDm, type DmCursor, type OwnerDmMessage } from "./ownerDm.ts";
+import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, type DmChannelPort } from "./workspaceLink.ts";
+import { handleWorkspaceAskButton, handleWorkspaceStopButton } from "./workspaceButtons.ts";
+import {
+  OWNER_DM_CURSOR_KEY,
+  catchUpOwnerDms,
+  handleOwnerDm as routeOwnerDm,
+  routeDirectMessage,
+  type DmCursor,
+  type OwnerDmMessage,
+} from "./ownerDm.ts";
 import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningAutomod, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
 
 function behaviorFor(guildId: string): string {
@@ -324,7 +331,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     set: (id) => linkStore.setKv(OWNER_DM_CURSOR_KEY, id),
   };
   const workspaceLink = new WorkspaceLink({
-    principalId: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID,
+    principalId: resolveOwnerPrincipalId(),
     store: linkStore,
     ownerChannel: async (): Promise<DmChannelPort | null> => {
       if (!config.ownerDiscordId) return null;
@@ -400,7 +407,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   async function handleOwnerDm(message: Message): Promise<void> {
     const dm = ownerDmMessage(message);
     if (!dm) return;
-    handledBeforeCatchUp?.add(message.id);
     await routeOwnerDm(dm, {
       workspaceEnabled: config.dmWorkspaceEnabled,
       transcriptionEnabled: config.transcriptionEnabled,
@@ -435,54 +441,25 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       cursor,
       ownerId,
       now: Date.now(),
-      fetchAfter: async (after, limit) => [...(await dmChannel.messages.fetch({ after, limit })).values()],
-      handle: (m) => handleOwnerDm(m),
+      fetchAfter: async (after, limit) => [...(await dmChannel.messages.fetch({ after, limit, cache: false })).values()],
+      handle: (m) => handleDirectMessage(m),
       alreadyHandled: (id) => handled.has(id),
     });
     if (count > 0) logger.info({ count }, "caught up owner DMs sent while offline");
   }
 
-  async function handleWorkspaceStopButton(interaction: ButtonInteraction): Promise<void> {
-    if (interaction.user.id !== config.ownerDiscordId) {
-      await interaction.reply({ content: "Only the owner can stop this.", flags: MessageFlags.Ephemeral }).catch(() => {});
-      return;
-    }
-    // abort waits for the run to unwind, which can outlast Discord's 3 s interaction deadline.
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
-    try {
-      const res = await workspaceLink.abort();
-      await interaction.editReply(res.aborted ? "Stopping…" : "Nothing is running.").catch(() => {});
-    } catch (err) {
-      await interaction.editReply(`Couldn't stop: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
-    }
-  }
-
-  async function handleWorkspaceAskButton(interaction: ButtonInteraction): Promise<void> {
-    if (interaction.user.id !== config.ownerDiscordId) {
-      await interaction.reply({ content: "Only the owner can answer this.", flags: MessageFlags.Ephemeral }).catch(() => {});
-      return;
-    }
-    const [askId, idx] = interaction.customId.slice(WS_ASK_PREFIX.length).split(":");
-    const label = "label" in interaction.component ? interaction.component.label : null;
-    const answer = askId ? workspaceLink.askChoice(askId, Number(idx), label ?? null) : null;
-    if (!answer) {
-      await interaction.reply({ content: "This question is no longer active.", flags: MessageFlags.Ephemeral }).catch(() => {});
-      return;
-    }
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
-    try {
-      await workspaceLink.sendMessage({
-        messageId: `wsask:${interaction.id}`,
-        text: answer,
-        kind: "user",
-        author: { id: interaction.user.id, name: interaction.user.globalName ?? interaction.user.username },
-      });
-      await interaction.editReply(`Answered: ${answer}`).catch(() => {});
-      // Drop the buttons so a second click can't send the answer again.
-      await interaction.message.edit(answeredAsk(interaction.message, answer)).catch(() => {});
-    } catch (err) {
-      await interaction.editReply(`Couldn't deliver the answer: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
-    }
+  /** Live and caught-up DMs alike: task replies and needs_input answers first, then the owner-DM router. */
+  async function handleDirectMessage(message: Message): Promise<void> {
+    if (message.author.bot) return;
+    await routeDirectMessage(message, {
+      isOwner: isOwnerDm(message, config.ownerDiscordId),
+      // Replies to non-blocking runner messages are durable ordinary follow-ups, never steer/ask answers.
+      // A reply to a needs_input ping is the ANSWER to that task's ask, not a fresh agent message.
+      preChecks: [maybeReplyToTaskMessage, maybeAnswerAsk],
+      handleOwner: handleOwnerDm,
+      cursor: dmCursor,
+      onOwnerDm: (id) => handledBeforeCatchUp?.add(id),
+    });
   }
 
   /** Posts a deterministic (LLM-free) status line to the task's originating DM when a turn
@@ -620,15 +597,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   // ── MessageCreate ────────────────────────────────────────────────────────────
   client.on(Events.MessageCreate, async (message: Message) => {
     if (!message.guildId) {
-      if (message.author.bot) return;
-      // Replies to non-blocking runner messages are durable ordinary follow-ups, never steer/ask answers.
-      if (await maybeReplyToTaskMessage(message)) return;
-      // A reply to a needs_input ping is the ANSWER to that task's ask — route it, don't treat it as a
-      // fresh agent message.
-      if (await maybeAnswerAsk(message)) return;
-      if (isOwnerDm(message, config.ownerDiscordId)) {
-        await handleOwnerDm(message).catch((err) => logger.error({ err }, "unhandled error in owner DM path"));
-      }
+      await handleDirectMessage(message).catch((err) => logger.error({ err }, "unhandled error in DM path"));
       return;
     }
     const guildConfig = config.guildConfig[message.guildId];
@@ -928,11 +897,11 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
     if (btn.customId.startsWith(WS_STOP_PREFIX)) {
-      await handleWorkspaceStopButton(btn);
+      await handleWorkspaceStopButton(btn, { ownerId: config.ownerDiscordId, link: workspaceLink });
       return;
     }
     if (btn.customId.startsWith(WS_ASK_PREFIX)) {
-      await handleWorkspaceAskButton(btn);
+      await handleWorkspaceAskButton(btn, { ownerId: config.ownerDiscordId, link: workspaceLink });
       return;
     }
   });

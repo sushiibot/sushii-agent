@@ -36,6 +36,11 @@ export const MESSAGE_TIMEOUT_MS = 10_000;
 const CONTROL_TIMEOUT_MS = 30_000;
 const PROGRESS_LINES = 8;
 const OUTBOX_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const ENDED_TURNS_KEPT = 100;
+/** Consecutive failed sends of one delivery before it goes out as plain text instead. */
+export const DELIVERY_MAX_FAILURES = 3;
+const PLAIN_CHUNK = 2000;
+const ASK_QUESTION_MAX = 3500;
 
 /** Minimum gap between progress edits for a turn of the given age. */
 export function progressEditGap(ageMs: number): number {
@@ -125,6 +130,10 @@ export class WorkspaceLink {
   private readonly askChoices = new Map<string, string[]>();
   private connectWaiters: Array<() => void> = [];
   private replaying: Promise<void> | null = null;
+  private replayAgain = false;
+  // turnId → tool count for turns that have ended; null when the count is unknown (a restart).
+  private readonly endedTurns = new Map<string, number | null>();
+  private readonly sendFailures = new Map<string, number>();
   private rpc: WorkspaceRpc | null;
 
   constructor(opts: WorkspaceLinkOptions) {
@@ -181,8 +190,20 @@ export class WorkspaceLink {
     return (await this.request(RPC_METHODS.chatMessage, params, MESSAGE_TIMEOUT_MS)) as ChatMessageResult;
   }
 
-  async abort(): Promise<{ aborted: boolean }> {
-    return (await this.request(RPC_METHODS.chatAbort, { principalId: this.opts.principalId }, CONTROL_TIMEOUT_MS)) as { aborted: boolean };
+  /** With a turnId, the workspace aborts only that turn and answers aborted:false once it has ended. */
+  async abort(turnId?: string): Promise<{ aborted: boolean }> {
+    const params = { principalId: this.opts.principalId, ...(turnId ? { turnId } : {}) };
+    return (await this.request(RPC_METHODS.chatAbort, params, CONTROL_TIMEOUT_MS)) as { aborted: boolean };
+  }
+
+  /** Whether this process is still showing the turn as working. */
+  hasTurn(turnId: string): boolean {
+    return this.turns.has(turnId);
+  }
+
+  /** Records a turn a Stop button finalized outside the event stream, so its turn_end adds no second message. */
+  markTurnEnded(turnId: string): void {
+    this.rememberEnded(turnId, null);
   }
 
   async newSession(): Promise<{ sessionFile: string }> {
@@ -207,27 +228,40 @@ export class WorkspaceLink {
 
   /** Sends each offline exchange oldest-first as context, deleting a row once the workspace accepts it. */
   replayInbox(): Promise<void> {
-    if (this.replaying) return this.replaying;
+    // A pass already running may be bound to a socket that is being replaced; run once more after it.
+    if (this.replaying) {
+      this.replayAgain = true;
+      return this.replaying;
+    }
     this.replaying = (async () => {
       try {
-        for (const row of this.opts.store.listInbox(this.opts.principalId)) {
-          const params: ChatMessageParams = {
-            principalId: this.opts.principalId,
-            messageId: `inbox:${row.id}`,
-            text: `User: ${row.userText}\nAssistant (offline fallback): ${row.replyText}`,
-            kind: "context",
-            author: this.opts.owner(),
-          };
-          await this.request(RPC_METHODS.chatMessage, params, CONTROL_TIMEOUT_MS);
-          this.opts.store.deleteInbox(row.id);
-        }
-      } catch (err) {
-        log.warn({ err }, "inbox replay stopped; the rest resends on the next register");
+        do {
+          this.replayAgain = false;
+          await this.replayOnce();
+        } while (this.replayAgain && this.isConnected());
       } finally {
         this.replaying = null;
       }
     })();
     return this.replaying;
+  }
+
+  private async replayOnce(): Promise<void> {
+    try {
+      for (const row of this.opts.store.listInbox(this.opts.principalId)) {
+        const params: ChatMessageParams = {
+          principalId: this.opts.principalId,
+          messageId: `inbox:${row.id}`,
+          text: `User: ${row.userText}\nAssistant (offline fallback): ${row.replyText}`,
+          kind: "context",
+          author: this.opts.owner(),
+        };
+        await this.request(RPC_METHODS.chatMessage, params, CONTROL_TIMEOUT_MS);
+        this.opts.store.deleteInbox(row.id);
+      }
+    } catch (err) {
+      log.warn({ err }, "inbox replay stopped; the rest resends on the next register");
+    }
   }
 
   private request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
@@ -271,15 +305,35 @@ export class WorkspaceLink {
     this.onEvent(parsed.data);
   }
 
-  /** Renders a delivery once, then acks it. A failed Discord send is left unacked so the workspace resends it. */
+  /** Renders a delivery once, then acks it. A failed Discord send is left unacked so the workspace resends
+   *  it; pages already sent are recorded and skipped on the resend. */
   async deliver(p: ChatDeliverParams): Promise<void> {
     if (this.delivering.has(p.outboxId)) return;
     this.delivering.add(p.outboxId);
     try {
       if (!this.opts.store.hasSeenOutbox(p.outboxId)) {
+        const toolCount = p.kind === "reply" && p.turnId ? this.closeTurnForReply(p.turnId) : null;
         const channel = await this.opts.ownerChannel();
         if (!channel) throw new Error("owner DM channel unavailable");
-        for (const msg of this.renderDelivery(p)) await channel.send(msg);
+        try {
+          const pages = this.renderDelivery(p, toolCount);
+          for (const [i, page] of pages.entries()) {
+            const pageKey = `${p.outboxId}#${i}`;
+            if (pages.length > 1 && this.opts.store.hasSeenOutbox(pageKey)) continue;
+            await channel.send(page);
+            if (pages.length > 1) this.opts.store.markOutboxSeen(pageKey, p.principalId, this.now());
+          }
+          this.sendFailures.delete(p.outboxId);
+        } catch (err) {
+          const failures = (this.sendFailures.get(p.outboxId) ?? 0) + 1;
+          this.sendFailures.set(p.outboxId, failures);
+          if (failures < DELIVERY_MAX_FAILURES) throw err;
+          log.warn({ err, outboxId: p.outboxId, failures }, "delivery keeps failing to render; sending it as plain text");
+          for (const chunk of plainChunks(p.kind === "ask" ? (p.ask?.question ?? p.text) : p.text)) {
+            await channel.send({ content: chunk, allowedMentions: { parse: [] } });
+          }
+          this.sendFailures.delete(p.outboxId);
+        }
         this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
       }
       await this.request(RPC_METHODS.chatAck, { outboxId: p.outboxId }, CONTROL_TIMEOUT_MS).catch((err) =>
@@ -292,16 +346,29 @@ export class WorkspaceLink {
     }
   }
 
-  renderDelivery(p: ChatDeliverParams): MessageCreateOptions[] {
+  /** Finalizes the reply's progress view if it is still open; returns the turn's tool count if known. */
+  private closeTurnForReply(turnId: string): number | null {
+    const turn = this.turns.get(turnId);
+    if (turn) {
+      this.finishTurn(turn, "done");
+      return turn.toolCount;
+    }
+    return this.endedTurns.get(turnId) ?? null;
+  }
+
+  renderDelivery(p: ChatDeliverParams, toolCount: number | null = null): MessageCreateOptions[] {
     if (p.kind === "ask") return [this.renderAsk(p)];
     const prefix = p.kind === "proactive" ? "-# ⏰\n" : "";
-    const footer = p.usage ? `\n${renderChatUsageFooter(p.usage)}` : "";
+    const tools = toolCount ? toolsLabel(toolCount) : null;
+    const footerLine = p.usage ? `${renderChatUsageFooter(p.usage)}${tools ? ` · ${tools}` : ""}` : tools ? `-# ${tools}` : null;
+    const footer = footerLine ? `\n${footerLine}` : "";
     return buildComponentMessages(`${prefix}${p.text}${footer}`).map((m) => ({ ...m, allowedMentions: { parse: [] } }));
   }
 
   private renderAsk(p: ChatDeliverParams): MessageCreateOptions {
-    const question = p.ask?.question ?? p.text;
-    const choices = (p.ask?.choices ?? []).slice(0, 25);
+    const rawQuestion = p.ask?.question ?? p.text;
+    const question = rawQuestion.length > ASK_QUESTION_MAX ? `${rawQuestion.slice(0, ASK_QUESTION_MAX)}…` : rawQuestion;
+    const choices = (p.ask?.choices ?? []).slice(0, 25).map((c, i) => (c.trim() ? c : `(option ${i + 1})`));
     const container = new ContainerBuilder()
       .setAccentColor(ACCENT.info)
       .addTextDisplayComponents(
@@ -354,7 +421,7 @@ export class WorkspaceLink {
       case "turn_end": {
         const turn = this.turns.get(p.turnId);
         if (turn) this.finishTurn(turn, ev.aborted ? "stopped" : "done");
-        else if (ev.aborted) {
+        else if (ev.aborted && !this.endedTurns.has(p.turnId)) {
           // A tool-less run that was stopped: no progress message exists, and no reply will follow.
           void this.createMessage(this.renderFinal({ startedAt: this.now(), toolCount: 0 }, "stopped"));
         }
@@ -412,8 +479,15 @@ export class WorkspaceLink {
     return turn.chain;
   }
 
+  private rememberEnded(turnId: string, toolCount: number | null): void {
+    this.endedTurns.delete(turnId);
+    this.endedTurns.set(turnId, toolCount);
+    if (this.endedTurns.size > ENDED_TURNS_KEPT) this.endedTurns.delete(this.endedTurns.keys().next().value!);
+  }
+
   private finishTurn(turn: TurnProgress, outcome: Outcome): void {
     this.turns.delete(turn.turnId);
+    this.rememberEnded(turn.turnId, turn.toolCount);
     if (turn.timer !== null) {
       this.timers.clear(turn.timer);
       turn.timer = null;
@@ -424,8 +498,8 @@ export class WorkspaceLink {
 
   renderWorking(turn: Pick<TurnProgress, "turnId" | "startedAt" | "lines">): MessageCreateOptions & MessageEditOptions {
     const icon = { run: "…", ok: "✓", err: "✗" } as const;
-    const lines = turn.lines.slice(-PROGRESS_LINES).map((l) => `${icon[l.state]} **${l.name}** ${l.summary}`.trimEnd());
-    const header = `⏳ working · started <t:${Math.floor(turn.startedAt / 1000)}:R>`;
+    const lines = turn.lines.slice(-PROGRESS_LINES).map((l) => `${icon[l.state]} \`${l.name}\` ${l.summary}`.trimEnd());
+    const header = `-# ⏳ working · started <t:${Math.floor(turn.startedAt / 1000)}:R>`;
     const container = new ContainerBuilder()
       .setAccentColor(ACCENT.info)
       .addTextDisplayComponents(new TextDisplayBuilder({ content: [header, ...lines].join("\n") }))
@@ -437,14 +511,24 @@ export class WorkspaceLink {
     return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
   }
 
-  renderFinal(turn: Pick<TurnProgress, "startedAt" | "toolCount">, outcome: Outcome): MessageCreateOptions & MessageEditOptions {
-    const tools = `${turn.toolCount} ${turn.toolCount === 1 ? "tool" : "tools"}`;
-    const summary = `${formatDuration(this.now() - turn.startedAt)} · ${tools}`;
+  /** Pass null for a turn this process no longer tracks: the label then carries no duration or count. */
+  renderFinal(turn: Pick<TurnProgress, "startedAt" | "toolCount"> | null, outcome: Outcome): MessageCreateOptions & MessageEditOptions {
+    const summary = turn ? ` · ${formatDuration(this.now() - turn.startedAt)} · ${toolsLabel(turn.toolCount)}` : "";
     const [label, accent] =
-      outcome === "done" ? [`✓ done · ${summary}`, ACCENT.info] : outcome === "stopped" ? [`⏹ stopped · ${summary}`, ACCENT.danger] : [`⚠️ interrupted · ${summary}`, ACCENT.warning];
+      outcome === "done" ? [`✓ done${summary}`, ACCENT.info] : outcome === "stopped" ? [`⏹ stopped${summary}`, ACCENT.danger] : [`⚠️ interrupted${summary}`, ACCENT.warning];
     const container = new ContainerBuilder().setAccentColor(accent).addTextDisplayComponents(new TextDisplayBuilder({ content: label }));
     return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
   }
+}
+
+function toolsLabel(count: number): string {
+  return `${count} ${count === 1 ? "tool" : "tools"}`;
+}
+
+function plainChunks(text: string): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += PLAIN_CHUNK) chunks.push(text.slice(i, i + PLAIN_CHUNK));
+  return chunks.length ? chunks : ["(empty message)"];
 }
 
 /** The ask message once answered: its question text with the choice noted, and no buttons. */
