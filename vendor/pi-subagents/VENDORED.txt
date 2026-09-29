@@ -1,0 +1,11 @@
+@gotgenes/pi-subagents 21.8.0, vendored from
+https://github.com/gotgenes/pi-packages/tree/245c8ae7a34d74ae5a97a28399ef59a20f7cafb0/packages/pi-subagents
+License: MIT (LICENSE, verbatim). Copied: src/, package.json, LICENSE, README.md. Never installed; no install scripts run.
+
+Local patches:
+- src/tools/{agent-tool,get-result-tool,steer-tool}.ts, src/session/{ask-parent-tool,notify-parent-tool}.ts:
+  import { Type } from "@sinclair/typebox" -> from "typebox" (Pi 0.99.1 ships typebox 1.x; same Type API).
+
+Used by src/workspace/subagents/host.ts: SubagentManager, Subagent, SubagentSession (turn loop and turn cap),
+ConcurrencyLimiter, the child lifecycle publisher. The package's own composition root (src/index.ts), its
+`subagent` tool and its UI are not loaded.
