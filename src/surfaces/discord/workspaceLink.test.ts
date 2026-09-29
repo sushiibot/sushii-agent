@@ -245,14 +245,21 @@ describe("chat/deliver", () => {
     expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
   });
 
-  test("a delivery Discord keeps rejecting goes out as plain text after repeated failures, then is acked", async () => {
-    const { link, rpc, channel } = setup();
+  test("a delivery Discord keeps rejecting goes out as plain text after repeated failures across restarts, then is acked", async () => {
+    const { rpc, channel, store } = setup();
     channel.failWhen = (o) => o.content === undefined;
-    for (let i = 0; i < DELIVERY_MAX_FAILURES - 1; i++) await link.deliver(deliverParams());
+    // Each resend follows a register, usually after a bot restart: a fresh link over the same store.
+    const freshLink = () => {
+      const link = new WorkspaceLink({ principalId: P, store, ownerChannel: async () => channel, owner: () => ({ id: "owner-1", name: "drk" }) });
+      link.attach(rpc);
+      return link;
+    };
+    for (let i = 0; i < DELIVERY_MAX_FAILURES - 1; i++) await freshLink().deliver(deliverParams());
     expect(rpc.calls).toHaveLength(0);
-    await link.deliver(deliverParams());
+    await freshLink().deliver(deliverParams());
     expect(channel.sent.map((m) => m.content)).toEqual(["hello there"]);
     expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+    expect(store.getKv("workspace:deliver_failures:o1")).toBeNull();
   });
 
   test("an ask with an overlong question or empty choice still renders valid components", async () => {

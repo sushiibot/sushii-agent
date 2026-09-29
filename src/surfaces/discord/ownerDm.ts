@@ -1,6 +1,6 @@
 import { ContainerBuilder, MessageFlags, TextDisplayBuilder, type MessageCreateOptions } from "discord.js";
 import type { ChatMessageMode } from "../../orchestration/contracts.ts";
-import { mayHaveBeenAccepted } from "../../orchestration/transport/server.ts";
+import { RpcConnectionClosedError, mayHaveBeenAccepted } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { ACCENT, OFFLINE_NOTICE, type WorkspaceLink } from "./workspaceLink.ts";
 
@@ -126,8 +126,8 @@ async function route(message: OwnerDmMessage, deps: OwnerDmDeps): Promise<void> 
   if (workspace) {
     // A voice message's audio is already transcribed; only forward real attachments.
     const attachments = voice ? [] : message.attachments;
-    try {
-      const res = await link.sendMessage({
+    const send = () =>
+      link.sendMessage({
         messageId: message.id,
         text,
         kind: "user",
@@ -135,6 +135,16 @@ async function route(message: OwnerDmMessage, deps: OwnerDmDeps): Promise<void> 
         ...(attachments.length ? { attachments } : {}),
         ...(voice ? { voice: true } : {}),
       });
+    try {
+      let res;
+      try {
+        res = await send();
+      } catch (err) {
+        // A replacement socket took over; the old one likely died before the workspace read the DM.
+        // The workspace dedupes by messageId, so a retry of a DM it did take comes back as a duplicate.
+        if (!(err instanceof RpcConnectionClosedError && link.isConnected())) throw err;
+        res = await send();
+      }
       const emoji = modeReaction(res.mode);
       if (emoji) await message.react(emoji).catch(() => {});
       return;

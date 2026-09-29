@@ -50,6 +50,10 @@ export class WorkspaceLinkStore {
     return ormFor(this.db).select().from(kv).where(eq(kv.key, key)).get()?.value ?? null;
   }
 
+  deleteKv(key: string): void {
+    ormFor(this.db).delete(kv).where(eq(kv.key, key)).run();
+  }
+
   setKv(key: string, value: string): void {
     ormFor(this.db).insert(kv).values({ key, value }).onConflictDoUpdate({ target: kv.key, set: { value } }).run();
   }

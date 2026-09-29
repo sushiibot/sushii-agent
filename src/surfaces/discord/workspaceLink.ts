@@ -133,7 +133,6 @@ export class WorkspaceLink {
   private replayAgain = false;
   // turnId → tool count for turns that have ended; null when the count is unknown (a restart).
   private readonly endedTurns = new Map<string, number | null>();
-  private readonly sendFailures = new Map<string, number>();
   private rpc: WorkspaceRpc | null;
 
   constructor(opts: WorkspaceLinkOptions) {
@@ -323,16 +322,17 @@ export class WorkspaceLink {
             await channel.send(page);
             if (pages.length > 1) this.opts.store.markOutboxSeen(pageKey, p.principalId, this.now());
           }
-          this.sendFailures.delete(p.outboxId);
+          this.opts.store.deleteKv(failureKey(p.outboxId));
         } catch (err) {
-          const failures = (this.sendFailures.get(p.outboxId) ?? 0) + 1;
-          this.sendFailures.set(p.outboxId, failures);
+          // Persisted: the workspace resends mostly after a register, which usually follows a bot restart.
+          const failures = Number(this.opts.store.getKv(failureKey(p.outboxId)) ?? "0") + 1;
+          this.opts.store.setKv(failureKey(p.outboxId), String(failures));
           if (failures < DELIVERY_MAX_FAILURES) throw err;
           log.warn({ err, outboxId: p.outboxId, failures }, "delivery keeps failing to render; sending it as plain text");
           for (const chunk of plainChunks(p.kind === "ask" ? (p.ask?.question ?? p.text) : p.text)) {
             await channel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
-          this.sendFailures.delete(p.outboxId);
+          this.opts.store.deleteKv(failureKey(p.outboxId));
         }
         this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
       }
@@ -519,6 +519,10 @@ export class WorkspaceLink {
     const container = new ContainerBuilder().setAccentColor(accent).addTextDisplayComponents(new TextDisplayBuilder({ content: label }));
     return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
   }
+}
+
+function failureKey(outboxId: string): string {
+  return `workspace:deliver_failures:${outboxId}`;
 }
 
 function toolsLabel(count: number): string {

@@ -46,8 +46,11 @@ function memCursor(initial: string | null = null): DmCursor & { value: string | 
   return c;
 }
 
-function fakeDeps(opts: { enabled?: boolean; connected?: boolean; mode?: ChatMessageMode; sendError?: Error; connectedAfterFailure?: boolean } = {}) {
+function fakeDeps(
+  opts: { enabled?: boolean; connected?: boolean; mode?: ChatMessageMode; sendError?: Error; sendErrors?: Error[]; connectedAfterFailure?: boolean } = {},
+) {
   let connected = opts.connected ?? true;
+  const queuedErrors = [...(opts.sendErrors ?? [])];
   const calls = {
     messages: [] as Array<Omit<ChatMessageParams, "principalId">>,
     aborts: 0,
@@ -63,6 +66,8 @@ function fakeDeps(opts: { enabled?: boolean; connected?: boolean; mode?: ChatMes
       isConnected: () => connected,
       sendMessage: async (input) => {
         calls.messages.push(input);
+        const queued = queuedErrors.shift();
+        if (queued) throw queued;
         if (opts.sendError) {
           if (opts.connectedAfterFailure !== undefined) connected = opts.connectedAfterFailure;
           throw opts.sendError;
@@ -166,6 +171,32 @@ describe("owner DM routing", () => {
       expect(calls.inProcess).toEqual([{ text: "check the wiki sync", notice: OFFLINE_NOTICE }]);
       expect(calls.inbox).toHaveLength(1);
     }
+  });
+
+  test("a socket closed under a replacement connection retries once on the new one", async () => {
+    const { deps, calls } = fakeDeps({ sendErrors: [new RpcConnectionClosedError("connection closed")], mode: "steer" });
+    const { msg, reactions } = fakeMessage();
+    await handleOwnerDm(msg, deps);
+    expect(calls.messages.map((m) => m.messageId)).toEqual(["1000", "1000"]);
+    expect(reactions).toEqual(["↪️"]);
+    expect(calls.inProcess).toHaveLength(0);
+
+    const again = fakeDeps({ sendErrors: [new RpcConnectionClosedError("connection closed"), new RpcTimeoutError("timed out")] });
+    const second = fakeMessage();
+    await handleOwnerDm(second.msg, again.deps);
+    expect(again.calls.messages).toHaveLength(2);
+    expect(second.reactions).toEqual(["⏳"]);
+    expect(again.calls.inProcess).toHaveLength(0);
+
+    const refused = fakeDeps({ sendErrors: [new RpcConnectionClosedError("connection closed"), new RpcErrorReply("nope", -32000)] });
+    await handleOwnerDm(fakeMessage().msg, refused.deps);
+    expect(refused.calls.inProcess).toEqual([{ text: "check the wiki sync", notice: OFFLINE_NOTICE }]);
+  });
+
+  test("a timeout is not retried", async () => {
+    const { deps, calls } = fakeDeps({ sendErrors: [new RpcTimeoutError("timed out")] });
+    await handleOwnerDm(fakeMessage().msg, deps);
+    expect(calls.messages).toHaveLength(1);
   });
 
   test("an explicit RPC error or no connection means not accepted, so it falls back even while connected", async () => {
