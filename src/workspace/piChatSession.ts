@@ -202,6 +202,7 @@ export function createPiChatSessionFactory(
       // Pi keeps this binding across session.reload(), so each new session binds once.
       if (ui) await session.bindExtensions({ uiContext: ui, mode: "rpc" });
     } catch (err) {
+      sessionRef.current?.dispose();
       stubs?.release();
       throw err;
     }

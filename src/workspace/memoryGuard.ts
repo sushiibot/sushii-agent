@@ -33,9 +33,9 @@ export interface MemoryGuardOptions {
 const MEMORY_FILES: Record<string, number | undefined> = { "USER.md": USER_MD_CAP, "MEMORY.md": MEMORY_MD_CAP, "DREAMS.md": undefined };
 const BASH_WRITE = /(?:>>?|\btee\b|\bsed\b[^|;&]*\s-i|\bperl\b[^|;&]*\s-[a-z]*i|\bcp\b|\bmv\b|\bdd\b)/;
 const BASH_MEMORY_PATH = /(?:^|[\s"'=/>])(?:USER\.md|MEMORY\.md|DREAMS\.md|memory\/)/;
-const BASH_PERSONA_PATH = /(?:^|[\s"'=/>])(?:AGENTS\.md|SOUL\.md|\.agents\/)/;
-/** Files main loads into its own prompt; a subagent writing them could plant instructions for main. */
-const PERSONA_FILES = ["AGENTS.md", "SOUL.md"];
+const BASH_PERSONA_PATH = /(?:^|[\s"'=/>])(?:AGENTS\.md|SOUL\.md|schedule\.md|\.agents\/)/;
+/** Files that steer main (its prompt, its scheduled jobs); a subagent writing them could plant instructions for main. */
+const PERSONA_FILES = ["AGENTS.md", "SOUL.md", "schedule.md"];
 const PERSONA_DIR = ".agents";
 
 function realpathDeep(p: string): string {
@@ -78,7 +78,7 @@ export function resolveReal(raw: string, cwd: string): string {
   return realpathDeep(resolve(cwd, p));
 }
 
-/** Whether `raw` names AGENTS.md, SOUL.md or anything under .agents/ in home. */
+/** Whether `raw` names AGENTS.md, SOUL.md, schedule.md or anything under .agents/ in home. */
 export function isPersonaPath(raw: string, opts: MemoryGuardOptions): boolean {
   const real = resolveReal(raw, opts.cwd);
   const home = realpathDeep(resolve(opts.home));
@@ -152,8 +152,8 @@ export function checkMemoryWrite(toolName: string, input: Record<string, unknown
 function blockReason(rule: string, toolName: string): string {
   if (rule === "read-only") {
     return (
-      "Blocked by the memory guard: subagents can't write USER.md, MEMORY.md, DREAMS.md, memory/, AGENTS.md, SOUL.md or " +
-      ".agents/. Put anything worth remembering in your final answer; the main agent decides what to save."
+      "Blocked by the memory guard: subagents can't write USER.md, MEMORY.md, DREAMS.md, memory/, AGENTS.md, SOUL.md, " +
+      "schedule.md or .agents/. Put anything worth remembering in your final answer; the main agent decides what to save."
     );
   }
   if (rule === "outside") {

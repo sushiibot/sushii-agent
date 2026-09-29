@@ -77,14 +77,16 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("heartbeat", () => {
   test("NO_REPLY sends nothing and notes nothing", async () => {
-    for (const r of ["NO_REPLY", "  NO_REPLY\n", "`NO_REPLY`", "NO_REPLY."]) {
+    for (const r of ["NO_REPLY", "  NO_REPLY\n", "`NO_REPLY`", "NO_REPLY.", "**NO_REPLY**", "\"NO_REPLY\"", "_NO_REPLY_!", "Nothing needs attention. NO_REPLY", "NO_REPLY — all clear"]) {
       reply = r;
       const outcome = await createHeartbeatJob(HEARTBEAT, deps()).run(scheduled);
       expect(outcome).toEqual({ status: "no_reply" });
     }
     expect(delivered).toEqual([]);
     expect(notes).toEqual([]);
-    expect(isNoReply("NO_REPLY, nothing new")).toBe(false);
+    expect(isNoReply("The NO_REPLY sentinel showed up in the logs today.")).toBe(false);
+    expect(isNoReply("NO_REPLYING is not a word")).toBe(false);
+    expect(isNoReply("Your dentist appointment is at 3pm.")).toBe(false);
   });
 
   test("the session is light and read-only: job:heartbeat, AGENTS.md + USER.md, the prompt and the newest daily note", async () => {

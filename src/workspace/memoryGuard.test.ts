@@ -66,7 +66,10 @@ describe("checkMemoryWrite", () => {
     expect(checkMemoryWrite("edit", edit("SOUL.md", "a", "b"), ro)).toBe("read-only");
     expect(checkMemoryWrite("write", { path: ".agents/agents/evil.md", content: "x" }, ro)).toBe("read-only");
     expect(checkMemoryWrite("bash", { command: "echo x >> AGENTS.md" }, ro)).toBe("read-only");
+    expect(checkMemoryWrite("edit", edit("schedule.md", "a", "b"), ro)).toBe("read-only");
+    expect(checkMemoryWrite("bash", { command: "echo x >> schedule.md" }, ro)).toBe("read-only");
     expect(checkMemoryWrite("write", { path: "AGENTS.md", content: "x" }, opts())).toBeNull();
+    expect(checkMemoryWrite("edit", edit("schedule.md", "a", "b"), opts())).toBeNull();
 
     const wt = join(home, "projects", "repo-wt-1");
     mkdirSync(wt, { recursive: true });

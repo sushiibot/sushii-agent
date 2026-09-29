@@ -282,7 +282,7 @@ export class Scheduler {
       const last = state.jobs[name]?.lastRunAt;
       if (!last || now.getTime() - Date.parse(last) > DAY_MS) runs.push(this.runJob(name, { trigger: "catchup", force: false }));
     }
-    this.timer = setInterval(() => void this.tick(), this.opts.pollMs ?? 30_000);
+    this.timer = setInterval(() => void this.tick().catch((err) => this.opts.log?.error({ err }, "scheduler tick failed")), this.opts.pollMs ?? 30_000);
     this.timer.unref?.();
     return Promise.all(runs).then(() => {});
   }

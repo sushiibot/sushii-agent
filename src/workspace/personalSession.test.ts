@@ -575,9 +575,11 @@ describe("PersonalSession outbox", () => {
     sessions[0].finish("  NO_REPLY \n");
     await host.handleMessage(msg("m2", "and this"));
     sessions[0].finish("");
+    await host.handleMessage(msg("m3", "and that"));
+    sessions[0].finish("**NO_REPLY**");
     await tick();
     expect(transport.delivered()).toHaveLength(0);
-    expect(transport.events().filter((e) => e.type === "turn_end")).toHaveLength(2);
+    expect(transport.events().filter((e) => e.type === "turn_end")).toHaveLength(3);
   });
 
   test("live events map turn and tool boundaries", async () => {
@@ -1644,6 +1646,41 @@ describe("PersonalSession extension dialogs", () => {
     await host.handleNew();
     expect(await pending).toBeUndefined();
     expect(sessions).toHaveLength(2);
+  });
+
+  test("a dialog opened while a Stop or chat/new is in progress resolves to its default at once", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m-1", "go"));
+    const stopping = host.handleAbort();
+    const [confirmed, picked, typed] = [host.ui.confirm("Ok?", ""), host.ui.select("Pick", ["a"]), host.ui.input("Say")];
+    expect(await confirmed).toBe(false);
+    expect(await picked).toBeUndefined();
+    expect(await typed).toBeUndefined();
+    await stopping;
+
+    const resetting = host.handleNew();
+    const late = host.ui.input("Name?");
+    expect(await late).toBeUndefined();
+    await resetting;
+    expect(asks(transport)).toEqual([]);
+    // Open again once the reset is done; the owner's next message is a prompt, not an answer to a stale dialog.
+    const fresh = host.ui.confirm("Again?", "");
+    expect(asks(transport)).toHaveLength(1);
+    expect(await host.handleMessage(msg("m-2", "yes"))).toEqual({ accepted: true, mode: "prompt" });
+    expect(await fresh).toBe(true);
+    expect(sessions[1]!.prompts).toEqual([]);
+  });
+
+  test("a dialog still open when its run ends is cancelled and can't eat the next message", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleMessage(msg("m-1", "go"));
+    const named = host.ui.input("Name?");
+    sessions[0]!.finish("done");
+    expect(await named).toBeUndefined();
+    expect(await host.handleMessage(msg("m-2", "next thing"))).toEqual({ accepted: true, mode: "prompt" });
+    expect(sessions[0]!.prompts.map((p) => p.text)).toEqual([stamped("m-1", "go"), stamped("m-2", "next thing")]);
   });
 
   test("a Stop for an earlier turn leaves the current dialog open", async () => {

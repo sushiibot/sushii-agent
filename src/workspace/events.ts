@@ -4,6 +4,16 @@ import { summarizeToolArgs } from "../orchestration/runner/piShared.ts";
 import { CHATGPT_PROVIDER, modelLabel, publicAuthError } from "./chatgptFallback.ts";
 
 export const NO_REPLY = "NO_REPLY";
+const NO_REPLY_EDGE = /^NO_REPLY(?:$|[\s.,;:!?—–-])|(?:^|[\s.,;:!?—–-])NO_REPLY$/;
+
+/** Whether a reply means "say nothing": NO_REPLY alone or leading/trailing, even wrapped in markdown, quotes or punctuation. */
+export function isNoReply(text: string): boolean {
+  const bare = text
+    .replace(/[*`"'“”‘’~]/g, "")
+    .replace(/^[\s_]+/, "")
+    .replace(/[\s_.!?,;:…]+$/, "");
+  return NO_REPLY_EDGE.test(bare);
+}
 
 const TOOL_SUMMARY_MAX = 120;
 
@@ -95,7 +105,7 @@ export function runAborted(acc: RunAccumulator, abortRequested: boolean): boolea
 export function replyText(acc: RunAccumulator): string | null {
   if (acc.lastStopReason === "error") return null;
   const text = acc.finalText.trim();
-  if (!text || text === NO_REPLY) return null;
+  if (!text || isNoReply(text)) return null;
   return acc.finalText;
 }
 

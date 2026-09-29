@@ -362,8 +362,8 @@ export class PersonalSession {
   handleAbort(turnId?: string): Promise<ChatAbortResult> {
     // A flush holds the chain for minutes; /stop cuts it instead of waiting out the bot's 30s timeout behind it.
     this.flushCut?.cut();
-    // abort() waits for the run, which may be parked in an extension dialog.
-    if (turnId === undefined || this.run?.turnId === turnId) this.asks.cancelAll("stop");
+    // abort() waits for the run, which may be parked in an extension dialog, or open a new one before it lands.
+    const release = turnId === undefined || this.run?.turnId === turnId ? this.asks.hold("stop") : () => {};
     return this.enqueue(async () => {
       const session = this.session;
       if (!session) return { aborted: false };
@@ -373,7 +373,7 @@ export class PersonalSession {
       if (this.run) this.run.abortRequested = true;
       await session.abort();
       return { aborted };
-    });
+    }).finally(release);
   }
 
   handleNew(): Promise<ChatNewResult> {
@@ -382,7 +382,8 @@ export class PersonalSession {
     const deadline = Date.now() + budgetMs;
     const reserve = newFinishReserveMs(budgetMs);
     this.pendingNew++;
-    this.asks.cancelAll("new session");
+    // The flush turn on the old session can open dialogs; nobody is left to answer them.
+    const release = this.asks.hold("new session");
     if (this.flushCut?.reason === "compaction") this.flushCut.cut(deadline - reserve);
     return this.enqueue(async () => {
       this.resetting = true;
@@ -413,7 +414,10 @@ export class PersonalSession {
       } finally {
         this.resetting = false;
       }
-    }).finally(() => this.pendingNew--);
+    }).finally(() => {
+      this.pendingNew--;
+      release();
+    });
   }
 
   // The replacement session is built fresh from the home files, so it needs no reload.
@@ -638,7 +642,7 @@ export class PersonalSession {
   async dispose(): Promise<void> {
     if (this.resendTimer) clearInterval(this.resendTimer);
     this.resendTimer = null;
-    this.asks.cancelAll("shutdown");
+    this.asks.hold("shutdown");
     const session = this.session;
     this.detach();
     if (session?.isStreaming) await session.abort().catch(() => {});
@@ -874,6 +878,7 @@ export class PersonalSession {
   private settle(session: ChatSession): void {
     const run = this.run;
     this.run = null;
+    this.asks.cancelAll("run ended");
     this.settleCount++;
     this.lastSettle = { outcome: run ? this.finishRun(session, run) : "silent", turnId: run?.turnId };
     this.releaseSettleWaiters();
@@ -1015,6 +1020,7 @@ export class PersonalSession {
     const run = this.run;
     this.run = null;
     if (!run) return;
+    this.asks.cancelAll("run closed");
     if (run.deltaTimer) clearTimeout(run.deltaTimer);
     this.emitFor(run, { type: "turn_end", aborted: true });
   }

@@ -3,10 +3,11 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSyn
 import { dirname, join } from "node:path";
 
 /**
- * Home-relative files and trees a subagent must never change: memory, persona, agent defs/skills, and the home
- * repo's config and hooks (either can run a command during main's next memory commit).
+ * Home-relative files and trees a subagent must never change: memory, persona, agent defs/skills, scheduled jobs
+ * (they outlive the child), and the home repo's config and hooks (either can run a command during main's next
+ * memory commit).
  */
-export const PROTECTED_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "SOUL.md", "AGENTS.md", ".git/config"] as const;
+export const PROTECTED_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "SOUL.md", "AGENTS.md", "schedule.md", ".git/config"] as const;
 export const PROTECTED_DIRS = ["memory", ".agents", ".git/hooks"] as const;
 /** Larger files are watched but can't be restored. */
 const MAX_RESTORABLE_BYTES = 4 * 1024 * 1024;

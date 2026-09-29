@@ -38,6 +38,7 @@ export class ChatAsks {
   private readonly deliver: (ask: AskRequest) => void;
   private readonly timeoutMs: number;
   private readonly newId: () => string;
+  private holds = 0;
 
   constructor(opts: { deliver: (ask: AskRequest) => void; timeoutMs?: number; newId?: () => string }) {
     this.deliver = opts.deliver;
@@ -51,6 +52,10 @@ export class ChatAsks {
 
   ask<T>(question: string, choices: string[], parse: Parse<T>, fallback: T, dialog?: ExtensionUIDialogOptions): Promise<T> {
     if (dialog?.signal?.aborted) return Promise.resolve(fallback);
+    if (this.holds > 0) {
+      log.info("extension dialog opened while its run is being stopped or reset; using its default");
+      return Promise.resolve(fallback);
+    }
     const askId = this.newId();
     return new Promise<T>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -111,6 +116,18 @@ export class ChatAsks {
   cancelAll(reason: string): void {
     if (this.pending.length) log.info({ reason, count: this.pending.length }, "cancelling open extension dialogs");
     for (const entry of [...this.pending]) entry.settle(entry.fallback);
+  }
+
+  /** Cancels open asks and resolves new ones to their default until every returned release has been called. */
+  hold(reason: string): () => void {
+    this.holds++;
+    this.cancelAll(reason);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.holds--;
+    };
   }
 }
 

@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getLogger } from "../logger.ts";
 import type { WorkspaceConfig } from "./config.ts";
+import { isNoReply, NO_REPLY } from "./events.ts";
 import { readJson, writeFileAtomic } from "./files.ts";
 import { runToolFreeJob } from "./jobSession.ts";
 import type { RunRecorder } from "./runLog.ts";
@@ -9,9 +10,10 @@ import { ScheduleFile, type ScheduleEntry } from "./scheduleFile.ts";
 import type { JobContext, JobOutcome, JobSchedule, ScheduledJob, Scheduler } from "./scheduler.ts";
 import type { ToolStubs } from "./toolStubs.ts";
 
+export { isNoReply, NO_REPLY };
+
 const log = getLogger("workspace.proactive");
 
-export const NO_REPLY = "NO_REPLY";
 export const HEARTBEAT_JOB = "heartbeat";
 export const HEARTBEAT_PROMPT =
   "Check whether anything needs drk's attention right now: something due or overdue, a follow-up you promised, " +
@@ -25,10 +27,6 @@ const NOTE_LINES = 15;
 const NOTE_LINE_MAX = 300;
 const CONTEXT_NOTE_MAX = 300;
 const DAILY_NOTE = /^\d{4}-\d{2}-\d{2}\.md$/;
-
-export function isNoReply(text: string): boolean {
-  return /^`?NO_REPLY`?\.?$/.test(text.trim());
-}
 
 export function jobWindowMs(schedule: JobSchedule): number {
   return schedule.when.kind === "every" ? schedule.when.minutes * 60_000 : DAILY_JOB_WINDOW_MS;
