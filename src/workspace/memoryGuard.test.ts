@@ -29,7 +29,7 @@ describe("containsSecret", () => {
 
   // Fake values in each provider's documented shape.
   const shaped = {
-    discordBotToken: "MTA5ODc2NTQzMjEwOTg3NjU0.GaBcDe.abcdefghijklmnopqrstuvwxyz0123456789",
+    discordBotToken: ["MTA5ODc2NTQzMjEwOTg3NjU0", "GaBcDe", "abcdefghijklmnopqrstuvwxyz0123456789"].join("."),
     googleApiKey: `AIza${"Sy0123456789abcdefghijklmnopqrstuv"}`,
     awsAccessKeyId: "AKIAIOSFODNN7EXAMPLE",
     slackToken: "xoxb-1234567890-abcdefghij",

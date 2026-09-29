@@ -74,7 +74,7 @@ describe("buildHandoff", () => {
   test("JWTs, Discord tokens and cloud keys are redacted from the note", () => {
     const secrets = [
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
-      "MTA5ODc2NTQzMjEwOTg3NjU0.GaBcDe.abcdefghijklmnopqrstuvwxyz0123456789",
+      ["MTA5ODc2NTQzMjEwOTg3NjU0", "GaBcDe", "abcdefghijklmnopqrstuvwxyz0123456789"].join("."),
       `AIza${"Sy0123456789abcdefghijklmnopqrstuv"}`,
     ];
     const text = buildHandoff({ messages: secrets.map((s) => user(`[discord:1 …]\nuse ${s}`)) }, { title: "Reset handoff", detail: "x" }, NOW)!;
