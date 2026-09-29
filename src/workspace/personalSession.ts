@@ -785,7 +785,7 @@ export class PersonalSession {
   }
 
   /** A message outside any turn (a login prompt or result, a notice): outboxed like a reply, never added to the session. */
-  deliverOutOfBand(d: Pick<ChatDeliverParams, "kind" | "text" | "origin" | "auth" | "authResult">): void {
+  deliverOutOfBand(d: Pick<ChatDeliverParams, "kind" | "text" | "origin" | "auth" | "authResult" | "loginId">): void {
     const entry: ChatDeliverParams = {
       ...(d.origin ? { origin: d.origin } : {}),
       outboxId: this.newId(),
@@ -794,6 +794,7 @@ export class PersonalSession {
       text: d.text,
       ...(d.auth ? { auth: d.auth } : {}),
       ...(d.authResult ? { authResult: d.authResult } : {}),
+      ...(d.loginId ? { loginId: d.loginId } : {}),
     };
     this.outbox.append(entry);
     this.send(entry);

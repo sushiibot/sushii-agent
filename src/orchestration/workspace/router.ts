@@ -10,8 +10,42 @@ const log = getLogger("orchestration/workspace/router");
 const NEW_COMMANDS = new Set(["!new", "!reset", "!clear"]);
 const STOP_COMMAND = "!stop";
 const LOGIN_COMMAND_RE = /^!login(?:\s+(\S+))?$/i;
-/** Pi's ChatGPT redirect URI (or its localhost spelling), which carries the authorization code. */
-export const LOGIN_CALLBACK_RE = /^http:\/\/(?:127\.0\.0\.1|localhost):1455\/auth\/callback(?:[?#]|$)/i;
+
+// Pi's redirect URI carries the authorization code, so it is matched anywhere and however it is wrapped.
+const CALLBACK_HOST_PATH_RE = /(?:127\.0\.0\.1|localhost)(?::1455)?\/auth\/callback|:1455\/auth\/callback/i;
+const CALLBACK_PATH_RE = /\/auth\/callback/i;
+const CALLBACK_HOST_PORT_RE = /(?:127\.0\.0\.1|localhost):1455/i;
+const CODE_PARAM_RE = /[?&#]code=/i;
+const STATE_PARAM_RE = /[?&#]state=/i;
+// Markdown, spoiler, quoting and bracket wrappers; never `_` or `-`, which end base64url values.
+const CALLBACK_TOKEN_SPLIT = /[\s<>`'"*|~()[\]{}]+/;
+const SCHEME_RE = /[a-z][a-z0-9+.-]*:\/\//i;
+const LOCAL_HOST_RE = /127\.0\.0\.1|localhost/i;
+
+/** Whether a message holds something shaped like the ChatGPT sign-in callback. */
+export function looksLikeLoginCallback(text: string): boolean {
+  if (CALLBACK_HOST_PATH_RE.test(text)) return true;
+  if (CALLBACK_PATH_RE.test(text) && CODE_PARAM_RE.test(text) && STATE_PARAM_RE.test(text)) return true;
+  return CALLBACK_HOST_PORT_RE.test(text) && CODE_PARAM_RE.test(text);
+}
+
+/** The callback URL inside a message that looks like one, unwrapped and with a scheme; null otherwise. */
+export function detectLoginCallback(text: string): { url: string } | null {
+  if (!looksLikeLoginCallback(text)) return null;
+  const tokens = text.split(CALLBACK_TOKEN_SPLIT).filter(Boolean);
+  const token =
+    tokens.find((t) => CALLBACK_PATH_RE.test(t) && /[?&#](?:code|error)=/i.test(t)) ??
+    tokens.find((t) => CALLBACK_PATH_RE.test(t) || CALLBACK_HOST_PORT_RE.test(t)) ??
+    text.trim();
+  let url = token.replace(/[.,;:!?]+$/, "");
+  const scheme = SCHEME_RE.exec(url);
+  if (scheme) url = url.slice(scheme.index);
+  else {
+    const host = LOCAL_HOST_RE.exec(url);
+    url = `http://${(host ? url.slice(host.index) : url).replace(/^\/+/, "")}`;
+  }
+  return { url };
+}
 
 /** The last message the router handled on one conversation; `advance` only ever moves it forward. */
 export interface MessageCursor {
@@ -164,8 +198,8 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
   deps.link.recordOffline(text, reply ?? "(no reply)", message.origin);
 }
 
-/** `!login …` and, while a login is pending, the pasted callback URL. The paste goes only to auth/complete:
- *  never to the agent, the fallback, the inbox or a log line. True when the message was consumed. */
+/** `!login …` and any sign-in callback, which reaches only auth/complete and only while a login is pending.
+ *  True when the message was consumed. */
 async function routeLogin<M extends InboundMessage>(
   message: M,
   deps: OwnerRouterDeps<M>,
@@ -173,23 +207,29 @@ async function routeLogin<M extends InboundMessage>(
   notice: (n: RouterNotice) => Promise<void>,
 ): Promise<boolean> {
   const { link } = deps;
-  if (!link.isOwner || !link.isLoginPending || !link.startLogin || !link.completeLogin || !link.cancelLogin) return false;
-  if (!link.isOwner({ surface: message.origin.surface, userId: message.author.id, name: message.author.name })) return false;
-  const text = message.text.trim();
   const online = deps.workspaceEnabled && link.isConnected();
+  const owner = link.isOwner?.({ surface: message.origin.surface, userId: message.author.id, name: message.author.name }) ?? false;
 
-  if (LOGIN_CALLBACK_RE.test(text) && link.isLoginPending()) {
+  const callback = detectLoginCallback(message.text);
+  if (callback) {
+    if (!owner || !link.completeLogin || !link.isLoginPending?.()) {
+      await notice({ type: "loginCallbackIgnored" });
+      return true;
+    }
     if (!online) {
       await notice({ type: "loginOffline" });
       return true;
     }
     await ack("accepted");
-    const res = await link.completeLogin(text);
-    if (res.status === "inactive") await notice({ type: "loginNotPending" });
+    const res = await link.completeLogin(callback.url);
+    if (res.status === "inactive") await notice({ type: "loginCallbackIgnored" });
     else if (res.status === "offline") await notice({ type: "loginOffline" });
     else if (res.status === "failed") await notice({ type: "loginFailed", error: res.error });
     return true;
   }
+
+  if (!owner || !link.isLoginPending || !link.startLogin || !link.completeLogin || !link.cancelLogin) return false;
+  const text = message.text.trim();
 
   const command = LOGIN_COMMAND_RE.exec(text);
   if (!command) return false;
@@ -218,9 +258,9 @@ async function routeLogin<M extends InboundMessage>(
   return true;
 }
 
-/** One message, live or caught up: pre-checks (task replies, pending answers) consume it first; otherwise
- *  the principal's own message goes to the owner router. Every owner message advances the cursor,
- *  whichever branch took it. */
+/** One message, live or caught up. An owner's sign-in callback goes to the owner router before any pre-check.
+ *  Otherwise pre-checks (task replies, pending answers) run first, then the owner router. Every owner
+ *  message advances the cursor. */
 export async function routeDirectMessage<T extends { id: string }>(
   message: T,
   deps: {
@@ -229,10 +269,16 @@ export async function routeDirectMessage<T extends { id: string }>(
     handleOwner: (message: T) => Promise<void>;
     cursor: MessageCursor;
     onOwnerDm?: (id: string) => void;
+    /** The message's text, checked for a sign-in callback before any pre-check can hand it elsewhere. */
+    textOf: (message: T) => string;
   },
 ): Promise<void> {
   if (deps.isOwner) deps.onOwnerDm?.(message.id);
   try {
+    if (deps.isOwner && looksLikeLoginCallback(deps.textOf(message))) {
+      await deps.handleOwner(message);
+      return;
+    }
     for (const check of deps.preChecks) if (await check(message)) return;
     if (deps.isOwner) await deps.handleOwner(message);
   } finally {

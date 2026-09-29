@@ -5,6 +5,7 @@ import {
   chatDeliverParams,
   type AuthCancelResult,
   type AuthCompleteResult,
+  type AuthStartResult,
   chatEventParams,
   type ChatDeliverParams,
   type ChatEventParams,
@@ -15,7 +16,7 @@ import {
   type ToolCancelResult,
   type ToolManifestEntry,
 } from "../contracts.ts";
-import { MethodNotFoundError, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
+import { MethodNotFoundError, mayHaveBeenAccepted, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { getLogger } from "../../logger.ts";
 import { progressEditDelay, realTimers, type Timers } from "./progress.ts";
@@ -398,37 +399,66 @@ export class WorkspaceLink {
     return `${LOGIN_PENDING_KV_PREFIX}${this.opts.principalId}`;
   }
 
-  /** Persisted, so a callback pasted across a bot restart is still kept from the agent. */
-  isLoginPending(): boolean {
-    const until = Number(this.opts.store.getKv(this.loginKey()) ?? "0");
-    if (until > this.now()) return true;
-    if (until) this.clearLoginPending();
-    return false;
+  /** Persisted, so a callback pasted across a bot restart is still kept from the agent. `loginId` is null
+   *  until the workspace names it. */
+  private pendingLogin(): { until: number; loginId: string | null } | null {
+    const raw = this.opts.store.getKv(this.loginKey());
+    if (raw === null) return null;
+    let pending: { until: number; loginId: string | null };
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      pending =
+        typeof parsed === "number"
+          ? { until: parsed, loginId: null }
+          : { until: Number((parsed as { until?: unknown }).until) || 0, loginId: typeof (parsed as { loginId?: unknown }).loginId === "string" ? (parsed as { loginId: string }).loginId : null };
+    } catch {
+      pending = { until: 0, loginId: null };
+    }
+    if (pending.until > this.now()) return pending;
+    this.clearLoginPending();
+    return null;
   }
 
-  private setLoginPending(): void {
-    this.opts.store.setKv(this.loginKey(), String(this.now() + LOGIN_PENDING_MS));
+  isLoginPending(): boolean {
+    return this.pendingLogin() !== null;
+  }
+
+  private setLoginPending(loginId: string | null): void {
+    this.opts.store.setKv(this.loginKey(), JSON.stringify({ until: this.now() + LOGIN_PENDING_MS, loginId }));
   }
 
   private clearLoginPending(): void {
     this.opts.store.deleteKv(this.loginKey());
   }
 
+  /** A first-seen sign-in link marks its login pending; from then on only that login's result ends it. */
+  private onAuthDelivery(p: ChatDeliverParams): void {
+    if (p.kind === "auth") this.setLoginPending(p.loginId ?? this.pendingLogin()?.loginId ?? null);
+    if (p.authResult && p.loginId && this.pendingLogin()?.loginId === p.loginId) this.clearLoginPending();
+  }
+
+  /** Pending is set before auth/start is sent: its sign-in link can arrive even when the answer is lost. */
   async startLogin(origin: ChatOrigin): Promise<StartLoginResult> {
     if (!this.isConnected()) return { status: "offline" };
+    const wasPending = this.isLoginPending();
+    if (!wasPending) this.setLoginPending(null);
+    let res: Partial<AuthStartResult> | undefined;
     try {
-      await this.request(AUTH_METHODS.start, { principalId: this.opts.principalId, provider: "openai", origin }, CONTROL_TIMEOUT_MS);
+      res = (await this.request(AUTH_METHODS.start, { principalId: this.opts.principalId, provider: "openai", origin }, CONTROL_TIMEOUT_MS)) as Partial<AuthStartResult> | undefined;
     } catch (err) {
       const error = errorText(err);
       if (error.includes(LOGIN_ALREADY_PENDING)) {
-        this.setLoginPending();
+        if (!this.isLoginPending()) this.setLoginPending(null);
         return { status: "alreadyPending" };
       }
+      if (!wasPending && !mayHaveBeenAccepted(err)) this.clearLoginPending();
       this.authLog.warn({ error }, "auth/start failed");
       return { status: "failed", error };
     }
-    this.setLoginPending();
-    this.authLog.info({ surface: origin.surface }, "ChatGPT login started");
+    const loginId = typeof res?.loginId === "string" ? res.loginId : null;
+    const current = this.pendingLogin();
+    if (loginId !== null || !current) this.setLoginPending(loginId ?? current?.loginId ?? null);
+    this.authLog.info({ surface: origin.surface, loginId }, "ChatGPT login started");
     return { status: "started" };
   }
 
@@ -656,9 +686,9 @@ export class WorkspaceLink {
   async deliver(p: ChatDeliverParams): Promise<void> {
     if (this.delivering.has(p.outboxId)) return;
     this.delivering.add(p.outboxId);
-    if (p.authResult) this.clearLoginPending();
     try {
       if (!this.opts.store.hasSeenOutbox(p.outboxId)) {
+        this.onAuthDelivery(p);
         const toolCount = p.kind === "reply" && p.turnId ? this.closeTurnForReply(p.turnId) : null;
         const { adapter, origin } = this.surfaceFor(p.origin);
         const delivery = deliveryView(p, toolCount);

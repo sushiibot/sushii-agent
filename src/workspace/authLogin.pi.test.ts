@@ -209,6 +209,37 @@ describe("ChatGPT login from a chat surface, on real Pi", () => {
     }
   });
 
+  test("Pi's callback server never accepts a callback inside the workspace; only the paste completes the login", async () => {
+    writeFileSync(join(root, "agent", "auth.json"), "{}");
+    const h = harness();
+    h.login.start({ surface: "discord", conversationId: "dm" });
+    await waitFor(() => h.delivered.some((d) => d.kind === "auth"), "the auth delivery");
+    const state = new URL(h.delivered.find((d) => d.kind === "auth")!.auth!.url).searchParams.get("state")!;
+    const hijack = `http://127.0.0.1:1455/auth/callback?code=attacker-code&state=${encodeURIComponent(state)}&client_id=attacker-client`;
+    const reached = await realFetch(hijack).then(
+      (r) => r.status,
+      () => "refused",
+    );
+    expect(reached).toBe("refused");
+    await realFetch("http://127.0.0.1:1455/auth/callback?error=x").catch(() => {});
+    await new Promise((r) => setTimeout(r, 50));
+    expect(tokenGrants).toEqual([]);
+    expect(h.login.isPending).toBe(true);
+
+    const result = await h.login.complete(`http://127.0.0.1:1455/auth/callback?code=the-code&state=${encodeURIComponent(state)}&client_id=issued-client`);
+    expect(result).toEqual({ ok: true, model: "gpt-6.1-sol" });
+    expect(tokenGrants).toEqual([expect.objectContaining({ code: "the-code", client_id: "issued-client" })]);
+    expect(JSON.parse(readFileSync(join(root, "agent", "auth.json"), "utf8")).openai.clientId).toBe("issued-client");
+    // The port is released once the login ends.
+    const free = createServer();
+    const bound = await new Promise<boolean>((resolve) => {
+      free.once("error", () => resolve(false));
+      free.listen(1455, "127.0.0.1", () => resolve(true));
+    });
+    if (bound) await new Promise((r) => free.close(r));
+    expect(bound).toBe(true);
+  });
+
   test("the authorize URL is longer than a Discord link button allows", async () => {
     writeFileSync(join(root, "agent", "auth.json"), "{}");
     const h = harness();

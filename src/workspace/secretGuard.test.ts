@@ -112,6 +112,12 @@ describe("bash", () => {
     expect(bash(`cat ${root}/p*/*`)).toBe(true);
   });
 
+  test("blocks the chat outbox, which holds the pending sign-in link", () => {
+    expect(bash("cat /data/state/outbox.jsonl")).toBe(true);
+    expect(bash("rg state= /data/state/'outbox'.jsonl")).toBe(true);
+    expect(blocked("read", { path: "/data/state/outbox.jsonl" })).toBe(true);
+  });
+
   test("blocks process environment reads", () => {
     expect(bash("cat /proc/self/environ")).toBe(true);
     expect(bash("tr '\\0' '\\n' < /proc/1/environ")).toBe(true);

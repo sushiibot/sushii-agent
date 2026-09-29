@@ -177,6 +177,9 @@ export const chatUsage = z.object({
 });
 export type ChatUsage = z.infer<typeof chatUsage>;
 
+// Bound on workspace-chosen ids and names, so one can't bloat a log line or a Discord component.
+export const ID_MAX = 256;
+
 export const chatDeliverParams = z.object({
   origin: chatOrigin.optional(),
   outboxId: z.string(),
@@ -191,11 +194,10 @@ export const chatDeliverParams = z.object({
   auth: z.object({ url: z.string().url().max(4096), instructions: z.string() }).optional(),
   // Set on the reply that ends a surface login, so the bot stops treating pastes as its callback.
   authResult: z.enum(["ok", "failed", "cancelled", "timeout"]).optional(),
+  // kind "auth" and authResult: the login they belong to, so a resent result can't end a newer login.
+  loginId: z.string().max(ID_MAX).optional(),
 });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
-
-// Bound on workspace-chosen ids and names, so one can't bloat a log line or a Discord component.
-export const ID_MAX = 256;
 
 export const chatEventPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("turn_start") }),
@@ -232,6 +234,7 @@ export const authStartParams = z.object({ principalId: z.string(), provider: z.l
 export type AuthStartParams = z.infer<typeof authStartParams>;
 export interface AuthStartResult {
   started: true;
+  loginId: string;
 }
 
 /** `input` is the pasted callback URL; it carries the authorization code, so it is never logged. */

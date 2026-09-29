@@ -495,6 +495,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       handleOwner: handleOwnerDm,
       cursor: snowflakeCursor(dmCursor),
       onOwnerDm: (id) => handledBeforeCatchUp?.add(id),
+      textOf: (m) => m.content,
     });
   }
 

@@ -491,6 +491,22 @@ describe("PersonalSession outbox", () => {
     expect(afterAck.transport.delivered()).toHaveLength(0);
   });
 
+  test("an out-of-band sign-in delivery carries its loginId, and its link is redacted on disk", async () => {
+    const { host, transport, stateDir } = setup();
+    await host.start();
+    const url = "https://auth.openai.com/api/accounts/authorize?state=LIVE-STATE-1&code_challenge=LIVE-CHALLENGE-2";
+    host.deliverOutOfBand({ kind: "auth", text: "Sign in", auth: { url, instructions: "x" }, loginId: "L1" });
+    host.deliverOutOfBand({ kind: "reply", text: "done", authResult: "ok", loginId: "L1" });
+    await tick();
+    expect(transport.delivered().map((d) => [d.kind, d.loginId, d.auth?.url])).toEqual([
+      ["auth", "L1", url],
+      ["reply", "L1", undefined],
+    ]);
+    const disk = readFileSync(join(stateDir, "outbox.jsonl"), "utf8");
+    expect(disk).not.toContain("LIVE-STATE-1");
+    expect(disk).not.toContain("LIVE-CHALLENGE-2");
+  });
+
   test("unacked entries are resent on an interval in order, skipping any whose send is still unanswered", async () => {
     const { host, sessions, transport } = setup({ resendIntervalMs: 20 });
     await host.start();

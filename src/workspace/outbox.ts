@@ -5,7 +5,29 @@ import { writeFileAtomic } from "./files.ts";
 
 type OutboxLine = { type: "entry"; entry: ChatDeliverParams } | { type: "ack"; outboxId: string };
 
-/** Append-only JSONL of deliveries (entry before send, ack on confirm), compacted on load. */
+// The agent can read the state dir; these would let it finish a pending sign-in with its own code.
+const AUTH_URL_SECRET_PARAMS = ["state", "code_challenge", "nonce"];
+const REDACTED_PARAM = "redacted";
+
+/** The sign-in URL without the values that bind a callback to this login. */
+export function redactAuthUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "about:blank";
+  }
+  for (const name of AUTH_URL_SECRET_PARAMS) if (parsed.searchParams.has(name)) parsed.searchParams.set(name, REDACTED_PARAM);
+  return parsed.toString();
+}
+
+/** A sign-in link is written to disk redacted; only the in-memory copy can be resent. */
+function onDisk(entry: ChatDeliverParams): ChatDeliverParams {
+  return entry.auth ? { ...entry, auth: { ...entry.auth, url: redactAuthUrl(entry.auth.url) } } : entry;
+}
+
+/** Append-only JSONL of deliveries (entry before send, ack on confirm), compacted on load. A sign-in link
+ *  left unacked by a previous process is dropped on load: its login died with that process. */
 export class Outbox {
   readonly path: string;
   private readonly pending = new Map<string, ChatDeliverParams>();
@@ -16,7 +38,7 @@ export class Outbox {
   }
 
   append(entry: ChatDeliverParams): void {
-    this.write({ type: "entry", entry });
+    this.write({ type: "entry", entry: onDisk(entry) });
     this.pending.set(entry.outboxId, entry);
   }
 
@@ -48,7 +70,9 @@ export class Outbox {
       } catch {
         continue; // a torn last line from a crash mid-append
       }
-      if (line.type === "entry") this.pending.set(line.entry.outboxId, line.entry);
+      if (line.type === "entry") {
+        if (line.entry.kind !== "auth") this.pending.set(line.entry.outboxId, line.entry);
+      }
       else if (line.type === "ack") this.pending.delete(line.outboxId);
     }
     const compacted = this.unacked().map((entry) => `${JSON.stringify({ type: "entry", entry } satisfies OutboxLine)}\n`);

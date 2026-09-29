@@ -37,6 +37,8 @@ const PROC_SENSITIVE = /^\/proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/(?:en
 const NETWORK_TOOL = /\b(?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|rsync|telnet|ftp|openssl)\b|\/dev\/(?:tcp|udp)\//;
 const ENV_DUMP = /(?:^|[\s|;&(`]|\$\()(?:env|printenv)(?=$|[\s|;&)>`])/;
 const GLOB_CHARS = /[*?[]/;
+// The chat outbox carries the in-flight ChatGPT sign-in link.
+const OUTBOX_FILE = "outbox.jsonl";
 
 function realpathDeep(p: string): string {
   let head = p;
@@ -85,6 +87,7 @@ function checkPath(toolName: string, input: Record<string, unknown>, paths: Guar
   for (const p of candidates) {
     if (paths.agentDirs.some((d) => inside(p, d))) return "agent-dir";
     if (PROC_SENSITIVE.test(p)) return "proc";
+    if (basename(p) === OUTBOX_FILE) return "outbox";
     if (WRITE_TOOLS.has(toolName) && paths.projectConfigDirs.some((d) => inside(p, d))) return "project-config";
     if (RECURSIVE_TOOLS.has(toolName)) {
       if (paths.agentDirs.some((d) => inside(d, p))) return "agent-dir-ancestor";
@@ -129,6 +132,7 @@ export function checkBashCommand(command: string, paths: GuardedPaths): string |
   if (paths.agentDirs.some((d) => norm.includes(d))) return "agent-dir";
   if (paths.agentDirNames.some((n) => new RegExp(`(?:^|[\\s/])${escapeRegex(n)}(?:$|[\\s/])`).test(norm))) return "agent-dir";
   if (/auth\.json/.test(norm)) return "auth-file";
+  if (norm.includes(OUTBOX_FILE)) return "outbox";
   if (norm.includes("/proc/") && /environ|cmdline|\bmem\b/.test(norm)) return "proc";
   if (ENV_DUMP.test(norm) && NETWORK_TOOL.test(norm)) return "env-exfil";
 

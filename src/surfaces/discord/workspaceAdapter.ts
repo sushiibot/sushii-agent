@@ -157,6 +157,8 @@ function noticeMessage(notice: RouterNotice): string | MessageCreateOptions {
       return "A ChatGPT sign-in is already in progress — paste the callback URL here, or send `!login cancel`.";
     case "loginNotPending":
       return "No ChatGPT sign-in in progress — send `!login chatgpt` to start one.";
+    case "loginCallbackIgnored":
+      return "That looks like a ChatGPT sign-in link; no sign-in is in progress, so it wasn't sent anywhere. Send `!login chatgpt` to start one.";
     case "loginFailed":
       return `Couldn't reach the ChatGPT sign-in: ${notice.error}`;
     case "loginUsage":

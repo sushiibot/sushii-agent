@@ -119,6 +119,8 @@ export type RouterNotice =
   | { type: "loginOffline" }
   | { type: "loginAlreadyPending" }
   | { type: "loginNotPending" }
+  // A sign-in callback arrived with no login pending; it went nowhere.
+  | { type: "loginCallbackIgnored" }
   | { type: "loginFailed"; error: string }
   | { type: "loginUsage" };
 
