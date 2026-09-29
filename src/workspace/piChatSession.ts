@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
 import type { AgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
@@ -6,6 +5,9 @@ import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
+import { RunLog, type RunRecorder } from "./runLog.ts";
+import { observeRuns } from "./runObserver.ts";
+import { chatSessionDir } from "./sessionPaths.ts";
 import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
 
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
@@ -45,7 +47,8 @@ function restoreChatGptThinking(session: AgentSession): void {
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context
  *  files, settings.json and auth.json under agentDir. ChatGPT sign-in is the primary model when
  *  configured and signed in; OpenRouter is the fallback. */
-export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSessionFactory {
+export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs?: RunRecorder } = {}): ChatSessionFactory {
+  const runs = opts.runs ?? new RunLog(config.stateDir);
   // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
   const selector = new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
 
@@ -70,7 +73,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
     });
 
     const cwd = config.home;
-    const sessionDir = join(config.agentDir, "chat");
+    const sessionDir = chatSessionDir(config.agentDir);
     const sessionManager = sessionFile ? SessionManager.open(sessionFile, sessionDir, cwd) : SessionManager.create(cwd, sessionDir);
 
     // The extension's handlers only run once createAgentSession has returned and set this.
@@ -133,6 +136,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
     sessionOverrides.set(session, { session, overrides });
+    observeRuns(session, { recorder: runs, sessionFile: file, agentName: "main", defaultModel: config.model });
     return { session, sessionFile: file };
   };
 }

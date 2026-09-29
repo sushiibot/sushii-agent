@@ -1,9 +1,12 @@
+// First: initialises OTel (when OTEL_EXPORTER_OTLP_ENDPOINT is set) before anything creates spans.
+import { otelSDK } from "../telemetry.ts";
 import { OrchestrationClient } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
 import { PersonalSession } from "./personalSession.ts";
 import { createPiChatSessionFactory } from "./piChatSession.ts";
 import { scaffoldHome } from "./home.ts";
+import { RunLog } from "./runLog.ts";
 
 const log = getLogger("workspace");
 
@@ -25,12 +28,16 @@ async function main(): Promise<void> {
   // whenever no ChatGPT login is stored.
   delete process.env.OPENAI_API_KEY;
   await scaffoldHome(config.home);
+  // One instance for the whole process: later subagent and job runners record through it too.
+  const runs = new RunLog(config.stateDir);
+  const orphans = runs.reconcileOrphans();
+  if (orphans) log.warn({ orphans }, "closed runs left open by a previous process");
   let client: OrchestrationClient | null = null;
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
-    factory: createPiChatSessionFactory(config),
+    factory: createPiChatSessionFactory(config, { runs }),
     transport: {
       request: (method, params) => (client ? client.request(method, params) : Promise.reject(new Error("not connected"))),
       notify: (method, params) => client?.notify(method, params),
@@ -57,6 +64,7 @@ async function main(): Promise<void> {
     log.info({ signal }, "workspace shutting down");
     client?.close();
     await personal.dispose();
+    await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceConfig } from "./config.ts";
 import { createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
+import { RunLog } from "./runLog.ts";
+import { runWsRuns } from "./wsRuns.ts";
 
 let root: string;
 const realFetch = globalThis.fetch;
@@ -19,8 +21,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function realSession(): Promise<AgentSession> {
-  const config = {
+function testConfig(): WorkspaceConfig {
+  return {
     model: "test/model",
     apiKey: "test-key",
     baseUrl: "http://127.0.0.1:9/v1",
@@ -28,9 +30,36 @@ async function realSession(): Promise<AgentSession> {
     home: join(root, "home"),
     stateDir: join(root, "state"),
   } as WorkspaceConfig;
-  const { session } = await createPiChatSessionFactory(config)({ sessionFile: null });
+}
+
+async function realSession(): Promise<AgentSession> {
+  const { session } = await createPiChatSessionFactory(testConfig())({ sessionFile: null });
   return session as AgentSession;
 }
+
+describe("run log", () => {
+  test("a real chat turn is recorded as a main run in the run index", async () => {
+    const config = testConfig();
+    const runs = new RunLog(config.stateDir);
+    // No retries against the unreachable model, so the turn fails fast.
+    mkdirSync(config.agentDir, { recursive: true });
+    writeFileSync(join(config.agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
+    const { session, sessionFile } = await createPiChatSessionFactory(config, { runs })({ sessionFile: null });
+    expect(sessionFile.startsWith(join(config.agentDir, "chat"))).toBe(true);
+    await (session as AgentSession).prompt("hello there").catch(() => {});
+    const [run] = runs.listRuns();
+    expect(run).toMatchObject({ agentName: "main", task: "hello there", sessionFile, status: "failed" });
+    expect(run.endedAt).toBeDefined();
+
+    // ws-runs reads the real Pi session file for that run.
+    const out: string[] = [];
+    const env = { HOME: config.home, WORKSPACE_STATE_DIR: config.stateDir, PI_CODING_AGENT_DIR: config.agentDir };
+    expect(runWsRuns(["show", run.runId], { env, out: (l) => out.push(l), err: (l) => out.push(l) })).toBe(0);
+    expect(out.join("\n")).toContain("user: hello there");
+    expect(out.join("\n")).toContain("[error: 503");
+    session.dispose();
+  }, 20_000);
+});
 
 describe("reloadContext", () => {
   test("keeps the compaction reserve override across a reload", async () => {

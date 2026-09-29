@@ -15,6 +15,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   "MEMORY.md": "MEMORY.md",
   "DREAMS.md": "DREAMS.md",
   ".agents/skills/README.md": "agents-skills-README.md",
+  ".agents/skills/session-history/SKILL.md": "agents-skills-session-history-SKILL.md",
   ".gitignore": "gitignore",
 };
 

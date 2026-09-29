@@ -84,6 +84,9 @@ ENV HOME=/data/home \
 # OPENAI_API_KEY is the OpenRouter key: Pi's openai provider would send it to api.openai.com.
 RUN printf '%s\n' '#!/bin/sh' 'exec env -u OPENAI_API_KEY bun /app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js "$@"' > /usr/local/bin/pi \
     && chmod 755 /usr/local/bin/pi
+# `ws-runs`: the agent's read path to its own run index and session transcripts (redacted).
+RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-runs.ts "$@"' > /usr/local/bin/ws-runs \
+    && chmod 755 /usr/local/bin/ws-runs
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]

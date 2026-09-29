@@ -39,7 +39,7 @@ describe("scaffoldHome", () => {
   test("creates the layout, git-inits and commits the scaffold", async () => {
     const result = await scaffoldHome(home);
 
-    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", ".agents/skills/README.md", ".gitignore"]) {
+    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".gitignore"]) {
       expect(existsSync(join(home, f))).toBe(true);
     }
     for (const d of ["memory", "projects", "scratch", ".agents/skills"]) expect(existsSync(join(home, d))).toBe(true);
@@ -51,7 +51,26 @@ describe("scaffoldHome", () => {
     expect((await git.raw(["config", "--local", "user.name"])).trim()).toBe("sushii-workspace");
     expect((await git.raw(["config", "--local", "user.email"])).trim()).toBe("workspace@localhost");
     const files = (await git.raw(["ls-files"])).trim().split("\n").sort();
-    expect(files).toEqual([".agents/skills/README.md", ".gitignore", "AGENTS.md", "DREAMS.md", "MEMORY.md", "SOUL.md", "USER.md"]);
+    expect(files).toEqual([".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".gitignore", "AGENTS.md", "DREAMS.md", "MEMORY.md", "SOUL.md", "USER.md"]);
+  });
+
+  test("scaffolds the session-history skill but never overwrites an existing one", async () => {
+    const skill = join(home, ".agents/skills/session-history/SKILL.md");
+    mkdirSync(join(home, ".agents/skills/session-history"), { recursive: true });
+    writeFileSync(skill, "my edited skill\n");
+    const result = await scaffoldHome(home);
+    expect(result.created).not.toContain(".agents/skills/session-history/SKILL.md");
+    expect(readFileSync(skill, "utf8")).toBe("my edited skill\n");
+
+    const fresh = mkdtempSync(join(tmpdir(), "ws-home-"));
+    try {
+      await scaffoldHome(fresh);
+      const content = readFileSync(join(fresh, ".agents/skills/session-history/SKILL.md"), "utf8");
+      expect(content).toBe(readHomeTemplate(".agents/skills/session-history/SKILL.md"));
+      expect(content).toMatch(/^---\nname: session-history\ndescription: .+\n---/);
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
   });
 
   test("never overwrites existing files and git-inits only once", async () => {
