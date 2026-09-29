@@ -90,6 +90,9 @@ RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-runs.ts "$@"' > /usr/local/b
 # `ws-consolidate`: queues a memory consolidation for the workspace's scheduler, or shows the last run.
 RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-consolidate.ts "$@"' > /usr/local/bin/ws-consolidate \
     && chmod 755 /usr/local/bin/ws-consolidate
+# `ws-schedule`: lists the scheduled jobs, or queues a run of one for the workspace's scheduler.
+RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-schedule.ts "$@"' > /usr/local/bin/ws-schedule \
+    && chmod 755 /usr/local/bin/ws-schedule
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]

@@ -14,6 +14,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   "USER.md": "USER.md",
   "MEMORY.md": "MEMORY.md",
   "DREAMS.md": "DREAMS.md",
+  "schedule.md": "schedule.md",
   ".agents/skills/README.md": "agents-skills-README.md",
   ".agents/skills/session-history/SKILL.md": "agents-skills-session-history-SKILL.md",
   ".agents/agents/explore.md": "agents-agents-explore.md",
@@ -26,7 +27,7 @@ const TEMPLATE_FILES: Record<string, string> = {
 const HOME_DIRS = ["memory", ".agents/skills", ".agents/agents", "projects", "scratch"];
 
 /** The only paths the workspace itself ever stages in the home repo. */
-export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "SOUL.md", "AGENTS.md", ".agents/"];
+export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "SOUL.md", "AGENTS.md", "schedule.md", ".agents/"];
 
 /** The memory subset of HOME_TRACKED_PATHS, which the workspace auto-commits. */
 export const MEMORY_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/"];
@@ -70,6 +71,8 @@ export async function scaffoldHome(home: string): Promise<ScaffoldResult> {
     created.push(homePath);
   }
 
+  allowInGitignore(home, "/schedule.md");
+
   // Keyed on HEAD, not .git, so a first run that died between init and the initial commit is finished here.
   const initialized = await serialized(async () => {
     const git = runnerGit(home);
@@ -84,6 +87,19 @@ export async function scaffoldHome(home: string): Promise<ScaffoldResult> {
 
   if (created.length > 0 || initialized) log.info({ home, created, initialized }, "home scaffolded");
   return { created, initialized };
+}
+
+/** Adds `!<path>` to an existing home's allowlist .gitignore, for files added to the template after it was scaffolded. */
+function allowInGitignore(home: string, path: string): void {
+  const file = join(home, ".gitignore");
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return;
+  }
+  if (text.split("\n").includes(`!${path}`)) return;
+  writeFileSync(file, `${text.endsWith("\n") ? text : `${text}\n`}!${path}\n`);
 }
 
 export interface ContextFile {

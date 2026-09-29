@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { isValidAt, isValidTimeZone } from "./scheduler.ts";
+import { isValidAt, isValidTimeZone, parseActiveHours, parseWhen, type JobSchedule } from "./scheduler.ts";
 
 export type WorkspaceProvider = "chatgpt" | "openrouter";
 
@@ -22,6 +22,26 @@ export interface WorkspaceConfig {
   tz: string;
   /** Local "HH:MM" of the nightly memory consolidation. */
   consolidateAt: string;
+  /** The built-in heartbeat job's schedule; null when disabled. */
+  heartbeat: JobSchedule | null;
+  /** Most proactive messages all scheduled jobs together may send in any 24 h. */
+  proactiveDailyCap: number;
+}
+
+export const DEFAULT_HEARTBEAT_MINUTES = 120;
+export const DEFAULT_HEARTBEAT_ACTIVE = "08:00-22:00";
+export const DEFAULT_PROACTIVE_DAILY_CAP = 6;
+
+function loadHeartbeat(env: NodeJS.ProcessEnv): JobSchedule | null {
+  const every = env.WORKSPACE_HEARTBEAT_EVERY?.trim().toLowerCase() || String(DEFAULT_HEARTBEAT_MINUTES);
+  if (every === "off" || every === "0") return null;
+  const when = parseWhen(`every ${/^\d+$/.test(every) ? `${every}m` : every}`);
+  if (!when) throw new WorkspaceConfigError(`WORKSPACE_HEARTBEAT_EVERY must be minutes (5-1440, e.g. 120 or 2h) or "off", got "${every}"`);
+  const activeRaw = env.WORKSPACE_HEARTBEAT_ACTIVE?.trim() || DEFAULT_HEARTBEAT_ACTIVE;
+  if (activeRaw.toLowerCase() === "always") return { when };
+  const active = parseActiveHours(activeRaw);
+  if (!active) throw new WorkspaceConfigError(`WORKSPACE_HEARTBEAT_ACTIVE must be HH:MM-HH:MM or "always", got "${activeRaw}"`);
+  return { when, active };
 }
 
 export class WorkspaceConfigError extends Error {}
@@ -41,6 +61,9 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
   if (!isValidTimeZone(tz)) throw new WorkspaceConfigError(`WORKSPACE_TZ must be an IANA time zone, got "${tz}"`);
   const consolidateAt = env.WORKSPACE_CONSOLIDATE_AT?.trim() || "04:00";
   if (!isValidAt(consolidateAt)) throw new WorkspaceConfigError(`WORKSPACE_CONSOLIDATE_AT must be HH:MM, got "${consolidateAt}"`);
+  const heartbeat = loadHeartbeat(env);
+  const capRaw = env.WORKSPACE_PROACTIVE_DAILY_CAP?.trim() || String(DEFAULT_PROACTIVE_DAILY_CAP);
+  if (!/^\d+$/.test(capRaw)) throw new WorkspaceConfigError(`WORKSPACE_PROACTIVE_DAILY_CAP must be a whole number, got "${capRaw}"`);
   return {
     orchUrl: env.ORCH_URL || "ws://localhost:8788",
     orchSecret,
@@ -57,5 +80,7 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
     stateDir: env.WORKSPACE_STATE_DIR || resolve(home, "..", ".workspace"),
     tz,
     consolidateAt,
+    heartbeat,
+    proactiveDailyCap: Number(capRaw),
   };
 }

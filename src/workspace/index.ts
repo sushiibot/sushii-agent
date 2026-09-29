@@ -16,6 +16,8 @@ import { SubagentHost } from "./subagents/host.ts";
 import { MainTurnTracker } from "./subagents/turnTracker.ts";
 import { Scheduler } from "./scheduler.ts";
 import { createConsolidationJob } from "./consolidation.ts";
+import { wireProactiveJobs } from "./proactive.ts";
+import { ulid } from "./ulid.ts";
 
 const log = getLogger("workspace");
 
@@ -118,6 +120,26 @@ async function main(): Promise<void> {
   const consolidation = createConsolidationJob(config, { runs, live: personal });
   // Its memory writes are main-side: the subagents' protected watch must not undo them.
   scheduler.register({ ...consolidation, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md"]) });
+  wireProactiveJobs(scheduler, {
+    config,
+    runs,
+    toolStubs,
+    deliver: (text) => personal.deliverOutOfBand({ kind: "proactive", text }),
+    note: async (name, text) => {
+      await personal.handleMessage({
+        origin: { surface: "workspace", conversationId: "schedule" },
+        principalId: config.principalId,
+        messageId: `job:${name}:${ulid()}`,
+        text,
+        kind: "context",
+        author: { id: "workspace", name: "scheduler" },
+      });
+    },
+    onScheduleChange: () =>
+      void commitHome("chore(schedule): update schedule.md", { home: config.home, paths: ["schedule.md"] }).catch((err) =>
+        log.warn({ err }, "failed to commit schedule.md"),
+      ),
+  });
   void scheduler.start();
 
   client = new OrchestrationClient({

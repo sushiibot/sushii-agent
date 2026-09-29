@@ -2,8 +2,25 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Scheduler, lastOccurrence, readSchedulerState, requestPath, requestRun, schedulerStatePath, type JobContext, type JobOutcome } from "./scheduler.ts";
+import {
+  DAILY_GRACE_MS,
+  Scheduler,
+  inActiveHours,
+  lastOccurrence,
+  parseActiveHours,
+  parseWhen,
+  readJobIndex,
+  readSchedulerState,
+  requestPath,
+  requestRun,
+  scheduledTrigger,
+  schedulerStatePath,
+  type JobContext,
+  type JobOutcome,
+  type JobSchedule,
+} from "./scheduler.ts";
 import { runWsConsolidate } from "./wsConsolidate.ts";
+import { runWsSchedule } from "./wsSchedule.ts";
 
 let stateDir: string;
 let clock: Date;
@@ -225,5 +242,175 @@ describe("ws-consolidate", () => {
     expect(cli([]).code).toBe(2);
     expect(cli(["--now", "--status"]).code).toBe(2);
     expect(cli(["--later"]).err[0]).toContain("usage");
+  });
+});
+
+describe("per-job schedules", () => {
+  const every = (minutes: number, active?: string): JobSchedule => ({
+    when: { kind: "every", minutes },
+    ...(active ? { active: parseActiveHours(active)! } : {}),
+  });
+
+  test("parseWhen and parseActiveHours accept the documented forms only", () => {
+    expect(parseWhen("daily 08:00")).toEqual({ kind: "daily", at: "08:00" });
+    expect(parseWhen("every 120m")).toEqual({ kind: "every", minutes: 120 });
+    expect(parseWhen("Every 90 minutes")).toEqual({ kind: "every", minutes: 90 });
+    expect(parseWhen("every 2h")).toEqual({ kind: "every", minutes: 120 });
+    for (const bad of ["daily 8am", "daily 24:00", "every 4m", "every 25h", "every", "hourly", "every 10 seconds"]) expect(parseWhen(bad)).toBeNull();
+    expect(parseActiveHours("08:00-22:00")).toEqual({ start: "08:00", end: "22:00" });
+    expect(parseActiveHours("22:00 - 06:00")).toEqual({ start: "22:00", end: "06:00" });
+    for (const bad of ["08:00", "8-22", "08:00-08:00", "08:00-25:00"]) expect(parseActiveHours(bad)).toBeNull();
+  });
+
+  test("active hours use the zone's wall clock, wrap midnight, and follow DST", () => {
+    const day = { start: "08:00", end: "22:00" };
+    expect(inActiveHours(new Date("2026-09-29T07:59:00Z"), day, "UTC")).toBe(false);
+    expect(inActiveHours(new Date("2026-09-29T08:00:00Z"), day, "UTC")).toBe(true);
+    expect(inActiveHours(new Date("2026-09-29T22:00:00Z"), day, "UTC")).toBe(false);
+    const night = { start: "22:00", end: "06:00" };
+    expect(inActiveHours(new Date("2026-09-29T23:30:00Z"), night, "UTC")).toBe(true);
+    expect(inActiveHours(new Date("2026-09-29T05:59:00Z"), night, "UTC")).toBe(true);
+    expect(inActiveHours(new Date("2026-09-29T12:00:00Z"), night, "UTC")).toBe(false);
+    // New York: 08:00 local is 12:00Z in EDT (Oct 31), 13:00Z in EST after the Nov 1 fall-back.
+    const ny = "America/New_York";
+    expect(inActiveHours(new Date("2026-10-31T12:00:00Z"), day, ny)).toBe(true);
+    expect(inActiveHours(new Date("2026-11-02T12:00:00Z"), day, ny)).toBe(false);
+    expect(inActiveHours(new Date("2026-11-02T13:00:00Z"), day, ny)).toBe(true);
+  });
+
+  test("every N minutes: first poll, then only once N minutes have passed", () => {
+    const s = every(120);
+    const now = new Date("2026-09-29T12:00:00Z");
+    expect(scheduledTrigger(s, null, now, "UTC")).toBe("interval");
+    expect(scheduledTrigger(s, now.getTime() - 119 * 60_000, now, "UTC")).toBeNull();
+    expect(scheduledTrigger(s, now.getTime() - 120 * 60_000, now, "UTC")).toBe("interval");
+    expect(scheduledTrigger(every(120, "13:00-22:00"), null, now, "UTC")).toBeNull();
+    expect(scheduledTrigger({ ...s, disabled: true }, null, now, "UTC")).toBeNull();
+  });
+
+  test("daily at a time: once per occurrence, within the grace window, across a DST gap", () => {
+    const s: JobSchedule = { when: { kind: "daily", at: "08:00" } };
+    expect(scheduledTrigger(s, null, new Date("2026-09-29T07:59:00Z"), "UTC")).toBeNull();
+    expect(scheduledTrigger(s, null, new Date("2026-09-29T08:00:30Z"), "UTC")).toBe("daily");
+    expect(scheduledTrigger(s, Date.parse("2026-09-29T08:00:30Z"), new Date("2026-09-29T08:30:00Z"), "UTC")).toBeNull();
+    // A restart that missed the time by over an hour skips it rather than sending late.
+    const late = new Date(Date.parse("2026-09-29T08:00:00Z") + DAILY_GRACE_MS + 60_000);
+    expect(scheduledTrigger(s, Date.parse("2026-09-28T08:00:00Z"), late, "UTC")).toBeNull();
+    // 02:30 doesn't exist in New York on 2027-03-14; lastOccurrence places it at 06:30Z and it still fires once.
+    const gap: JobSchedule = { when: { kind: "daily", at: "02:30" } };
+    const ny = "America/New_York";
+    expect(scheduledTrigger(gap, Date.parse("2027-03-13T07:30:00Z"), new Date("2027-03-14T06:29:00Z"), ny)).toBeNull();
+    expect(scheduledTrigger(gap, Date.parse("2027-03-13T07:30:00Z"), new Date("2027-03-14T06:30:00Z"), ny)).toBe("daily");
+    expect(scheduledTrigger(gap, Date.parse("2027-03-14T06:30:00Z"), new Date("2027-03-14T07:10:00Z"), ny)).toBeNull();
+    // The day after, 02:30 EDT is 06:30Z again.
+    expect(scheduledTrigger(gap, Date.parse("2027-03-14T06:30:00Z"), new Date("2027-03-15T06:30:00Z"), ny)).toBe("daily");
+  });
+
+  test("the scheduler runs per-job schedules on its polls and keeps the default daily job on `at`", async () => {
+    seedLastRun("consolidation", clock.toISOString());
+    const s = scheduler();
+    const consolidation = recordingJob();
+    const beat = recordingJob("heartbeat");
+    s.register(consolidation.job);
+    s.register({ ...beat.job, schedule: every(60, "08:00-22:00") });
+    await s.start();
+    // Startup catch-up is only for jobs without their own schedule.
+    expect(beat.calls).toEqual([]);
+    await s.tick();
+    expect(beat.calls).toEqual([{ trigger: "interval", force: false }]);
+    clock = new Date("2026-09-29T12:59:00Z");
+    await s.tick();
+    expect(beat.calls).toHaveLength(1);
+    clock = new Date("2026-09-29T13:00:00Z");
+    await s.tick();
+    expect(beat.calls).toHaveLength(2);
+    clock = new Date("2026-09-29T23:00:00Z");
+    await s.tick();
+    expect(beat.calls).toHaveLength(2);
+    expect(consolidation.calls).toEqual([]);
+    clock = new Date("2026-09-30T04:00:10Z");
+    await s.tick();
+    expect(consolidation.calls).toEqual([{ trigger: "daily", force: false }]);
+    expect(beat.calls).toHaveLength(2);
+  });
+
+  test("source jobs: picked up and dropped between polls, registered names win, manual runs reach them, the index follows", async () => {
+    seedLastRun("consolidation", clock.toISOString());
+    const s = scheduler();
+    s.register(recordingJob().job);
+    const brief = recordingJob("brief");
+    const shadow = recordingJob("consolidation");
+    let source = [{ ...brief.job, schedule: { when: { kind: "daily", at: "12:00" }, disabled: true } as JobSchedule }, shadow.job];
+    s.addSource(() => source);
+    await s.start();
+    expect(readJobIndex(stateDir)).toEqual([
+      { name: "consolidation", schedule: "daily 04:00" },
+      { name: "brief", schedule: "daily 12:00 (disabled)" },
+    ]);
+    await s.tick();
+    expect(brief.calls).toEqual([]);
+
+    requestRun(stateDir, "brief");
+    await s.tick();
+    expect(brief.calls).toEqual([{ trigger: "manual", force: true }]);
+
+    source = [];
+    await s.tick();
+    expect(readJobIndex(stateDir)).toEqual([{ name: "consolidation", schedule: "daily 04:00" }]);
+    requestRun(stateDir, "brief");
+    await s.tick();
+    expect(brief.calls).toHaveLength(1);
+    expect(shadow.calls).toEqual([]);
+  });
+
+  test("a source that throws is skipped for that poll", async () => {
+    const s = scheduler();
+    s.addSource(() => {
+      throw new Error("bad file");
+    });
+    await s.start();
+    await s.tick();
+    expect(readJobIndex(stateDir)).toEqual([]);
+  });
+});
+
+describe("ws-schedule", () => {
+  function cli(argv: string[]) {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = runWsSchedule(argv, { env: { WORKSPACE_STATE_DIR: stateDir }, out: (l) => out.push(l), err: (l) => err.push(l), now: () => clock });
+    return { code, out, err };
+  }
+
+  test("list shows the jobs and their last runs; run queues a manual run the scheduler picks up", async () => {
+    expect(cli(["list"]).out[0]).toContain("hasn't started");
+    seedLastRun("consolidation", clock.toISOString());
+    const s = scheduler();
+    s.register(recordingJob().job);
+    const beat = recordingJob("heartbeat", async () => ({ status: "no_reply" }));
+    s.register({ ...beat.job, schedule: { when: { kind: "every", minutes: 120 }, active: { start: "08:00", end: "22:00" } } });
+    await s.start();
+    expect(cli(["list"]).out).toEqual([
+      `consolidation: daily 04:00; last ${clock.toISOString()} (daily) → applied`,
+      "heartbeat: every 120m, active 08:00-22:00; never run",
+    ]);
+
+    const queued = cli(["run", "heartbeat"]);
+    expect(queued.code).toBe(0);
+    expect(existsSync(requestPath(stateDir, "heartbeat"))).toBe(true);
+    await s.tick();
+    expect(beat.calls[0]).toEqual({ trigger: "manual", force: true });
+    expect(cli(["list"]).out[1]).toBe(`heartbeat: every 120m, active 08:00-22:00; last ${clock.toISOString()} (manual) → no_reply`);
+  });
+
+  test("errors: unknown or invalid job, bad usage", async () => {
+    const s = scheduler();
+    s.register(recordingJob().job);
+    await s.start();
+    expect(cli(["run", "nope"])).toMatchObject({ code: 1, err: ["ws-schedule: unknown job: nope (see ws-schedule list; a new schedule.md job loads within a minute)"] });
+    expect(cli(["run", "../x"]).code).toBe(1);
+    expect(cli([]).code).toBe(2);
+    expect(cli(["run"]).code).toBe(2);
+    expect(cli(["list", "x"]).code).toBe(2);
   });
 });

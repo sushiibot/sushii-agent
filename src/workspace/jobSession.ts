@@ -1,4 +1,6 @@
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AgentSession, AgentSessionEvent, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { assertExactTools, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
 import { getLogger } from "../logger.ts";
 import type { WorkspaceConfig } from "./config.ts";
@@ -6,8 +8,18 @@ import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallback
 import type { RunRecorder } from "./runLog.ts";
 import { observeRuns } from "./runObserver.ts";
 import { jobSessionDir } from "./sessionPaths.ts";
+import { USER_MD_CAP, capContent } from "./home.ts";
+import { createMemoryGuardExtension } from "./memoryGuard.ts";
+import { createSecretGuardExtension } from "./secretGuard.ts";
+import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
 
 const log = getLogger("workspace.job");
+
+/** Read-only builtins; a job never gets bash, edit or write. */
+export const JOB_READ_TOOLS = ["read", "grep", "find", "ls"] as const;
+
+/** Home-relative files a job may load into its system prompt, with their caps. */
+const JOB_CONTEXT_CAPS: Record<string, number | undefined> = { "AGENTS.md": undefined, "USER.md": USER_MD_CAP };
 
 const PROVIDER_ID = "sushii-workspace-job-openrouter";
 export const JOB_TIMEOUT_MS = 10 * 60_000;
@@ -20,6 +32,10 @@ export interface ToolFreeJobInput {
   prompt: string;
   runs: RunRecorder;
   timeoutMs?: number;
+  /** Home files appended to the system prompt, in order; a missing one is skipped. */
+  contextFiles?: Array<"AGENTS.md" | "USER.md">;
+  /** Read-only tools (read/grep/find/ls, plus the bot-proxied stubs when given) instead of none. */
+  readOnlyTools?: { toolStubs?: ToolStubs };
 }
 
 export interface ToolFreeJobResult {
@@ -43,9 +59,27 @@ function textOf(content: unknown): string {
     .join("");
 }
 
+/** The system prompt plus the requested home files, each in a `<file>` block. */
+export function jobSystemPrompt(home: string, base: string, files: readonly string[] = []): string {
+  const blocks: string[] = [];
+  for (const name of files) {
+    let raw: string;
+    try {
+      raw = readFileSync(join(home, name), "utf8");
+    } catch {
+      continue;
+    }
+    const cap = JOB_CONTEXT_CAPS[name];
+    const content = cap === undefined ? raw : capContent(raw, cap).content;
+    blocks.push(`<file path="~/${name}">\n${content.trimEnd()}\n</file>`);
+  }
+  return blocks.length ? `${base}\n\n${blocks.join("\n\n")}` : base;
+}
+
 /**
- * One prompt in a fresh, persisted Pi session with no tools, no context files, skills or discovered
- * extensions: a pure text transform. Starts on ChatGPT when signed in (OpenRouter otherwise) and retries
+ * One prompt in a fresh, persisted Pi session with no skills or discovered extensions. By default it has no
+ * tools and no context files: a pure text transform. `readOnlyTools` adds reads behind the secret guard and
+ * a read-only memory guard; `contextFiles` adds home files to the system prompt. Starts on ChatGPT when signed in (OpenRouter otherwise) and retries
  * once on OpenRouter after a ChatGPT limit/auth failure. Its backend cool-down is its own, not the chat's.
  */
 export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJobInput): Promise<ToolFreeJobResult> {
@@ -64,6 +98,20 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
 
   const cwd = config.home;
   const sessionRef: { current: AgentSession | null } = { current: null };
+  const systemPrompt = jobSystemPrompt(config.home, input.systemPrompt, input.contextFiles);
+  const withTools = input.readOnlyTools !== undefined;
+  // Approval-gated tools would park a job past its own timeout; jobs only get tools that run without asking.
+  const jobStubTools = (input.readOnlyTools?.toolStubs
+    ? KNOWN_PROXIED_TOOLS.filter((n) => input.readOnlyTools?.toolStubs?.entry(n)?.approval === "none")
+    : []) as string[];
+  const stubs = input.readOnlyTools?.toolStubs?.binding({ agentId: input.agentName, agentName: input.agentName });
+  const guards: { name: string; factory: ExtensionFactory }[] = withTools
+    ? [
+        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log }) },
+        ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
+        { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, readOnly: true, log }) },
+      ]
+    : [];
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir: config.agentDir,
@@ -72,9 +120,10 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPromptOverride: () => input.systemPrompt,
+    systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
     extensionFactories: [
+      ...guards,
       {
         name: "sushii-model-fallback",
         factory: createModelFallbackExtension({
@@ -91,27 +140,36 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
       },
     ],
   });
-  await loader.reload();
-
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
   settingsManager.getCacheWarmingMode = () => "off";
   const sessionManager = SessionManager.create(cwd, jobSessionDir(config.agentDir));
-  const { session } = await createAgentSession({
-    cwd,
-    agentDir: config.agentDir,
-    model,
-    modelRuntime,
-    resourceLoader: loader,
-    settingsManager,
-    sessionManager,
-    tools: [],
-    noTools: "all",
-  });
-  sessionRef.current = session;
-  assertExactTools(session, [], input.agentName);
+  let session: AgentSession;
+  try {
+    await loader.reload();
+    ({ session } = await createAgentSession({
+      cwd,
+      agentDir: config.agentDir,
+      model,
+      modelRuntime,
+      resourceLoader: loader,
+      settingsManager,
+      sessionManager,
+      ...(withTools
+        ? { tools: [...JOB_READ_TOOLS, ...(stubs ? jobStubTools : [])], excludeTools: ["ask_question"] }
+        : { tools: [], noTools: "all" as const }),
+    }));
+    sessionRef.current = session;
+    const builtins = withTools ? [...JOB_READ_TOOLS] : [];
+    assertExactTools(session, [...builtins, ...(stubs?.registeredNames() ?? [])], input.agentName, [...builtins, ...(stubs?.offered() ?? []).filter((n) => jobStubTools.includes(n))]);
+    stubs?.assertOwned(session, input.agentName);
+  } catch (err) {
+    stubs?.release();
+    throw err;
+  }
   const sessionFile = sessionManager.getSessionFile();
   if (!sessionFile) {
     session.dispose();
+    stubs?.release();
     throw new Error(`${input.agentName}: job session has no persisted file`);
   }
   observeRuns(session, { recorder: input.runs, sessionFile, agentName: input.agentName, defaultModel: config.model });
@@ -121,6 +179,7 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
     return { text, model: modelLabel(last?.provider ?? model.provider, last?.model ?? model.id), sessionFile };
   } finally {
     session.dispose();
+    stubs?.release();
   }
 }
 

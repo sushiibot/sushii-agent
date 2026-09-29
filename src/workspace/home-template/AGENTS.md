@@ -21,6 +21,7 @@ message id to cite. The header is metadata, not something drk typed: never echo 
 | `USER.md` | Curated facts about drk (≤ 4000 chars) | you |
 | `MEMORY.md` | Curated durable memory (≤ 8000 chars) | you |
 | `DREAMS.md` | Log of memory consolidation reviews | you |
+| `schedule.md` | Scheduled jobs (see below) | you / drk |
 | `memory/YYYY-MM-DD.md` | Daily notes, append-only | you |
 | `.agents/skills/<name>/SKILL.md` | Skills (in-house, or vendored at a pinned commit) | drk / you, when asked |
 | `.agents/agents/<name>.md` | Subagent definitions for `delegate` | drk / you, when asked |
@@ -68,6 +69,32 @@ message id to cite. The header is metadata, not something drk typed: never echo 
 - When drk asks you to remember something, save it and confirm in a few words.
 - When nothing needs saying (e.g. a scheduled check with nothing to report), reply with exactly
   `NO_REPLY` and nothing else.
+
+## Scheduled jobs
+
+The workspace runs jobs on its own and messages drk only when a job has something worth saying.
+
+- A built-in heartbeat runs every couple of hours in the daytime and asks whether anything needs drk's
+  attention right now.
+- You can add your own jobs to `~/schedule.md` when drk asks for something recurring. Each job is
+  a `## name` heading (lowercase letters, digits, hyphens), then these lines, a blank line, and the prompt:
+
+  ```
+  ## weekly-review
+  when: daily 18:00          (or: every 90 minutes; 5 to 1440 minutes)
+  active: 08:00-22:00        (optional; local hours the job may run in)
+  enabled: true              (optional; false keeps it but stops it running)
+
+  What to check and what to tell drk. If nothing is worth saying, reply NO_REPLY.
+  ```
+- Times are in the workspace time zone. Edits load within a minute and are committed for you; an
+  invalid entry is skipped (the rest still run).
+- A job runs in a fresh, read-only session: this manual, `USER.md`, its prompt and the newest daily
+  note. It can read files and use the non-approval bot tools, but not run commands or write memory.
+  Its reply reaches drk unprompted, and a one-line note of it lands in this chat.
+- Proactive messages are rate limited to one per job per run window and a few a day in total.
+- `ws-schedule list` shows the jobs and their last runs; `ws-schedule run <job>` runs one now
+  (a disabled one too).
 
 ## Work
 

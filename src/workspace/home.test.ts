@@ -65,7 +65,19 @@ describe("scaffoldHome", () => {
       "MEMORY.md",
       "SOUL.md",
       "USER.md",
+      "schedule.md",
     ]);
+  });
+
+  test("an older home's .gitignore is opened up for schedule.md, once", async () => {
+    await scaffoldHome(home);
+    const ignore = join(home, ".gitignore");
+    writeFileSync(ignore, readFileSync(ignore, "utf8").replace("!/schedule.md\n", ""));
+    await scaffoldHome(home);
+    await scaffoldHome(home);
+    expect(readFileSync(ignore, "utf8").split("\n").filter((l) => l === "!/schedule.md")).toHaveLength(1);
+    writeFileSync(join(home, "schedule.md"), "# edited\n");
+    expect((await commitHome("schedule", { home, paths: ["schedule.md"] })).committed).toBe(true);
   });
 
   test("scaffolds the default agent defs without overwriting an edited one", async () => {
