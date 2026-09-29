@@ -12,10 +12,16 @@ import { getLogger } from "../../logger.ts";
 import { realTimers, type Timers } from "./progress.ts";
 import { SurfaceUnavailableError, type ApprovalDecision, type ApprovalField, type ApprovalView, type SurfaceMessageHandle, type SurfaceRegistry } from "./surface.ts";
 
+const log = getLogger("orchestration/workspace/tools");
+
 export const TOOL_EXEC_TIMEOUT_MS = 120_000;
 export const APPROVAL_TIMEOUT_MS = 30 * 60_000;
 // An approved tool can't be cancelled once running (tool context has no abort signal), so it may finish after this.
 const ASK_TIMEOUT_ERROR = "timeout after 120 s; the action may still complete, so do not retry it";
+
+/** Longest approval body shown before it is clipped; sized so the worst-case Discord prompt stays within
+ *  its 4000-char text limit. */
+export const APPROVAL_BODY_MAX = 2800;
 
 /** One argument shown on an approval prompt. `single` fields are shown in full on one line and rejected
  *  when longer than `max`; the `body` field is shown as a block, clipped to `max`. */
@@ -42,7 +48,7 @@ export const PROXIED_TOOLS: Readonly<Record<string, ProxiedTool>> = {
     display: [
       { key: "repo_label", max: 100, kind: "single" },
       { key: "title", max: 256, kind: "single" },
-      { key: "description", max: 400, kind: "body" },
+      { key: "description", max: APPROVAL_BODY_MAX, kind: "body" },
     ],
   },
   team_config: { approval: "none" },
@@ -93,6 +99,19 @@ function newNonce(): string {
 
 const DENIED: ToolCallResult = { ok: false, error: "denied by owner", denied: true };
 
+// Default-ignorable and format characters render as nothing or reorder text, so an approved prompt could
+// hide part of what executes. Tag characters are listed explicitly: most are unassigned, so not \p{Cf}.
+const INVISIBLE_RE = /[\p{Cf}\u{E0000}-\u{E007F}]/u;
+export const INVISIBLE_ERROR = "invisible/format characters not allowed";
+
+/** Whether any string in `value`, at any depth, holds an invisible or format character. */
+export function hasInvisible(value: unknown): boolean {
+  if (typeof value === "string") return INVISIBLE_RE.test(value);
+  if (Array.isArray(value)) return value.some(hasInvisible);
+  if (typeof value === "object" && value !== null) return Object.entries(value).some(([k, v]) => INVISIBLE_RE.test(k) || hasInvisible(v));
+  return false;
+}
+
 export class WorkspaceTools {
   private readonly opts: WorkspaceToolsOptions;
   private readonly registry: ToolRegistry;
@@ -104,18 +123,25 @@ export class WorkspaceTools {
   // callIds from arrival until settled, so a duplicate can't slip in while the prompt is being posted.
   private readonly claimed = new Set<string>();
   private readonly closed = new WeakSet<ConnectionInfo>();
+  private readonly refused = new Set<string>();
 
   constructor(opts: WorkspaceToolsOptions) {
     this.opts = opts;
     this.registry = opts.registry ?? createToolRegistry();
     this.timers = opts.timers ?? realTimers;
     this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? (getLogger("orchestration/workspace/tools") as unknown as AuditLog);
+    this.log = opts.log ?? (log as unknown as AuditLog);
+    // Surfaces an unsupported schema at startup rather than on the first register.
+    try {
+      this.entries();
+    } catch (err) {
+      log.warn({ err }, "could not resolve the proxied tools");
+    }
   }
 
   /** The proxied tools this bot can run right now: the allowlist, narrowed by the registry's config
    *  gates as resolved for the owner in their private space with no hosts (so no surface/cache/fs/mcp tools). */
-  private entries(): Map<string, ToolEntry<keyof ToolHosts>> {
+  private entries(): Map<string, { entry: ToolEntry<keyof ToolHosts>; schema: Record<string, unknown> }> {
     if (!this.opts.ownerUserId()) return new Map();
     const session = { hosts: {}, capabilities: {} } as unknown as SurfaceSession;
     const resolved = this.registry.resolve(session, {
@@ -127,15 +153,26 @@ export class WorkspaceTools {
       authorized: true,
       moderationOn: false,
     });
-    return new Map(resolved.filter((e) => Object.hasOwn(PROXIED_TOOLS, e.name)).map((e) => [e.name, e]));
+    const out = new Map<string, { entry: ToolEntry<keyof ToolHosts>; schema: Record<string, unknown> }>();
+    for (const entry of resolved) {
+      if (!Object.hasOwn(PROXIED_TOOLS, entry.name)) continue;
+      const schema = closedSchema(entry.definition.parameters);
+      if (!schema) {
+        if (!this.refused.has(entry.name)) log.warn({ tool: entry.name }, "not proxying a tool whose schema can't be closed");
+        this.refused.add(entry.name);
+        continue;
+      }
+      out.set(entry.name, { entry, schema });
+    }
+    return out;
   }
 
   manifest(): ToolManifestEntry[] {
-    return [...this.entries().values()].map((e) => ({
-      name: e.name,
-      description: e.definition.description,
-      inputSchema: closedSchema(e.definition.parameters),
-      approval: PROXIED_TOOLS[e.name]!.approval,
+    return [...this.entries().values()].map(({ entry, schema }) => ({
+      name: entry.name,
+      description: entry.definition.description,
+      inputSchema: schema,
+      approval: PROXIED_TOOLS[entry.name]!.approval,
     }));
   }
 
@@ -172,12 +209,14 @@ export class WorkspaceTools {
 
   private async dispatch(conn: ConnectionInfo, p: ToolCallParams): Promise<ToolCallResult> {
     if (p.principalId !== this.opts.principalId || conn.principalId !== this.opts.principalId) return { ok: false, error: "principal mismatch" };
-    const entry = this.entries().get(p.name);
-    if (!entry) return { ok: false, error: `unknown tool: ${p.name}` };
+    const resolved = this.entries().get(p.name);
+    if (!resolved) return { ok: false, error: `unknown tool: ${p.name}` };
+    const { entry, schema } = resolved;
     const args = p.args === undefined ? {} : p.args;
-    if (!Check(closedSchema(entry.definition.parameters) as Parameters<typeof Check>[0], args)) {
+    if (!Check(schema as Parameters<typeof Check>[0], args)) {
       return { ok: false, error: `invalid arguments for ${p.name}` };
     }
+    if (hasInvisible(args)) return { ok: false, error: INVISIBLE_ERROR };
     const input = args as Record<string, unknown>;
     const policy = PROXIED_TOOLS[p.name]!;
     if (policy.approval === "none") return this.execute(entry, input, p, "timeout");
@@ -297,24 +336,67 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Keywords closedSchema understands. Combinators, tuples, refs and pattern properties could carry keys
+// past the closed objects, so a schema using anything else is refused rather than proxied.
+const SCHEMA_KEYWORDS = new Set([
+  "$schema",
+  "type",
+  "properties",
+  "required",
+  "additionalProperties",
+  "items",
+  "enum",
+  "const",
+  "description",
+  "title",
+  "default",
+  "examples",
+  "format",
+  "pattern",
+  "minLength",
+  "maxLength",
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  "multipleOf",
+  "minItems",
+  "maxItems",
+  "uniqueItems",
+]);
+
 /** A copy of a tool's JSON Schema with `additionalProperties:false` on every object that declares
- *  properties (and on the root regardless), so args can carry nothing the tool doesn't define. */
-export function closedSchema(schema: Record<string, unknown>): Record<string, unknown> {
-  const close = (node: unknown, root: boolean): unknown => {
-    if (typeof node !== "object" || node === null || Array.isArray(node)) return node;
+ *  properties (and on the root regardless), so args can carry nothing the tool doesn't define. Null
+ *  when the schema uses a keyword this can't close. */
+export function closedSchema(schema: Record<string, unknown>): Record<string, unknown> | null {
+  const close = (node: unknown, root: boolean): Record<string, unknown> | null => {
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return null;
     const out: Record<string, unknown> = { ...(node as Record<string, unknown>) };
+    if (Object.keys(out).some((k) => !SCHEMA_KEYWORDS.has(k))) return null;
+    if (out.additionalProperties !== undefined && typeof out.additionalProperties !== "boolean") return null;
     const props = out.properties;
-    if (typeof props === "object" && props !== null) {
-      out.properties = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, close(v, false)]));
+    if (props !== undefined) {
+      if (typeof props !== "object" || props === null || Array.isArray(props)) return null;
+      const closed: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(props)) {
+        const c = close(v, false);
+        if (!c) return null;
+        closed[k] = c;
+      }
+      out.properties = closed;
       out.additionalProperties = false;
     } else if (root) {
       out.properties = {};
       out.additionalProperties = false;
     }
-    if (out.items !== undefined) out.items = close(out.items, false);
+    if (out.items !== undefined) {
+      const items = close(out.items, false);
+      if (!items) return null;
+      out.items = items;
+    }
     return out;
   };
-  return close(schema, true) as Record<string, unknown>;
+  return close(schema, true);
 }
 
 /** The approval prompt's fields, taken only from the tool's display list in its fixed order. Empty values

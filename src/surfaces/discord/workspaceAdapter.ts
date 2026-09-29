@@ -352,13 +352,25 @@ function codeBlockSafe(text: string): string {
   return text.replace(/`/g, "ˋ");
 }
 
+/** At most `max` UTF-16 units of `text`, never splitting a surrogate pair. */
+function clipAtCodePoint(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = 0;
+  for (const cp of text) {
+    if (end + cp.length > max) break;
+    end += cp.length;
+  }
+  return text.slice(0, end);
+}
+
 /** The approval prompt's args lines, in the fields' order. */
 export function renderApprovalArgs(fields: readonly ApprovalField[]): string {
   return fields
     .map((f) => {
       if (f.kind === "single") return `**${f.key}:** ${inlineSafe(f.value)}`;
-      const extra = f.value.length > f.max ? `\n-# (+${f.value.length - f.max} chars)` : "";
-      return `**${f.key}:**\n\`\`\`\n${codeBlockSafe(f.value.slice(0, f.max))}\n\`\`\`${extra}`;
+      const shown = clipAtCodePoint(f.value, f.max);
+      const extra = shown.length < f.value.length ? `\n-# (+${f.value.length - shown.length} more chars)` : "";
+      return `**${f.key}:**\n\`\`\`\n${codeBlockSafe(shown)}\n\`\`\`${extra}`;
     })
     .join("\n");
 }
