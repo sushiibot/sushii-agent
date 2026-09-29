@@ -8,7 +8,7 @@ import { createSecretGuardExtension } from "./secretGuard.ts";
 import { createMemoryGuardExtension } from "./memoryGuard.ts";
 import { createCompactionHandoffExtension } from "./memoryFlush.ts";
 import { RunLog, type RunRecorder } from "./runLog.ts";
-import { observeRuns } from "./runObserver.ts";
+import { observeRuns, type RunObserver } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
 import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
 import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
@@ -22,9 +22,21 @@ const memoryLog = getLogger("workspace.memory");
 const PROVIDER_ID = "sushii-workspace-openrouter";
 const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
 
-/** Pi's bash under the agent env allowlist, minus PI_* (PI_CODING_AGENT_DIR and PI_SESSION_FILE point at the agent dir). */
-export function createWorkspaceBashTool(cwd: string) {
-  return createAgentBashTool(cwd, undefined, { dropPrefixes: ["PI_"], exposeSessionEnvironment: false });
+/** Pi's bash under the agent env allowlist, minus PI_* (PI_CODING_AGENT_DIR and PI_SESSION_FILE point at the agent dir).
+ *  `WS_RUN_ID` is the run in progress at spawn time, so `ws-runs` can default to it. */
+export function createWorkspaceBashTool(cwd: string, currentRunId: () => string | null = () => null) {
+  const extraEnv = (): Record<string, string> => {
+    const runId = currentRunId();
+    return runId ? { WS_RUN_ID: runId } : {};
+  };
+  return createAgentBashTool(cwd, extraEnv, { dropPrefixes: ["PI_"], exposeSessionEnvironment: false });
+}
+
+const runObservers = new WeakMap<object, RunObserver>();
+
+/** The runId of `session`'s run in progress (a subagent's parentRunId); null between runs. */
+export function currentRunId(session: ChatSession): string | null {
+  return runObservers.get(session)?.currentRunId() ?? null;
 }
 
 /** In-memory settings overrides per live session, re-applied after a reload drops them. */
@@ -132,7 +144,8 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
     // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
     settingsManager.getCacheWarmingMode = () => "off";
 
-    const bashTool = await createWorkspaceBashTool(cwd);
+    const observerRef: { current: RunObserver | null } = { current: null };
+    const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null);
     const { session } = await createAgentSession({
       cwd,
       agentDir: config.agentDir,
@@ -155,7 +168,9 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
     sessionOverrides.set(session, { session, overrides });
-    observeRuns(session, { recorder: runs, sessionFile: file, agentName: "main", defaultModel: config.model });
-    return { session, sessionFile: file };
+    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: "main", defaultModel: config.model });
+    observerRef.current = observer;
+    runObservers.set(session, observer);
+    return { session, sessionFile: file, currentRunId: () => observer.currentRunId() };
   };
 }

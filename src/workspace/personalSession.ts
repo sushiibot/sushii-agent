@@ -46,7 +46,12 @@ export type ChatSession = Pick<
 >;
 
 /** Opens `sessionFile` when given, else creates a fresh chat session. */
-export type ChatSessionFactory = (input: { sessionFile: string | null }) => Promise<{ session: ChatSession; sessionFile: string }>;
+export type ChatSessionFactory = (input: { sessionFile: string | null }) => Promise<{
+  session: ChatSession;
+  sessionFile: string;
+  /** The run in progress on `session` (a subagent's parentRunId); null between runs. */
+  currentRunId?: () => string | null;
+}>;
 
 export interface ChatTransport {
   request(method: string, params: unknown): Promise<unknown>;

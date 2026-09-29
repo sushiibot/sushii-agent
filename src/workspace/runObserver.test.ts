@@ -127,3 +127,37 @@ describe("observeRuns", () => {
     expect(log.listRuns()).toHaveLength(1);
   });
 });
+
+describe("observeRuns robustness and current run", () => {
+  test("currentRunId is the run in progress, null between runs", () => {
+    const s = new FakeSession();
+    const observer = observeRuns(s, { recorder: log, sessionFile: "/agent/chat/s.jsonl", agentName: "main" });
+    expect(observer.currentRunId()).toBeNull();
+    s.emit({ type: "agent_start" });
+    s.user("hi");
+    const runId = observer.currentRunId();
+    expect(runId).toBe(log.listRuns()[0]!.runId);
+    s.assistant("hello", "stop");
+    s.emit({ type: "agent_settled" });
+    expect(observer.currentRunId()).toBeNull();
+  });
+
+  test("a run index that can't be written never blocks Pi's dispose", () => {
+    const s = new FakeSession();
+    const broken = {
+      startRun: () => {
+        throw new Error("ENOSPC");
+      },
+      endRun: () => {
+        throw new Error("ENOSPC");
+      },
+      listRuns: () => [],
+      getRun: () => null,
+    };
+    observeRuns(s, { recorder: broken, sessionFile: "/agent/chat/s.jsonl", agentName: "main" });
+    s.emit({ type: "agent_start" });
+    s.user("hi");
+    expect(() => s.dispose()).not.toThrow();
+    expect(s.disposed).toBe(true);
+  });
+});

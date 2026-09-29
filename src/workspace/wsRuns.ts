@@ -1,53 +1,65 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, join, relative, resolve } from "node:path";
 import { latestRuns, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
-import { resolveAgentDir, resolveStateDir, sessionRoots } from "./sessionPaths.ts";
+import { resolveStateDir, sessionRoots } from "./sessionPaths.ts";
 
 // The sanctioned way for the agent to read its own session files, which live under the secret-guarded
-// agent dir. Every path from runs.jsonl or state.json is agent-writable, so reads are confined to
-// real *.jsonl Pi session files under the session roots and all output is redacted.
+// agent dir. The session roots come from pinned agent dirs; every path in runs.jsonl is agent-writable,
+// so reads are confined to real *.jsonl Pi session files under those roots and all output is redacted.
 
 const USAGE = `usage:
-  ws-runs list [--limit N] [--agent NAME] [--parent RUNID] [--since ISO]
-  ws-runs show <runId> [--full]
+  ws-runs list [--limit N] [--agent NAME] [--parent [RUNID]] [--since ISO]
+  ws-runs show [runId] [--full]        (runId defaults to $WS_RUN_ID, the current run)
   ws-runs search <text> [--limit N]`;
 
 const TOOL_RESULT_MAX = 300;
 const TOOL_ARGS_MAX = 160;
 const SNIPPET_RADIUS = 60;
-const NEVER_READ = new Set(["auth.json", "settings.json", "models.json"]);
 
 export interface WsRunsIo {
   env: NodeJS.ProcessEnv;
+  /** From `pinnedAgentDirs`, read once at process start; never from agent-writable files. */
+  agentDirs: string[];
   out: (line: string) => void;
   err: (line: string) => void;
 }
 
 // --- redaction ---------------------------------------------------------------------------------
 
-const BLOB = /[A-Za-z0-9+/_=-]{40,}/g;
+const BLOB = /[A-Za-z0-9+_=-]{32,}/g;
+
+// Kebab/snake identifiers, UUIDs and session file names are long runs of the blob class too, but
+// split into short words; random tokens have a long unbroken alphanumeric stretch with a digit.
+function looksRandom(token: string): boolean {
+  if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) return false;
+  return token.split(/[-_]/).some((part) => part.length >= 16 && /[0-9]/.test(part) && /[A-Za-z]/.test(part));
+}
 
 export function redact(text: string): string {
   return text
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g, "[REDACTED]")
+    .replace(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,}/g, "[REDACTED]")
     .replace(/\b(?:sk|rk)-[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, "[REDACTED]")
-    .replace(/\b[0-9a-fA-F]{40,}\b/g, "[REDACTED]")
-    .replace(BLOB, (m) => {
-      // Absolute paths and plain words are long runs of this class too; a blob mixes cases and digits.
-      if (m.startsWith("/")) return m;
-      return /[0-9]/.test(m) && /[a-z]/.test(m) && /[A-Z]/.test(m) ? "[REDACTED]" : m;
-    });
+    .replace(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{40,}(?![0-9A-Fa-f])/g, "[REDACTED]")
+    .replace(BLOB, (m) => (looksRandom(m) ? "[REDACTED]" : m));
 }
 
 // --- confined session file access --------------------------------------------------------------
 
 const inside = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
 
-function realRoots(agentDir: string): string[] {
-  return sessionRoots(agentDir)
-    .filter((r) => existsSync(r))
-    .map((r) => realpathSync(r));
+// A root that is itself a symlink could point anywhere, e.g. `<agentDir>/chat -> <agentDir>`.
+function realRoots(agentDirs: string[]): string[] {
+  const roots: string[] = [];
+  for (const r of agentDirs.flatMap(sessionRoots)) {
+    try {
+      const st = lstatSync(r);
+      if (st.isDirectory() && !st.isSymbolicLink()) roots.push(realpathSync(r));
+    } catch {}
+  }
+  return [...new Set(roots)];
 }
 
 /** Lines from the start of a file, read in chunks. */
@@ -79,7 +91,7 @@ export function confineSessionFile(file: string, roots: string[]): string | null
   } catch {
     return null;
   }
-  if (!real.endsWith(".jsonl") || NEVER_READ.has(basename(real))) return null;
+  if (!real.endsWith(".jsonl")) return null;
   if (!roots.some((r) => inside(real, r))) return null;
   try {
     const st = statSync(real);
@@ -122,6 +134,7 @@ interface Entry {
     role?: string;
     content?: unknown;
     toolName?: string;
+    toolCallId?: string;
     isError?: boolean;
     stopReason?: string;
     errorMessage?: string;
@@ -143,20 +156,50 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-function toolCallsOf(content: unknown): string[] {
+const WS_RUNS_CMD = /(?:^|[;&|(]\s*)ws-runs(?:\s|$)/;
+
+interface ToolCall {
+  type?: string;
+  id?: string;
+  name?: string;
+  arguments?: { command?: unknown };
+}
+
+function isWsRunsCall(c: ToolCall): boolean {
+  return c?.type === "toolCall" && c.name === "bash" && typeof c.arguments?.command === "string" && WS_RUNS_CMD.test(c.arguments.command.trim());
+}
+
+/** Ids of the bash calls in `file` that ran ws-runs, whose output search skips. */
+function wsRunsCallIds(file: string): Set<string> {
+  const ids = new Set<string>();
+  for (const line of headLines(file)) {
+    if (!line.includes("ws-runs")) continue;
+    const content = parseEntry(line)?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const c of content as ToolCall[]) if (isWsRunsCall(c) && c.id) ids.add(c.id);
+  }
+  return ids;
+}
+
+function toolCallsOf(content: unknown, hideWsRuns: boolean): string[] {
   if (!Array.isArray(content)) return [];
-  return content
-    .filter((c) => c?.type === "toolCall" && typeof c.name === "string")
+  return (content as ToolCall[])
+    .filter((c) => c?.type === "toolCall" && typeof c.name === "string" && !(hideWsRuns && isWsRunsCall(c)))
     .map((c) => `→ ${c.name} ${clip(oneLine(redact(JSON.stringify(c.arguments ?? {}))), TOOL_ARGS_MAX)}`);
 }
 
-/** The printable, redacted lines for one session entry; empty for entries with nothing to show. */
-function renderEntry(entry: Entry, full: boolean): string[] {
-  // Redacted before any clipping, so a cut can't leave a secret fragment too short to match.
-  return renderRaw(entry, full).map(redact);
+/** Tool calls to leave out: search hides its own ws-runs invocations and their results. */
+interface Hide {
+  wsRunsCallIds: Set<string>;
 }
 
-function renderRaw(entry: Entry, full: boolean): string[] {
+/** The printable, redacted lines for one session entry; empty for entries with nothing to show. */
+function renderEntry(entry: Entry, full: boolean, hide?: Hide): string[] {
+  // Redacted before any clipping, so a cut can't leave a secret fragment too short to match.
+  return renderRaw(entry, full, hide).map(redact);
+}
+
+function renderRaw(entry: Entry, full: boolean, hide?: Hide): string[] {
   if (entry.type === "message" && entry.message) {
     const m = entry.message;
     if (m.role === "user") return [`user: ${textOf(m.content)}`];
@@ -164,11 +207,12 @@ function renderRaw(entry: Entry, full: boolean): string[] {
       const lines: string[] = [];
       const text = textOf(m.content).trim();
       if (text) lines.push(`assistant: ${text}`);
-      lines.push(...toolCallsOf(m.content));
+      lines.push(...toolCallsOf(m.content, !!hide));
       if (m.stopReason === "error" || m.stopReason === "aborted") lines.push(`[${m.stopReason}${m.errorMessage ? `: ${oneLine(m.errorMessage)}` : ""}]`);
       return lines;
     }
     if (m.role === "toolResult") {
+      if (hide && m.toolCallId && hide.wsRunsCallIds.has(m.toolCallId)) return [];
       const text = redact(textOf(m.content));
       return [`← ${m.toolName ?? "tool"}${m.isError ? " (error)" : ""}: ${full ? text : clip(oneLine(text), TOOL_RESULT_MAX)}`];
     }
@@ -196,15 +240,28 @@ function parseEntry(line: string): Entry | null {
 interface Ctx {
   io: WsRunsIo;
   stateDir: string;
-  agentDir: string | null;
+  agentDirs: string[];
+  roots: string[];
+  /** The run this invocation happens in, from the agent's bash env. */
+  currentRunId: string | null;
 }
 
-function displayPath(file: string, agentDir: string | null): string {
-  if (agentDir) {
-    const rel = relative(agentDir, file);
-    if (!rel.startsWith("..")) return rel;
+function displayPath(file: string, agentDirs: string[]): string {
+  for (const dir of agentDirs) {
+    for (const d of [dir, safeRealpath(dir)]) {
+      const rel = relative(d, file);
+      if (!rel.startsWith("..")) return rel;
+    }
   }
   return basename(file);
+}
+
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 function fmtTime(iso: string | undefined): string {
@@ -230,7 +287,10 @@ function table(rows: string[][]): string[] {
 function cmdList(ctx: Ctx, flags: Flags): number {
   const limit = flags.int("limit", 20);
   const agent = flags.str("agent");
-  const parent = flags.str("parent");
+  const parentFlag = flags.str("parent");
+  // A bare --parent means the current run's children.
+  const parent = parentFlag === "" ? (ctx.currentRunId ?? undefined) : parentFlag;
+  if (parentFlag === "" && !parent) return fail(ctx.io, "--parent: no runId given and WS_RUN_ID is not set");
   const sinceRaw = flags.str("since");
   const since = sinceRaw ? new Date(sinceRaw) : undefined;
   if (since && Number.isNaN(since.getTime())) return fail(ctx.io, `--since: not a date: ${sinceRaw}`);
@@ -243,6 +303,7 @@ function cmdList(ctx: Ctx, flags: Flags): number {
     rows.push([r.runId, fmtTime(r.startedAt), r.status, r.agentName, r.parentRunId ?? "-", fmtDuration(r), fmtTokens(r), clip(oneLine(redact(r.task)), 60)]);
     if (++n >= limit) break;
   }
+  if (ctx.currentRunId) ctx.io.out(redact(`current run: ${ctx.currentRunId}`));
   if (n === 0) {
     ctx.io.out("no runs recorded");
     return 0;
@@ -256,7 +317,8 @@ function findRun(stateDir: string, runId: string): RunRecord | null {
   return null;
 }
 
-function cmdShow(ctx: Ctx, runId: string | undefined, flags: Flags): number {
+function cmdShow(ctx: Ctx, arg: string | undefined, flags: Flags): number {
+  const runId = arg ?? ctx.currentRunId;
   if (!runId) return fail(ctx.io, USAGE);
   const full = flags.bool("full");
   const run = findRun(ctx.stateDir, runId);
@@ -268,12 +330,12 @@ function cmdShow(ctx: Ctx, runId: string | undefined, flags: Flags): number {
   out(`started:  ${run.startedAt}`);
   out(`ended:    ${run.endedAt ?? "-"} (${fmtDuration(run)})`);
   out(`tokens:   ${fmtTokens(run)}`);
-  out(`session:  ${displayPath(run.sessionFile, ctx.agentDir)}`);
+  out(`session:  ${displayPath(run.sessionFile, ctx.agentDirs)}`);
   out(`task:     ${run.task}`);
   if (run.resultSummary) out(`result:   ${run.resultSummary}`);
   out("");
 
-  const file = ctx.agentDir ? confineSessionFile(run.sessionFile, realRoots(ctx.agentDir)) : null;
+  const file = confineSessionFile(run.sessionFile, ctx.roots);
   if (!file) {
     out(existsSync(run.sessionFile) ? "(session file is outside the session dirs; not shown)" : "(no session file yet: the run ended before Pi wrote one)");
     return 0;
@@ -303,8 +365,7 @@ function cmdShow(ctx: Ctx, runId: string | undefined, flags: Flags): number {
 function cmdSearch(ctx: Ctx, query: string | undefined, flags: Flags): number {
   if (!query) return fail(ctx.io, USAGE);
   const limit = flags.int("limit", 20);
-  if (!ctx.agentDir) return fail(ctx.io, "cannot locate the session dirs (set HOME)");
-  const roots = realRoots(ctx.agentDir);
+  const roots = ctx.roots;
   const needle = query.toLowerCase();
 
   const runsByFile = new Map<string, RunRecord[]>();
@@ -326,22 +387,30 @@ function cmdSearch(ctx: Ctx, query: string | undefined, flags: Flags): number {
   const files = listSessionFiles(roots)
     .map((f) => confineSessionFile(f, roots))
     .filter((f): f is string => f !== null)
-    .map((f) => ({ f, mtime: statSync(f).mtimeMs }))
+    .flatMap((f) => {
+      try {
+        return [{ f, mtime: statSync(f).mtimeMs }];
+      } catch {
+        return [];
+      }
+    })
     .sort((a, b) => b.mtime - a.mtime);
 
   let hits = 0;
   for (const { f } of files) {
+    let hide: Hide | undefined;
     for (const line of tailLines(f)) {
       if (!line.toLowerCase().includes(needle)) continue;
       const entry = parseEntry(line);
       if (!entry || entry.type === "session") continue;
+      hide ??= { wsRunsCallIds: wsRunsCallIds(f) };
       // Matched against redacted text, so hit/no-hit can't reveal a secret one guessed character at a time.
-      const text = renderEntry(entry, true).join(" ");
+      const text = renderEntry(entry, true, hide).join(" ");
       const at = text.toLowerCase().indexOf(needle);
       if (at === -1) continue;
       const start = Math.max(0, at - SNIPPET_RADIUS);
       const snippet = `${start > 0 ? "…" : ""}${oneLine(text.slice(start, at + needle.length + SNIPPET_RADIUS))}${at + needle.length + SNIPPET_RADIUS < text.length ? "…" : ""}`;
-      ctx.io.out(redact(`${runAt(f, entry.timestamp)}  ${displayPath(f, ctx.agentDir)}  ${fmtTime(entry.timestamp)}  ${snippet}`));
+      ctx.io.out(redact(`${runAt(f, entry.timestamp)}  ${displayPath(f, ctx.agentDirs)}  ${fmtTime(entry.timestamp)}  ${snippet}`));
       if (++hits >= limit) return 0;
     }
   }
@@ -372,7 +441,8 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Flags } {
     const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
     if (eq !== -1) values.set(name, a.slice(eq + 1));
     else if (BOOL_FLAGS.has(name)) values.set(name, "true");
-    else values.set(name, argv[++i] ?? "");
+    else if (argv[i + 1] === undefined || argv[i + 1]!.startsWith("--")) values.set(name, "");
+    else values.set(name, argv[++i]!);
   }
   return {
     positional,
@@ -397,7 +467,9 @@ export function runWsRuns(argv: string[], io: WsRunsIo): number {
   const [cmd, arg] = positional;
   const stateDir = resolveStateDir(io.env);
   if (!stateDir) return fail(io, "cannot locate the run index (set HOME or WORKSPACE_STATE_DIR)");
-  const ctx: Ctx = { io, stateDir, agentDir: resolveAgentDir(io.env, stateDir) };
+  const agentDirs = io.agentDirs.map((d) => resolve(d));
+  const currentRunId = io.env.WS_RUN_ID?.trim() || null;
+  const ctx: Ctx = { io, stateDir, agentDirs, roots: realRoots(agentDirs), currentRunId };
   switch (cmd) {
     case "list":
       return cmdList(ctx, flags);

@@ -1,5 +1,4 @@
 import { join, resolve } from "node:path";
-import { readWorkspaceState } from "./state.ts";
 
 /** Where each kind of agent session persists its Pi JSONL, under PI_CODING_AGENT_DIR. */
 export const SESSION_DIRS = {
@@ -32,14 +31,10 @@ export function resolveStateDir(env: NodeJS.ProcessEnv): string | null {
   return env.HOME ? resolve(env.HOME, "..", ".workspace") : null;
 }
 
-/**
- * The agent's bash drops PI_*, so without PI_CODING_AGENT_DIR the dir is taken from the recorded
- * chat session (`<agentDir>/chat/<file>`). Callers must still confine reads to its session roots.
- */
-export function resolveAgentDir(env: NodeJS.ProcessEnv, stateDir: string | null): string | null {
-  const fromEnv = env.PI_CODING_AGENT_DIR || env.PI_AGENT_DIR;
-  if (fromEnv) return fromEnv;
-  const chat = stateDir ? readWorkspaceState(stateDir)?.chatSessionFile : undefined;
-  if (chat) return resolve(chat, "..", "..");
-  return env.HOME ? join(env.HOME, ".pi-workspace") : null;
+/** The workspace image's agent dir. `ws-runs` reads sessions only under it: env and state.json are
+ *  agent-writable, so neither may move the session roots. */
+export const DEFAULT_AGENT_DIR = "/data/pi-agent";
+
+export function pinnedAgentDirs(): string[] {
+  return [DEFAULT_AGENT_DIR];
 }

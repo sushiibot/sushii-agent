@@ -13,25 +13,31 @@ and `bash`, so don't try to open them directly.
 ## Commands
 
 ```sh
-ws-runs list [--limit N] [--agent NAME] [--parent RUNID] [--since ISO]
-ws-runs show <runId> [--full]
+ws-runs list [--limit N] [--agent NAME] [--parent [RUNID]] [--since ISO]
+ws-runs show [runId] [--full]
 ws-runs search <text> [--limit N]
 ```
 
+Your current run's id is in `$WS_RUN_ID` (set in every bash command you run). `ws-runs list` prints
+it on its first line, `ws-runs show` with no runId shows the current run, and a bare `--parent`
+lists the current run's children.
+
 - `list`: newest runs first, with status, agent (`main`, a subagent name, or `job:<name>`), parent
   run, duration, tokens and task. `--since 2026-09-28` limits it to runs started after that time;
-  `--parent <runId>` lists a run's children.
+  `--parent <runId>` lists a run's children. Runs are ordered by their last update, so a long run that
+  just finished can sort above runs that started after it.
 - `show`: the run's record plus a condensed transcript of that run only: user and assistant text,
   one line per tool call, and tool results cut to 300 chars. Add `--full` for complete tool output.
 - `search`: a case-insensitive text search across every session file, newest first. Each hit prints
-  the run id (or `-` if no run covers it), the session file, a timestamp and a snippet.
+  the run id (or `-` if no run covers it), the session file, a timestamp and a snippet. Your own
+  `ws-runs` commands and their output are left out of the results.
 
 ## How to use it
 
 - "What did I do yesterday?": `ws-runs list --since <yesterday's date> --limit 50`, then `show`
   the runs that matter. Summarize them; don't paste the transcripts back.
-- "What did that subagent find?": `ws-runs list --parent <your runId>` or use the runId the
-  delegate result gave you, then `ws-runs show <runId>`.
+- "What did that subagent find?": `ws-runs list --parent` (children of the current run), or use the
+  runId the delegate result gave you, then `ws-runs show <runId>`.
 - "When did we talk about X?": `ws-runs search "X"`, then `show` the run it names.
 - Debugging your own failed or aborted run: `ws-runs list` shows its status; `ws-runs show <runId> --full`
   shows the exact tool calls and errors.

@@ -19,6 +19,13 @@ let mainRun: string;
 let earlierRun: string;
 let childRun: string;
 let hostileRun: string;
+let symlinkRun: string;
+let hardlinkRun: string;
+let outsideRun: string;
+let agent2: string;
+
+// A Pi-session-shaped file outside the session roots, e.g. the operator's docker-exec `pi` sessions.
+const MARKER = "OPERATOR_SESSION_MARKER";
 
 const GH_TOKEN = `ghp_${"A1b2C3d4".repeat(5)}`;
 const SK_KEY = "sk-or-v1-0123456789abcdefABCDEF";
@@ -74,6 +81,23 @@ beforeAll(() => {
     ]),
   );
 
+  writeFileSync(
+    join(agentDir, "chat", "2026-09-28_self.jsonl"),
+    sessionLines([
+      msg("w0", "2026-09-28T08:00:00.000Z", { role: "user", content: "find alpaca notes" }),
+      msg("w1", "2026-09-28T08:00:01.000Z", {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "ws1", name: "bash", arguments: { command: "ws-runs search alpaca --limit 5" } },
+          { type: "toolCall", id: "ws2", name: "bash", arguments: { command: "echo alpaca-echo" } },
+        ],
+        stopReason: "toolUse",
+      }),
+      msg("w2", "2026-09-28T08:00:02.000Z", { role: "toolResult", toolCallId: "ws1", toolName: "bash", content: [{ type: "text", text: "RESULTMARK alpaca hit" }] }),
+      msg("w3", "2026-09-28T08:00:03.000Z", { role: "toolResult", toolCallId: "ws2", toolName: "bash", content: [{ type: "text", text: "alpaca-echo" }] }),
+    ]),
+  );
+
   const childDir = subagentSessionDir(agentDir, "PARENT");
   mkdirSync(childDir, { recursive: true });
   const childFile = join(childDir, "child.jsonl");
@@ -88,6 +112,23 @@ beforeAll(() => {
   // Agent-writable inputs pointing at files ws-runs must never print.
   symlinkSync(join(agentDir, "auth.json"), join(agentDir, "chat", "sneaky.jsonl"));
   linkSync(join(agentDir, "auth.json"), join(agentDir, "chat", "hard.jsonl"));
+
+  // Separate session-shaped files per attack, so each test fails only if its own check is removed.
+  const opDir = join(agentDir, "sessions", "--data-home--");
+  mkdirSync(opDir, { recursive: true });
+  const opSession = (name: string) => {
+    const f = join(opDir, name);
+    writeFileSync(f, sessionLines([msg("o1", "2026-09-29T10:00:01.000Z", { role: "user", content: `${MARKER} ${name}` })]));
+    return f;
+  };
+  symlinkSync(opSession("sym.jsonl"), join(agentDir, "chat", "linked.jsonl"));
+  linkSync(opSession("hard.jsonl"), join(agentDir, "chat", "hardlinked.jsonl"));
+  const direct = opSession("direct.jsonl");
+  // A second agent dir whose session root is a symlink to the operator's sessions.
+  agent2 = join(root, "agent2");
+  mkdirSync(agent2, { recursive: true });
+  symlinkSync(join(agentDir, "sessions"), join(agent2, "chat"));
+  opSession("viaroot.jsonl");
 
   writeWorkspaceState(stateDir, { chatSessionFile: chatFile });
   let now = new Date("2026-09-29T09:00:04.000Z");
@@ -104,15 +145,22 @@ beforeAll(() => {
   now = new Date("2026-09-29T10:00:05.000Z");
   log.endRun(mainRun, { status: "done", usage: { inputTokens: 1200, outputTokens: 80, costUsd: 0.0123 }, resultSummary: "Deployed" });
   hostileRun = log.startRun({ agentName: "main", task: "hostile", sessionFile: join(agentDir, "chat", "sneaky.jsonl") });
+  symlinkRun = log.startRun({ agentName: "main", task: "hostile", sessionFile: join(agentDir, "chat", "linked.jsonl") });
+  hardlinkRun = log.startRun({ agentName: "main", task: "hostile", sessionFile: join(agentDir, "chat", "hardlinked.jsonl") });
+  outsideRun = log.startRun({ agentName: "main", task: "hostile", sessionFile: direct });
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 /** Runs the CLI with only HOME in env, as the agent's bash has it (PI_* and WORKSPACE_* are dropped). */
 function cli(...args: string[]): { code: number; out: string; err: string } {
+  return cliWith({ env: { HOME: home } }, ...args);
+}
+
+function cliWith(opts: { env: NodeJS.ProcessEnv; agentDirs?: string[] }, ...args: string[]): { code: number; out: string; err: string } {
   const out: string[] = [];
   const err: string[] = [];
-  const code = runWsRuns(args, { env: { HOME: home }, out: (l) => out.push(l), err: (l) => err.push(l) });
+  const code = runWsRuns(args, { env: opts.env, agentDirs: opts.agentDirs ?? [agentDir], out: (l) => out.push(l), err: (l) => err.push(l) });
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
@@ -126,6 +174,23 @@ describe("redact", () => {
     expect(out).toContain(LONG_PATH);
     expect(out).toContain("01J9ZQ8G6KX3T1V2W3Y4Z5A6B7");
   });
+
+  test("masks hex glued to a word, lowercase tokens, blobs after a slash and JWTs", () => {
+    const lower = "a8d7f6g5h4j3k2l1m0n9b8v7c6x5z4q3";
+    const blob = "AbCdEfGh1234567890IjKlMnOpQrStUvWxYz";
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+    const discord = `${"M".repeat(4)}TIzNDU2Nzg5MDEyMzQ1Njc4.GhIjKl.${"a1".repeat(15)}`;
+    const cases = [`secret_${HEX_KEY}`, `0x${HEX_KEY}`, lower, `/data/home/x/${blob}`, `/${blob}`, jwt, discord];
+    for (const c of cases) {
+      const out = redact(`value ${c} end`);
+      expect(out).toContain("[REDACTED]");
+      for (const secret of [HEX_KEY, lower, blob, "c2lnbmF0dXJl", "eyJzdWIiOiIxIn0", "a1".repeat(15)]) expect(out).not.toContain(secret);
+    }
+    expect(redact(`id_${"deadbeef".repeat(5)}`)).toBe("id_[REDACTED]");
+    expect(redact("/data/home/x/")).toBe("/data/home/x/");
+    // Kebab identifiers and UUIDs are long but made of short words.
+    for (const keep of ["session-history-skill-template-directory", "0b1c9f3e-2a4d-4e8b-9c1a-7f6e5d4c3b2a"]) expect(redact(keep)).toBe(keep);
+  });
 });
 
 describe("ws-runs list", () => {
@@ -134,7 +199,7 @@ describe("ws-runs list", () => {
     expect(all.code).toBe(0);
     const rows = all.out.split("\n");
     expect(rows[0]).toMatch(/^RUN\s+STARTED/);
-    expect(rows[1]).toContain(hostileRun);
+    expect(rows[1]).toContain(outsideRun);
     expect(all.out.indexOf(mainRun)).toBeLessThan(all.out.indexOf(earlierRun));
     expect(all.out).toContain("1200/80 $0.0123");
 
@@ -145,6 +210,12 @@ describe("ws-runs list", () => {
     expect(cli("list", "--limit", "1").out.split("\n")).toHaveLength(2);
     expect(cli("list", "--since", "2026-09-29T09:30:00Z").out).not.toContain(earlierRun);
     expect(cli("list", "--since", "yesterday-ish").code).toBe(1);
+
+    const current = cliWith({ env: { HOME: home, WS_RUN_ID: mainRun } }, "list", "--parent");
+    expect(current.out).toContain(`current run: ${mainRun}`);
+    expect(current.out).toContain(childRun);
+    expect(current.out).not.toContain(earlierRun);
+    expect(cli("list", "--parent").code).toBe(1);
   });
 });
 
@@ -195,6 +266,66 @@ describe("ws-runs show", () => {
     expect(out).toContain("not shown");
     expect(cli("show", "NOPE").code).toBe(1);
   });
+
+  test("defaults to the current run from WS_RUN_ID", () => {
+    const { code, out } = cliWith({ env: { HOME: home, WS_RUN_ID: childRun } }, "show");
+    expect(code).toBe(0);
+    expect(out).toContain(`run:      ${childRun}`);
+    expect(cli("show").code).toBe(1);
+  });
+});
+
+// Each fixture is a valid Pi session outside the session roots, so only the check under test stops it.
+describe("ws-runs session confinement", () => {
+  test("a session symlinked into chat/ is not shown", () => {
+    const { out } = cli("show", symlinkRun);
+    expect(out).toContain("not shown");
+    expect(out).not.toContain(MARKER);
+  });
+
+  test("a session hard-linked into chat/ is neither shown nor searched", () => {
+    const { out } = cli("show", hardlinkRun);
+    expect(out).toContain("not shown");
+    expect(out).not.toContain(MARKER);
+    expect(cli("search", "hard.jsonl").out).not.toContain(MARKER);
+  });
+
+  test("a run pointing straight at a session outside the roots is not shown", () => {
+    const { out } = cli("show", outsideRun);
+    expect(out).toContain("not shown");
+    expect(out).not.toContain(MARKER);
+  });
+
+  test("a session root that is a symlink is skipped", () => {
+    const { out } = cliWith({ env: { HOME: home }, agentDirs: [agentDir, agent2] }, "search", "viaroot");
+    expect(out).toBe("no matches");
+  });
+
+  test("env and state.json don't move the session roots", async () => {
+    // A self-contained tree with only a real, non-pinned agent dir holding the marker.
+    const t = mkdtempSync(join(tmpdir(), "ws-runs-pin-"));
+    try {
+      const tHome = join(t, "home");
+      const tState = join(t, ".workspace");
+      const other = join(t, "other-agent");
+      mkdirSync(tHome, { recursive: true });
+      mkdirSync(join(other, "chat"), { recursive: true });
+      const file = join(other, "chat", "s.jsonl");
+      writeFileSync(file, sessionLines([msg("o1", "2026-09-29T10:00:01.000Z", { role: "user", content: `${MARKER} pinned` })]));
+      writeWorkspaceState(tState, { chatSessionFile: file });
+      const runId = new RunLog(tState).startRun({ agentName: "main", task: "t", sessionFile: file });
+      const env = { HOME: tHome, PI_CODING_AGENT_DIR: other, PI_AGENT_DIR: other, PATH: process.env.PATH ?? "" };
+      const bin = resolve(import.meta.dir, "../../bin/ws-runs.ts");
+      for (const args of [["show", runId], ["search", MARKER]]) {
+        const proc = Bun.spawn(["bun", bin, ...args], { env, stdout: "pipe", stderr: "pipe" });
+        const out = await new Response(proc.stdout).text();
+        await proc.exited;
+        expect(out).not.toContain(MARKER);
+      }
+    } finally {
+      rmSync(t, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ws-runs search", () => {
@@ -206,6 +337,14 @@ describe("ws-runs search", () => {
     expect(lines.some((l) => l.startsWith(`${childRun}  subagents/PARENT/child.jsonl`))).toBe(true);
     expect(cli("search", "zebras").out).toContain(earlierRun);
     expect(cli("search", "kangaroo", "--limit", "1").out.split("\n")).toHaveLength(1);
+  });
+
+  test("leaves out ws-runs invocations and their output", () => {
+    const { out } = cli("search", "alpaca");
+    expect(out).toContain("find alpaca notes");
+    expect(out).toContain("echo alpaca-echo");
+    expect(out).not.toContain("ws-runs search");
+    expect(out).not.toContain("RESULTMARK");
   });
 
   test("redacts hits and skips non-session files", () => {
@@ -236,7 +375,8 @@ describe("ws-runs and the secret guard", () => {
     const proc = Bun.spawn(["bun", bin, "show", mainRun], { env: { HOME: home, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
     const out = await new Response(proc.stdout).text();
     expect(await proc.exited).toBe(0);
-    expect(out).toContain("assistant: Deployed the Kangaroo build.");
-    expect(out).not.toContain(GH_TOKEN);
+    // The fixture's agent dir isn't the pinned /data/pi-agent, so only the run's metadata prints.
+    expect(out).toContain(`run:      ${mainRun}`);
+    expect(out).toContain("not shown");
   });
 });

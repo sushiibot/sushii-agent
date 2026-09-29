@@ -30,11 +30,17 @@ interface OpenRun {
   tools: Map<string, Span>;
 }
 
+export interface RunObserver {
+  unsubscribe(): void;
+  /** The runId of the run in progress, e.g. a subagent's parentRunId; null between runs. */
+  currentRunId(): string | null;
+}
+
 /**
  * Records every run of `session` (agent_start → agent_settled, steers included) in the run index,
- * with a `workspace.turn` span per run and a `workspace.tool` span per tool call. Returns an unsubscribe.
+ * with a `workspace.turn` span per run and a `workspace.tool` span per tool call.
  */
-export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions): () => void {
+export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions): RunObserver {
   let run: OpenRun | null = null;
 
   const begin = (r: OpenRun, task: string): string => {
@@ -56,10 +62,11 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
     const r = run;
     run = null;
     if (!r) return;
-    const runId = begin(r, "");
     const status = forced ?? runStatus(r.acc);
     const resultSummary = r.acc.errorMessage ?? (r.acc.finalText.trim() || undefined);
+    let runId: string | null = null;
     try {
+      runId = begin(r, "");
       opts.recorder.endRun(runId, {
         status,
         usage: { inputTokens: r.acc.inputTokens, outputTokens: r.acc.outputTokens, costUsd: r.acc.costUsd },
@@ -127,11 +134,16 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
   // A session disposed mid-run (chat/new, shutdown) never settles; close its run here.
   const dispose = session.dispose.bind(session);
   session.dispose = () => {
-    unsubscribe();
-    if (run) finish("aborted");
-    dispose();
+    try {
+      unsubscribe();
+      if (run) finish("aborted");
+    } catch (err) {
+      log.error({ err }, "run observer failed to close the run on dispose");
+    } finally {
+      dispose();
+    }
   };
-  return unsubscribe;
+  return { unsubscribe, currentRunId: () => run?.runId ?? null };
 }
 
 function isOutput(event: AgentSessionEvent): boolean {
