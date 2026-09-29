@@ -67,13 +67,16 @@ export type ChatSessionFactory = (input: { sessionFile: string | null; ui?: Exte
 }>;
 
 export interface ChatTransport {
-  request(method: string, params: unknown): Promise<unknown>;
+  request(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
   notify(method: string, params: unknown): void;
   /** When absent the link is assumed up. */
   isConnected?(): boolean;
 }
 
 const RESEND_INTERVAL_MS = 60_000;
+// The bot answers chat/deliver at once but drops a request that lands before its register reply; without a
+// deadline that send stays "unanswered" and the interval resend skips it until the next reconnect.
+const DELIVER_TIMEOUT_MS = 30_000;
 
 /** Memory upkeep around the chat session; tests supply fakes. */
 export interface MemoryHooks {
@@ -120,6 +123,7 @@ export interface PersonalSessionOptions {
   fileExists?: (path: string) => boolean;
   /** How often unacked deliveries are resent while connected. Default 60s. */
   resendIntervalMs?: number;
+  deliverTimeoutMs?: number;
   /** Receipt time for messages whose id isn't a Discord snowflake. */
   now?: () => Date;
   /** When set: flush memory before chat/new and before compaction, and commit memory changes after turns. */
@@ -979,7 +983,7 @@ export class PersonalSession {
   private send(entry: ChatDeliverParams): void {
     this.sending.add(entry.outboxId);
     this.opts.transport
-      .request(RPC_METHODS.chatDeliver, entry)
+      .request(RPC_METHODS.chatDeliver, entry, this.opts.deliverTimeoutMs ?? DELIVER_TIMEOUT_MS)
       .catch((err) => log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend"))
       .finally(() => this.sending.delete(entry.outboxId));
   }

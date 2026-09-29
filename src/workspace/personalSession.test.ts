@@ -161,12 +161,12 @@ class FakeTransport implements ChatTransport {
   fail = false;
   connected = true;
   onRequest?: (method: string, params: unknown) => void;
-  respond?: (method: string, params: unknown) => Promise<unknown>;
+  respond?: (method: string, params: unknown, timeoutMs?: number) => Promise<unknown>;
 
-  request(method: string, params: unknown): Promise<unknown> {
+  request(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
     this.onRequest?.(method, params);
     this.requests.push({ method, params });
-    if (this.respond) return this.respond(method, params);
+    if (this.respond) return this.respond(method, params, timeoutMs);
     return this.fail ? Promise.reject(new Error("link closed")) : Promise.resolve({});
   }
 
@@ -199,7 +199,15 @@ function tempDir(): string {
 }
 
 function setup(
-  opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean; resendIntervalMs?: number; memory?: MemoryHooks; askTimeoutMs?: number } = {},
+  opts: {
+    stateDir?: string;
+    factory?: ChatSessionFactory;
+    fileExists?: (p: string) => boolean;
+    resendIntervalMs?: number;
+    deliverTimeoutMs?: number;
+    memory?: MemoryHooks;
+    askTimeoutMs?: number;
+  } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
   const sessions: FakeSession[] = [];
@@ -227,6 +235,7 @@ function setup(
     newId: () => `id-${++id}`,
     fileExists: opts.fileExists,
     resendIntervalMs: opts.resendIntervalMs,
+    deliverTimeoutMs: opts.deliverTimeoutMs,
     now: () => NOW,
     memory: opts.memory,
     askTimeoutMs: opts.askTimeoutMs,
@@ -550,6 +559,26 @@ describe("PersonalSession outbox", () => {
     const settled = sent().length;
     await sleep(50);
     expect(sent()).toHaveLength(settled);
+    await host.dispose();
+  });
+
+  test("a chat/deliver the bot never answers times out, so the interval resend retries it", async () => {
+    const { host, sessions, transport } = setup({ resendIntervalMs: 20, deliverTimeoutMs: 10 });
+    await host.start();
+    let first = true;
+    // Like a request sent before the bot's register reply: the bot drops it and never answers.
+    transport.respond = (_method, _params, timeoutMs) => {
+      if (!first) return Promise.resolve({});
+      first = false;
+      return timeoutMs === undefined ? new Promise(() => {}) : new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), timeoutMs));
+    };
+    await host.handleMessage(msg("m1", "one"));
+    sessions[0].finish("first");
+    await tick();
+    host.onRegistered();
+    await sleep(80);
+    const [a] = transport.delivered().map((d) => d.outboxId);
+    expect(transport.delivered().filter((d) => d.outboxId === a).length).toBeGreaterThan(1);
     await host.dispose();
   });
 

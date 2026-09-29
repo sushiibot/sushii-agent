@@ -100,7 +100,7 @@ async function main(): Promise<void> {
       flushRanThisCycle: sessionFlushRanThisCycle,
     },
     transport: {
-      request: (method, params) => (client ? client.request(method, params) : Promise.reject(new NotConnectedError())),
+      request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
       notify,
       isConnected: () => client?.connected ?? false,
     },
