@@ -70,7 +70,8 @@ export function memoryTarget(raw: string, opts: MemoryGuardOptions): MemoryTarge
   return null;
 }
 
-function resolveReal(raw: string, cwd: string): string {
+/** The real path `raw` names, the way Pi resolves tool paths (`@` prefix, `~`, relative to `cwd`). */
+export function resolveReal(raw: string, cwd: string): string {
   let p = raw.startsWith("@") ? raw.slice(1) : raw;
   if (p === "~") p = homedir();
   else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));

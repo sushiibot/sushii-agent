@@ -15,7 +15,7 @@ import { runnerGit } from "../../orchestration/runner/runnerGit.ts";
 import { getLogger } from "../../logger.ts";
 import type { WorkspaceConfig } from "../config.ts";
 import { mapSessionEvent, newRunAccumulator, type RunAccumulator } from "../events.ts";
-import { createMemoryGuardExtension } from "../memoryGuard.ts";
+import { createMemoryGuardExtension, resolveReal } from "../memoryGuard.ts";
 import { createCompactionHandoffExtension } from "../memoryFlush.ts";
 import { createWorkspaceBashTool } from "../piChatSession.ts";
 import type { RunRecorder, RunStatus } from "../runLog.ts";
@@ -191,11 +191,7 @@ export class SubagentHost {
     pi.on("tool_call", (event) => {
       if (!WRITING_TOOLS.has(event.toolName)) return undefined;
       const input = event.input as { path?: unknown };
-      let paths: string[] | null = null;
-      if (event.toolName !== "bash" && typeof input.path === "string") {
-        const rel = relative(home, resolve(home, input.path));
-        paths = rel.startsWith("..") || isAbsolute(rel) ? [] : [rel];
-      }
+      const paths = event.toolName !== "bash" && typeof input.path === "string" ? leasePaths(home, input.path) : null;
       leases.get(event.toolCallId)?.();
       leases.set(event.toolCallId, this.watch.mainWrite(paths));
       return undefined;
@@ -726,6 +722,18 @@ export class SubagentHost {
 }
 
 const WRITING_TOOLS = new Set(["bash", "edit", "write"]);
+
+/** What a main edit/write of `raw` may touch, home-relative; null (anything) when it doesn't resolve under home. */
+export function leasePaths(home: string, raw: string): string[] | null {
+  let realHome: string;
+  try {
+    realHome = realpathSync(home);
+  } catch {
+    return null;
+  }
+  const rel = relative(realHome, resolveReal(raw, home));
+  return !rel || rel.startsWith("..") || isAbsolute(rel) ? null : [rel];
+}
 
 /** A writer's worktree: its branch and the paths under projects/ it may change (worktree, git admin dir, its branch, objects). */
 export function worktreeInfo(home: string, worktree: string): { branch: string; projectPaths: string[] } | null {

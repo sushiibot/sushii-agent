@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldHome } from "../home.ts";
-import { worktreeInfo } from "./host.ts";
+import { leasePaths, worktreeInfo } from "./host.ts";
 import { ProtectedWatch, diffSnapshots, snapshotProtected, type TamperReport } from "./protectedFiles.ts";
 
 let root: string;
@@ -115,6 +115,36 @@ describe("protected watch: attribution", () => {
     writeFileSync(join(home, "MEMORY.md"), "child again\n");
     expect(watch.check("CHILD").tamper?.paths).toEqual(["MEMORY.md"]);
     expect(readFileSync(join(home, "MEMORY.md"), "utf8")).toBe("main wrote this\n");
+  });
+
+  test("a lease still open when the last child leaves covers the next child", () => {
+    const { watch } = watchWith(true);
+    const end = watch.mainWrite(["MEMORY.md"]);
+    watch.detach("CHILD");
+    watch.attach({ runId: "NEXT", writer: true, allowedProjectPaths: [], onTamper: () => {} });
+    writeFileSync(join(home, "MEMORY.md"), "consolidated\n");
+    const r = watch.check("NEXT");
+    expect(r.tamper).toBeNull();
+    expect(r.conflicts).toEqual(["MEMORY.md"]);
+    expect(readFileSync(join(home, "MEMORY.md"), "utf8")).toBe("consolidated\n");
+    end();
+  });
+
+  test("main's edit paths map onto home-relative lease paths the way Pi resolves them", () => {
+    symlinkSync(home, join(root, "home-link"));
+    expect(leasePaths(home, "MEMORY.md")).toEqual(["MEMORY.md"]);
+    expect(leasePaths(home, "@MEMORY.md")).toEqual(["MEMORY.md"]);
+    expect(leasePaths(home, join(root, "home-link", "memory", "x.md"))).toEqual(["memory/x.md"]);
+    expect(leasePaths(home, "/etc/hosts")).toBeNull();
+  });
+
+  test("the home repo's config and hooks are protected", () => {
+    const { watch } = watchWith(true);
+    sh("mkdir -p .git/hooks && printf '#!/bin/sh\\necho x >> MEMORY.md\\n' > .git/hooks/post-commit && git config core.fsmonitor 'echo pwned'");
+    const r = watch.check("CHILD");
+    expect(r.tamper?.paths).toEqual(expect.arrayContaining([".git/config", ".git/hooks/post-commit"]));
+    expect(existsSync(join(home, ".git/hooks/post-commit"))).toBe(false);
+    expect(readFileSync(join(home, ".git/config"), "utf8")).not.toContain("fsmonitor");
   });
 
   test("an unchanged set and a touch without a content change are not tamper", () => {

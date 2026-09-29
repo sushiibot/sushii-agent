@@ -2,9 +2,12 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** Home-relative files and trees a subagent must never change: memory, persona and agent defs/skills. */
-export const PROTECTED_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "SOUL.md", "AGENTS.md"] as const;
-export const PROTECTED_DIRS = ["memory", ".agents"] as const;
+/**
+ * Home-relative files and trees a subagent must never change: memory, persona, agent defs/skills, and the home
+ * repo's config and hooks (either can run a command during main's next memory commit).
+ */
+export const PROTECTED_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "SOUL.md", "AGENTS.md", ".git/config"] as const;
+export const PROTECTED_DIRS = ["memory", ".agents", ".git/hooks"] as const;
 /** Larger files are watched but can't be restored. */
 const MAX_RESTORABLE_BYTES = 4 * 1024 * 1024;
 const MAX_PROJECT_ENTRIES = 200_000;
@@ -301,7 +304,8 @@ export class ProtectedWatch {
     if (!this.children.size) {
       this.memory = null;
       this.projects = null;
-      this.leases.clear();
+      // A lease still open (consolidation, a long main bash call) must cover the next child's windows too.
+      for (const l of this.leases) if (l.end !== null) this.leases.delete(l);
       return;
     }
     if (child.writer) this.projects = this.hasWriter() ? this.fingerprintProjects() : null;
