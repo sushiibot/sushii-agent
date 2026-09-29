@@ -76,11 +76,15 @@ export interface WorkspaceRpc {
 }
 
 export interface EditableMessage {
+  /** Needed to find a progress message again after a restart; without it the view isn't persisted. */
+  id?: string;
   edit(options: MessageEditOptions): Promise<unknown>;
 }
 
 export interface DmChannelPort {
   send(options: MessageCreateOptions): Promise<EditableMessage>;
+  /** Re-opens a message this bot sent earlier; resolves null when it's gone. */
+  fetchMessage?(id: string): Promise<EditableMessage | null>;
 }
 
 export interface Timers {
@@ -105,6 +109,9 @@ export interface WorkspaceLinkOptions {
   timers?: Timers;
   /** Serves `tool/call` and the register result's tool manifest; absent → no tools offered. */
   tools?: WorkspaceToolsPort;
+  /** DM_WORKSPACE_ENABLED. When false the link still drains a connected workspace's deliveries (say, a
+   *  reply outboxed before a rollback) but offers and serves no tools. Default true. */
+  enabled?: boolean;
 }
 
 export interface WorkspaceToolsPort {
@@ -113,7 +120,18 @@ export interface WorkspaceToolsPort {
   onSocketClosed(conn: ConnectionInfo): void;
 }
 
-type ToolLine = { name: string; summary: string; state: "run" | "ok" | "err" };
+const MAIN_AGENT = "main";
+const PROGRESS_KV_PREFIX = "workspace:progress:";
+const ENDED_COUNTS_PERSISTED = 20;
+
+/** `agentId` is set on a subagent's tool, which renders nested under the parent turn. */
+type ToolLine = { name: string; summary: string; state: "run" | "ok" | "err"; agentId?: string };
+
+/** What survives a restart: open progress views (to finalize or keep driving) and recent tool counts. */
+interface ProgressSnapshot {
+  open: Array<{ turnId: string; messageId: string; startedAt: number; toolCount: number; lines: ToolLine[] }>;
+  ended: Array<[string, number]>;
+}
 
 interface TurnProgress {
   turnId: string;
@@ -121,6 +139,9 @@ interface TurnProgress {
   lines: ToolLine[];
   toolCount: number;
   message: Promise<EditableMessage | null> | null;
+  messageId: string | null;
+  /** Rebuilt from the snapshot of an earlier process. */
+  restored: boolean;
   // Serializes edits so a late in-flight edit can't overwrite the terminal state.
   chain: Promise<unknown>;
   lastEditAt: number;
@@ -144,12 +165,23 @@ export class WorkspaceLink {
   // turnId → tool count for turns that have ended; null when the count is unknown (a restart).
   private readonly endedTurns = new Map<string, number | null>();
   private rpc: WorkspaceRpc | null;
+  // Progress views an earlier process left open, picked up on the first register.
+  private orphans: ProgressSnapshot["open"];
+  // Restored views finalized as interrupted at an idle register; their reply may still arrive to mark them done.
+  private readonly interruptedRestored = new Map<string, TurnProgress>();
 
   constructor(opts: WorkspaceLinkOptions) {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
     this.timers = opts.timers ?? realTimers;
     this.rpc = opts.rpc ?? null;
+    const snapshot = this.loadProgress();
+    this.orphans = snapshot.open;
+    for (const [turnId, count] of snapshot.ended) this.endedTurns.set(turnId, count);
+  }
+
+  private get toolsEnabled(): boolean {
+    return this.opts.enabled !== false && this.opts.tools !== undefined;
   }
 
   get principalId(): string {
@@ -169,7 +201,7 @@ export class WorkspaceLink {
         if (conn.principalId === this.opts.principalId) log.info({ runnerId: conn.runnerId }, "workspace disconnected");
       },
       onSocketClosed: (conn) => this.opts.tools?.onSocketClosed(conn),
-      toolManifest: (conn) => (conn.principalId === this.opts.principalId ? (this.opts.tools?.manifest() ?? []) : []),
+      toolManifest: (conn) => (conn.principalId === this.opts.principalId && this.toolsEnabled ? this.opts.tools!.manifest() : []),
       onRequest: (conn, method, params) => this.onRequest(conn, method, params),
       onNotification: (conn, method, params) => this.onNotification(conn, method, params),
     };
@@ -215,6 +247,7 @@ export class WorkspaceLink {
   /** Records a turn a Stop button finalized outside the event stream, so its turn_end adds no second message. */
   markTurnEnded(turnId: string): void {
     this.rememberEnded(turnId, null);
+    this.persistProgress();
   }
 
   async newSession(): Promise<{ sessionFile: string }> {
@@ -286,6 +319,7 @@ export class WorkspaceLink {
     const waiters = this.connectWaiters;
     this.connectWaiters = [];
     for (const w of waiters) w();
+    this.restoreOrphans(conn.state === "streaming");
     // An idle workspace has no run in flight, so any turn still shown as working ended unobserved.
     if (conn.state === "idle") {
       for (const turn of [...this.turns.values()]) this.finishTurn(turn, "interrupted");
@@ -293,8 +327,69 @@ export class WorkspaceLink {
     void this.replayInbox();
   }
 
+  /** Takes over the progress views an earlier process left open. Inserted synchronously so an event for
+   *  the same turn edits the existing message instead of opening a second one. A restored view never
+   *  sends a new message: when its message can't be fetched, its edits are dropped. */
+  private restoreOrphans(streaming: boolean): void {
+    const orphans = this.orphans;
+    this.orphans = [];
+    if (!orphans.length) return;
+    const channel = this.opts.ownerChannel().catch(() => null);
+    for (const o of orphans) {
+      if (this.turns.has(o.turnId) || this.endedTurns.has(o.turnId)) continue;
+      const message = channel.then((c) => c?.fetchMessage?.(o.messageId).catch(() => null) ?? null);
+      const turn: TurnProgress = {
+        turnId: o.turnId,
+        startedAt: o.startedAt,
+        lines: o.lines,
+        toolCount: o.toolCount,
+        message,
+        messageId: o.messageId,
+        restored: true,
+        chain: message,
+        lastEditAt: 0,
+        timer: null,
+      };
+      this.turns.set(o.turnId, turn);
+      if (!streaming) {
+        this.interruptedRestored.set(o.turnId, turn);
+        this.finishTurn(turn, "interrupted");
+      }
+    }
+    log.info({ count: orphans.length, streaming }, "took over progress views from before a restart");
+  }
+
+  private progressKey(): string {
+    return `${PROGRESS_KV_PREFIX}${this.opts.principalId}`;
+  }
+
+  private loadProgress(): ProgressSnapshot {
+    try {
+      const raw = this.opts.store.getKv(this.progressKey());
+      const parsed = raw ? (JSON.parse(raw) as Partial<ProgressSnapshot>) : {};
+      return { open: Array.isArray(parsed.open) ? parsed.open : [], ended: Array.isArray(parsed.ended) ? parsed.ended : [] };
+    } catch (err) {
+      log.warn({ err }, "ignoring an unreadable progress snapshot");
+      return { open: [], ended: [] };
+    }
+  }
+
+  private persistProgress(): void {
+    const open = [...this.turns.values()]
+      .filter((t) => t.messageId !== null)
+      .map((t) => ({ turnId: t.turnId, messageId: t.messageId!, startedAt: t.startedAt, toolCount: t.toolCount, lines: t.lines.slice(-PROGRESS_LINES) }));
+    // Views not yet taken over stay persisted until a register restores them.
+    for (const o of this.orphans) if (!this.turns.has(o.turnId)) open.push(o);
+    const ended = [...this.endedTurns].filter((e): e is [string, number] => e[1] !== null).slice(-ENDED_COUNTS_PERSISTED);
+    try {
+      this.opts.store.setKv(this.progressKey(), JSON.stringify({ open, ended } satisfies ProgressSnapshot));
+    } catch (err) {
+      log.warn({ err }, "failed to persist workspace progress");
+    }
+  }
+
   private async onRequest(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown> {
-    if (method === RPC_METHODS.toolCall && this.opts.tools) return this.opts.tools.handleCall(conn, params);
+    if (method === RPC_METHODS.toolCall && this.toolsEnabled) return this.opts.tools!.handleCall(conn, params);
     if (method !== RPC_METHODS.chatDeliver) throw new MethodNotFoundError(`method not found: ${method}`);
     const p = chatDeliverParams.parse(params);
     if (p.principalId !== conn.principalId || p.principalId !== this.opts.principalId) throw new Error("principal mismatch");
@@ -327,8 +422,9 @@ export class WorkspaceLink {
         const toolCount = p.kind === "reply" && p.turnId ? this.closeTurnForReply(p.turnId) : null;
         const channel = await this.opts.ownerChannel();
         if (!channel) throw new Error("owner DM channel unavailable");
+        let pages: MessageCreateOptions[] | null = null;
         try {
-          const pages = this.renderDelivery(p, toolCount);
+          pages = this.renderDelivery(p, toolCount);
           for (const [i, page] of pages.entries()) {
             const pageKey = `${p.outboxId}#${i}`;
             if (pages.length > 1 && this.opts.store.hasSeenOutbox(pageKey)) continue;
@@ -342,7 +438,10 @@ export class WorkspaceLink {
           this.opts.store.setKv(failureKey(p.outboxId), String(failures));
           if (failures < DELIVERY_MAX_FAILURES) throw err;
           log.warn({ err, outboxId: p.outboxId, failures }, "delivery keeps failing to render; sending it as plain text");
-          for (const chunk of plainChunks(p.kind === "ask" ? (p.ask?.question ?? p.text) : p.text)) {
+          const fullText = p.kind === "ask" ? (p.ask?.question ?? p.text) : p.text;
+          // Pages that already went out as components aren't repeated.
+          const text = pages && pages.length > 1 ? this.unsentPagesText(pages, p.outboxId) : fullText;
+          for (const chunk of plainChunks(text)) {
             await channel.send({ content: chunk, allowedMentions: { parse: [] } });
           }
           this.opts.store.deleteKv(failureKey(p.outboxId));
@@ -359,12 +458,25 @@ export class WorkspaceLink {
     }
   }
 
+  private unsentPagesText(pages: MessageCreateOptions[], outboxId: string): string {
+    return pages
+      .filter((_, i) => !this.opts.store.hasSeenOutbox(`${outboxId}#${i}`))
+      .map((page) => textDisplays(page.components ?? []).join("\n"))
+      .join("\n");
+  }
+
   /** Finalizes the reply's progress view if it is still open; returns the turn's tool count if known. */
   private closeTurnForReply(turnId: string): number | null {
     const turn = this.turns.get(turnId);
     if (turn) {
       this.finishTurn(turn, "done");
       return turn.toolCount;
+    }
+    const restored = this.interruptedRestored.get(turnId);
+    if (restored) {
+      // It had finished while the bot was down: the reply proves it wasn't interrupted.
+      this.interruptedRestored.delete(turnId);
+      void this.queueEdit(restored, () => this.renderFinal(restored, "done"));
     }
     return this.endedTurns.get(turnId) ?? null;
   }
@@ -405,32 +517,23 @@ export class WorkspaceLink {
   // ── Live progress ──────────────────────────────────────────────────────────
 
   onEvent(p: ChatEventParams): void {
+    if (p.agentId !== MAIN_AGENT) {
+      this.onSubagentEvent(p);
+      return;
+    }
     const ev = p.ev;
     switch (ev.type) {
       case "turn_start":
+        // One main turn runs at a time, so a restored view of another turn ended while the bot was down.
+        for (const turn of [...this.turns.values()]) if (turn.restored && turn.turnId !== p.turnId) this.finishTurn(turn, "interrupted");
         this.turnFor(p.turnId);
         return;
-      case "tool_start": {
-        const turn = this.turnFor(p.turnId);
-        turn.lines.push({ name: ev.name, summary: ev.summary, state: "run" });
-        turn.toolCount++;
-        if (!turn.message) {
-          turn.lastEditAt = this.now();
-          turn.message = this.createMessage(this.renderWorking(turn));
-          turn.chain = turn.message;
-        } else {
-          this.markDirty(turn);
-        }
+      case "tool_start":
+        this.addToolLine(this.turnFor(p.turnId), { name: ev.name, summary: ev.summary, state: "run" });
         return;
-      }
-      case "tool_end": {
-        const turn = this.turns.get(p.turnId);
-        const line = turn?.lines.find((l) => l.name === ev.name && l.state === "run");
-        if (!turn || !line) return;
-        line.state = ev.ok ? "ok" : "err";
-        this.markDirty(turn);
+      case "tool_end":
+        this.endToolLine(this.turns.get(p.turnId), ev.name, ev.ok, undefined);
         return;
-      }
       case "turn_end": {
         const turn = this.turns.get(p.turnId);
         if (turn) this.finishTurn(turn, ev.aborted ? "stopped" : "done");
@@ -445,6 +548,43 @@ export class WorkspaceLink {
     }
   }
 
+  /** A subagent's tools render nested in the parent turn's view. Its own turn and text events, and
+   *  events whose parent turn isn't shown here, are ignored. */
+  private onSubagentEvent(p: ChatEventParams): void {
+    const turn = this.turns.get(p.turnId);
+    if (!turn) {
+      log.debug({ agentId: p.agentId, turnId: p.turnId, type: p.ev.type }, "ignoring subagent event without a live parent turn");
+      return;
+    }
+    if (p.ev.type === "tool_start") this.addToolLine(turn, { name: p.ev.name, summary: p.ev.summary, state: "run", agentId: p.agentId });
+    else if (p.ev.type === "tool_end") this.endToolLine(turn, p.ev.name, p.ev.ok, p.agentId);
+  }
+
+  private addToolLine(turn: TurnProgress, line: ToolLine): void {
+    turn.lines.push(line);
+    turn.toolCount++;
+    if (!turn.message) {
+      turn.lastEditAt = this.now();
+      turn.message = this.createMessage(this.renderWorking(turn));
+      turn.chain = turn.message;
+      void turn.message.then((m) => {
+        turn.messageId = m?.id ?? null;
+        if (this.turns.get(turn.turnId) === turn) this.persistProgress();
+      });
+    } else {
+      this.markDirty(turn);
+      this.persistProgress();
+    }
+  }
+
+  private endToolLine(turn: TurnProgress | undefined, name: string, ok: boolean, agentId: string | undefined): void {
+    const line = turn?.lines.find((l) => l.name === name && l.agentId === agentId && l.state === "run");
+    if (!turn || !line) return;
+    line.state = ok ? "ok" : "err";
+    this.markDirty(turn);
+    this.persistProgress();
+  }
+
   /** Waits for every queued progress edit; for tests and shutdown. */
   async settled(): Promise<void> {
     await Promise.all([...this.turns.values()].map((t) => t.chain.catch(() => {})));
@@ -453,7 +593,7 @@ export class WorkspaceLink {
   private turnFor(turnId: string): TurnProgress {
     let turn = this.turns.get(turnId);
     if (!turn) {
-      turn = { turnId, startedAt: this.now(), lines: [], toolCount: 0, message: null, chain: Promise.resolve(), lastEditAt: 0, timer: null };
+      turn = { turnId, startedAt: this.now(), lines: [], toolCount: 0, message: null, messageId: null, restored: false, chain: Promise.resolve(), lastEditAt: 0, timer: null };
       this.turns.set(turnId, turn);
     }
     return turn;
@@ -507,11 +647,12 @@ export class WorkspaceLink {
     }
     if (turn.message) void this.queueEdit(turn, () => this.renderFinal(turn, outcome));
     else if (outcome !== "done") void this.createMessage(this.renderFinal({ startedAt: turn.startedAt, toolCount: 0 }, outcome));
+    this.persistProgress();
   }
 
   renderWorking(turn: Pick<TurnProgress, "turnId" | "startedAt" | "lines">): MessageCreateOptions & MessageEditOptions {
     const icon = { run: "…", ok: "✓", err: "✗" } as const;
-    const lines = turn.lines.slice(-PROGRESS_LINES).map((l) => `${icon[l.state]} \`${l.name}\` ${l.summary}`.trimEnd());
+    const lines = turn.lines.slice(-PROGRESS_LINES).map((l) => `${l.agentId ? "↳ " : ""}${icon[l.state]} \`${l.name}\` ${l.summary}`.trimEnd());
     const header = `-# ⏳ working · started <t:${Math.floor(turn.startedAt / 1000)}:R>`;
     const container = new ContainerBuilder()
       .setAccentColor(ACCENT.info)
@@ -548,15 +689,21 @@ function plainChunks(text: string): string[] {
   return chunks.length ? chunks : ["(empty message)"];
 }
 
-/** The ask message once answered: its question text with the choice noted, and no buttons. */
-export function answeredAsk(message: { components: Array<{ toJSON(): unknown }> }, answer: string): MessageEditOptions {
+/** The text display contents of a message's components, in order. */
+function textDisplays(components: readonly unknown[]): string[] {
   const texts: string[] = [];
   const walk = (node: unknown) => {
     const n = node as { type?: number; content?: unknown; components?: unknown[] };
     if (n?.type === ComponentType.TextDisplay && typeof n.content === "string") texts.push(n.content);
     n?.components?.forEach(walk);
   };
-  message.components.forEach((c) => walk(c.toJSON()));
+  for (const c of components) walk(typeof (c as { toJSON?: unknown }).toJSON === "function" ? (c as { toJSON(): unknown }).toJSON() : c);
+  return texts;
+}
+
+/** The ask message once answered: its question text with the choice noted, and no buttons. */
+export function answeredAsk(message: { components: Array<{ toJSON(): unknown }> }, answer: string): MessageEditOptions {
+  const texts = textDisplays(message.components);
   const question = (texts[0] ?? "🙋 **Question**").split("\n-# ")[0];
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT.success)

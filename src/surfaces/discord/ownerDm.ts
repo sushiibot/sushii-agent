@@ -14,6 +14,7 @@ const DISCORD_EPOCH_MS = 1420070400000n;
 
 const NEW_COMMANDS = new Set(["!new", "!reset", "!clear"]);
 const STOP_COMMAND = "!stop";
+export const NEW_WHILE_OFFLINE = "-# ⚠️ workspace offline — its session is unchanged; send `!new` again once it's back";
 
 /** The owner-DM message fields the router needs; the gateway adapts a discord.js Message. */
 export interface OwnerDmMessage {
@@ -79,8 +80,13 @@ async function route(message: OwnerDmMessage, deps: OwnerDmDeps): Promise<void> 
   const workspace = deps.workspaceEnabled && link.isConnected();
 
   if (NEW_COMMANDS.has(command)) {
-    if (!workspace) {
+    if (!deps.workspaceEnabled) {
       await deps.resetInProcess(message);
+      return;
+    }
+    if (!workspace) {
+      // Clearing the fallback's history would read as a new session, but the workspace's continues on reconnect.
+      await message.send(NEW_WHILE_OFFLINE).catch(() => {});
       return;
     }
     await message.react("🧠").catch(() => {});

@@ -8,6 +8,7 @@ import {
   CATCH_UP_PAGE_SIZE,
   advanceCursor,
   catchUpOwnerDms,
+  NEW_WHILE_OFFLINE,
   handleOwnerDm,
   routeDirectMessage,
   selectCatchUp,
@@ -223,11 +224,14 @@ describe("owner DM routing", () => {
     expect(calls.messages).toHaveLength(0);
   });
 
-  test("!new while the workspace is offline resets the in-process conversation", async () => {
+  test("!new while the workspace is offline says its session is unchanged and clears nothing", async () => {
     const { deps, calls } = fakeDeps({ connected: false });
-    await handleOwnerDm(fakeMessage({ content: "!clear" }).msg, deps);
-    expect(calls.resets).toBe(1);
+    const m = fakeMessage({ content: "!clear" });
+    await handleOwnerDm(m.msg, deps);
+    expect(calls.resets).toBe(0);
     expect(calls.news).toBe(0);
+    expect(m.sent).toEqual([NEW_WHILE_OFFLINE]);
+    expect(NEW_WHILE_OFFLINE).toContain("session is unchanged");
   });
 
   test("voice: echo is `-# 🎙️ <transcript>` and the text goes out with voice:true and no audio attachment", async () => {

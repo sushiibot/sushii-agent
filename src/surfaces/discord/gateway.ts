@@ -331,10 +331,26 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     get: () => linkStore.getKv(OWNER_DM_CURSOR_KEY),
     set: (id) => linkStore.setKv(OWNER_DM_CURSOR_KEY, id),
   };
+  // The ORCH port binds before login, so a workspace can register (and restore progress views) before
+  // the client can reach the REST API.
+  // Typed Client<true> for convenience, but this runs before login.
+  const bootClient = client as Client;
+  const clientReady = bootClient.isReady()
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        bootClient.once(Events.ClientReady, () => resolve());
+        setTimeout(resolve, 60_000).unref?.();
+      });
   const ownerChannel = async (): Promise<DmChannelPort | null> => {
     if (!config.ownerDiscordId) return null;
+    await clientReady;
     const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
-    return user ? await user.createDM() : null;
+    const dm = user ? await user.createDM() : null;
+    if (!dm) return null;
+    return {
+      send: (options) => dm.send(options),
+      fetchMessage: (id) => dm.messages.fetch(id).catch(() => null),
+    };
   };
   const workspaceTools = new WorkspaceTools({
     principalId: resolveOwnerPrincipalId(),
@@ -349,6 +365,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     ownerChannel,
     owner: () => ({ id: config.ownerDiscordId ?? "", name: "owner" }),
     tools: workspaceTools,
+    enabled: config.dmWorkspaceEnabled,
   });
 
   function ownerDmMessage(message: Message): OwnerDmMessage | null {
@@ -565,7 +582,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   try {
     const dispatcher = getDispatcher();
     // Before ensureListening() below, so a workspace registering at boot gets the register hook.
-    if (config.dmWorkspaceEnabled) workspaceLink.attach(dispatcher.server);
+    // Attached even with the flag off, so a workspace's leftover outbox drains instead of resending forever;
+    // the flag still gates DM routing and the tools.
+    workspaceLink.attach(dispatcher.server);
     dispatcher.onTaskMessage((message) => { void deliverTaskMessage(message); });
     // Retry durable undelivered agent messages after restart. Delivery is idempotence-limited by
     // persisted state; a crash after Discord send but before status update can create one duplicate.

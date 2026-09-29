@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { MessageCreateOptions, MessageEditOptions } from "discord.js";
 import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
-import { RPC_METHODS, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
+import { RPC_METHODS, chatEventParams, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/transport/server.ts";
 import { DELIVERY_MAX_FAILURES, WorkspaceLink, answeredAsk, formatDuration, progressEditDelay, progressEditGap, type Timers, type WorkspaceRpc } from "./workspaceLink.ts";
 
@@ -487,5 +487,219 @@ describe("bot-proxied tools", () => {
     const { rpc } = setup();
     await expect(rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCall, {})).rejects.toThrow("method not found");
     expect(rpc.handler!.toolManifest!(CONN)).toEqual([]);
+  });
+});
+
+class IdChannel {
+  msgs = new Map<string, { sent: MessageCreateOptions; edits: MessageEditOptions[] }>();
+  order: string[] = [];
+  fetchMessage?: (id: string) => Promise<{ id: string; edit(o: MessageEditOptions): Promise<unknown> } | null>;
+  private seq = 0;
+  constructor(fetchable = true) {
+    if (fetchable) this.fetchMessage = async (id) => (this.msgs.has(id) ? this.handle(id) : null);
+  }
+  async send(options: MessageCreateOptions) {
+    const id = `m${++this.seq}`;
+    this.msgs.set(id, { sent: options, edits: [] });
+    this.order.push(id);
+    return this.handle(id);
+  }
+  private handle(id: string) {
+    return { id, edit: async (o: MessageEditOptions) => void this.msgs.get(id)!.edits.push(o) };
+  }
+  current(id: string): string {
+    const m = this.msgs.get(id)!;
+    return textOf(m.edits.at(-1) ?? m.sent);
+  }
+}
+
+const settle = async () => {
+  for (let i = 0; i < 5; i++) await tick();
+};
+
+describe("progress views survive a bot restart", () => {
+  function processes(channel: IdChannel) {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const store = new WorkspaceLinkStore(db);
+    const start = () => {
+      const rpc = new FakeRpc([]);
+      const link = new WorkspaceLink({ principalId: P, store, ownerChannel: async () => channel, owner: () => ({ id: "owner-1", name: "drk" }), timers: new ManualTimers() });
+      link.attach(rpc);
+      return { link, rpc };
+    };
+    return { start, store };
+  }
+
+  test("streaming re-register: the same turn keeps editing the old message, and the reply gets the full tool count", async () => {
+    const channel = new IdChannel();
+    const { start } = processes(channel);
+    const bot1 = start();
+    event(bot1.rpc, "t1", { type: "tool_start", name: "bash", summary: "sleep 30" });
+    await settle();
+    event(bot1.rpc, "t1", { type: "tool_end", name: "bash", ok: true });
+    event(bot1.rpc, "t1", { type: "tool_start", name: "read", summary: "" });
+    await settle();
+
+    const bot2 = start(); // restart: fresh process, same DB
+    bot2.rpc.handler!.onRegister!({ ...CONN, state: "streaming" });
+    expect(bot2.link.hasTurn("t1")).toBe(true);
+    event(bot2.rpc, "t1", { type: "tool_start", name: "grep", summary: "" });
+    await settle();
+    expect(channel.order).toEqual(["m1"]);
+
+    await bot2.link.deliver(deliverParams({ outboxId: "r1", turnId: "t1", text: "all done" }));
+    await settle();
+    expect(channel.order).toHaveLength(2);
+    expect(channel.current("m1")).toContain("✓ done");
+    expect(channel.current("m1")).toContain("3 tools");
+    expect(channel.current("m2")).toContain("3 tools");
+  });
+
+  test("idle re-register: the stale view is finalized, then marked done when its reply arrives with the count", async () => {
+    const channel = new IdChannel();
+    const { start } = processes(channel);
+    const bot1 = start();
+    event(bot1.rpc, "t2", { type: "tool_start", name: "bash", summary: "" });
+    await settle();
+
+    const bot2 = start();
+    bot2.rpc.handler!.onRegister!({ ...CONN, state: "idle" });
+    await settle();
+    expect(channel.current("m1")).toContain("⚠️ interrupted");
+    expect(channel.current("m1")).not.toContain("wsstop:");
+
+    await bot2.link.deliver(deliverParams({ outboxId: "r2", turnId: "t2", text: "finished while you were away" }));
+    await settle();
+    expect(channel.current("m1")).toContain("✓ done");
+    expect(channel.current(channel.order[1]!)).toContain("1 tool");
+  });
+
+  test("a view that can't be fetched is never re-sent; the reply still gets its count; ended counts persist too", async () => {
+    const channel = new IdChannel(false);
+    const { start } = processes(channel);
+    const bot1 = start();
+    event(bot1.rpc, "t3", { type: "tool_start", name: "bash", summary: "" });
+    event(bot1.rpc, "t4", { type: "tool_start", name: "a", summary: "" });
+    event(bot1.rpc, "t4", { type: "tool_start", name: "b", summary: "" });
+    await settle();
+    event(bot1.rpc, "t4", { type: "turn_end", aborted: false });
+    await settle();
+    const before = channel.order.length;
+
+    const bot2 = start();
+    bot2.rpc.handler!.onRegister!({ ...CONN, state: "idle" });
+    await settle();
+    expect(channel.order).toHaveLength(before);
+    await bot2.link.deliver(deliverParams({ outboxId: "r3", turnId: "t3", text: "x" }));
+    await bot2.link.deliver(deliverParams({ outboxId: "r4", turnId: "t4", text: "y" }));
+    expect(channel.current(channel.order.at(-2)!)).toContain("1 tool");
+    expect(channel.current(channel.order.at(-1)!)).toContain("2 tools");
+  });
+
+  test("a new main turn finalizes a restored view of an earlier turn", async () => {
+    const channel = new IdChannel();
+    const { start } = processes(channel);
+    const bot1 = start();
+    event(bot1.rpc, "t5", { type: "tool_start", name: "bash", summary: "" });
+    await settle();
+    const bot2 = start();
+    bot2.rpc.handler!.onRegister!({ ...CONN, state: "streaming" });
+    event(bot2.rpc, "t6", { type: "turn_start" });
+    await settle();
+    expect(bot2.link.hasTurn("t5")).toBe(false);
+    expect(channel.current("m1")).toContain("⚠️ interrupted");
+  });
+});
+
+describe("subagent chat/events", () => {
+  function sub(rpc: FakeRpc, turnId: string, ev: ChatEventPayload, agentId = "01JRUNID"): void {
+    rpc.handler!.onNotification!(CONN, RPC_METHODS.chatEvent, { principalId: P, turnId, agentId, parentRunId: "main", ev });
+  }
+
+  test("the contract accepts a runId agentId", () => {
+    expect(chatEventParams.safeParse({ principalId: P, turnId: "t", agentId: "01JRUNID", ev: { type: "turn_start" } }).success).toBe(true);
+    expect(chatEventParams.safeParse({ principalId: P, turnId: "t", agentId: "", ev: { type: "turn_start" } }).success).toBe(false);
+  });
+
+  test("subagent tools nest under the parent turn; its turn events never end the parent", async () => {
+    const { link, rpc, channel, timers } = setup();
+    event(rpc, "t1", { type: "tool_start", name: "task", summary: "delegate" });
+    await tick();
+    sub(rpc, "t1", { type: "turn_start" });
+    sub(rpc, "t1", { type: "tool_start", name: "task", summary: "inner" });
+    sub(rpc, "t1", { type: "tool_end", name: "task", ok: true });
+    sub(rpc, "t1", { type: "turn_end", aborted: false });
+    expect(link.hasTurn("t1")).toBe(true);
+    timers.fireAll();
+    await settle();
+    const working = textOf(channel.edits[0]!.at(-1)!);
+    expect(working).toContain("… `task` delegate");
+    expect(working).toContain("↳ ✓ `task` inner");
+    event(rpc, "t1", { type: "turn_end", aborted: false });
+    await settle();
+    expect(textOf(channel.edits[0]!.at(-1)!)).toContain("2 tools");
+    expect(channel.sent).toHaveLength(1);
+  });
+
+  test("a subagent event without a live parent turn is ignored, not a new message", async () => {
+    const { link, rpc, channel } = setup();
+    sub(rpc, "nope", { type: "tool_start", name: "bash", summary: "" });
+    sub(rpc, "nope", { type: "turn_end", aborted: true });
+    await settle();
+    expect(channel.sent).toHaveLength(0);
+    expect(link.hasTurn("nope")).toBe(false);
+  });
+});
+
+describe("workspace flag off", () => {
+  test("the link drains deliveries but offers and serves no tools", async () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const rpc = new FakeRpc([]);
+    const channel = new FakeChannel([]);
+    const calls: string[] = [];
+    const link = new WorkspaceLink({
+      principalId: P,
+      store: new WorkspaceLinkStore(db),
+      ownerChannel: async () => channel,
+      owner: () => ({ id: "owner-1", name: "drk" }),
+      enabled: false,
+      tools: {
+        manifest: () => [{ name: "web_search", description: "d", inputSchema: { type: "object" }, approval: "none" }],
+        handleCall: async () => (calls.push("call"), { ok: true, result: "r" }),
+        onSocketClosed: () => {},
+      },
+    });
+    link.attach(rpc);
+    expect(rpc.handler!.toolManifest!(CONN)).toEqual([]);
+    await expect(rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCall, { name: "web_search" })).rejects.toThrow("method not found");
+    expect(calls).toEqual([]);
+    await deliverViaServer(rpc, deliverParams({ outboxId: "left-over" }));
+    await settle();
+    expect(channel.sent).toHaveLength(1);
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+});
+
+describe("plain-text fallback", () => {
+  test("pages already sent as components aren't repeated in the fallback", async () => {
+    const { link, rpc, channel } = setup();
+    const text = Array.from({ length: 3 }, (_, i) => `section ${i}\n${"x".repeat(3000)}`).join("\n\n");
+    let firstPageSent = false;
+    channel.failWhen = (o) => {
+      if (o.content !== undefined) return false;
+      if (!firstPageSent) return !(firstPageSent = true);
+      return true;
+    };
+    for (let i = 0; i < DELIVERY_MAX_FAILURES; i++) await link.deliver(deliverParams({ text }));
+    const components = channel.sent.filter((m) => m.content === undefined);
+    const plain = channel.sent.filter((m) => m.content !== undefined).map((m) => m.content).join("");
+    expect(components).toHaveLength(1);
+    expect(textOf(components[0]!)).toContain("section 0");
+    expect(plain).not.toContain("section 0");
+    expect(plain).toContain("section 2");
+    expect(plain.length).toBeLessThan(text.length - 2000);
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
   });
 });

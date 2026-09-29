@@ -82,7 +82,7 @@ export async function handleWorkspaceApprovalButton(
     return;
   }
   const parsed = parseApprovalId(interaction.customId);
-  if (!parsed || !deps.tools.decide(parsed.callId, parsed.decision)) {
+  if (!parsed || !deps.tools.decide(parsed.nonce, parsed.decision)) {
     await interaction.reply({ content: "This approval has expired.", flags: MessageFlags.Ephemeral }).catch(() => {});
     return;
   }

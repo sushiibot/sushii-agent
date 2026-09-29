@@ -9,7 +9,6 @@ import { handleWorkspaceApprovalButton, type WorkspaceButtonInteraction } from "
 import { ACCENT, type Timers } from "./workspaceLink.ts";
 import {
   APPROVAL_TIMEOUT_MS,
-  MAX_APPROVAL_CALL_ID,
   PROXIED_TOOLS,
   TOOL_EXEC_TIMEOUT_MS,
   WorkspaceTools,
@@ -86,6 +85,13 @@ function fixedRegistry(entries: ToolEntry<keyof ToolHosts>[]): ToolRegistry {
   return { resolve: () => entries };
 }
 
+/** The nonce in a posted approval prompt's buttons. */
+function nonceOf(prompt: MessageCreateOptions): string {
+  const m = /wsap:([A-Za-z0-9_-]{16}):approve/.exec(textOf(prompt));
+  if (!m) throw new Error("no approval nonce in prompt");
+  return m[1]!;
+}
+
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 async function until(cond: () => boolean): Promise<void> {
@@ -112,6 +118,12 @@ function setup(opts: Partial<WorkspaceToolsOptions> = {}) {
 function call(name: string, args: unknown, extra: Partial<ToolCallParams> = {}): ToolCallParams {
   return { principalId: P, callId: `call-${name}`, name, args, agentId: "main", agentName: "main", ...extra };
 }
+
+const LINEAR_SCHEMA = {
+  type: "object",
+  properties: { title: { type: "string" }, description: { type: "string" }, repo_label: { type: "string" } },
+  required: ["title", "description", "repo_label"],
+};
 
 const ALL_ON: ToolAvailability = { exa: true, grafanaBaseUrl: true, linear: true };
 
@@ -186,8 +198,7 @@ describe("tool/call — approval none", () => {
   });
 
   test("team_config: the list and the detail form are both reads, run without a prompt", async () => {
-    expect(PROXIED_TOOLS.team_config!({})).toBe("none");
-    expect(PROXIED_TOOLS.team_config!({ team: "x" })).toBe("none");
+    expect(PROXIED_TOOLS.team_config!.approval).toBe("none");
     const { tools, channel } = setup({ registry: createToolRegistry(undefined, () => ALL_ON) });
     const list = await tools.handleCall(conn(), call("team_config", undefined));
     expect(list.ok).toBe(true);
@@ -275,11 +286,7 @@ describe("tool/call — rejected without executing", () => {
 });
 
 describe("tool/call — approval ask", () => {
-  const linearSchema = {
-    type: "object",
-    properties: { title: { type: "string" }, description: { type: "string" }, repo_label: { type: "string" } },
-    required: ["title", "description", "repo_label"],
-  };
+  const linearSchema = LINEAR_SCHEMA;
   const ARGS = { title: "Crash on login", description: "SECRET_BODY stack trace", repo_label: "sushii-bot" };
 
   function askSetup() {
@@ -299,9 +306,10 @@ describe("tool/call — approval ask", () => {
     expect(text).toContain("**file_linear_issue** requested by `researcher` (subagent of main)");
     expect(text).toContain("Crash on login");
     expect(text).toContain("auto-denies in 30 min");
-    expect(text).toContain("wsap:c1:approve");
-    expect(text).toContain("wsap:c1:deny");
-    tools.decide("c1", "deny");
+    const nonce = nonceOf(prompt);
+    expect(text).toContain(`wsap:${nonce}:deny`);
+    expect(text).not.toContain("wsap:c1");
+    tools.decide(nonce, "deny");
   });
 
   test("approve runs the tool and edits the prompt to Approved with a result line", async () => {
@@ -310,7 +318,7 @@ describe("tool/call — approval ask", () => {
     await until(() => channel.sent.length > 0);
     expect(textOf(channel.sent[0]!)).not.toContain("subagent");
     expect(linear.calls).toHaveLength(0);
-    expect(tools.decide("c1", "approve")).toBe(true);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(true);
     expect(await pending).toEqual({ ok: true, result: "Filed ENG-1: Crash on login — https://linear.app/x/ENG-1" });
     expect(linear.calls).toHaveLength(1);
     await until(() => channel.edits.length === 2);
@@ -320,14 +328,14 @@ describe("tool/call — approval ask", () => {
     expect(textOf(edit)).toContain("✅ Approved");
     expect(textOf(edit)).toContain("Filed ENG-1");
     expect(textOf(edit)).toContain('"disabled":true');
-    expect(tools.decide("c1", "approve")).toBe(false);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(false);
   });
 
   test("deny returns denied without running", async () => {
     const { tools, channel, linear } = askSetup();
     const pending = tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "c1" }));
     await until(() => channel.sent.length > 0);
-    tools.decide("c1", "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny");
     expect(await pending).toEqual({ ok: false, error: "denied by owner", denied: true });
     expect(linear.calls).toHaveLength(0);
     expect(textOf(channel.edits[0]!)).toContain("❌ Denied");
@@ -342,7 +350,7 @@ describe("tool/call — approval ask", () => {
     expect(await pending).toEqual({ ok: false, error: "denied by owner", denied: true });
     expect(linear.calls).toHaveLength(0);
     expect(textOf(channel.edits[0]!)).toContain("⌛ Timed out");
-    expect(tools.decide("c1", "approve")).toBe(false);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(false);
   });
 
   test("the socket closing expires the pending approval; a late click finds nothing", async () => {
@@ -356,7 +364,7 @@ describe("tool/call — approval ask", () => {
     tools.onSocketClosed(c);
     expect(await pending).toMatchObject({ ok: false, denied: true });
     expect(textOf(channel.edits[0]!)).toContain("⌛ Expired (workspace disconnected)");
-    expect(tools.decide("c1", "approve")).toBe(false);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(false);
     expect(linear.calls).toHaveLength(0);
   });
 
@@ -366,26 +374,27 @@ describe("tool/call — approval ask", () => {
     expect(await tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "dup" }))).toEqual({ ok: false, error: "duplicate callId: dup" });
     await until(() => channel.sent.length > 0);
     expect(channel.sent).toHaveLength(1);
-    tools.decide("dup", "approve");
+    tools.decide(nonceOf(channel.sent[0]!), "approve");
     expect((await first).ok).toBe(true);
     expect(linear.calls).toHaveLength(1);
   });
 
-  test("a callId too long for a button is rejected before prompting", async () => {
+  test("a long callId still gets a prompt: the button id doesn't carry it", async () => {
     const { tools, channel } = askSetup();
-    const res = await tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "x".repeat(MAX_APPROVAL_CALL_ID + 1) }));
-    expect(res.ok).toBe(false);
-    expect(channel.sent).toHaveLength(0);
+    const pending = tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "x".repeat(200) }));
+    await until(() => channel.sent.length > 0);
+    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    expect((await pending).ok).toBe(false);
   });
 });
 
 describe("audit log", () => {
   test("every call logs the pinned fields and never the args", async () => {
-    const linear = fakeEntry("file_linear_issue", { type: "object" }, async () => "Filed ENG-2");
+    const linear = fakeEntry("file_linear_issue", LINEAR_SCHEMA, async () => "Filed ENG-2");
     const { tools, channel, log } = setup({ registry: fixedRegistry([linear.entry]) });
-    const pending = tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "SECRET_BODY" }, { callId: "c9", agentId: "01RUN", agentName: "coder", parentRunId: "main-run" }));
+    const pending = tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "SECRET_BODY", repo_label: "r" }, { callId: "c9", agentId: "01RUN", agentName: "coder", parentRunId: "main-run" }));
     await until(() => channel.sent.length > 0);
-    tools.decide("c9", "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny");
     await pending;
     await tools.handleCall(conn(), call("nope", {}));
     await tools.handleCall(conn(), { name: "get_trace", callId: "bad-1", args: { description: "SECRET_BODY" } });
@@ -416,19 +425,25 @@ describe("wsap: buttons", () => {
     return { interaction, replies, updated: () => updated };
   }
 
-  test("parses callIds that contain colons", () => {
-    expect(parseApprovalId("wsap:a:b:c:approve")).toEqual({ callId: "a:b:c", decision: "approve" });
-    expect(parseApprovalId("wsap:c1:deny")).toEqual({ callId: "c1", decision: "deny" });
-    expect(parseApprovalId("wsap:c1:maybe")).toBeNull();
+  const N1 = "AAAAAAAAAAAAAAAA";
+  const N2 = "BBBBBBBBBBBBBBBB";
+
+  test("parses only bot nonces; callId-shaped ids are rejected", () => {
+    expect(parseApprovalId(`wsap:${N1}:approve`)).toEqual({ nonce: N1, decision: "approve" });
+    expect(parseApprovalId(`wsap:${N1}:deny`)).toEqual({ nonce: N1, decision: "deny" });
+    expect(parseApprovalId(`wsap:${N1}:maybe`)).toBeNull();
+    expect(parseApprovalId(`wsap:${N1}:approve:deny`)).toBeNull();
+    expect(parseApprovalId("wsap:c1:approve")).toBeNull();
+    expect(parseApprovalId("wsap:a:b:c:approve")).toBeNull();
     expect(parseApprovalId("wsap::approve")).toBeNull();
   });
 
   test("only the owner can decide", async () => {
     const decided: string[] = [];
     const tools = { decide: (id: string) => (decided.push(id), true) };
-    const stranger = fakeInteraction("wsap:c1:approve", "someone");
+    const stranger = fakeInteraction(`wsap:${N1}:approve`, "someone");
     await handleWorkspaceApprovalButton(stranger.interaction, { ownerId: OWNER_ID, tools });
-    const unset = fakeInteraction("wsap:c1:approve");
+    const unset = fakeInteraction(`wsap:${N1}:approve`);
     await handleWorkspaceApprovalButton(unset.interaction, { ownerId: undefined, tools });
     expect(decided).toEqual([]);
     expect(JSON.stringify(stranger.replies)).toContain("Only the owner");
@@ -436,14 +451,14 @@ describe("wsap: buttons", () => {
 
   test("the owner's click routes the decision; a stale one answers expired", async () => {
     const decided: Array<[string, string]> = [];
-    const tools = { decide: (id: string, d: "approve" | "deny") => (decided.push([id, d]), id === "live:1") };
-    const live = fakeInteraction("wsap:live:1:deny");
+    const tools = { decide: (id: string, d: "approve" | "deny") => (decided.push([id, d]), id === N1) };
+    const live = fakeInteraction(`wsap:${N1}:deny`);
     await handleWorkspaceApprovalButton(live.interaction, { ownerId: OWNER_ID, tools });
-    expect(decided).toEqual([["live:1", "deny"]]);
+    expect(decided).toEqual([[N1, "deny"]]);
     expect(live.updated()).toBe(true);
     expect(live.replies).toHaveLength(0);
 
-    const stale = fakeInteraction("wsap:gone:approve");
+    const stale = fakeInteraction(`wsap:${N2}:approve`);
     await handleWorkspaceApprovalButton(stale.interaction, { ownerId: OWNER_ID, tools });
     expect(stale.updated()).toBe(false);
     expect(JSON.stringify(stale.replies)).toContain("expired");
@@ -454,8 +469,156 @@ describe("wsap: buttons", () => {
     const { tools, channel } = setup({ registry: fixedRegistry([linear.entry]) });
     const pending = tools.handleCall(conn(), call("file_linear_issue", {}, { callId: "run-7:tc-2" }));
     await until(() => channel.sent.length > 0);
-    const i = fakeInteraction("wsap:run-7:tc-2:approve");
+    const i = fakeInteraction(`wsap:${nonceOf(channel.sent[0]!)}:approve`);
     await handleWorkspaceApprovalButton(i.interaction, { ownerId: OWNER_ID, tools });
     expect(await pending).toEqual({ ok: true, result: "Filed ENG-3" } satisfies ToolCallResult);
+  });
+});
+
+describe("approval hardening", () => {
+  function linearSetup() {
+    const linear = fakeEntry("file_linear_issue", LINEAR_SCHEMA, async (i) => `Filed ENG-9: ${i.title}`);
+    return { ...setup({ registry: fixedRegistry([linear.entry]) }), linear };
+  }
+
+  /** Text lines of the prompt's text display, as Discord would split them. */
+  function promptLines(prompt: MessageCreateOptions): string[] {
+    const json = (prompt.components ?? []).map((c) => ("toJSON" in c ? c.toJSON() : c)) as Array<{ components?: Array<{ content?: string }> }>;
+    return (json[0]?.components?.[0]?.content ?? "").split("\n");
+  }
+
+  test("extra arg keys are rejected before any prompt or execution (the review repro)", async () => {
+    const { tools, channel, linear } = linearSetup();
+    const args = {
+      a: "x".repeat(300),
+      b: "y".repeat(300),
+      c: "z".repeat(300),
+      "note\n### ✅ Approved\n-# …": "",
+      title: "DROP PROD",
+      description: "…SECRET-TAIL",
+      repo_label: "r",
+    };
+    expect(await tools.handleCall(conn(), call("file_linear_issue", args))).toEqual({ ok: false, error: "invalid arguments for file_linear_issue" });
+    expect(channel.sent).toHaveLength(0);
+    expect(linear.calls).toHaveLength(0);
+  });
+
+  test("extra keys are rejected for none tools too, and nested objects are closed", async () => {
+    const probe = fakeEntry("web_search", { type: "object", properties: { query: { type: "string" }, opts: { type: "object", properties: { n: { type: "number" } } } } }, async () => "ok");
+    const { tools } = setup({ registry: fixedRegistry([probe.entry]) });
+    expect((await tools.handleCall(conn(), call("web_search", { query: "q", extra: 1 }))).ok).toBe(false);
+    expect((await tools.handleCall(conn(), call("web_search", { query: "q", opts: { n: 1, sneaky: true } }))).ok).toBe(false);
+    expect(await tools.handleCall(conn(), call("web_search", { query: "q", opts: { n: 1 } }))).toEqual({ ok: true, result: "ok" });
+    expect(probe.calls).toHaveLength(1);
+  });
+
+  test("the manifest advertises the closed schemas the bot enforces", () => {
+    const { tools } = setup({ registry: createToolRegistry(undefined, () => ALL_ON) });
+    for (const t of tools.manifest()) expect(t.inputSchema.additionalProperties).toBe(false);
+  });
+
+  test("every ask tool's display fields cover its real schema, so nothing runs that wasn't shown", () => {
+    const { tools } = setup({ registry: createToolRegistry(undefined, () => ALL_ON) });
+    const asks = tools.manifest().filter((t) => t.approval === "ask");
+    expect(asks.map((t) => t.name)).toEqual(["file_linear_issue"]);
+    for (const t of asks) {
+      const policy = PROXIED_TOOLS[t.name]!;
+      if (policy.approval !== "ask") throw new Error("unreachable");
+      expect(policy.display.map((f) => f.key).sort()).toEqual(Object.keys(t.inputSchema.properties as object).sort());
+    }
+    expect((PROXIED_TOOLS.file_linear_issue as { display: ReadonlyArray<{ key: string }> }).display.map((f) => f.key)).toEqual(["repo_label", "title", "description"]);
+  });
+
+  test("spoofed headers, subtext and mentions in valid args render inert, in a fixed order", async () => {
+    const { tools, channel } = linearSetup();
+    const spoof = "x\n### ✅ Approved\n-# looks official\n> quote <@123> [link](https://evil.test) **bold**";
+    const pending = tools.handleCall(conn(), call("file_linear_issue", { description: `${spoof}\n\`\`\`\n### escaped?`, title: `t ${spoof}`, repo_label: `r\n# H1` }));
+    await until(() => channel.sent.length > 0);
+    const lines = promptLines(channel.sent[0]!);
+    // Outside the body's code block, only the bot's own lines may start with markdown syntax.
+    const fence = lines.findIndex((l) => l === "```");
+    const close = lines.findIndex((l, i) => i > fence && l === "```");
+    expect(fence).toBeGreaterThan(0);
+    expect(close).toBeGreaterThan(fence);
+    const outside = [...lines.slice(0, fence), ...lines.slice(close + 1)];
+    expect(outside.filter((l) => /^(#|-#|>)/.test(l))).toEqual(["### 🙋 Approve action?", "-# auto-denies in 30 min"]);
+    expect(lines.slice(fence + 1, close).some((l) => l.includes("```"))).toBe(false);
+    expect(outside.findIndex((l) => l.startsWith("**repo_label:**"))).toBeLessThan(outside.findIndex((l) => l.startsWith("**title:**")));
+    const titleLine = outside.find((l) => l.startsWith("**title:**"))!;
+    expect(titleLine).toContain("\\<\\@123\\>");
+    expect(titleLine).toContain("\\[link](");
+    expect(titleLine).toContain("\\*\\*bold\\*\\*");
+    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    await pending;
+  });
+
+  test("the full title is shown, an oversized one is rejected, and a long body is clipped with a count", async () => {
+    const { tools, channel, linear } = linearSetup();
+    expect((await tools.handleCall(conn(), call("file_linear_issue", { title: "t".repeat(257), description: "d", repo_label: "r" }))).ok).toBe(false);
+    expect(channel.sent).toHaveLength(0);
+    const title = "T".repeat(256);
+    const pending = tools.handleCall(conn(), call("file_linear_issue", { title, description: `${"b".repeat(400)}TAIL`, repo_label: "r" }));
+    await until(() => channel.sent.length > 0);
+    const text = promptLines(channel.sent[0]!).join("\n");
+    expect(text).toContain(title);
+    expect(text).not.toContain("TAIL");
+    expect(text).toContain("(+4 chars)");
+    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    await pending;
+    expect(linear.calls).toHaveLength(0);
+  });
+
+  test("after a restart, the old prompt's button can't approve a new call that reuses the callId", async () => {
+    const a = linearSetup();
+    void a.tools.handleCall(conn(), call("file_linear_issue", { title: "benign", description: "d", repo_label: "r" }, { callId: "call_1" }));
+    await until(() => a.channel.sent.length > 0);
+    const oldNonce = nonceOf(a.channel.sent[0]!);
+
+    const b = linearSetup(); // the restarted process
+    const pending = b.tools.handleCall(conn(), call("file_linear_issue", { title: "EVIL", description: "d", repo_label: "r" }, { callId: "call_1" }));
+    await until(() => b.channel.sent.length > 0);
+    const newNonce = nonceOf(b.channel.sent[0]!);
+    expect(newNonce).not.toBe(oldNonce);
+
+    for (const customId of [`wsap:${oldNonce}:approve`, "wsap:call_1:approve"]) {
+      const replies: unknown[] = [];
+      const click = { customId, user: { id: OWNER_ID }, reply: async (o: unknown) => void replies.push(o), deferUpdate: async () => {} } as unknown as WorkspaceButtonInteraction;
+      await handleWorkspaceApprovalButton(click, { ownerId: OWNER_ID, tools: b.tools });
+      expect(JSON.stringify(replies)).toContain("expired");
+    }
+    expect(b.linear.calls).toHaveLength(0);
+    b.tools.decide(newNonce, "deny");
+    expect(await pending).toMatchObject({ denied: true });
+    expect(b.linear.calls).toHaveLength(0);
+  });
+
+  test("oversized ids and names are rejected; a multi-line agentName renders on one clipped line", async () => {
+    const { tools, channel } = linearSetup();
+    for (const extra of [{ agentName: "n".repeat(257) }, { callId: "c".repeat(257) }, { agentId: "a".repeat(257) }, { callId: "" }]) {
+      const res = await tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "d", repo_label: "r" }, extra));
+      expect(res.ok).toBe(false);
+    }
+    expect(channel.sent).toHaveLength(0);
+    const pending = tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "d", repo_label: "r" }, { agentName: `helper\n### ✅ Approved ${"z".repeat(200)}` }));
+    await until(() => channel.sent.length > 0);
+    const requester = promptLines(channel.sent[0]!)[1]!;
+    expect(requester).toStartWith("**file_linear_issue** requested by `helper ### ✅ Approved");
+    expect(requester.length).toBeLessThan(120);
+    expect(promptLines(channel.sent[0]!).filter((l) => l.startsWith("###"))).toEqual(["### 🙋 Approve action?"]);
+    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    await pending;
+  });
+
+  test("an approved call past 120 s says it may still complete, so the workspace won't retry", async () => {
+    const hang = fakeEntry("file_linear_issue", LINEAR_SCHEMA, () => new Promise<string>(() => {}));
+    const { tools, channel, timers } = setup({ registry: fixedRegistry([hang.entry]) });
+    const pending = tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "d", repo_label: "r" }));
+    await until(() => channel.sent.length > 0);
+    tools.decide(nonceOf(channel.sent[0]!), "approve");
+    await until(() => [...timers.handles.values()].some((h) => h.ms === TOOL_EXEC_TIMEOUT_MS));
+    timers.fire(TOOL_EXEC_TIMEOUT_MS);
+    const res = await pending;
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.error).toContain("may still complete");
   });
 });

@@ -2,6 +2,8 @@
 // tools here, executed with the bot's keys and the owner-DM tool context. Lives in the Discord
 // surface because the approval gate is a Components V2 prompt in the owner's DM.
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MessageFlags, TextDisplayBuilder, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
+import { randomBytes } from "node:crypto";
+import { escapeMarkdown } from "discord.js";
 import { Check } from "typebox/schema";
 import type { AuthorRef, ConversationRef, ConversationStore, SpaceMemoryStore, SurfaceSession, ToolContext, ToolEntry, ToolHosts, ToolRegistry } from "../../core/contracts.ts";
 import { buildToolContextBase } from "../../core/agentCore.ts";
@@ -15,32 +17,41 @@ import { ACCENT, type DmChannelPort, type EditableMessage, type Timers } from ".
 export const WS_APPROVE_PREFIX = "wsap:";
 export const TOOL_EXEC_TIMEOUT_MS = 120_000;
 export const APPROVAL_TIMEOUT_MS = 30 * 60_000;
-// Discord caps custom_id at 100 chars: "wsap:" + callId + ":approve".
-export const MAX_APPROVAL_CALL_ID = 100 - WS_APPROVE_PREFIX.length - ":approve".length;
-const ARGS_SUMMARY_MAX = 600;
-const ARG_VALUE_MAX = 200;
 const RESULT_SUMMARY_MAX = 200;
+const AGENT_NAME_MAX = 64;
+// An approved tool can't be cancelled once running (tool context has no abort signal), so it may finish after this.
+const ASK_TIMEOUT_ERROR = "timeout after 120 s; the action may still complete, so do not retry it";
 
-type ApprovalRule = (args: Record<string, unknown>) => ToolApproval;
-const never: ApprovalRule = () => "none";
-const always: ApprovalRule = () => "ask";
+/** One argument shown on an approval prompt. `single` fields are shown in full on one line and rejected
+ *  when longer than `max`; the `body` field is shown in a code block, clipped to `max`. */
+export interface DisplayField {
+  key: string;
+  max: number;
+  kind: "single" | "body";
+}
 
-/** The only tools a workspace can reach, and when each needs the owner's click. A tool must be listed
- *  here to be proxied, whatever the registry offers. team_config is read-only (a team list, or one
- *  team's detail with `team`); it has no write action, so every call is `none`. */
-export const PROXIED_TOOLS: Readonly<Record<string, ApprovalRule>> = {
-  web_search: never,
-  fetch_url_content: never,
-  search_logs: never,
-  get_trace: never,
-  get_issue_status: never,
-  list_triaged_issues: never,
-  file_linear_issue: always,
-  team_config: never,
+export type ProxiedTool = { approval: "none" } | { approval: "ask"; display: readonly DisplayField[] };
+
+/** The only tools a workspace can reach, and whether each needs the owner's click. A tool must be listed
+ *  here to be proxied, whatever the registry offers. An ask tool's prompt shows only its `display`
+ *  fields, and its args may hold no other keys. team_config is read-only, so it is `none`. */
+export const PROXIED_TOOLS: Readonly<Record<string, ProxiedTool>> = {
+  web_search: { approval: "none" },
+  fetch_url_content: { approval: "none" },
+  search_logs: { approval: "none" },
+  get_trace: { approval: "none" },
+  get_issue_status: { approval: "none" },
+  list_triaged_issues: { approval: "none" },
+  file_linear_issue: {
+    approval: "ask",
+    display: [
+      { key: "repo_label", max: 100, kind: "single" },
+      { key: "title", max: 256, kind: "single" },
+      { key: "description", max: 400, kind: "body" },
+    ],
+  },
+  team_config: { approval: "none" },
 };
-
-/** Manifest-level approval: "ask" when any call of the tool can need approval. */
-const MANIFEST_APPROVAL: Readonly<Record<string, ToolApproval>> = { file_linear_issue: "ask" };
 
 export interface ToolCallAudit {
   principalId: string;
@@ -78,6 +89,12 @@ interface PendingApproval {
   resolve: (d: Decision) => void;
 }
 
+// 16 base64url chars: unguessable, colon-free, and independent of anything the workspace sends.
+const NONCE_RE = /^[A-Za-z0-9_-]{16}$/;
+function newNonce(): string {
+  return randomBytes(12).toString("base64url");
+}
+
 const realTimers: Timers = {
   set: (fn, ms) => setTimeout(fn, ms),
   clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -91,6 +108,7 @@ export class WorkspaceTools {
   private readonly timers: Timers;
   private readonly now: () => number;
   private readonly log: AuditLog;
+  // Keyed by a bot-generated nonce, never the callId, so a prompt can only settle the call it was posted for.
   private readonly pending = new Map<string, PendingApproval>();
   // callIds from arrival until settled, so a duplicate can't slip in while the prompt is being posted.
   private readonly claimed = new Set<string>();
@@ -125,8 +143,8 @@ export class WorkspaceTools {
     return [...this.entries().values()].map((e) => ({
       name: e.name,
       description: e.definition.description,
-      inputSchema: e.definition.parameters,
-      approval: MANIFEST_APPROVAL[e.name] ?? "none",
+      inputSchema: closedSchema(e.definition.parameters),
+      approval: PROXIED_TOOLS[e.name]!.approval,
     }));
   }
 
@@ -166,16 +184,19 @@ export class WorkspaceTools {
     const entry = this.entries().get(p.name);
     if (!entry) return { ok: false, error: `unknown tool: ${p.name}` };
     const args = p.args === undefined ? {} : p.args;
-    if (!Check(entry.definition.parameters as Parameters<typeof Check>[0], args)) {
+    if (!Check(closedSchema(entry.definition.parameters) as Parameters<typeof Check>[0], args)) {
       return { ok: false, error: `invalid arguments for ${p.name}` };
     }
     const input = args as Record<string, unknown>;
-    if (PROXIED_TOOLS[p.name]!(input) === "none") return this.execute(entry, input, p);
-    return this.executeWithApproval(conn, entry, input, p);
+    const policy = PROXIED_TOOLS[p.name]!;
+    if (policy.approval === "none") return this.execute(entry, input, p, "timeout");
+    const shown = displayArgs(policy.display, input);
+    if (!shown.ok) return { ok: false, error: `invalid arguments for ${p.name}: ${shown.error}` };
+    return this.executeWithApproval(conn, entry, input, p, shown.text);
   }
 
   /** Runs the tool as the owner in their DM space, the context the in-process DM agent gets. */
-  private async execute(entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams): Promise<ToolCallResult> {
+  private async execute(entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, timeoutError: string): Promise<ToolCallResult> {
     const ownerId = this.opts.ownerUserId();
     if (!ownerId) return { ok: false, error: "owner not configured" };
     const conversation: ConversationRef = { surface: "discord", spaceId: DM_SPACE_ID, conversationId: `workspace:${this.opts.principalId}`, isPrivate: true };
@@ -185,7 +206,7 @@ export class WorkspaceTools {
 
     let timer: unknown;
     const timeout = new Promise<ToolCallResult>((resolve) => {
-      timer = this.timers.set(() => resolve({ ok: false, error: "timeout" }), TOOL_EXEC_TIMEOUT_MS);
+      timer = this.timers.set(() => resolve({ ok: false, error: timeoutError }), TOOL_EXEC_TIMEOUT_MS);
     });
     const run = entry.execute(input, ctx).then(
       (r): ToolCallResult => ({ ok: true, result: r.content }),
@@ -198,48 +219,46 @@ export class WorkspaceTools {
     }
   }
 
-  private async executeWithApproval(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams): Promise<ToolCallResult> {
-    if (p.callId.length === 0 || p.callId.length > MAX_APPROVAL_CALL_ID) {
-      return { ok: false, error: `callId must be 1-${MAX_APPROVAL_CALL_ID} chars for a tool that needs approval` };
-    }
+  private async executeWithApproval(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, argsText: string): Promise<ToolCallResult> {
     if (this.claimed.has(p.callId)) return { ok: false, error: `duplicate callId: ${p.callId}` };
     this.claimed.add(p.callId);
     try {
-      return await this.approveThenExecute(conn, entry, input, p);
+      return await this.approveThenExecute(conn, entry, input, p, argsText);
     } finally {
       this.claimed.delete(p.callId);
     }
   }
 
-  private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams): Promise<ToolCallResult> {
-    const prompt: ApprovalPrompt = { tool: p.name, agentId: p.agentId, agentName: p.agentName, argsSummary: summarizeArgs(input) };
+  private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, argsText: string): Promise<ToolCallResult> {
+    const prompt: ApprovalPrompt = { tool: p.name, agentId: p.agentId, agentName: p.agentName, argsText };
+    const nonce = newNonce();
     const channel = await this.opts.ownerChannel().catch(() => null);
     if (!channel) return { ok: false, error: "owner DM unavailable; cannot ask for approval" };
     let message: EditableMessage;
     try {
-      message = await channel.send(renderApprovalPrompt(p.callId, prompt));
+      message = await channel.send(renderApprovalPrompt(nonce, prompt));
     } catch (err) {
       return { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` };
     }
 
-    const decision = this.closed.has(conn) ? "expired" : await this.awaitDecision(conn, p.callId);
+    const decision = this.closed.has(conn) ? "expired" : await this.awaitDecision(conn, nonce);
     const edit = (options: MessageEditOptions) => message.edit(options).catch(() => {});
     if (decision !== "approve") {
-      await edit(renderApprovalFinal(p.callId, prompt, decision));
+      await edit(renderApprovalFinal(nonce, prompt, decision));
       return DENIED;
     }
     // Disable the buttons while the tool runs, so a second click doesn't read as "expired".
-    const running = edit(renderApprovalFinal(p.callId, prompt, "approve"));
-    const result = await this.execute(entry, input, p);
+    const running = edit(renderApprovalFinal(nonce, prompt, "approve"));
+    const result = await this.execute(entry, input, p, ASK_TIMEOUT_ERROR);
     await running;
-    await edit(renderApprovalFinal(p.callId, prompt, "approve", result));
+    await edit(renderApprovalFinal(nonce, prompt, "approve", result));
     return result;
   }
 
-  private awaitDecision(conn: ConnectionInfo, callId: string): Promise<Decision> {
+  private awaitDecision(conn: ConnectionInfo, nonce: string): Promise<Decision> {
     return new Promise((resolve) => {
-      const timer = this.timers.set(() => this.settle(callId, "timeout"), APPROVAL_TIMEOUT_MS);
-      this.pending.set(callId, {
+      const timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
+      this.pending.set(nonce, {
         conn,
         resolve: (d) => {
           this.timers.clear(timer);
@@ -249,24 +268,24 @@ export class WorkspaceTools {
     });
   }
 
-  private settle(callId: string, decision: Decision): boolean {
-    const p = this.pending.get(callId);
+  private settle(nonce: string, decision: Decision): boolean {
+    const p = this.pending.get(nonce);
     if (!p) return false;
-    this.pending.delete(callId);
+    this.pending.delete(nonce);
     p.resolve(decision);
     return true;
   }
 
-  /** An owner's click. False when the approval is no longer pending (decided, timed out, expired, or
-   *  lost to a restart). */
-  decide(callId: string, decision: "approve" | "deny"): boolean {
-    return this.settle(callId, decision);
+  /** An owner's click on the prompt carrying `nonce`. False when that prompt is no longer pending (decided,
+   *  timed out, expired, or posted by an earlier process). */
+  decide(nonce: string, decision: "approve" | "deny"): boolean {
+    return this.settle(nonce, decision);
   }
 
   /** The socket a pending approval arrived on closed: its reply can't be delivered, so expire it. */
   onSocketClosed(conn: ConnectionInfo): void {
     this.closed.add(conn);
-    for (const [callId, p] of [...this.pending]) if (p.conn === conn) this.settle(callId, "expired");
+    for (const [nonce, p] of [...this.pending]) if (p.conn === conn) this.settle(nonce, "expired");
   }
 }
 
@@ -274,7 +293,7 @@ interface ApprovalPrompt {
   tool: string;
   agentId: string;
   agentName: string;
-  argsSummary: string;
+  argsText: string;
 }
 
 /** The identifying string fields of a malformed tool/call, for its audit line; never args. */
@@ -292,55 +311,96 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** Compact `key: value` lines for the approval prompt, capped at ARGS_SUMMARY_MAX chars. */
-export function summarizeArgs(args: Record<string, unknown>): string {
-  const lines = Object.entries(args)
-    .filter(([, v]) => v !== undefined && v !== null && v !== "")
-    .map(([k, v]) => `**${k}:** ${clip((typeof v === "string" ? v : JSON.stringify(v)).replace(/\s+/g, " "), ARG_VALUE_MAX)}`);
-  return clip(lines.join("\n"), ARGS_SUMMARY_MAX);
+/** A copy of a tool's JSON Schema with `additionalProperties:false` on every object that declares
+ *  properties (and on the root regardless), so args can carry nothing the tool doesn't define. */
+export function closedSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const close = (node: unknown, root: boolean): unknown => {
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return node;
+    const out: Record<string, unknown> = { ...(node as Record<string, unknown>) };
+    const props = out.properties;
+    if (typeof props === "object" && props !== null) {
+      out.properties = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, close(v, false)]));
+      out.additionalProperties = false;
+    } else if (root) {
+      out.properties = {};
+      out.additionalProperties = false;
+    }
+    if (out.items !== undefined) out.items = close(out.items, false);
+    return out;
+  };
+  return close(schema, true) as Record<string, unknown>;
 }
 
+/** Inline text that can't open a new line (so no line-start headers, subtext or quotes) or carry live
+ *  markdown, links, mentions or timestamps. */
+function inlineSafe(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return escapeMarkdown(flat, { maskedLink: true }).replace(/[<>@]/g, (c) => `\\${c}`);
+}
+
+/** Text rendered verbatim inside a code block: backticks are swapped so it can't close the block. */
+function codeBlockSafe(text: string): string {
+  return text.replace(/`/g, "ˋ");
+}
+
+/** The approval prompt's args lines, built only from the tool's display fields in their fixed order. */
+export function displayArgs(fields: readonly DisplayField[], args: Record<string, unknown>): { ok: true; text: string } | { ok: false; error: string } {
+  const lines: string[] = [];
+  for (const f of fields) {
+    const raw = args[f.key];
+    if (raw === undefined || raw === null || raw === "") continue;
+    const value = typeof raw === "string" ? raw : JSON.stringify(raw);
+    if (f.kind === "single") {
+      if (value.length > f.max) return { ok: false, error: `${f.key} is longer than ${f.max} chars` };
+      lines.push(`**${f.key}:** ${inlineSafe(value)}`);
+    } else {
+      const extra = value.length > f.max ? `\n-# (+${value.length - f.max} chars)` : "";
+      lines.push(`**${f.key}:**\n\`\`\`\n${codeBlockSafe(value.slice(0, f.max))}\n\`\`\`${extra}`);
+    }
+  }
+  return { ok: true, text: lines.join("\n") };
+}
+
+// agentId is self-reported by the workspace, so the subagent label is advisory.
 function requesterLine(prompt: ApprovalPrompt): string {
-  const name = prompt.agentName.replace(/`/g, "'");
+  const name = clip(prompt.agentName.replace(/\s+/g, " ").trim(), AGENT_NAME_MAX).replace(/`/g, "'") || "?";
   return `**${prompt.tool}** requested by \`${name}\`${prompt.agentId !== "main" ? " (subagent of main)" : ""}`;
 }
 
-function approvalButtons(callId: string, disabled: boolean): ActionRowBuilder<ButtonBuilder> {
+function approvalButtons(nonce: string, disabled: boolean): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`${WS_APPROVE_PREFIX}${callId}:approve`).setLabel("Approve").setStyle(ButtonStyle.Success).setDisabled(disabled),
-    new ButtonBuilder().setCustomId(`${WS_APPROVE_PREFIX}${callId}:deny`).setLabel("Deny").setStyle(ButtonStyle.Danger).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`${WS_APPROVE_PREFIX}${nonce}:approve`).setLabel("Approve").setStyle(ButtonStyle.Success).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`${WS_APPROVE_PREFIX}${nonce}:deny`).setLabel("Deny").setStyle(ButtonStyle.Danger).setDisabled(disabled),
   );
 }
 
 function body(prompt: ApprovalPrompt): string {
-  return [requesterLine(prompt), prompt.argsSummary].filter(Boolean).join("\n");
+  return [requesterLine(prompt), prompt.argsText].filter(Boolean).join("\n");
 }
 
-export function renderApprovalPrompt(callId: string, prompt: ApprovalPrompt): MessageCreateOptions {
+export function renderApprovalPrompt(nonce: string, prompt: ApprovalPrompt): MessageCreateOptions {
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT.warning)
     .addTextDisplayComponents(new TextDisplayBuilder({ content: `### 🙋 Approve action?\n${body(prompt)}\n-# auto-denies in 30 min` }))
-    .addActionRowComponents(approvalButtons(callId, false));
+    .addActionRowComponents(approvalButtons(nonce, false));
   return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
 }
 
-export function renderApprovalFinal(callId: string, prompt: ApprovalPrompt, decision: Decision, result?: ToolCallResult): MessageEditOptions {
+export function renderApprovalFinal(nonce: string, prompt: ApprovalPrompt, decision: Decision, result?: ToolCallResult): MessageEditOptions {
   const header = { approve: "✅ Approved", deny: "❌ Denied", timeout: "⌛ Timed out", expired: "⌛ Expired (workspace disconnected)" }[decision];
-  const outcome = result ? `\n-# → ${clip((result.ok ? result.result : `failed: ${result.error}`).split("\n")[0] ?? "", RESULT_SUMMARY_MAX)}` : "";
+  const outcome = result ? `\n-# → ${inlineSafe(clip((result.ok ? result.result : `failed: ${result.error}`).split("\n")[0] ?? "", RESULT_SUMMARY_MAX))}` : "";
   const container = new ContainerBuilder()
     .setAccentColor(decision === "approve" ? ACCENT.success : ACCENT.danger)
     .addTextDisplayComponents(new TextDisplayBuilder({ content: `### ${header}\n${body(prompt)}${outcome}` }))
-    .addActionRowComponents(approvalButtons(callId, true));
+    .addActionRowComponents(approvalButtons(nonce, true));
   return { components: [container], allowedMentions: { parse: [] } };
 }
 
-/** Splits `wsap:<callId>:<approve|deny>`; the callId itself may contain colons. */
-export function parseApprovalId(customId: string): { callId: string; decision: "approve" | "deny" } | null {
+/** Parses `wsap:<nonce>:<approve|deny>`. Anything else, including the older callId-based ids, is null. */
+export function parseApprovalId(customId: string): { nonce: string; decision: "approve" | "deny" } | null {
   if (!customId.startsWith(WS_APPROVE_PREFIX)) return null;
-  const rest = customId.slice(WS_APPROVE_PREFIX.length);
-  const i = rest.lastIndexOf(":");
-  if (i <= 0) return null;
-  const decision = rest.slice(i + 1);
+  const [nonce, decision, ...rest] = customId.slice(WS_APPROVE_PREFIX.length).split(":");
+  if (rest.length || !nonce || !NONCE_RE.test(nonce)) return null;
   if (decision !== "approve" && decision !== "deny") return null;
-  return { callId: rest.slice(0, i), decision };
+  return { nonce, decision };
 }

@@ -187,6 +187,9 @@ export const chatDeliverParams = z.object({
 });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
 
+// Bound on workspace-chosen ids and names, so one can't bloat a log line or a Discord component.
+export const ID_MAX = 256;
+
 export const chatEventPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("turn_start") }),
   z.object({ type: z.literal("tool_start"), name: z.string(), summary: z.string() }),
@@ -200,7 +203,7 @@ export const chatEventParams = z.object({
   origin: chatOrigin.optional(),
   principalId: z.string(),
   turnId: z.string(),
-  agentId: z.literal("main"),
+  agentId: z.string().min(1).max(ID_MAX), // "main" | <runId> of a subagent
   parentRunId: z.string().optional(),
   ev: chatEventPayload,
 });
@@ -223,13 +226,13 @@ export const workspaceRegisterResult = z.object({ ok: z.literal(true), tools: z.
 export type WorkspaceRegisterResult = z.infer<typeof workspaceRegisterResult>;
 
 export const toolCallParams = z.object({
-  principalId: z.string(),
-  callId: z.string(),
-  name: z.string(),
+  principalId: z.string().max(ID_MAX),
+  callId: z.string().min(1).max(ID_MAX),
+  name: z.string().max(ID_MAX),
   args: z.unknown(),
-  agentId: z.string(), // "main" | <runId>
-  agentName: z.string(),
-  parentRunId: z.string().optional(),
+  agentId: z.string().min(1).max(ID_MAX), // "main" | <runId>
+  agentName: z.string().max(ID_MAX),
+  parentRunId: z.string().max(ID_MAX).optional(),
 });
 export type ToolCallParams = z.infer<typeof toolCallParams>;
 export type ToolCallResult = { ok: true; result: string } | { ok: false; error: string; denied?: boolean };
