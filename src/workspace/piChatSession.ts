@@ -81,7 +81,7 @@ export function createPiChatSessionFactory(
   // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
   const selector = opts.selector ?? new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
 
-  return async ({ sessionFile }) => {
+  return async ({ sessionFile, ui }) => {
     const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
     const { modelRuntime, model: openrouterModel, maxTokens } = await createOpenRouterModel({
       agentDir: config.agentDir,
@@ -127,6 +127,8 @@ export function createPiChatSessionFactory(
       cwd,
       agentDir: config.agentDir,
       agentsFilesOverride: homeAgentsFilesOverride(cwd),
+      // Only the factories below: the agent can write ~/.pi and <cwd>/.pi, so discovered extensions would run its code in-process.
+      noExtensions: true,
       extensionFactories: [
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
@@ -173,6 +175,8 @@ export function createPiChatSessionFactory(
       sessionRef.current = session;
       assertExactTools(session, [...WORKSPACE_TOOLS, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...delegate, ...(stubs?.offered() ?? [])]);
       stubs?.assertOwned(session, "workspace");
+      // Pi keeps this binding across session.reload(), so each new session binds once.
+      if (ui) await session.bindExtensions({ uiContext: ui, mode: "rpc" });
     } catch (err) {
       stubs?.release();
       throw err;

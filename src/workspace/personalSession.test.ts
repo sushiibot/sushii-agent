@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentSessionEvent, PromptOptions } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
 import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type MemoryHooks } from "./personalSession.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
@@ -199,16 +199,18 @@ function tempDir(): string {
 }
 
 function setup(
-  opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean; resendIntervalMs?: number; memory?: MemoryHooks } = {},
+  opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean; resendIntervalMs?: number; memory?: MemoryHooks; askTimeoutMs?: number } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
   const sessions: FakeSession[] = [];
   const factoryCalls: Array<string | null> = [];
+  const boundUis: Array<ExtensionUIContext | undefined> = [];
   let n = 0;
   const factory: ChatSessionFactory =
     opts.factory ??
-    (async ({ sessionFile }) => {
+    (async ({ sessionFile, ui }) => {
       factoryCalls.push(sessionFile);
+      boundUis.push(ui);
       const s = new FakeSession(sessionFile ?? join(stateDir, `chat-${++n}.jsonl`));
       sessions.push(s);
       return { session: s as unknown as ChatSession, sessionFile: s.file };
@@ -227,8 +229,9 @@ function setup(
     resendIntervalMs: opts.resendIntervalMs,
     now: () => NOW,
     memory: opts.memory,
+    askTimeoutMs: opts.askTimeoutMs,
   });
-  return { host, sessions, factoryCalls, transport, stateDir };
+  return { host, sessions, factoryCalls, boundUis, transport, stateDir };
 }
 
 const NOW = new Date("2026-09-29T12:00:00Z");
@@ -1510,5 +1513,146 @@ describe("PersonalSession memory upkeep", () => {
     s.finish("r1");
     await sleep(20);
     expect(flushPrompts(s)).toHaveLength(0);
+  });
+});
+
+describe("PersonalSession extension dialogs", () => {
+  const asks = (t: FakeTransport) => t.delivered().filter((d) => d.kind === "ask");
+
+  test("every session the factory builds, chat/new included, is bound to the same headless UI", async () => {
+    const { host, boundUis } = setup();
+    await host.start();
+    await host.handleNew();
+    expect(boundUis).toHaveLength(2);
+    expect(boundUis[0]).toBe(host.ui);
+    expect(boundUis[1]).toBe(host.ui);
+  });
+
+  test("confirm goes out as an ask on the run's conversation; the owner's button answer resolves it", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m-1", "clean up"));
+    const confirmed = host.ui.confirm("Run rm -rf build?", "bash wants to delete build/");
+    const [ask] = asks(transport);
+    expect(ask).toMatchObject({
+      kind: "ask",
+      origin: DM_ORIGIN,
+      turnId: expect.any(String),
+      text: "Run rm -rf build?\nbash wants to delete build/",
+      ask: { question: "Run rm -rf build?\nbash wants to delete build/", choices: ["Yes", "No"] },
+    });
+    const res = await host.handleMessage(msg(`wsask:${ask!.ask!.askId}`, "Yes"));
+    expect(res).toEqual({ accepted: true, mode: "prompt" });
+    expect(await confirmed).toBe(true);
+    // The answer resolved the dialog; it never reached the model.
+    expect(sessions[0]!.prompts.map((p) => p.text)).toEqual([stamped("m-1", "clean up")]);
+    // A second click on the same ask is a duplicate.
+    expect(await host.handleMessage(msg(`wsask:${ask!.ask!.askId}`, "No"))).toEqual({ accepted: true, mode: "duplicate" });
+    sessions[0]!.finish("done");
+  });
+
+  test("a typed yes/no answers a confirm; other text steers the run instead", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleMessage(msg("m-1", "go"));
+    const confirmed = host.ui.confirm("Proceed?", "");
+    expect(await host.handleMessage(msg("m-2", "what does it do?"))).toEqual({ accepted: true, mode: "steer" });
+    expect(await host.handleMessage(msg("m-3", "no"))).toEqual({ accepted: true, mode: "prompt" });
+    expect(await confirmed).toBe(false);
+    expect(sessions[0]!.steers).toEqual([stamped("m-2", "what does it do?")]);
+    sessions[0]!.finish("ok");
+  });
+
+  test("select maps choices by button label, typed label, or number", async () => {
+    const { host, transport } = setup();
+    await host.start();
+    const first = host.ui.select("Which branch?", ["main", "dev", " "]);
+    const [ask] = asks(transport);
+    expect(ask!.ask!.choices).toEqual(["main", "dev", " "]);
+    await host.handleMessage(msg(`wsask:${ask!.ask!.askId}`, "dev"));
+    expect(await first).toBe("dev");
+
+    const second = host.ui.select("Which branch?", ["main", "dev"]);
+    await host.handleMessage(msg("m-2", "MAIN"));
+    expect(await second).toBe("main");
+
+    const third = host.ui.select("Which?", ["a", " "]);
+    const blank = asks(transport)[2]!;
+    // The bot labels a blank choice "(option N)" and sends that label as the answer.
+    await host.handleMessage(msg(`wsask:${blank.ask!.askId}`, "(option 2)"));
+    expect(await third).toBe(" ");
+
+    const fourth = host.ui.select("Which?", ["x", "y"]);
+    await host.handleMessage(msg("m-4", "2"));
+    expect(await fourth).toBe("y");
+  });
+
+  test("input takes the owner's next free-text message, without its header", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const named = host.ui.input("Branch name?", "feat/...");
+    const [ask] = asks(transport);
+    expect(ask!.ask).toEqual({ askId: expect.any(String), question: "Branch name?\nfeat/..." });
+    expect(await host.handleMessage(msg("m-1", "  feat/ui-context "))).toEqual({ accepted: true, mode: "prompt" });
+    expect(await named).toBe("feat/ui-context");
+    expect(sessions[0]!.prompts).toEqual([]);
+    // Recorded as seen: a retry of the answer can't become a prompt.
+    expect(await host.handleMessage(msg("m-1", "feat/ui-context"))).toEqual({ accepted: true, mode: "duplicate" });
+  });
+
+  test("context messages never answer a dialog", async () => {
+    const { host } = setup();
+    await host.start();
+    const named = host.ui.input("Name?");
+    expect(await host.handleMessage(msg("c-1", "someone else said this", { kind: "context" }))).toEqual({ accepted: true, mode: "context" });
+    let settled = false;
+    void named.then(() => (settled = true));
+    await tick();
+    expect(settled).toBe(false);
+    await host.handleMessage(msg("m-1", "drk"));
+    expect(await named).toBe("drk");
+  });
+
+  test("an unanswered dialog times out to its default", async () => {
+    const { host } = setup({ askTimeoutMs: 20 });
+    await host.start();
+    const [confirmed, picked, typed] = [host.ui.confirm("Ok?", ""), host.ui.select("Pick", ["a"]), host.ui.input("Say")];
+    expect(await confirmed).toBe(false);
+    expect(await picked).toBeUndefined();
+    expect(await typed).toBeUndefined();
+  });
+
+  test("a late button answer to a timed-out ask is swallowed, not prompted", async () => {
+    const { host, sessions, transport } = setup({ askTimeoutMs: 10 });
+    await host.start();
+    await host.ui.confirm("Ok?", "");
+    const [ask] = asks(transport);
+    expect(await host.handleMessage(msg(`wsask:${ask!.ask!.askId}`, "Yes"))).toEqual({ accepted: true, mode: "duplicate" });
+    expect(sessions[0]!.prompts).toEqual([]);
+  });
+
+  test("/stop and chat/new release a run parked in a dialog", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleMessage(msg("m-1", "go"));
+    const stopped = host.ui.confirm("Ok?", "");
+    const abort = host.handleAbort();
+    expect(await stopped).toBe(false);
+    await abort;
+
+    const pending = host.ui.input("Name?");
+    await host.handleNew();
+    expect(await pending).toBeUndefined();
+    expect(sessions).toHaveLength(2);
+  });
+
+  test("a Stop for an earlier turn leaves the current dialog open", async () => {
+    const { host } = setup();
+    await host.start();
+    await host.handleMessage(msg("m-1", "go"));
+    const confirmed = host.ui.confirm("Ok?", "");
+    await host.handleAbort("some-old-turn");
+    await host.handleMessage(msg("m-2", "yes"));
+    expect(await confirmed).toBe(true);
   });
 });

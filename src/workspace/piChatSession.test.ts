@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
@@ -7,6 +7,7 @@ import type { WorkspaceConfig } from "./config.ts";
 import { createPiChatSessionFactory, createWorkspaceBashTool, currentRunId, reloadContext } from "./piChatSession.ts";
 import { RunLog } from "./runLog.ts";
 import { runWsRuns } from "./wsRuns.ts";
+import { ChatAsks, createHeadlessUIContext } from "./uiContext.ts";
 
 let root: string;
 const realFetch = globalThis.fetch;
@@ -102,6 +103,58 @@ describe("reloadContext", () => {
     };
     await expect(reloadContext(session)).rejects.toThrow("resource reload failed");
     expect(session.settingsManager.getCompactionSettings().reserveTokens).toBe(reserve);
+    session.dispose();
+  });
+});
+
+describe("extensions", () => {
+  // Pi would load these from the agent dir and from the project (<cwd>/.pi); the agent can write both.
+  function plantExtensions(config: WorkspaceConfig): string[] {
+    const markers: string[] = [];
+    for (const dir of [join(config.agentDir, "extensions"), join(config.home, ".pi", "extensions")]) {
+      mkdirSync(dir, { recursive: true });
+      const marker = join(dir, "loaded.marker");
+      markers.push(marker);
+      writeFileSync(
+        join(dir, "planted.ts"),
+        `import { writeFileSync } from "node:fs";\nexport default function () { writeFileSync(${JSON.stringify(marker)}, "loaded"); }\n`,
+      );
+    }
+    return markers;
+  }
+
+  test("auto-discovered extensions are not loaded, at creation, reload, or a new session", async () => {
+    const config = testConfig();
+    const markers = plantExtensions(config);
+    const factory = createPiChatSessionFactory(config);
+    const { session } = await factory({ sessionFile: null });
+    const planted = (s: AgentSession) => s.extensionRunner.getExtensionPaths().filter((p) => p.includes("planted"));
+    expect(planted(session as AgentSession)).toEqual([]);
+    await reloadContext(session);
+    expect(planted(session as AgentSession)).toEqual([]);
+    const next = (await factory({ sessionFile: null })).session as AgentSession;
+    expect(planted(next)).toEqual([]);
+    expect(markers.filter((m) => existsSync(m))).toEqual([]);
+    session.dispose();
+    next.dispose();
+  });
+
+  test("the session is bound to the headless UI, and a reload keeps it bound", async () => {
+    const delivered: string[] = [];
+    const asks = new ChatAsks({ deliver: (a) => delivered.push(a.question), timeoutMs: 5 });
+    const ui = createHeadlessUIContext(asks);
+    const session = (await createPiChatSessionFactory(testConfig())({ sessionFile: null, ui })).session as AgentSession;
+    expect(session.extensionRunner.hasUI()).toBe(true);
+    await reloadContext(session);
+    expect(session.extensionRunner.hasUI()).toBe(true);
+    expect(await session.extensionRunner.getUIContext().confirm("Ok?", "after reload")).toBe(false);
+    expect(delivered).toEqual(["Ok?\nafter reload"]);
+    session.dispose();
+  });
+
+  test("without a UI the session stays headless", async () => {
+    const session = await realSession();
+    expect(session.extensionRunner.hasUI()).toBe(false);
     session.dispose();
   });
 });

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
   RPC_METHODS,
   chatAbortParams,
@@ -20,6 +20,7 @@ import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborte
 import { Outbox } from "./outbox.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
 import {
   COMPACTION_FLUSH_TIMEOUT_MS,
   FLUSH_MARKER,
@@ -57,8 +58,8 @@ export type ChatSession = Pick<
   | "dispose"
 >;
 
-/** Opens `sessionFile` when given, else creates a fresh chat session. */
-export type ChatSessionFactory = (input: { sessionFile: string | null }) => Promise<{
+/** Opens `sessionFile` when given, else creates a fresh chat session, its extensions bound to `ui`. */
+export type ChatSessionFactory = (input: { sessionFile: string | null; ui?: ExtensionUIContext }) => Promise<{
   session: ChatSession;
   sessionFile: string;
   /** The run in progress on `session` (a subagent's parentRunId); null between runs. */
@@ -123,6 +124,8 @@ export interface PersonalSessionOptions {
   now?: () => Date;
   /** When set: flush memory before chat/new and before compaction, and commit memory changes after turns. */
   memory?: MemoryHooks;
+  /** How long an extension dialog waits for the owner. Default ASK_TIMEOUT_MS. */
+  askTimeoutMs?: number;
 }
 
 interface OpenRun {
@@ -204,12 +207,17 @@ export class PersonalSession {
   // Tasks on the serial chain not yet finished.
   private queued = 0;
   private reloadDue = false;
+  private readonly asks: ChatAsks;
+  /** Bound into every session the factory builds, so extension dialogs reach the owner as asks. */
+  readonly ui: ExtensionUIContext;
 
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
     this.outbox = new Outbox(opts.stateDir);
     this.recentIds = new RecentIds(opts.stateDir);
     this.newId = opts.newId ?? ulid;
+    this.asks = new ChatAsks({ deliver: (ask) => this.deliverAsk(ask), timeoutMs: opts.askTimeoutMs, newId: this.newId });
+    this.ui = createHeadlessUIContext(this.asks);
   }
 
   get state(): "idle" | "streaming" {
@@ -264,7 +272,7 @@ export class PersonalSession {
     const exists = this.opts.fileExists ?? existsSync;
     const recorded = readWorkspaceState(this.opts.stateDir);
     const reopen = recorded && exists(recorded.chatSessionFile) ? recorded.chatSessionFile : null;
-    const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen });
+    const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen, ui: this.ui });
     this.attach(session, sessionFile);
     if (recorded?.chatSessionFile !== sessionFile) writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile });
     log.info({ sessionFile, reopened: reopen !== null }, "personal session ready");
@@ -295,6 +303,12 @@ export class PersonalSession {
     if (this.isSeen(id)) return DUPLICATE;
     const original = this.inFlight.get(id);
     if (original) return original.then(() => DUPLICATE);
+    // Ahead of the chain: the run waiting on the dialog holds up everything queued behind it.
+    const answered = params.kind === "user" ? this.asks.answer(id, params.text) : null;
+    if (answered) {
+      this.recentIds.add(id);
+      return answered === "answered" ? { accepted: true, mode: "prompt" } : DUPLICATE;
+    }
     const handling = this.accept(params);
     this.inFlight.set(id, handling);
     try {
@@ -326,6 +340,8 @@ export class PersonalSession {
   handleAbort(turnId?: string): Promise<ChatAbortResult> {
     // A flush holds the chain for minutes; /stop cuts it instead of waiting out the bot's 30s timeout behind it.
     this.flushCut?.cut();
+    // abort() waits for the run, which may be parked in an extension dialog.
+    if (turnId === undefined || this.run?.turnId === turnId) this.asks.cancelAll("stop");
     return this.enqueue(async () => {
       const session = this.session;
       if (!session) return { aborted: false };
@@ -344,6 +360,7 @@ export class PersonalSession {
     const deadline = Date.now() + budgetMs;
     const reserve = newFinishReserveMs(budgetMs);
     this.pendingNew++;
+    this.asks.cancelAll("new session");
     if (this.flushCut?.reason === "compaction") this.flushCut.cut(deadline - reserve);
     return this.enqueue(async () => {
       this.resetting = true;
@@ -364,7 +381,7 @@ export class PersonalSession {
           await this.flushBeforeNew(old, deadline, budgetMs);
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
-        const { session, sessionFile } = await this.opts.factory({ sessionFile: null });
+        const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui });
         this.detach();
         old?.dispose();
         this.attach(session, sessionFile);
@@ -552,6 +569,7 @@ export class PersonalSession {
   async dispose(): Promise<void> {
     if (this.resendTimer) clearInterval(this.resendTimer);
     this.resendTimer = null;
+    this.asks.cancelAll("shutdown");
     const session = this.session;
     this.detach();
     if (session?.isStreaming) await session.abort().catch(() => {});
@@ -837,6 +855,22 @@ export class PersonalSession {
       ...(d.auth ? { auth: d.auth } : {}),
       ...(d.authResult ? { authResult: d.authResult } : {}),
       ...(d.loginId ? { loginId: d.loginId } : {}),
+    };
+    this.outbox.append(entry);
+    this.send(entry);
+  }
+
+  private deliverAsk(ask: AskRequest): void {
+    const run = this.run;
+    const origin = run?.origin ?? this.lastOrigin;
+    const entry: ChatDeliverParams = {
+      ...(origin ? { origin } : {}),
+      outboxId: this.newId(),
+      principalId: this.opts.principalId,
+      kind: "ask",
+      text: ask.question,
+      ask: ask.choices.length ? ask : { askId: ask.askId, question: ask.question },
+      ...(run ? { turnId: run.turnId } : {}),
     };
     this.outbox.append(entry);
     this.send(entry);
