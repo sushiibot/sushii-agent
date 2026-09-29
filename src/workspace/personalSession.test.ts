@@ -8,9 +8,11 @@ import { PersonalSession, type ChatSession, type ChatSessionFactory, type ChatTr
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
 // Mirrors the Pi 0.84 behaviour the host relies on (core/agent-session.js, pi-agent-core agent-loop.js):
-// - an idle prompt() awaits preflight, flips isStreaming, emits the user message, and resolves when the run settles;
-// - a streaming prompt() queues a steer, which the loop drains (a user message_start each) before a normal finish;
-// - abort() skips the drain, and with steers still queued Pi continues on them, so abort() waits out that run;
+// - an idle prompt() awaits preflight, flips isStreaming, emits the user message, and resolves when its run settles;
+// - a streaming prompt() queues a steer (after any input-handler await), which the loop drains before a normal finish;
+// - abort() ends the run asynchronously; with steers still queued by then, Pi continues on them and abort() waits it out;
+// - settling clears isStreaming, then awaits extension handlers (settleGate) before emitting agent_settled, and
+//   resolves idle waiters only if no new run started in that gap;
 // - clearQueue() empties the steer queue and returns it.
 class FakeSession {
   isStreaming = false;
@@ -19,10 +21,16 @@ class FakeSession {
   steers: string[] = [];
   queue: string[] = [];
   customs: Array<{ content: unknown; options: unknown }> = [];
+  messages: Array<{ role: string }> = [];
   aborts = 0;
   disposed = false;
+  settleGate: Promise<void> | null = null;
+  steerGate: Promise<void> | null = null;
+  abortGate: Promise<void> | null = null;
+  rejectAfterRun: Error | null = null;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
   private idleWaiters: Array<() => void> = [];
+  private runDone: (() => void) | null = null;
 
   constructor(readonly file: string) {}
 
@@ -41,6 +49,7 @@ class FakeSession {
 
   async prompt(text: string, options?: PromptOptions): Promise<void> {
     this.prompts.push({ text, options });
+    if (this.isStreaming && this.steerGate) await this.steerGate;
     if (this.isStreaming) {
       if (!options?.streamingBehavior) throw new Error("Agent is already processing");
       this.steers.push(text);
@@ -51,9 +60,11 @@ class FakeSession {
     await new Promise((r) => setTimeout(r, 5));
     options?.preflightResult?.(true);
     this.isStreaming = true;
+    const done = new Promise<void>((r) => (this.runDone = r));
     this.emit({ type: "agent_start" });
     this.emitUser(text);
-    await this.waitForIdle();
+    await done;
+    if (this.rejectAfterRun) throw this.rejectAfterRun;
   }
 
   clearQueue(): { steering: string[]; followUp: string[] } {
@@ -67,18 +78,19 @@ class FakeSession {
     this.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } });
     this.emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: "ok", isError: false });
     this.endMessage(text, stopReason, errorMessage);
-    this.settle();
+    void this.settle();
   }
 
   /** A steer queued after the loop's last drain: the run settles with it still pending. */
   settleStranded(text: string): void {
     this.endMessage(text, "stop");
-    this.settle();
+    void this.settle();
   }
 
   async abort(): Promise<void> {
     this.aborts++;
     if (!this.isStreaming) return;
+    await (this.abortGate ?? Promise.resolve());
     this.endMessage("", "aborted");
     if (this.queue.length === 0) return this.settle();
     this.drain(); // _handlePostAgentRun sees queued messages and continues
@@ -106,6 +118,7 @@ class FakeSession {
   }
 
   private endMessage(text: string, stopReason: string, errorMessage?: string): void {
+    this.messages.push({ role: "assistant" });
     this.emit({
       type: "message_end",
       message: {
@@ -118,10 +131,14 @@ class FakeSession {
     });
   }
 
-  private settle(): void {
+  private async settle(): Promise<void> {
+    const done = this.runDone;
+    this.runDone = null;
     this.isStreaming = false;
+    await (this.settleGate ?? Promise.resolve());
     this.emit({ type: "agent_settled" });
-    for (const w of this.idleWaiters.splice(0)) w();
+    done?.();
+    if (!this.isStreaming) for (const w of this.idleWaiters.splice(0)) w();
   }
 
   private waitForIdle(): Promise<void> {
@@ -133,12 +150,19 @@ class FakeTransport implements ChatTransport {
   requests: Array<{ method: string; params: unknown }> = [];
   notifications: Array<{ method: string; params: unknown }> = [];
   fail = false;
+  connected = true;
   onRequest?: (method: string, params: unknown) => void;
+  respond?: (method: string, params: unknown) => Promise<unknown>;
 
   request(method: string, params: unknown): Promise<unknown> {
     this.onRequest?.(method, params);
     this.requests.push({ method, params });
+    if (this.respond) return this.respond(method, params);
     return this.fail ? Promise.reject(new Error("link closed")) : Promise.resolve({});
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 
   notify(method: string, params: unknown): void {
@@ -165,7 +189,9 @@ function tempDir(): string {
   return d;
 }
 
-function setup(opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean } = {}) {
+function setup(
+  opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean; resendIntervalMs?: number } = {},
+) {
   const stateDir = opts.stateDir ?? tempDir();
   const sessions: FakeSession[] = [];
   const factoryCalls: Array<string | null> = [];
@@ -189,6 +215,7 @@ function setup(opts: { stateDir?: string; factory?: ChatSessionFactory; fileExis
     textDeltaMs: null,
     newId: () => `id-${++id}`,
     fileExists: opts.fileExists,
+    resendIntervalMs: opts.resendIntervalMs,
   });
   return { host, sessions, factoryCalls, transport, stateDir };
 }
@@ -203,6 +230,15 @@ const msg = (messageId: string, text: string, extra: Partial<ChatMessageParams> 
 });
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open = () => {};
+  const promise = new Promise<void>((r) => (open = r));
+  return { promise, open };
+}
+
+const compactionEnd = { type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false };
 
 const TIMED_OUT = Symbol("timed out");
 /** Races a call that must not wait on a continuation run; the fake only ends such a run on finish(). */
@@ -265,7 +301,7 @@ describe("PersonalSession idempotency", () => {
     expect(second.sessions[0].prompts).toHaveLength(0);
   });
 
-  test("an id is recorded as seen only once accepted, but an in-flight resend is still a duplicate", async () => {
+  test("an id is recorded as seen only once accepted; a resend of a held message waits for it and is a duplicate", async () => {
     const stateDir = tempDir();
     const { host, sessions } = setup({ stateDir });
     await host.start();
@@ -273,7 +309,7 @@ describe("PersonalSession idempotency", () => {
     s.isCompacting = true;
     const pending = host.handleMessage(msg("m1", "hi"));
     await tick();
-    expect(await host.handleMessage(msg("m1", "hi"))).toEqual({ accepted: true, mode: "duplicate" });
+    const retry = host.handleMessage(msg("m1", "hi"));
 
     // A host restarted before acceptance must not treat the bot's retry as a duplicate.
     const restarted = setup({ stateDir });
@@ -281,9 +317,32 @@ describe("PersonalSession idempotency", () => {
     expect((await restarted.host.handleMessage(msg("m1", "hi"))).mode).toBe("prompt");
 
     s.isCompacting = false;
-    s.emit({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false });
+    s.emit(compactionEnd);
     expect((await pending).mode).toBe("prompt");
+    expect(await retry).toEqual({ accepted: true, mode: "duplicate" });
+    expect(s.prompts).toHaveLength(1);
     expect(await host.handleMessage(msg("m1", "hi"))).toEqual({ accepted: true, mode: "duplicate" });
+  });
+
+  test("a resend of a held message fails with the original, so a later retry still delivers it", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    const s = sessions[0];
+    const original = s.prompt.bind(s);
+    s.prompt = async () => {
+      throw new Error("no api key");
+    };
+    s.isCompacting = true;
+    const first = host.handleMessage(msg("m1", "hi")).catch((e: Error) => e);
+    await tick();
+    const retry = host.handleMessage(msg("m1", "hi")).catch((e: Error) => e);
+    s.isCompacting = false;
+    s.emit(compactionEnd);
+    expect(String(await first)).toContain("no api key");
+    expect(String(await retry)).toContain("no api key");
+
+    s.prompt = original;
+    expect((await host.handleMessage(msg("m1", "hi"))).mode).toBe("prompt");
   });
 
   test("a message whose prompt fails is not remembered, so a retry goes through", async () => {
@@ -347,6 +406,7 @@ describe("PersonalSession outbox", () => {
 
     const [entry] = transport.delivered();
     expect(entry).toMatchObject({ principalId: "drk", kind: "reply", text: "hello there", replyTo: "m1" });
+    expect(entry.turnId).toBe((transport.notifications[0].params as ChatEventParams).turnId);
     expect(entry.usage).toEqual({ model: "test/model", inputTokens: 100, outputTokens: 20, cacheRead: 50, contextPct: 10 });
     expect(onDiskAtSend).toEqual([true]);
 
@@ -365,6 +425,64 @@ describe("PersonalSession outbox", () => {
     const afterAck = setup({ stateDir });
     afterAck.host.resendUnacked();
     expect(afterAck.transport.delivered()).toHaveLength(0);
+  });
+
+  test("unacked entries are resent on an interval in order, skipping any whose send is still unanswered", async () => {
+    const { host, sessions, transport } = setup({ resendIntervalMs: 20 });
+    await host.start();
+    const pending = new Map<string, () => void>();
+    transport.respond = (_method, params) => {
+      const id = (params as ChatDeliverParams).outboxId;
+      if (pending.size === 0 && !transport.delivered().slice(0, -1).some((d) => d.outboxId === id)) {
+        return new Promise((resolve) => pending.set(id, () => resolve({})));
+      }
+      return Promise.reject(new Error("bot error"));
+    };
+    await host.handleMessage(msg("m1", "one"));
+    sessions[0].finish("first");
+    await tick();
+    await host.handleMessage(msg("m2", "two"));
+    sessions[0].finish("second");
+    await tick();
+    const [a, b] = transport.delivered().map((d) => d.outboxId);
+
+    host.onRegistered();
+    await sleep(50);
+    const sent = () => transport.delivered().map((d) => d.outboxId);
+    // a's first send is still unanswered, so only b is retried.
+    expect(sent().filter((id) => id === a)).toHaveLength(1);
+    expect(sent().filter((id) => id === b).length).toBeGreaterThan(2);
+
+    pending.get(a)!();
+    await tick();
+    transport.respond = () => Promise.resolve({});
+    const before = sent().length;
+    await sleep(30);
+    const retried = sent().slice(before);
+    expect(retried.slice(0, 2)).toEqual([a, b]);
+
+    host.handleAck(a);
+    host.handleAck(b);
+    transport.connected = false;
+    const settled = sent().length;
+    await sleep(50);
+    expect(sent()).toHaveLength(settled);
+    await host.dispose();
+  });
+
+  test("no resend runs while the link is down", async () => {
+    const { host, sessions, transport } = setup({ resendIntervalMs: 10 });
+    await host.start();
+    transport.fail = true;
+    await host.handleMessage(msg("m1", "one"));
+    sessions[0].finish("first");
+    await tick();
+    host.onRegistered();
+    transport.connected = false;
+    const count = transport.delivered().length;
+    await sleep(40);
+    expect(transport.delivered()).toHaveLength(count);
+    await host.dispose();
   });
 
   test("NO_REPLY and empty replies are not delivered, but the turn still ends", async () => {
@@ -428,6 +546,53 @@ describe("PersonalSession chat/abort", () => {
     expect(s.prompts).toHaveLength(2);
   });
 
+  test("a steer that lands while the abort is in flight is dropped, not continued", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "long job"));
+    const s = sessions[0];
+    const steer = gate();
+    const abortLands = gate();
+    s.steerGate = steer.promise;
+    s.abortGate = abortLands.promise;
+
+    const m2 = host.handleMessage(msg("m2", "and also"));
+    await tick();
+    const abort = host.handleAbort();
+    await tick();
+    steer.open();
+    await tick();
+    abortLands.open();
+
+    expect(await within(abort)).toEqual({ aborted: true });
+    expect((await m2).mode).toBe("steer");
+    expect(s.isStreaming).toBe(false);
+    expect(s.pendingMessageCount).toBe(0);
+    await tick();
+    expect(transport.delivered()).toHaveLength(0);
+  });
+
+  test("an abort naming a finished turn is a no-op; one naming the current turn stops it", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("m1", "first"));
+    s.finish("done");
+    await tick();
+    const staleTurn = transport.delivered()[0].turnId!;
+
+    await host.handleMessage(msg("m2", "second"));
+    expect(await host.handleAbort(staleTurn)).toEqual({ aborted: false });
+    expect(s.aborts).toBe(0);
+    expect(s.isStreaming).toBe(true);
+
+    const currentTurn = (transport.notifications.at(-1)!.params as ChatEventParams).turnId;
+    expect(currentTurn).not.toBe(staleTurn);
+    const handlers = host.handlers();
+    expect(await handlers["chat/abort"]({ principalId: "drk", turnId: currentTurn })).toEqual({ aborted: true });
+    expect(s.isStreaming).toBe(false);
+  });
+
   test("reports aborted:false when idle", async () => {
     const { host } = setup();
     await host.start();
@@ -460,6 +625,35 @@ describe("PersonalSession stranded steers", () => {
   });
 });
 
+describe("PersonalSession settle gap", () => {
+  test("a message arriving after the run ends but before agent_settled starts its own turn and gets its own reply", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("m1", "first"));
+    const settled = gate();
+    s.settleGate = settled.promise;
+    s.finish("answer to first");
+    expect(s.isStreaming).toBe(false);
+
+    const m2 = host.handleMessage(msg("m2", "second"));
+    await sleep(20);
+    expect(s.prompts).toHaveLength(1);
+    s.settleGate = null;
+    settled.open();
+    expect((await m2).mode).toBe("prompt");
+    s.finish("answer to second");
+    await tick();
+
+    const delivered = transport.delivered();
+    expect(delivered.map((d) => [d.text, d.replyTo])).toEqual([
+      ["answer to first", "m1"],
+      ["answer to second", "m2"],
+    ]);
+    expect(delivered[0].turnId).not.toBe(delivered[1].turnId);
+  });
+});
+
 describe("PersonalSession failures", () => {
   test("an errored run delivers a one-line failure notice instead of its partial text", async () => {
     const { host, sessions, transport } = setup();
@@ -468,7 +662,42 @@ describe("PersonalSession failures", () => {
     sessions[0].finish("partial answ", "error", "provider returned 502\nretry budget exhausted");
     await tick();
     expect(transport.delivered()).toMatchObject([{ kind: "reply", text: "⚠️ Turn failed: provider returned 502", replyTo: "m1" }]);
+    expect(transport.delivered()[0].turnId).toBe((transport.notifications[0].params as ChatEventParams).turnId);
     expect(transport.events().at(-1)).toEqual({ type: "turn_end", aborted: false });
+  });
+
+  test("a rejection after a run that already replied does not add a failure notice", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    s.rejectAfterRun = new Error("Cannot continue from message role: assistant");
+    await host.handleMessage(msg("m1", "hi"));
+    s.finish("the answer");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.text)).toEqual(["the answer"]);
+  });
+
+  test("a rejection after an aborted run stays silent", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    s.rejectAfterRun = new Error("Cannot continue from message role: assistant");
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleAbort();
+    await sleep(10);
+    expect(transport.delivered()).toHaveLength(0);
+  });
+
+  test("a rejection after a run that said nothing delivers a notice for that turn", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    s.rejectAfterRun = new Error("No messages to continue from");
+    await host.handleMessage(msg("m1", "hi"));
+    s.finish("");
+    await sleep(10);
+    const turnId = (transport.notifications[0].params as ChatEventParams).turnId;
+    expect(transport.delivered()).toMatchObject([{ text: "⚠️ Turn failed: No messages to continue from", replyTo: "m1", turnId }]);
   });
 
   test("a prompt rejected after acceptance delivers a failure notice", async () => {
@@ -482,6 +711,14 @@ describe("PersonalSession failures", () => {
     expect((await host.handleMessage(msg("m1", "hi"))).mode).toBe("prompt");
     await tick();
     expect(transport.delivered()).toMatchObject([{ kind: "reply", text: "⚠️ Turn failed: extension blew up", replyTo: "m1" }]);
+    expect(transport.delivered()[0].turnId).toBeUndefined();
+  });
+
+  test("chat text reaches Pi literally, without template or command expansion", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "/skill:deploy now"));
+    expect(sessions[0].prompts[0].options?.expandPromptTemplates).toBe(false);
   });
 });
 
@@ -552,6 +789,40 @@ describe("PersonalSession chat/new", () => {
     expect(host.currentSessionFile).toBe(sessions[1].file);
   });
 
+  test("a run that finished but hadn't settled when chat/new ran ends as aborted and delivers nothing", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const old = sessions[0];
+    await host.handleMessage(msg("m1", "old convo"));
+    const settled = gate();
+    old.settleGate = settled.promise;
+    old.finish("old answer");
+
+    await host.handleNew();
+    settled.open();
+    await tick();
+    expect(transport.delivered()).toHaveLength(0);
+    expect(transport.events().filter((e) => e.type === "turn_end")).toEqual([{ type: "turn_end", aborted: true }]);
+  });
+
+  test("context buffered during the old conversation's run is not carried into the new session", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    const old = sessions[0];
+    await host.handleMessage(msg("m1", "old convo"));
+    expect((await host.handleMessage(msg("c1", "old context", { kind: "context" }))).mode).toBe("context");
+
+    await host.handleNew();
+    const fresh = sessions[1];
+    await host.handleMessage(msg("m2", "new convo"));
+    fresh.finish("hi");
+    await sleep(10);
+    expect(fresh.customs).toHaveLength(0);
+    expect(old.customs).toHaveLength(0);
+    expect(await host.handleMessage(msg("c1", "old context", { kind: "context" }))).toEqual({ accepted: true, mode: "duplicate" });
+    expect(fresh.customs).toHaveLength(0);
+  });
+
   test("a factory failure keeps the old session attached and usable", async () => {
     const stateDir = tempDir();
     const sessions: FakeSession[] = [];
@@ -596,5 +867,77 @@ describe("PersonalSession context messages", () => {
     expect(s.customs.map((c) => c.content)).toEqual(["offline exchange A", "offline exchange B"]);
     expect(s.customs[1].options).toEqual({ triggerTurn: false });
     expect(transport.delivered()).toHaveLength(1);
+  });
+
+  test("buffered context is not recorded as seen until it is appended", async () => {
+    const stateDir = tempDir();
+    const { host, sessions } = setup({ stateDir });
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("m1", "hi"));
+    s.finish("earlier reply");
+    await tick();
+    await host.handleMessage(msg("m2", "again"));
+    await host.handleMessage(msg("c1", "offline exchange", { kind: "context" }));
+    expect(await host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).toEqual({ accepted: true, mode: "duplicate" });
+
+    // A crash while it sits in the buffer: the bot's retry must be taken.
+    const restarted = setup({ stateDir });
+    await restarted.host.start();
+    expect((await restarted.host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).mode).toBe("context");
+
+    s.finish("reply");
+    await tick();
+    expect(s.customs.map((c) => c.content)).toEqual(["offline exchange"]);
+    const later = setup({ stateDir });
+    await later.host.start();
+    expect((await later.host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).mode).toBe("duplicate");
+  });
+
+  test("context appended to a session with no reply on disk yet is recorded as seen only after the first reply", async () => {
+    const stateDir = tempDir();
+    const { host, sessions } = setup({ stateDir });
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("c1", "offline exchange", { kind: "context" }));
+    expect(s.customs).toHaveLength(1);
+    expect(await host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).toEqual({ accepted: true, mode: "duplicate" });
+    const beforeReply = setup({ stateDir });
+    await beforeReply.host.start();
+    expect((await beforeReply.host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).mode).toBe("context");
+
+    await host.handleMessage(msg("m1", "hi"));
+    s.finish("reply");
+    await tick();
+    const afterReply = setup({ stateDir });
+    await afterReply.host.start();
+    expect((await afterReply.host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).mode).toBe("duplicate");
+  });
+
+  test("context buffered during a run lands before the next prompt", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    const s = sessions[0];
+    const order: string[] = [];
+    const prompt = s.prompt.bind(s);
+    s.prompt = async (text, options) => {
+      order.push(`prompt:${text}`);
+      return prompt(text, options);
+    };
+    const custom = s.sendCustomMessage.bind(s);
+    s.sendCustomMessage = async (message, options) => {
+      order.push(`context:${String(message.content)}`);
+      return custom(message, options);
+    };
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleMessage(msg("c1", "ctx", { kind: "context" }));
+    const settled = gate();
+    s.settleGate = settled.promise;
+    s.finish("reply");
+    const m2 = host.handleMessage(msg("m2", "next"));
+    s.settleGate = null;
+    settled.open();
+    await m2;
+    expect(order).toEqual(["prompt:hi", "context:ctx", "prompt:next"]);
   });
 });

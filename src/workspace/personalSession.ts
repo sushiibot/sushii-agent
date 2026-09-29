@@ -37,6 +37,7 @@ export type ChatSession = Pick<
   | "subscribe"
   | "sendCustomMessage"
   | "getContextUsage"
+  | "messages"
   | "dispose"
 >;
 
@@ -46,7 +47,11 @@ export type ChatSessionFactory = (input: { sessionFile: string | null }) => Prom
 export interface ChatTransport {
   request(method: string, params: unknown): Promise<unknown>;
   notify(method: string, params: unknown): void;
+  /** When absent the link is assumed up. */
+  isConnected?(): boolean;
 }
+
+const RESEND_INTERVAL_MS = 60_000;
 
 export interface PersonalSessionOptions {
   principalId: string;
@@ -58,6 +63,8 @@ export interface PersonalSessionOptions {
   textDeltaMs?: number | null;
   newId?: () => string;
   fileExists?: (path: string) => boolean;
+  /** How often unacked deliveries are resent while connected. Default 60s. */
+  resendIntervalMs?: number;
 }
 
 interface OpenRun {
@@ -74,6 +81,14 @@ interface PendingInbound {
   messageId: string;
   text: string;
 }
+
+interface BufferedContext {
+  messageId: string;
+  text: string;
+}
+
+/** How the most recent settle ended, so a late prompt rejection knows whether the user already heard something. */
+type SettleOutcome = "reply" | "notice" | "aborted" | "suppressed" | "silent";
 
 /** The owner's single long-lived Pi session behind the chat/* verbs, replying through the outbox. */
 export class PersonalSession {
@@ -92,11 +107,17 @@ export class PersonalSession {
   private run: OpenRun | null = null;
   private lastInboundId: string | undefined;
   private unconsumed: PendingInbound[] = [];
-  // Ids being handled right now; recent-ids.json only records a message once it's accepted.
-  private readonly inFlightIds = new Set<string>();
-  private lastSettleNotified = false;
-  private pendingContext: string[] = [];
+  // A retry of a message still being handled shares its outcome: a failure must reach the retry too.
+  private readonly inFlight = new Map<string, Promise<ChatMessageResult>>();
+  private settleCount = 0;
+  private lastSettle: { outcome: SettleOutcome; turnId?: string } = { outcome: "silent" };
+  private pendingContext: BufferedContext[] = [];
+  // Context appended to a session Pi hasn't written to disk yet (no assistant message so far).
+  private unpersistedContextIds: string[] = [];
   private compactionWaiters: Array<() => void> = [];
+  private settleWaiters: Array<() => void> = [];
+  private readonly sending = new Set<string>();
+  private resendTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
@@ -136,8 +157,9 @@ export class PersonalSession {
         return this.handleMessage(params);
       },
       [RPC_METHODS.chatAbort]: async (p) => {
-        this.assertPrincipal(chatAbortParams.parse(p).principalId);
-        return this.handleAbort();
+        const params = chatAbortParams.parse(p);
+        this.assertPrincipal(params.principalId);
+        return this.handleAbort(params.turnId);
       },
       [RPC_METHODS.chatNew]: async (p) => {
         this.assertPrincipal(chatNewParams.parse(p).principalId);
@@ -149,32 +171,46 @@ export class PersonalSession {
 
   async handleMessage(params: ChatMessageParams): Promise<ChatMessageResult> {
     const id = params.messageId;
-    if (this.recentIds.has(id) || this.inFlightIds.has(id)) return { accepted: true, mode: "duplicate" };
-    this.inFlightIds.add(id);
+    if (this.isSeen(id)) return DUPLICATE;
+    const original = this.inFlight.get(id);
+    if (original) return original.then(() => DUPLICATE);
+    const handling = this.accept(params);
+    this.inFlight.set(id, handling);
     try {
-      let mode: ChatMessageResult["mode"];
-      if (params.kind === "context") {
-        await this.enqueue(() => this.appendContext(params.text));
-        mode = "context";
-      } else {
-        mode = await this.enqueue(() => this.promptOrSteer(id, formatUserText(params)));
-      }
-      this.recentIds.add(id);
-      return { accepted: true, mode };
+      return await handling;
     } finally {
-      this.inFlightIds.delete(id);
+      this.inFlight.delete(id);
     }
   }
 
-  // Queued steers are dropped: otherwise Pi continues on them after the abort and abort() waits out that whole run.
-  async handleAbort(): Promise<ChatAbortResult> {
-    const session = this.session;
-    if (!session) return { aborted: false };
-    const aborted = session.isStreaming;
-    this.dropQueued(session);
-    if (this.run) this.run.abortRequested = true;
-    await session.abort();
-    return { aborted };
+  private async accept(params: ChatMessageParams): Promise<ChatMessageResult> {
+    const id = params.messageId;
+    if (params.kind === "context") {
+      await this.enqueue(() => this.appendContext(id, params.text));
+      return { accepted: true, mode: "context" };
+    }
+    const mode = await this.enqueue(() => this.promptOrSteer(id, formatUserText(params)));
+    this.recentIds.add(id);
+    return { accepted: true, mode };
+  }
+
+  private isSeen(id: string): boolean {
+    return this.recentIds.has(id) || this.unpersistedContextIds.includes(id) || this.pendingContext.some((c) => c.messageId === id);
+  }
+
+  // Chained so a steer can't slip into Pi's queue between clearQueue() and abort(). Queued steers are dropped:
+  // otherwise Pi continues on them after the abort and abort() waits out that whole run.
+  handleAbort(turnId?: string): Promise<ChatAbortResult> {
+    return this.enqueue(async () => {
+      const session = this.session;
+      if (!session) return { aborted: false };
+      if (turnId !== undefined && this.run?.turnId !== turnId) return { aborted: false };
+      const aborted = session.isStreaming;
+      this.dropQueued(session);
+      if (this.run) this.run.abortRequested = true;
+      await session.abort();
+      return { aborted };
+    });
   }
 
   handleNew(): Promise<ChatNewResult> {
@@ -185,6 +221,7 @@ export class PersonalSession {
         const old = this.session;
         if (old) {
           this.dropQueued(old);
+          this.retireContext();
           if (this.run) {
             this.run.abortRequested = true;
             this.run.suppressReply = true;
@@ -214,12 +251,26 @@ export class PersonalSession {
     return {};
   }
 
-  /** Called after every (re)register: the bot dedupes by outboxId, so resending is safe. */
+  /** Called after every (re)register: resends right away, then keeps retrying on an interval while connected. */
+  onRegistered(): void {
+    this.resendUnacked();
+    if (this.resendTimer) return;
+    this.resendTimer = setInterval(() => {
+      if (this.opts.transport.isConnected?.() ?? true) this.resendUnacked();
+    }, this.opts.resendIntervalMs ?? RESEND_INTERVAL_MS);
+    this.resendTimer.unref?.();
+  }
+
+  /** The bot dedupes by outboxId, so resending is safe; an entry whose last send is still unanswered is skipped. */
   resendUnacked(): void {
-    for (const entry of this.outbox.unacked()) this.send(entry);
+    for (const entry of this.outbox.unacked()) {
+      if (!this.sending.has(entry.outboxId)) this.send(entry);
+    }
   }
 
   async dispose(): Promise<void> {
+    if (this.resendTimer) clearInterval(this.resendTimer);
+    this.resendTimer = null;
     const session = this.session;
     this.detach();
     if (session?.isStreaming) await session.abort().catch(() => {});
@@ -236,28 +287,37 @@ export class PersonalSession {
   private async promptOrSteer(messageId: string, text: string): Promise<"prompt" | "steer"> {
     for (let attempt = 0; ; attempt++) {
       await this.waitForCompaction();
+      await this.waitForSettle();
       const session = this.requireSession();
       const mode = session.isStreaming ? "steer" : "prompt";
+      // Context that arrived during the last run belongs before this prompt, not after its reply.
+      if (mode === "prompt" && this.pendingContext.length) await this.flushPendingContext();
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
       const pending: PendingInbound = { messageId, text };
       this.unconsumed.push(pending);
       let accepted = false;
+      let settlesAtAccept = 0;
       try {
         await new Promise<void>((resolve, reject) => {
           session
             .prompt(text, {
               streamingBehavior: "steer",
+              // Chat text is literal: a Discord message starting with "/" must not run a skill or extension command.
+              expandPromptTemplates: false,
               preflightResult: (ok) => {
                 if (!ok) return;
                 accepted = true;
+                settlesAtAccept = this.settleCount;
                 resolve();
               },
             })
             .then(resolve, (err) => {
               if (!accepted) return reject(err);
               log.error({ err, messageId }, "chat prompt failed after it was accepted");
-              // Pi settles the run before this rejection lands; don't repeat a notice that settle already sent.
-              if (!this.lastSettleNotified) this.deliverFailure(err, messageId);
+              // Pi settles the run before this rejection lands; only speak up if that settle said nothing.
+              const settled = this.settleCount !== settlesAtAccept;
+              if (!settled) this.deliverFailure(err, messageId, this.run?.turnId);
+              else if (this.lastSettle.outcome === "silent") this.deliverFailure(err, messageId, this.lastSettle.turnId);
             });
         });
         return mode;
@@ -279,11 +339,15 @@ export class PersonalSession {
   // Pi drains the steer queue only at the start of its next run, so a steer queued after the loop's last drain would wait for the next inbound message.
   private requeueStranded(session: ChatSession): void {
     const { steering, followUp } = session.clearQueue();
+    const gen = this.generation;
     for (const text of [...steering, ...followUp]) {
       const i = this.unconsumed.findIndex((p) => p.text === text);
       const messageId = i === -1 ? undefined : this.unconsumed.splice(i, 1)[0].messageId;
       log.info({ messageId }, "re-prompting a steer stranded at settle");
-      void this.enqueue(() => this.promptOrSteer(messageId ?? "", text)).catch((err) => this.deliverFailure(err, messageId));
+      // A chat/new queued ahead of it drops it, like any other steer queued on the old conversation.
+      void this.enqueue(async () => {
+        if (gen === this.generation) await this.promptOrSteer(messageId ?? "", text);
+      }).catch((err) => this.deliverFailure(err, messageId));
     }
   }
 
@@ -296,28 +360,54 @@ export class PersonalSession {
   }
 
   // Mid-run, sendCustomMessage(triggerTurn:false) would mutate the live message list; wait for settle.
-  private async appendContext(text: string): Promise<void> {
+  private async appendContext(messageId: string, text: string): Promise<void> {
     const session = this.requireSession();
     if (session.isStreaming || this.run) {
-      this.pendingContext.push(text);
+      this.pendingContext.push({ messageId, text });
       return;
     }
     await session.sendCustomMessage({ customType: CONTEXT_CUSTOM_TYPE, content: text, display: true }, { triggerTurn: false });
+    this.markContextAppended(session, messageId);
   }
 
+  // Entries leave the buffer one at a time, so a failed append leaves the rest for the next idle point.
   private async flushPendingContext(): Promise<void> {
     const session = this.requireSession();
-    if (session.isStreaming || this.run) return;
-    const texts = this.pendingContext;
-    this.pendingContext = [];
-    for (const text of texts) {
+    while (this.pendingContext.length && !session.isStreaming && !this.run) {
+      const { messageId, text } = this.pendingContext[0];
       await session.sendCustomMessage({ customType: CONTEXT_CUSTOM_TYPE, content: text, display: true }, { triggerTurn: false });
+      this.pendingContext.shift();
+      this.markContextAppended(session, messageId);
+    }
+  }
+
+  // Pi writes nothing to the session file until its first assistant message; until then a crash would lose the context.
+  private markContextAppended(session: ChatSession, messageId: string): void {
+    if (hasAssistantMessage(session)) this.recentIds.add(messageId);
+    else this.unpersistedContextIds.push(messageId);
+  }
+
+  private commitUnpersistedContext(session: ChatSession): void {
+    if (!this.unpersistedContextIds.length || !hasAssistantMessage(session)) return;
+    for (const id of this.unpersistedContextIds.splice(0)) this.recentIds.add(id);
+  }
+
+  // The old conversation's context goes with it; its ids count as handled so a retry can't land in the new one.
+  private retireContext(): void {
+    for (const id of [...this.unpersistedContextIds.splice(0), ...this.pendingContext.splice(0).map((c) => c.messageId)]) {
+      this.recentIds.add(id);
     }
   }
 
   private waitForCompaction(): Promise<void> {
     if (!this.session?.isCompacting) return Promise.resolve();
     return new Promise((resolve) => this.compactionWaiters.push(resolve));
+  }
+
+  // Pi clears isStreaming before it emits agent_settled; a prompt in that gap would merge into the closing run.
+  private waitForSettle(): Promise<void> {
+    if (!this.run || this.session?.isStreaming) return Promise.resolve();
+    return new Promise((resolve) => this.settleWaiters.push(resolve));
   }
 
   private requireSession(): ChatSession {
@@ -340,6 +430,7 @@ export class PersonalSession {
     this.generation++;
     this.closeRunWithoutReply();
     this.releaseCompactionWaiters();
+    this.releaseSettleWaiters();
   }
 
   private onEvent(session: ChatSession, event: AgentSessionEvent): void {
@@ -377,43 +468,53 @@ export class PersonalSession {
   private settle(session: ChatSession): void {
     const run = this.run;
     this.run = null;
-    this.lastSettleNotified = false;
-    if (run) {
-      this.flushDelta(run);
-      const aborted = runAborted(run.acc, run.abortRequested);
-      this.emitFor(run, { type: "turn_end", aborted });
-      if (!aborted && !run.suppressReply) {
-        const usage = runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent);
-        if (run.acc.errorMessage !== undefined) {
-          this.lastSettleNotified = true;
-          this.deliver(failureNotice(run.acc.errorMessage), this.lastInboundId, usage);
-        } else {
-          const text = replyText(run.acc);
-          if (text !== null) this.deliver(text, this.lastInboundId, usage);
-        }
-      }
-    }
+    this.settleCount++;
+    this.lastSettle = { outcome: run ? this.finishRun(session, run) : "silent", turnId: run?.turnId };
+    this.releaseSettleWaiters();
+    this.commitUnpersistedContext(session);
     if (this.pendingContext.length) {
-      void this.enqueue(() => this.flushPendingContext()).catch((err) => log.error({ err }, "failed to append buffered context"));
+      const gen = this.generation;
+      void this.enqueue(async () => {
+        if (gen === this.generation) await this.flushPendingContext();
+      }).catch((err) => log.error({ err }, "failed to append buffered context"));
     }
     if (session.pendingMessageCount > 0 && !session.isCompacting) this.requeueStranded(session);
   }
 
-  private deliver(text: string, replyTo: string | undefined, usage?: ChatDeliverParams["usage"]): void {
+  // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.
+  private finishRun(session: ChatSession, run: OpenRun): SettleOutcome {
+    this.flushDelta(run);
+    const aborted = runAborted(run.acc, run.abortRequested);
+    this.emitFor(run, { type: "turn_end", aborted: aborted || run.suppressReply });
+    if (aborted) return "aborted";
+    if (run.suppressReply) return "suppressed";
+    const usage = runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent);
+    if (run.acc.errorMessage !== undefined) {
+      this.deliver(failureNotice(run.acc.errorMessage), this.lastInboundId, run.turnId, usage);
+      return "notice";
+    }
+    const text = replyText(run.acc);
+    if (text === null) return "silent";
+    this.deliver(text, this.lastInboundId, run.turnId, usage);
+    return "reply";
+  }
+
+  private deliver(text: string, replyTo: string | undefined, turnId: string | undefined, usage?: ChatDeliverParams["usage"]): void {
     const entry: ChatDeliverParams = {
       outboxId: this.newId(),
       principalId: this.opts.principalId,
       kind: "reply",
       text,
       ...(replyTo ? { replyTo } : {}),
+      ...(turnId ? { turnId } : {}),
       ...(usage ? { usage } : {}),
     };
     this.outbox.append(entry);
     this.send(entry);
   }
 
-  private deliverFailure(err: unknown, replyTo: string | undefined): void {
-    this.deliver(failureNotice(err instanceof Error ? err.message : String(err)), replyTo || undefined);
+  private deliverFailure(err: unknown, replyTo: string | undefined, turnId?: string): void {
+    this.deliver(failureNotice(err instanceof Error ? err.message : String(err)), replyTo || undefined, turnId);
   }
 
   private assertPrincipal(principalId: string): void {
@@ -423,9 +524,11 @@ export class PersonalSession {
   }
 
   private send(entry: ChatDeliverParams): void {
+    this.sending.add(entry.outboxId);
     this.opts.transport
       .request(RPC_METHODS.chatDeliver, entry)
-      .catch((err) => log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend after re-register"));
+      .catch((err) => log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend"))
+      .finally(() => this.sending.delete(entry.outboxId));
   }
 
   private emit(ev: ChatEventPayload): void {
@@ -456,7 +559,9 @@ export class PersonalSession {
   private closeRunWithoutReply(): void {
     const run = this.run;
     this.run = null;
-    if (run?.deltaTimer) clearTimeout(run.deltaTimer);
+    if (!run) return;
+    if (run.deltaTimer) clearTimeout(run.deltaTimer);
+    this.emitFor(run, { type: "turn_end", aborted: true });
   }
 
   private releaseCompactionWaiters(): void {
@@ -464,6 +569,18 @@ export class PersonalSession {
     this.compactionWaiters = [];
     for (const w of waiters) w();
   }
+
+  private releaseSettleWaiters(): void {
+    const waiters = this.settleWaiters;
+    this.settleWaiters = [];
+    for (const w of waiters) w();
+  }
+}
+
+const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
+
+function hasAssistantMessage(session: ChatSession): boolean {
+  return session.messages.some((m) => m.role === "assistant");
 }
 
 export function formatUserText(params: Pick<ChatMessageParams, "text" | "voice" | "attachments">): string {

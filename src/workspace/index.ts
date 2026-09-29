@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     transport: {
       request: (method, params) => (client ? client.request(method, params) : Promise.reject(new Error("not connected"))),
       notify: (method, params) => client?.notify(method, params),
+      isConnected: () => client?.connected ?? false,
     },
   });
   await personal.start();
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     state: () => personal.state,
     handlers: personal.handlers(),
-    onRegistered: () => personal.resendUnacked(),
+    onRegistered: () => personal.onRegistered(),
   });
 
   const shutdown = async (signal: string) => {
