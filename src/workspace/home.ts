@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { runnerGit } from "../orchestration/runner/runnerGit.ts";
+import { runnerGit, runnerGitEnv } from "../orchestration/runner/runnerGit.ts";
 import { getLogger } from "../logger.ts";
 
 const log = getLogger("workspace.home");
@@ -62,18 +62,17 @@ export async function scaffoldHome(home: string): Promise<ScaffoldResult> {
     created.push(homePath);
   }
 
-  let initialized = false;
-  if (!existsSync(join(home, ".git"))) {
-    await serialized(async () => {
-      const git = runnerGit(home);
-      await git.init();
-      await git.addConfig("user.name", GIT_NAME, false, "local");
-      await git.addConfig("user.email", GIT_EMAIL, false, "local");
-      await git.addConfig("commit.gpgsign", "false", false, "local");
-      await commitPaths(home, [".gitignore", ...HOME_TRACKED_PATHS], "chore(home): scaffold workspace home", true);
-    });
-    initialized = true;
-  }
+  // Keyed on HEAD, not .git, so a first run that died between init and the initial commit is finished here.
+  const initialized = await serialized(async () => {
+    const git = runnerGit(home);
+    if (!existsSync(join(home, ".git"))) await git.init();
+    await git.addConfig("user.name", GIT_NAME, false, "local");
+    await git.addConfig("user.email", GIT_EMAIL, false, "local");
+    await git.addConfig("commit.gpgsign", "false", false, "local");
+    if (await hasHead(home)) return false;
+    await commitPaths(home, [".gitignore", ...HOME_TRACKED_PATHS], "chore(home): scaffold workspace home", true);
+    return true;
+  });
 
   if (created.length > 0 || initialized) log.info({ home, created, initialized }, "home scaffolded");
   return { created, initialized };
@@ -86,7 +85,9 @@ export interface ContextFile {
 
 export function capContent(content: string, cap: number): { content: string; truncated: boolean } {
   if (content.length <= cap) return { content, truncated: false };
-  return { content: `${content.slice(0, cap)}\n[truncated at ${cap} chars — curate this file]\n`, truncated: true };
+  // Don't split a surrogate pair (an emoji) at the cut.
+  const end = /[\uD800-\uDBFF]/.test(content.charAt(cap - 1)) ? cap - 1 : cap;
+  return { content: `${content.slice(0, end)}\n[truncated at ${cap} chars — curate this file]\n`, truncated: true };
 }
 
 /** SOUL/USER/MEMORY from `home`, capped; a missing file is skipped. Read fresh on every call. */
@@ -119,6 +120,15 @@ export function homeAgentsFilesOverride(home: string) {
   };
 }
 
+async function hasHead(home: string): Promise<boolean> {
+  try {
+    await runnerGit(home).raw(["rev-parse", "--verify", "HEAD"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 let chain: Promise<unknown> = Promise.resolve();
 
 function serialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -133,11 +143,15 @@ async function commitPaths(home: string, paths: string[], message: string, initi
   const present = paths.filter((p) => existsSync(join(home, p)) || tracked.some((t) => t === p || (p.endsWith("/") && t.startsWith(p))));
   if (present.length === 0) return { committed: false };
   await git.raw(["add", "-A", "--", ...present]);
-  const staged = (await git.raw(["diff", "--cached", "--name-only", "--", ...present])).split("\n").filter(Boolean);
+  const staged = (await git.raw(["diff", "--cached", "--name-only", "--no-renames", "--", ...present])).split("\n").filter(Boolean);
   if (staged.length === 0) return { committed: false };
   // Exact staged names, so anything else the agent staged stays out; a pathspec git doesn't know
-  // (an empty dir) would fail `commit`.
-  await git.raw(["commit", "--no-verify", "-m", message, ...(initial ? [] : ["--", ...staged])]);
+  // (an empty dir) would fail `commit`. --no-renames lists a rename's deleted side too.
+  // --no-verify skips pre-commit only; hooksPath also stops an agent-planted post-commit hook. Passed as
+  // git's own `-c` env form because simple-git refuses a literal `-c core.hooksPath`.
+  await git
+    .env({ ...runnerGitEnv(), GIT_CONFIG_PARAMETERS: "'core.hooksPath'='/dev/null'" })
+    .raw(["commit", "--no-verify", "-m", message, ...(initial ? [] : ["--", ...staged])]);
   const sha = (await git.revparse(["HEAD"])).trim();
   return { committed: true, sha };
 }

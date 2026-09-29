@@ -376,6 +376,7 @@ async function startWorkspace(): Promise<Workspace> {
       isConnected: () => ws.client?.connected ?? false,
     },
     resendIntervalMs: 200,
+    now: () => NOW,
   });
   await ws.personal.start();
   cleanups.push(() => ws.personal.dispose());
@@ -449,6 +450,10 @@ function stopInteraction(turnId: string) {
   return { interaction, editReplies };
 }
 
+const NOW = new Date("2026-09-29T12:00:00Z");
+/** The prompt text for a message whose (test) id isn't a snowflake, so it carries the receipt time. */
+const stamped = (messageId: string, text: string) => `[discord:${messageId} 2026-09-29 12:00 UTC]\n${text}`;
+
 // ── Scenarios ─────────────────────────────────────────────────────────────────
 describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
   test("1. a DM gets 👀, a live progress view, then the reply with footer and tool count; the outbox is acked", async () => {
@@ -457,7 +462,7 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
 
     await h.route.dm("100", "what's in my home dir?");
     expect(h.dm.reactionsOn("100")).toEqual(["👀"]);
-    expect(h.ws.pi().prompts).toEqual(["what's in my home dir?"]);
+    expect(h.ws.pi().prompts).toEqual([stamped("100", "what's in my home dir?")]);
 
     h.ws.pi().tool("bash", { command: "ls -la ~" });
     await waitFor(() => h.dm.progress().length === 1, "progress message");
@@ -490,7 +495,7 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     h.ws.pi().tool("bash", { command: "git log -5" });
     await h.route.dm("201", "also list open PRs");
     expect(h.dm.reactionsOn("201")).toEqual(["↪️"]);
-    expect(h.ws.pi().steers).toEqual(["also list open PRs"]);
+    expect(h.ws.pi().steers).toEqual([stamped("201", "also list open PRs")]);
     expect(h.ws.pi().prompts).toHaveLength(2);
 
     h.ws.pi().reply("Summary + PRs.");
@@ -553,8 +558,8 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     expect(h.r.bot.messages.map((m) => m.messageId)).not.toContain("401");
 
     await h.route.dm("402", "fresh start");
-    expect(h.ws.pi().prompts).toEqual(["fresh start"]);
-    expect(first.prompts).toEqual(["hello"]);
+    expect(h.ws.pi().prompts).toEqual([stamped("402", "fresh start")]);
+    expect(first.prompts).toEqual([stamped("400", "hello")]);
   });
 
   test("5a. bot dies after sending the reply but before chat/ack: the restarted bot acks without resending", async () => {
@@ -683,13 +688,13 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     await connected(h);
 
     await Promise.all([h.route.dm("800", "once please"), h.route.dm("800", "once please")]);
-    expect(h.ws.pi().prompts).toEqual(["once please"]);
+    expect(h.ws.pi().prompts).toEqual([stamped("800", "once please")]);
     expect(h.dm.reactionsOn("800")).toEqual(["👀"]);
 
     h.ws.pi().reply("once");
     await waitFor(() => h.dm.replies().length === 1, "reply");
     await h.route.dm("800", "once please");
-    expect(h.ws.pi().prompts).toEqual(["once please"]);
+    expect(h.ws.pi().prompts).toEqual([stamped("800", "once please")]);
     expect(h.dm.reactionsOn("800")).toEqual(["👀"]);
     const modes = h.r.bot.messages.filter((m) => m.messageId === "800");
     expect(modes).toHaveLength(3);

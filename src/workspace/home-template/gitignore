@@ -1,10 +1,18 @@
-projects/
-scratch/
-node_modules/
-.bun/
-.local/
-.npm-global/
-.cache/
-.pi-workspace/
+# Allowlist: only the memory and persona files are versioned. Everything else in $HOME
+# (credential stores, browser profiles, installs, projects/, scratch/) stays out.
+/*
+!/.gitignore
+!/AGENTS.md
+!/SOUL.md
+!/USER.md
+!/MEMORY.md
+!/DREAMS.md
+!/memory/
+/memory/*
+!/memory/*.md
+!/.agents/
 *.env
 .env*
+*.pem
+*.key
+credentials*.json

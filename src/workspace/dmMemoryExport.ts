@@ -10,8 +10,8 @@ export const DM_SPACE_ID = "dm";
 
 const MIGRATED_TAG = "(src: migrated)";
 
-// Titles that describe drk rather than a topic go to USER.md.
-const PROFILE_TITLE = /\b(user|profile|about|prefer(s|ences?)?|personal|bio|identity|likes?|dislikes?|habits?|routines?|family|friends?|drk)\b/i;
+// Titles that describe drk rather than a topic go to USER.md. The script prints each routing for review.
+const PROFILE_TITLE = /\b(profile|prefer(s|ences?)?|personal|bio|identity|likes?|dislikes?|habits?|routines?|family|friends?|drk)\b/i;
 
 export interface DmMemoryRow {
   title: string;
@@ -24,6 +24,8 @@ export interface DmMemoryExport {
   memory: string;
   /** Bullets that didn't fit under a file's cap, for `memory/migrated-overflow.md`. */
   overflow: string[];
+  /** Which file each entry was routed to (before the caps), so drk can check the heuristic. */
+  routing: { title: string; file: "USER.md" | "MEMORY.md" }[];
 }
 
 export function readDmMemoryRows(db: Database): DmMemoryRow[] {
@@ -83,13 +85,37 @@ export function formatDmMemoryExport(
 
   const userBullets = [...(core ? profileBullets(core.content) : []), ...entries.filter((r) => PROFILE_TITLE.test(r.title)).map(entryBullet)];
   const memoryBullets = entries.filter((r) => !PROFILE_TITLE.test(r.title)).map(entryBullet);
+  const routing = entries.map((r) => ({ title: r.title.trim(), file: PROFILE_TITLE.test(r.title) ? ("USER.md" as const) : ("MEMORY.md" as const) }));
 
   const overflow: string[] = [];
   const user = fill(userHeader, userBullets, USER_MD_CAP, overflow);
   const memory = fill(memoryHeader, memoryBullets, MEMORY_MD_CAP, overflow);
-  return { user, memory, overflow };
+  return { user, memory, overflow, routing };
 }
 
 export function formatOverflowFile(overflow: string[]): string {
   return `# Migrated memory that didn't fit under the USER.md / MEMORY.md caps\n\nPromote what still matters; delete the rest.\n\n${overflow.join("\n")}\n`;
+}
+
+export const WORKSPACE_CONTAINER = "sushii_agent_workspace";
+export const BOT_CONTAINER = "sushii_agent";
+const WORKSPACE_HOME = "/data/home";
+
+/**
+ * Shell steps that move the exported files into the workspace home. Both `docker exec`s run as each
+ * container's default user, so the files land owned by the workspace's uid 1000; nothing needs root
+ * (the workspace runs with `cap_drop: ALL`, where even root can't chown). No `-t`: a TTY corrupts the tar stream.
+ */
+export function formatCopySteps(out: string, written: string[], opts: { onHost?: boolean } = {}): string[] {
+  const files = written.join(" ");
+  const pack = opts.onHost ? `tar -C ${out} -cf - ${files}` : `docker exec ${BOT_CONTAINER} tar -C ${out} -cf - ${files}`;
+  const addPaths = [...new Set(written.map((p) => (p.startsWith("memory/") ? "memory/" : p)))].join(" ");
+  const git = `docker exec ${WORKSPACE_CONTAINER} git -C ${WORKSPACE_HOME}`;
+  return [
+    `${pack} | docker exec -i ${WORKSPACE_CONTAINER} tar -C ${WORKSPACE_HOME} -xf -`,
+    `${git} diff -- ${addPaths}`,
+    `${git} add -- ${addPaths}`,
+    `${git} -c core.hooksPath=/dev/null commit -m "chore(home): import bot DM memory"`,
+    `docker restart ${WORKSPACE_CONTAINER}`,
+  ];
 }

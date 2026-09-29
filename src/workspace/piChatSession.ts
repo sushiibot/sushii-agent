@@ -16,9 +16,12 @@ const sessionOverrides = new WeakMap<object, { session: AgentSession; overrides:
 export async function reloadContext(session: ChatSession): Promise<void> {
   const entry = sessionOverrides.get(session);
   if (!entry) throw new Error("reloadContext: session was not built by the pi chat session factory");
-  // reload() re-reads settings from disk, discarding applyOverrides(); compaction reads them lazily.
-  await entry.session.reload();
-  entry.session.settingsManager.applyOverrides(entry.overrides);
+  // reload() re-reads settings first, discarding applyOverrides(), so re-apply even if a later step throws.
+  try {
+    await entry.session.reload();
+  } finally {
+    entry.session.settingsManager.applyOverrides(entry.overrides);
+  }
 }
 
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context

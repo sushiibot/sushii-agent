@@ -22,7 +22,9 @@ import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
 const log = getLogger("workspace.session");
 
-export const VOICE_PREFIX = "[voice message, transcribed] ";
+const VOICE_MARKER = "voice message, transcribed";
+const DISCORD_EPOCH_MS = 1420070400000n;
+const SNOWFLAKE = /^\d{17,20}$/;
 const CONTEXT_CUSTOM_TYPE = "workspace_context";
 
 /** The slice of Pi's AgentSession the host drives; tests supply a fake. */
@@ -65,6 +67,8 @@ export interface PersonalSessionOptions {
   fileExists?: (path: string) => boolean;
   /** How often unacked deliveries are resent while connected. Default 60s. */
   resendIntervalMs?: number;
+  /** Receipt time for messages whose id isn't a Discord snowflake. */
+  now?: () => Date;
 }
 
 interface OpenRun {
@@ -185,11 +189,13 @@ export class PersonalSession {
 
   private async accept(params: ChatMessageParams): Promise<ChatMessageResult> {
     const id = params.messageId;
+    // Stamped once here: steers re-prompted from Pi's queue and buffered context already carry it.
+    const text = formatUserText(params, this.opts.now?.() ?? new Date());
     if (params.kind === "context") {
-      await this.enqueue(() => this.appendContext(id, params.text));
+      await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
-    const mode = await this.enqueue(() => this.promptOrSteer(id, formatUserText(params)));
+    const mode = await this.enqueue(() => this.promptOrSteer(id, text));
     this.recentIds.add(id);
     return { accepted: true, mode };
   }
@@ -583,8 +589,37 @@ function hasAssistantMessage(session: ChatSession): boolean {
   return session.messages.some((m) => m.role === "assistant");
 }
 
-export function formatUserText(params: Pick<ChatMessageParams, "text" | "voice" | "attachments">): string {
-  let text = params.voice ? `${VOICE_PREFIX}${params.text}` : params.text;
+const DEFAULT_SURFACE = "discord";
+
+/** The Discord send time of a snowflake id, or null for any other id. */
+export function snowflakeTime(id: string): Date | null {
+  if (!SNOWFLAKE.test(id)) return null;
+  return new Date(Number((BigInt(id) >> 22n) + DISCORD_EPOCH_MS));
+}
+
+function formatUtc(date: Date): string {
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * `[<surface>:<messageId> YYYY-MM-DD HH:MM UTC]`, the source a memory entry cites. Host-minted ids
+ * (`inbox:…`, `wsask:…`) aren't surface messages, so they appear bare and can't pass for one.
+ */
+export function messageHeader(messageId: string, receivedAt: Date, opts: { surface?: string; voice?: boolean } = {}): string | null {
+  const suffix = opts.voice ? `, ${VOICE_MARKER}` : "";
+  if (!messageId) return opts.voice ? `[${VOICE_MARKER}]` : null;
+  if (messageId.includes(":")) return `[${messageId} ${formatUtc(receivedAt)}${suffix}]`;
+  const surface = opts.surface ?? DEFAULT_SURFACE;
+  const sent = (surface === "discord" ? snowflakeTime(messageId) : null) ?? receivedAt;
+  return `[${surface}:${messageId} ${formatUtc(sent)}${suffix}]`;
+}
+
+export function formatUserText(
+  params: Pick<ChatMessageParams, "messageId" | "text" | "voice" | "attachments" | "origin">,
+  receivedAt: Date,
+): string {
+  const header = messageHeader(params.messageId, receivedAt, { surface: params.origin?.surface, voice: params.voice === true });
+  let text = header ? `${header}\n${params.text}` : params.text;
   // The workspace model is text-only; attachments reach it as links it can fetch with its tools.
   for (const a of params.attachments ?? []) text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}]`;
   return text;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
-import { PersonalSession, type ChatSession, type ChatSessionFactory, type ChatTransport } from "./personalSession.ts";
+import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport } from "./personalSession.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
 // Mirrors the Pi 0.84 behaviour the host relies on (core/agent-session.js, pi-agent-core agent-loop.js):
@@ -216,9 +216,14 @@ function setup(
     newId: () => `id-${++id}`,
     fileExists: opts.fileExists,
     resendIntervalMs: opts.resendIntervalMs,
+    now: () => NOW,
   });
   return { host, sessions, factoryCalls, transport, stateDir };
 }
+
+const NOW = new Date("2026-09-29T12:00:00Z");
+/** The prompt text for a message whose (test) id isn't a snowflake, so it carries the receipt time. */
+const stamped = (messageId: string, text: string) => `[discord:${messageId} 2026-09-29 12:00 UTC]\n${text}`;
 
 const msg = (messageId: string, text: string, extra: Partial<ChatMessageParams> = {}): ChatMessageParams => ({
   principalId: "drk",
@@ -245,6 +250,45 @@ const TIMED_OUT = Symbol("timed out");
 const within = <T>(p: Promise<T>, ms = 100): Promise<T | typeof TIMED_OUT> =>
   Promise.race([p, new Promise<typeof TIMED_OUT>((r) => setTimeout(() => r(TIMED_OUT), ms))]);
 
+describe("message header", () => {
+  // Discord's documented example snowflake: sent 2016-04-30 11:18:25.796 UTC.
+  const SNOWFLAKE = "175928847299117063";
+
+  test("a Discord message gets its surface and its send time, not the receipt time", () => {
+    expect(messageHeader(SNOWFLAKE, NOW)).toBe(`[discord:${SNOWFLAKE} 2016-04-30 11:18 UTC]`);
+    expect(messageHeader(SNOWFLAKE, NOW, { surface: "discord" })).toBe(`[discord:${SNOWFLAKE} 2016-04-30 11:18 UTC]`);
+  });
+
+  test("another surface gets its own name and the receipt time", () => {
+    expect(messageHeader("ev123", NOW, { surface: "buzz" })).toBe("[buzz:ev123 2026-09-29 12:00 UTC]");
+    expect(messageHeader("1727000000.000100", NOW, { surface: "slack" })).toBe("[slack:1727000000.000100 2026-09-29 12:00 UTC]");
+  });
+
+  test("host-minted ids appear bare, so they can't pass for a surface message", () => {
+    expect(messageHeader("inbox:7", NOW)).toBe("[inbox:7 2026-09-29 12:00 UTC]");
+    expect(messageHeader("wsask:abc", NOW)).toBe("[wsask:abc 2026-09-29 12:00 UTC]");
+  });
+
+  test("the voice marker sits inside the header; attachments follow the text", () => {
+    const text = formatUserText(
+      {
+        messageId: SNOWFLAKE,
+        text: "remind me",
+        voice: true,
+        origin: { surface: "discord", conversationId: "dm" },
+        attachments: [{ name: "a.png", contentType: "image/png", url: "https://x/a.png" }],
+      },
+      NOW,
+    );
+    expect(text).toBe(`[discord:${SNOWFLAKE} 2016-04-30 11:18 UTC, voice message, transcribed]\nremind me\n[attachment: a.png (image/png) https://x/a.png]`);
+  });
+
+  test("no id: no header, but a voice message is still marked", () => {
+    expect(formatUserText({ messageId: "", text: "hi" }, NOW)).toBe("hi");
+    expect(formatUserText({ messageId: "", text: "hi", voice: true }, NOW)).toBe("[voice message, transcribed]\nhi");
+  });
+});
+
 describe("PersonalSession routing", () => {
   test("idle message starts a turn; a message during the turn steers the same session", async () => {
     const { host, sessions } = setup();
@@ -254,7 +298,7 @@ describe("PersonalSession routing", () => {
     expect(await host.handleMessage(msg("m2", "also this"))).toEqual({ accepted: true, mode: "steer" });
     const s = sessions[0];
     expect(s.prompts.map((p) => p.options?.streamingBehavior)).toEqual(["steer", "steer"]);
-    expect(s.steers).toEqual(["also this"]);
+    expect(s.steers).toEqual([stamped("m2", "also this")]);
   });
 
   test("two messages racing an idle session start one run, not two", async () => {
@@ -262,14 +306,14 @@ describe("PersonalSession routing", () => {
     await host.start();
     const [a, b] = await Promise.all([host.handleMessage(msg("m1", "one")), host.handleMessage(msg("m2", "two"))]);
     expect([a.mode, b.mode]).toEqual(["prompt", "steer"]);
-    expect(sessions[0].steers).toEqual(["two"]);
+    expect(sessions[0].steers).toEqual([stamped("m2", "two")]);
   });
 
-  test("voice messages carry the transcription marker", async () => {
+  test("voice messages carry the transcription marker in the header", async () => {
     const { host, sessions } = setup();
     await host.start();
     await host.handleMessage(msg("m1", "remind me", { voice: true }));
-    expect(sessions[0].prompts[0].text).toBe("[voice message, transcribed] remind me");
+    expect(sessions[0].prompts[0].text).toBe("[discord:m1 2026-09-29 12:00 UTC, voice message, transcribed]\nremind me");
   });
 
   test("a prompt waits out an in-progress compaction", async () => {
@@ -614,7 +658,7 @@ describe("PersonalSession stranded steers", () => {
     expect(transport.delivered().map((d) => [d.text, d.replyTo])).toEqual([["answer to first", "m1"]]);
     expect(s.pendingMessageCount).toBe(0);
     expect(s.isStreaming).toBe(true);
-    expect(s.prompts.map((p) => p.text)).toEqual(["first", "second", "second"]);
+    expect(s.prompts.map((p) => p.text)).toEqual([stamped("m1", "first"), stamped("m2", "second"), stamped("m2", "second")]);
 
     s.finish("answer to second");
     await tick();
@@ -767,7 +811,7 @@ describe("PersonalSession chat/new", () => {
     expect(sessionFile).toBe(join(stateDir, "chat-2.jsonl"));
     expect(readWorkspaceState(stateDir)).toEqual({ chatSessionFile: sessionFile });
     expect((await held).mode).toBe("prompt");
-    expect(sessions[1].prompts.map((p) => p.text)).toEqual(["first in new"]);
+    expect(sessions[1].prompts.map((p) => p.text)).toEqual([stamped("m2", "first in new")]);
     expect(host.isResetting).toBe(false);
     expect(old.disposed).toBe(true);
   });
@@ -856,7 +900,7 @@ describe("PersonalSession context messages", () => {
     await host.start();
     const s = sessions[0];
     expect(await host.handleMessage(msg("c1", "offline exchange A", { kind: "context" }))).toEqual({ accepted: true, mode: "context" });
-    expect(s.customs.map((c) => c.content)).toEqual(["offline exchange A"]);
+    expect(s.customs.map((c) => c.content)).toEqual([stamped("c1", "offline exchange A")]);
     expect(s.prompts).toHaveLength(0);
 
     await host.handleMessage(msg("m1", "hi"));
@@ -864,7 +908,7 @@ describe("PersonalSession context messages", () => {
     expect(s.customs).toHaveLength(1);
     s.finish("reply");
     await tick();
-    expect(s.customs.map((c) => c.content)).toEqual(["offline exchange A", "offline exchange B"]);
+    expect(s.customs.map((c) => c.content)).toEqual([stamped("c1", "offline exchange A"), stamped("c2", "offline exchange B")]);
     expect(s.customs[1].options).toEqual({ triggerTurn: false });
     expect(transport.delivered()).toHaveLength(1);
   });
@@ -888,7 +932,7 @@ describe("PersonalSession context messages", () => {
 
     s.finish("reply");
     await tick();
-    expect(s.customs.map((c) => c.content)).toEqual(["offline exchange"]);
+    expect(s.customs.map((c) => c.content)).toEqual([stamped("c1", "offline exchange")]);
     const later = setup({ stateDir });
     await later.host.start();
     expect((await later.host.handleMessage(msg("c1", "offline exchange", { kind: "context" }))).mode).toBe("duplicate");
@@ -938,6 +982,6 @@ describe("PersonalSession context messages", () => {
     s.settleGate = null;
     settled.open();
     await m2;
-    expect(order).toEqual(["prompt:hi", "context:ctx", "prompt:next"]);
+    expect(order).toEqual([`prompt:${stamped("m1", "hi")}`, `context:${stamped("c1", "ctx")}`, `prompt:${stamped("m2", "next")}`]);
   });
 });

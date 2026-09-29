@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../orchestration/runner/runnerGit.ts";
-import { MEMORY_MD_CAP, USER_MD_CAP, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
+import { MEMORY_MD_CAP, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
 
 const GIT_ENV = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const savedEnv: Record<string, string | undefined> = {};
@@ -46,11 +46,6 @@ describe("scaffoldHome", () => {
     expect(result.initialized).toBe(true);
     expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe(readHomeTemplate("AGENTS.md"));
 
-    const gitignore = readFileSync(join(home, ".gitignore"), "utf8").split("\n");
-    for (const entry of ["projects/", "scratch/", "node_modules/", ".bun/", ".local/", ".npm-global/", ".cache/", "*.env", ".env*"]) {
-      expect(gitignore).toContain(entry);
-    }
-
     const git = runnerGit(home);
     expect(await commitCount()).toBe(1);
     expect((await git.raw(["config", "--local", "user.name"])).trim()).toBe("sushii-workspace");
@@ -73,13 +68,30 @@ describe("scaffoldHome", () => {
     expect(await commitCount()).toBe(1);
   });
 
-  test("ignored dirs never get committed", async () => {
+  test("the .gitignore allowlist hides everything but the memory and persona files", async () => {
     await scaffoldHome(home);
     writeFileSync(join(home, "projects", "x.txt"), "x");
     writeFileSync(join(home, "scratch", "y.txt"), "y");
     writeFileSync(join(home, ".env.local"), "SECRET=1");
-    const status = await runnerGit(home).status();
-    expect(status.not_added).toEqual([]);
+    mkdirSync(join(home, ".config", "gh"), { recursive: true });
+    writeFileSync(join(home, ".config", "gh", "hosts.yml"), "oauth_token: x");
+    writeFileSync(join(home, ".git-credentials"), "https://x:y@github.com");
+    writeFileSync(join(home, "memory", "token.txt"), "ghp_x");
+    mkdirSync(join(home, ".agents", "skills", "s"), { recursive: true });
+    writeFileSync(join(home, ".agents", "skills", "s", "credentials.json"), "{}");
+    writeFileSync(join(home, ".agents", "skills", "s", "SKILL.md"), "# s");
+    writeFileSync(join(home, "memory", "2026-09-29.md"), "note");
+    const status = await runnerGit(home).raw(["status", "--porcelain", "--untracked-files=all"]);
+    expect(status.trim().split("\n").sort()).toEqual(["?? .agents/skills/s/SKILL.md", "?? memory/2026-09-29.md"]);
+  });
+
+  test("finishes a first run that died after git init", async () => {
+    await runnerGit(home).init();
+    const result = await scaffoldHome(home);
+    expect(result.initialized).toBe(true);
+    expect(await commitCount()).toBe(1);
+    expect((await runnerGit(home).raw(["config", "--local", "user.name"])).trim()).toBe("sushii-workspace");
+    expect((await scaffoldHome(home)).initialized).toBe(false);
   });
 });
 
@@ -99,6 +111,11 @@ describe("home context files", () => {
     const [user, memory] = loadHomeContextFiles(home);
     expect(user!.content).toBe(`${"u".repeat(USER_MD_CAP)}\n[truncated at ${USER_MD_CAP} chars — curate this file]\n`);
     expect(memory!.content).toBe("m".repeat(MEMORY_MD_CAP));
+  });
+
+  test("truncation never splits a surrogate pair", () => {
+    const { content } = capContent(`${"a".repeat(9)}😀tail`, 10);
+    expect(content.startsWith(`${"a".repeat(9)}\n[truncated`)).toBe(true);
   });
 
   test("Pi's resource loader yields ~/AGENTS.md first, then SOUL/USER/MEMORY, re-read on reload", async () => {
@@ -142,6 +159,7 @@ describe("commitHome", () => {
     writeFileSync(join(home, "USER.md"), "- likes tea (src: migrated)\n");
     writeFileSync(join(home, "memory", "2026-09-29.md"), "note\n");
     writeFileSync(join(home, "stray.txt"), "not memory\n");
+    await runnerGit(home).raw(["add", "-f", "stray.txt"]);
 
     const result = await commitHome("memory: flush", { home });
 
@@ -150,7 +168,29 @@ describe("commitHome", () => {
     expect(result.sha).toBe((await git.revparse(["HEAD"])).trim());
     const changed = (await git.raw(["show", "--name-only", "--format=", "HEAD"])).trim().split("\n").sort();
     expect(changed).toEqual(["USER.md", "memory/2026-09-29.md"]);
-    expect((await git.status()).not_added).toEqual(["stray.txt"]);
+    expect((await git.status()).staged).toEqual(["stray.txt"]);
+  });
+
+  test("a rename commits both sides", async () => {
+    await scaffoldHome(home);
+    const body = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
+    writeFileSync(join(home, "memory", "a.md"), body);
+    await commitHome("add a", { home });
+    rmSync(join(home, "memory", "a.md"));
+    writeFileSync(join(home, "memory", "b.md"), `${body}\nmore`);
+    expect((await commitHome("move", { home })).committed).toBe(true);
+    const git = runnerGit(home);
+    expect((await git.raw(["ls-tree", "-r", "--name-only", "HEAD", "memory/"])).trim()).toBe("memory/b.md");
+    expect((await git.raw(["status", "--porcelain"])).trim()).toBe("");
+  });
+
+  test("an agent-planted post-commit hook doesn't run", async () => {
+    await scaffoldHome(home);
+    const marker = join(home, "hook-ran");
+    writeFileSync(join(home, ".git", "hooks", "post-commit"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    writeFileSync(join(home, "MEMORY.md"), "- x (src: migrated)\n");
+    expect((await commitHome("m", { home })).committed).toBe(true);
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("commits a deleted tracked file and serializes concurrent calls", async () => {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { applySchema } from "../db/index.ts";
 import { CORE_PROFILE_TITLE } from "../core/stores/index.ts";
-import { formatDmMemoryExport, formatOverflowFile, readDmMemoryRows } from "./dmMemoryExport.ts";
+import { formatCopySteps, formatDmMemoryExport, formatOverflowFile, readDmMemoryRows } from "./dmMemoryExport.ts";
 import { MEMORY_MD_CAP, readHomeTemplate } from "./home.ts";
 
 function fixtureDb(): Database {
@@ -40,6 +40,34 @@ describe("DM memory export", () => {
         "- **sushii deploy notes**: Deploy via ansible; host: apps (src: migrated)\n",
     );
     expect(out.overflow).toEqual([]);
+    expect(out.routing).toContainEqual({ title: "Coffee preferences", file: "USER.md" });
+    expect(out.routing).toContainEqual({ title: "sushii deploy notes", file: "MEMORY.md" });
+  });
+
+  test("topic titles that merely mention users or 'about' stay in MEMORY.md", () => {
+    const rows = [
+      { title: "notes about sushii-bot deploys", content: "a", updatedAt: 2 },
+      { title: "user onboarding flow", content: "b", updatedAt: 1 },
+    ];
+    const out = formatDmMemoryExport(rows, { userHeader: "# U\n", memoryHeader: "# M\n" });
+    expect(out.user).toBe("# U\n");
+    expect(out.routing.map((r) => r.file)).toEqual(["MEMORY.md", "MEMORY.md"]);
+  });
+
+  test("copy steps stream a tar into the workspace as its own user, then review, commit and restart", () => {
+    const steps = formatCopySteps("/data/x", ["USER.md", "MEMORY.md", "memory/migrated-overflow.md"]);
+    expect(steps[0]).toBe(
+      "docker exec sushii_agent tar -C /data/x -cf - USER.md MEMORY.md memory/migrated-overflow.md | docker exec -i sushii_agent_workspace tar -C /data/home -xf -",
+    );
+    expect(steps.slice(1)).toEqual([
+      "docker exec sushii_agent_workspace git -C /data/home diff -- USER.md MEMORY.md memory/",
+      "docker exec sushii_agent_workspace git -C /data/home add -- USER.md MEMORY.md memory/",
+      'docker exec sushii_agent_workspace git -C /data/home -c core.hooksPath=/dev/null commit -m "chore(home): import bot DM memory"',
+      "docker restart sushii_agent_workspace",
+    ]);
+    const all = steps.join("\n");
+    for (const rootOnly of ["docker cp", "-u 0", "--user", "chown", " -t ", "-it "]) expect(all).not.toContain(rootOnly);
+    expect(formatCopySteps("/tmp/x", ["USER.md"], { onHost: true })[0]).toStartWith("tar -C /tmp/x -cf - USER.md | docker exec -i");
   });
 
   test("keeps each file within its cap and overflows the rest", () => {

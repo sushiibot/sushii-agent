@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { formatDmMemoryExport, formatOverflowFile, readDmMemoryRows } from "../src/workspace/dmMemoryExport.ts";
+import { formatCopySteps, formatDmMemoryExport, formatOverflowFile, readDmMemoryRows } from "../src/workspace/dmMemoryExport.ts";
 
 const { values } = parseArgs({
   options: {
@@ -52,15 +52,16 @@ if (process.env.MNEMOSYNE_MCP_URL) {
   console.log("mnemosyne: skipped. The client has no list/recall-all operation, so the DM bank can't be exported in full.");
 }
 
-const addPaths = written.map((p) => (p.startsWith("memory/") ? "memory/" : p)).filter((p, i, a) => a.indexOf(p) === i).join(" ");
+console.log("\nRouting (check it; move any misfiled bullet by hand before committing):");
+for (const { title, file } of result.routing) console.log(`  ${file.padEnd(9)} ${title}`);
+
+const indent = (steps: string[]) => steps.map((l) => `  ${l}`).join("\n");
 console.log(`
-Copy into the workspace home (this overwrites the scaffolded USER.md / MEMORY.md):
+Copy into the workspace home. Run this before the agent has written its own memory: it replaces
+USER.md and MEMORY.md. Read the diff step's output before you commit.
 
-  docker cp sushii_agent:${out}/. ./dm-memory-export/
-  docker cp ./dm-memory-export/. sushii_agent_workspace:/data/home/
-  docker exec -u 0 sushii_agent_workspace chown -R 1000:1000 /data/home/USER.md /data/home/MEMORY.md /data/home/memory
-  docker exec sushii_agent_workspace git -C /data/home add -- ${addPaths}
-  docker exec sushii_agent_workspace git -C /data/home commit -m "chore(home): import bot DM memory"
-  docker restart sushii_agent_workspace   # the session reads context files when it is created
+${indent(formatCopySteps(out, written))}
 
-Skip the first docker cp if you ran this script on the host.`);
+Ran this script on the host instead of in the bot container? The first step becomes:
+
+${indent(formatCopySteps(out, written, { onHost: true }).slice(0, 1))}`);
