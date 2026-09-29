@@ -113,16 +113,17 @@ export async function createAgentBashTool(
 type ToolSetSession = { getAllTools(): ReadonlyArray<{ name: string }>; getActiveToolNames(): string[]; dispose(): void };
 
 /**
- * Throws (disposing the session) unless the session registered and activated exactly `expected`.
- * Pi 0.99 ships codemode, tool_search and MCP as built-in extensions; this keeps any of them, or a
- * tool from a future default, from reaching the model unnoticed.
+ * Throws (disposing the session) unless the session registered exactly `expected` and activated exactly
+ * `expectedActive` (default: all of `expected`). Pi 0.99 ships codemode, tool_search and MCP as built-in
+ * extensions; this keeps any of them, or a tool from a future default, from reaching the model unnoticed.
  */
-export function assertExactTools(session: ToolSetSession, expected: readonly string[], label: string): void {
+export function assertExactTools(session: ToolSetSession, expected: readonly string[], label: string, expectedActive: readonly string[] = expected): void {
   const want = [...expected].sort();
+  const wantActive = [...expectedActive].sort();
   const registered = session.getAllTools().map((t) => t.name).sort();
   const active = [...session.getActiveToolNames()].sort();
-  const same = (a: string[]) => a.length === want.length && a.every((n, i) => n === want[i]);
-  if (same(registered) && same(active)) return;
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((n, i) => n === b[i]);
+  if (same(registered, want) && same(active, wantActive)) return;
   session.dispose();
-  throw new Error(`${label}: unexpected pi tool set (registered ${registered.join(",")}; active ${active.join(",")}; want ${want.join(",")})`);
+  throw new Error(`${label}: unexpected pi tool set (registered ${registered.join(",")}; active ${active.join(",")}; want ${want.join(",")}; want active ${wantActive.join(",")})`);
 }

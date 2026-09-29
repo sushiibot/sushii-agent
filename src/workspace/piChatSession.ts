@@ -8,6 +8,7 @@ import { createSecretGuardExtension } from "./secretGuard.ts";
 import { RunLog, type RunRecorder } from "./runLog.ts";
 import { observeRuns } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
+import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
 import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
 
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
@@ -47,7 +48,7 @@ function restoreChatGptThinking(session: AgentSession): void {
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context
  *  files, settings.json and auth.json under agentDir. ChatGPT sign-in is the primary model when
  *  configured and signed in; OpenRouter is the fallback. */
-export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs?: RunRecorder } = {}): ChatSessionFactory {
+export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs?: RunRecorder; toolStubs?: ToolStubs } = {}): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
   // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
   const selector = new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
@@ -91,6 +92,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
       },
       log,
     });
+    const stubs = opts.toolStubs?.binding();
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: config.agentDir,
@@ -98,6 +100,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
       extensionFactories: [
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
+        ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
       ],
     });
     await loader.reload();
@@ -124,13 +127,15 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
       resourceLoader: loader,
       settingsManager,
       // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
-      tools: WORKSPACE_TOOLS,
+      // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
+      tools: stubs ? [...WORKSPACE_TOOLS, ...KNOWN_PROXIED_TOOLS] : WORKSPACE_TOOLS,
       customTools: [bashTool],
       excludeTools: ["ask_question"],
       sessionManager,
     });
     sessionRef.current = session;
-    assertExactTools(session, WORKSPACE_TOOLS, "workspace");
+    assertExactTools(session, [...WORKSPACE_TOOLS, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...(stubs?.offered() ?? [])]);
+    stubs?.assertOwned(session, "workspace");
     if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
 
     const file = sessionManager.getSessionFile();

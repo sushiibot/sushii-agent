@@ -9,6 +9,8 @@ import {
   type RepoSpec,
   type RunnerAdapter,
   type RunnerEvent,
+  type WorkspaceRegisterResult,
+  workspaceRegisterResult,
 } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
 
@@ -17,6 +19,27 @@ const logger = getLogger("orchestration:client");
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+}
+
+/** request() found no open link; nothing was sent. */
+export class NotConnectedError extends Error {
+  constructor() {
+    super("not connected");
+  }
+}
+
+/** The link dropped after the request was sent; the peer may or may not have acted on it. */
+export class ConnectionClosedError extends Error {
+  constructor() {
+    super("connection closed");
+  }
+}
+
+/** No response within the request's timeoutMs; the peer may still act on it. */
+export class RequestTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`no response within ${Math.round(timeoutMs / 1000)} s`);
+  }
 }
 
 export interface OrchestrationClientOptions {
@@ -39,8 +62,9 @@ export interface OrchestrationClientOptions {
   adapter?: RunnerAdapter;
   /** Extra inbound request methods, answered with the handler's result. */
   handlers?: Record<string, (params: unknown) => Promise<unknown>>;
-  /** Fires after each successful (re)register, once responses are routed. */
-  onRegistered?: () => void;
+  /** Fires after each successful (re)register, once responses are routed. A workspace gets its parsed
+   *  register result (a malformed one reads as no tools); a task runner gets null. */
+  onRegistered?: (result: WorkspaceRegisterResult | null) => void;
   // Keep-alive interval (default 30s, under Bun.serve's 120s idle default). 0 disables.
   heartbeatMs?: number;
   // Cap for reconnect backoff (default 30s). Only used by run().
@@ -81,11 +105,11 @@ export class OrchestrationClient {
     while (this.shouldRun) {
       this.lastCloseCode = null;
       try {
-        await this.connect();
+        const result = await this.connect();
         this.listen();
         this.startHeartbeat();
         logger.info({ runnerId: this.options.runnerId }, "runner connected");
-        this.options.onRegistered?.();
+        this.options.onRegistered?.(this.registerResult(result));
         backoff = 500;
         await new Promise<void>((res) => (this.resolveClosed = res));
       } catch (err) {
@@ -101,6 +125,14 @@ export class OrchestrationClient {
       await new Promise((r) => setTimeout(r, delay));
       backoff = Math.min(backoff * 2, cap);
     }
+  }
+
+  private registerResult(raw: unknown): WorkspaceRegisterResult | null {
+    if ((this.options.role ?? "task-runner") !== "workspace") return null;
+    const parsed = workspaceRegisterResult.safeParse(raw);
+    if (parsed.success) return parsed.data;
+    logger.warn({ runnerId: this.options.runnerId, error: parsed.error.issues[0]?.message }, "malformed workspace register result; no tools offered");
+    return { ok: true, tools: [] };
   }
 
   private async awaitSocketClosed(timeoutMs: number): Promise<void> {
@@ -135,7 +167,8 @@ export class OrchestrationClient {
     }
   }
 
-  connect(): Promise<void> {
+  /** Resolves with the register call's result. */
+  connect(): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.options.url);
       this.ws = ws;
@@ -153,7 +186,7 @@ export class OrchestrationClient {
         } else if (event.code === ORCH_CLOSE.replaced) {
           logger.warn({ runnerId: this.options.runnerId, reason: event.reason }, "orchestrator closed the connection as a duplicate");
         }
-        this.rejectAllPending(new Error("connection closed"));
+        this.rejectAllPending(new ConnectionClosedError());
         if (this.ws === ws) this.ws = null;
         this.resolveClosed?.();
         this.resolveClosed = null;
@@ -161,7 +194,7 @@ export class OrchestrationClient {
 
       ws.addEventListener("open", () => {
         const id = this.nextId++;
-        this.pending.set(id, { resolve: () => resolve(), reject });
+        this.pending.set(id, { resolve, reject });
         ws.send(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -192,7 +225,7 @@ export class OrchestrationClient {
           this.pending.delete(parsed.data.id);
           ws.removeEventListener("message", onRegisterAck);
           if (parsed.data.error) call.reject(new Error(parsed.data.error.message));
-          else call.resolve(undefined);
+          else call.resolve(parsed.data.result);
         };
         ws.addEventListener("message", onRegisterAck);
       });
@@ -210,13 +243,29 @@ export class OrchestrationClient {
     });
   }
 
-  /** Sends a request to the orchestrator; rejects if the link drops before the response. */
-  request(method: string, params: unknown): Promise<unknown> {
+  /** Sends a request to the orchestrator. Rejects with NotConnectedError (not sent), ConnectionClosedError
+   *  (the link dropped before the response) or RequestTimeoutError; never retries. */
+  request(method: string, params: unknown, opts: { timeoutMs?: number } = {}): Promise<unknown> {
     const ws = this.ws;
-    if (!ws || ws.readyState !== ws.OPEN) return Promise.reject(new Error("not connected"));
+    if (!ws || ws.readyState !== ws.OPEN) return Promise.reject(new NotConnectedError());
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      this.pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      if (opts.timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          if (this.pending.delete(id)) reject(new RequestTimeoutError(opts.timeoutMs!));
+        }, opts.timeoutMs);
+      }
       ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     });
   }
@@ -235,7 +284,7 @@ export class OrchestrationClient {
   close(): void {
     this.shouldRun = false;
     this.stopHeartbeat();
-    this.rejectAllPending(new Error("connection closed"));
+    this.rejectAllPending(new ConnectionClosedError());
     this.resolveClosed?.();
     this.resolveClosed = null;
     this.ws?.close();

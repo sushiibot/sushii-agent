@@ -1,12 +1,13 @@
 // First: initialises OTel (when OTEL_EXPORTER_OTLP_ENDPOINT is set) before anything creates spans.
 import { otelSDK } from "../telemetry.ts";
-import { OrchestrationClient } from "../orchestration/transport/client.ts";
+import { NotConnectedError, OrchestrationClient } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
 import { PersonalSession } from "./personalSession.ts";
 import { createPiChatSessionFactory } from "./piChatSession.ts";
 import { scaffoldHome } from "./home.ts";
 import { RunLog } from "./runLog.ts";
+import { ToolStubs } from "./toolStubs.ts";
 
 const log = getLogger("workspace");
 
@@ -33,11 +34,15 @@ async function main(): Promise<void> {
   const orphans = runs.reconcileOrphans();
   if (orphans) log.warn({ orphans }, "closed runs left open by a previous process");
   let client: OrchestrationClient | null = null;
+  const toolStubs = new ToolStubs({
+    principalId: config.principalId,
+    request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
+  });
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
-    factory: createPiChatSessionFactory(config, { runs }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs }),
     transport: {
       request: (method, params) => (client ? client.request(method, params) : Promise.reject(new Error("not connected"))),
       notify: (method, params) => client?.notify(method, params),
@@ -57,7 +62,10 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     state: () => personal.state,
     handlers: personal.handlers(),
-    onRegistered: () => personal.onRegistered(),
+    onRegistered: (result) => {
+      toolStubs.update(result?.tools ?? []);
+      personal.onRegistered();
+    },
   });
 
   const shutdown = async (signal: string) => {

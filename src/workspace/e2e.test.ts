@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentSessionEvent, PromptOptions } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, PromptOptions, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { MessageCreateOptions, MessageEditOptions } from "discord.js";
 import { applySchema } from "../db/index.ts";
 import { WorkspaceLinkStore } from "../db/workspaceLink.ts";
@@ -19,6 +19,9 @@ import { handleWorkspaceStopButton, type WorkspaceButtonInteraction } from "../s
 import { ACCENT, DiscordOwnerDmSurface, DiscordWorkspaceAdapter, OFFLINE_NOTICE, WS_STOP_PREFIX } from "../surfaces/discord/workspaceAdapter.ts";
 import { PersonalSession, type ChatSession, type ChatSessionFactory } from "./personalSession.ts";
 import { readWorkspaceState } from "./state.ts";
+import { ToolStubs } from "./toolStubs.ts";
+import type { ToolEntry, ToolHosts } from "../core/contracts.ts";
+import { WorkspaceTools, type AuditLog, type ToolCallAudit, type WorkspaceToolsOptions } from "../orchestration/workspace/tools.ts";
 
 // One process: real OrchestrationServer + WorkspaceLink + owner-DM router on the bot side, real
 // OrchestrationClient + PersonalSession on the workspace side. Only Pi and Discord are faked.
@@ -77,6 +80,23 @@ class FakePi {
     const toolCallId = `t${++this.toolSeq}`;
     this.emit({ type: "tool_execution_start", toolCallId, toolName: name, args });
     this.emit({ type: "tool_execution_end", toolCallId, toolName: name, result: "ok", isError: !ok });
+  }
+
+  /** Runs a real tool definition the way Pi would: start event, execute, end event, toolResult in the transcript. */
+  async runTool(def: ToolDefinition, args: Record<string, unknown>): Promise<void> {
+    const toolCallId = `t${++this.toolSeq}`;
+    this.emit({ type: "tool_execution_start", toolCallId, toolName: def.name, args });
+    let text: string;
+    let isError = false;
+    try {
+      const r = await def.execute(toolCallId, args as never, undefined, undefined, undefined as never);
+      text = r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    } catch (err) {
+      text = (err as Error).message;
+      isError = true;
+    }
+    this.messages.push({ role: "toolResult", toolName: def.name, content: [{ type: "text", text }], isError } as { role: string });
+    this.emit({ type: "tool_execution_end", toolCallId, toolName: def.name, result: text, isError });
   }
 
   toolStart(name: string, args: Record<string, unknown>): void {
@@ -246,6 +266,21 @@ interface Bot {
   kill: Kill;
   /** Every chat/message the bot sent the workspace. */
   messages: ChatMessageParams[];
+  /** Inputs the bot's fake web_search ran with, and the tool/call audit lines. */
+  searches: Array<Record<string, unknown>>;
+  audits: ToolCallAudit[];
+}
+
+function fakeWebSearch(searches: Array<Record<string, unknown>>): ToolEntry<keyof ToolHosts> {
+  return {
+    name: "web_search",
+    definition: { name: "web_search", description: "Search the web (fake).", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+    requiresHosts: [],
+    async execute(input) {
+      searches.push(input);
+      return { content: `3 results for ${String(input.query)}` };
+    },
+  };
 }
 
 function startServer(port: number): OrchestrationServer {
@@ -256,8 +291,21 @@ function startServer(port: number): OrchestrationServer {
 async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0): Promise<Bot> {
   const server = startServer(port);
   const surfaces = new SurfaceRegistry("discord").register(new DiscordWorkspaceAdapter({ ownerChannel: async () => dm }));
-  const link = new WorkspaceLink({ principalId: P, store, surfaces, owner: () => ({ id: OWNER, name: "drk" }), timers: immediateTimers });
-  const bot: Bot = { server, link, port: 0, deliverRequests: 0, kill: "none", messages: [] };
+  const searches: Array<Record<string, unknown>> = [];
+  const audits: ToolCallAudit[] = [];
+  const audit: AuditLog = { info: (obj) => void audits.push(obj) };
+  const tools = new WorkspaceTools({
+    principalId: P,
+    ownerUserId: () => OWNER,
+    toolSpace: { surface: "discord", spaceId: "dm" },
+    surfaces,
+    store: {} as WorkspaceToolsOptions["store"],
+    memory: { count: () => 0, getServerContext: () => null } as unknown as WorkspaceToolsOptions["memory"],
+    registry: { resolve: () => [fakeWebSearch(searches)] },
+    log: audit,
+  });
+  const link = new WorkspaceLink({ principalId: P, store, surfaces, owner: () => ({ id: OWNER, name: "drk" }), timers: immediateTimers, tools });
+  const bot: Bot = { server, link, port: 0, deliverRequests: 0, kill: "none", messages: [], searches, audits };
   const die = () => setTimeout(() => server.stop(), 0);
   // Wraps the real server only to observe traffic and to simulate the bot process dying at a chosen point.
   const rpc: WorkspaceRpc = {
@@ -303,6 +351,7 @@ async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0): Promis
 
 interface Workspace {
   personal: PersonalSession;
+  toolStubs: ToolStubs;
   sessions: FakePi[];
   stateDir: string;
   client: OrchestrationClient | null;
@@ -324,6 +373,10 @@ async function startWorkspace(): Promise<Workspace> {
   };
   const ws: Workspace = {
     personal: null as unknown as PersonalSession,
+    toolStubs: new ToolStubs({
+      principalId: P,
+      request: (method, params, timeoutMs) => (ws.client ? ws.client.request(method, params, { timeoutMs }) : Promise.reject(new Error("not connected"))),
+    }),
     sessions,
     stateDir,
     client: null,
@@ -340,7 +393,10 @@ async function startWorkspace(): Promise<Workspace> {
         principalId: P,
         state: () => ws.personal.state,
         handlers: ws.personal.handlers(),
-        onRegistered: () => ws.personal.onRegistered(),
+        onRegistered: (result) => {
+          ws.toolStubs.update(result?.tools ?? []);
+          ws.personal.onRegistered();
+        },
         heartbeatMs: 0,
         backoffCapMs: 100,
       });
@@ -708,5 +764,26 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     expect(modes).toHaveLength(3);
     await new Promise((r) => setTimeout(r, 50));
     expect(h.dm.replies()).toHaveLength(1);
+  });
+
+  test("9. a bot tool round-trip: the manifest arrives at register, the stub calls the bot, the result lands in the transcript", async () => {
+    const h = await linked();
+    await connected(h);
+    await waitFor(() => h.ws.toolStubs.names().length > 0, "tool manifest");
+    expect(h.ws.toolStubs.names()).toEqual(["web_search"]);
+    const search = h.ws.toolStubs.definitions().find((d) => d.name === "web_search")!;
+    expect(search.parameters).toMatchObject({ required: ["query"], additionalProperties: false });
+
+    await h.route.dm("900", "search for bun releases");
+    await h.ws.pi().runTool(search, { query: "bun releases" });
+    expect(h.r.bot.searches).toEqual([{ query: "bun releases" }]);
+    expect(h.r.bot.audits).toMatchObject([{ principalId: P, agentId: "main", agentName: "main", name: "web_search", ok: true, denied: false }]);
+    expect(h.ws.pi().messages.at(-1)).toMatchObject({ role: "toolResult", toolName: "web_search", isError: false, content: [{ type: "text", text: "3 results for bun releases" }] });
+
+    await waitFor(() => h.dm.progress().length === 1, "progress");
+    expect(textOf(h.dm.progress()[0]!.options)).toContain("`web_search`");
+    h.ws.pi().reply("Bun 2.0 is out.");
+    await waitFor(() => h.dm.replies().length === 1, "reply");
+    expect(textOf(h.dm.replies()[0]!.options)).toContain("Bun 2.0 is out.");
   });
 });

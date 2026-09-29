@@ -78,5 +78,7 @@ message id to cite. The header is metadata, not something drk typed: never echo 
 - File tools: `read`, `edit`, `write`, `grep`, `find`, `ls`.
 - Browser: the `agent-browser` CLI (`agent-browser --help`) for pages that need JavaScript,
   logins or screenshots.
+- Bot tools (`web_search`, `fetch_url_content`, `search_logs`, `get_trace`, the Linear tools,
+  `team_config`) run through the bot. Some need drk's approval in chat; if a call is denied, don't retry it.
 - GitHub: `gh` and `git`. A GitHub App token is injected into the environment when configured;
   if `gh auth status` fails, say so rather than working around it.

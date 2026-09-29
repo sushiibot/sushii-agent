@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { OrchestrationClient } from "./client.ts";
+import type { WorkspaceRegisterResult } from "../contracts.ts";
+import { ConnectionClosedError, NotConnectedError, OrchestrationClient, RequestTimeoutError } from "./client.ts";
 
 // A bare WS peer standing in for the bot: acks register, then lets the test drive raw frames.
-function fakeOrchestrator() {
+function fakeOrchestrator(registerResult: unknown = { ok: true }) {
   const received: Array<Record<string, unknown>> = [];
   let peer: { send(data: string): void } | null = null;
   const server = Bun.serve({
@@ -17,11 +18,17 @@ function fakeOrchestrator() {
       message(ws, raw) {
         const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
         received.push(msg);
-        if (msg.method === "runner/register") ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { ok: true } }));
+        if (msg.method === "runner/register") ws.send(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: registerResult }));
       },
     },
   });
-  return { url: `ws://localhost:${server.port}`, received, send: (m: unknown) => peer!.send(JSON.stringify(m)), stop: () => server.stop(true) };
+  return {
+    url: `ws://localhost:${server.port}`,
+    received,
+    send: (m: unknown) => peer!.send(JSON.stringify(m)),
+    drop: () => (peer as unknown as { close(): void }).close(),
+    stop: () => server.stop(true),
+  };
 }
 
 const waitFor = async (pred: () => boolean) => {
@@ -64,6 +71,73 @@ describe("OrchestrationClient extra handlers", () => {
     } finally {
       client.close();
       await running;
+      orch.stop();
+    }
+  });
+});
+
+const WEB_SEARCH = { name: "web_search", description: "search", inputSchema: { type: "object", properties: {}, additionalProperties: false }, approval: "none" };
+
+async function registeredWith(registerResult: unknown, role: "workspace" | "task-runner") {
+  const orch = fakeOrchestrator(registerResult);
+  const results: Array<WorkspaceRegisterResult | null> = [];
+  const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", role, heartbeatMs: 0, onRegistered: (r) => results.push(r) });
+  const running = client.run();
+  await waitFor(() => results.length === 1);
+  client.close();
+  await running;
+  orch.stop();
+  return results;
+}
+
+describe("OrchestrationClient register result", () => {
+  test("a workspace gets the parsed tool manifest", async () => {
+    expect(await registeredWith({ ok: true, tools: [WEB_SEARCH] }, "workspace")).toEqual([{ ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"] }]);
+  });
+
+  test("a malformed workspace result reads as no tools", async () => {
+    expect(await registeredWith({ ok: true, tools: [{ name: 1 }] }, "workspace")).toEqual([{ ok: true, tools: [] }]);
+  });
+
+  test("a task runner gets null", async () => {
+    expect(await registeredWith({ ok: true }, "task-runner")).toEqual([null]);
+  });
+});
+
+describe("OrchestrationClient.request failures", () => {
+  async function connected() {
+    const orch = fakeOrchestrator();
+    const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", role: "workspace", heartbeatMs: 0 });
+    await client.connect();
+    client.listen();
+    return { orch, client };
+  }
+
+  test("a timeout rejects once and a late response is ignored", async () => {
+    const { orch, client } = await connected();
+    try {
+      const reply = client.request("tool/call", {}, { timeoutMs: 30 });
+      await expect(reply).rejects.toBeInstanceOf(RequestTimeoutError);
+      const sent = orch.received.find((m) => m.method === "tool/call")!;
+      orch.send({ jsonrpc: "2.0", id: sent.id, result: { ok: true, result: "late" } });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(orch.received.filter((m) => m.method === "tool/call")).toHaveLength(1);
+    } finally {
+      client.close();
+      orch.stop();
+    }
+  });
+
+  test("a dropped link rejects in-flight requests with ConnectionClosedError; a closed one with NotConnectedError", async () => {
+    const { orch, client } = await connected();
+    try {
+      const reply = client.request("tool/call", {}, { timeoutMs: 5_000 });
+      await waitFor(() => orch.received.some((m) => m.method === "tool/call"));
+      orch.drop();
+      await expect(reply).rejects.toBeInstanceOf(ConnectionClosedError);
+      await expect(client.request("tool/call", {})).rejects.toBeInstanceOf(NotConnectedError);
+    } finally {
+      client.close();
       orch.stop();
     }
   });
