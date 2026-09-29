@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { isValidAt, isValidTimeZone } from "./scheduler.ts";
 
 export type WorkspaceProvider = "chatgpt" | "openrouter";
 
@@ -17,6 +18,10 @@ export interface WorkspaceConfig {
   agentDir: string;
   home: string;
   stateDir: string;
+  /** IANA zone for scheduled jobs. */
+  tz: string;
+  /** Local "HH:MM" of the nightly memory consolidation. */
+  consolidateAt: string;
 }
 
 export class WorkspaceConfigError extends Error {}
@@ -32,6 +37,10 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
   if (provider !== "chatgpt" && provider !== "openrouter") {
     throw new WorkspaceConfigError(`WORKSPACE_PROVIDER must be "chatgpt" or "openrouter", got "${provider}"`);
   }
+  const tz = env.WORKSPACE_TZ?.trim() || "UTC";
+  if (!isValidTimeZone(tz)) throw new WorkspaceConfigError(`WORKSPACE_TZ must be an IANA time zone, got "${tz}"`);
+  const consolidateAt = env.WORKSPACE_CONSOLIDATE_AT?.trim() || "04:00";
+  if (!isValidAt(consolidateAt)) throw new WorkspaceConfigError(`WORKSPACE_CONSOLIDATE_AT must be HH:MM, got "${consolidateAt}"`);
   return {
     orchUrl: env.ORCH_URL || "ws://localhost:8788",
     orchSecret,
@@ -46,5 +55,7 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
     home,
     // Sibling of HOME, so prod (HOME=/data/home) lands on /data/.workspace outside the home repo.
     stateDir: env.WORKSPACE_STATE_DIR || resolve(home, "..", ".workspace"),
+    tz,
+    consolidateAt,
   };
 }

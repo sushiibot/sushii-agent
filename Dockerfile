@@ -87,6 +87,9 @@ RUN printf '%s\n' '#!/bin/sh' 'exec env -u OPENAI_API_KEY bun /app/node_modules/
 # `ws-runs`: the agent's read path to its own run index and session transcripts (redacted).
 RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-runs.ts "$@"' > /usr/local/bin/ws-runs \
     && chmod 755 /usr/local/bin/ws-runs
+# `ws-consolidate`: queues a memory consolidation for the workspace's scheduler, or shows the last run.
+RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-consolidate.ts "$@"' > /usr/local/bin/ws-consolidate \
+    && chmod 755 /usr/local/bin/ws-consolidate
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]

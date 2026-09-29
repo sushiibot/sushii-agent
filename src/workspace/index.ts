@@ -14,6 +14,8 @@ import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { SubagentHost } from "./subagents/host.ts";
 import { MainTurnTracker } from "./subagents/turnTracker.ts";
+import { Scheduler } from "./scheduler.ts";
+import { createConsolidationJob } from "./consolidation.ts";
 
 const log = getLogger("workspace");
 
@@ -94,6 +96,9 @@ async function main(): Promise<void> {
   });
   reauth = new ReauthNotifier({ stateDir: config.stateDir, deliver: (d) => personal.deliverOutOfBand(d), suppressed: () => authLogin.isPending });
   await personal.start();
+  const scheduler = new Scheduler({ stateDir: config.stateDir, at: config.consolidateAt, tz: config.tz, log: getLogger("workspace.scheduler") });
+  scheduler.register(createConsolidationJob(config, { runs }));
+  void scheduler.start();
 
   client = new OrchestrationClient({
     url: config.orchUrl,
@@ -115,7 +120,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     log.info({ signal }, "workspace shutting down");
     client?.close();
-    await personal.dispose();
+    await Promise.all([scheduler.stop(), personal.dispose()]);
     await subagents.dispose();
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
