@@ -181,7 +181,7 @@ describe("protected watch: projects/", () => {
     for (const name of ["repo", "other"]) {
       const dir = join(projects, name);
       mkdirSync(dir, { recursive: true });
-      sh("git init -q", dir);
+      sh("git init -q -b main", dir);
       writeFileSync(join(dir, "a.txt"), "a\n");
       git(dir, "add .");
       git(dir, "commit -qm init");
@@ -211,7 +211,7 @@ describe("protected watch: projects/", () => {
   test("moving another branch of the source repo is caught", async () => {
     const { info } = await repos();
     const { watch } = watchWith(true, info.projectPaths);
-    git(join(home, "projects", "repo-wt-1"), "branch -f master HEAD~0");
+    git(join(home, "projects", "repo-wt-1"), "branch -f side HEAD");
     sh("git update-ref refs/heads/evil HEAD", join(home, "projects", "repo-wt-1"));
     expect(watch.check("CHILD").tamper?.paths).toEqual(expect.arrayContaining(["projects/repo/.git/refs/heads/evil"]));
   });
