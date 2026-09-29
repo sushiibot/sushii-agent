@@ -29,6 +29,12 @@ export async function reloadContext(session: ChatSession): Promise<void> {
   }
 }
 
+// A detour through the non-reasoning OpenRouter model leaves the level at "off", which Pi clamps up to the
+// ChatGPT model's lowest effort; reopened sessions restore that clamped level from the transcript.
+function restoreChatGptThinking(session: AgentSession): void {
+  session.setThinkingLevel(session.settingsManager.getDefaultThinkingLevel() ?? "medium");
+}
+
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context
  *  files, settings.json and auth.json under agentDir. ChatGPT sign-in is the primary model when
  *  configured and signed in; OpenRouter is the fallback. */
@@ -68,8 +74,10 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
       fallback: openrouterModel,
       signedIn: () => chatGptSignedIn(modelRuntime),
       setModel: async (m) => {
-        if (!sessionRef.current) throw new Error("pi chat session not ready");
-        await sessionRef.current.setModel(m);
+        const session = sessionRef.current;
+        if (!session) throw new Error("pi chat session not ready");
+        await session.setModel(m);
+        if (m.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
       },
       log,
     });
@@ -107,6 +115,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
     });
     sessionRef.current = session;
     assertExactTools(session, WORKSPACE_TOOLS, "workspace");
+    if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
 
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
