@@ -146,23 +146,39 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
 
     const observerRef: { current: RunObserver | null } = { current: null };
     const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null);
-    const { session } = await createAgentSession({
-      cwd,
-      agentDir: config.agentDir,
-      model,
-      modelRuntime,
-      resourceLoader: loader,
-      settingsManager,
-      // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
-      // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
-      tools: stubs ? [...WORKSPACE_TOOLS, ...KNOWN_PROXIED_TOOLS] : WORKSPACE_TOOLS,
-      customTools: [bashTool],
-      excludeTools: ["ask_question"],
-      sessionManager,
-    });
-    sessionRef.current = session;
-    assertExactTools(session, [...WORKSPACE_TOOLS, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...(stubs?.offered() ?? [])]);
-    stubs?.assertOwned(session, "workspace");
+    let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    try {
+      ({ session } = await createAgentSession({
+        cwd,
+        agentDir: config.agentDir,
+        model,
+        modelRuntime,
+        resourceLoader: loader,
+        settingsManager,
+        // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
+        // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
+        tools: stubs ? [...WORKSPACE_TOOLS, ...KNOWN_PROXIED_TOOLS] : WORKSPACE_TOOLS,
+        customTools: [bashTool],
+        excludeTools: ["ask_question"],
+        sessionManager,
+      }));
+      sessionRef.current = session;
+      assertExactTools(session, [...WORKSPACE_TOOLS, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...(stubs?.offered() ?? [])]);
+      stubs?.assertOwned(session, "workspace");
+    } catch (err) {
+      stubs?.release();
+      throw err;
+    }
+    if (stubs) {
+      const dispose = session.dispose.bind(session);
+      session.dispose = () => {
+        try {
+          return dispose();
+        } finally {
+          stubs.release();
+        }
+      };
+    }
     if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
 
     const file = sessionManager.getSessionFile();
