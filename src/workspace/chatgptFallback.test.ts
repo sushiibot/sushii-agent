@@ -45,6 +45,11 @@ describe("classifyChatGptError", () => {
     expect(classifyChatGptError('Authentication failed for "openai". Run /login openai')?.reason).toBe("auth");
   });
 
+  test("ChatGPT usage or user data being unavailable is an unavailable failure, even on a 429", () => {
+    expect(classifyChatGptError('OpenAI API error (503): {"code":"subscription_sharing_usage_unavailable"}')?.reason).toBe("unavailable");
+    expect(classifyChatGptError('OpenAI API error (429): {"code":"subscription_sharing_user_unavailable"}')?.reason).toBe("unavailable");
+  });
+
   test("other errors don't trigger a fallback", () => {
     expect(classifyChatGptError("OpenAI API error (500): internal error")).toBeNull();
     expect(classifyChatGptError("context length exceeded")).toBeNull();
@@ -94,6 +99,15 @@ describe("BackendSelector", () => {
     expect(s.select(true)).toBe("openrouter");
     c.advance(1000);
     expect(s.select(true)).toBe("chatgpt");
+  });
+
+  test("an unavailable failure takes the default cool-down, ignoring any reset hint", () => {
+    const s = new BackendSelector({ primaryEnabled: true, now: clock().now });
+    expect(s.onChatGptFailure('{"code":"subscription_sharing_usage_unavailable"} "resets_in_seconds": 30')).toEqual({
+      reason: "unavailable",
+      until: NOW + DEFAULT_COOLDOWN_MS,
+    });
+    expect(s.select(true)).toBe("openrouter");
   });
 
   test("an unrelated error starts no cool-down", () => {

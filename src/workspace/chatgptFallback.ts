@@ -9,7 +9,7 @@ const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
 export const NOT_SIGNED_IN_WARNING = "ChatGPT not signed in — run: docker exec -it sushii_agent_workspace pi, then /login openai";
 
 export type Backend = "chatgpt" | "openrouter";
-export type FailureReason = "limit" | "auth";
+export type FailureReason = "limit" | "unavailable" | "auth";
 
 /** The model identity the host needs: Pi's Model carries more, but only these fields are read here. */
 export interface ModelRef {
@@ -23,10 +23,13 @@ export function modelLabel(provider: string, modelId: string): string {
 }
 
 const LIMIT_PATTERN = /subscription_sharing_usage_limit_exceeded|usage.?limit|insufficient_quota|quota|rate.?limit|too many requests|\(429\)/i;
+// Pi retries these itself first; still failing afterwards means the ChatGPT side is down, so no reset hint applies.
+const UNAVAILABLE_PATTERN = /subscription_sharing_\w+_unavailable|usage.?unavailable/i;
 const AUTH_PATTERN =
   /OAuth refresh failed|OAuth auth derivation failed|Authentication failed|No API key|\((?:401|403)\)|invalid_grant|unauthori[sz]ed|invalid.?api.?key|token.{0,20}(?:expired|revoked)/i;
 
 export function classifyChatGptError(errorMessage: string, now = Date.now()): { reason: FailureReason; resetAt?: number } | null {
+  if (UNAVAILABLE_PATTERN.test(errorMessage)) return { reason: "unavailable" };
   if (LIMIT_PATTERN.test(errorMessage)) {
     const resetAt = parseResetAt(errorMessage, now);
     return resetAt === undefined ? { reason: "limit" } : { reason: "limit", resetAt };

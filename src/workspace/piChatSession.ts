@@ -108,6 +108,9 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
       },
     };
     settingsManager.applyOverrides(overrides);
+    // Warm requests would spend the ChatGPT subscription. Pi reads the mode only from the shared global
+    // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
+    settingsManager.getCacheWarmingMode = () => "off";
 
     const bashTool = await createWorkspaceBashTool(cwd);
     const { session } = await createAgentSession({
