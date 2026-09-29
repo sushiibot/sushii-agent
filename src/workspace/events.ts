@@ -1,6 +1,7 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatEventPayload, ChatUsage } from "../orchestration/contracts.ts";
 import { summarizeToolArgs } from "../orchestration/runner/piShared.ts";
+import { CHATGPT_PROVIDER, modelLabel } from "./chatgptFallback.ts";
 
 export const NO_REPLY = "NO_REPLY";
 
@@ -16,14 +17,18 @@ export interface RunAccumulator {
   costUsd: number;
   lastStopReason: string | undefined;
   errorMessage: string | undefined;
+  /** The model that produced the latest assistant message. */
+  model: string | undefined;
 }
 
 export function newRunAccumulator(): RunAccumulator {
-  return { finalText: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, lastStopReason: undefined, errorMessage: undefined };
+  return { finalText: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, lastStopReason: undefined, errorMessage: undefined, model: undefined };
 }
 
 interface AssistantLike {
   role: "assistant";
+  provider?: string;
+  model?: string;
   content: Array<{ type: string; text?: string }>;
   stopReason?: string;
   errorMessage?: string;
@@ -66,7 +71,9 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
       acc.outputTokens += u?.output ?? 0;
       acc.cacheRead += u?.cacheRead ?? 0;
       acc.cacheWrite += u?.cacheWrite ?? 0;
-      acc.costUsd += u?.cost?.total ?? 0;
+      // A ChatGPT sign-in turn is paid by the subscription; Pi's catalog price would be misleading.
+      if (msg.provider !== CHATGPT_PROVIDER) acc.costUsd += u?.cost?.total ?? 0;
+      if (msg.provider && msg.model) acc.model = modelLabel(msg.provider, msg.model);
       acc.lastStopReason = msg.stopReason;
       acc.errorMessage = msg.stopReason === "error" ? (msg.errorMessage ?? "unknown error") : undefined;
       acc.finalText = assistantText(msg);
@@ -91,14 +98,15 @@ export function replyText(acc: RunAccumulator): string | null {
   return acc.finalText;
 }
 
-export function runUsage(acc: RunAccumulator, model: string, contextPercent: number | null | undefined): ChatUsage {
+/** `defaultModel` names the model when the run produced no assistant message. */
+export function runUsage(acc: RunAccumulator, defaultModel: string, contextPercent: number | null | undefined): ChatUsage {
   return {
-    model,
+    model: acc.model ?? defaultModel,
     inputTokens: acc.inputTokens,
     outputTokens: acc.outputTokens,
     ...(acc.cacheRead ? { cacheRead: acc.cacheRead } : {}),
     ...(acc.cacheWrite ? { cacheWrite: acc.cacheWrite } : {}),
-    // The provider is registered with zero per-token prices, so a zero here means "unknown", not free.
+    // OpenRouter is registered with zero per-token prices and ChatGPT turns are excluded, so a zero means "unknown", not free.
     ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}),
     ...(contextPercent != null ? { contextPct: contextPercent } : {}),
   };

@@ -1,11 +1,15 @@
 import { join } from "node:path";
 import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
 import type { AgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
+import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
 
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
+
+const log = getLogger("workspace.model");
 
 const PROVIDER_ID = "sushii-workspace-openrouter";
 const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
@@ -26,11 +30,15 @@ export async function reloadContext(session: ChatSession): Promise<void> {
 }
 
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context
- *  files, settings.json under agentDir. */
+ *  files, settings.json and auth.json under agentDir. ChatGPT sign-in is the primary model when
+ *  configured and signed in; OpenRouter is the fallback. */
 export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSessionFactory {
+  // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
+  const selector = new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
+
   return async ({ sessionFile }) => {
     const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
-    const { modelRuntime, model, maxTokens } = await createOpenRouterModel({
+    const { modelRuntime, model: openrouterModel, maxTokens } = await createOpenRouterModel({
       agentDir: config.agentDir,
       providerId: PROVIDER_ID,
       providerName: "sushii workspace OpenRouter",
@@ -38,17 +46,49 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
     });
+    const chatgptModel = config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
+    const model = await selectInitialModel({
+      config,
+      runtime: modelRuntime,
+      selector,
+      primary: chatgptModel,
+      fallback: openrouterModel,
+      log,
+    });
 
     const cwd = config.home;
     const sessionDir = join(config.agentDir, "chat");
     const sessionManager = sessionFile ? SessionManager.open(sessionFile, sessionDir, cwd) : SessionManager.create(cwd, sessionDir);
 
-    const loader = new DefaultResourceLoader({ cwd, agentDir: config.agentDir, agentsFilesOverride: homeAgentsFilesOverride(cwd) });
+    // The extension's handlers only run once createAgentSession has returned and set this.
+    const sessionRef: { current: AgentSession | null } = { current: null };
+    const fallbackExtension = createModelFallbackExtension({
+      selector,
+      primary: chatgptModel,
+      fallback: openrouterModel,
+      signedIn: () => chatGptSignedIn(modelRuntime),
+      setModel: async (m) => {
+        if (!sessionRef.current) throw new Error("pi chat session not ready");
+        await sessionRef.current.setModel(m);
+      },
+      log,
+    });
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir: config.agentDir,
+      agentsFilesOverride: homeAgentsFilesOverride(cwd),
+      extensionFactories: [{ name: "sushii-model-fallback", factory: fallbackExtension }],
+    });
     await loader.reload();
 
     // In-memory only (session.reload() drops it): a 16k default reserve overflows on a maxTokens-sized turn.
     const settingsManager = SettingsManager.create(cwd, config.agentDir);
-    const overrides: Settings = { compaction: { reserveTokens: maxTokens } };
+    const overrides: Settings = {
+      compaction: {
+        reserveTokens: maxTokens,
+        ...(chatgptModel ? { modelOverrides: { [`${CHATGPT_PROVIDER}/${chatgptModel.id}`]: { reserveTokens: chatgptModel.maxTokens } } } : {}),
+      },
+    };
     settingsManager.applyOverrides(overrides);
 
     const bashTool = await createAgentBashTool(cwd);
@@ -65,6 +105,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
       excludeTools: ["ask_question"],
       sessionManager,
     });
+    sessionRef.current = session;
     assertExactTools(session, WORKSPACE_TOOLS, "workspace");
 
     const file = sessionManager.getSessionFile();

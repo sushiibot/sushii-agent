@@ -21,6 +21,9 @@ function loadConfigOrExit(): WorkspaceConfig {
 
 async function main(): Promise<void> {
   const config = loadConfigOrExit();
+  // This is the OpenRouter key; Pi's built-in openai provider would otherwise send it to api.openai.com
+  // whenever no ChatGPT login is stored.
+  delete process.env.OPENAI_API_KEY;
   await scaffoldHome(config.home);
   let client: OrchestrationClient | null = null;
   const personal = new PersonalSession({
@@ -59,7 +62,10 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
-  log.info({ url: config.orchUrl, principalId: config.principalId, model: config.model }, "workspace starting");
+  log.info(
+    { url: config.orchUrl, principalId: config.principalId, provider: config.provider, chatgptModel: config.chatgptModel, model: config.model },
+    "workspace starting",
+  );
   await client.run();
 }
 

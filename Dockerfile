@@ -80,6 +80,9 @@ ENV HOME=/data/home \
     BUN_INSTALL_BIN=/data/home/.bun/bin \
     NPM_CONFIG_PREFIX=/data/home/.npm-global \
     PATH=/data/home/.bun/bin:/data/home/.local/bin:/data/home/.npm-global/bin:${PATH}
+# `pi` CLI for the one-time `/login openai`; it shares auth.json with the workspace via PI_CODING_AGENT_DIR.
+RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js "$@"' > /usr/local/bin/pi \
+    && chmod 755 /usr/local/bin/pi
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]
