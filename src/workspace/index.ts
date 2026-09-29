@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       signature: () => memoryFilesSignature(config.home),
     },
     transport: {
-      request: (method, params) => (client ? client.request(method, params) : Promise.reject(new Error("not connected"))),
+      request: (method, params) => (client ? client.request(method, params) : Promise.reject(new NotConnectedError())),
       notify: (method, params) => client?.notify(method, params),
       isConnected: () => client?.connected ?? false,
     },

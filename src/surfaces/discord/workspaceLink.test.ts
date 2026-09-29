@@ -477,19 +477,21 @@ describe("bot-proxied tools", () => {
           return { ok: true, result: "r" };
         },
         onSocketClosed: (conn) => void seen.push(`closed:${conn.runnerId}`),
+        handleCancel: (_conn, params) => (seen.push(`cancel:${(params as { callId: string }).callId}`), { cancelled: false }),
       },
     });
     link.attach(rpc);
     return { handler: rpc.handler!, seen };
   }
 
-  test("tool/call, the manifest and socket closes route to the tools port", async () => {
+  test("tool/call, tool/cancel, the manifest and socket closes route to the tools port", async () => {
     const { handler, seen } = withTools();
     expect(await handler.onRequest!(CONN, RPC_METHODS.toolCall, { name: "web_search" })).toEqual({ ok: true, result: "r" });
+    expect(await handler.onRequest!(CONN, RPC_METHODS.toolCancel, { callId: "c9" })).toEqual({ cancelled: false });
     expect(handler.toolManifest!(CONN).map((t) => t.name)).toEqual(["web_search"]);
     expect(handler.toolManifest!({ ...CONN, principalId: "someone-else" })).toEqual([]);
     handler.onSocketClosed!(CONN);
-    expect(seen).toEqual(["call:web_search", `closed:${CONN.runnerId}`]);
+    expect(seen).toEqual(["call:web_search", "cancel:c9", `closed:${CONN.runnerId}`]);
   });
 
   test("without a tools port, tool/call is method-not-found and the manifest is empty", async () => {
@@ -678,11 +680,13 @@ describe("workspace flag off", () => {
         manifest: () => [{ name: "web_search", description: "d", inputSchema: { type: "object" }, approval: "none" }],
         handleCall: async () => (calls.push("call"), { ok: true, result: "r" }),
         onSocketClosed: () => {},
+        handleCancel: () => ({ cancelled: false }),
       },
     });
     link.attach(rpc);
     expect(rpc.handler!.toolManifest!(CONN)).toEqual([]);
     await expect(rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCall, { name: "web_search" })).rejects.toThrow("method not found");
+    await expect(rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCancel, { callId: "c1" })).rejects.toThrow("method not found");
     expect(calls).toEqual([]);
     await deliverViaServer(rpc, deliverParams({ outboxId: "left-over" }));
     await settle();

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentSessionEvent, PromptOptions, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, ExtensionAPI, PromptOptions, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { MessageCreateOptions, MessageEditOptions } from "discord.js";
 import { applySchema } from "../db/index.ts";
 import { WorkspaceLinkStore } from "../db/workspaceLink.ts";
@@ -44,6 +44,9 @@ class FakePi {
   messages: Array<{ role: string }> = [];
   aborts = 0;
   disposed = false;
+  /** Tools registered through the session's extension API, as piChatSession's stub binding does. */
+  readonly tools = new Map<string, ToolDefinition>();
+  readonly extensionApi = { registerTool: (def: ToolDefinition) => void this.tools.set(def.name, def) } as unknown as ExtensionAPI;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
   private runDone: (() => void) | null = null;
   private toolSeq = 0;
@@ -83,13 +86,13 @@ class FakePi {
   }
 
   /** Runs a real tool definition the way Pi would: start event, execute, end event, toolResult in the transcript. */
-  async runTool(def: ToolDefinition, args: Record<string, unknown>): Promise<void> {
+  async runTool(def: ToolDefinition, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
     const toolCallId = `t${++this.toolSeq}`;
     this.emit({ type: "tool_execution_start", toolCallId, toolName: def.name, args });
     let text: string;
     let isError = false;
     try {
-      const r = await def.execute(toolCallId, args as never, undefined, undefined, undefined as never);
+      const r = await def.execute(toolCallId, args as never, signal, undefined, undefined as never);
       text = r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
     } catch (err) {
       text = (err as Error).message;
@@ -269,6 +272,9 @@ interface Bot {
   /** Inputs the bot's fake web_search ran with, and the tool/call audit lines. */
   searches: Array<Record<string, unknown>>;
   audits: ToolCallAudit[];
+  tools: WorkspaceTools;
+  /** Titles the bot's fake file_linear_issue (an approval-gated tool) filed. */
+  filed: string[];
 }
 
 function fakeWebSearch(searches: Array<Record<string, unknown>>): ToolEntry<keyof ToolHosts> {
@@ -283,17 +289,35 @@ function fakeWebSearch(searches: Array<Record<string, unknown>>): ToolEntry<keyo
   };
 }
 
+function fakeLinear(filed: string[]): ToolEntry<keyof ToolHosts> {
+  const str = { type: "string" };
+  return {
+    name: "file_linear_issue",
+    definition: {
+      name: "file_linear_issue",
+      description: "File a Linear issue (fake).",
+      parameters: { type: "object", properties: { title: str, description: str, repo_label: str }, required: ["title", "description", "repo_label"] },
+    },
+    requiresHosts: [],
+    async execute(input) {
+      filed.push(String(input.title));
+      return { content: "Filed ENG-1" };
+    },
+  };
+}
+
 function startServer(port: number): OrchestrationServer {
   const server = new OrchestrationServer({ port, onEvent: () => {}, secretGrants: { [SECRET]: { principalId: P, roles: ["workspace"] } } });
   return server;
 }
 
-async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0): Promise<Bot> {
+async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0, opts: { linear?: boolean } = {}): Promise<Bot> {
   const server = startServer(port);
   const surfaces = new SurfaceRegistry("discord").register(new DiscordWorkspaceAdapter({ ownerChannel: async () => dm }));
   const searches: Array<Record<string, unknown>> = [];
   const audits: ToolCallAudit[] = [];
   const audit: AuditLog = { info: (obj) => void audits.push(obj) };
+  const filed: string[] = [];
   const tools = new WorkspaceTools({
     principalId: P,
     ownerUserId: () => OWNER,
@@ -301,11 +325,11 @@ async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0): Promis
     surfaces,
     store: {} as WorkspaceToolsOptions["store"],
     memory: { count: () => 0, getServerContext: () => null } as unknown as WorkspaceToolsOptions["memory"],
-    registry: { resolve: () => [fakeWebSearch(searches)] },
+    registry: { resolve: () => [fakeWebSearch(searches), ...(opts.linear ? [fakeLinear(filed)] : [])] },
     log: audit,
   });
   const link = new WorkspaceLink({ principalId: P, store, surfaces, owner: () => ({ id: OWNER, name: "drk" }), timers: immediateTimers, tools });
-  const bot: Bot = { server, link, port: 0, deliverRequests: 0, kill: "none", messages: [], searches, audits };
+  const bot: Bot = { server, link, port: 0, deliverRequests: 0, kill: "none", messages: [], searches, audits, tools, filed };
   const die = () => setTimeout(() => server.stop(), 0);
   // Wraps the real server only to observe traffic and to simulate the bot process dying at a chosen point.
   const rpc: WorkspaceRpc = {
@@ -368,6 +392,7 @@ async function startWorkspace(): Promise<Workspace> {
   const sessions: FakePi[] = [];
   const factory: ChatSessionFactory = async () => {
     const s = new FakePi(join(stateDir, `chat-${sessions.length + 1}.jsonl`));
+    ws.toolStubs.binding().factory(s.extensionApi);
     sessions.push(s);
     return { session: s as unknown as ChatSession, sessionFile: s.file };
   };
@@ -481,12 +506,12 @@ function router(link: () => WorkspaceLink, dm: FakeDm): Router {
   return { deps, inProcess, dm: (id, content) => handleOwnerDm(dm.message(id, content), deps) };
 }
 
-async function linked() {
+async function linked(opts: { linear?: boolean } = {}) {
   const dm = new FakeDm();
   const db = new Database(":memory:");
   applySchema(db);
   const store = new WorkspaceLinkStore(db);
-  const bot = await startBot(store, dm);
+  const bot = await startBot(store, dm, 0, opts);
   const ws = await startWorkspace();
   const r = { bot };
   const route = router(() => r.bot.link, dm);
@@ -771,7 +796,8 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     await connected(h);
     await waitFor(() => h.ws.toolStubs.names().length > 0, "tool manifest");
     expect(h.ws.toolStubs.names()).toEqual(["web_search"]);
-    const search = h.ws.toolStubs.definitions().find((d) => d.name === "web_search")!;
+    await waitFor(() => h.ws.pi().tools.has("web_search"), "stub registered in the live session");
+    const search = h.ws.pi().tools.get("web_search")!;
     expect(search.parameters).toMatchObject({ required: ["query"], additionalProperties: false });
 
     await h.route.dm("900", "search for bun releases");
@@ -785,5 +811,27 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     h.ws.pi().reply("Bun 2.0 is out.");
     await waitFor(() => h.dm.replies().length === 1, "reply");
     expect(textOf(h.dm.replies()[0]!.options)).toContain("Bun 2.0 is out.");
+  });
+
+  test("10. stopping a turn mid-approval withdraws the call: the prompt shows Cancelled and a later Approve runs nothing", async () => {
+    const h = await linked({ linear: true });
+    await connected(h);
+    await waitFor(() => h.ws.pi().tools.has("file_linear_issue"), "ask stub registered in the live session");
+
+    await h.route.dm("1000", "file a bug about login");
+    const ac = new AbortController();
+    const run = h.ws.pi().runTool(h.ws.pi().tools.get("file_linear_issue")!, { title: "Login crash", description: "D", repo_label: "sushii-bot" }, ac.signal);
+    const promptOf = () => h.dm.sent.find((s) => textOf(s.options).includes("wsap:"));
+    await waitFor(() => promptOf() !== undefined, "approval prompt");
+    const prompt = promptOf()!;
+    const nonce = /wsap:([A-Za-z0-9_-]{16}):approve/.exec(textOf(prompt.options))![1]!;
+
+    ac.abort();
+    await run;
+    expect(h.ws.pi().messages.at(-1)).toMatchObject({ role: "toolResult", toolName: "file_linear_issue", isError: true });
+    await waitFor(() => h.dm.current(prompt).includes("⏹ Cancelled"), "prompt shows Cancelled");
+    expect(h.r.bot.tools.decide(nonce, "approve", { surface: "discord", userId: OWNER, name: "drk" })).toBe("expired");
+    expect(h.r.bot.filed).toEqual([]);
+    h.ws.pi().reply("Stopped.");
   });
 });

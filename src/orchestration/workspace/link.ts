@@ -8,6 +8,7 @@ import {
   type ChatMessageResult,
   type ChatOrigin,
   type ToolCallResult,
+  type ToolCancelResult,
   type ToolManifestEntry,
 } from "../contracts.ts";
 import { MethodNotFoundError, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
@@ -62,6 +63,7 @@ export interface WorkspaceRpc {
 export interface WorkspaceToolsPort {
   manifest(): ToolManifestEntry[];
   handleCall(conn: ConnectionInfo, params: unknown): Promise<ToolCallResult>;
+  handleCancel(conn: ConnectionInfo, params: unknown): ToolCancelResult;
   onSocketClosed(conn: ConnectionInfo): void;
   /** An owner's text reply to a buttonless approval prompt; true when it settled a pending approval. */
   decideByCode?(code: string, decision: "approve" | "deny", actor: SurfaceActor): boolean;
@@ -523,6 +525,7 @@ export class WorkspaceLink {
 
   private async onRequest(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown> {
     if (method === RPC_METHODS.toolCall && this.toolsEnabled) return this.opts.tools!.handleCall(conn, params);
+    if (method === RPC_METHODS.toolCancel && this.toolsEnabled) return this.opts.tools!.handleCancel(conn, params);
     if (method !== RPC_METHODS.chatDeliver) throw new MethodNotFoundError(`method not found: ${method}`);
     const p = chatDeliverParams.parse(params);
     if (p.principalId !== conn.principalId || p.principalId !== this.opts.principalId) throw new Error("principal mismatch");

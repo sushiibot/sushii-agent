@@ -489,7 +489,7 @@ describe("text approvals on a surface without buttons", () => {
     const pending = h.call("c1");
     const { view } = await h.prompted();
     timers.fire(APPROVAL_TIMEOUT_MS);
-    expect(await pending).toMatchObject({ denied: true });
+    expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining("approval timed out") });
     await h.route(h.from(TEST, `approve ${view.replyCode}`));
     expect(h.test.of("notice").map((c) => c.arg)).toEqual([{ type: "approvalExpired" }]);
     expect(h.chatMessages()).toEqual([]);
@@ -553,6 +553,21 @@ describe("approval races", () => {
     expect(h.test.of("resolveApproval").map((c) => c.arg)).toEqual(["expired"]);
     expect(h.tools.decide(nonce, "approve", OWNER_TEST)).toBe("expired");
     expect(h.tools.decideByCode(view.replyCode!, "approve", OWNER_TEST)).toBe(false);
+    expect(executed).toEqual([]);
+  });
+});
+
+describe("tool/cancel through the link", () => {
+  test("a cancel routed from the workspace retires the prompt's reply code", async () => {
+    const executed: string[] = [];
+    const h = approvalSetup({ executed });
+    const pending = h.call("c1");
+    const { view } = await h.prompted();
+    expect(await h.rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCancel, { principalId: P, callId: "c1" })).toEqual({ cancelled: true });
+    expect(await pending).toEqual({ ok: false, error: "cancelled" });
+    expect(h.test.of("resolveApproval").map((c) => c.arg)).toEqual(["cancelled"]);
+    await h.route(h.from(TEST, `approve ${view.replyCode}`));
+    expect(h.test.of("notice").map((c) => c.arg)).toEqual([{ type: "approvalExpired" }]);
     expect(executed).toEqual([]);
   });
 });

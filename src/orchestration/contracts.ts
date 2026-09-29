@@ -123,6 +123,8 @@ export const RPC_METHODS = {
   chatEvent: "chat/event",
   // Workspace → bot request: run one of the bot's secret-holding tools (manifest sent in the register result).
   toolCall: "tool/call",
+  // Workspace → bot request: withdraw a still-pending tool/call (its turn was stopped) → { cancelled }.
+  toolCancel: "tool/cancel",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -237,6 +239,14 @@ export const toolCallParams = z.object({
 });
 export type ToolCallParams = z.infer<typeof toolCallParams>;
 export type ToolCallResult = { ok: true; result: string } | { ok: false; error: string; denied?: boolean };
+
+export const toolCancelParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  callId: z.string().min(1).max(ID_MAX),
+});
+export type ToolCancelParams = z.infer<typeof toolCancelParams>;
+/** cancelled is false when the call already finished, is unknown, or is already executing. */
+export type ToolCancelResult = { cancelled: boolean };
 
 export const jsonRpcRequest = z.object({
   jsonrpc: z.literal("2.0"),

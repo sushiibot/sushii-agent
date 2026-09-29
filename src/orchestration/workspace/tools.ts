@@ -6,7 +6,7 @@ import { Check } from "typebox/schema";
 import type { AuthorRef, ConversationRef, ConversationStore, SpaceMemoryStore, SurfaceId, SurfaceSession, ToolContext, ToolEntry, ToolHosts, ToolRegistry } from "../../core/contracts.ts";
 import { buildToolContextBase } from "../../core/agentCore.ts";
 import { createToolRegistry } from "../../core/tools/registry.ts";
-import { toolCallParams, type ToolCallParams, type ToolCallResult, type ToolManifestEntry } from "../contracts.ts";
+import { toolCallParams, toolCancelParams, type ToolCallParams, type ToolCallResult, type ToolCancelResult, type ToolManifestEntry } from "../contracts.ts";
 import type { ConnectionInfo } from "../transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { realTimers, type Timers } from "./progress.ts";
@@ -91,6 +91,7 @@ export interface WorkspaceToolsOptions {
 
 interface PendingApproval {
   conn: ConnectionInfo;
+  callId: string;
   resolve: (d: ApprovalDecision) => void;
   /** The reply code on a surface without buttons. */
   code?: { code: string; surface: string };
@@ -109,6 +110,8 @@ function newNonce(): string {
 }
 
 const DENIED: ToolCallResult = { ok: false, error: "denied by owner", denied: true };
+const CANCELLED: ToolCallResult = { ok: false, error: "cancelled" };
+const APPROVAL_TIMED_OUT: ToolCallResult = { ok: false, error: "approval timed out (owner didn't respond within 30 min); do not retry it unless drk asks in chat" };
 
 // Default-ignorable and format characters render as nothing or reorder text, so an approved prompt could
 // hide part of what executes. Tag characters are listed explicitly: most are unassigned, so not \p{Cf}.
@@ -286,7 +289,7 @@ export class WorkspaceTools {
     const code = adapter.capabilities.richButtons ? undefined : { code: this.newCode(), surface: adapter.surface };
     const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code.code } : {}) };
     // Pending before the prompt exists, so a click racing the post's return still counts.
-    const decided = this.awaitDecision(conn, nonce, code);
+    const decided = this.awaitDecision(conn, p.callId, nonce, code);
     let prompt: SurfaceMessageHandle;
     let resolve: (decision: ApprovalDecision, result?: ToolCallResult) => Promise<void>;
     try {
@@ -302,7 +305,9 @@ export class WorkspaceTools {
     const decision = await decided;
     if (decision !== "approve") {
       await resolve(decision);
-      return DENIED;
+      // Copies: a caller that mutates its result must not change the next one.
+      if (decision === "cancelled") return { ...CANCELLED };
+      return decision === "timeout" ? { ...APPROVAL_TIMED_OUT } : { ...DENIED };
     }
     // Disable the buttons while the tool runs, so a second click doesn't read as "expired".
     const running = resolve("approve");
@@ -320,12 +325,13 @@ export class WorkspaceTools {
     }
   }
 
-  private awaitDecision(conn: ConnectionInfo, nonce: string, code: PendingApproval["code"]): Promise<ApprovalDecision> {
+  private awaitDecision(conn: ConnectionInfo, callId: string, nonce: string, code: PendingApproval["code"]): Promise<ApprovalDecision> {
     return new Promise((resolve) => {
       const timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
       if (code) this.codes.set(code.code, nonce);
       this.pending.set(nonce, {
         conn,
+        callId,
         ...(code ? { code } : {}),
         resolve: (d) => {
           this.timers.clear(timer);
@@ -364,6 +370,21 @@ export class WorkspaceTools {
     const pending = nonce ? this.pending.get(nonce) : undefined;
     if (!nonce || pending?.code?.surface !== actor.surface) return false;
     return this.decide(nonce, decision, actor) === "decided";
+  }
+
+  /** `tool/cancel`: settles a call still waiting for approval as cancelled, from the connection it arrived
+   *  on only. An approved or `none` call is already running and can't be stopped, so it runs to the end. */
+  handleCancel(conn: ConnectionInfo, raw: unknown): ToolCancelResult {
+    const parsed = toolCancelParams.safeParse(raw);
+    if (!parsed.success) throw new Error(`invalid tool/cancel params: ${parsed.error.issues[0]?.message ?? "malformed"}`);
+    const { principalId, callId } = parsed.data;
+    if (principalId !== this.opts.principalId || conn.principalId !== this.opts.principalId) throw new Error("principal mismatch");
+    for (const [nonce, p] of this.pending) {
+      if (p.callId !== callId || p.conn !== conn) continue;
+      log.info({ principalId, callId }, "workspace tool/call cancelled");
+      return { cancelled: this.settle(nonce, "cancelled") };
+    }
+    return { cancelled: false };
   }
 
   /** The socket a pending approval arrived on closed: its reply can't be delivered, so expire it. */

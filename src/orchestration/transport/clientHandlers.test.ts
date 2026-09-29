@@ -95,8 +95,15 @@ describe("OrchestrationClient register result", () => {
     expect(await registeredWith({ ok: true, tools: [WEB_SEARCH] }, "workspace")).toEqual([{ ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"] }]);
   });
 
-  test("a malformed workspace result reads as no tools", async () => {
-    expect(await registeredWith({ ok: true, tools: [{ name: 1 }] }, "workspace")).toEqual([{ ok: true, tools: [] }]);
+  test("a malformed manifest entry drops only that entry", async () => {
+    const newerApproval = { ...WEB_SEARCH, name: "file_linear_issue", approval: "twice" };
+    expect(await registeredWith({ ok: true, tools: [{ name: 1 }, newerApproval, WEB_SEARCH] }, "workspace")).toEqual([
+      { ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"] },
+    ]);
+  });
+
+  test("a result with no tools list reads as no tools", async () => {
+    expect(await registeredWith({ ok: true, tools: "web_search" }, "workspace")).toEqual([{ ok: true, tools: [] }]);
   });
 
   test("a task runner gets null", async () => {

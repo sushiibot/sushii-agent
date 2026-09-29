@@ -85,7 +85,8 @@ export interface ApprovalView {
   replyCode?: string;
 }
 
-export type ApprovalDecision = "approve" | "deny" | "timeout" | "expired";
+/** `cancelled`: the workspace withdrew the call because its turn was stopped. */
+export type ApprovalDecision = "approve" | "deny" | "timeout" | "expired" | "cancelled";
 
 /** Receipt signals on the user's message. */
 export type AckKind = "accepted" | "steer" | "queued" | "newSession" | "stopped" | "transcribing";

@@ -348,12 +348,14 @@ describe("tool/call — approval ask", () => {
     expect(accentOf(channel.edits[0]!)).toBe(ACCENT.danger);
   });
 
-  test("no click in 30 min → timed out, denied", async () => {
+  test("no click in 30 min → timed out, reported as unanswered rather than denied", async () => {
     const { tools, channel, timers, linear } = askSetup();
     const pending = tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "c1" }));
     await until(() => channel.sent.length > 0 && timers.handles.size > 0);
     timers.fire(APPROVAL_TIMEOUT_MS);
-    expect(await pending).toEqual({ ok: false, error: "denied by owner", denied: true });
+    const res = await pending;
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining("approval timed out (owner didn't respond") });
+    expect(res).not.toHaveProperty("denied");
     expect(linear.calls).toHaveLength(0);
     expect(textOf(channel.edits[0]!)).toContain("⌛ Timed out");
     expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("expired");
@@ -391,6 +393,70 @@ describe("tool/call — approval ask", () => {
     await until(() => channel.sent.length > 0);
     tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     expect((await pending).ok).toBe(false);
+  });
+});
+
+describe("tool/cancel", () => {
+  const ARGS = { title: "Crash on login", description: "body", repo_label: "sushii-bot" };
+  const cancel = (callId: string, principalId = P) => ({ principalId, callId });
+
+  test("cancelling a call awaiting approval answers cancelled, shows Cancelled, and a later Approve runs nothing", async () => {
+    const linear = fakeEntry("file_linear_issue", LINEAR_SCHEMA, async () => "Filed ENG-9");
+    const { tools, channel, timers } = setup({ registry: fixedRegistry([linear.entry]) });
+    const c = conn();
+    const pending = tools.handleCall(c, call("file_linear_issue", ARGS, { callId: "c1" }));
+    await until(() => channel.sent.length > 0);
+    expect(tools.handleCancel(c, cancel("c1"))).toEqual({ cancelled: true });
+    expect(await pending).toEqual({ ok: false, error: "cancelled" });
+    await until(() => channel.edits.length > 0);
+    expect(textOf(channel.edits[0]!)).toContain("⏹ Cancelled");
+    expect(textOf(channel.edits[0]!)).toContain('"disabled":true');
+    expect(timers.handles.size).toBe(0);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("expired");
+    expect(tools.handleCancel(c, cancel("c1"))).toEqual({ cancelled: false });
+    expect(linear.calls).toHaveLength(0);
+  });
+
+  test("an unknown or finished callId answers cancelled:false", async () => {
+    const linear = fakeEntry("file_linear_issue", LINEAR_SCHEMA, async () => "Filed ENG-9");
+    const { tools, channel } = setup({ registry: fixedRegistry([linear.entry]) });
+    const c = conn();
+    expect(tools.handleCancel(c, cancel("nope"))).toEqual({ cancelled: false });
+    const pending = tools.handleCall(c, call("file_linear_issue", ARGS, { callId: "c1" }));
+    await until(() => channel.sent.length > 0);
+    tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER);
+    expect((await pending).ok).toBe(true);
+    expect(tools.handleCancel(c, cancel("c1"))).toEqual({ cancelled: false });
+  });
+
+  test("a running none tool can't be cancelled and still finishes", async () => {
+    let finish!: (v: string) => void;
+    const search = fakeEntry("web_search", { type: "object", properties: { query: { type: "string" } } }, () => new Promise((r) => (finish = r)));
+    const { tools } = setup({ registry: fixedRegistry([search.entry]) });
+    const c = conn();
+    const pending = tools.handleCall(c, call("web_search", { query: "q" }, { callId: "s1" }));
+    await until(() => search.calls.length > 0);
+    expect(tools.handleCancel(c, cancel("s1"))).toEqual({ cancelled: false });
+    finish("results");
+    expect(await pending).toEqual({ ok: true, result: "results" });
+  });
+
+  test("another principal, or another connection, can't cancel the call", async () => {
+    const linear = fakeEntry("file_linear_issue", LINEAR_SCHEMA, async () => "Filed ENG-9");
+    const { tools, channel } = setup({ registry: fixedRegistry([linear.entry]) });
+    const c = conn();
+    const pending = tools.handleCall(c, call("file_linear_issue", ARGS, { callId: "c1" }));
+    await until(() => channel.sent.length > 0);
+    const eve: ConnectionInfo = { ...conn(), principalId: "eve", runnerId: "workspace-eve" };
+    expect(() => tools.handleCancel(eve, cancel("c1", "eve"))).toThrow("principal mismatch");
+    expect(() => tools.handleCancel(eve, cancel("c1"))).toThrow("principal mismatch");
+    expect(() => tools.handleCancel(c, cancel("c1", "eve"))).toThrow("principal mismatch");
+    expect(tools.handleCancel(conn(), cancel("c1"))).toEqual({ cancelled: false });
+    expect(() => tools.handleCancel(c, { principalId: P })).toThrow("invalid tool/cancel params");
+    expect(channel.edits).toHaveLength(0);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("decided");
+    expect(await pending).toEqual({ ok: true, result: "Filed ENG-9" });
+    expect(linear.calls).toHaveLength(1);
   });
 });
 

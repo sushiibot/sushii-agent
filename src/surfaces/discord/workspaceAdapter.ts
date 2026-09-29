@@ -422,7 +422,7 @@ export function renderApprovalPrompt(nonce: string, view: ApprovalView): Message
 }
 
 export function renderApprovalFinal(nonce: string, view: ApprovalView, decision: ApprovalDecision, result?: ToolCallResult): MessageEditOptions {
-  const header = { approve: "✅ Approved", deny: "❌ Denied", timeout: "⌛ Timed out", expired: "⌛ Expired (workspace disconnected)" }[decision];
+  const header = { approve: "✅ Approved", deny: "❌ Denied", timeout: "⌛ Timed out", expired: "⌛ Expired (workspace disconnected)", cancelled: "⏹ Cancelled" }[decision];
   const outcome = result ? `\n-# → ${inlineSafe(clip((result.ok ? result.result : `failed: ${result.error}`).split("\n")[0] ?? "", RESULT_SUMMARY_MAX))}` : "";
   const container = new ContainerBuilder()
     .setAccentColor(decision === "approve" ? ACCENT.success : ACCENT.danger)

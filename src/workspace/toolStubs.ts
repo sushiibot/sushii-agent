@@ -1,5 +1,5 @@
 import type { AgentSession, AgentToolResult, ExtensionAPI, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { RPC_METHODS, type ToolCallParams, type ToolCallResult, type ToolManifestEntry } from "../orchestration/contracts.ts";
+import { RPC_METHODS, type ToolCallParams, type ToolCallResult, type ToolCancelParams, type ToolManifestEntry } from "../orchestration/contracts.ts";
 import { ConnectionClosedError, NotConnectedError, RequestTimeoutError } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { ulid } from "./ulid.ts";
@@ -26,6 +26,8 @@ export const ASK_TOOL_TIMEOUT_MS = 33 * 60_000;
 /** Above the bot's 120 s execution cap. */
 export const TOOL_TIMEOUT_MS = 150_000;
 
+export const TOOL_CANCEL_TIMEOUT_MS = 10_000;
+
 export function toolTimeoutMs(approval: ToolManifestEntry["approval"]): number {
   return approval === "ask" ? ASK_TOOL_TIMEOUT_MS : TOOL_TIMEOUT_MS;
 }
@@ -45,7 +47,7 @@ export const LINK_CLOSED_TEXT = "workspace link closed; the call may or may not 
 export interface ToolStubsOptions {
   principalId: string;
   /** One JSON-RPC request to the bot, never retried (OrchestrationClient.request). */
-  request: (method: string, params: ToolCallParams, timeoutMs: number) => Promise<unknown>;
+  request: (method: string, params: ToolCallParams | ToolCancelParams, timeoutMs: number) => Promise<unknown>;
   newId?: () => string;
 }
 
@@ -98,6 +100,16 @@ export class ToolStubs {
     return b;
   }
 
+  /** (Re)subscribes a binding to update(); its factory calls this on every load, reloads included. */
+  attach(b: StubBinding): void {
+    this.bindings.add(b);
+  }
+
+  /** Stops updating a binding, for a session that was disposed or never finished being created. */
+  release(b: StubBinding): void {
+    this.bindings.delete(b);
+  }
+
   definition(entry: ToolManifestEntry, ctx: StubAgentContext): ToolDefinition {
     const def: ToolDefinition = {
       name: entry.name,
@@ -110,7 +122,7 @@ export class ToolStubs {
     return def;
   }
 
-  // Pi has already validated params against the closed schema; they go to the bot exactly as given.
+  // Pi has already validated (and coerced) params against the closed schema; they go to the bot as Pi left them.
   private async call(name: string, args: unknown, ctx: StubAgentContext, signal: AbortSignal | undefined): Promise<StubResult> {
     const entry = this.manifest.get(name);
     if (!entry) throw new Error(`${name} is no longer offered by the bot`);
@@ -124,11 +136,13 @@ export class ToolStubs {
       agentName: ctx.agentName,
       ...(ctx.parentRunId ? { parentRunId: ctx.parentRunId } : {}),
     };
+    if (signal?.aborted) throw new Error(`${name} was aborted before it was sent`);
     const pending = this.opts.request(RPC_METHODS.toolCall, params, toolTimeoutMs(entry.approval));
     let raw: unknown;
     try {
       raw = await (signal ? abortable(pending, signal) : pending);
     } catch (err) {
+      if (signal?.aborted) this.cancel(callId);
       throw new Error(requestErrorText(err, entry));
     }
     const result = raw as ToolCallResult | undefined;
@@ -138,6 +152,19 @@ export class ToolStubs {
     if (result?.ok === false && result.denied) throw new Error(DENIED_TEXT);
     if (result?.ok === false && typeof result.error === "string") throw new Error(result.error);
     throw new Error(`malformed tool/call result for ${name}`);
+  }
+
+  /** Withdraws a call whose turn was stopped, so its approval prompt can't run it later. Best-effort: the
+   *  prompt still expires on its own if this never arrives. */
+  private cancel(callId: string): void {
+    const params: ToolCancelParams = { principalId: this.opts.principalId, callId };
+    let sent: Promise<unknown>;
+    try {
+      sent = this.opts.request(RPC_METHODS.toolCancel, params, TOOL_CANCEL_TIMEOUT_MS);
+    } catch (err) {
+      sent = Promise.reject(err);
+    }
+    sent.catch((err) => log.debug({ err, callId }, "tool/cancel not delivered"));
   }
 }
 
@@ -155,8 +182,15 @@ export class StubBinding {
   readonly factory: ExtensionFactory = (pi) => {
     this.pi = pi;
     this.registered = new Map();
+    // An update() during a reload found the old runtime stale and dropped this binding.
+    this.stubs.attach(this);
     this.sync();
   };
+
+  release(): void {
+    this.pi = null;
+    this.stubs.release(this);
+  }
 
   /** Stub names registered and declared to the model. */
   offered(): string[] {
@@ -178,7 +212,8 @@ export class StubBinding {
     }
   }
 
-  /** Registers added or changed stubs and hides removed ones. False once the session is gone. */
+  /** Registers added or changed stubs and hides removed ones. False once the session's runtime is stale
+   *  (disposed, or mid-reload; a reload's factory run attaches it again). */
   sync(): boolean {
     const pi = this.pi;
     if (!pi) return true;
@@ -201,13 +236,19 @@ export class StubBinding {
       }
       return true;
     } catch (err) {
-      // registerTool throws once the session is disposed or reloaded past this runtime.
-      log.debug({ err }, "dropping a stale tool-stub binding");
-      this.pi = null;
-      return false;
+      if (err instanceof Error && STALE_RUNTIME_RE.test(err.message)) {
+        log.debug({ err }, "dropping a stale tool-stub binding");
+        this.pi = null;
+        return false;
+      }
+      log.warn({ err }, "failed to apply the tool manifest to a session; keeping it for the next update");
+      return true;
     }
   }
 }
+
+// Pi's registerTool error once the session is disposed or reloaded past this runtime.
+const STALE_RUNTIME_RE = /extension ctx is stale/;
 
 function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error("aborted"));

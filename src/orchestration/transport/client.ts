@@ -9,7 +9,9 @@ import {
   type RepoSpec,
   type RunnerAdapter,
   type RunnerEvent,
+  type ToolManifestEntry,
   type WorkspaceRegisterResult,
+  toolManifestEntry,
   workspaceRegisterResult,
 } from "../contracts.ts";
 import { getLogger } from "../../logger.ts";
@@ -131,8 +133,19 @@ export class OrchestrationClient {
     if ((this.options.role ?? "task-runner") !== "workspace") return null;
     const parsed = workspaceRegisterResult.safeParse(raw);
     if (parsed.success) return parsed.data;
-    logger.warn({ runnerId: this.options.runnerId, error: parsed.error.issues[0]?.message }, "malformed workspace register result; no tools offered");
-    return { ok: true, tools: [] };
+    const listed = (raw as { tools?: unknown } | null)?.tools;
+    if (!Array.isArray(listed)) {
+      logger.warn({ runnerId: this.options.runnerId, error: parsed.error.issues[0]?.message }, "malformed workspace register result; no tools offered");
+      return { ok: true, tools: [] };
+    }
+    // One entry this workspace can't read (say, a newer approval kind) drops only that tool.
+    const tools: ToolManifestEntry[] = [];
+    for (const t of listed) {
+      const entry = toolManifestEntry.safeParse(t);
+      if (entry.success) tools.push(entry.data);
+      else logger.warn({ runnerId: this.options.runnerId, tool: (t as { name?: unknown } | null)?.name, error: entry.error.issues[0]?.message }, "skipping a malformed tool manifest entry");
+    }
+    return { ok: true, tools };
   }
 
   private async awaitSocketClosed(timeoutMs: number): Promise<void> {
