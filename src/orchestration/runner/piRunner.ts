@@ -8,7 +8,7 @@ import type { BrowserUpdate, HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent 
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
 import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
-import { createAgentBashTool, createOpenRouterModel, summarizeToolArgs } from "./piShared.ts";
+import { assertExactTools, createAgentBashTool, createOpenRouterModel, summarizeToolArgs } from "./piShared.ts";
 import { allocateBrowserPorts, browserEnv, closeBrowserSessions, type BrowserPorts } from "./browser.ts";
 import { BrowserRelay } from "./browserStream.ts";
 import { sweepBrowserUse } from "./browserUse.ts";
@@ -17,6 +17,7 @@ import { ENV_CONTEXT_PATH } from "./envContext.ts";
 const log = getLogger("orchestration.runner.pi");
 
 const PROVIDER_ID = "sushii-runner-openrouter";
+const RUNNER_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_owner", "send_owner_message"];
 const ASK_TIMEOUT_MS = 30 * 60_000; // block on ask_owner at most this long, then unblock with a sentinel
 
 // Per-session bridge for the ask_owner tool. The tool's execute parks on `ask()`; an inbound answer
@@ -628,11 +629,12 @@ export class PiRunnerAdapter implements RunnerAdapter {
       // Custom tools MUST be in this allowlist too: Pi filters customTools by isAllowedTool(name). "bash"
       // (a same-named override of the built-in — our credential-injecting shell) and "ask_owner" both
       // have to be listed or they're dropped. Pi's own interactive ask_question stays excluded.
-      tools: ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_owner", "send_owner_message"],
+      tools: RUNNER_TOOLS,
       customTools: [bashTool, askTool, ownerMessageTool],
       excludeTools: ["ask_question"],
       sessionManager,
     });
+    assertExactTools(session, RUNNER_TOOLS, "task runner");
 
     const sessionFile = sessionManager.getSessionFile();
     if (!sessionFile) throw new Error("pi session has no persisted file — cannot resume later");

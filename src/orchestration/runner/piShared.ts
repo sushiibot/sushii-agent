@@ -104,3 +104,20 @@ export async function createAgentBashTool(cwd: string, extraEnv: () => Record<st
   // Cast: the bash factory returns a specialized ToolDefinition; customTools wants the generic one.
   return tool as unknown as ToolDefinition;
 }
+
+type ToolSetSession = { getAllTools(): ReadonlyArray<{ name: string }>; getActiveToolNames(): string[]; dispose(): void };
+
+/**
+ * Throws (disposing the session) unless the session registered and activated exactly `expected`.
+ * Pi 0.99 ships codemode, tool_search and MCP as built-in extensions; this keeps any of them, or a
+ * tool from a future default, from reaching the model unnoticed.
+ */
+export function assertExactTools(session: ToolSetSession, expected: readonly string[], label: string): void {
+  const want = [...expected].sort();
+  const registered = session.getAllTools().map((t) => t.name).sort();
+  const active = [...session.getActiveToolNames()].sort();
+  const same = (a: string[]) => a.length === want.length && a.every((n, i) => n === want[i]);
+  if (same(registered) && same(active)) return;
+  session.dispose();
+  throw new Error(`${label}: unexpected pi tool set (registered ${registered.join(",")}; active ${active.join(",")}; want ${want.join(",")})`);
+}

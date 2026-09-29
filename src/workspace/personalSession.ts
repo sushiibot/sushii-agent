@@ -310,8 +310,8 @@ export class PersonalSession {
               streamingBehavior: "steer",
               // Chat text is literal: a Discord message starting with "/" must not run a skill or extension command.
               expandPromptTemplates: false,
-              preflightResult: (ok) => {
-                if (!ok) return;
+              // Called only for an accepted input ("started" | "queued" | "handled"); a rejection rejects prompt().
+              preflightResult: () => {
                 accepted = true;
                 settlesAtAccept = this.settleCount;
                 resolve();
@@ -387,14 +387,14 @@ export class PersonalSession {
     }
   }
 
-  // Pi writes nothing to the session file until its first assistant message; until then a crash would lose the context.
+  // Pi writes nothing to the session file until its first user or assistant message; until then a crash would lose the context.
   private markContextAppended(session: ChatSession, messageId: string): void {
-    if (hasAssistantMessage(session)) this.recentIds.add(messageId);
+    if (hasConversation(session)) this.recentIds.add(messageId);
     else this.unpersistedContextIds.push(messageId);
   }
 
   private commitUnpersistedContext(session: ChatSession): void {
-    if (!this.unpersistedContextIds.length || !hasAssistantMessage(session)) return;
+    if (!this.unpersistedContextIds.length || !hasConversation(session)) return;
     for (const id of this.unpersistedContextIds.splice(0)) this.recentIds.add(id);
   }
 
@@ -585,8 +585,8 @@ export class PersonalSession {
 
 const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
 
-function hasAssistantMessage(session: ChatSession): boolean {
-  return session.messages.some((m) => m.role === "assistant");
+function hasConversation(session: ChatSession): boolean {
+  return session.messages.some((m) => m.role === "user" || m.role === "assistant");
 }
 
 const DEFAULT_SURFACE = "discord";

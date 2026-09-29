@@ -54,11 +54,11 @@ class FakeSession {
       if (!options?.streamingBehavior) throw new Error("Agent is already processing");
       this.steers.push(text);
       this.queue.push(text);
-      options.preflightResult?.(true);
+      options.preflightResult?.("queued");
       return;
     }
     await new Promise((r) => setTimeout(r, 5));
-    options?.preflightResult?.(true);
+    options?.preflightResult?.("started");
     this.isStreaming = true;
     const done = new Promise<void>((r) => (this.runDone = r));
     this.emit({ type: "agent_start" });
@@ -749,7 +749,7 @@ describe("PersonalSession failures", () => {
     await host.start();
     const s = sessions[0];
     s.prompt = async (_text, options) => {
-      options?.preflightResult?.(true);
+      options?.preflightResult?.("started");
       throw new Error("extension blew up");
     };
     expect((await host.handleMessage(msg("m1", "hi"))).mode).toBe("prompt");

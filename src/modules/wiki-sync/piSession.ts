@@ -3,6 +3,7 @@ import { type Span, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
+import { assertExactTools } from "../../orchestration/runner/piShared.ts";
 import { createEmbedAttachmentTool } from "./embedTool.ts";
 import type { WikiRepo } from "./git.ts";
 import { commitAndPush } from "./git.ts";
@@ -14,6 +15,7 @@ const logger = getLogger("wiki-sync:pi");
 const sessionLogger = getLogger("wiki-sync:pi:session");
 
 const PROVIDER_ID = "sushii-openrouter";
+const WIKI_SYNC_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "commit_and_push", "embed_attachment"];
 
 // How many times to re-prompt a session that comes back with no text, no thinking, and no tool
 // calls at all -- distinct from pi-coding-agent's own auto_retry (which only covers transient
@@ -374,11 +376,12 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     modelRuntime,
     resourceLoader: loader,
     settingsManager,
-    tools: ["read", "edit", "write", "grep", "find", "ls", "commit_and_push", "embed_attachment"],
+    tools: WIKI_SYNC_TOOLS,
     excludeTools: ["bash", "ask_question"],
     customTools: [commitAndPushTool, embedAttachmentTool],
     sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSync.agentDir, "sessions")),
   });
+  assertExactTools(session, WIKI_SYNC_TOOLS, "wiki-sync");
 
   const eventLog = sessionLogger.child({ wikiId: opts.wikiId });
   const spans = createSessionSpans();
