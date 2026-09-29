@@ -11,9 +11,12 @@ import { ORCH_CLOSE, RPC_METHODS, type ChatMessageParams } from "../orchestratio
 import { OrchestrationClient } from "../orchestration/transport/client.ts";
 import { OrchestrationServer, type WorkspaceHandler } from "../orchestration/transport/server.ts";
 import { DmConductorSession } from "../surfaces/discord/dmConductor.ts";
+import { WorkspaceLink, type WorkspaceRpc } from "../orchestration/workspace/link.ts";
+import type { Timers } from "../orchestration/workspace/progress.ts";
+import { SurfaceRegistry } from "../orchestration/workspace/surface.ts";
 import { handleOwnerDm, type DmCursor, type OwnerDmDeps, type OwnerDmMessage } from "../surfaces/discord/ownerDm.ts";
 import { handleWorkspaceStopButton, type WorkspaceButtonInteraction } from "../surfaces/discord/workspaceButtons.ts";
-import { ACCENT, OFFLINE_NOTICE, WS_STOP_PREFIX, WorkspaceLink, type Timers, type WorkspaceRpc } from "../surfaces/discord/workspaceLink.ts";
+import { ACCENT, DiscordOwnerDmSurface, DiscordWorkspaceAdapter, OFFLINE_NOTICE, WS_STOP_PREFIX } from "../surfaces/discord/workspaceAdapter.ts";
 import { PersonalSession, type ChatSession, type ChatSessionFactory } from "./personalSession.ts";
 import { readWorkspaceState } from "./state.ts";
 
@@ -191,6 +194,7 @@ class FakeDm {
   message(id: string, content: string): OwnerDmMessage {
     return {
       id,
+      channelId: "dm",
       content,
       author: { id: OWNER, name: "drk" },
       isVoice: false,
@@ -251,7 +255,8 @@ function startServer(port: number): OrchestrationServer {
 
 async function startBot(store: WorkspaceLinkStore, dm: FakeDm, port = 0): Promise<Bot> {
   const server = startServer(port);
-  const link = new WorkspaceLink({ principalId: P, store, ownerChannel: async () => dm, owner: () => ({ id: OWNER, name: "drk" }), timers: immediateTimers });
+  const surfaces = new SurfaceRegistry("discord").register(new DiscordWorkspaceAdapter({ ownerChannel: async () => dm }));
+  const link = new WorkspaceLink({ principalId: P, store, surfaces, owner: () => ({ id: OWNER, name: "drk" }), timers: immediateTimers });
   const bot: Bot = { server, link, port: 0, deliverRequests: 0, kill: "none", messages: [] };
   const die = () => setTimeout(() => server.stop(), 0);
   // Wraps the real server only to observe traffic and to simulate the bot process dying at a chosen point.
@@ -399,20 +404,22 @@ function router(link: () => WorkspaceLink, dm: FakeDm): Router {
     get link() {
       return link();
     },
-    transcribe: async () => null,
-    // The real fallback delivery path; only the in-process agent loop is skipped.
-    runInProcess: async (_m, text, { notice }) => {
-      inProcess.push({ text, ...(notice ? { notice } : {}) });
-      const session = new DmConductorSession(dm, { id: "bot", username: "sushii" }, notice ? { notice, accentColor: ACCENT.warning } : {});
-      await session.deliver({
-        segments: [{ kind: "text", text: `fallback answer to: ${text}` }],
-        usage: { model: "fallback/model", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, contextTokens: 1, contextLimit: 100 },
-        toolTrace: [],
-        cancelled: false,
-      });
-      return session.deliveredText;
-    },
-    resetInProcess: async () => {},
+    surface: new DiscordOwnerDmSurface({
+      transcribe: async () => null,
+      // The real fallback delivery path; only the in-process agent loop is skipped.
+      runInProcess: async (_m, text, { notice }) => {
+        inProcess.push({ text, ...(notice ? { notice } : {}) });
+        const session = new DmConductorSession(dm, { id: "bot", username: "sushii" }, notice ? { notice, accentColor: ACCENT.warning } : {});
+        await session.deliver({
+          segments: [{ kind: "text", text: `fallback answer to: ${text}` }],
+          usage: { model: "fallback/model", inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, contextTokens: 1, contextLimit: 100 },
+          toolTrace: [],
+          cancelled: false,
+        });
+        return session.deliveredText;
+      },
+      resetInProcess: async () => {},
+    }),
     cursor: memCursor,
   };
   return { deps, inProcess, dm: (id, content) => handleOwnerDm(dm.message(id, content), deps) };
@@ -440,6 +447,7 @@ function stopInteraction(turnId: string) {
   const interaction = {
     customId: `${WS_STOP_PREFIX}${turnId}`,
     id: `int-${turnId}`,
+    channelId: "dm",
     user: { id: OWNER, username: "drk", globalName: "drk" },
     component: { label: "Stop" },
     message: { components: [], edit: async () => {} },

@@ -63,6 +63,8 @@ export interface Config {
   orchRunnerSecret: string | undefined;
   /** Route owner DMs to the personal-agent workspace when it is connected (DM_WORKSPACE_ENABLED). Default off. */
   dmWorkspaceEnabled: boolean;
+  /** Surface that gets the workspace's proactive messages and approval prompts (WORKSPACE_PREFERRED_SURFACE). Default discord. */
+  workspacePreferredSurface: string;
   /** Public base URL of the bot's HTTP app (e.g. https://agent-mcp.sushii.bot), used to build the
    *  per-task live-stream viewer link. Unset → no web link is shown (Discord tail still works). */
   taskStreamBaseUrl: string | undefined;
@@ -291,6 +293,7 @@ export const config: Config = {
   orchSecret: process.env["ORCH_SECRET"]?.trim() || undefined,
   orchRunnerSecret: process.env["ORCH_RUNNER_SECRET"]?.trim() || undefined,
   dmWorkspaceEnabled: ["1", "true", "yes"].includes(optional("DM_WORKSPACE_ENABLED", "false").toLowerCase()),
+  workspacePreferredSurface: optional("WORKSPACE_PREFERRED_SURFACE", "discord").trim() || "discord",
   buzz: {
     privateKey: process.env["BUZZ_PRIVATE_KEY"],
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),

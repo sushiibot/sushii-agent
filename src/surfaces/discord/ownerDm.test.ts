@@ -8,23 +8,25 @@ import {
   CATCH_UP_PAGE_SIZE,
   advanceCursor,
   catchUpOwnerDms,
-  NEW_WHILE_OFFLINE,
   handleOwnerDm,
-  routeDirectMessage,
   selectCatchUp,
   snowflakeAt,
-  voiceEcho,
+  snowflakeCursor,
   type DmCursor,
   type OwnerDmDeps,
   type OwnerDmMessage,
 } from "./ownerDm.ts";
-import { OFFLINE_NOTICE } from "./workspaceLink.ts";
+import { routeDirectMessage } from "../../orchestration/workspace/router.ts";
+import { DiscordOwnerDmSurface, NEW_WHILE_OFFLINE, OFFLINE_NOTICE, voiceEcho } from "./workspaceAdapter.ts";
+
+const ORIGIN = { surface: "discord", conversationId: "dm-1" };
 
 function fakeMessage(overrides: Partial<OwnerDmMessage> = {}) {
   const reactions: string[] = [];
   const sent: Array<string | MessageCreateOptions> = [];
   const msg: OwnerDmMessage = {
     id: "1000",
+    channelId: "dm-1",
     content: "check the wiki sync",
     author: { id: "owner-1", name: "drk" },
     isVoice: false,
@@ -59,6 +61,7 @@ function fakeDeps(
     inProcess: [] as Array<{ text: string; notice?: string }>,
     resets: 0,
     inbox: [] as Array<[string, string]>,
+    inboxOrigins: [] as unknown[],
   };
   const deps: OwnerDmDeps = {
     workspaceEnabled: opts.enabled ?? true,
@@ -83,16 +86,21 @@ function fakeDeps(
         calls.news++;
         return { sessionFile: "s.jsonl" };
       },
-      recordOffline: (u, r) => calls.inbox.push([u, r]),
+      recordOffline: (u, r, origin) => {
+        calls.inbox.push([u, r]);
+        calls.inboxOrigins.push(origin);
+      },
     },
-    transcribe: async () => "remind me what we changed",
-    runInProcess: async (_m, text, { notice }) => {
-      calls.inProcess.push({ text, ...(notice ? { notice } : {}) });
-      return "in-process reply";
-    },
-    resetInProcess: async () => {
-      calls.resets++;
-    },
+    surface: new DiscordOwnerDmSurface({
+      transcribe: async () => "remind me what we changed",
+      runInProcess: async (_m, text, { notice }) => {
+        calls.inProcess.push({ text, ...(notice ? { notice } : {}) });
+        return "in-process reply";
+      },
+      resetInProcess: async () => {
+        calls.resets++;
+      },
+    }),
     cursor: memCursor(),
   };
   return { deps, calls };
@@ -124,7 +132,7 @@ describe("owner DM routing", () => {
     const attachments = [{ url: "https://cdn/x.png", name: "x.png", contentType: "image/png" }];
     const { msg, reactions } = fakeMessage({ attachments });
     await handleOwnerDm(msg, deps);
-    expect(calls.messages).toEqual([{ messageId: "1000", text: "check the wiki sync", kind: "user", author: { id: "owner-1", name: "drk" }, attachments }]);
+    expect(calls.messages).toEqual([{ origin: ORIGIN, messageId: "1000", text: "check the wiki sync", kind: "user", author: { id: "owner-1", name: "drk" }, attachments }]);
     expect(calls.inProcess).toHaveLength(0);
     expect(reactions).toEqual(["👀"]);
   });
@@ -148,6 +156,7 @@ describe("owner DM routing", () => {
     expect(calls.messages).toHaveLength(0);
     expect(calls.inProcess).toEqual([{ text: "check the wiki sync", notice: OFFLINE_NOTICE }]);
     expect(calls.inbox).toEqual([["check the wiki sync", "in-process reply"]]);
+    expect(calls.inboxOrigins).toEqual([ORIGIN]);
   });
 
   test("a timeout while the workspace is still connected leaves the DM to the workspace: ⏳, no fallback", async () => {
@@ -241,7 +250,7 @@ describe("owner DM routing", () => {
     await handleOwnerDm(msg, deps);
     expect(sent[0]).toBe("-# 🎙️ remind me what we changed");
     expect(voiceEcho("x")).toBe("-# 🎙️ x");
-    expect(calls.messages).toEqual([{ messageId: "1000", text: "remind me what we changed", kind: "user", author: { id: "owner-1", name: "drk" }, voice: true }]);
+    expect(calls.messages).toEqual([{ origin: ORIGIN, messageId: "1000", text: "remind me what we changed", kind: "user", author: { id: "owner-1", name: "drk" }, voice: true }]);
   });
 
   test("voice on the in-process path uses the same echo", async () => {
@@ -398,7 +407,7 @@ describe("DM catch-up on ready", () => {
         isOwner: true,
         preChecks: [async (m) => (m.id === "1002" ? (taskReplies.push(m.id), true) : false)],
         handleOwner: (m) => handleOwnerDm(m, deps),
-        cursor: deps.cursor,
+        cursor: snowflakeCursor(deps.cursor),
       });
     await catchUpOwnerDms({
       cursor: "1000",
@@ -418,12 +427,12 @@ describe("DM catch-up on ready", () => {
     let handledOwner = false;
     await routeDirectMessage(
       { id: "1004" },
-      { isOwner: true, preChecks: [async () => true], handleOwner: async () => void (handledOwner = true), cursor, onOwnerDm: (id) => seen.push(id) },
+      { isOwner: true, preChecks: [async () => true], handleOwner: async () => void (handledOwner = true), cursor: snowflakeCursor(cursor), onOwnerDm: (id) => seen.push(id) },
     );
     expect(handledOwner).toBe(false);
     expect(cursor.get()).toBe("1004");
     expect(seen).toEqual(["1004"]);
-    await routeDirectMessage({ id: "1009" }, { isOwner: false, preChecks: [async () => false], handleOwner: async () => void (handledOwner = true), cursor });
+    await routeDirectMessage({ id: "1009" }, { isOwner: false, preChecks: [async () => false], handleOwner: async () => void (handledOwner = true), cursor: snowflakeCursor(cursor) });
     expect(handledOwner).toBe(false);
     expect(cursor.get()).toBe("1004");
   });

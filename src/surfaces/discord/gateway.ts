@@ -51,17 +51,13 @@ import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREF
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 import { resolveOwnerPrincipalId } from "../../orchestration/transport/server.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
-import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, type DmChannelPort } from "./workspaceLink.ts";
+import { WorkspaceLink } from "../../orchestration/workspace/link.ts";
+import { kvCursor, routeDirectMessage } from "../../orchestration/workspace/router.ts";
+import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
+import { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
+import { ACCENT, DiscordWorkspaceAdapter, WS_APPROVE_PREFIX, WS_ASK_PREFIX, WS_STOP_PREFIX, type DmChannelPort } from "./workspaceAdapter.ts";
 import { handleWorkspaceApprovalButton, handleWorkspaceAskButton, handleWorkspaceStopButton } from "./workspaceButtons.ts";
-import { WS_APPROVE_PREFIX, WorkspaceTools } from "./workspaceTools.ts";
-import {
-  OWNER_DM_CURSOR_KEY,
-  catchUpOwnerDms,
-  handleOwnerDm as routeOwnerDm,
-  routeDirectMessage,
-  type DmCursor,
-  type OwnerDmMessage,
-} from "./ownerDm.ts";
+import { OWNER_DM_CURSOR_KEY, catchUpOwnerDms, handleOwnerDm as routeOwnerDm, snowflakeCursor, type DmCursor, type OwnerDmMessage } from "./ownerDm.ts";
 import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningAutomod, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
 
 function behaviorFor(guildId: string): string {
@@ -327,10 +323,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   }
 
   const linkStore = new WorkspaceLinkStore(getDb());
-  const dmCursor: DmCursor = {
-    get: () => linkStore.getKv(OWNER_DM_CURSOR_KEY),
-    set: (id) => linkStore.setKv(OWNER_DM_CURSOR_KEY, id),
-  };
+  const dmCursor: DmCursor = kvCursor(linkStore, OWNER_DM_CURSOR_KEY);
   // The ORCH port binds before login, so a workspace can register (and restore progress views) before
   // the client can reach the REST API.
   // Typed Client<true> for convenience, but this runs before login.
@@ -352,27 +345,49 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       fetchMessage: (id) => dm.messages.fetch(id).catch(() => null),
     };
   };
+  // An owner DM as the router sees it, carrying the discord.js message the in-process fallback answers.
+  type GatewayDm = OwnerDmMessage & { raw: Message };
+  const discordWorkspace = new DiscordWorkspaceAdapter<GatewayDm>({
+    ownerChannel,
+    inbound: {
+      transcribe: (dm) => transcribeVoice(dm.raw),
+      runInProcess: (dm, text, { notice }) => runOwnerDmInProcess(dm.raw, text, notice),
+      // Deterministic DM session boundary. A DM has no threads (unlike guilds, where each thread is a
+      // fresh conversation), so this is the manual "start fresh" for the owner's one ever-growing DM.
+      // A `!` prefix (not `/`) avoids triggering Discord's slash-command autocomplete/registry.
+      resetInProcess: async (dm) => {
+        const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: dm.channelId };
+        store.save(conversation, { messages: [], initialThreadContext: null });
+        await dm.react("✅").catch(() => {});
+        await dm.send("Started a fresh conversation — this chat's history is cleared. Durable memory is unaffected.").catch(() => {});
+      },
+    },
+  });
+  const workspaceSurfaces = new SurfaceRegistry(config.workspacePreferredSurface).register(discordWorkspace);
   const workspaceTools = new WorkspaceTools({
     principalId: resolveOwnerPrincipalId(),
     ownerUserId: () => config.ownerDiscordId,
-    ownerChannel,
+    toolSpace: { surface: SURFACE, spaceId: DM_SPACE_ID },
+    surfaces: workspaceSurfaces,
     store,
     memory,
   });
   const workspaceLink = new WorkspaceLink({
     principalId: resolveOwnerPrincipalId(),
     store: linkStore,
-    ownerChannel,
+    surfaces: workspaceSurfaces,
     owner: () => ({ id: config.ownerDiscordId ?? "", name: "owner" }),
     tools: workspaceTools,
     enabled: config.dmWorkspaceEnabled,
   });
 
-  function ownerDmMessage(message: Message): OwnerDmMessage | null {
+  function ownerDmMessage(message: Message): GatewayDm | null {
     if (!message.channel.isSendable()) return null;
     const channel = message.channel;
     return {
+      raw: message,
       id: message.id,
+      channelId: message.channelId,
       content: message.content,
       author: { id: message.author.id, name: message.author.globalName ?? message.author.username },
       isVoice: message.flags.has(MessageFlags.IsVoiceMessage),
@@ -438,17 +453,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       workspaceEnabled: config.dmWorkspaceEnabled,
       transcriptionEnabled: config.transcriptionEnabled,
       link: workspaceLink,
-      transcribe: () => transcribeVoice(message),
-      runInProcess: (_dm, text, { notice }) => runOwnerDmInProcess(message, text, notice),
-      // Deterministic DM session boundary. A DM has no threads (unlike guilds, where each thread is a
-      // fresh conversation), so this is the manual "start fresh" for the owner's one ever-growing DM.
-      // A `!` prefix (not `/`) avoids triggering Discord's slash-command autocomplete/registry.
-      resetInProcess: async (dm) => {
-        const conversation: ConversationRef = { surface: SURFACE, spaceId: DM_SPACE_ID, conversationId: message.channelId };
-        store.save(conversation, { messages: [], initialThreadContext: null });
-        await dm.react("✅").catch(() => {});
-        await dm.send("Started a fresh conversation — this chat's history is cleared. Durable memory is unaffected.").catch(() => {});
-      },
+      surface: discordWorkspace,
       cursor: dmCursor,
     });
   }
@@ -484,7 +489,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       // A reply to a needs_input ping is the ANSWER to that task's ask, not a fresh agent message.
       preChecks: [maybeReplyToTaskMessage, maybeAnswerAsk],
       handleOwner: handleOwnerDm,
-      cursor: dmCursor,
+      cursor: snowflakeCursor(dmCursor),
       onOwnerDm: (id) => handledBeforeCatchUp?.add(id),
     });
   }

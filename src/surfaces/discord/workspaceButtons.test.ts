@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { MessageEditOptions } from "discord.js";
 import type { ChatMessageMode, ChatMessageParams } from "../../orchestration/contracts.ts";
 import { handleWorkspaceAskButton, handleWorkspaceStopButton, type WorkspaceButtonDeps, type WorkspaceButtonInteraction } from "./workspaceButtons.ts";
-import { ACCENT } from "./workspaceLink.ts";
+import { ACCENT } from "./workspaceAdapter.ts";
 
 const OWNER = "owner-1";
 
@@ -18,6 +18,7 @@ function fakeInteraction(customId: string, opts: { userId?: string; label?: stri
   const interaction = {
     customId,
     id: `int-${Math.random()}`,
+    channelId: "dm-1",
     user: { id: opts.userId ?? OWNER, username: "drk", globalName: "drk" },
     component: { label: opts.label ?? null },
     message: {
@@ -48,7 +49,6 @@ function fakeLink(opts: { tracked?: string[]; aborted?: boolean; mode?: ChatMess
       return { aborted: opts.aborted ?? true };
     },
     markTurnEnded: (id) => void calls.ended.push(id),
-    renderFinal: (_turn, outcome) => ({ components: [], content: `final:${outcome}` }),
     askChoice: (askId, i, label) => opts.choices?.[askId]?.[i] ?? label,
     sendMessage: async (input) => {
       calls.messages.push(input);
@@ -87,7 +87,7 @@ describe("workspace Stop button", () => {
     await handleWorkspaceStopButton(i.interaction, { ownerId: OWNER, link });
     expect(calls.aborts).toEqual(["old-turn"]);
     expect(calls.ended).toEqual(["old-turn"]);
-    expect(i.messageEdits.map((e) => e.content)).toEqual(["final:interrupted"]);
+    expect(i.messageEdits.map(textOf)).toEqual([expect.stringContaining('"content":"⚠️ interrupted"')]);
     expect(i.editReplies).toEqual(["That turn already finished."]);
   });
 
@@ -96,7 +96,7 @@ describe("workspace Stop button", () => {
     const i = fakeInteraction("wsstop:t2");
     await handleWorkspaceStopButton(i.interaction, { ownerId: OWNER, link });
     expect(calls.ended).toEqual(["t2"]);
-    expect(i.messageEdits.map((e) => e.content)).toEqual(["final:stopped"]);
+    expect(i.messageEdits.map(textOf)).toEqual([expect.stringContaining('"content":"⏹ stopped"')]);
     expect(i.editReplies).toEqual(["Stopping…"]);
   });
 });
@@ -114,7 +114,7 @@ describe("workspace ask button", () => {
     const { link, calls } = fakeLink({ choices: { ask9: ["Yes", "No"] } });
     const i = fakeInteraction("wsask:ask9:1");
     await handleWorkspaceAskButton(i.interaction, { ownerId: OWNER, link });
-    expect(calls.messages).toEqual([{ messageId: "wsask:ask9", text: "No", kind: "user", author: { id: OWNER, name: "drk" } }]);
+    expect(calls.messages).toEqual([{ origin: { surface: "discord", conversationId: "dm-1" }, messageId: "wsask:ask9", text: "No", kind: "user", author: { id: OWNER, name: "drk" } }]);
     expect(i.editReplies).toEqual(["Answered: No"]);
     expect(i.messageEdits).toHaveLength(1);
     expect(textOf(i.messageEdits[0]!)).toContain(`"accent_color":${ACCENT.success}`);

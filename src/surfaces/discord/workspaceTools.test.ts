@@ -6,17 +6,18 @@ import { config } from "../../config.ts";
 import type { ToolCallParams, ToolCallResult } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo } from "../../orchestration/transport/server.ts";
 import { handleWorkspaceApprovalButton, type WorkspaceButtonInteraction } from "./workspaceButtons.ts";
-import { ACCENT, type Timers } from "./workspaceLink.ts";
+import type { Timers } from "../../orchestration/workspace/progress.ts";
+import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
+import { ACCENT, DiscordWorkspaceAdapter, parseApprovalId, type DmChannelPort } from "./workspaceAdapter.ts";
 import {
   APPROVAL_TIMEOUT_MS,
   PROXIED_TOOLS,
   TOOL_EXEC_TIMEOUT_MS,
   WorkspaceTools,
-  parseApprovalId,
   type AuditLog,
   type ToolCallAudit,
   type WorkspaceToolsOptions,
-} from "./workspaceTools.ts";
+} from "../../orchestration/workspace/tools.ts";
 
 const P = "drk";
 const OWNER_ID = "100000000000000000";
@@ -105,7 +106,8 @@ function setup(opts: Partial<WorkspaceToolsOptions> = {}) {
   const tools = new WorkspaceTools({
     principalId: P,
     ownerUserId: () => OWNER_ID,
-    ownerChannel: async () => channel,
+    toolSpace: { surface: "discord", spaceId: "dm" },
+    surfaces: new SurfaceRegistry("discord").register(new DiscordWorkspaceAdapter({ ownerChannel: async () => channel as unknown as DmChannelPort })),
     store: {} as WorkspaceToolsOptions["store"],
     memory: { count: () => 0, getServerContext: () => null } as unknown as WorkspaceToolsOptions["memory"],
     timers,

@@ -225,8 +225,11 @@ const NOW = new Date("2026-09-29T12:00:00Z");
 /** The prompt text for a message whose (test) id isn't a snowflake, so it carries the receipt time. */
 const stamped = (messageId: string, text: string) => `[discord:${messageId} 2026-09-29 12:00 UTC]\n${text}`;
 
+const DM_ORIGIN = { surface: "discord", conversationId: "dm" };
+
 const msg = (messageId: string, text: string, extra: Partial<ChatMessageParams> = {}): ChatMessageParams => ({
   principalId: "drk",
+  origin: DM_ORIGIN,
   messageId,
   text,
   kind: "user",
@@ -983,5 +986,51 @@ describe("PersonalSession context messages", () => {
     settled.open();
     await m2;
     expect(order).toEqual([`prompt:${stamped("m1", "hi")}`, `context:${stamped("c1", "ctx")}`, `prompt:${stamped("m2", "next")}`]);
+  });
+});
+
+describe("PersonalSession origin echo", () => {
+  const WEB = { surface: "web", conversationId: "tab-1" };
+
+  test("a turn's events and its reply carry the prompting message's origin, and a resend keeps it", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    await host.start();
+    transport.fail = true;
+    await host.handleMessage(msg("m1", "hi", { origin: WEB }));
+    sessions[0].finish("hello there");
+    await tick();
+
+    const events = transport.notifications.map((n) => n.params as ChatEventParams);
+    expect(events.length).toBeGreaterThan(0);
+    for (const e of events) expect(e.origin).toEqual(WEB);
+    expect(transport.delivered()[0]!.origin).toEqual(WEB);
+
+    const restarted = setup({ stateDir });
+    restarted.host.resendUnacked();
+    expect(restarted.transport.delivered()[0]!.origin).toEqual(WEB);
+  });
+
+  test("a steer from another surface joins the run, which still answers on the run's origin", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "hi", { origin: WEB }));
+    expect(await host.handleMessage(msg("m2", "also", { origin: DM_ORIGIN }))).toEqual({ accepted: true, mode: "steer" });
+    sessions[0].finish("both answered");
+    await tick();
+    expect(transport.delivered().map((d) => d.origin)).toEqual([WEB]);
+  });
+
+  test("the next run answers on its own message's origin", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "hi", { origin: WEB }));
+    sessions[0].finish("one");
+    await tick();
+    await host.handleMessage(msg("m2", "again", { origin: DM_ORIGIN }));
+    sessions[0].finish("two");
+    await tick();
+    expect(transport.delivered().map((d) => d.origin)).toEqual([WEB, DM_ORIGIN]);
+    const turnStarts = transport.notifications.map((n) => n.params as ChatEventParams).filter((e) => e.ev.type === "turn_start");
+    expect(turnStarts.map((e) => e.origin)).toEqual([WEB, DM_ORIGIN]);
   });
 });

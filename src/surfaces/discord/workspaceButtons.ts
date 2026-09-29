@@ -1,16 +1,20 @@
 import { MessageFlags, type ButtonInteraction } from "discord.js";
+import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
+import type { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
 import { getLogger } from "../../logger.ts";
-import { WS_ASK_PREFIX, WS_STOP_PREFIX, answeredAsk, type WorkspaceLink } from "./workspaceLink.ts";
-import { parseApprovalId, type WorkspaceTools } from "./workspaceTools.ts";
+import { DISCORD_SURFACE, WS_ASK_PREFIX, WS_STOP_PREFIX, answeredAsk, parseApprovalId, renderProgressFinal } from "./workspaceAdapter.ts";
 
 const log = getLogger("surfaces/discord/workspaceButtons");
 
 /** The ButtonInteraction surface these handlers use; tests pass a fake. */
-export type WorkspaceButtonInteraction = Pick<ButtonInteraction, "customId" | "id" | "user" | "component" | "message" | "reply" | "deferReply" | "editReply" | "deferUpdate">;
+export type WorkspaceButtonInteraction = Pick<
+  ButtonInteraction,
+  "customId" | "id" | "channelId" | "user" | "component" | "message" | "reply" | "deferReply" | "editReply" | "deferUpdate"
+>;
 
 export interface WorkspaceButtonDeps {
   ownerId: string | undefined;
-  link: Pick<WorkspaceLink, "abort" | "hasTurn" | "markTurnEnded" | "renderFinal" | "askChoice" | "sendMessage">;
+  link: Pick<WorkspaceLink, "abort" | "hasTurn" | "markTurnEnded" | "askChoice" | "sendMessage">;
 }
 
 function errorText(err: unknown): string {
@@ -38,7 +42,7 @@ export async function handleWorkspaceStopButton(interaction: WorkspaceButtonInte
   if (!tracked) {
     deps.link.markTurnEnded(turnId);
     await interaction.message
-      .edit(deps.link.renderFinal(null, aborted ? "stopped" : "interrupted"))
+      .edit(renderProgressFinal({ outcome: aborted ? "stopped" : "interrupted", summary: null }))
       .catch((err) => log.warn({ err, turnId }, "failed to finalize an untracked progress message"));
   }
   await interaction.editReply(aborted ? "Stopping…" : "That turn already finished.").catch(() => {});
@@ -60,6 +64,7 @@ export async function handleWorkspaceAskButton(interaction: WorkspaceButtonInter
   try {
     // Keyed by the ask, so a second click before the buttons are stripped is a workspace-side duplicate.
     const res = await deps.link.sendMessage({
+      origin: { surface: DISCORD_SURFACE, conversationId: interaction.channelId },
       messageId: `wsask:${askId}`,
       text: answer,
       kind: "user",

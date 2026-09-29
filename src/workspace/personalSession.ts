@@ -12,6 +12,7 @@ import {
   type ChatMessageParams,
   type ChatMessageResult,
   type ChatNewResult,
+  type ChatOrigin,
 } from "../orchestration/contracts.ts";
 import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
@@ -73,6 +74,8 @@ export interface PersonalSessionOptions {
 
 interface OpenRun {
   turnId: string;
+  /** The prompting message's origin; the run's events and reply go back to it. */
+  origin: ChatOrigin | undefined;
   acc: RunAccumulator;
   deltaBuffer: string;
   deltaTimer: ReturnType<typeof setTimeout> | null;
@@ -84,6 +87,7 @@ interface OpenRun {
 interface PendingInbound {
   messageId: string;
   text: string;
+  origin: ChatOrigin | undefined;
 }
 
 interface BufferedContext {
@@ -110,6 +114,7 @@ export class PersonalSession {
   private resetting = false;
   private run: OpenRun | null = null;
   private lastInboundId: string | undefined;
+  private lastOrigin: ChatOrigin | undefined;
   private unconsumed: PendingInbound[] = [];
   // A retry of a message still being handled shares its outcome: a failure must reach the retry too.
   private readonly inFlight = new Map<string, Promise<ChatMessageResult>>();
@@ -195,7 +200,7 @@ export class PersonalSession {
       await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
-    const mode = await this.enqueue(() => this.promptOrSteer(id, text));
+    const mode = await this.enqueue(() => this.promptOrSteer(id, text, params.origin));
     this.recentIds.add(id);
     return { accepted: true, mode };
   }
@@ -290,7 +295,7 @@ export class PersonalSession {
   }
 
   // Pi marks the run active only after async preflight, so gate the queue on preflightResult or a racing idle prompt starts a second run.
-  private async promptOrSteer(messageId: string, text: string): Promise<"prompt" | "steer"> {
+  private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined): Promise<"prompt" | "steer"> {
     for (let attempt = 0; ; attempt++) {
       await this.waitForCompaction();
       await this.waitForSettle();
@@ -299,7 +304,7 @@ export class PersonalSession {
       // Context that arrived during the last run belongs before this prompt, not after its reply.
       if (mode === "prompt" && this.pendingContext.length) await this.flushPendingContext();
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
-      const pending: PendingInbound = { messageId, text };
+      const pending: PendingInbound = { messageId, text, origin };
       this.unconsumed.push(pending);
       let accepted = false;
       let settlesAtAccept = 0;
@@ -322,8 +327,8 @@ export class PersonalSession {
               log.error({ err, messageId }, "chat prompt failed after it was accepted");
               // Pi settles the run before this rejection lands; only speak up if that settle said nothing.
               const settled = this.settleCount !== settlesAtAccept;
-              if (!settled) this.deliverFailure(err, messageId, this.run?.turnId);
-              else if (this.lastSettle.outcome === "silent") this.deliverFailure(err, messageId, this.lastSettle.turnId);
+              if (!settled) this.deliverFailure(err, messageId, this.run?.turnId, this.run?.origin ?? origin);
+              else if (this.lastSettle.outcome === "silent") this.deliverFailure(err, messageId, this.lastSettle.turnId, origin);
             });
         });
         return mode;
@@ -348,12 +353,13 @@ export class PersonalSession {
     const gen = this.generation;
     for (const text of [...steering, ...followUp]) {
       const i = this.unconsumed.findIndex((p) => p.text === text);
-      const messageId = i === -1 ? undefined : this.unconsumed.splice(i, 1)[0].messageId;
+      const stranded = i === -1 ? undefined : this.unconsumed.splice(i, 1)[0];
+      const messageId = stranded?.messageId;
       log.info({ messageId }, "re-prompting a steer stranded at settle");
       // A chat/new queued ahead of it drops it, like any other steer queued on the old conversation.
       void this.enqueue(async () => {
-        if (gen === this.generation) await this.promptOrSteer(messageId ?? "", text);
-      }).catch((err) => this.deliverFailure(err, messageId));
+        if (gen === this.generation) await this.promptOrSteer(messageId ?? "", text, stranded?.origin);
+      }).catch((err) => this.deliverFailure(err, messageId, undefined, stranded?.origin));
     }
   }
 
@@ -362,6 +368,7 @@ export class PersonalSession {
     if (i === -1) return;
     // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
     this.lastInboundId = this.unconsumed[i].messageId || this.lastInboundId;
+    this.lastOrigin = this.unconsumed[i].origin ?? this.lastOrigin;
     this.unconsumed.splice(0, i + 1);
   }
 
@@ -450,6 +457,8 @@ export class PersonalSession {
     if (event.type === "agent_start" && !this.run) {
       this.run = {
         turnId: this.newId(),
+        // agent_start comes before the prompting message's message_start, so it is still the newest pending one.
+        origin: this.unconsumed.at(-1)?.origin ?? this.lastOrigin,
         acc: newRunAccumulator(),
         deltaBuffer: "",
         deltaTimer: null,
@@ -496,17 +505,18 @@ export class PersonalSession {
     if (run.suppressReply) return "suppressed";
     const usage = runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent);
     if (run.acc.errorMessage !== undefined) {
-      this.deliver(failureNotice(run.acc.errorMessage), this.lastInboundId, run.turnId, usage);
+      this.deliver(failureNotice(run.acc.errorMessage), this.lastInboundId, run.turnId, run.origin, usage);
       return "notice";
     }
     const text = replyText(run.acc);
     if (text === null) return "silent";
-    this.deliver(text, this.lastInboundId, run.turnId, usage);
+    this.deliver(text, this.lastInboundId, run.turnId, run.origin, usage);
     return "reply";
   }
 
-  private deliver(text: string, replyTo: string | undefined, turnId: string | undefined, usage?: ChatDeliverParams["usage"]): void {
+  private deliver(text: string, replyTo: string | undefined, turnId: string | undefined, origin: ChatOrigin | undefined, usage?: ChatDeliverParams["usage"]): void {
     const entry: ChatDeliverParams = {
+      ...(origin ? { origin } : {}),
       outboxId: this.newId(),
       principalId: this.opts.principalId,
       kind: "reply",
@@ -519,8 +529,8 @@ export class PersonalSession {
     this.send(entry);
   }
 
-  private deliverFailure(err: unknown, replyTo: string | undefined, turnId?: string): void {
-    this.deliver(failureNotice(err instanceof Error ? err.message : String(err)), replyTo || undefined, turnId);
+  private deliverFailure(err: unknown, replyTo: string | undefined, turnId: string | undefined, origin: ChatOrigin | undefined): void {
+    this.deliver(failureNotice(err instanceof Error ? err.message : String(err)), replyTo || undefined, turnId, origin);
   }
 
   private assertPrincipal(principalId: string): void {
@@ -542,7 +552,13 @@ export class PersonalSession {
   }
 
   private emitFor(run: OpenRun, ev: ChatEventPayload): void {
-    this.opts.transport.notify(RPC_METHODS.chatEvent, { principalId: this.opts.principalId, turnId: run.turnId, agentId: "main", ev });
+    this.opts.transport.notify(RPC_METHODS.chatEvent, {
+      ...(run.origin ? { origin: run.origin } : {}),
+      principalId: this.opts.principalId,
+      turnId: run.turnId,
+      agentId: "main",
+      ev,
+    });
   }
 
   private bufferDelta(run: OpenRun, text: string): void {
@@ -615,7 +631,7 @@ export function messageHeader(messageId: string, receivedAt: Date, opts: { surfa
 }
 
 export function formatUserText(
-  params: Pick<ChatMessageParams, "messageId" | "text" | "voice" | "attachments" | "origin">,
+  params: Pick<ChatMessageParams, "messageId" | "text" | "voice" | "attachments"> & { origin?: ChatOrigin },
   receivedAt: Date,
 ): string {
   const header = messageHeader(params.messageId, receivedAt, { surface: params.origin?.surface, voice: params.voice === true });

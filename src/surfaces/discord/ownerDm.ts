@@ -1,8 +1,8 @@
-import { ContainerBuilder, MessageFlags, TextDisplayBuilder, type MessageCreateOptions } from "discord.js";
-import type { ChatMessageMode } from "../../orchestration/contracts.ts";
-import { RpcConnectionClosedError, mayHaveBeenAccepted } from "../../orchestration/transport/server.ts";
+import type { MessageCreateOptions } from "discord.js";
+import { handleOwnerMessage, type MessageCursor, type OwnerRouterDeps } from "../../orchestration/workspace/router.ts";
+import type { InboundSurface } from "../../orchestration/workspace/surface.ts";
 import { getLogger } from "../../logger.ts";
-import { ACCENT, OFFLINE_NOTICE, type WorkspaceLink } from "./workspaceLink.ts";
+import { discordInbound, type DiscordInbound } from "./workspaceAdapter.ts";
 
 const log = getLogger("surfaces/discord/ownerDm");
 
@@ -12,13 +12,10 @@ export const CATCH_UP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const CATCH_UP_PAGE_SIZE = 100;
 const DISCORD_EPOCH_MS = 1420070400000n;
 
-const NEW_COMMANDS = new Set(["!new", "!reset", "!clear"]);
-const STOP_COMMAND = "!stop";
-export const NEW_WHILE_OFFLINE = "-# ⚠️ workspace offline — its session is unchanged; send `!new` again once it's back";
-
 /** The owner-DM message fields the router needs; the gateway adapts a discord.js Message. */
 export interface OwnerDmMessage {
   id: string;
+  channelId: string;
   content: string;
   author: { id: string; name: string };
   isVoice: boolean;
@@ -27,15 +24,9 @@ export interface OwnerDmMessage {
   send(options: string | MessageCreateOptions): Promise<unknown>;
 }
 
-export interface OwnerDmDeps {
-  workspaceEnabled: boolean;
-  transcriptionEnabled: boolean;
-  link: Pick<WorkspaceLink, "isConnected" | "sendMessage" | "abort" | "newSession" | "recordOffline">;
-  transcribe(message: OwnerDmMessage): Promise<string | null>;
-  /** Runs the in-process DM agent; resolves to the reply text it delivered, if any. */
-  runInProcess(message: OwnerDmMessage, text: string, options: { notice?: string }): Promise<string | null>;
-  /** The in-process `!new`: clears the DM conversation history. */
-  resetInProcess(message: OwnerDmMessage): Promise<void>;
+export interface OwnerDmDeps<P extends OwnerDmMessage = OwnerDmMessage> extends Omit<OwnerRouterDeps<DiscordInbound<P>>, "cursor" | "surface"> {
+  /** Answers the DM in place; the gateway passes its DiscordWorkspaceAdapter. */
+  surface: InboundSurface<DiscordInbound<P>>;
   cursor: DmCursor;
 }
 
@@ -44,135 +35,20 @@ export interface DmCursor {
   set(id: string): void;
 }
 
-export function voiceEcho(transcript: string): string {
-  return `-# 🎙️ ${transcript}`;
-}
-
-export function modeReaction(mode: ChatMessageMode): string | null {
-  if (mode === "prompt") return "👀";
-  if (mode === "steer") return "↪️";
-  return null;
-}
-
 /** Moves the cursor forward only, so a slow catch-up item can't rewind past a newer live DM. */
 export function advanceCursor(cursor: DmCursor, id: string): void {
   const current = cursor.get();
   if (current === null || BigInt(id) > BigInt(current)) cursor.set(id);
 }
 
-function newSessionReply(): MessageCreateOptions {
-  const container = new ContainerBuilder().setAccentColor(ACCENT.success).addTextDisplayComponents(new TextDisplayBuilder({ content: "✅ New session." }));
-  return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
+/** A DM cursor ordered by snowflake. */
+export function snowflakeCursor(cursor: DmCursor): MessageCursor {
+  return { advance: (id) => advanceCursor(cursor, id) };
 }
 
-/** Routes one owner DM: to the workspace when enabled and connected, else to the in-process agent. */
-export async function handleOwnerDm(message: OwnerDmMessage, deps: OwnerDmDeps): Promise<void> {
-  try {
-    await route(message, deps);
-  } finally {
-    advanceCursor(deps.cursor, message.id);
-  }
-}
-
-async function route(message: OwnerDmMessage, deps: OwnerDmDeps): Promise<void> {
-  const { link } = deps;
-  const command = message.content.trim().toLowerCase();
-  const workspace = deps.workspaceEnabled && link.isConnected();
-
-  if (NEW_COMMANDS.has(command)) {
-    if (!deps.workspaceEnabled) {
-      await deps.resetInProcess(message);
-      return;
-    }
-    if (!workspace) {
-      // Clearing the fallback's history would read as a new session, but the workspace's continues on reconnect.
-      await message.send(NEW_WHILE_OFFLINE).catch(() => {});
-      return;
-    }
-    await message.react("🧠").catch(() => {});
-    try {
-      await link.newSession();
-      await message.send(newSessionReply()).catch(() => {});
-    } catch (err) {
-      log.warn({ err }, "chat/new failed");
-      await message.send(`Couldn't start a new session: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
-    }
-    return;
-  }
-
-  if (deps.workspaceEnabled && command === STOP_COMMAND) {
-    if (!workspace) {
-      await message.send("-# ⚠️ workspace offline — nothing to stop").catch(() => {});
-      return;
-    }
-    try {
-      await link.abort();
-      await message.react("⏹️").catch(() => {});
-    } catch (err) {
-      log.warn({ err }, "chat/abort failed");
-      await message.send(`Couldn't stop: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
-    }
-    return;
-  }
-
-  let text = message.content;
-  let voice = false;
-  if (deps.transcriptionEnabled && message.isVoice) {
-    await message.react("🎙️").catch(() => {});
-    const transcript = await deps.transcribe(message);
-    if (!transcript) {
-      await message.send("Sorry, I couldn't transcribe that voice message.").catch(() => {});
-      return;
-    }
-    text = transcript;
-    voice = true;
-    await message.send(voiceEcho(transcript)).catch(() => {});
-  }
-
-  if (workspace) {
-    // A voice message's audio is already transcribed; only forward real attachments.
-    const attachments = voice ? [] : message.attachments;
-    const send = () =>
-      link.sendMessage({
-        messageId: message.id,
-        text,
-        kind: "user",
-        author: message.author,
-        ...(attachments.length ? { attachments } : {}),
-        ...(voice ? { voice: true } : {}),
-      });
-    try {
-      let res;
-      try {
-        res = await send();
-      } catch (err) {
-        // A replacement socket took over; the old one likely died before the workspace read the DM.
-        // The workspace dedupes by messageId, so a retry of a DM it did take comes back as a duplicate.
-        if (!(err instanceof RpcConnectionClosedError && link.isConnected())) throw err;
-        res = await send();
-      }
-      const emoji = modeReaction(res.mode);
-      if (emoji) await message.react(emoji).catch(() => {});
-      return;
-    } catch (err) {
-      // The workspace dedupes by messageId and answers a DM it took, so answering here too would double-reply.
-      if (mayHaveBeenAccepted(err) && link.isConnected()) {
-        log.warn({ err, messageId: message.id }, "chat/message unconfirmed while the workspace is connected; leaving it to the workspace");
-        await message.react("⏳").catch(() => {});
-        return;
-      }
-      log.warn({ err, messageId: message.id }, "chat/message not accepted; answering in-process");
-    }
-  }
-
-  // Immediate receipt ack; the in-process turn can take a while.
-  await message.react("👀").catch(() => {});
-  if (!deps.workspaceEnabled) {
-    await deps.runInProcess(message, text, {});
-    return;
-  }
-  const reply = await deps.runInProcess(message, text, { notice: OFFLINE_NOTICE });
-  deps.link.recordOffline(text, reply ?? "(no reply)");
+/** Routes one owner DM through the surface-neutral owner router. */
+export function handleOwnerDm<P extends OwnerDmMessage>(message: P, deps: OwnerDmDeps<P>): Promise<void> {
+  return handleOwnerMessage(discordInbound(message), { ...deps, cursor: snowflakeCursor(deps.cursor) });
 }
 
 export interface CatchUpCandidate {
@@ -229,25 +105,4 @@ export async function catchUpOwnerDms<T extends CatchUpCandidate>(input: {
     await input.handle(m).catch((err) => log.error({ err, messageId: m.id }, "catch-up DM failed"));
   }
   return pending.length;
-}
-
-/** One DM, live or caught up: task replies and needs_input answers consume it first; otherwise an
- *  owner DM goes to the owner-DM handler. Every owner DM advances the cursor, whichever branch took it. */
-export async function routeDirectMessage<T extends { id: string }>(
-  message: T,
-  deps: {
-    isOwner: boolean;
-    preChecks: Array<(message: T) => Promise<boolean>>;
-    handleOwner: (message: T) => Promise<void>;
-    cursor: DmCursor;
-    onOwnerDm?: (id: string) => void;
-  },
-): Promise<void> {
-  if (deps.isOwner) deps.onOwnerDm?.(message.id);
-  try {
-    for (const check of deps.preChecks) if (await check(message)) return;
-    if (deps.isOwner) await deps.handleOwner(message);
-  } finally {
-    if (deps.isOwner) advanceCursor(deps.cursor, message.id);
-  }
 }

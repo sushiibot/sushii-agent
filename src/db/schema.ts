@@ -249,6 +249,9 @@ export const workspaceInbox = sqliteTable("workspace_inbox", {
   userText: text("user_text").notNull(),
   replyText: text("reply_text").notNull(),
   createdAt: integer("created_at").notNull(),
+  // Where the answered message came from; null on rows recorded before origins were stored.
+  originSurface: text("origin_surface"),
+  originConversationId: text("origin_conversation_id"),
 });
 
 export const kv = sqliteTable("kv", {

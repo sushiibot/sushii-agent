@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { asc, eq, lt } from "drizzle-orm";
 import { kv, workspaceInbox, workspaceOutboxSeen } from "./schema.ts";
+import type { ChatOrigin } from "../orchestration/contracts.ts";
 
 // All timestamps here are unix milliseconds.
 
@@ -15,6 +16,8 @@ export interface InboxRow {
   userText: string;
   replyText: string;
   createdAt: number;
+  /** Null on rows recorded before origins were stored. */
+  origin: ChatOrigin | null;
 }
 
 /** Persistence behind the workspace link; the gateway passes the real DB, tests an in-memory one. */
@@ -33,13 +36,25 @@ export class WorkspaceLinkStore {
     ormFor(this.db).delete(workspaceOutboxSeen).where(lt(workspaceOutboxSeen.seenAt, now - maxAgeMs)).run();
   }
 
-  addInbox(principalId: string, userText: string, replyText: string, now = Date.now()): void {
-    ormFor(this.db).insert(workspaceInbox).values({ principalId, userText, replyText, createdAt: now }).run();
+  addInbox(principalId: string, userText: string, replyText: string, now = Date.now(), origin?: ChatOrigin): void {
+    ormFor(this.db)
+      .insert(workspaceInbox)
+      .values({ principalId, userText, replyText, createdAt: now, originSurface: origin?.surface ?? null, originConversationId: origin?.conversationId ?? null })
+      .run();
   }
 
   /** Oldest first. */
   listInbox(principalId: string): InboxRow[] {
-    return ormFor(this.db).select().from(workspaceInbox).where(eq(workspaceInbox.principalId, principalId)).orderBy(asc(workspaceInbox.id)).all();
+    return ormFor(this.db)
+      .select()
+      .from(workspaceInbox)
+      .where(eq(workspaceInbox.principalId, principalId))
+      .orderBy(asc(workspaceInbox.id))
+      .all()
+      .map(({ originSurface, originConversationId, ...row }) => ({
+        ...row,
+        origin: originSurface !== null ? { surface: originSurface, conversationId: originConversationId ?? "" } : null,
+      }));
   }
 
   deleteInbox(id: number): void {

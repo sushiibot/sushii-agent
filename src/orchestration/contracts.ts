@@ -127,11 +127,12 @@ export const RPC_METHODS = {
 
 // ── Chat protocol (workspace ↔ bot). ──
 // Where a chat message came from; replies/events echo it so the bot routes them back to that surface.
+// Optional on deliver/event: a proactive message has none, and neither do entries outboxed before origins.
 export const chatOrigin = z.object({ surface: z.string(), conversationId: z.string() });
 export type ChatOrigin = z.infer<typeof chatOrigin>;
 
 export const chatMessageParams = z.object({
-  origin: chatOrigin.optional(),
+  origin: chatOrigin,
   principalId: z.string(),
   messageId: z.string(),
   text: z.string(),

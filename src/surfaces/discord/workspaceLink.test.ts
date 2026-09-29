@@ -5,9 +5,17 @@ import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { RPC_METHODS, chatEventParams, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/transport/server.ts";
-import { DELIVERY_MAX_FAILURES, WorkspaceLink, answeredAsk, formatDuration, progressEditDelay, progressEditGap, type Timers, type WorkspaceRpc } from "./workspaceLink.ts";
+import { DELIVERY_MAX_FAILURES, WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
+import { formatDuration, progressEditDelay, progressEditGap, type Timers } from "../../orchestration/workspace/progress.ts";
+import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
+import { DiscordWorkspaceAdapter, answeredAsk, renderDelivery, renderProgressFinal, type DmChannelPort } from "./workspaceAdapter.ts";
 
 const P = "drk";
+const ORIGIN = { surface: "discord", conversationId: "dm-1" };
+
+function discordSurfaces(ownerChannel: () => Promise<unknown>): SurfaceRegistry {
+  return new SurfaceRegistry("discord").register(new DiscordWorkspaceAdapter({ ownerChannel: ownerChannel as () => Promise<DmChannelPort | null> }));
+}
 const CONN: ConnectionInfo = { runnerId: `workspace-${P}`, role: "workspace", principalId: P, protocolVersion: 1, state: "idle" };
 
 type Call = { method: string; params: unknown };
@@ -92,7 +100,7 @@ function setup() {
   const link = new WorkspaceLink({
     principalId: P,
     store,
-    ownerChannel: async () => channel,
+    surfaces: discordSurfaces(async () => channel),
     owner: () => ({ id: "owner-1", name: "drk" }),
     now: () => now,
     timers,
@@ -194,7 +202,7 @@ describe("chat/deliver", () => {
 
   test("an answered ask keeps its question and drops the buttons", async () => {
     const { link } = setup();
-    const [ask] = link.renderDelivery(deliverParams({ kind: "ask", ask: { askId: "a", question: "Merge now?", choices: ["Yes", "No"] } }));
+    const [ask] = renderDelivery(deliverParams({ kind: "ask", ask: { askId: "a", question: "Merge now?", choices: ["Yes", "No"] } }));
     const edited = textOf(answeredAsk({ components: ask!.components as Array<{ toJSON(): unknown }> }, "Yes"));
     expect(edited).toContain("Merge now?");
     expect(edited).toContain("-# → Yes");
@@ -250,7 +258,7 @@ describe("chat/deliver", () => {
     channel.failWhen = (o) => o.content === undefined;
     // Each resend follows a register, usually after a bot restart: a fresh link over the same store.
     const freshLink = () => {
-      const link = new WorkspaceLink({ principalId: P, store, ownerChannel: async () => channel, owner: () => ({ id: "owner-1", name: "drk" }) });
+      const link = new WorkspaceLink({ principalId: P, store, surfaces: discordSurfaces(async () => channel), owner: () => ({ id: "owner-1", name: "drk" }) });
       link.attach(rpc);
       return link;
     };
@@ -263,8 +271,9 @@ describe("chat/deliver", () => {
   });
 
   test("an ask with an overlong question or empty choice still renders valid components", async () => {
-    const { link } = setup();
-    const [ask] = link.renderDelivery(deliverParams({ kind: "ask", ask: { askId: "a", question: "q".repeat(5000), choices: ["", "  ", "ok"] } }));
+    const { link, channel } = setup();
+    await link.deliver(deliverParams({ kind: "ask", ask: { askId: "a", question: "q".repeat(5000), choices: ["", "  ", "ok"] } }));
+    const [ask] = channel.sent;
     const body = textOf(ask!);
     const content = JSON.parse(body)[0].components[0].content as string;
     expect(content.length).toBeLessThanOrEqual(4000);
@@ -285,8 +294,8 @@ describe("inbox replay", () => {
   test("register replays offline exchanges oldest-first as context and deletes each once accepted", async () => {
     const { link, rpc, store } = setup();
     rpc.connected = false;
-    link.recordOffline("first q", "first a");
-    link.recordOffline("second q", "second a");
+    link.recordOffline("first q", "first a", ORIGIN);
+    link.recordOffline("second q", "second a", ORIGIN);
     rpc.connected = true;
     rpc.respond = async () => ({ accepted: true, mode: "context" });
     rpc.handler!.onRegister!(CONN);
@@ -302,8 +311,8 @@ describe("inbox replay", () => {
   test("a rejected row stops the replay and stays for the next register", async () => {
     const { link, rpc, store } = setup();
     rpc.connected = false;
-    link.recordOffline("q1", "a1");
-    link.recordOffline("q2", "a2");
+    link.recordOffline("q1", "a1", ORIGIN);
+    link.recordOffline("q2", "a2", ORIGIN);
     rpc.connected = true;
     rpc.respond = async () => {
       throw new Error("link closed");
@@ -316,7 +325,7 @@ describe("inbox replay", () => {
   test("a re-register while a replay is in flight on the old socket replays again on the new one", async () => {
     const { link, rpc, store } = setup();
     rpc.connected = false;
-    link.recordOffline("q1", "a1");
+    link.recordOffline("q1", "a1", ORIGIN);
     rpc.connected = true;
     let rejectOld!: (err: Error) => void;
     rpc.respond = () => new Promise((_, reject) => (rejectOld = reject));
@@ -423,7 +432,7 @@ describe("live progress", () => {
     event(rpc, "t7", { type: "turn_end", aborted: true });
     await tick();
     expect(channel.sent).toHaveLength(0);
-    expect(textOf(link.renderFinal(null, "interrupted"))).toContain('"content":"⚠️ interrupted"');
+    expect(textOf(renderProgressFinal({ outcome: "interrupted", summary: null }))).toContain('"content":"⚠️ interrupted"');
   });
 
   test("events for another principal are ignored", async () => {
@@ -459,7 +468,7 @@ describe("bot-proxied tools", () => {
     const link = new WorkspaceLink({
       principalId: P,
       store: new WorkspaceLinkStore(db),
-      ownerChannel: async () => null,
+      surfaces: discordSurfaces(async () => null),
       owner: () => ({ id: "owner-1", name: "drk" }),
       tools: {
         manifest: () => [{ name: "web_search", description: "d", inputSchema: { type: "object" }, approval: "none" }],
@@ -524,7 +533,7 @@ describe("progress views survive a bot restart", () => {
     const store = new WorkspaceLinkStore(db);
     const start = () => {
       const rpc = new FakeRpc([]);
-      const link = new WorkspaceLink({ principalId: P, store, ownerChannel: async () => channel, owner: () => ({ id: "owner-1", name: "drk" }), timers: new ManualTimers() });
+      const link = new WorkspaceLink({ principalId: P, store, surfaces: discordSurfaces(async () => channel), owner: () => ({ id: "owner-1", name: "drk" }), timers: new ManualTimers() });
       link.attach(rpc);
       return { link, rpc };
     };
@@ -662,7 +671,7 @@ describe("workspace flag off", () => {
     const link = new WorkspaceLink({
       principalId: P,
       store: new WorkspaceLinkStore(db),
-      ownerChannel: async () => channel,
+      surfaces: discordSurfaces(async () => channel),
       owner: () => ({ id: "owner-1", name: "drk" }),
       enabled: false,
       tools: {

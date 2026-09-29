@@ -1,29 +1,24 @@
-// Bot side of `tool/call`: the workspace runs its model elsewhere but calls these secret-holding
-// tools here, executed with the bot's keys and the owner-DM tool context. Lives in the Discord
-// surface because the approval gate is a Components V2 prompt in the owner's DM.
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder, MessageFlags, TextDisplayBuilder, type MessageCreateOptions, type MessageEditOptions } from "discord.js";
+// Bot side of `tool/call`: the workspace runs its model elsewhere but calls these secret-holding tools
+// here, executed with the bot's keys in the principal's private tool context. Owner approval is asked on
+// the principal's preferred surface, since a tool/call carries no origin.
 import { randomBytes } from "node:crypto";
-import { escapeMarkdown } from "discord.js";
 import { Check } from "typebox/schema";
-import type { AuthorRef, ConversationRef, ConversationStore, SpaceMemoryStore, SurfaceSession, ToolContext, ToolEntry, ToolHosts, ToolRegistry } from "../../core/contracts.ts";
+import type { AuthorRef, ConversationRef, ConversationStore, SpaceMemoryStore, SurfaceId, SurfaceSession, ToolContext, ToolEntry, ToolHosts, ToolRegistry } from "../../core/contracts.ts";
 import { buildToolContextBase } from "../../core/agentCore.ts";
 import { createToolRegistry } from "../../core/tools/registry.ts";
-import { toolCallParams, type ToolApproval, type ToolCallParams, type ToolCallResult, type ToolManifestEntry } from "../../orchestration/contracts.ts";
-import type { ConnectionInfo } from "../../orchestration/transport/server.ts";
+import { toolCallParams, type ToolCallParams, type ToolCallResult, type ToolManifestEntry } from "../contracts.ts";
+import type { ConnectionInfo } from "../transport/server.ts";
 import { getLogger } from "../../logger.ts";
-import { DM_SPACE_ID } from "./dmConductor.ts";
-import { ACCENT, type DmChannelPort, type EditableMessage, type Timers } from "./workspaceLink.ts";
+import { realTimers, type Timers } from "./progress.ts";
+import { SurfaceUnavailableError, type ApprovalDecision, type ApprovalField, type ApprovalView, type SurfaceMessageHandle, type SurfaceRegistry } from "./surface.ts";
 
-export const WS_APPROVE_PREFIX = "wsap:";
 export const TOOL_EXEC_TIMEOUT_MS = 120_000;
 export const APPROVAL_TIMEOUT_MS = 30 * 60_000;
-const RESULT_SUMMARY_MAX = 200;
-const AGENT_NAME_MAX = 64;
 // An approved tool can't be cancelled once running (tool context has no abort signal), so it may finish after this.
 const ASK_TIMEOUT_ERROR = "timeout after 120 s; the action may still complete, so do not retry it";
 
 /** One argument shown on an approval prompt. `single` fields are shown in full on one line and rejected
- *  when longer than `max`; the `body` field is shown in a code block, clipped to `max`. */
+ *  when longer than `max`; the `body` field is shown as a block, clipped to `max`. */
 export interface DisplayField {
   key: string;
   max: number;
@@ -71,9 +66,12 @@ export interface AuditLog {
 
 export interface WorkspaceToolsOptions {
   principalId: string;
-  /** The owner's Discord id; tools run as this user. Unset → no tools are offered. */
+  /** The owner's user id on `toolSpace.surface`; tools run as this user. Unset → no tools are offered. */
   ownerUserId: () => string | undefined;
-  ownerChannel: () => Promise<DmChannelPort | null>;
+  /** The private space tools run in: the context the in-process agent gets for the owner. */
+  toolSpace: { surface: SurfaceId; spaceId: string };
+  /** Where approval prompts go (the preferred surface). */
+  surfaces: SurfaceRegistry;
   store: ConversationStore;
   memory: SpaceMemoryStore;
   registry?: ToolRegistry;
@@ -82,23 +80,16 @@ export interface WorkspaceToolsOptions {
   log?: AuditLog;
 }
 
-type Decision = "approve" | "deny" | "timeout" | "expired";
-
 interface PendingApproval {
   conn: ConnectionInfo;
-  resolve: (d: Decision) => void;
+  resolve: (d: ApprovalDecision) => void;
 }
 
 // 16 base64url chars: unguessable, colon-free, and independent of anything the workspace sends.
-const NONCE_RE = /^[A-Za-z0-9_-]{16}$/;
+export const NONCE_RE = /^[A-Za-z0-9_-]{16}$/;
 function newNonce(): string {
   return randomBytes(12).toString("base64url");
 }
-
-const realTimers: Timers = {
-  set: (fn, ms) => setTimeout(fn, ms),
-  clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
-};
 
 const DENIED: ToolCallResult = { ok: false, error: "denied by owner", denied: true };
 
@@ -119,17 +110,17 @@ export class WorkspaceTools {
     this.registry = opts.registry ?? createToolRegistry();
     this.timers = opts.timers ?? realTimers;
     this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? (getLogger("surfaces/discord/workspaceTools") as unknown as AuditLog);
+    this.log = opts.log ?? (getLogger("orchestration/workspace/tools") as unknown as AuditLog);
   }
 
   /** The proxied tools this bot can run right now: the allowlist, narrowed by the registry's config
-   *  gates as resolved for the owner in their DM with no hosts (so no Discord/cache/fs/mcp tools). */
+   *  gates as resolved for the owner in their private space with no hosts (so no surface/cache/fs/mcp tools). */
   private entries(): Map<string, ToolEntry<keyof ToolHosts>> {
     if (!this.opts.ownerUserId()) return new Map();
     const session = { hosts: {}, capabilities: {} } as unknown as SurfaceSession;
     const resolved = this.registry.resolve(session, {
-      surface: "discord",
-      spaceId: DM_SPACE_ID,
+      surface: this.opts.toolSpace.surface,
+      spaceId: this.opts.toolSpace.spaceId,
       autoMod: false,
       isOwner: true,
       isPrivate: true,
@@ -190,17 +181,18 @@ export class WorkspaceTools {
     const input = args as Record<string, unknown>;
     const policy = PROXIED_TOOLS[p.name]!;
     if (policy.approval === "none") return this.execute(entry, input, p, "timeout");
-    const shown = displayArgs(policy.display, input);
+    const shown = approvalFields(policy.display, input);
     if (!shown.ok) return { ok: false, error: `invalid arguments for ${p.name}: ${shown.error}` };
-    return this.executeWithApproval(conn, entry, input, p, shown.text);
+    return this.executeWithApproval(conn, entry, input, p, shown.fields);
   }
 
-  /** Runs the tool as the owner in their DM space, the context the in-process DM agent gets. */
+  /** Runs the tool as the owner in their private space, the context the in-process agent gets. */
   private async execute(entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, timeoutError: string): Promise<ToolCallResult> {
     const ownerId = this.opts.ownerUserId();
     if (!ownerId) return { ok: false, error: "owner not configured" };
-    const conversation: ConversationRef = { surface: "discord", spaceId: DM_SPACE_ID, conversationId: `workspace:${this.opts.principalId}`, isPrivate: true };
-    const owner: AuthorRef = { surface: "discord", userId: ownerId, username: "owner" };
+    const { surface, spaceId } = this.opts.toolSpace;
+    const conversation: ConversationRef = { surface, spaceId, conversationId: `workspace:${this.opts.principalId}`, isPrivate: true };
+    const owner: AuthorRef = { surface, userId: ownerId, username: "owner" };
     const base = buildToolContextBase({ conversation, isPrivate: true, store: this.opts.store, memory: this.opts.memory, hosts: {} });
     const ctx = { ...base, owner, turnId: p.callId } as ToolContext & Required<ToolHosts>;
 
@@ -219,43 +211,48 @@ export class WorkspaceTools {
     }
   }
 
-  private async executeWithApproval(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, argsText: string): Promise<ToolCallResult> {
+  private async executeWithApproval(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, fields: ApprovalField[]): Promise<ToolCallResult> {
     if (this.claimed.has(p.callId)) return { ok: false, error: `duplicate callId: ${p.callId}` };
     this.claimed.add(p.callId);
     try {
-      return await this.approveThenExecute(conn, entry, input, p, argsText);
+      return await this.approveThenExecute(conn, entry, input, p, fields);
     } finally {
       this.claimed.delete(p.callId);
     }
   }
 
-  private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, argsText: string): Promise<ToolCallResult> {
-    const prompt: ApprovalPrompt = { tool: p.name, agentId: p.agentId, agentName: p.agentName, argsText };
+  private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, fields: ApprovalField[]): Promise<ToolCallResult> {
+    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields };
     const nonce = newNonce();
-    const channel = await this.opts.ownerChannel().catch(() => null);
-    if (!channel) return { ok: false, error: "owner DM unavailable; cannot ask for approval" };
-    let message: EditableMessage;
+    // Pending before the prompt exists, so a click racing the post's return still counts.
+    const decided = this.awaitDecision(conn, nonce);
+    let prompt: SurfaceMessageHandle;
+    let resolve: (decision: ApprovalDecision, result?: ToolCallResult) => Promise<void>;
     try {
-      message = await channel.send(renderApprovalPrompt(nonce, prompt));
+      const { adapter, origin } = this.opts.surfaces.resolve(null);
+      prompt = await adapter.approvalPrompt(origin, view, nonce);
+      resolve = (decision, result) => adapter.resolveApproval(prompt, view, nonce, decision, result).catch(() => {});
     } catch (err) {
+      this.settle(nonce, "expired");
+      if (err instanceof SurfaceUnavailableError) return { ok: false, error: `${err.message}; cannot ask for approval` };
       return { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` };
     }
 
-    const decision = this.closed.has(conn) ? "expired" : await this.awaitDecision(conn, nonce);
-    const edit = (options: MessageEditOptions) => message.edit(options).catch(() => {});
+    if (this.closed.has(conn)) this.settle(nonce, "expired");
+    const decision = await decided;
     if (decision !== "approve") {
-      await edit(renderApprovalFinal(nonce, prompt, decision));
+      await resolve(decision);
       return DENIED;
     }
     // Disable the buttons while the tool runs, so a second click doesn't read as "expired".
-    const running = edit(renderApprovalFinal(nonce, prompt, "approve"));
+    const running = resolve("approve");
     const result = await this.execute(entry, input, p, ASK_TIMEOUT_ERROR);
     await running;
-    await edit(renderApprovalFinal(nonce, prompt, "approve", result));
+    await resolve("approve", result);
     return result;
   }
 
-  private awaitDecision(conn: ConnectionInfo, nonce: string): Promise<Decision> {
+  private awaitDecision(conn: ConnectionInfo, nonce: string): Promise<ApprovalDecision> {
     return new Promise((resolve) => {
       const timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
       this.pending.set(nonce, {
@@ -268,7 +265,7 @@ export class WorkspaceTools {
     });
   }
 
-  private settle(nonce: string, decision: Decision): boolean {
+  private settle(nonce: string, decision: ApprovalDecision): boolean {
     const p = this.pending.get(nonce);
     if (!p) return false;
     this.pending.delete(nonce);
@@ -289,13 +286,6 @@ export class WorkspaceTools {
   }
 }
 
-interface ApprovalPrompt {
-  tool: string;
-  agentId: string;
-  agentName: string;
-  argsText: string;
-}
-
 /** The identifying string fields of a malformed tool/call, for its audit line; never args. */
 function pickStrings(raw: unknown): Partial<ToolCallParams> {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
@@ -305,10 +295,6 @@ function pickStrings(raw: unknown): Partial<ToolCallParams> {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function clip(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /** A copy of a tool's JSON Schema with `additionalProperties:false` on every object that declares
@@ -331,76 +317,16 @@ export function closedSchema(schema: Record<string, unknown>): Record<string, un
   return close(schema, true) as Record<string, unknown>;
 }
 
-/** Inline text that can't open a new line (so no line-start headers, subtext or quotes) or carry live
- *  markdown, links, mentions or timestamps. */
-function inlineSafe(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return escapeMarkdown(flat, { maskedLink: true }).replace(/[<>@]/g, (c) => `\\${c}`);
-}
-
-/** Text rendered verbatim inside a code block: backticks are swapped so it can't close the block. */
-function codeBlockSafe(text: string): string {
-  return text.replace(/`/g, "ˋ");
-}
-
-/** The approval prompt's args lines, built only from the tool's display fields in their fixed order. */
-export function displayArgs(fields: readonly DisplayField[], args: Record<string, unknown>): { ok: true; text: string } | { ok: false; error: string } {
-  const lines: string[] = [];
+/** The approval prompt's fields, taken only from the tool's display list in its fixed order. Empty values
+ *  are skipped; a `single` value longer than its max is rejected rather than hidden. */
+export function approvalFields(fields: readonly DisplayField[], args: Record<string, unknown>): { ok: true; fields: ApprovalField[] } | { ok: false; error: string } {
+  const out: ApprovalField[] = [];
   for (const f of fields) {
     const raw = args[f.key];
     if (raw === undefined || raw === null || raw === "") continue;
     const value = typeof raw === "string" ? raw : JSON.stringify(raw);
-    if (f.kind === "single") {
-      if (value.length > f.max) return { ok: false, error: `${f.key} is longer than ${f.max} chars` };
-      lines.push(`**${f.key}:** ${inlineSafe(value)}`);
-    } else {
-      const extra = value.length > f.max ? `\n-# (+${value.length - f.max} chars)` : "";
-      lines.push(`**${f.key}:**\n\`\`\`\n${codeBlockSafe(value.slice(0, f.max))}\n\`\`\`${extra}`);
-    }
+    if (f.kind === "single" && value.length > f.max) return { ok: false, error: `${f.key} is longer than ${f.max} chars` };
+    out.push({ key: f.key, value, kind: f.kind, max: f.max });
   }
-  return { ok: true, text: lines.join("\n") };
-}
-
-// agentId is self-reported by the workspace, so the subagent label is advisory.
-function requesterLine(prompt: ApprovalPrompt): string {
-  const name = clip(prompt.agentName.replace(/\s+/g, " ").trim(), AGENT_NAME_MAX).replace(/`/g, "'") || "?";
-  return `**${prompt.tool}** requested by \`${name}\`${prompt.agentId !== "main" ? " (subagent of main)" : ""}`;
-}
-
-function approvalButtons(nonce: string, disabled: boolean): ActionRowBuilder<ButtonBuilder> {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`${WS_APPROVE_PREFIX}${nonce}:approve`).setLabel("Approve").setStyle(ButtonStyle.Success).setDisabled(disabled),
-    new ButtonBuilder().setCustomId(`${WS_APPROVE_PREFIX}${nonce}:deny`).setLabel("Deny").setStyle(ButtonStyle.Danger).setDisabled(disabled),
-  );
-}
-
-function body(prompt: ApprovalPrompt): string {
-  return [requesterLine(prompt), prompt.argsText].filter(Boolean).join("\n");
-}
-
-export function renderApprovalPrompt(nonce: string, prompt: ApprovalPrompt): MessageCreateOptions {
-  const container = new ContainerBuilder()
-    .setAccentColor(ACCENT.warning)
-    .addTextDisplayComponents(new TextDisplayBuilder({ content: `### 🙋 Approve action?\n${body(prompt)}\n-# auto-denies in 30 min` }))
-    .addActionRowComponents(approvalButtons(nonce, false));
-  return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
-}
-
-export function renderApprovalFinal(nonce: string, prompt: ApprovalPrompt, decision: Decision, result?: ToolCallResult): MessageEditOptions {
-  const header = { approve: "✅ Approved", deny: "❌ Denied", timeout: "⌛ Timed out", expired: "⌛ Expired (workspace disconnected)" }[decision];
-  const outcome = result ? `\n-# → ${inlineSafe(clip((result.ok ? result.result : `failed: ${result.error}`).split("\n")[0] ?? "", RESULT_SUMMARY_MAX))}` : "";
-  const container = new ContainerBuilder()
-    .setAccentColor(decision === "approve" ? ACCENT.success : ACCENT.danger)
-    .addTextDisplayComponents(new TextDisplayBuilder({ content: `### ${header}\n${body(prompt)}${outcome}` }))
-    .addActionRowComponents(approvalButtons(nonce, true));
-  return { components: [container], allowedMentions: { parse: [] } };
-}
-
-/** Parses `wsap:<nonce>:<approve|deny>`. Anything else, including the older callId-based ids, is null. */
-export function parseApprovalId(customId: string): { nonce: string; decision: "approve" | "deny" } | null {
-  if (!customId.startsWith(WS_APPROVE_PREFIX)) return null;
-  const [nonce, decision, ...rest] = customId.slice(WS_APPROVE_PREFIX.length).split(":");
-  if (rest.length || !nonce || !NONCE_RE.test(nonce)) return null;
-  if (decision !== "approve" && decision !== "deny") return null;
-  return { nonce, decision };
+  return { ok: true, fields: out };
 }
