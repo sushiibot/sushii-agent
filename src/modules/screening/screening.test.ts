@@ -67,7 +67,7 @@ function harness(text: Partial<TextVerdict["scores"]> = { scam: 0.9, promo: 0.1 
     },
     classifyImage: async (url) => {
       h.imageCalls.push(url);
-      return { unsafe: false, categories: [], reason: "A cat.", model: "google/gemini-2.5-flash-lite", cost: 0.0002, ...image };
+      return { unsafe: false, categories: [], reason: "A cat.", model: "google/gemini-3.5-flash-lite", cost: 0.0005, ...image };
     },
     post: async (channelId, container) => {
       h.posts.push({ channelId, container });
@@ -182,14 +182,14 @@ describe("classify", () => {
   });
 
   test("classifyImage sends the policy, captions by kind", async () => {
-    const bodies: { temperature: number; messages: { role: string; content: string | { type: string; text?: string }[] }[] }[] = [];
+    const bodies: { temperature?: number; messages: { role: string; content: string | { type: string; text?: string }[] }[] }[] = [];
     const fakeFetch = (async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(init.body as string));
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"category":"ok","reason":"A cat."}' } }] }));
     }) as unknown as typeof fetch;
     expect(await classifyImage("https://cdn.discordapp.com/a.png", "pfp", fakeFetch)).toMatchObject({ unsafe: false, reason: "A cat." });
     await classifyImage("https://cdn.discordapp.com/b.png", "image", fakeFetch);
-    expect(bodies[0]!.temperature).toBe(0);
+    expect(bodies[0]!.temperature).toBeUndefined();
     expect(bodies[0]!.messages[0]!.role).toBe("system");
     expect((bodies[0]!.messages[1]!.content as { text?: string }[])[1]!.text).toBe("Profile picture of a Discord user.");
     expect((bodies[1]!.messages[1]!.content as { text?: string }[])[1]!.text).toBe("Image shared in a Discord chat.");

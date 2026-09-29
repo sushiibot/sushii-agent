@@ -2,7 +2,7 @@ import { config } from "../../config.ts";
 import type { ScreeningRule, ScreeningRuleId } from "./rules.ts";
 
 export const TEXT_MODEL = "typesafe/jev-1.13";
-export const IMAGE_MODEL = "google/gemini-2.5-flash-lite";
+export const IMAGE_MODEL = "google/gemini-3.5-flash-lite";
 
 /** Only the new message is judged; the member's earlier lines are context. No display names:
  *  a crude or odd name alone pushed benign messages over the threshold. */
@@ -87,7 +87,7 @@ export type ImageCategory = (typeof IMAGE_CATEGORIES)[number];
 /** An explicit allow list, not a guard model's taxonomy: those count profanity, weapons and
  *  copyrighted characters as unsafe, which flags ordinary avatars. */
 const IMAGE_POLICY = `You review an image posted on Discord for the server's moderators. Flag it only if it clearly shows one of:
-- sexual: nudity (exposed genitals, female nipples, bare buttocks), sex acts, pornographic or fetish imagery
+- sexual: nudity (exposed genitals, female nipples, bare buttocks), including in paintings, drawings and classical art; sex acts, pornographic or fetish imagery
 - minor_sexual: any sexualized depiction of a minor, real or drawn
 - gore: real or realistic graphic violence, mutilation, dead bodies, self-harm injuries
 - hate: hate symbols (swastika, SS runes, KKK, etc.) or imagery demeaning a protected group
@@ -139,8 +139,9 @@ export async function classifyImage(imageUrl: string, kind: "pfp" | "image", fet
       },
     ],
     response_format: { type: "json_schema", json_schema: IMAGE_SCHEMA },
-    max_tokens: 300,
-    temperature: 0,
+    // Gemini 3 loops on repeated tokens below its default temperature, so none is set.
+    max_tokens: 2000,
+    reasoning: { effort: "low" },
     // Some providers train on inputs.
     provider: { data_collection: "deny" },
   })) as {
@@ -150,7 +151,7 @@ export async function classifyImage(imageUrl: string, kind: "pfp" | "image", fet
   };
   const choice = json.choices?.[0];
   const meta = { model: json.model ?? IMAGE_MODEL, cost: json.usage?.cost ?? null };
-  // Gemini's own filter blocks the worst images outright; those must surface as flags, not errors.
+  // Provider-side filters block the worst images outright; those must surface as flags, not errors.
   if (choice?.finish_reason === "content_filter" || /SAFETY|PROHIBITED|BLOCKLIST|SPII/i.test(choice?.native_finish_reason ?? "")) {
     return { unsafe: true, categories: ["blocked"], reason: `Provider refused to review it (${choice?.native_finish_reason ?? choice?.finish_reason}).`, ...meta };
   }
