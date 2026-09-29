@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import { createAutoModeExtension, judgeCompletion, READ_ONLY_TOOLS, type AutoModeAudit } from "./autoMode.ts";
-import { DEFAULT_JUDGE_MODEL, WorkspaceConfigError, loadWorkspaceConfig } from "./config.ts";
+import { createAutoModeExtension, judgeCompletion, judgeForBackend, READ_ONLY_TOOLS, type AutoModeAudit } from "./autoMode.ts";
+import { BackendSelector } from "./chatgptFallback.ts";
+import { DEFAULT_JUDGE_CHATGPT_MODEL, DEFAULT_JUDGE_MODEL, WorkspaceConfigError, loadWorkspaceConfig } from "./config.ts";
 import { ChatAsks, createHeadlessUIContext } from "./uiContext.ts";
 
 type Handler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
@@ -31,7 +32,7 @@ function harness(opts: { completions?: Completion[]; judge?: boolean; hasUI?: bo
   const confirms: Array<{ title: string; message: string }> = [];
   let handler: Handler | undefined;
   const factory = createAutoModeExtension({
-    judge: opts.judge === false ? null : JUDGE,
+    judge: async () => (opts.judge === false ? null : JUDGE),
     complete: async (_model, context, options = {}) => {
       const msg = context.messages[0] as { content: string };
       prompts.push({ system: context.systemPrompt, user: msg.content, options });
@@ -181,6 +182,62 @@ describe("judgeCompletion", () => {
     await complete(JUDGE, { messages: [] }, { temperature: 0, maxTokens: 512, sessionId: "s" });
     expect(seen).toEqual([{ maxTokens: 2000, sessionId: "s" }]);
   });
+
+  const CHATGPT_JUDGE = { id: "gpt-6-luna", api: "openai-responses", provider: "openai" } as unknown as NonNullable<ExtensionContext["model"]>;
+  const LIMIT = "OpenAI API error (429): subscription_sharing_usage_limit_exceeded";
+
+  function runtime(replies: Array<{ stopReason?: string; errorMessage?: string; throws?: string }>) {
+    const models: string[] = [];
+    const rt = {
+      complete: (async (m: { id: string }) => {
+        models.push(m.id);
+        const r = replies.shift() ?? { stopReason: "stop" };
+        if (r.throws) throw new Error(r.throws);
+        return { content: [], ...r };
+      }) as never,
+    };
+    return { rt, models };
+  }
+
+  test("a ChatGPT limit flips the shared selector and re-asks the OpenRouter judge once", async () => {
+    const selector = new BackendSelector({ primaryEnabled: true });
+    const { rt, models } = runtime([{ stopReason: "error", errorMessage: LIMIT }, { stopReason: "stop" }]);
+    const reply = await judgeCompletion(rt, { selector, openrouter: JUDGE })(CHATGPT_JUDGE, { messages: [] });
+    expect(models).toEqual(["gpt-6-luna", "test/judge"]);
+    expect((reply as { stopReason?: string }).stopReason).toBe("stop");
+    expect(selector.coolingDownUntil).not.toBeNull();
+    // During the cool-down a ChatGPT judge call goes straight to OpenRouter.
+    await judgeCompletion(rt, { selector, openrouter: JUDGE })(CHATGPT_JUDGE, { messages: [] });
+    expect(models).toEqual(["gpt-6-luna", "test/judge", "test/judge"]);
+  });
+
+  test("an unclassified ChatGPT failure stays a failure (the caller asks) and leaves the selector alone", async () => {
+    const selector = new BackendSelector({ primaryEnabled: true });
+    const { rt, models } = runtime([{ throws: "socket hang up" }]);
+    await expect(judgeCompletion(rt, { selector, openrouter: JUDGE })(CHATGPT_JUDGE, { messages: [] })).rejects.toThrow("socket hang up");
+    expect(models).toEqual(["gpt-6-luna"]);
+    expect(selector.coolingDownUntil).toBeNull();
+  });
+});
+
+describe("judgeForBackend", () => {
+  const CHATGPT_JUDGE = { id: "gpt-6-luna", provider: "openai" } as unknown as NonNullable<ExtensionContext["model"]>;
+
+  test("follows the shared selector: ChatGPT judge when signed in, OpenRouter judge in a cool-down or signed out", async () => {
+    let now = 1_000;
+    let signedIn = true;
+    const selector = new BackendSelector({ primaryEnabled: true, now: () => now });
+    const auth = { checkAuth: async () => (signedIn ? { type: "oauth" } : undefined) };
+    const pick = judgeForBackend({ selector, runtime: auth, chatgpt: CHATGPT_JUDGE, openrouter: JUDGE });
+    expect((await pick()).id).toBe("gpt-6-luna");
+    selector.onChatGptFailure("usage limit reached");
+    expect((await pick()).id).toBe("test/judge");
+    now += 2 * 60 * 60_000;
+    expect((await pick()).id).toBe("gpt-6-luna");
+    signedIn = false;
+    expect((await pick()).id).toBe("test/judge");
+    expect((await judgeForBackend({ selector, runtime: auth, chatgpt: undefined, openrouter: JUDGE })()).id).toBe("test/judge");
+  });
 });
 
 describe("auto mode config", () => {
@@ -190,6 +247,8 @@ describe("auto mode config", () => {
     const c = loadWorkspaceConfig(base);
     expect(c.autoMode).toBe(true);
     expect(c.judgeModel).toBe(DEFAULT_JUDGE_MODEL);
+    expect(c.judgeChatgptModel).toBe(DEFAULT_JUDGE_CHATGPT_MODEL);
+    expect(loadWorkspaceConfig({ ...base, WORKSPACE_JUDGE_CHATGPT_MODEL: "gpt-5.4-nano" }).judgeChatgptModel).toBe("gpt-5.4-nano");
   });
 
   test("WORKSPACE_AUTO_MODE=off turns it off; WORKSPACE_JUDGE_MODEL picks the judge", () => {

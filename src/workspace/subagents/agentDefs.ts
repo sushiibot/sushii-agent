@@ -28,7 +28,7 @@ export interface AgentDef {
   description: string;
   /** Pi built-in tools, in canonical order. */
   tools: BuiltinTool[];
-  /** An OpenRouter model id; undefined inherits the workspace model. */
+  /** A pinned OpenRouter model id; undefined follows the shared backend (ChatGPT, or OpenRouter during a cool-down). */
   model?: string;
   maxTurns?: number;
   /** Default mode when the caller doesn't say. */
@@ -56,12 +56,17 @@ export function mapTools(names: string[] | undefined): BuiltinTool[] {
   return BUILTIN_TOOLS.filter((t) => out.has(t));
 }
 
-/** Claude Code model aliases and "inherit" mean "the workspace model" here. */
+/**
+ * `provider/model` pins an OpenRouter model (`openai/gpt-…` is OpenRouter's id, not ChatGPT); an explicit
+ * `openrouter/` prefix is dropped when a `provider/model` id remains, so `openrouter/auto` stays itself.
+ * Claude Code aliases and "inherit" follow the shared backend.
+ */
 function modelId(val: unknown): string | undefined {
   if (typeof val !== "string") return undefined;
   const v = val.trim();
   if (!v || v === "inherit" || !v.includes("/")) return undefined;
-  return v;
+  const rest = v.startsWith("openrouter/") ? v.slice("openrouter/".length) : null;
+  return rest?.includes("/") ? rest : v;
 }
 
 function positiveInt(val: unknown): number | undefined {

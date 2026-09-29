@@ -10,6 +10,8 @@ export interface RunUsage {
   inputTokens: number;
   outputTokens: number;
   costUsd?: number;
+  /** The model of the run's last reply: `chatgpt/<id>` under Sign in with ChatGPT, else the OpenRouter id. */
+  model?: string;
 }
 
 /** One line of runs.jsonl. */
@@ -74,6 +76,7 @@ function normalizeUsage(usage: RunUsage | undefined): RunUsage | undefined {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     ...(usage.costUsd && usage.costUsd > 0 ? { costUsd: usage.costUsd } : {}),
+    ...(usage.model ? { model: usage.model } : {}),
   };
 }
 

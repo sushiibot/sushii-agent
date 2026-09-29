@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
+import { BackendSelector } from "./chatgptFallback.ts";
 import type { ToolFreeJobInput, ToolFreeJobResult } from "./jobSession.ts";
 import {
   DAILY_JOB_WINDOW_MS,
@@ -50,6 +51,7 @@ function deps(overrides: Partial<PromptJobDeps> = {}): PromptJobDeps {
   return {
     config: cfg,
     runs: new RunLog(cfg.stateDir),
+    selector: new BackendSelector({ primaryEnabled: false }),
     limiter: new ProactiveLimiter(cfg.stateDir, cfg.proactiveDailyCap),
     deliver: (text) => delivered.push(text),
     note: async (name, text) => {
@@ -202,6 +204,7 @@ describe("wireProactiveJobs", () => {
     wireProactiveJobs(scheduler, {
       config: cfg,
       runs: new RunLog(cfg.stateDir),
+      selector: new BackendSelector({ primaryEnabled: false }),
       deliver: (t) => delivered.push(t),
       note: async (name, text) => {
         notes.push({ name, text });

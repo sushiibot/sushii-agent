@@ -258,7 +258,7 @@ function fmtDuration(r: RunRecord): string {
 
 function fmtTokens(r: RunRecord): string {
   if (!r.usage) return "-";
-  return `${r.usage.inputTokens}/${r.usage.outputTokens}${r.usage.costUsd ? ` $${r.usage.costUsd.toFixed(4)}` : ""}`;
+  return `${r.usage.inputTokens}/${r.usage.outputTokens}${r.usage.costUsd ? ` $${r.usage.costUsd.toFixed(4)}` : ""}${r.usage.model ? ` ${r.usage.model}` : ""}`;
 }
 
 function table(rows: string[][]): string[] {

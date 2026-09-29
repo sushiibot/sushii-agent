@@ -7,6 +7,7 @@ import {
   type AuditRecord,
   type CompletionFn,
 } from "../../vendor/pi-verdict/extensions/pi-verdict.ts";
+import { type BackendSelector, CHATGPT_PROVIDER, publicAuthError } from "./chatgptFallback.ts";
 
 /**
  * Auto mode: pi-verdict's rule floor plus a model judge on the main agent's tool calls. A seatbelt
@@ -83,13 +84,59 @@ export function registerJudgeModel(runtime: ModelRuntime, opts: { model: string;
   return model;
 }
 
-/** pi-verdict's completion call on `runtime`, without temperature: Gemini 3 loops on repeated tokens at 0. */
-export function judgeCompletion(runtime: Pick<ModelRuntime, "complete">): CompletionFn {
+/** The judge on the shared backend: the ChatGPT judge while the selector is on ChatGPT, else the OpenRouter one. */
+export function judgeForBackend(opts: {
+  selector: BackendSelector;
+  runtime: Parameters<BackendSelector["current"]>[0];
+  chatgpt: JudgeModel | undefined;
+  openrouter: JudgeModel;
+}): () => Promise<JudgeModel> {
+  return async () => (opts.chatgpt && (await opts.selector.current(opts.runtime)) === "chatgpt" ? opts.chatgpt : opts.openrouter);
+}
+
+export interface JudgeFallback {
+  selector: BackendSelector;
+  openrouter: JudgeModel;
+  log?: Log;
+}
+
+type Reply = { stopReason?: string; errorMessage?: string };
+
+/**
+ * pi-verdict's completion call on `runtime`, without temperature: Gemini 3 loops on repeated tokens at 0.
+ * With `fallback`, a ChatGPT limit/auth failure flips the shared selector and the call is re-sent once to the
+ * OpenRouter judge; a ChatGPT judge asked while the selector is cooling down goes straight to OpenRouter.
+ */
+export function judgeCompletion(runtime: Pick<ModelRuntime, "complete">, fallback?: JudgeFallback): CompletionFn {
   return async (model, context, options = {}) => {
     const { temperature: _t, ...rest } = options;
     const maxTokens = Math.max(typeof rest.maxTokens === "number" ? rest.maxTokens : 0, JUDGE_MAX_TOKENS);
-    const reply = await runtime.complete(model, context as Parameters<ModelRuntime["complete"]>[1], { ...rest, maxTokens });
-    return reply as unknown as Awaited<ReturnType<CompletionFn>>;
+    const call = async (m: typeof model) =>
+      (await runtime.complete(m, context as Parameters<ModelRuntime["complete"]>[1], { ...rest, maxTokens })) as unknown as Awaited<ReturnType<CompletionFn>>;
+    if (!fallback || model.provider !== CHATGPT_PROVIDER) return call(model);
+    if (fallback.selector.coolingDownUntil !== null) return call(fallback.openrouter);
+    let error: string;
+    let thrown: unknown = null;
+    let reply: Awaited<ReturnType<CompletionFn>> | undefined;
+    try {
+      reply = await call(model);
+      const r = reply as Reply;
+      if (r.stopReason !== "error") return reply;
+      error = r.errorMessage ?? "";
+    } catch (err) {
+      thrown = err;
+      error = err instanceof Error ? err.message : String(err);
+    }
+    const decision = fallback.selector.onChatGptFailure(error);
+    if (!decision) {
+      if (thrown !== null) throw thrown;
+      return reply!;
+    }
+    fallback.log?.warn(
+      { reason: decision.reason, until: new Date(decision.until).toISOString(), model: fallback.openrouter.id, error: publicAuthError(error) },
+      "ChatGPT judge call failed; asking the OpenRouter judge",
+    );
+    return call(fallback.openrouter);
   };
 }
 
@@ -108,8 +155,8 @@ export interface AutoModeAudit {
 }
 
 export interface AutoModeOptions {
-  /** null: every judged call fails closed to an ask. */
-  judge: JudgeModel | null;
+  /** The judge for this call, read per call so it follows the shared backend; null: every judged call fails closed to an ask. */
+  judge: () => Promise<JudgeModel | null>;
   complete: CompletionFn;
   agentDir: string;
   currentRunId?: () => string | null;
@@ -148,7 +195,7 @@ async function decide(
   const state = new SessionState(prot, RULES, null);
   const audit = new CapturingAudit();
   state.audit = audit;
-  const judge = opts.judge;
+  const judge = await opts.judge();
   // hasUI is always true here: the headless ask → deny degradation happens below, after the mapping.
   const v = await adjudicate(state, call, {
     cwd: ctx.cwd,

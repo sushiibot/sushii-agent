@@ -69,7 +69,7 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
       runId = begin(r, "");
       opts.recorder.endRun(runId, {
         status,
-        usage: { inputTokens: r.acc.inputTokens, outputTokens: r.acc.outputTokens, costUsd: r.acc.costUsd },
+        usage: { inputTokens: r.acc.inputTokens, outputTokens: r.acc.outputTokens, costUsd: r.acc.costUsd, ...(r.acc.model ? { model: r.acc.model } : {}) },
         ...(resultSummary ? { resultSummary } : {}),
       });
     } catch (err) {
@@ -80,7 +80,7 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
     if (status === "failed") r.span.setStatus({ code: SpanStatusCode.ERROR, message: r.acc.errorMessage });
     r.span.end();
     log.info(
-      { runId, agentName: opts.agentName, status, inputTokens: r.acc.inputTokens, outputTokens: r.acc.outputTokens },
+      { runId, agentName: opts.agentName, status, model: r.acc.model, inputTokens: r.acc.inputTokens, outputTokens: r.acc.outputTokens },
       "run settled",
     );
   };

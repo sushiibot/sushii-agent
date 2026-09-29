@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RPC_METHODS, type ToolCallParams, type ToolManifestEntry } from "../orchestration/contracts.ts";
 import type { WorkspaceConfig } from "./config.ts";
+import { BackendSelector } from "./chatgptFallback.ts";
 import { ProactiveLimiter, createHeartbeatJob } from "./proactive.ts";
 import { RunLog } from "./runLog.ts";
 import { jobSessionDir } from "./sessionPaths.ts";
@@ -118,6 +119,7 @@ describe("heartbeat on a real Pi session", () => {
     const outcome = await createHeartbeatJob(cfg.heartbeat!, {
       config: cfg,
       runs,
+      selector: new BackendSelector({ primaryEnabled: cfg.provider === "chatgpt" }),
       toolStubs,
       limiter: new ProactiveLimiter(cfg.stateDir, cfg.proactiveDailyCap),
       deliver: (t) => delivered.push(t),
@@ -162,6 +164,7 @@ describe("heartbeat on a real Pi session", () => {
     const outcome = await createHeartbeatJob(cfg.heartbeat!, {
       config: cfg,
       runs,
+      selector: new BackendSelector({ primaryEnabled: cfg.provider === "chatgpt" }),
       limiter: new ProactiveLimiter(cfg.stateDir, cfg.proactiveDailyCap),
       deliver: (t) => delivered.push(t),
       note: async () => {},

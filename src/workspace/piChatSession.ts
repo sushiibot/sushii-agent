@@ -1,9 +1,9 @@
 import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
-import type { AgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
-import { DEFAULT_JUDGE_MODEL, type WorkspaceConfig } from "./config.ts";
-import { createAutoModeExtension, judgeCompletion, registerJudgeModel } from "./autoMode.ts";
+import { DEFAULT_JUDGE_CHATGPT_MODEL, DEFAULT_JUDGE_MODEL, type WorkspaceConfig } from "./config.ts";
+import { createAutoModeExtension, judgeCompletion, judgeForBackend, registerJudgeModel } from "./autoMode.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
 import { createMemoryGuardExtension } from "./memoryGuard.ts";
@@ -15,7 +15,14 @@ import { observeRuns, type RunObserver } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
 import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
 import type { SubagentHost } from "./subagents/host.ts";
-import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
+import {
+  BackendSelector,
+  CHATGPT_PROVIDER,
+  chatGptSignedIn,
+  createModelFallbackExtension,
+  restoreChatGptThinking,
+  selectInitialModel,
+} from "./chatgptFallback.ts";
 
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
 
@@ -68,10 +75,11 @@ export function compactionTrigger(session: ChatSession): number | null {
   return settings.enabled ? model.contextWindow - settings.reserveTokens : null;
 }
 
-// A detour through the non-reasoning OpenRouter model leaves the level at "off", which Pi clamps up to the
-// ChatGPT model's lowest effort; reopened sessions restore that clamped level from the transcript.
-function restoreChatGptThinking(session: AgentSession): void {
-  session.setThinkingLevel(session.settingsManager.getDefaultThinkingLevel() ?? "medium");
+function chatgptJudgeModel(runtime: Pick<ModelRuntime, "getModel">, config: WorkspaceConfig) {
+  const id = config.judgeChatgptModel ?? DEFAULT_JUDGE_CHATGPT_MODEL;
+  const model = runtime.getModel(CHATGPT_PROVIDER, id);
+  if (!model) autoModeLog.warn({ model: id }, "ChatGPT judge model not in Pi's openai catalog; the judge uses OpenRouter");
+  return model;
 }
 
 /** Builds real Pi chat sessions: cwd = HOME, default context-file discovery plus the home context
@@ -82,7 +90,7 @@ export function createPiChatSessionFactory(
   opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost } = {},
 ): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
-  // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
+  // The process-wide selector in production; a fallback instance only for tests that build a factory alone.
   const selector = opts.selector ?? new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
 
   return async ({ sessionFile, ui }) => {
@@ -95,9 +103,10 @@ export function createPiChatSessionFactory(
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
     });
-    const judge = config.autoMode
+    const openrouterJudge = config.autoMode
       ? registerJudgeModel(modelRuntime, { model: config.judgeModel ?? DEFAULT_JUDGE_MODEL, apiKey: config.apiKey, baseUrl: config.baseUrl })
       : null;
+    const chatgptJudge = openrouterJudge && config.provider === "chatgpt" ? chatgptJudgeModel(modelRuntime, config) : undefined;
     const chatgptModel = config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
     const model = await selectInitialModel({
       config,
@@ -146,13 +155,13 @@ export function createPiChatSessionFactory(
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
         { name: "sushii-verify-gate", factory: createVerifyGateExtension({ home: config.home, cwd, log, loopNudged: () => loopState.nudged }) },
         // After the deterministic guards, so their blocks cost no judge call or owner prompt.
-        ...(judge
+        ...(openrouterJudge
           ? [
               {
                 name: "sushii-auto-mode",
                 factory: createAutoModeExtension({
-                  judge,
-                  complete: judgeCompletion(modelRuntime),
+                  judge: judgeForBackend({ selector, runtime: modelRuntime, chatgpt: chatgptJudge, openrouter: openrouterJudge }),
+                  complete: judgeCompletion(modelRuntime, { selector, openrouter: openrouterJudge, log: autoModeLog }),
                   agentDir: config.agentDir,
                   currentRunId: () => observerRef.current?.currentRunId() ?? null,
                   log: autoModeLog,

@@ -13,6 +13,14 @@ import { RPC_METHODS, type ChatEventParams, type ChatEventPayload, type ChatOrig
 import { assertExactTools, createOpenRouterModel } from "../../orchestration/runner/piShared.ts";
 import { runnerGit } from "../../orchestration/runner/runnerGit.ts";
 import { getLogger } from "../../logger.ts";
+import {
+  type BackendSelector,
+  CHATGPT_PROVIDER,
+  chatGptSignedIn,
+  createModelFallbackExtension,
+  restoreChatGptThinking,
+  selectInitialModel,
+} from "../chatgptFallback.ts";
 import type { WorkspaceConfig } from "../config.ts";
 import { mapSessionEvent, newRunAccumulator, type RunAccumulator } from "../events.ts";
 import { createMemoryGuardExtension, resolveReal } from "../memoryGuard.ts";
@@ -75,6 +83,8 @@ export const DEFAULT_LIMITS: SubagentLimits = {
 export interface SubagentHostOptions {
   config: WorkspaceConfig;
   runs: RunRecorder;
+  /** The process-wide backend selector: children start on its backend, and a child's ChatGPT failure flips it for everyone. */
+  selector: BackendSelector;
   toolStubs?: ToolStubs;
   /** The main turn in progress; child progress nests under it. */
   currentTurn?: () => ParentTurn | null;
@@ -411,13 +421,19 @@ export class SubagentHost {
     try {
       this.opts.runs.endRun(spawn.runId, {
         status,
-        usage: { inputTokens: spawn.acc.inputTokens, outputTokens: spawn.acc.outputTokens, costUsd: spawn.costUsd },
+        usage: {
+          inputTokens: spawn.acc.inputTokens,
+          outputTokens: spawn.acc.outputTokens,
+          // The cap's OpenRouter-rate estimate is not spend on a ChatGPT run, which the subscription pays for.
+          ...(spawn.acc.model?.startsWith("chatgpt/") ? {} : { costUsd: spawn.costUsd }),
+          ...(spawn.acc.model ? { model: spawn.acc.model } : {}),
+        },
         ...(text ? { resultSummary: text } : {}),
       });
     } catch (err) {
       log.error({ err, runId: spawn.runId }, "failed to record the end of a subagent run");
     }
-    log.info({ runId: spawn.runId, agent: spawn.def.name, status, inputTokens: spawn.acc.inputTokens, outputTokens: spawn.acc.outputTokens }, "subagent settled");
+    log.info({ runId: spawn.runId, agent: spawn.def.name, status, model: spawn.acc.model, inputTokens: spawn.acc.inputTokens, outputTokens: spawn.acc.outputTokens }, "subagent settled");
     return { runId: spawn.runId, status, text: this.resultText(spawn, status, text) };
   }
 
@@ -599,7 +615,34 @@ export class SubagentHost {
     if (!spawn) throw new Error("subagent spawned without a spawn context");
     const { config } = this.opts;
     const { createAgentSession, DefaultResourceLoader, SettingsManager } = await import("@earendil-works/pi-coding-agent");
-    const { modelRuntime, model, maxTokens } = await this.model(spawn.def.model);
+    // A def that names its own model is pinned to it; every other child follows the shared backend like main.
+    const pinned = spawn.def.model !== undefined;
+    const { modelRuntime, model: openrouterModel, maxTokens } = await this.model(spawn.def.model);
+    const chatgptModel = !pinned && config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
+    const model = pinned
+      ? openrouterModel
+      : await selectInitialModel({ config, runtime: modelRuntime, selector: this.opts.selector, primary: chatgptModel, fallback: openrouterModel, log });
+    const sessionRef: { current: AgentSession | null } = { current: null };
+    const fallback: { name: string; factory: ExtensionFactory }[] = pinned
+      ? []
+      : [
+          {
+            name: "sushii-model-fallback",
+            factory: createModelFallbackExtension({
+              selector: this.opts.selector,
+              primary: chatgptModel,
+              fallback: openrouterModel,
+              signedIn: () => chatGptSignedIn(modelRuntime),
+              setModel: async (m) => {
+                const session = sessionRef.current;
+                if (!session) throw new Error("subagent session not ready");
+                await session.setModel(m);
+                if (m.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
+              },
+              log,
+            }),
+          },
+        ];
     const sessionManager = spawn.sessionManager;
     const cwd = sessionManager.getCwd();
     const file = spawn.sessionFile;
@@ -625,6 +668,7 @@ export class SubagentHost {
       extensionFactories: [
         { name: "sushii-protected-watch", factory: this.watchExtension(spawn) },
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
+        ...fallback,
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         {
           name: "sushii-memory-guard",
@@ -640,7 +684,12 @@ export class SubagentHost {
     try {
       await loader.reload();
       const settingsManager = SettingsManager.create(cwd, config.agentDir);
-      settingsManager.applyOverrides({ compaction: { reserveTokens: maxTokens } });
+      settingsManager.applyOverrides({
+        compaction: {
+          reserveTokens: maxTokens,
+          ...(chatgptModel ? { modelOverrides: { [`${CHATGPT_PROVIDER}/${chatgptModel.id}`]: { reserveTokens: chatgptModel.maxTokens } } } : {}),
+        },
+      });
       settingsManager.getCacheWarmingMode = () => "off";
       // Bash writes wherever the process can, so only a writer (confined to its worktree by the watch) gets it.
       const builtins = spawn.def.writer ? spawn.def.tools : spawn.def.tools.filter((t) => t !== "bash");
@@ -658,6 +707,8 @@ export class SubagentHost {
         excludeTools: ["ask_question"],
         sessionManager,
       }));
+      sessionRef.current = session;
+      if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
       assertExactTools(session, [...builtins, ...extra, ...(stubs?.registeredNames() ?? [])], `subagent ${spawn.def.name}`, [...builtins, ...extra, ...(stubs?.offered() ?? [])]);
       stubs?.assertOwned(session, `subagent ${spawn.def.name}`);
     } catch (err) {

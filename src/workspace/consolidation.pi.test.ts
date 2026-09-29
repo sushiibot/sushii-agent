@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkspaceConfig } from "./config.ts";
+import { BackendSelector } from "./chatgptFallback.ts";
 import { CONSOLIDATION_AGENT, MARKERS, SYSTEM_PROMPT, createConsolidationJob } from "./consolidation.ts";
 import { commitHome, scaffoldHome } from "./home.ts";
 import { runToolFreeJob } from "./jobSession.ts";
@@ -122,7 +123,7 @@ describe("consolidation job on a real Pi session", () => {
     stubFetch((url) => (isChatGpt(url) ? jsonResponse(429, USAGE_LIMIT_BODY) : isOpenRouter(url) ? openRouterReply(PROPOSAL) : undefined));
     const runs = new RunLog(config().stateDir);
 
-    const outcome = await createConsolidationJob(config(), { runs }).run({ trigger: "manual", force: false });
+    const outcome = await createConsolidationJob(config(), { runs, selector: new BackendSelector({ primaryEnabled: config().provider === "chatgpt" }) }).run({ trigger: "manual", force: false });
 
     expect(outcome.status).toBe("applied");
     expect(requests.filter(isChatGpt)).toHaveLength(1);
@@ -147,7 +148,7 @@ describe("consolidation job on a real Pi session", () => {
   test("the job session registers no tools, even with the OpenRouter-only backend", async () => {
     stubFetch((url) => (isOpenRouter(url) ? openRouterReply("done") : undefined));
     const runs = new RunLog(config("openrouter").stateDir);
-    const result = await runToolFreeJob(config("openrouter"), { agentName: "job:test", systemPrompt: "Reply done.", prompt: "go", runs });
+    const result = await runToolFreeJob(config("openrouter"), { agentName: "job:test", systemPrompt: "Reply done.", prompt: "go", runs, selector: new BackendSelector({ primaryEnabled: false }) });
     expect(result).toMatchObject({ text: "done", model: OPENROUTER_MODEL });
     expect(bodies[0]!.tools ?? []).toEqual([]);
     // Pi appends only a <cwd> block to the override; none of its coding-agent prompt or tool docs.
@@ -160,7 +161,7 @@ describe("consolidation job on a real Pi session", () => {
   test("a model error fails the job, records a failed run, and leaves memory alone", async () => {
     stubFetch((url) => (isOpenRouter(url) ? jsonResponse(400, { error: { message: "bad request", code: 400 } }) : undefined));
     const runs = new RunLog(config("openrouter").stateDir);
-    await expect(createConsolidationJob(config("openrouter"), { runs }).run({ trigger: "daily", force: false })).rejects.toThrow(/job reply error/);
+    await expect(createConsolidationJob(config("openrouter"), { runs, selector: new BackendSelector({ primaryEnabled: false }) }).run({ trigger: "daily", force: false })).rejects.toThrow(/job reply error/);
     expect(runs.listRuns({ agentName: CONSOLIDATION_AGENT })[0]).toMatchObject({ status: "failed" });
     expect(readFileSync(join(root, "home", "MEMORY.md"), "utf8")).toBe(MEMORY);
   });

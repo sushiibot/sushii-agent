@@ -6,6 +6,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { RPC_METHODS, type ChatDeliverParams, type ChatEventParams, type ToolCallParams, type ToolManifestEntry } from "../../orchestration/contracts.ts";
 import { runnerGit } from "../../orchestration/runner/runnerGit.ts";
 import type { WorkspaceConfig } from "../config.ts";
+import { BackendSelector } from "../chatgptFallback.ts";
 import { scaffoldHome } from "../home.ts";
 import { PersonalSession, type ChatTransport } from "../personalSession.ts";
 import { createPiChatSessionFactory } from "../piChatSession.ts";
@@ -108,6 +109,7 @@ async function host(limits: Partial<SubagentLimits> = {}) {
   const cfg = config();
   await scaffoldHome(cfg.home);
   const runs = new RunLog(cfg.stateDir);
+  const selector = new BackendSelector({ primaryEnabled: cfg.provider === "chatgpt" });
   const delivered: ChatDeliverParams[] = [];
   const events: ChatEventParams[] = [];
   const toolCalls: ToolCallParams[] = [];
@@ -128,6 +130,7 @@ async function host(limits: Partial<SubagentLimits> = {}) {
   const subagents = new SubagentHost({
     config: cfg,
     runs,
+    selector,
     toolStubs,
     notify,
     currentTurn: () => turns.current(),
@@ -145,7 +148,7 @@ async function host(limits: Partial<SubagentLimits> = {}) {
     principalId: "drk",
     model: cfg.model,
     stateDir: cfg.stateDir,
-    factory: createPiChatSessionFactory(cfg, { runs, toolStubs, subagents }),
+    factory: createPiChatSessionFactory(cfg, { runs, toolStubs, subagents, selector }),
     transport,
     textDeltaMs: null,
   });
@@ -449,7 +452,7 @@ describe("limits, driving the host directly", () => {
     const cfg = config();
     await scaffoldHome(cfg.home);
     const runs = new RunLog(cfg.stateDir);
-    const host = new SubagentHost({ config: cfg, runs, limits, ...extra });
+    const host = new SubagentHost({ config: cfg, runs, selector: new BackendSelector({ primaryEnabled: false }), limits, ...extra });
     const pi = { sendMessage: () => {} } as never;
     const call = (task: string, extra: object = {}) => host.delegate({ agent: "explore", task, ...extra }, { parent, pi, toolCallId: "t", ctx });
     return { cfg, runs, host, call };
@@ -623,6 +626,7 @@ describe("limits, driving the host directly", () => {
     const host = new SubagentHost({
       config: cfg,
       runs: new RunLog(cfg.stateDir),
+      selector: new BackendSelector({ primaryEnabled: false }),
       wake: (r, consumed) => {
         woken.push(r.runId);
         consume = consumed;

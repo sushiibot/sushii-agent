@@ -4,7 +4,15 @@ import type { AgentSession, AgentSessionEvent, ExtensionFactory } from "@earendi
 import { assertExactTools, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
 import { getLogger } from "../logger.ts";
 import type { WorkspaceConfig } from "./config.ts";
-import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, modelLabel, selectInitialModel } from "./chatgptFallback.ts";
+import {
+  type BackendSelector,
+  CHATGPT_PROVIDER,
+  chatGptSignedIn,
+  createModelFallbackExtension,
+  modelLabel,
+  restoreChatGptThinking,
+  selectInitialModel,
+} from "./chatgptFallback.ts";
 import type { RunRecorder } from "./runLog.ts";
 import { observeRuns } from "./runObserver.ts";
 import { jobSessionDir } from "./sessionPaths.ts";
@@ -31,6 +39,8 @@ export interface ToolFreeJobInput {
   systemPrompt: string;
   prompt: string;
   runs: RunRecorder;
+  /** The process-wide backend selector the chat session uses too. */
+  selector: BackendSelector;
   timeoutMs?: number;
   /** Home files appended to the system prompt, in order; a missing one is skipped. */
   contextFiles?: Array<"AGENTS.md" | "USER.md">;
@@ -80,7 +90,7 @@ export function jobSystemPrompt(home: string, base: string, files: readonly stri
  * One prompt in a fresh, persisted Pi session with no skills or discovered extensions. By default it has no
  * tools and no context files: a pure text transform. `readOnlyTools` adds reads behind the secret guard and
  * a read-only memory guard; `contextFiles` adds home files to the system prompt. Starts on ChatGPT when signed in (OpenRouter otherwise) and retries
- * once on OpenRouter after a ChatGPT limit/auth failure. Its backend cool-down is its own, not the chat's.
+ * once on OpenRouter after a ChatGPT limit/auth failure, on the shared selector: a job's failure moves the chat too.
  */
 export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJobInput): Promise<ToolFreeJobResult> {
   const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
@@ -92,7 +102,7 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
   });
-  const selector = new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
+  const { selector } = input;
   const chatgptModel = config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
   const model = await selectInitialModel({ config, runtime: modelRuntime, selector, primary: chatgptModel, fallback: openrouterModel, log });
 
@@ -132,15 +142,19 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
           fallback: openrouterModel,
           signedIn: () => chatGptSignedIn(modelRuntime),
           setModel: async (m) => {
-            if (!sessionRef.current) throw new Error("job session not ready");
-            await sessionRef.current.setModel(m);
+            const session = sessionRef.current;
+            if (!session) throw new Error("job session not ready");
+            await session.setModel(m);
+            if (m.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
           },
           log,
         }),
       },
     ],
   });
-  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+  // drk's default thinking level from settings.json, which an in-memory manager would not read.
+  const defaultThinkingLevel = SettingsManager.create(cwd, config.agentDir).getDefaultThinkingLevel();
+  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, ...(defaultThinkingLevel ? { defaultThinkingLevel } : {}) });
   settingsManager.getCacheWarmingMode = () => "off";
   const sessionManager = SessionManager.create(cwd, jobSessionDir(config.agentDir));
   let session: AgentSession;
@@ -159,6 +173,7 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
         : { tools: [], noTools: "all" as const }),
     }));
     sessionRef.current = session;
+    if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
     const builtins = withTools ? [...JOB_READ_TOOLS] : [];
     assertExactTools(session, [...builtins, ...(stubs?.registeredNames() ?? [])], input.agentName, [...builtins, ...(stubs?.offered() ?? []).filter((n) => jobStubTools.includes(n))]);
     stubs?.assertOwned(session, input.agentName);

@@ -17,6 +17,11 @@ describe("agent defs", () => {
     expect(parseAgentDef("/x/y.md", "---\nmodel: openai/gpt-5-mini\n---\n").model).toBe("openai/gpt-5-mini");
   });
 
+  test("an explicit openrouter/ prefix pins the OpenRouter id behind it; openrouter/auto stays whole", () => {
+    expect(parseAgentDef("/x/y.md", "---\nmodel: openrouter/anthropic/claude-sonnet-4.5\n---\n").model).toBe("anthropic/claude-sonnet-4.5");
+    expect(parseAgentDef("/x/y.md", "---\nmodel: openrouter/auto\n---\n").model).toBe("openrouter/auto");
+  });
+
   test("no tools key gives the read-only set; a writer has edit or write", () => {
     const def = parseAgentDef("/x/plain.md", "no frontmatter body");
     expect(def).toMatchObject({ name: "plain", tools: ["read", "grep", "find", "ls"], writer: false });

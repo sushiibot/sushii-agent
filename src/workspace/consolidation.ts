@@ -6,6 +6,7 @@ import type { WorkspaceConfig } from "./config.ts";
 import { readJson, writeFileAtomic } from "./files.ts";
 import { MEMORY_MD_CAP, USER_MD_CAP, commitHome } from "./home.ts";
 import { runToolFreeJob } from "./jobSession.ts";
+import type { BackendSelector } from "./chatgptFallback.ts";
 import type { RunRecorder } from "./runLog.ts";
 import type { JobOutcome, ScheduledJob } from "./scheduler.ts";
 import { containsSecret, redact } from "./secretPatterns.ts";
@@ -677,7 +678,10 @@ export async function runConsolidation(deps: ConsolidationDeps, opts: { force?: 
 }
 
 /** The nightly job, wired to the workspace's model selection, run log, home repo and live chat session. */
-export function createConsolidationJob(config: WorkspaceConfig, opts: { runs: RunRecorder; live?: LiveSession; limits?: Partial<ConsolidationLimits> }): ScheduledJob {
+export function createConsolidationJob(
+  config: WorkspaceConfig,
+  opts: { runs: RunRecorder; selector: BackendSelector; live?: LiveSession; limits?: Partial<ConsolidationLimits> },
+): ScheduledJob {
   return {
     name: CONSOLIDATION_JOB,
     run: async ({ force }): Promise<JobOutcome> => {
@@ -686,7 +690,7 @@ export function createConsolidationJob(config: WorkspaceConfig, opts: { runs: Ru
           home: config.home,
           stateDir: config.stateDir,
           propose: async (systemPrompt, prompt) => {
-            const { text, model } = await runToolFreeJob(config, { agentName: CONSOLIDATION_AGENT, systemPrompt, prompt, runs: opts.runs });
+            const { text, model } = await runToolFreeJob(config, { agentName: CONSOLIDATION_AGENT, systemPrompt, prompt, runs: opts.runs, selector: opts.selector });
             return { text, model };
           },
           commit: (message, paths) => commitHome(message, { home: config.home, paths }),

@@ -136,3 +136,7 @@ and writing memory. Use `delegate` for bulky or independent work.
 - Coding tasks go to one `coder` at a time (`repo: <dir under projects/>`); it works on its own
   branch in a worktree. Review its diff before telling drk it's done.
 - Say in one line what you delegated and why.
+- Models: a child runs on the same backend as you (ChatGPT, or OpenRouter while ChatGPT is
+  cooling down). A def's frontmatter `model:` pins one instead: an OpenRouter id such as
+  `model: anthropic/claude-sonnet-4.5` or `model: openrouter/anthropic/claude-sonnet-4.5`
+  (`openai/…` ids are OpenRouter too). Leave `model:` out, or use `inherit`, to follow the backend.

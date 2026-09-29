@@ -28,8 +28,10 @@ export interface WorkspaceConfig {
   proactiveDailyCap: number;
   /** Model-judged gate on the main agent's risky tool calls. Absent means off. */
   autoMode?: boolean;
-  /** OpenRouter model id of the auto-mode judge. */
+  /** OpenRouter model id of the auto-mode judge, used while the shared backend is on OpenRouter. */
   judgeModel?: string;
+  /** Model id on Pi's `openai` provider for the judge while the shared backend is on ChatGPT. */
+  judgeChatgptModel?: string;
 }
 
 export const DEFAULT_HEARTBEAT_MINUTES = 120;
@@ -50,6 +52,9 @@ function loadHeartbeat(env: NodeJS.ProcessEnv): JobSchedule | null {
 
 /** Cheap and fast on OpenRouter; already the screening image judge. */
 export const DEFAULT_JUDGE_MODEL = "google/gemini-3.5-flash-lite";
+
+/** The smallest current model in Pi's openai catalog; its "off" thinking maps to effort "none", so a verdict needs no reasoning budget. */
+export const DEFAULT_JUDGE_CHATGPT_MODEL = "gpt-6-luna";
 
 export class WorkspaceConfigError extends Error {}
 
@@ -93,5 +98,6 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
     proactiveDailyCap: Number(capRaw),
     autoMode: autoMode === "on",
     judgeModel: env.WORKSPACE_JUDGE_MODEL?.trim() || DEFAULT_JUDGE_MODEL,
+    judgeChatgptModel: env.WORKSPACE_JUDGE_CHATGPT_MODEL?.trim() || DEFAULT_JUDGE_CHATGPT_MODEL,
   };
 }

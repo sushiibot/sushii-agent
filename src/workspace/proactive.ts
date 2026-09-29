@@ -5,6 +5,7 @@ import type { WorkspaceConfig } from "./config.ts";
 import { isNoReply, NO_REPLY } from "./events.ts";
 import { readJson, writeFileAtomic } from "./files.ts";
 import { runToolFreeJob } from "./jobSession.ts";
+import type { BackendSelector } from "./chatgptFallback.ts";
 import type { RunRecorder } from "./runLog.ts";
 import { ScheduleFile, type ScheduleEntry } from "./scheduleFile.ts";
 import type { JobContext, JobOutcome, JobSchedule, ScheduledJob, Scheduler } from "./scheduler.ts";
@@ -141,6 +142,7 @@ export interface PromptJobSpec {
 export interface PromptJobDeps {
   config: WorkspaceConfig;
   runs: RunRecorder;
+  selector: BackendSelector;
   toolStubs?: ToolStubs;
   limiter: ProactiveLimiter;
   /** Sends `text` to drk as a proactive message. */
@@ -175,6 +177,7 @@ export function createPromptJob(spec: PromptJobSpec, deps: PromptJobDeps): Sched
         systemPrompt: jobPreamble(spec.name, now, deps.config.tz),
         prompt,
         runs: deps.runs,
+        selector: deps.selector,
         contextFiles: ["AGENTS.md", "USER.md"],
         readOnlyTools: deps.toolStubs ? { toolStubs: deps.toolStubs } : {},
       });
@@ -218,6 +221,7 @@ export function scheduleFileSource(file: ScheduleFile, deps: PromptJobDeps): () 
 export interface ProactiveWiring {
   config: WorkspaceConfig;
   runs: RunRecorder;
+  selector: BackendSelector;
   toolStubs?: ToolStubs;
   deliver: (text: string) => void;
   note: (name: string, text: string) => Promise<void>;
@@ -233,6 +237,7 @@ export function wireProactiveJobs(scheduler: Scheduler, w: ProactiveWiring): voi
   const deps: PromptJobDeps = {
     config: w.config,
     runs: w.runs,
+    selector: w.selector,
     ...(w.toolStubs ? { toolStubs: w.toolStubs } : {}),
     limiter: new ProactiveLimiter(w.config.stateDir, w.config.proactiveDailyCap),
     deliver: w.deliver,

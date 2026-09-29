@@ -48,6 +48,8 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
   });
+  // The one backend selector: main, subagents, jobs and the auto-mode judge all start their calls on its
+  // current backend, so a ChatGPT limit or auth failure anywhere moves them all to OpenRouter together.
   // Late-bound: the selector reports auth failures while the first session is built, before these exist.
   let reauth: ReauthNotifier | null = null;
   const selector = new BackendSelector({
@@ -70,6 +72,7 @@ async function main(): Promise<void> {
   const subagents = new SubagentHost({
     config,
     runs,
+    selector,
     toolStubs,
     notify,
     currentTurn: () => turns.current(),
@@ -117,12 +120,13 @@ async function main(): Promise<void> {
   personalRef = personal;
   subagents.redeliverPending();
   const scheduler = new Scheduler({ stateDir: config.stateDir, at: config.consolidateAt, tz: config.tz, log: getLogger("workspace.scheduler") });
-  const consolidation = createConsolidationJob(config, { runs, live: personal });
+  const consolidation = createConsolidationJob(config, { runs, selector, live: personal });
   // Its memory writes are main-side: the subagents' protected watch must not undo them.
   scheduler.register({ ...consolidation, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md"]) });
   wireProactiveJobs(scheduler, {
     config,
     runs,
+    selector,
     toolStubs,
     deliver: (text) => personal.deliverOutOfBand({ kind: "proactive", text }),
     note: async (name, text) => {
@@ -172,7 +176,14 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
   log.info(
-    { url: config.orchUrl, principalId: config.principalId, provider: config.provider, chatgptModel: config.chatgptModel, model: config.model },
+    {
+      url: config.orchUrl,
+      principalId: config.principalId,
+      provider: config.provider,
+      chatgptModel: config.chatgptModel,
+      model: config.model,
+      judge: config.autoMode ? { chatgpt: config.judgeChatgptModel, openrouter: config.judgeModel } : null,
+    },
     "workspace starting",
   );
   await client.run();

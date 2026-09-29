@@ -1,4 +1,4 @@
-import type { AgentBeforeSettleEvent, BoundaryResult, ExtensionFactory, InputEventResult } from "@earendil-works/pi-coding-agent";
+import type { AgentBeforeSettleEvent, AgentSession, BoundaryResult, ExtensionFactory, InputEventResult } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceConfig } from "./config.ts";
 import { redact } from "./secretPatterns.ts";
 
@@ -70,7 +70,10 @@ export function parseResetAt(text: string, now = Date.now()): number | undefined
   return at;
 }
 
-/** Which backend each turn starts on: ChatGPT while signed in, OpenRouter for a cool-down after a ChatGPT failure. */
+/**
+ * Which backend every model call starts on: ChatGPT while signed in, OpenRouter for a cool-down after a
+ * ChatGPT failure. One instance per process, shared by main, subagents, jobs and the auto-mode judge.
+ */
 export class BackendSelector {
   private fallbackUntil = 0;
   private readonly now: () => number;
@@ -99,6 +102,11 @@ export class BackendSelector {
     return { reason: failure.reason, until: this.fallbackUntil };
   }
 
+  /** The backend right now, reading the sign-in state from `runtime`'s credential store. */
+  async current(runtime: Pick<AuthRuntime, "checkAuth">): Promise<Backend> {
+    return this.select(await chatGptSignedIn(runtime));
+  }
+
   /** Ends the cool-down, e.g. after a fresh login. */
   reset(): void {
     this.fallbackUntil = 0;
@@ -117,6 +125,12 @@ export async function chatGptSignedIn(runtime: Pick<AuthRuntime, "checkAuth">): 
   } catch {
     return false;
   }
+}
+
+// A detour through the non-reasoning OpenRouter model leaves the level at "off", which Pi clamps up to the
+// ChatGPT model's lowest effort; reopened sessions restore that clamped level from the transcript.
+export function restoreChatGptThinking(session: Pick<AgentSession, "setThinkingLevel" | "settingsManager">): void {
+  session.setThinkingLevel(session.settingsManager.getDefaultThinkingLevel() ?? "medium");
 }
 
 interface Log {
@@ -196,11 +210,11 @@ export function createModelFallbackExtension<M extends ModelRef>(deps: FallbackE
   return (pi) => {
     let retriedThisRun = false;
 
-    // `input` runs before prompt()'s auth preflight, so a stale model is replaced before it can fail the turn.
-    pi.on("input", async (event, ctx): Promise<InputEventResult> => {
-      if (event.streamingBehavior || !primary) return { action: "continue" };
+    // Moves the session onto the selector's current backend.
+    const align = async (current: ModelRef | undefined): Promise<void> => {
+      if (!primary) return;
       const want = selector.select(await deps.signedIn());
-      const onChatGpt = ctx.model?.provider === CHATGPT_PROVIDER;
+      const onChatGpt = current?.provider === CHATGPT_PROVIDER;
       try {
         if (want === "chatgpt" && !onChatGpt) {
           await deps.setModel(primary);
@@ -214,7 +228,18 @@ export function createModelFallbackExtension<M extends ModelRef>(deps: FallbackE
         const decision = selector.onChatGptFailure(message);
         log.warn({ error: publicAuthError(message), until: decision && new Date(decision.until).toISOString() }, "could not switch to ChatGPT; staying on OpenRouter");
       }
+    };
+
+    // `input` runs before prompt()'s auth preflight, so a stale model is replaced before it can fail the turn.
+    pi.on("input", async (event, ctx): Promise<InputEventResult> => {
+      if (!event.streamingBehavior) await align(ctx.model);
       return { action: "continue" };
+    });
+
+    // Pi reads the session model again before each follow-up request of a run, so a flip made elsewhere
+    // (a child, a job, the judge) or a cool-down ending also moves a run already in progress.
+    pi.on("turn_end", async (_event, ctx) => {
+      await align(ctx.model);
     });
 
     pi.on("before_agent_start", () => {

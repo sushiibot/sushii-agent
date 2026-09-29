@@ -911,6 +911,7 @@ describe("workspace e2e: delegate, scheduled jobs, auto-mode asks", () => {
     wireProactiveJobs(scheduler, {
       config,
       runs: new RunLog(h.ws.stateDir),
+      selector: new BackendSelector({ primaryEnabled: false }),
       runner: async () => ({ text: replies.shift()! }) as Awaited<ReturnType<NonNullable<Parameters<typeof wireProactiveJobs>[1]["runner"]>>>,
       deliver: (text) => h.ws.personal.deliverOutOfBand({ kind: "proactive", text }),
       note: async (name, text) => {
