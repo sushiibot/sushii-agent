@@ -1,0 +1,10 @@
+projects/
+scratch/
+node_modules/
+.bun/
+.local/
+.npm-global/
+.cache/
+.pi-workspace/
+*.env
+.env*

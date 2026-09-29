@@ -3,6 +3,7 @@ import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
 import { PersonalSession } from "./personalSession.ts";
 import { createPiChatSessionFactory } from "./piChatSession.ts";
+import { scaffoldHome } from "./home.ts";
 
 const log = getLogger("workspace");
 
@@ -20,6 +21,7 @@ function loadConfigOrExit(): WorkspaceConfig {
 
 async function main(): Promise<void> {
   const config = loadConfigOrExit();
+  await scaffoldHome(config.home);
   let client: OrchestrationClient | null = null;
   const personal = new PersonalSession({
     principalId: config.principalId,
