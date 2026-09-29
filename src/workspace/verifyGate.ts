@@ -52,6 +52,7 @@ export function isCheckCommand(command: string): boolean {
 
 const GIT_MUTATE = /\bgit\s+(?:-C\s+\S+\s+)?(?:apply|am|merge|rebase|cherry-pick|revert|restore|pull|reset\s+--hard|checkout\s+(?:\S+\s+)?--|stash\s+(?:pop|apply))\b/;
 const FILE_MUTATE = /(?:\bsed\b[^|;&]*\s-i|\bperl\b[^|;&]*\s-[a-z]*i|\btee\b|(?:^|[\s;&|(])(?:mv|cp|rm|patch|touch|truncate)\s)/;
+const REPO_REMOVAL = /^\s*rm\s+(?:-[A-Za-z]+\s+)*\S*projects\/[A-Za-z0-9._-]+\/?\s*$/;
 const PROJECT_REF = /(?:^|[\s"'=/(])projects\/([A-Za-z0-9._-]+)/;
 
 function hasRedirect(command: string): boolean {
@@ -63,6 +64,8 @@ function hasRedirect(command: string): boolean {
 export function bashChangedRepo(command: string): string | null {
   const repo = command.match(PROJECT_REF)?.[1];
   if (!repo) return null;
+  // Removing a whole repo leaves nothing to check.
+  if (REPO_REMOVAL.test(command)) return null;
   return GIT_MUTATE.test(command) || FILE_MUTATE.test(command) || hasRedirect(command) ? repo : null;
 }
 

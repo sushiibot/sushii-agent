@@ -161,3 +161,9 @@ describe("command matching", () => {
     expect(explainsNoCheck("Fixed the bug.")).toBe(false);
   });
 });
+
+test("removing a whole repo under projects/ doesn't ask for a check", () => {
+  expect(bashChangedRepo("rm -rf /data/home/projects/app")).toBeNull();
+  expect(bashChangedRepo("rm -rf projects/app/")).toBeNull();
+  expect(bashChangedRepo("rm -rf projects/app/src/old.ts")).toBe("app");
+});
