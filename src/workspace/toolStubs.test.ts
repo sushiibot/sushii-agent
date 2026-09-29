@@ -233,6 +233,9 @@ describe("real Pi session", () => {
 
     s.update([LINEAR]);
     expect(active(pi)).toEqual([...BUILTINS, "file_linear_issue"].sort());
+    s.update([SEARCH, LINEAR]);
+    expect(active(pi)).toEqual([...BUILTINS, "file_linear_issue", "web_search"].sort());
+    s.update([LINEAR]);
 
     await reloadContext(pi);
     expect(active(pi)).toEqual([...BUILTINS, "file_linear_issue"].sort());
