@@ -33,8 +33,14 @@ export interface OrchestrationClientOptions {
   /** The role's secret (ORCH_SECRET for a workspace, ORCH_RUNNER_SECRET for a task runner); omitted when unset. */
   secret?: string;
   principalId?: string;
-  state?: "idle" | "streaming";
-  adapter: RunnerAdapter;
+  /** A getter reports the live state at each (re)register. */
+  state?: "idle" | "streaming" | (() => "idle" | "streaming");
+  /** Absent for connections that serve no session/* verbs (e.g. the workspace). */
+  adapter?: RunnerAdapter;
+  /** Extra inbound request methods, answered with the handler's result. */
+  handlers?: Record<string, (params: unknown) => Promise<unknown>>;
+  /** Fires after each successful (re)register, once responses are routed. */
+  onRegistered?: () => void;
   // Keep-alive interval (default 30s, under Bun.serve's 120s idle default). 0 disables.
   heartbeatMs?: number;
   // Cap for reconnect backoff (default 30s). Only used by run().
@@ -79,6 +85,7 @@ export class OrchestrationClient {
         this.listen();
         this.startHeartbeat();
         logger.info({ runnerId: this.options.runnerId }, "runner connected");
+        this.options.onRegistered?.();
         backoff = 500;
         await new Promise<void>((res) => (this.resolveClosed = res));
       } catch (err) {
@@ -172,7 +179,7 @@ export class OrchestrationClient {
               protocolVersion: PROTOCOL_VERSION,
               ...(this.options.secret ? { secret: this.options.secret } : {}),
               ...(this.options.principalId ? { principalId: this.options.principalId } : {}),
-              ...(this.options.state ? { state: this.options.state } : {}),
+              ...(this.options.state ? { state: typeof this.options.state === "function" ? this.options.state() : this.options.state } : {}),
             },
           }),
         );
@@ -203,6 +210,28 @@ export class OrchestrationClient {
     });
   }
 
+  /** Sends a request to the orchestrator; rejects if the link drops before the response. */
+  request(method: string, params: unknown): Promise<unknown> {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== ws.OPEN) return Promise.reject(new Error("not connected"));
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+    });
+  }
+
+  /** Fire-and-forget notification; dropped while disconnected. */
+  notify(method: string, params: unknown): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    ws.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+  }
+
+  get connected(): boolean {
+    return this.ws !== null && this.ws.readyState === this.ws.OPEN;
+  }
+
   close(): void {
     this.shouldRun = false;
     this.stopHeartbeat();
@@ -222,10 +251,12 @@ export class OrchestrationClient {
   // have killed and respawned the process) always starts a fresh subscription even if a previous
   // one is still draining; otherwise a subscription already in flight is left alone.
   private beginStream(ws: WebSocket, taskId: string, opts: { resubscribe?: boolean } = {}): void {
+    const adapter = this.options.adapter;
+    if (!adapter) return;
     if (!opts.resubscribe && this.streamingGenerations.has(taskId)) return;
     const generation = this.nextStreamGeneration++;
     this.streamingGenerations.set(taskId, generation);
-    this.options.adapter
+    adapter
       .stream(taskId, (e) => this.emit(ws, e))
       .catch((err) => {
         logger.error({ err, taskId }, "runner adapter stream failed");
@@ -254,13 +285,21 @@ export class OrchestrationClient {
     }
 
     const req = jsonRpcRequest.safeParse(parsed);
-    if (!req.success) return;
+    if (!req.success) {
+      this.handleResponse(parsed);
+      return;
+    }
 
     const { id, method, params } = req.data;
     const adapter = this.options.adapter;
+    const handler = this.options.handlers?.[method];
 
     try {
-      if (method === RPC_METHODS.start) {
+      if (handler) {
+        this.respond(ws, id, await handler(params));
+      } else if (!adapter) {
+        this.respondError(ws, id, `method not found: ${method}`, -32601);
+      } else if (method === RPC_METHODS.start) {
         const input = params as { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null };
         const result = await adapter.start(input);
         this.respond(ws, id, result);
@@ -287,6 +326,8 @@ export class OrchestrationClient {
       } else if (method === RPC_METHODS.browserWatch) {
         const input = params as { taskId: string; watch: boolean };
         this.respond(ws, id, adapter.watchBrowser ? await adapter.watchBrowser(input) : { supported: false });
+      } else {
+        this.respondError(ws, id, `method not found: ${method}`, -32601);
       }
     } catch (err) {
       this.respondError(ws, id, err instanceof Error ? err.message : String(err));
@@ -297,8 +338,18 @@ export class OrchestrationClient {
     ws.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
   }
 
-  private respondError(ws: WebSocket, id: string | number, message: string): void {
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message } }));
+  private respondError(ws: WebSocket, id: string | number, message: string, code = -32000): void {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
+  }
+
+  private handleResponse(parsed: unknown): void {
+    const res = jsonRpcResponse.safeParse(parsed);
+    if (!res.success) return;
+    const call = this.pending.get(res.data.id);
+    if (!call) return;
+    this.pending.delete(res.data.id);
+    if (res.data.error) call.reject(new Error(res.data.error.message));
+    else call.resolve(res.data.result);
   }
 
   private emit(ws: WebSocket, event: RunnerEvent): void {

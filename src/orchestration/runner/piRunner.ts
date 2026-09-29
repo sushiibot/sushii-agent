@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import simpleGit from "simple-git";
 import { defineTool, type AgentSession, type AgentSessionEvent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -8,7 +8,7 @@ import type { BrowserUpdate, HandbackMeta, RepoSpec, RunnerAdapter, RunnerEvent 
 import { getLogger } from "../../logger.ts";
 import { RunnerEventReducer, type StreamLineEvent } from "./claudeCodeRunner.ts";
 import { agentGitEnv, cloneIfAbsent, configureForAgent, ensureWorktree, pruneWorktrees, removeWorktree, type RepoOpsDeps } from "./repoOps.ts";
-import { buildAgentEnv } from "./agentEnv.ts";
+import { createAgentBashTool, createOpenRouterModel, summarizeToolArgs } from "./piShared.ts";
 import { allocateBrowserPorts, browserEnv, closeBrowserSessions, type BrowserPorts } from "./browser.ts";
 import { BrowserRelay } from "./browserStream.ts";
 import { sweepBrowserUse } from "./browserUse.ts";
@@ -16,8 +16,6 @@ import { ENV_CONTEXT_PATH } from "./envContext.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
-const MODEL_METADATA_TIMEOUT_MS = 5000;
 const PROVIDER_ID = "sushii-runner-openrouter";
 const ASK_TIMEOUT_MS = 30 * 60_000; // block on ask_owner at most this long, then unblock with a sentinel
 
@@ -127,45 +125,6 @@ export interface PiRunnerOptions {
   workspaceRoot?: string | null;
   worktreeTtlMs?: number;
   gcIntervalMs?: number;
-}
-
-/**
- * Resolve the model's real context window from OpenRouter's catalog so max_tokens is capped under
- * the true ceiling. Ported verbatim from wiki-sync's piSession — setting max_tokens to the full
- * context window (what OpenRouter reports as max_completion_tokens) makes every prompt overflow and
- * get silently rejected. Falls back to a safe buffer on any fetch/parse failure.
- */
-async function resolveContextWindow(modelId: string, fallback: number): Promise<number> {
-  try {
-    const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
-    const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number }> };
-    const entry = payload.data?.find((m) => m.id === modelId);
-    if (!entry?.context_length || entry.context_length <= 0) throw new Error(`model ${modelId} missing context_length`);
-    return entry.context_length;
-  } catch (err) {
-    log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using fallback");
-    return fallback;
-  }
-}
-
-// Prefer the human-meaningful field of a tool's args for the activity line (the command, the path,
-// the pattern), else compact JSON. Truncation happens downstream in activityLine.
-function summarizeToolArgs(args: unknown): string {
-  if (typeof args === "string") return args;
-  if (args && typeof args === "object") {
-    const a = args as Record<string, unknown>;
-    for (const k of ["command", "path", "file_path", "pattern", "query", "url"]) {
-      if (typeof a[k] === "string" && a[k]) return a[k] as string;
-    }
-    // Fallback: a compact key=value of scalar fields, never a raw JSON object dump.
-    const parts = Object.entries(a)
-      .filter(([, v]) => v != null && typeof v !== "object")
-      .slice(0, 3)
-      .map(([k, v]) => `${k}=${String(v).slice(0, 40)}`);
-    return parts.join(" ");
-  }
-  return "";
 }
 
 // Prefer a tool result's human-readable payload (a command's stdout, a file's text) over a raw JSON
@@ -618,40 +577,17 @@ export class PiRunnerAdapter implements RunnerAdapter {
     repoHome: string,
     browserPorts: BrowserPorts | null,
   ): Promise<{ session: AgentSession; sessionFile: string; askBridge: AskBridge }> {
-    const { createAgentSession, ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createBashToolDefinition } =
-      await import("@earendil-works/pi-coding-agent");
-    // A fresh runner (e.g. a new container volume) has no agentDir yet; ModelRuntime.create expects
-    // the auth/models files to exist. The provider is registered inline below, so empty files are
-    // enough — create them if absent rather than requiring a provisioning step.
-    mkdirSync(this.options.agentDir, { recursive: true });
-    const authPath = join(this.options.agentDir, "auth.json");
-    const modelsPath = join(this.options.agentDir, "models.json");
-    if (!existsSync(authPath)) writeFileSync(authPath, "{}");
-    if (!existsSync(modelsPath)) writeFileSync(modelsPath, "{}");
-    const modelRuntime = await ModelRuntime.create({ authPath, modelsPath });
-    const contextWindow = await resolveContextWindow(this.options.model, this.options.fallbackContextWindow ?? 800_000);
-    const maxTokens = Math.min(this.options.maxOutputTokens ?? 65_536, contextWindow);
-    modelRuntime.registerProvider(PROVIDER_ID, {
-      name: "sushii runner OpenRouter",
-      baseUrl: this.options.baseUrl,
+    const { createAgentSession, SessionManager, SettingsManager, DefaultResourceLoader } = await import("@earendil-works/pi-coding-agent");
+    const { modelRuntime, model } = await createOpenRouterModel({
+      agentDir: this.options.agentDir,
+      providerId: PROVIDER_ID,
+      providerName: "sushii runner OpenRouter",
+      model: this.options.model,
       apiKey: this.options.apiKey,
-      api: "openai-completions",
-      models: [
-        {
-          id: this.options.model,
-          name: this.options.model,
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow,
-          maxTokens,
-          samplingParams: { provider: { data_collection: "deny" } },
-          compat: { sendSessionAffinityHeaders: true },
-        },
-      ],
+      baseUrl: this.options.baseUrl,
+      maxOutputTokens: this.options.maxOutputTokens,
+      fallbackContextWindow: this.options.fallbackContextWindow,
     });
-    const model = modelRuntime.getModel(PROVIDER_ID, this.options.model);
-    if (!model) throw new Error(`pi runner model ${PROVIDER_ID}/${this.options.model} failed to register`);
 
     const sessionDir = `${this.options.agentDir}/sessions`;
     const sessionManager = resumeSessionFile
@@ -670,15 +606,12 @@ export class PiRunnerAdapter implements RunnerAdapter {
     // Every spawn gets an allowlisted env plus the per-repo git/gh credentials (fresh token via
     // tokenRef), so the agent's own `git push` / `gh pr create` authenticate without the runner's
     // secrets appearing in `env` output.
-    const bashTool = createBashToolDefinition(cwd, {
-      spawnHook: (context) => {
-        const token = tokenRef.current;
-        const extra = {
-          ...(token ? agentGitEnv(repoHome, token) : {}),
-          ...(browserPorts ? browserEnv(taskId, browserPorts, this.options.browserUseApiKey, this.options.runnerId) : {}),
-        };
-        return { ...context, env: buildAgentEnv(context.env, extra) };
-      },
+    const bashTool = await createAgentBashTool(cwd, () => {
+      const token = tokenRef.current;
+      return {
+        ...(token ? agentGitEnv(repoHome, token) : {}),
+        ...(browserPorts ? browserEnv(taskId, browserPorts, this.options.browserUseApiKey, this.options.runnerId) : {}),
+      };
     });
 
     const askBridge = makeAskBridge();
@@ -696,8 +629,7 @@ export class PiRunnerAdapter implements RunnerAdapter {
       // (a same-named override of the built-in — our credential-injecting shell) and "ask_owner" both
       // have to be listed or they're dropped. Pi's own interactive ask_question stays excluded.
       tools: ["read", "edit", "write", "grep", "find", "ls", "bash", "ask_owner", "send_owner_message"],
-      // Cast: the bash factory returns a specialized ToolDefinition; customTools wants the generic one.
-      customTools: [bashTool as unknown as ToolDefinition, askTool, ownerMessageTool],
+      customTools: [bashTool, askTool, ownerMessageTool],
       excludeTools: ["ask_question"],
       sessionManager,
     });

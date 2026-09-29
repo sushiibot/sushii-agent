@@ -113,7 +113,87 @@ export const RPC_METHODS = {
   event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
   browserWatch: "session/browser", // start/stop the live browser relay (params: { taskId, watch }) → { supported }
   heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)
+  // Personal-agent chat verbs (role "workspace"). Bot → workspace requests:
+  chatMessage: "chat/message",
+  chatAbort: "chat/abort",
+  chatNew: "chat/new",
+  chatAck: "chat/ack",
+  // Workspace → bot: deliver is a request (bot replies {} then later sends chat/ack); event is a notification.
+  chatDeliver: "chat/deliver",
+  chatEvent: "chat/event",
 } as const;
+
+// ── Chat protocol (workspace ↔ bot). ──
+export const chatMessageParams = z.object({
+  principalId: z.string(),
+  messageId: z.string(),
+  text: z.string(),
+  kind: z.enum(["user", "context"]),
+  author: z.object({ id: z.string(), name: z.string() }),
+  attachments: z.array(z.object({ url: z.string(), name: z.string(), contentType: z.string() })).optional(),
+  voice: z.boolean().optional(),
+});
+export type ChatMessageParams = z.infer<typeof chatMessageParams>;
+export type ChatMessageMode = "prompt" | "steer" | "duplicate" | "context";
+export interface ChatMessageResult {
+  accepted: true;
+  mode: ChatMessageMode;
+}
+
+export const chatAbortParams = z.object({ principalId: z.string() });
+export type ChatAbortParams = z.infer<typeof chatAbortParams>;
+export interface ChatAbortResult {
+  aborted: boolean;
+}
+
+export const chatNewParams = z.object({ principalId: z.string() });
+export type ChatNewParams = z.infer<typeof chatNewParams>;
+export interface ChatNewResult {
+  sessionFile: string;
+}
+
+export const chatAckParams = z.object({ outboxId: z.string() });
+export type ChatAckParams = z.infer<typeof chatAckParams>;
+
+export const chatUsage = z.object({
+  model: z.string(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheRead: z.number().optional(),
+  cacheWrite: z.number().optional(),
+  costUsd: z.number().optional(),
+  contextPct: z.number().optional(),
+});
+export type ChatUsage = z.infer<typeof chatUsage>;
+
+export const chatDeliverParams = z.object({
+  outboxId: z.string(),
+  principalId: z.string(),
+  kind: z.enum(["reply", "proactive", "ask"]),
+  text: z.string(),
+  replyTo: z.string().optional(),
+  usage: chatUsage.optional(),
+  ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
+});
+export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
+
+export const chatEventPayload = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("turn_start") }),
+  z.object({ type: z.literal("tool_start"), name: z.string(), summary: z.string() }),
+  z.object({ type: z.literal("tool_end"), name: z.string(), ok: z.boolean() }),
+  z.object({ type: z.literal("text_delta"), text: z.string() }),
+  z.object({ type: z.literal("turn_end"), aborted: z.boolean() }),
+]);
+export type ChatEventPayload = z.infer<typeof chatEventPayload>;
+
+export const chatEventParams = z.object({
+  principalId: z.string(),
+  turnId: z.string(),
+  agentId: z.literal("main"),
+  parentRunId: z.string().optional(),
+  ev: chatEventPayload,
+});
+export type ChatEventParams = z.infer<typeof chatEventParams>;
 
 export const jsonRpcRequest = z.object({
   jsonrpc: z.literal("2.0"),
