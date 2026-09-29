@@ -6,9 +6,9 @@ import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { RPC_METHODS, chatEventParams, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/transport/server.ts";
 import { DELIVERY_MAX_FAILURES, WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
-import { formatDuration, progressEditDelay, progressEditGap, type Timers } from "../../orchestration/workspace/progress.ts";
+import { formatDuration, progressEditDelay, type Timers } from "../../orchestration/workspace/progress.ts";
 import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
-import { DiscordWorkspaceAdapter, answeredAsk, renderDelivery, renderProgressFinal, type DmChannelPort } from "./workspaceAdapter.ts";
+import { DiscordWorkspaceAdapter, answeredAsk, progressEditGap, renderDelivery, renderProgressFinal, type DmChannelPort } from "./workspaceAdapter.ts";
 
 const P = "drk";
 const ORIGIN = { surface: "discord", conversationId: "dm-1" };
@@ -135,10 +135,10 @@ describe("progress edit schedule", () => {
   });
 
   test("delay is what's left of the gap since the last edit, never negative", () => {
-    expect(progressEditDelay({ now: 1_000, startedAt: 0, lastEditAt: 0 })).toBe(2_000);
-    expect(progressEditDelay({ now: 5_000, startedAt: 0, lastEditAt: 0 })).toBe(0);
-    expect(progressEditDelay({ now: 45_000, startedAt: 0, lastEditAt: 40_000 })).toBe(5_000);
-    expect(progressEditDelay({ now: 700_000, startedAt: 0, lastEditAt: 690_000 })).toBe(50_000);
+    expect(progressEditDelay({ now: 1_000, startedAt: 0, lastEditAt: 0 }, progressEditGap)).toBe(2_000);
+    expect(progressEditDelay({ now: 5_000, startedAt: 0, lastEditAt: 0 }, progressEditGap)).toBe(0);
+    expect(progressEditDelay({ now: 45_000, startedAt: 0, lastEditAt: 40_000 }, progressEditGap)).toBe(5_000);
+    expect(progressEditDelay({ now: 700_000, startedAt: 0, lastEditAt: 690_000 }, progressEditGap)).toBe(50_000);
   });
 
   test("formatDuration", () => {

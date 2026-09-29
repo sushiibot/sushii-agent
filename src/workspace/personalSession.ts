@@ -76,6 +76,8 @@ interface OpenRun {
   turnId: string;
   /** The prompting message's origin; the run's events and reply go back to it. */
   origin: ChatOrigin | undefined;
+  /** The prompting message; the reply's replyTo when the latest steer came from another conversation. */
+  promptMessageId: string | undefined;
   acc: RunAccumulator;
   deltaBuffer: string;
   deltaTimer: ReturnType<typeof setTimeout> | null;
@@ -115,6 +117,8 @@ export class PersonalSession {
   private run: OpenRun | null = null;
   private lastInboundId: string | undefined;
   private lastOrigin: ChatOrigin | undefined;
+  // The message whose prompt() starts the next run; a later steer can't become the run's origin.
+  private nextRunPrompt: PendingInbound | undefined;
   private unconsumed: PendingInbound[] = [];
   // A retry of a message still being handled shares its outcome: a failure must reach the retry too.
   private readonly inFlight = new Map<string, Promise<ChatMessageResult>>();
@@ -306,6 +310,7 @@ export class PersonalSession {
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
       const pending: PendingInbound = { messageId, text, origin };
       this.unconsumed.push(pending);
+      if (mode === "prompt") this.nextRunPrompt = pending;
       let accepted = false;
       let settlesAtAccept = 0;
       try {
@@ -334,6 +339,7 @@ export class PersonalSession {
         return mode;
       } catch (err) {
         this.unconsumed = this.unconsumed.filter((p) => p !== pending);
+        if (this.nextRunPrompt === pending) this.nextRunPrompt = undefined;
         if (attempt === 0 && isCompactionBusy(err)) continue;
         log.error({ err, messageId }, "chat prompt failed");
         throw err;
@@ -455,10 +461,12 @@ export class PersonalSession {
       this.consumeInbound(userText(event.message));
     }
     if (event.type === "agent_start" && !this.run) {
+      const prompt = this.nextRunPrompt;
+      this.nextRunPrompt = undefined;
       this.run = {
         turnId: this.newId(),
-        // agent_start comes before the prompting message's message_start, so it is still the newest pending one.
-        origin: this.unconsumed.at(-1)?.origin ?? this.lastOrigin,
+        origin: prompt?.origin ?? this.lastOrigin,
+        promptMessageId: prompt?.messageId || undefined,
         acc: newRunAccumulator(),
         deltaBuffer: "",
         deltaTimer: null,
@@ -504,13 +512,15 @@ export class PersonalSession {
     if (aborted) return "aborted";
     if (run.suppressReply) return "suppressed";
     const usage = runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent);
+    // replyTo must name a message in the conversation the reply goes to.
+    const replyTo = sameConversation(this.lastOrigin, run.origin) ? this.lastInboundId : run.promptMessageId;
     if (run.acc.errorMessage !== undefined) {
-      this.deliver(failureNotice(run.acc.errorMessage), this.lastInboundId, run.turnId, run.origin, usage);
+      this.deliver(failureNotice(run.acc.errorMessage), replyTo, run.turnId, run.origin, usage);
       return "notice";
     }
     const text = replyText(run.acc);
     if (text === null) return "silent";
-    this.deliver(text, this.lastInboundId, run.turnId, run.origin, usage);
+    this.deliver(text, replyTo, run.turnId, run.origin, usage);
     return "reply";
   }
 
@@ -653,4 +663,8 @@ function userText(message: { content?: unknown }): string {
 
 function isCompactionBusy(err: unknown): boolean {
   return err instanceof Error && err.message.includes("while compaction is in progress");
+}
+
+function sameConversation(a: ChatOrigin | undefined, b: ChatOrigin | undefined): boolean {
+  return a?.surface === b?.surface && a?.conversationId === b?.conversationId;
 }

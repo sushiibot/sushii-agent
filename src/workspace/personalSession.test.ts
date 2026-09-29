@@ -28,6 +28,8 @@ class FakeSession {
   steerGate: Promise<void> | null = null;
   abortGate: Promise<void> | null = null;
   rejectAfterRun: Error | null = null;
+  /** Holds agent_start after preflightResult("started"), the window where a steer can queue first. */
+  startGate: Promise<void> | null = null;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
   private idleWaiters: Array<() => void> = [];
   private runDone: (() => void) | null = null;
@@ -61,6 +63,7 @@ class FakeSession {
     options?.preflightResult?.("started");
     this.isStreaming = true;
     const done = new Promise<void>((r) => (this.runDone = r));
+    if (this.startGate) await this.startGate;
     this.emit({ type: "agent_start" });
     this.emitUser(text);
     await done;
@@ -1018,6 +1021,35 @@ describe("PersonalSession origin echo", () => {
     sessions[0].finish("both answered");
     await tick();
     expect(transport.delivered().map((d) => d.origin)).toEqual([WEB]);
+    // The steer's id belongs to the other conversation, so the reply points at the run's own prompt.
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m1"]);
+  });
+
+  test("a steer from the same conversation is still the reply's replyTo", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "hi", { origin: WEB }));
+    await host.handleMessage(msg("m2", "also", { origin: WEB }));
+    sessions[0].finish("both answered");
+    await tick();
+    expect(transport.delivered().map((d) => [d.origin, d.replyTo])).toEqual([[WEB, "m2"]]);
+  });
+
+  test("a steer queued before agent_start doesn't become the run's origin", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    const start = gate();
+    s.startGate = start.promise;
+    expect((await host.handleMessage(msg("m1", "hi", { origin: WEB }))).mode).toBe("prompt");
+    expect((await host.handleMessage(msg("m2", "also", { origin: DM_ORIGIN }))).mode).toBe("steer");
+    start.open();
+    await tick();
+    s.finish("both answered");
+    await tick();
+    const turnStarts = transport.notifications.map((n) => n.params as ChatEventParams).filter((e) => e.ev.type === "turn_start");
+    expect(turnStarts.map((e) => e.origin)).toEqual([WEB]);
+    expect(transport.delivered().map((d) => [d.origin, d.replyTo])).toEqual([[WEB, "m1"]]);
   });
 
   test("the next run answers on its own message's origin", async () => {

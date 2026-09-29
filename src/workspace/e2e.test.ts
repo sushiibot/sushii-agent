@@ -588,13 +588,13 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
     expect(current).not.toBe(stale);
 
     const staleClick = stopInteraction(stale);
-    await handleWorkspaceStopButton(staleClick.interaction, { ownerId: OWNER, link: h.r.bot.link });
+    await handleWorkspaceStopButton(staleClick.interaction, { link: h.r.bot.link });
     expect(staleClick.editReplies).toEqual(["That turn already finished."]);
     expect(h.ws.pi().aborts).toBe(0);
     expect(h.ws.pi().isStreaming).toBe(true);
 
     const click = stopInteraction(current);
-    await handleWorkspaceStopButton(click.interaction, { ownerId: OWNER, link: h.r.bot.link });
+    await handleWorkspaceStopButton(click.interaction, { link: h.r.bot.link });
     expect(click.editReplies).toEqual(["Stopping…"]);
     expect(h.ws.pi().aborts).toBe(1);
     const progress2 = h.dm.progress()[1]!;

@@ -23,7 +23,7 @@ export function kvCursor(store: Pick<WorkspaceLinkStore, "getKv" | "setKv">, key
 export interface OwnerRouterDeps<M extends InboundMessage> {
   workspaceEnabled: boolean;
   transcriptionEnabled: boolean;
-  link: Pick<WorkspaceLink, "isConnected" | "sendMessage" | "abort" | "newSession" | "recordOffline">;
+  link: Pick<WorkspaceLink, "isConnected" | "sendMessage" | "abort" | "newSession" | "recordOffline"> & Partial<Pick<WorkspaceLink, "interceptReply">>;
   /** The surface the message arrived on. */
   surface: InboundSurface<M>;
   cursor: MessageCursor;
@@ -52,6 +52,14 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
   const workspace = deps.workspaceEnabled && link.isConnected();
   const ack = (kind: AckKind) => surface.ack(message, kind).catch(() => {});
   const notice = (n: Parameters<InboundSurface<M>["notice"]>[1]) => surface.notice(message, n).catch(() => {});
+
+  // Replies to a buttonless prompt answer the bot, not the agent: they reach neither the workspace nor the fallback.
+  const intercepted = (await link.interceptReply?.(message)) ?? { handled: false };
+  if (intercepted.handled) {
+    if (intercepted.ack) await ack(intercepted.ack);
+    if (intercepted.notice) await notice(intercepted.notice);
+    return;
+  }
 
   if (NEW_COMMANDS.has(command)) {
     if (!deps.workspaceEnabled) {

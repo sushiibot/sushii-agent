@@ -21,11 +21,12 @@ import {
   type ReplyView,
   type RouterNotice,
   type SendAttempt,
+  type SurfaceActor,
   type SurfaceAdapter,
   type SurfaceCapabilities,
   type SurfaceMessageHandle,
 } from "./surface.ts";
-import { WorkspaceTools } from "./tools.ts";
+import { APPROVAL_TIMEOUT_MS, WorkspaceTools } from "./tools.ts";
 
 const P = "drk";
 const CONN: ConnectionInfo = { runnerId: `workspace-${P}`, role: "workspace", principalId: P, protocolVersion: 1, state: "idle" };
@@ -38,6 +39,10 @@ type Call = { method: string; origin?: ChatOrigin | null; arg?: unknown };
 class FakeAdapter implements SurfaceAdapter {
   calls: Call[] = [];
   unavailable = false;
+  /** The adapter's progress edit gap, whatever the turn's age. */
+  gap = 0;
+  /** Holds approvalPrompt's post until opened. */
+  promptGate: Promise<void> | null = null;
   private seq = 0;
   readonly capabilities: SurfaceCapabilities;
 
@@ -63,6 +68,9 @@ class FakeAdapter implements SurfaceAdapter {
   async askPrompt(origin: ChatOrigin | null, ask: AskView, _attempt: SendAttempt): Promise<void> {
     this.calls.push({ method: "askPrompt", origin, arg: ask });
   }
+  progressEditGap(): number {
+    return this.gap;
+  }
   async progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<SurfaceMessageHandle> {
     this.calls.push({ method: "progressCreate", origin, arg: structuredClone(view) });
     return { id: `${this.surface}-${++this.seq}` };
@@ -79,6 +87,7 @@ class FakeAdapter implements SurfaceAdapter {
   }
   async approvalPrompt(origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<SurfaceMessageHandle> {
     this.calls.push({ method: "approvalPrompt", origin, arg: { view, nonce } });
+    if (this.promptGate) await this.promptGate;
     return { id: nonce };
   }
   async resolveApproval(_handle: SurfaceMessageHandle, _view: ApprovalView, _nonce: string, decision: ApprovalDecision): Promise<void> {
@@ -350,8 +359,322 @@ describe("tool approvals", () => {
       ["title", "T", "single"],
       ["description", "D", "body"],
     ]);
-    expect(tools.decide(nonce, "approve")).toBe(true);
+    expect(tools.decide(nonce, "approve", { surface: "test", userId: "owner-1", name: "drk" })).toBe("decided");
     expect(await pending).toEqual({ ok: true, result: "filed" });
     expect(test.of("resolveApproval").map((c) => c.arg)).toEqual(["approve", "approve"]);
+  });
+});
+
+const OWNER_TEST: SurfaceActor = { surface: "test", userId: "owner-1", name: "drk" };
+const OWNER_DISCORD: SurfaceActor = { surface: "discord", userId: "owner-1", name: "drk" };
+
+/** Timers that record each requested delay and fire only when told to. */
+class ManualTimers implements Timers {
+  handles = new Map<number, { fn: () => void; ms: number }>();
+  private seq = 0;
+  set(fn: () => void, ms: number): unknown {
+    const id = ++this.seq;
+    this.handles.set(id, { fn, ms });
+    return id;
+  }
+  clear(h: unknown): void {
+    this.handles.delete(h as number);
+  }
+  fire(ms: number): void {
+    for (const [id, h] of [...this.handles]) {
+      if (h.ms !== ms) continue;
+      this.handles.delete(id);
+      h.fn();
+    }
+  }
+}
+
+const LINEAR: ToolEntry<keyof ToolHosts> = {
+  name: "file_linear_issue",
+  definition: {
+    name: "file_linear_issue",
+    description: "file",
+    parameters: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, repo_label: { type: "string" } } },
+  },
+  requiresHosts: [],
+  execute: async () => ({ content: "filed" }),
+};
+
+/** A buttonless preferred surface ("test") next to a surface with buttons ("discord"), one link and its tools. */
+function approvalSetup(opts: { timers?: Timers; executed?: string[] } = {}) {
+  const test = new FakeAdapter("test");
+  const discord = new FakeAdapter("discord", { richButtons: true });
+  const surfaces = new SurfaceRegistry("test").register(test).register(discord);
+  const entry: ToolEntry<keyof ToolHosts> = {
+    ...LINEAR,
+    execute: async (input) => {
+      opts.executed?.push(String((input as { title?: string }).title));
+      return { content: "filed" };
+    },
+  };
+  const tools = new WorkspaceTools({
+    principalId: P,
+    ownerUserId: () => "owner-1",
+    toolSpace: { surface: "test", spaceId: "private" },
+    surfaces,
+    store: {} as never,
+    memory: { count: () => 0, getServerContext: () => null } as never,
+    registry: { resolve: () => [entry] },
+    log: { info: () => {} },
+    ...(opts.timers ? { timers: opts.timers } : {}),
+  });
+  const rpc = new FakeRpc();
+  const link = new WorkspaceLink({ principalId: P, store: newStore(), surfaces, owner: () => ({ id: "owner-1", name: "drk" }), timers: immediate, tools });
+  link.attach(rpc);
+  const call = (callId: string, title = "T") =>
+    tools.handleCall(CONN, { principalId: P, callId, name: "file_linear_issue", args: { title, description: "D", repo_label: "r" }, agentId: "main", agentName: "main" });
+  const prompted = async (n = 1) => {
+    for (let i = 0; i < 50 && test.of("approvalPrompt").length < n; i++) await tick();
+    return test.of("approvalPrompt")[n - 1]!.arg as { view: ApprovalView; nonce: string };
+  };
+  const from = (origin: ChatOrigin, text: string, authorId = "owner-1"): InboundMessage => ({ origin, id: `m-${text}`, text, author: { id: authorId, name: "drk" }, isVoice: false, attachments: [] });
+  const route = (message: InboundMessage) =>
+    handleOwnerMessage(message, { workspaceEnabled: true, transcriptionEnabled: false, link, surface: surfaces.get(message.origin.surface)!, cursor: { advance: () => {} } });
+  const chatMessages = () => rpc.calls.filter((c) => c.method === RPC_METHODS.chatMessage).map((c) => c.params as { messageId: string; text: string; origin: ChatOrigin });
+  return { test, discord, tools, rpc, link, call, prompted, from, route, chatMessages };
+}
+
+describe("text approvals on a surface without buttons", () => {
+  test("end to end: the prompt carries a code, `approve <code>` runs the tool, and the reply never reaches the workspace", async () => {
+    const executed: string[] = [];
+    const h = approvalSetup({ executed });
+    const pending = h.call("c1");
+    const { view } = await h.prompted();
+    expect(view.replyCode).toMatch(/^[a-z2-9]{6}$/);
+    await h.route(h.from(TEST, `approve ${view.replyCode}`));
+    expect(await pending).toEqual({ ok: true, result: "filed" });
+    expect(executed).toEqual(["T"]);
+    expect(h.test.of("resolveApproval").map((c) => c.arg)).toEqual(["approve", "approve"]);
+    expect(h.test.of("ack").map((c) => c.arg)).toEqual(["accepted"]);
+    expect(h.chatMessages()).toEqual([]);
+    expect(h.test.of("fallbackReply")).toEqual([]);
+  });
+
+  test("a code is single-use, case-insensitive, and `deny` denies", async () => {
+    const h = approvalSetup();
+    const pending = h.call("c1");
+    const { view } = await h.prompted();
+    await h.route(h.from(TEST, `  DENY ${view.replyCode!.toUpperCase()} `));
+    expect(await pending).toMatchObject({ ok: false, denied: true });
+    await h.route(h.from(TEST, `approve ${view.replyCode}`));
+    expect(h.test.of("notice").map((c) => c.arg)).toEqual([{ type: "approvalExpired" }]);
+    expect(h.chatMessages()).toEqual([]);
+  });
+
+  test("a wrong code, a stranger, or a code typed on another surface decides nothing", async () => {
+    const executed: string[] = [];
+    const h = approvalSetup({ executed });
+    const pending = h.call("c1");
+    const { view, nonce } = await h.prompted();
+    await h.route(h.from(TEST, "approve zzzzzz"));
+    await h.route(h.from(TEST, `approve ${view.replyCode}`, "stranger"));
+    expect(h.test.of("notice").map((c) => c.arg)).toEqual([{ type: "approvalExpired" }, { type: "approvalExpired" }]);
+    expect(h.tools.decideByCode(view.replyCode!, "approve", OWNER_DISCORD)).toBe(false);
+    // On a surface with buttons the same text is an ordinary message for the agent.
+    await h.route(h.from(DISCORD, `approve ${view.replyCode}`));
+    expect(h.chatMessages().map((m) => [m.origin, m.text])).toEqual([[DISCORD, `approve ${view.replyCode}`]]);
+    expect(executed).toEqual([]);
+    expect(h.tools.decide(nonce, "deny", OWNER_TEST)).toBe("decided");
+    expect(await pending).toMatchObject({ denied: true });
+  });
+
+  test("the code dies with the approval's timeout", async () => {
+    const timers = new ManualTimers();
+    const h = approvalSetup({ timers });
+    const pending = h.call("c1");
+    const { view } = await h.prompted();
+    timers.fire(APPROVAL_TIMEOUT_MS);
+    expect(await pending).toMatchObject({ denied: true });
+    await h.route(h.from(TEST, `approve ${view.replyCode}`));
+    expect(h.test.of("notice").map((c) => c.arg)).toEqual([{ type: "approvalExpired" }]);
+    expect(h.chatMessages()).toEqual([]);
+  });
+
+  test("a surface with buttons gets no code", async () => {
+    const test = new FakeAdapter("test", { richButtons: true });
+    const tools = new WorkspaceTools({
+      principalId: P,
+      ownerUserId: () => "owner-1",
+      toolSpace: { surface: "test", spaceId: "private" },
+      surfaces: new SurfaceRegistry("test").register(test),
+      store: {} as never,
+      memory: { count: () => 0, getServerContext: () => null } as never,
+      registry: { resolve: () => [LINEAR] },
+      log: { info: () => {} },
+    });
+    const pending = tools.handleCall(CONN, { principalId: P, callId: "c1", name: "file_linear_issue", args: { title: "T" }, agentId: "main", agentName: "main" });
+    for (let i = 0; i < 50 && !test.of("approvalPrompt").length; i++) await tick();
+    const { view, nonce } = test.of("approvalPrompt")[0]!.arg as { view: ApprovalView; nonce: string };
+    expect("replyCode" in view).toBe(false);
+    tools.decide(nonce, "deny", OWNER_TEST);
+    await pending;
+  });
+
+  test("the body reaches the adapter whole; clipping is the surface's call", async () => {
+    const h = approvalSetup();
+    const description = "d".repeat(10_000);
+    const pending = h.tools.handleCall(CONN, { principalId: P, callId: "c1", name: "file_linear_issue", args: { title: "T", description }, agentId: "main", agentName: "main" });
+    const { view, nonce } = await h.prompted();
+    expect(view.fields.find((f) => f.key === "description")).toEqual({ key: "description", kind: "body", value: description });
+    h.tools.decide(nonce, "deny", OWNER_TEST);
+    await pending;
+  });
+});
+
+describe("approval races", () => {
+  test("a click that lands while the prompt is still posting counts", async () => {
+    const executed: string[] = [];
+    const h = approvalSetup({ executed });
+    let open!: () => void;
+    h.test.promptGate = new Promise((r) => (open = r));
+    const pending = h.call("c1");
+    const { nonce } = await h.prompted();
+    expect(h.tools.decide(nonce, "approve", OWNER_TEST)).toBe("decided");
+    open();
+    expect(await pending).toEqual({ ok: true, result: "filed" });
+    expect(h.test.of("resolveApproval").map((c) => c.arg)).toEqual(["approve", "approve"]);
+  });
+
+  test("the socket closing while the prompt is still posting expires it, and the prompt then shows expired", async () => {
+    const executed: string[] = [];
+    const h = approvalSetup({ executed });
+    let open!: () => void;
+    h.test.promptGate = new Promise((r) => (open = r));
+    const pending = h.call("c1");
+    const { nonce, view } = await h.prompted();
+    h.tools.onSocketClosed(CONN);
+    open();
+    expect(await pending).toMatchObject({ ok: false, denied: true });
+    expect(h.test.of("resolveApproval").map((c) => c.arg)).toEqual(["expired"]);
+    expect(h.tools.decide(nonce, "approve", OWNER_TEST)).toBe("expired");
+    expect(h.tools.decideByCode(view.replyCode!, "approve", OWNER_TEST)).toBe(false);
+    expect(executed).toEqual([]);
+  });
+});
+
+describe("asks answered through the core", () => {
+  test("on a surface without buttons, a choice's number answers the latest ask, keyed like a button click", async () => {
+    const h = approvalSetup();
+    await h.link.deliver(deliverParams({ origin: TEST, kind: "ask", ask: { askId: "a1", question: "Merge?", choices: ["Yes", "No"] } }));
+    await h.route(h.from(TEST, "2"));
+    expect(h.chatMessages()).toEqual([expect.objectContaining({ messageId: "wsask:a1", text: "No", origin: TEST })]);
+    expect(h.test.of("ack").map((c) => c.arg)).toEqual(["accepted"]);
+    // Answered: the next number is an ordinary message again.
+    await h.route(h.from(TEST, "2"));
+    expect(h.chatMessages().map((m) => m.messageId)).toEqual(["wsask:a1", "m-2"]);
+  });
+
+  test("a number out of range, or on a surface with buttons, is an ordinary message", async () => {
+    const h = approvalSetup();
+    await h.link.deliver(deliverParams({ origin: TEST, kind: "ask", ask: { askId: "a1", question: "Merge?", choices: ["Yes", "No"] } }));
+    await h.link.deliver(deliverParams({ outboxId: "o2", origin: DISCORD, kind: "ask", ask: { askId: "a2", question: "Ship?", choices: ["Yes"] } }));
+    await h.route(h.from(TEST, "3"));
+    await h.route(h.from(DISCORD, "1"));
+    expect(h.chatMessages().map((m) => [m.messageId, m.text])).toEqual([
+      ["m-3", "3"],
+      ["m-1", "1"],
+    ]);
+  });
+
+  test("the same ask answered from two surfaces uses one message id, so the workspace sees a duplicate", async () => {
+    const h = approvalSetup();
+    await h.link.deliver(deliverParams({ origin: TEST, kind: "ask", ask: { askId: "a1", question: "Merge?", choices: ["Yes", "No"] } }));
+    const a = await h.link.answerAsk(DISCORD, "a1", { index: 0 }, OWNER_DISCORD);
+    const b = await h.link.answerAsk(TEST, "a1", { text: "No" }, OWNER_TEST);
+    expect([a.status, b.status]).toEqual(["answered", "answered"]);
+    expect(h.chatMessages().map((m) => m.messageId)).toEqual(["wsask:a1", "wsask:a1"]);
+  });
+
+  test("a stranger's answer is refused before anything is deferred or sent", async () => {
+    const h = approvalSetup();
+    await h.link.deliver(deliverParams({ origin: TEST, kind: "ask", ask: { askId: "a1", question: "Merge?", choices: ["Yes"] } }));
+    let accepted = false;
+    const res = await h.link.answerAsk(TEST, "a1", { index: 0 }, { ...OWNER_TEST, userId: "stranger" }, { onAccepted: async () => void (accepted = true) });
+    expect(res).toEqual({ status: "forbidden" });
+    expect(accepted).toBe(false);
+    expect(await h.link.answerAsk(TEST, "a9", { index: 0 }, OWNER_TEST)).toEqual({ status: "inactive" });
+    expect(h.chatMessages()).toEqual([]);
+  });
+});
+
+describe("stop through the core", () => {
+  test("a tracked turn is aborted and left to the event stream; an untracked one comes back with its final state", async () => {
+    const { link, rpc, event } = setup();
+    rpc.requestWorkspace = async (_p, method, params) => {
+      rpc.calls.push({ method, params });
+      return { aborted: true };
+    };
+    event("t1", { type: "turn_start" }, TEST);
+    const order: string[] = [];
+    const tracked = await link.stopTurn(TEST, "t1", OWNER_TEST, { onAccepted: async () => void order.push("accepted") });
+    expect(tracked).toEqual({ status: "ok", aborted: true, final: null });
+    expect(order).toEqual(["accepted"]);
+    expect(await link.stopTurn(TEST, "gone", OWNER_TEST)).toEqual({ status: "ok", aborted: true, final: { outcome: "stopped", summary: null } });
+    expect(rpc.calls.map((c) => c.params)).toEqual([
+      { principalId: P, turnId: "t1" },
+      { principalId: P, turnId: "gone" },
+    ]);
+  });
+
+  test("a stranger can't stop a turn", async () => {
+    const { link, rpc } = setup();
+    expect(await link.stopTurn(TEST, "t1", { ...OWNER_TEST, userId: "someone" })).toEqual({ status: "forbidden" });
+    expect(rpc.calls).toEqual([]);
+  });
+});
+
+describe("progress cadence comes from the adapter", () => {
+  test("an adapter's gap sets the delay between updates; a zero gap updates on every change", async () => {
+    const timers = new ManualTimers();
+    const slow = new FakeAdapter("test");
+    slow.gap = 5_000;
+    const link = new WorkspaceLink({ principalId: P, store: newStore(), surfaces: new SurfaceRegistry("test").register(slow), owner: () => ({ id: "owner-1", name: "drk" }), timers, now: () => 1_000 });
+    const tool = (turnId: string, name: string) => link.onEvent({ origin: TEST, principalId: P, turnId, agentId: "main", ev: { type: "tool_start", name, summary: "" } });
+    tool("t1", "a");
+    tool("t1", "b");
+    expect([...timers.handles.values()].map((h) => h.ms)).toEqual([5_000]);
+
+    const fast = new FakeAdapter("test");
+    const link2 = new WorkspaceLink({ principalId: P, store: newStore(), surfaces: new SurfaceRegistry("test").register(fast), owner: () => ({ id: "owner-1", name: "drk" }), timers: new ManualTimers(), now: () => 1_000 });
+    for (const name of ["a", "b", "c"]) link2.onEvent({ origin: TEST, principalId: P, turnId: "t1", agentId: "main", ev: { type: "tool_start", name, summary: "" } });
+    await link2.settled();
+    expect(fast.of("progressUpdate").map((c) => (c.arg as { view: ProgressView }).view.lines.length)).toEqual([3, 3]);
+  });
+
+  test("a streaming adapter with progressDelta gets every delta at once, however slow its update gap", async () => {
+    class DeltaAdapter extends FakeAdapter {
+      deltas: string[] = [];
+      async progressDelta(_handle: SurfaceMessageHandle, delta: string): Promise<void> {
+        this.deltas.push(delta);
+      }
+    }
+    const web = new DeltaAdapter("test", { streaming: true });
+    web.gap = 60_000;
+    const timers = new ManualTimers();
+    const link = new WorkspaceLink({ principalId: P, store: newStore(), surfaces: new SurfaceRegistry("test").register(web), owner: () => ({ id: "owner-1", name: "drk" }), timers, now: () => 1_000 });
+    const delta = (text: string) => link.onEvent({ origin: TEST, principalId: P, turnId: "t1", agentId: "main", ev: { type: "text_delta", text } });
+    delta("Hel");
+    delta("lo");
+    delta(" there");
+    await link.settled();
+    expect((web.of("progressCreate")[0]!.arg as ProgressView).text).toBe("Hel");
+    expect(web.deltas).toEqual(["lo", " there"]);
+    expect(web.of("progressUpdate")).toEqual([]);
+    expect(timers.handles.size).toBe(0);
+  });
+});
+
+describe("preferred surface", () => {
+  test("is matched case-insensitively and must have an adapter", () => {
+    const registry = new SurfaceRegistry(" Discord ").register(new FakeAdapter("discord"));
+    expect(registry.preferredSurface).toBe("discord");
+    expect(() => registry.assertPreferredRegistered()).not.toThrow();
+    const typo = new SurfaceRegistry("discrod").register(new FakeAdapter("discord"));
+    expect(() => typo.assertPreferredRegistered()).toThrow('WORKSPACE_PREFERRED_SURFACE "discrod" has no adapter; registered: discord');
   });
 });

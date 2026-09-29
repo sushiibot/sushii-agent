@@ -70,14 +70,10 @@ export interface SendAttempt {
   plain: boolean;
 }
 
-/** One validated argument on an approval prompt, in the tool's fixed display order. */
-export interface ApprovalField {
-  key: string;
-  value: string;
-  /** `single` values are shown whole on one line; a `body` is shown as a block, clipped to `max`. */
-  kind: "single" | "body";
-  max: number;
-}
+/** One validated argument on an approval prompt, in the tool's fixed display order. A `single` value is
+ *  at most `max` chars and shown whole on one line; a `body` is shown as a block, and any clipping to fit
+ *  the surface is the adapter's call. */
+export type ApprovalField = { key: string; value: string; kind: "single"; max: number } | { key: string; value: string; kind: "body" };
 
 export interface ApprovalView {
   tool: string;
@@ -85,12 +81,21 @@ export interface ApprovalView {
   agentId: string;
   agentName: string;
   fields: ApprovalField[];
+  /** Set only on a surface without `richButtons`: the owner answers `approve <code>` or `deny <code>`. */
+  replyCode?: string;
 }
 
 export type ApprovalDecision = "approve" | "deny" | "timeout" | "expired";
 
 /** Receipt signals on the user's message. */
 export type AckKind = "accepted" | "steer" | "queued" | "newSession" | "stopped" | "transcribing";
+
+/** Who clicked a button or sent a reply, as the surface identifies them. */
+export interface SurfaceActor {
+  surface: string;
+  userId: string;
+  name: string;
+}
 
 /** Status lines the owner-message router posts in reply to a message. */
 export type RouterNotice =
@@ -100,7 +105,10 @@ export type RouterNotice =
   | { type: "nothingToStop" }
   | { type: "stopFailed"; error: string }
   | { type: "transcriptionFailed" }
-  | { type: "transcript"; text: string };
+  | { type: "transcript"; text: string }
+  | { type: "approvalExpired" }
+  | { type: "askAlreadyAnswered" }
+  | { type: "askNotDelivered"; error: string };
 
 /** A user's message as the core sees it; adapters extend it with whatever they need to answer it. */
 export interface InboundMessage {
@@ -131,20 +139,25 @@ export interface InboundSurface<M extends InboundMessage = InboundMessage> {
  * default conversation on this surface (a proactive message, or a legacy delivery without one).
  * A send that fails because the surface can't reach the principal at all throws SurfaceUnavailableError.
  */
-export interface SurfaceAdapter<M extends InboundMessage = InboundMessage> extends InboundSurface<M> {
+export interface SurfaceAdapter<M extends InboundMessage = InboundMessage, H extends SurfaceMessageHandle = SurfaceMessageHandle> extends InboundSurface<M> {
   readonly surface: string;
   readonly capabilities: SurfaceCapabilities;
   sendReply(origin: ChatOrigin | null, reply: ReplyView, attempt: SendAttempt): Promise<void>;
+  /** Without `richButtons`, choices are answered by their number (1-based) in a reply. */
   askPrompt(origin: ChatOrigin | null, ask: AskView, attempt: SendAttempt): Promise<void>;
-  progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<SurfaceMessageHandle>;
-  progressUpdate(handle: SurfaceMessageHandle, view: ProgressView): Promise<void>;
+  /** Minimum gap between progress updates of a turn `ageMs` old; 0 updates on every change. */
+  progressEditGap(ageMs: number): number;
+  progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<H>;
+  progressUpdate(handle: H, view: ProgressView): Promise<void>;
+  /** A streaming surface's live text: called per delta, unthrottled, instead of a full update. */
+  progressDelta?(handle: H, delta: string, view: ProgressView): Promise<void>;
   /** Edits the view into its final state, or posts the final state on its own when there is no view. */
-  progressFinalize(origin: ChatOrigin | null, handle: SurfaceMessageHandle | null, final: ProgressFinal): Promise<void>;
+  progressFinalize(origin: ChatOrigin | null, handle: H | null, final: ProgressFinal): Promise<void>;
   /** Re-opens a progress view an earlier process posted; null when it's gone. */
-  progressReopen(origin: ChatOrigin | null, id: string): Promise<SurfaceMessageHandle | null>;
-  approvalPrompt(origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<SurfaceMessageHandle>;
+  progressReopen(origin: ChatOrigin | null, id: string): Promise<H | null>;
+  approvalPrompt(origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<H>;
   /** Updates a posted prompt: decided, running (approve without result) or finished (with result). */
-  resolveApproval(handle: SurfaceMessageHandle, view: ApprovalView, nonce: string, decision: ApprovalDecision, result?: ToolCallResult): Promise<void>;
+  resolveApproval(handle: H, view: ApprovalView, nonce: string, decision: ApprovalDecision, result?: ToolCallResult): Promise<void>;
 }
 
 /** The surface can't reach the principal at all (not a rendering failure). */
@@ -159,8 +172,17 @@ export interface ResolvedSurface {
 /** Adapters keyed by surface id. Anything without a registered origin goes to the preferred surface. */
 export class SurfaceRegistry {
   private readonly adapters = new Map<string, SurfaceAdapter>();
+  readonly preferredSurface: string;
 
-  constructor(readonly preferredSurface: string) {}
+  constructor(preferredSurface: string) {
+    this.preferredSurface = preferredSurface.trim().toLowerCase();
+  }
+
+  /** Throws unless the preferred surface has an adapter: without one, proactive messages and approvals can't be sent. */
+  assertPreferredRegistered(): void {
+    if (this.adapters.has(this.preferredSurface)) return;
+    throw new Error(`WORKSPACE_PREFERRED_SURFACE "${this.preferredSurface}" has no adapter; registered: ${[...this.adapters.keys()].join(", ") || "none"}`);
+  }
 
   register(adapter: SurfaceAdapter): this {
     this.adapters.set(adapter.surface, adapter);

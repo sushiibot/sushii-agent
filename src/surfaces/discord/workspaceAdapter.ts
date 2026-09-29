@@ -33,7 +33,6 @@ import {
   type SendAttempt,
   type SurfaceAdapter,
   type SurfaceCapabilities,
-  type SurfaceMessageHandle,
 } from "../../orchestration/workspace/surface.ts";
 import { buildComponentMessages } from "./delivery.ts";
 import { renderChatUsageFooter } from "./footer.ts";
@@ -58,6 +57,18 @@ const RESULT_SUMMARY_MAX = 200;
 const AGENT_NAME_MAX = 64;
 
 export const DISCORD_CAPABILITIES: SurfaceCapabilities = { streaming: false, tables: false, richButtons: true, reactions: true, maxMessageChars: 4000 };
+
+/** Longest approval body shown before it is clipped: the rest of the worst-case prompt (header, requester,
+ *  single fields, footer) fits in the remaining 1200 chars of the message limit. */
+export const APPROVAL_BODY_MAX = DISCORD_CAPABILITIES.maxMessageChars - 1200;
+
+/** Discord's edit rate limits: progress edits slow down as a turn ages. */
+export function progressEditGap(ageMs: number): number {
+  if (ageMs < 30_000) return 3_000;
+  if (ageMs < 120_000) return 10_000;
+  if (ageMs < 600_000) return 30_000;
+  return 60_000;
+}
 
 const ACK_EMOJI: Record<AckKind, string> = {
   accepted: "👀",
@@ -129,6 +140,12 @@ function noticeMessage(notice: RouterNotice): string | MessageCreateOptions {
       return "Sorry, I couldn't transcribe that voice message.";
     case "transcript":
       return voiceEcho(notice.text);
+    case "approvalExpired":
+      return "This approval has expired.";
+    case "askAlreadyAnswered":
+      return "Already answered.";
+    case "askNotDelivered":
+      return `Couldn't deliver the answer: ${notice.error}`;
   }
 }
 
@@ -165,7 +182,7 @@ const NO_INBOUND: DiscordInboundDeps = {
 
 /** The workspace's Discord adapter. Everything goes to the owner's DM: it is the only Discord
  *  conversation a principal has, so an origin's conversationId isn't consulted. */
-export class DiscordWorkspaceAdapter<P extends OwnerDmMessage = OwnerDmMessage> extends DiscordOwnerDmSurface<P> implements SurfaceAdapter<DiscordInbound<P>> {
+export class DiscordWorkspaceAdapter<P extends OwnerDmMessage = OwnerDmMessage> extends DiscordOwnerDmSurface<P> implements SurfaceAdapter<DiscordInbound<P>, EditableMessage> {
   readonly surface = DISCORD_SURFACE;
   readonly capabilities = DISCORD_CAPABILITIES;
   private readonly ownerChannel: () => Promise<DmChannelPort | null>;
@@ -203,30 +220,34 @@ export class DiscordWorkspaceAdapter<P extends OwnerDmMessage = OwnerDmMessage> 
     else await channel.send(renderAsk(ask));
   }
 
-  async progressCreate(_origin: ChatOrigin | null, view: ProgressView): Promise<SurfaceMessageHandle> {
+  progressEditGap(ageMs: number): number {
+    return progressEditGap(ageMs);
+  }
+
+  async progressCreate(_origin: ChatOrigin | null, view: ProgressView): Promise<EditableMessage> {
     return (await this.channel()).send(renderWorking(view));
   }
 
-  async progressUpdate(handle: SurfaceMessageHandle, view: ProgressView): Promise<void> {
-    await (handle as EditableMessage).edit(renderWorking(view));
+  async progressUpdate(handle: EditableMessage, view: ProgressView): Promise<void> {
+    await handle.edit(renderWorking(view));
   }
 
-  async progressFinalize(_origin: ChatOrigin | null, handle: SurfaceMessageHandle | null, final: ProgressFinal): Promise<void> {
-    if (handle) await (handle as EditableMessage).edit(renderProgressFinal(final));
+  async progressFinalize(_origin: ChatOrigin | null, handle: EditableMessage | null, final: ProgressFinal): Promise<void> {
+    if (handle) await handle.edit(renderProgressFinal(final));
     else await (await this.channel()).send(renderProgressFinal(final));
   }
 
-  async progressReopen(_origin: ChatOrigin | null, id: string): Promise<SurfaceMessageHandle | null> {
+  async progressReopen(_origin: ChatOrigin | null, id: string): Promise<EditableMessage | null> {
     const channel = await this.ownerChannel().catch(() => null);
     return (await channel?.fetchMessage?.(id).catch(() => null)) ?? null;
   }
 
-  async approvalPrompt(_origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<SurfaceMessageHandle> {
+  async approvalPrompt(_origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<EditableMessage> {
     return (await this.channel()).send(renderApprovalPrompt(nonce, view));
   }
 
-  async resolveApproval(handle: SurfaceMessageHandle, view: ApprovalView, nonce: string, decision: ApprovalDecision, result?: ToolCallResult): Promise<void> {
-    await (handle as EditableMessage).edit(renderApprovalFinal(nonce, view, decision, result));
+  async resolveApproval(handle: EditableMessage, view: ApprovalView, nonce: string, decision: ApprovalDecision, result?: ToolCallResult): Promise<void> {
+    await handle.edit(renderApprovalFinal(nonce, view, decision, result));
   }
 }
 
@@ -368,7 +389,7 @@ export function renderApprovalArgs(fields: readonly ApprovalField[]): string {
   return fields
     .map((f) => {
       if (f.kind === "single") return `**${f.key}:** ${inlineSafe(f.value)}`;
-      const shown = clipAtCodePoint(f.value, f.max);
+      const shown = clipAtCodePoint(f.value, APPROVAL_BODY_MAX);
       const extra = shown.length < f.value.length ? `\n-# (+${f.value.length - shown.length} more chars)` : "";
       return `**${f.key}:**\n\`\`\`\n${codeBlockSafe(shown)}\n\`\`\`${extra}`;
     })

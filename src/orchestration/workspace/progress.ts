@@ -1,15 +1,6 @@
-/** Minimum gap between progress edits for a turn of the given age. */
-export function progressEditGap(ageMs: number): number {
-  if (ageMs < 30_000) return 3_000;
-  if (ageMs < 120_000) return 10_000;
-  if (ageMs < 600_000) return 30_000;
-  return 60_000;
-}
-
-/** How long to wait before the next progress edit; 0 means edit now. */
-export function progressEditDelay(input: { now: number; startedAt: number; lastEditAt: number }): number {
-  const gap = progressEditGap(input.now - input.startedAt);
-  return Math.max(0, input.lastEditAt + gap - input.now);
+/** How long to wait before the next progress edit, given the surface's gap for a turn's age; 0 means edit now. */
+export function progressEditDelay(input: { now: number; startedAt: number; lastEditAt: number }, gap: (ageMs: number) => number): number {
+  return Math.max(0, input.lastEditAt + gap(input.now - input.startedAt) - input.now);
 }
 
 export function formatDuration(ms: number): string {

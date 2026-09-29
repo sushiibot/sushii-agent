@@ -1,7 +1,7 @@
 // Bot side of `tool/call`: the workspace runs its model elsewhere but calls these secret-holding tools
 // here, executed with the bot's keys in the principal's private tool context. Owner approval is asked on
 // the principal's preferred surface, since a tool/call carries no origin.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { Check } from "typebox/schema";
 import type { AuthorRef, ConversationRef, ConversationStore, SpaceMemoryStore, SurfaceId, SurfaceSession, ToolContext, ToolEntry, ToolHosts, ToolRegistry } from "../../core/contracts.ts";
 import { buildToolContextBase } from "../../core/agentCore.ts";
@@ -10,7 +10,16 @@ import { toolCallParams, type ToolCallParams, type ToolCallResult, type ToolMani
 import type { ConnectionInfo } from "../transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { realTimers, type Timers } from "./progress.ts";
-import { SurfaceUnavailableError, type ApprovalDecision, type ApprovalField, type ApprovalView, type SurfaceMessageHandle, type SurfaceRegistry } from "./surface.ts";
+import {
+  SurfaceUnavailableError,
+  type ApprovalDecision,
+  type ApprovalField,
+  type ApprovalView,
+  type ResolvedSurface,
+  type SurfaceActor,
+  type SurfaceMessageHandle,
+  type SurfaceRegistry,
+} from "./surface.ts";
 
 const log = getLogger("orchestration/workspace/tools");
 
@@ -19,17 +28,9 @@ export const APPROVAL_TIMEOUT_MS = 30 * 60_000;
 // An approved tool can't be cancelled once running (tool context has no abort signal), so it may finish after this.
 const ASK_TIMEOUT_ERROR = "timeout after 120 s; the action may still complete, so do not retry it";
 
-/** Longest approval body shown before it is clipped; sized so the worst-case Discord prompt stays within
- *  its 4000-char text limit. */
-export const APPROVAL_BODY_MAX = 2800;
-
 /** One argument shown on an approval prompt. `single` fields are shown in full on one line and rejected
- *  when longer than `max`; the `body` field is shown as a block, clipped to `max`. */
-export interface DisplayField {
-  key: string;
-  max: number;
-  kind: "single" | "body";
-}
+ *  when longer than `max`; the `body` field is passed whole, for the surface to show or clip. */
+export type DisplayField = { key: string; kind: "single"; max: number } | { key: string; kind: "body" };
 
 export type ProxiedTool = { approval: "none" } | { approval: "ask"; display: readonly DisplayField[] };
 
@@ -48,7 +49,7 @@ export const PROXIED_TOOLS: Readonly<Record<string, ProxiedTool>> = {
     display: [
       { key: "repo_label", max: 100, kind: "single" },
       { key: "title", max: 256, kind: "single" },
-      { key: "description", max: APPROVAL_BODY_MAX, kind: "body" },
+      { key: "description", kind: "body" },
     ],
   },
   team_config: { approval: "none" },
@@ -78,6 +79,8 @@ export interface WorkspaceToolsOptions {
   toolSpace: { surface: SurfaceId; spaceId: string };
   /** Where approval prompts go (the preferred surface). */
   surfaces: SurfaceRegistry;
+  /** Who may decide an approval. Default: `ownerUserId` on `toolSpace.surface`. */
+  isOwner?: (actor: SurfaceActor) => boolean;
   store: ConversationStore;
   memory: SpaceMemoryStore;
   registry?: ToolRegistry;
@@ -89,7 +92,15 @@ export interface WorkspaceToolsOptions {
 interface PendingApproval {
   conn: ConnectionInfo;
   resolve: (d: ApprovalDecision) => void;
+  /** The reply code on a surface without buttons. */
+  code?: { code: string; surface: string };
 }
+
+export type DecideResult = "decided" | "forbidden" | "expired";
+
+// No 0/o, 1/l/i: the owner types the code back.
+const CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
+const CODE_LENGTH = 6;
 
 // 16 base64url chars: unguessable, colon-free, and independent of anything the workspace sends.
 export const NONCE_RE = /^[A-Za-z0-9_-]{16}$/;
@@ -124,6 +135,8 @@ export class WorkspaceTools {
   private readonly claimed = new Set<string>();
   private readonly closed = new WeakSet<ConnectionInfo>();
   private readonly refused = new Set<string>();
+  // Reply code → nonce, for prompts on surfaces without buttons; removed when the approval settles.
+  private readonly codes = new Map<string, string>();
 
   constructor(opts: WorkspaceToolsOptions) {
     this.opts = opts;
@@ -261,14 +274,22 @@ export class WorkspaceTools {
   }
 
   private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, fields: ApprovalField[]): Promise<ToolCallResult> {
-    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields };
+    let target: ResolvedSurface;
+    try {
+      target = this.opts.surfaces.resolve(null);
+    } catch (err) {
+      if (err instanceof SurfaceUnavailableError) return { ok: false, error: `${err.message}; cannot ask for approval` };
+      return { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` };
+    }
+    const { adapter, origin } = target;
     const nonce = newNonce();
+    const code = adapter.capabilities.richButtons ? undefined : { code: this.newCode(), surface: adapter.surface };
+    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code.code } : {}) };
     // Pending before the prompt exists, so a click racing the post's return still counts.
-    const decided = this.awaitDecision(conn, nonce);
+    const decided = this.awaitDecision(conn, nonce, code);
     let prompt: SurfaceMessageHandle;
     let resolve: (decision: ApprovalDecision, result?: ToolCallResult) => Promise<void>;
     try {
-      const { adapter, origin } = this.opts.surfaces.resolve(null);
       prompt = await adapter.approvalPrompt(origin, view, nonce);
       resolve = (decision, result) => adapter.resolveApproval(prompt, view, nonce, decision, result).catch(() => {});
     } catch (err) {
@@ -291,11 +312,21 @@ export class WorkspaceTools {
     return result;
   }
 
-  private awaitDecision(conn: ConnectionInfo, nonce: string): Promise<ApprovalDecision> {
+  private newCode(): string {
+    for (;;) {
+      let code = "";
+      for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+      if (!this.codes.has(code)) return code;
+    }
+  }
+
+  private awaitDecision(conn: ConnectionInfo, nonce: string, code: PendingApproval["code"]): Promise<ApprovalDecision> {
     return new Promise((resolve) => {
       const timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
+      if (code) this.codes.set(code.code, nonce);
       this.pending.set(nonce, {
         conn,
+        ...(code ? { code } : {}),
         resolve: (d) => {
           this.timers.clear(timer);
           resolve(d);
@@ -308,14 +339,31 @@ export class WorkspaceTools {
     const p = this.pending.get(nonce);
     if (!p) return false;
     this.pending.delete(nonce);
+    if (p.code) this.codes.delete(p.code.code);
     p.resolve(decision);
     return true;
   }
 
-  /** An owner's click on the prompt carrying `nonce`. False when that prompt is no longer pending (decided,
-   *  timed out, expired, or posted by an earlier process). */
-  decide(nonce: string, decision: "approve" | "deny"): boolean {
-    return this.settle(nonce, decision);
+  isOwner(actor: SurfaceActor): boolean {
+    if (this.opts.isOwner) return this.opts.isOwner(actor);
+    const owner = this.opts.ownerUserId();
+    return !!owner && actor.surface === this.opts.toolSpace.surface && actor.userId === owner;
+  }
+
+  /** The owner's decision on the prompt carrying `nonce`. `expired` when that prompt is no longer pending
+   *  (decided, timed out, expired, or posted by an earlier process). */
+  decide(nonce: string, decision: "approve" | "deny", actor: SurfaceActor): DecideResult {
+    if (!this.isOwner(actor)) return "forbidden";
+    return this.settle(nonce, decision) ? "decided" : "expired";
+  }
+
+  /** The owner's `approve <code>` / `deny <code>` reply. A code is single-use and only valid on the surface
+   *  its prompt was posted to. */
+  decideByCode(code: string, decision: "approve" | "deny", actor: SurfaceActor): boolean {
+    const nonce = this.codes.get(code.toLowerCase());
+    const pending = nonce ? this.pending.get(nonce) : undefined;
+    if (!nonce || pending?.code?.surface !== actor.surface) return false;
+    return this.decide(nonce, decision, actor) === "decided";
   }
 
   /** The socket a pending approval arrived on closed: its reply can't be delivered, so expire it. */
@@ -408,7 +456,7 @@ export function approvalFields(fields: readonly DisplayField[], args: Record<str
     if (raw === undefined || raw === null || raw === "") continue;
     const value = typeof raw === "string" ? raw : JSON.stringify(raw);
     if (f.kind === "single" && value.length > f.max) return { ok: false, error: `${f.key} is longer than ${f.max} chars` };
-    out.push({ key: f.key, value, kind: f.kind, max: f.max });
+    out.push(f.kind === "single" ? { key: f.key, value, kind: "single", max: f.max } : { key: f.key, value, kind: "body" });
   }
   return { ok: true, fields: out };
 }

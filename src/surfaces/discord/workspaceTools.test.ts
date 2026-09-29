@@ -7,10 +7,9 @@ import type { ToolCallParams, ToolCallResult } from "../../orchestration/contrac
 import type { ConnectionInfo } from "../../orchestration/transport/server.ts";
 import { handleWorkspaceApprovalButton, type WorkspaceButtonInteraction } from "./workspaceButtons.ts";
 import type { Timers } from "../../orchestration/workspace/progress.ts";
-import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
-import { ACCENT, DiscordWorkspaceAdapter, parseApprovalId, renderApprovalFinal, renderApprovalPrompt, type DmChannelPort } from "./workspaceAdapter.ts";
+import { SurfaceRegistry, type ApprovalField, type SurfaceActor } from "../../orchestration/workspace/surface.ts";
+import { ACCENT, APPROVAL_BODY_MAX, DiscordWorkspaceAdapter, parseApprovalId, renderApprovalFinal, renderApprovalPrompt, type DmChannelPort } from "./workspaceAdapter.ts";
 import {
-  APPROVAL_BODY_MAX,
   APPROVAL_TIMEOUT_MS,
   INVISIBLE_ERROR,
   PROXIED_TOOLS,
@@ -18,12 +17,14 @@ import {
   TOOL_EXEC_TIMEOUT_MS,
   WorkspaceTools,
   type AuditLog,
+  type DisplayField,
   type ToolCallAudit,
   type WorkspaceToolsOptions,
 } from "../../orchestration/workspace/tools.ts";
 
 const P = "drk";
 const OWNER_ID = "100000000000000000";
+const OWNER = { surface: "discord", userId: OWNER_ID, name: "drk" };
 const conn = (): ConnectionInfo => ({ runnerId: `workspace-${P}`, role: "workspace", principalId: P, protocolVersion: 1, state: "idle" });
 
 function textOf(options: MessageCreateOptions | MessageEditOptions): string {
@@ -314,7 +315,7 @@ describe("tool/call — approval ask", () => {
     const nonce = nonceOf(prompt);
     expect(text).toContain(`wsap:${nonce}:deny`);
     expect(text).not.toContain("wsap:c1");
-    tools.decide(nonce, "deny");
+    tools.decide(nonce, "deny", OWNER);
   });
 
   test("approve runs the tool and edits the prompt to Approved with a result line", async () => {
@@ -323,7 +324,7 @@ describe("tool/call — approval ask", () => {
     await until(() => channel.sent.length > 0);
     expect(textOf(channel.sent[0]!)).not.toContain("subagent");
     expect(linear.calls).toHaveLength(0);
-    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(true);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("decided");
     expect(await pending).toEqual({ ok: true, result: "Filed ENG-1: Crash on login — https://linear.app/x/ENG-1" });
     expect(linear.calls).toHaveLength(1);
     await until(() => channel.edits.length === 2);
@@ -333,14 +334,14 @@ describe("tool/call — approval ask", () => {
     expect(textOf(edit)).toContain("✅ Approved");
     expect(textOf(edit)).toContain("Filed ENG-1");
     expect(textOf(edit)).toContain('"disabled":true');
-    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(false);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("expired");
   });
 
   test("deny returns denied without running", async () => {
     const { tools, channel, linear } = askSetup();
     const pending = tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "c1" }));
     await until(() => channel.sent.length > 0);
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     expect(await pending).toEqual({ ok: false, error: "denied by owner", denied: true });
     expect(linear.calls).toHaveLength(0);
     expect(textOf(channel.edits[0]!)).toContain("❌ Denied");
@@ -355,7 +356,7 @@ describe("tool/call — approval ask", () => {
     expect(await pending).toEqual({ ok: false, error: "denied by owner", denied: true });
     expect(linear.calls).toHaveLength(0);
     expect(textOf(channel.edits[0]!)).toContain("⌛ Timed out");
-    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(false);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("expired");
   });
 
   test("the socket closing expires the pending approval; a late click finds nothing", async () => {
@@ -369,7 +370,7 @@ describe("tool/call — approval ask", () => {
     tools.onSocketClosed(c);
     expect(await pending).toMatchObject({ ok: false, denied: true });
     expect(textOf(channel.edits[0]!)).toContain("⌛ Expired (workspace disconnected)");
-    expect(tools.decide(nonceOf(channel.sent[0]!), "approve")).toBe(false);
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER)).toBe("expired");
     expect(linear.calls).toHaveLength(0);
   });
 
@@ -379,7 +380,7 @@ describe("tool/call — approval ask", () => {
     expect(await tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "dup" }))).toEqual({ ok: false, error: "duplicate callId: dup" });
     await until(() => channel.sent.length > 0);
     expect(channel.sent).toHaveLength(1);
-    tools.decide(nonceOf(channel.sent[0]!), "approve");
+    tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER);
     expect((await first).ok).toBe(true);
     expect(linear.calls).toHaveLength(1);
   });
@@ -388,7 +389,7 @@ describe("tool/call — approval ask", () => {
     const { tools, channel } = askSetup();
     const pending = tools.handleCall(conn(), call("file_linear_issue", ARGS, { callId: "x".repeat(200) }));
     await until(() => channel.sent.length > 0);
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     expect((await pending).ok).toBe(false);
   });
 });
@@ -399,7 +400,7 @@ describe("audit log", () => {
     const { tools, channel, log } = setup({ registry: fixedRegistry([linear.entry]) });
     const pending = tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "SECRET_BODY", repo_label: "r" }, { callId: "c9", agentId: "01RUN", agentName: "coder", parentRunId: "main-run" }));
     await until(() => channel.sent.length > 0);
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     await pending;
     await tools.handleCall(conn(), call("nope", {}));
     await tools.handleCall(conn(), { name: "get_trace", callId: "bad-1", args: { description: "SECRET_BODY" } });
@@ -445,26 +446,32 @@ describe("wsap: buttons", () => {
 
   test("only the owner can decide", async () => {
     const decided: string[] = [];
-    const tools = { decide: (id: string) => (decided.push(id), true) };
+    const toolsFor = (owner: string | undefined) => ({
+      isOwner: (a: SurfaceActor) => !!owner && a.surface === "discord" && a.userId === owner,
+      decide: (id: string) => (decided.push(id), "decided" as const),
+    });
     const stranger = fakeInteraction(`wsap:${N1}:approve`, "someone");
-    await handleWorkspaceApprovalButton(stranger.interaction, { ownerId: OWNER_ID, tools });
+    await handleWorkspaceApprovalButton(stranger.interaction, { tools: toolsFor(OWNER_ID) });
     const unset = fakeInteraction(`wsap:${N1}:approve`);
-    await handleWorkspaceApprovalButton(unset.interaction, { ownerId: undefined, tools });
+    await handleWorkspaceApprovalButton(unset.interaction, { tools: toolsFor(undefined) });
     expect(decided).toEqual([]);
     expect(JSON.stringify(stranger.replies)).toContain("Only the owner");
   });
 
   test("the owner's click routes the decision; a stale one answers expired", async () => {
     const decided: Array<[string, string]> = [];
-    const tools = { decide: (id: string, d: "approve" | "deny") => (decided.push([id, d]), id === N1) };
+    const tools = {
+      isOwner: (a: SurfaceActor) => a.userId === OWNER_ID,
+      decide: (id: string, d: "approve" | "deny") => (decided.push([id, d]), id === N1 ? ("decided" as const) : ("expired" as const)),
+    };
     const live = fakeInteraction(`wsap:${N1}:deny`);
-    await handleWorkspaceApprovalButton(live.interaction, { ownerId: OWNER_ID, tools });
+    await handleWorkspaceApprovalButton(live.interaction, { tools });
     expect(decided).toEqual([[N1, "deny"]]);
     expect(live.updated()).toBe(true);
     expect(live.replies).toHaveLength(0);
 
     const stale = fakeInteraction(`wsap:${N2}:approve`);
-    await handleWorkspaceApprovalButton(stale.interaction, { ownerId: OWNER_ID, tools });
+    await handleWorkspaceApprovalButton(stale.interaction, { tools });
     expect(stale.updated()).toBe(false);
     expect(JSON.stringify(stale.replies)).toContain("expired");
   });
@@ -475,8 +482,34 @@ describe("wsap: buttons", () => {
     const pending = tools.handleCall(conn(), call("file_linear_issue", {}, { callId: "run-7:tc-2" }));
     await until(() => channel.sent.length > 0);
     const i = fakeInteraction(`wsap:${nonceOf(channel.sent[0]!)}:approve`);
-    await handleWorkspaceApprovalButton(i.interaction, { ownerId: OWNER_ID, tools });
+    await handleWorkspaceApprovalButton(i.interaction, { tools });
     expect(await pending).toEqual({ ok: true, result: "Filed ENG-3" } satisfies ToolCallResult);
+  });
+
+  test("decide() itself refuses anyone but the owner on the owner's surface, leaving the approval pending", async () => {
+    const linear = fakeEntry("file_linear_issue", { type: "object" }, async () => "Filed ENG-4");
+    const { tools, channel } = setup({ registry: fixedRegistry([linear.entry]) });
+    const pending = tools.handleCall(conn(), call("file_linear_issue", {}));
+    await until(() => channel.sent.length > 0);
+    const nonce = nonceOf(channel.sent[0]!);
+    expect(tools.decide(nonce, "approve", { surface: "discord", userId: "someone", name: "x" })).toBe("forbidden");
+    expect(tools.decide(nonce, "approve", { surface: "web", userId: OWNER_ID, name: "drk" })).toBe("forbidden");
+    expect(linear.calls).toHaveLength(0);
+    expect(tools.decide(nonce, "approve", OWNER)).toBe("decided");
+    expect(await pending).toEqual({ ok: true, result: "Filed ENG-4" });
+  });
+
+  test("an unset owner can't decide anything", async () => {
+    const linear = fakeEntry("file_linear_issue", { type: "object" }, async () => "Filed");
+    let owner: string | undefined = OWNER_ID;
+    const { tools, channel } = setup({ registry: fixedRegistry([linear.entry]), ownerUserId: () => owner });
+    const pending = tools.handleCall(conn(), call("file_linear_issue", {}));
+    await until(() => channel.sent.length > 0);
+    owner = undefined;
+    expect(tools.decide(nonceOf(channel.sent[0]!), "approve", { surface: "discord", userId: "", name: "" })).toBe("forbidden");
+    owner = OWNER_ID;
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
+    expect(await pending).toMatchObject({ denied: true });
   });
 });
 
@@ -553,7 +586,7 @@ describe("approval hardening", () => {
     expect(titleLine).toContain("\\<\\@123\\>");
     expect(titleLine).toContain("\\[link](");
     expect(titleLine).toContain("\\*\\*bold\\*\\*");
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     await pending;
   });
 
@@ -569,7 +602,7 @@ describe("approval hardening", () => {
     expect(text).toContain("b".repeat(APPROVAL_BODY_MAX));
     expect(text).not.toContain("TAIL");
     expect(text).toContain("(+4 more chars)");
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     await pending;
     expect(linear.calls).toHaveLength(0);
   });
@@ -589,11 +622,11 @@ describe("approval hardening", () => {
     for (const customId of [`wsap:${oldNonce}:approve`, "wsap:call_1:approve"]) {
       const replies: unknown[] = [];
       const click = { customId, user: { id: OWNER_ID }, reply: async (o: unknown) => void replies.push(o), deferUpdate: async () => {} } as unknown as WorkspaceButtonInteraction;
-      await handleWorkspaceApprovalButton(click, { ownerId: OWNER_ID, tools: b.tools });
+      await handleWorkspaceApprovalButton(click, { tools: b.tools });
       expect(JSON.stringify(replies)).toContain("expired");
     }
     expect(b.linear.calls).toHaveLength(0);
-    b.tools.decide(newNonce, "deny");
+    b.tools.decide(newNonce, "deny", OWNER);
     expect(await pending).toMatchObject({ denied: true });
     expect(b.linear.calls).toHaveLength(0);
   });
@@ -611,7 +644,7 @@ describe("approval hardening", () => {
     expect(requester).toStartWith("**file_linear_issue** requested by `helper ### ✅ Approved");
     expect(requester.length).toBeLessThan(120);
     expect(promptLines(channel.sent[0]!).filter((l) => l.startsWith("###"))).toEqual(["### 🙋 Approve action?"]);
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     await pending;
   });
 
@@ -620,7 +653,7 @@ describe("approval hardening", () => {
     const { tools, channel, timers } = setup({ registry: fixedRegistry([hang.entry]) });
     const pending = tools.handleCall(conn(), call("file_linear_issue", { title: "t", description: "d", repo_label: "r" }));
     await until(() => channel.sent.length > 0);
-    tools.decide(nonceOf(channel.sent[0]!), "approve");
+    tools.decide(nonceOf(channel.sent[0]!), "approve", OWNER);
     await until(() => [...timers.handles.values()].some((h) => h.ms === TOOL_EXEC_TIMEOUT_MS));
     timers.fire(TOOL_EXEC_TIMEOUT_MS);
     const res = await pending;
@@ -674,14 +707,18 @@ describe("approval hardening, round 2", () => {
     const text = JSON.stringify((channel.sent[0]!.components ?? []).map((c) => ("toJSON" in c ? c.toJSON() : c)));
     expect(text).not.toContain("\\ud83d");
     expect(text).toContain("(+6 more chars)");
-    tools.decide(nonceOf(channel.sent[0]!), "deny");
+    tools.decide(nonceOf(channel.sent[0]!), "deny", OWNER);
     await pending;
   });
 
   test("with every field at its limit and full of escapable characters, every prompt state fits Discord's 4000 chars", () => {
-    const display = (PROXIED_TOOLS.file_linear_issue as { display: ReadonlyArray<{ key: string; max: number; kind: "single" | "body" }> }).display;
+    const display = (PROXIED_TOOLS.file_linear_issue as { display: readonly DisplayField[] }).display;
     const fill = { single: "*_`~|<>@[]#\\", body: "`\\*#>" };
-    const fields = display.map((f) => ({ key: f.key, kind: f.kind, max: f.max, value: fill[f.kind].repeat(f.max * 2).slice(0, f.kind === "single" ? f.max : f.max * 2) }));
+    const fields = display.map((f): ApprovalField =>
+      f.kind === "single"
+        ? { key: f.key, kind: "single", max: f.max, value: fill.single.repeat(f.max * 2).slice(0, f.max) }
+        : { key: f.key, kind: "body", value: fill.body.repeat(APPROVAL_BODY_MAX * 2).slice(0, APPROVAL_BODY_MAX * 2) },
+    );
     const view = { tool: "file_linear_issue", agentId: "01RUN", agentName: "a".repeat(64), fields };
     const len = (o: { components?: readonly unknown[] }) => ((o.components![0] as { toJSON(): { components: Array<{ content?: string }> } }).toJSON().components[0]!.content ?? "").length;
     const worstResult = { ok: false as const, error: "*".repeat(400) };

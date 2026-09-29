@@ -53,9 +53,9 @@ import { resolveOwnerPrincipalId } from "../../orchestration/transport/server.ts
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { kvCursor, routeDirectMessage } from "../../orchestration/workspace/router.ts";
-import { SurfaceRegistry } from "../../orchestration/workspace/surface.ts";
+import { SurfaceRegistry, type SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
-import { ACCENT, DiscordWorkspaceAdapter, WS_APPROVE_PREFIX, WS_ASK_PREFIX, WS_STOP_PREFIX, type DmChannelPort } from "./workspaceAdapter.ts";
+import { ACCENT, DISCORD_SURFACE, DiscordWorkspaceAdapter, WS_APPROVE_PREFIX, WS_ASK_PREFIX, WS_STOP_PREFIX, type DmChannelPort } from "./workspaceAdapter.ts";
 import { handleWorkspaceApprovalButton, handleWorkspaceAskButton, handleWorkspaceStopButton } from "./workspaceButtons.ts";
 import { OWNER_DM_CURSOR_KEY, catchUpOwnerDms, handleOwnerDm as routeOwnerDm, snowflakeCursor, type DmCursor, type OwnerDmMessage } from "./ownerDm.ts";
 import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningAutomod, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
@@ -364,14 +364,14 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     },
   });
   const workspaceSurfaces = new SurfaceRegistry(config.workspacePreferredSurface).register(discordWorkspace);
-  if (!workspaceSurfaces.get(config.workspacePreferredSurface)) {
-    logger.warn({ surface: config.workspacePreferredSurface }, "WORKSPACE_PREFERRED_SURFACE has no adapter; proactive messages and approvals will fail");
-  }
+  workspaceSurfaces.assertPreferredRegistered();
+  const isWorkspaceOwner = (actor: SurfaceActor) => actor.surface === DISCORD_SURFACE && !!config.ownerDiscordId && actor.userId === config.ownerDiscordId;
   const workspaceTools = new WorkspaceTools({
     principalId: resolveOwnerPrincipalId(),
     ownerUserId: () => config.ownerDiscordId,
     toolSpace: { surface: SURFACE, spaceId: DM_SPACE_ID },
     surfaces: workspaceSurfaces,
+    isOwner: isWorkspaceOwner,
     store,
     memory,
   });
@@ -380,6 +380,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     store: linkStore,
     surfaces: workspaceSurfaces,
     owner: () => ({ id: config.ownerDiscordId ?? "", name: "owner" }),
+    isOwner: isWorkspaceOwner,
     tools: workspaceTools,
     enabled: config.dmWorkspaceEnabled,
   });
@@ -934,15 +935,15 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
     if (btn.customId.startsWith(WS_STOP_PREFIX)) {
-      await handleWorkspaceStopButton(btn, { ownerId: config.ownerDiscordId, link: workspaceLink });
+      await handleWorkspaceStopButton(btn, { link: workspaceLink });
       return;
     }
     if (btn.customId.startsWith(WS_ASK_PREFIX)) {
-      await handleWorkspaceAskButton(btn, { ownerId: config.ownerDiscordId, link: workspaceLink });
+      await handleWorkspaceAskButton(btn, { link: workspaceLink });
       return;
     }
     if (btn.customId.startsWith(WS_APPROVE_PREFIX)) {
-      await handleWorkspaceApprovalButton(btn, { ownerId: config.ownerDiscordId, tools: workspaceTools });
+      await handleWorkspaceApprovalButton(btn, { tools: workspaceTools });
       return;
     }
   });

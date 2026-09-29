@@ -16,11 +16,16 @@ import { getLogger } from "../../logger.ts";
 import { progressEditDelay, realTimers, type Timers } from "./progress.ts";
 import {
   SurfaceUnavailableError,
+  type AckKind,
   type AskView,
+  type InboundMessage,
   type PageLedger,
   type ProgressFinal,
   type ProgressView,
   type ReplyView,
+  type ResolvedSurface,
+  type RouterNotice,
+  type SurfaceActor,
   type SurfaceAdapter,
   type SurfaceMessageHandle,
   type SurfaceRegistry,
@@ -38,6 +43,12 @@ const OUTBOX_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const ENDED_TURNS_KEPT = 100;
 /** Consecutive failed sends of one delivery before it goes out as plain text instead. */
 export const DELIVERY_MAX_FAILURES = 3;
+/** chat/message id of an ask's answer: one per ask, whichever surface or button answered it, so the
+ *  workspace collapses a second answer as a duplicate. */
+export const ASK_ANSWER_ID_PREFIX = "wsask:";
+
+const APPROVAL_REPLY_RE = /^(approve|deny)\s+(\S+)$/i;
+const CHOICE_REPLY_RE = /^\d{1,2}$/;
 
 /** The slice of OrchestrationServer the link drives; tests supply a fake. */
 export interface WorkspaceRpc {
@@ -50,6 +61,27 @@ export interface WorkspaceToolsPort {
   manifest(): ToolManifestEntry[];
   handleCall(conn: ConnectionInfo, params: unknown): Promise<ToolCallResult>;
   onSocketClosed(conn: ConnectionInfo): void;
+  /** An owner's text reply to a buttonless approval prompt; true when it settled a pending approval. */
+  decideByCode?(code: string, decision: "approve" | "deny", actor: SurfaceActor): boolean;
+}
+
+export type StopTurnResult = { status: "forbidden" } | { status: "failed"; error: string } | { status: "ok"; aborted: boolean; final: ProgressFinal | null };
+
+export type AnswerAskResult =
+  | { status: "forbidden" }
+  | { status: "inactive" }
+  | { status: "answered" | "duplicate"; answer: string }
+  | { status: "failed"; answer: string; error: string };
+
+/** A choice picked by index (a button, or a number typed on a surface without buttons), or free text. */
+export type AskChoice = { index: number; label?: string | null } | { text: string };
+
+/** Whether the core consumed an inbound reply itself; a consumed one never reaches the workspace. */
+export type InterceptResult = { handled: false } | { handled: true; ack?: AckKind; notice?: RouterNotice };
+
+/** Runs once an action passed its checks and before its slow part, e.g. to defer an interaction. */
+export interface ActionHooks {
+  onAccepted?: () => Promise<unknown>;
 }
 
 export interface WorkspaceLinkOptions {
@@ -64,6 +96,8 @@ export interface WorkspaceLinkOptions {
   timers?: Timers;
   /** Serves `tool/call` and the register result's tool manifest; absent → no tools offered. */
   tools?: WorkspaceToolsPort;
+  /** Whether `actor` is the principal. Default: the owner's id, on any surface; an empty id matches nobody. */
+  isOwner?: (actor: SurfaceActor) => boolean;
   /** DM_WORKSPACE_ENABLED. When false the link still drains a connected workspace's deliveries (say, a
    *  reply outboxed before a rollback) but offers and serves no tools. Default true. */
   enabled?: boolean;
@@ -91,6 +125,8 @@ interface TurnProgress {
   text: string;
   message: Promise<SurfaceMessageHandle | null> | null;
   messageId: string | null;
+  /** The adapter the view was made by, resolved once so its handle never goes to another adapter. */
+  target: ResolvedSurface | null;
   /** Rebuilt from the snapshot of an earlier process. */
   restored: boolean;
   // Serializes edits so a late in-flight edit can't overwrite the terminal state.
@@ -130,6 +166,8 @@ export class WorkspaceLink {
   private readonly turns = new Map<string, TurnProgress>();
   private readonly delivering = new Set<string>();
   private readonly askChoices = new Map<string, string[]>();
+  // Surface id → the ask whose choices a bare number answers there; only surfaces without buttons.
+  private readonly numberedAsks = new Map<string, { askId: string; count: number }>();
   private connectWaiters: Array<() => void> = [];
   private replaying: Promise<void> | null = null;
   private replayAgain = false;
@@ -241,6 +279,86 @@ export class WorkspaceLink {
     return this.askChoices.get(askId)?.[index] ?? label;
   }
 
+  isOwner(actor: SurfaceActor): boolean {
+    if (this.opts.isOwner) return this.opts.isOwner(actor);
+    const id = this.opts.owner().id;
+    return id !== "" && actor.userId === id;
+  }
+
+  /** The owner's Stop on a turn's progress view: aborts only that turn. A turn this process no longer
+   *  tracks (its view outlived a restart) gets no further events, so its final state is returned for the
+   *  caller to render. */
+  async stopTurn(origin: ChatOrigin, turnId: string, actor: SurfaceActor, hooks: ActionHooks = {}): Promise<StopTurnResult> {
+    if (!this.isOwner(actor)) return { status: "forbidden" };
+    await hooks.onAccepted?.();
+    const tracked = this.hasTurn(turnId);
+    let aborted: boolean;
+    try {
+      aborted = (await this.abort(turnId)).aborted;
+    } catch (err) {
+      log.warn({ err, turnId, surface: origin.surface }, "stop failed");
+      return { status: "failed", error: errorText(err) };
+    }
+    if (tracked) return { status: "ok", aborted, final: null };
+    this.markTurnEnded(turnId);
+    return { status: "ok", aborted, final: { outcome: aborted ? "stopped" : "interrupted", summary: null } };
+  }
+
+  /** The owner's answer to an ask, sent to the workspace as a user message from `origin`. */
+  async answerAsk(origin: ChatOrigin, askId: string, choice: AskChoice, actor: SurfaceActor, hooks: ActionHooks = {}): Promise<AnswerAskResult> {
+    if (!this.isOwner(actor)) return { status: "forbidden" };
+    const answer = !askId ? null : "text" in choice ? choice.text.trim() || null : this.askChoice(askId, choice.index, choice.label ?? null);
+    if (!answer) return { status: "inactive" };
+    await hooks.onAccepted?.();
+    try {
+      const res = await this.sendMessage({
+        origin,
+        messageId: `${ASK_ANSWER_ID_PREFIX}${askId}`,
+        text: answer,
+        kind: "user",
+        author: { id: actor.userId, name: actor.name },
+      });
+      for (const [surface, ask] of this.numberedAsks) if (ask.askId === askId) this.numberedAsks.delete(surface);
+      return { status: res.mode === "duplicate" ? "duplicate" : "answered", answer };
+    } catch (err) {
+      return { status: "failed", answer, error: errorText(err) };
+    }
+  }
+
+  /** Consumes a reply that answers a prompt on a surface without buttons: `approve <code>` / `deny <code>`
+   *  for an approval, or a choice's number for the latest numbered ask there. On surfaces with buttons
+   *  nothing is consumed. An approval reply with a dead code is still consumed, so it never reaches the agent. */
+  async interceptReply(message: InboundMessage): Promise<InterceptResult> {
+    const surface = message.origin.surface;
+    const adapter = this.opts.surfaces.get(surface);
+    if (!adapter || adapter.capabilities.richButtons) return { handled: false };
+    const text = message.text.trim();
+    const actor: SurfaceActor = { surface, userId: message.author.id, name: message.author.name };
+    const approval = APPROVAL_REPLY_RE.exec(text);
+    if (approval) {
+      const decision = approval[1]!.toLowerCase() as "approve" | "deny";
+      const decided = this.opts.tools?.decideByCode?.(approval[2]!, decision, actor) ?? false;
+      return decided ? { handled: true, ack: "accepted" } : { handled: true, notice: { type: "approvalExpired" } };
+    }
+    const ask = this.numberedAsks.get(surface);
+    if (!ask || !CHOICE_REPLY_RE.test(text)) return { handled: false };
+    const n = Number(text);
+    if (n < 1 || n > ask.count) return { handled: false };
+    const res = await this.answerAsk(message.origin, ask.askId, { index: n - 1 }, actor);
+    switch (res.status) {
+      case "answered":
+        return { handled: true, ack: "accepted" };
+      case "duplicate":
+        return { handled: true, notice: { type: "askAlreadyAnswered" } };
+      case "failed":
+        return { handled: true, notice: { type: "askNotDelivered", error: res.error } };
+      case "forbidden":
+        return { handled: true };
+      case "inactive":
+        return { handled: false };
+    }
+  }
+
   pruneOutboxSeen(): void {
     this.opts.store.pruneOutboxSeen(OUTBOX_SEEN_TTL_MS, this.now());
   }
@@ -297,11 +415,17 @@ export class WorkspaceLink {
     return resolved;
   }
 
-  private streams(origin: ChatOrigin | null): boolean {
+  /** The turn's surface, resolved on first use and then fixed for the turn. */
+  private targetOf(turn: TurnProgress): ResolvedSurface {
+    turn.target ??= this.surfaceFor(turn.origin);
+    return turn.target;
+  }
+
+  private tryTarget(turn: TurnProgress | undefined, origin: ChatOrigin | null): ResolvedSurface | null {
     try {
-      return this.opts.surfaces.resolve(origin).adapter.capabilities.streaming;
+      return turn ? this.targetOf(turn) : this.opts.surfaces.resolve(origin);
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -328,27 +452,28 @@ export class WorkspaceLink {
     if (!orphans.length) return;
     for (const o of orphans) {
       if (this.turns.has(o.turnId) || this.endedTurns.has(o.turnId)) continue;
-      const origin = o.origin ?? null;
-      const message = Promise.resolve()
-        .then(() => {
-          const s = this.surfaceFor(origin);
-          return s.adapter.progressReopen(s.origin, o.messageId);
-        })
-        .catch(() => null);
       const turn: TurnProgress = {
         turnId: o.turnId,
-        origin,
+        origin: o.origin ?? null,
         startedAt: o.startedAt,
         lines: o.lines,
         toolCount: o.toolCount,
         text: "",
-        message,
+        message: null,
         messageId: o.messageId,
+        target: null,
         restored: true,
-        chain: message,
+        chain: Promise.resolve(),
         lastEditAt: 0,
         timer: null,
       };
+      turn.message = Promise.resolve()
+        .then(() => {
+          const s = this.targetOf(turn);
+          return s.adapter.progressReopen(s.origin, o.messageId);
+        })
+        .catch(() => null);
+      turn.chain = turn.message;
       this.turns.set(o.turnId, turn);
       if (!streaming) {
         this.interruptedRestored.set(o.turnId, turn);
@@ -430,6 +555,7 @@ export class WorkspaceLink {
         const delivery = deliveryView(p, toolCount);
         if (delivery.type === "ask" && delivery.view.askId !== null && delivery.view.choices.length) {
           this.askChoices.set(delivery.view.askId, delivery.view.choices);
+          if (!adapter.capabilities.richButtons) this.numberedAsks.set(adapter.surface, { askId: delivery.view.askId, count: delivery.view.choices.length });
         }
         const ledger: PageLedger = {
           isSent: (i) => this.opts.store.hasSeenOutbox(`${p.outboxId}#${i}`),
@@ -509,10 +635,15 @@ export class WorkspaceLink {
         return;
       }
       case "text_delta": {
-        if (!this.streams(this.turns.get(p.turnId)?.origin ?? origin)) return;
-        const turn = this.turnFor(p.turnId, origin);
+        const existing = this.turns.get(p.turnId);
+        const target = this.tryTarget(existing, origin);
+        if (!target?.adapter.capabilities.streaming) return;
+        const turn = existing ?? this.turnFor(p.turnId, origin);
         turn.text += ev.text;
-        this.touch(turn);
+        if (turn.message && target.adapter.progressDelta) {
+          const delta = ev.text;
+          void this.queueEdit(turn, (adapter, handle) => adapter.progressDelta!(handle, delta, this.view(turn)), false);
+        } else this.touch(turn);
         return;
       }
     }
@@ -577,6 +708,7 @@ export class WorkspaceLink {
         text: "",
         message: null,
         messageId: null,
+        target: null,
         restored: false,
         chain: Promise.resolve(),
         lastEditAt: 0,
@@ -593,7 +725,7 @@ export class WorkspaceLink {
 
   private async createView(turn: TurnProgress): Promise<SurfaceMessageHandle | null> {
     try {
-      const { adapter, origin } = this.surfaceFor(turn.origin);
+      const { adapter, origin } = this.targetOf(turn);
       return await adapter.progressCreate(origin, this.view(turn));
     } catch (err) {
       log.warn({ err }, "failed to send workspace progress message");
@@ -613,7 +745,7 @@ export class WorkspaceLink {
 
   private markDirty(turn: TurnProgress): void {
     if (turn.timer !== null) return; // coalesced into the pending edit
-    const delay = progressEditDelay({ now: this.now(), startedAt: turn.startedAt, lastEditAt: turn.lastEditAt });
+    const delay = progressEditDelay({ now: this.now(), startedAt: turn.startedAt, lastEditAt: turn.lastEditAt }, (age) => this.editGap(turn, age));
     if (delay === 0) {
       this.queueUpdate(turn);
       return;
@@ -622,6 +754,14 @@ export class WorkspaceLink {
       turn.timer = null;
       if (this.turns.get(turn.turnId) === turn) this.queueUpdate(turn);
     }, delay);
+  }
+
+  private editGap(turn: TurnProgress, ageMs: number): number {
+    try {
+      return this.targetOf(turn).adapter.progressEditGap(ageMs);
+    } catch {
+      return 0;
+    }
   }
 
   private queueUpdate(turn: TurnProgress): Promise<unknown> {
@@ -634,14 +774,18 @@ export class WorkspaceLink {
     );
   }
 
-  private queueEdit(turn: TurnProgress, apply: (adapter: SurfaceAdapter, handle: SurfaceMessageHandle, origin: ChatOrigin | null) => Promise<unknown>): Promise<unknown> {
-    turn.lastEditAt = this.now();
+  private queueEdit(
+    turn: TurnProgress,
+    apply: (adapter: SurfaceAdapter, handle: SurfaceMessageHandle, origin: ChatOrigin | null) => Promise<unknown>,
+    throttled = true,
+  ): Promise<unknown> {
+    if (throttled) turn.lastEditAt = this.now();
     const message = turn.message;
     turn.chain = turn.chain.then(async () => {
       const handle = await message;
       if (!handle) return;
       try {
-        const s = this.surfaceFor(turn.origin);
+        const s = this.targetOf(turn);
         await apply(s.adapter, handle, s.origin);
       } catch (err) {
         log.warn({ err, turnId: turn.turnId }, "failed to edit workspace progress");
@@ -667,6 +811,10 @@ export class WorkspaceLink {
     else if (outcome !== "done") void this.postFinal(turn.origin, { outcome, summary: { durationMs: this.now() - turn.startedAt, toolCount: 0 } });
     this.persistProgress();
   }
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function failureKey(outboxId: string): string {
