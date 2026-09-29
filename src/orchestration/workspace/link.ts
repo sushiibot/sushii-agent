@@ -37,6 +37,8 @@ const log = getLogger("orchestration/workspace/link");
 
 export const MESSAGE_TIMEOUT_MS = 10_000;
 const CONTROL_TIMEOUT_MS = 30_000;
+// chat/new first runs the workspace's memory flush turn, bounded at 3 min.
+const NEW_SESSION_TIMEOUT_MS = 240_000;
 /** Tool lines kept per persisted progress view. */
 const PERSISTED_LINES = 8;
 const OUTBOX_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -264,7 +266,7 @@ export class WorkspaceLink {
   }
 
   async newSession(): Promise<{ sessionFile: string }> {
-    return (await this.request(RPC_METHODS.chatNew, { principalId: this.opts.principalId }, CONTROL_TIMEOUT_MS)) as { sessionFile: string };
+    return (await this.request(RPC_METHODS.chatNew, { principalId: this.opts.principalId }, NEW_SESSION_TIMEOUT_MS)) as { sessionFile: string };
   }
 
   /** Records an exchange the in-process fallback answered, for replay into the workspace's history. */

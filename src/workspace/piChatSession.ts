@@ -5,6 +5,8 @@ import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
+import { createMemoryGuardExtension } from "./memoryGuard.ts";
+import { createCompactionHandoffExtension } from "./memoryFlush.ts";
 import { RunLog, type RunRecorder } from "./runLog.ts";
 import { observeRuns } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
@@ -15,6 +17,7 @@ type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
 
 const log = getLogger("workspace.model");
 const guardLog = getLogger("workspace.guard");
+const memoryLog = getLogger("workspace.memory");
 
 const PROVIDER_ID = "sushii-workspace-openrouter";
 const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
@@ -37,6 +40,15 @@ export async function reloadContext(session: ChatSession): Promise<void> {
   } finally {
     entry.session.settingsManager.applyOverrides(entry.overrides);
   }
+}
+
+/** Tokens past which Pi auto-compacts `session` on its current model (shouldCompact in Pi's compaction.js). */
+export function compactionTrigger(session: ChatSession): number | null {
+  const entry = sessionOverrides.get(session);
+  const model = entry?.session.model;
+  if (!entry || !model || !(model.contextWindow > 0)) return null;
+  const settings = entry.session.settingsManager.getCompactionSettings(model);
+  return settings.enabled ? model.contextWindow - settings.reserveTokens : null;
 }
 
 // A detour through the non-reasoning OpenRouter model leaves the level at "off", which Pi clamps up to the
@@ -101,6 +113,8 @@ export function createPiChatSessionFactory(config: WorkspaceConfig, opts: { runs
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
+        { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
+        { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
       ],
     });
     await loader.reload();

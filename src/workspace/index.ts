@@ -4,8 +4,9 @@ import { NotConnectedError, OrchestrationClient } from "../orchestration/transpo
 import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
 import { PersonalSession } from "./personalSession.ts";
-import { createPiChatSessionFactory } from "./piChatSession.ts";
-import { scaffoldHome } from "./home.ts";
+import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
+import { commitHome, scaffoldHome } from "./home.ts";
+import { memoryFilesSignature } from "./memoryFlush.ts";
 import { RunLog } from "./runLog.ts";
 import { ToolStubs } from "./toolStubs.ts";
 
@@ -43,6 +44,12 @@ async function main(): Promise<void> {
     model: config.model,
     stateDir: config.stateDir,
     factory: createPiChatSessionFactory(config, { runs, toolStubs }),
+    memory: {
+      compactionTrigger,
+      reload: reloadContext,
+      commit: (message) => commitHome(message, { home: config.home }),
+      signature: () => memoryFilesSignature(config.home),
+    },
     transport: {
       request: (method, params) => (client ? client.request(method, params) : Promise.reject(new Error("not connected"))),
       notify: (method, params) => client?.notify(method, params),

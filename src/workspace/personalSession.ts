@@ -20,6 +20,7 @@ import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborte
 import { Outbox } from "./outbox.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import { FLUSH_TIMEOUT_MS, flushMarginTokens, flushPrompt, type FlushReason } from "./memoryFlush.ts";
 
 const log = getLogger("workspace.session");
 
@@ -56,6 +57,22 @@ export interface ChatTransport {
 
 const RESEND_INTERVAL_MS = 60_000;
 
+/** Memory upkeep around the chat session; tests supply fakes. */
+export interface MemoryHooks {
+  /** Tokens past which Pi auto-compacts `session`, or null when compaction is off or the window unknown. */
+  compactionTrigger(session: ChatSession): number | null;
+  /** Re-reads the home context files into `session`'s system prompt. */
+  reload(session: ChatSession): Promise<void>;
+  /** Commits the tracked memory files; a no-op when none changed. */
+  commit(message: string): Promise<unknown>;
+  /** A fingerprint of the tracked memory files, to skip the commit after a turn that changed none. */
+  signature(): string;
+  /** Default FLUSH_TIMEOUT_MS. */
+  flushTimeoutMs?: number;
+  /** Default flushMarginTokens(contextWindow). */
+  flushMarginTokens?: number;
+}
+
 export interface PersonalSessionOptions {
   principalId: string;
   model: string;
@@ -70,6 +87,8 @@ export interface PersonalSessionOptions {
   resendIntervalMs?: number;
   /** Receipt time for messages whose id isn't a Discord snowflake. */
   now?: () => Date;
+  /** When set: flush memory before chat/new and before compaction, and commit memory changes after turns. */
+  memory?: MemoryHooks;
 }
 
 interface OpenRun {
@@ -83,6 +102,8 @@ interface OpenRun {
   deltaTimer: ReturnType<typeof setTimeout> | null;
   abortRequested: boolean;
   suppressReply: boolean;
+  /** A memory flush: no chat events, no reply. */
+  hidden: boolean;
 }
 
 /** A user message handed to Pi that it hasn't yet turned into a user message_start. */
@@ -131,6 +152,12 @@ export class PersonalSession {
   private settleWaiters: Array<() => void> = [];
   private readonly sending = new Set<string>();
   private resendTimer: ReturnType<typeof setInterval> | null = null;
+  // The next run to start is a memory flush.
+  private flushing = false;
+  // Once per compaction cycle: cleared by a completed compaction or a session swap.
+  private flushedThisCycle = false;
+  private memorySignature: string | null = null;
+  private turnCommit: Promise<void> = Promise.resolve();
 
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
@@ -232,7 +259,6 @@ export class PersonalSession {
     return this.enqueue(async () => {
       this.resetting = true;
       try {
-        await this.beforeNewSession();
         const old = this.session;
         if (old) {
           this.dropQueued(old);
@@ -243,6 +269,8 @@ export class PersonalSession {
           }
           // Abort while still subscribed, so the retired run closes with turn_end{aborted}.
           if (old.isStreaming) await old.abort();
+          // After the abort: a flush sent into a live run would join it as a steer.
+          await this.flushBeforeNew(old);
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
         const { session, sessionFile } = await this.opts.factory({ sessionFile: null });
@@ -258,8 +286,83 @@ export class PersonalSession {
     });
   }
 
-  /** Hook point for flushing memory before a reset; the flush turn lands in a later unit. */
-  protected async beforeNewSession(): Promise<void> {}
+  // The replacement session is built fresh from the home files, so it needs no reload.
+  private async flushBeforeNew(old: ChatSession): Promise<void> {
+    const memory = this.opts.memory;
+    if (!memory) return;
+    await this.turnCommit;
+    if (hasConversation(old)) await this.flushMemory(old, "new");
+    await this.commitMemory("memory: flush before new session");
+  }
+
+  /** Runs one hidden flush turn on `session`, bounded; call from inside the inbound chain so messages wait behind it. */
+  private async flushMemory(session: ChatSession, reason: FlushReason): Promise<"done" | "timeout" | "skipped"> {
+    await this.waitForCompaction();
+    await this.waitForSettle();
+    if (session !== this.session || session.isStreaming) return "skipped";
+    const timeoutMs = this.opts.memory?.flushTimeoutMs ?? FLUSH_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    this.flushing = true;
+    try {
+      const outcome = await Promise.race([
+        session.prompt(flushPrompt(reason), { expandPromptTemplates: false }).then(() => "done" as const),
+        new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), timeoutMs))),
+      ]);
+      if (outcome === "timeout") {
+        log.warn({ reason, timeoutMs }, "memory flush timed out; aborting it and carrying on");
+        if (this.run?.hidden) this.run.abortRequested = true;
+        await session.abort().catch((err) => log.warn({ err }, "aborting the timed-out memory flush failed"));
+      } else {
+        log.info({ reason }, "memory flushed");
+      }
+      return outcome;
+    } catch (err) {
+      if (isCompactionBusy(err)) log.info({ reason }, "memory flush skipped: compaction in progress");
+      else log.warn({ err, reason }, "memory flush failed");
+      return "skipped";
+    } finally {
+      clearTimeout(timer);
+      this.flushing = false;
+    }
+  }
+
+  private async commitMemory(message: string): Promise<void> {
+    const memory = this.opts.memory;
+    if (!memory) return;
+    try {
+      await memory.commit(message);
+      this.memorySignature = memory.signature();
+    } catch (err) {
+      this.memorySignature = null;
+      log.warn({ err }, "memory commit failed");
+    }
+  }
+
+  /** After a chat turn: commit memory it changed, then flush if the context sits just below the compaction trigger. */
+  private afterTurn(session: ChatSession, turnId: string): void {
+    const memory = this.opts.memory;
+    if (!memory) return;
+    if (memory.signature() !== this.memorySignature) this.turnCommit = this.commitMemory(`memory: turn ${turnId}`);
+    if (this.flushedThisCycle || this.resetting || session.isCompacting) return;
+    const usage = session.getContextUsage();
+    const trigger = memory.compactionTrigger(session);
+    if (usage?.tokens == null || trigger === null) return;
+    // At or past the trigger the flush's own prompt would compact first; the session_before_compact handoff covers that.
+    const soft = trigger - (memory.flushMarginTokens ?? flushMarginTokens(usage.contextWindow));
+    if (usage.tokens < soft || usage.tokens >= trigger) return;
+    this.flushedThisCycle = true;
+    const gen = this.generation;
+    void this.enqueue(async () => {
+      if (gen !== this.generation) return;
+      // Settled first, so the turn's commit can't sweep up the flush's edits under its own message.
+      await this.turnCommit;
+      const outcome = await this.flushMemory(session, "compaction");
+      if (outcome === "skipped") return;
+      await this.commitMemory("memory: flush before compaction");
+      if (gen !== this.generation || session.isStreaming) return;
+      await memory.reload(session);
+    }).catch((err) => log.warn({ err }, "pre-compaction memory flush failed"));
+  }
 
   handleAck(outboxId: string): Record<string, never> {
     if (!this.outbox.ack(outboxId)) log.debug({ outboxId }, "ack for an unknown or already-acked outbox entry");
@@ -290,6 +393,7 @@ export class PersonalSession {
     this.detach();
     if (session?.isStreaming) await session.abort().catch(() => {});
     session?.dispose();
+    await this.turnCommit;
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -436,6 +540,7 @@ export class PersonalSession {
 
   private attach(session: ChatSession, sessionFile: string): void {
     const gen = ++this.generation;
+    this.flushedThisCycle = false;
     this.session = session;
     this.sessionFile = sessionFile;
     this.unsubscribe = session.subscribe((event) => {
@@ -454,6 +559,7 @@ export class PersonalSession {
 
   private onEvent(session: ChatSession, event: AgentSessionEvent): void {
     if (event.type === "compaction_end") {
+      if (event.result && !event.aborted) this.flushedThisCycle = false;
       this.releaseCompactionWaiters();
       return;
     }
@@ -472,6 +578,7 @@ export class PersonalSession {
         deltaTimer: null,
         abortRequested: false,
         suppressReply: false,
+        hidden: this.flushing,
       };
       this.emit({ type: "turn_start" });
       return;
@@ -502,10 +609,12 @@ export class PersonalSession {
       }).catch((err) => log.error({ err }, "failed to append buffered context"));
     }
     if (session.pendingMessageCount > 0 && !session.isCompacting) this.requeueStranded(session);
+    if (run && !run.hidden) this.afterTurn(session, run.turnId);
   }
 
   // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.
   private finishRun(session: ChatSession, run: OpenRun): SettleOutcome {
+    if (run.hidden) return "suppressed";
     this.flushDelta(run);
     const aborted = runAborted(run.acc, run.abortRequested);
     this.emitFor(run, { type: "turn_end", aborted: aborted || run.suppressReply });
@@ -562,6 +671,7 @@ export class PersonalSession {
   }
 
   private emitFor(run: OpenRun, ev: ChatEventPayload): void {
+    if (run.hidden) return;
     this.opts.transport.notify(RPC_METHODS.chatEvent, {
       ...(run.origin ? { origin: run.origin } : {}),
       principalId: this.opts.principalId,
@@ -573,7 +683,7 @@ export class PersonalSession {
 
   private bufferDelta(run: OpenRun, text: string): void {
     const ms = this.opts.textDeltaMs === undefined ? 500 : this.opts.textDeltaMs;
-    if (ms === null) return;
+    if (ms === null || run.hidden) return;
     run.deltaBuffer += text;
     if (run.deltaTimer) return;
     run.deltaTimer = setTimeout(() => this.flushDelta(run), ms);

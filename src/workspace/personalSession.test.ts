@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
-import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport } from "./personalSession.ts";
+import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type MemoryHooks } from "./personalSession.ts";
+import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
 // Mirrors the Pi 0.84 behaviour the host relies on (core/agent-session.js, pi-agent-core agent-loop.js):
@@ -104,8 +105,10 @@ class FakeSession {
     this.customs.push({ content: message.content, options });
   }
 
+  usage: { tokens: number | null; contextWindow: number; percent: number | null } = { tokens: 1000, contextWindow: 10_000, percent: 10 };
+
   getContextUsage() {
-    return { tokens: 1000, contextWindow: 10_000, percent: 10 };
+    return this.usage;
   }
 
   dispose(): void {
@@ -193,7 +196,7 @@ function tempDir(): string {
 }
 
 function setup(
-  opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean; resendIntervalMs?: number } = {},
+  opts: { stateDir?: string; factory?: ChatSessionFactory; fileExists?: (p: string) => boolean; resendIntervalMs?: number; memory?: MemoryHooks } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
   const sessions: FakeSession[] = [];
@@ -220,6 +223,7 @@ function setup(
     fileExists: opts.fileExists,
     resendIntervalMs: opts.resendIntervalMs,
     now: () => NOW,
+    memory: opts.memory,
   });
   return { host, sessions, factoryCalls, transport, stateDir };
 }
@@ -1064,5 +1068,216 @@ describe("PersonalSession origin echo", () => {
     expect(transport.delivered().map((d) => d.origin)).toEqual([WEB, DM_ORIGIN]);
     const turnStarts = transport.notifications.map((n) => n.params as ChatEventParams).filter((e) => e.ev.type === "turn_start");
     expect(turnStarts.map((e) => e.origin)).toEqual([WEB, DM_ORIGIN]);
+  });
+});
+
+describe("PersonalSession memory upkeep", () => {
+  function memoryFake(over: Partial<MemoryHooks> = {}) {
+    const calls: string[] = [];
+    let signature = "sig-0";
+    const hooks: MemoryHooks = {
+      compactionTrigger: () => 9000,
+      reload: async () => {
+        calls.push("reload");
+      },
+      commit: async (message) => {
+        calls.push(`commit:${message}`);
+      },
+      signature: () => signature,
+      flushTimeoutMs: 1000,
+      flushMarginTokens: 2000,
+      ...over,
+    };
+    return { hooks, calls, setSignature: (s: string) => (signature = s) };
+  }
+
+  const isFlush = (text: string) => text.startsWith(FLUSH_MARKER);
+  const flushPrompts = (s: FakeSession) => s.prompts.filter((p) => isFlush(p.text));
+  /** The fake's prompt() starts its run a few ms after recording the prompt. */
+  const flushRunning = (s: FakeSession, n: number) => flushPrompts(s).length === n && s.isStreaming;
+  const until = async (cond: () => boolean, ms = 1000) => {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) throw new Error("condition not met in time");
+      await sleep(2);
+    }
+  };
+
+  test("chat/new runs a hidden flush on the old session, suppresses its reply, commits, then resets", async () => {
+    const memory = memoryFake();
+    let sessionsAtCommit = -1;
+    const { host, sessions, transport } = setup({
+      memory: {
+        ...memory.hooks,
+        commit: async (m) => {
+          memory.calls.push(`commit:${m}`);
+          if (m.includes("new session")) sessionsAtCommit = sessions.length;
+        },
+      },
+    });
+    await host.start();
+    await host.handleMessage(msg("m1", "remember I like tea"));
+    sessions[0].finish("noted");
+    await tick();
+    const eventsBefore = transport.events().length;
+
+    const reset = host.handleNew();
+    await until(() => flushRunning(sessions[0], 1));
+    const flush = flushPrompts(sessions[0])[0];
+    expect(flush.options?.expandPromptTemplates).toBe(false);
+    expect(flush.text).toContain("NO_REPLY");
+    // A flush that ignores NO_REPLY is still never delivered, and its tool calls don't reach the chat.
+    sessions[0].finish("I saved your tea preference to USER.md");
+
+    await reset;
+    expect(sessionsAtCommit).toBe(1);
+    expect(memory.calls).toContain("commit:memory: flush before new session");
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].disposed).toBe(true);
+    expect(transport.delivered().map((d) => d.text)).toEqual(["noted"]);
+    expect(transport.events().slice(eventsBefore)).toEqual([]);
+    // The fresh session is built from the home files, so no reload.
+    expect(memory.calls).not.toContain("reload");
+  });
+
+  test("a flush that doesn't settle in time is aborted and the reset proceeds", async () => {
+    const memory = memoryFake({ flushTimeoutMs: 30 });
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    sessions[0].finish("hello");
+    await tick();
+
+    const { sessionFile } = await host.handleNew();
+    expect(flushPrompts(sessions[0])).toHaveLength(1);
+    expect(sessions[0].aborts).toBe(1);
+    expect(memory.calls).toContain("commit:memory: flush before new session");
+    expect(sessionFile).toBe(sessions[1].file);
+    expect(transport.delivered().map((d) => d.text)).toEqual(["hello"]);
+  });
+
+  test("a message arriving during the flush is held and replayed into the new session", async () => {
+    const memory = memoryFake();
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    await host.handleMessage(msg("m1", "old convo"));
+    sessions[0].finish("ok");
+    await tick();
+
+    const reset = host.handleNew();
+    await until(() => flushRunning(sessions[0], 1));
+    const held = host.handleMessage(msg("m2", "first in new"));
+    await sleep(20);
+    // Not steered into the flush run.
+    expect(sessions[0].prompts.map((p) => p.text)).toEqual([stamped("m1", "old convo"), flushPrompts(sessions[0])[0].text]);
+    expect(host.isResetting).toBe(true);
+
+    sessions[0].finish("NO_REPLY");
+    await reset;
+    expect((await held).mode).toBe("prompt");
+    expect(sessions[1].prompts.map((p) => p.text)).toEqual([stamped("m2", "first in new")]);
+    sessions[1].finish("fresh");
+    await tick();
+    expect(transport.delivered().map((d) => d.text)).toEqual(["ok", "fresh"]);
+  });
+
+  test("a session with no conversation yet is not flushed on chat/new", async () => {
+    const memory = memoryFake();
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    await host.handleNew();
+    expect(flushPrompts(sessions[0])).toHaveLength(0);
+    expect(memory.calls).toContain("commit:memory: flush before new session");
+  });
+
+  test("near the compaction trigger a flush runs once per cycle, only after the turn settles, then reloads", async () => {
+    const memory = memoryFake();
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+
+    // Below trigger − margin: nothing.
+    await host.handleMessage(msg("m1", "one"));
+    s.finish("r1");
+    await sleep(10);
+    expect(flushPrompts(s)).toHaveLength(0);
+
+    // Crossing the soft threshold mid-run (between tool calls) doesn't interrupt the run.
+    await host.handleMessage(msg("m2", "two"));
+    s.usage = { tokens: 7500, contextWindow: 10_000, percent: 75 };
+    s.emit({ type: "tool_execution_start", toolCallId: "x", toolName: "read", args: { path: "a" } });
+    await sleep(10);
+    expect(flushPrompts(s)).toHaveLength(0);
+    expect(s.steers).toEqual([]);
+    s.emit({ type: "tool_execution_end", toolCallId: "x", toolName: "read", result: "ok", isError: false });
+    s.finish("r2");
+    await until(() => flushRunning(s, 1));
+    expect(flushPrompts(s)[0].text).toContain("compacted");
+    const eventsBefore = transport.events().length;
+
+    // A message during the flush waits for it.
+    const held = host.handleMessage(msg("m3", "three"));
+    await sleep(10);
+    expect(s.steers).toEqual([]);
+    s.finish("NO_REPLY");
+    expect((await held).mode).toBe("prompt");
+    expect(memory.calls.slice(-2)).toEqual(["commit:memory: flush before compaction", "reload"]);
+    expect(transport.events().slice(eventsBefore).filter((e) => e.type === "turn_start")).toHaveLength(1);
+
+    // Still in the band, same cycle: no second flush.
+    s.finish("r3");
+    await sleep(10);
+    expect(flushPrompts(s)).toHaveLength(1);
+
+    // A completed compaction opens a new cycle.
+    s.emit({ ...compactionEnd, result: { summary: "s" } });
+    await host.handleMessage(msg("m4", "four"));
+    s.finish("r4");
+    await until(() => flushRunning(s, 2));
+    s.finish("NO_REPLY");
+    await until(() => memory.calls.filter((c) => c === "reload").length === 2);
+    expect(transport.delivered().map((d) => d.text)).toEqual(["r1", "r2", "r3", "r4"]);
+  });
+
+  test("no soft flush at or past the trigger, or when the context size is unknown", async () => {
+    const memory = memoryFake();
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    s.usage = { tokens: 9000, contextWindow: 10_000, percent: 90 };
+    await host.handleMessage(msg("m1", "one"));
+    s.finish("r1");
+    await sleep(10);
+    s.usage = { tokens: null, contextWindow: 10_000, percent: null };
+    await host.handleMessage(msg("m2", "two"));
+    s.finish("r2");
+    await sleep(10);
+    expect(flushPrompts(s)).toHaveLength(0);
+  });
+
+  test("a turn commits memory only when the memory files changed", async () => {
+    const memory = memoryFake();
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    const turnCommits = () => memory.calls.filter((c) => c.startsWith("commit:memory: turn "));
+
+    await host.handleMessage(msg("m1", "one"));
+    s.finish("r1");
+    await sleep(10);
+    // The first turn after start always tries: a crash may have left changes uncommitted.
+    expect(turnCommits()).toHaveLength(1);
+
+    await host.handleMessage(msg("m2", "two"));
+    s.finish("r2");
+    await sleep(10);
+    expect(turnCommits()).toHaveLength(1);
+
+    memory.setSignature("sig-1");
+    await host.handleMessage(msg("m3", "three"));
+    s.finish("r3");
+    await sleep(10);
+    expect(turnCommits()).toHaveLength(2);
+    expect(turnCommits()[1]).toMatch(/^commit:memory: turn id-\d+$/);
   });
 });
