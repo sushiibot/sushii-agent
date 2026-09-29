@@ -24,7 +24,7 @@ const JUDGE_MAX_TOKENS = 2000;
 const LOG_REASON_MAX = 160;
 const ASK_ACTION_MAX = 1500;
 
-/** Pi's read-only built-ins and the bot-proxied lookups: these never reach the judge. */
+/** Tools the judge never sees: Pi's read-only built-ins, the bot-proxied lookups, and bot tools the bot gates itself. */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "read",
   "grep",
@@ -36,6 +36,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "get_trace",
   "get_issue_status",
   "list_triaged_issues",
+  "team_config",
+  // The bot already asks drk before running this one; judging it too would prompt twice.
+  "file_linear_issue",
 ]);
 
 // pi-verdict's user rules, fixed here instead of its config file (which it would write under ~/.pi/agent).
