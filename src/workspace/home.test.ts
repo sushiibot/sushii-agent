@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../orchestration/runner/runnerGit.ts";
+import { loadAgentDefs } from "./subagents/agentDefs.ts";
 import { MEMORY_MD_CAP, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
 
 const GIT_ENV = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -51,7 +52,35 @@ describe("scaffoldHome", () => {
     expect((await git.raw(["config", "--local", "user.name"])).trim()).toBe("sushii-workspace");
     expect((await git.raw(["config", "--local", "user.email"])).trim()).toBe("workspace@localhost");
     const files = (await git.raw(["ls-files"])).trim().split("\n").sort();
-    expect(files).toEqual([".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".gitignore", "AGENTS.md", "DREAMS.md", "MEMORY.md", "SOUL.md", "USER.md"]);
+    expect(files).toEqual([
+      ".agents/agents/coder.md",
+      ".agents/agents/explore.md",
+      ".agents/agents/researcher.md",
+      ".agents/agents/reviewer.md",
+      ".agents/skills/README.md",
+      ".agents/skills/session-history/SKILL.md",
+      ".gitignore",
+      "AGENTS.md",
+      "DREAMS.md",
+      "MEMORY.md",
+      "SOUL.md",
+      "USER.md",
+    ]);
+  });
+
+  test("scaffolds the default agent defs without overwriting an edited one", async () => {
+    const explore = join(home, ".agents/agents/explore.md");
+    mkdirSync(join(home, ".agents/agents"), { recursive: true });
+    writeFileSync(explore, "---\nname: explore\ndescription: mine\n---\nmy prompt\n");
+    const result = await scaffoldHome(home);
+    expect(result.created).not.toContain(".agents/agents/explore.md");
+    expect(result.created).toEqual(expect.arrayContaining([".agents/agents/researcher.md", ".agents/agents/reviewer.md", ".agents/agents/coder.md"]));
+    expect(readFileSync(explore, "utf8")).toContain("my prompt");
+    const defs = loadAgentDefs(home);
+    expect([...defs.keys()].sort()).toEqual(["coder", "explore", "researcher", "reviewer"]);
+    expect(defs.get("explore")!.description).toBe("mine");
+    expect(defs.get("coder")).toMatchObject({ writer: true, background: true, tools: ["read", "grep", "find", "ls", "bash", "edit", "write"] });
+    expect(defs.get("reviewer")).toMatchObject({ writer: false, tools: ["read", "grep", "find", "ls", "bash"] });
   });
 
   test("scaffolds the session-history skill but never overwrites an existing one", async () => {

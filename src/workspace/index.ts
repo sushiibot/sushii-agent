@@ -12,6 +12,8 @@ import { RunLog } from "./runLog.ts";
 import { ToolStubs } from "./toolStubs.ts";
 import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
+import { SubagentHost } from "./subagents/host.ts";
+import { MainTurnTracker } from "./subagents/turnTracker.ts";
 
 const log = getLogger("workspace");
 
@@ -54,11 +56,17 @@ async function main(): Promise<void> {
       }
     },
   });
+  const turns = new MainTurnTracker();
+  const notify = (method: string, params: unknown) => {
+    turns.observe(method, params);
+    client?.notify(method, params);
+  };
+  const subagents = new SubagentHost({ config, runs, toolStubs, notify, currentTurn: () => turns.current() });
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -73,7 +81,7 @@ async function main(): Promise<void> {
     },
     transport: {
       request: (method, params) => (client ? client.request(method, params) : Promise.reject(new NotConnectedError())),
-      notify: (method, params) => client?.notify(method, params),
+      notify,
       isConnected: () => client?.connected ?? false,
     },
   });
@@ -108,6 +116,7 @@ async function main(): Promise<void> {
     log.info({ signal }, "workspace shutting down");
     client?.close();
     await personal.dispose();
+    await subagents.dispose();
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
   };

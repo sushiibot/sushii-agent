@@ -11,6 +11,7 @@ import { RunLog, type RunRecorder } from "./runLog.ts";
 import { observeRuns, type RunObserver } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
 import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
+import type { SubagentHost } from "./subagents/host.ts";
 import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
 
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
@@ -74,7 +75,7 @@ function restoreChatGptThinking(session: AgentSession): void {
  *  configured and signed in; OpenRouter is the fallback. */
 export function createPiChatSessionFactory(
   config: WorkspaceConfig,
-  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector } = {},
+  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost } = {},
 ): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
   // Shared across sessions, so a chat/new during a cool-down stays on OpenRouter.
@@ -120,6 +121,8 @@ export function createPiChatSessionFactory(
       log,
     });
     const stubs = opts.toolStubs?.binding();
+    const observerRef: { current: RunObserver | null } = { current: null };
+    const delegate = opts.subagents?.offersDelegate(0) ? ["delegate"] : [];
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: config.agentDir,
@@ -130,6 +133,9 @@ export function createPiChatSessionFactory(
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
         { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
+        ...(opts.subagents && delegate.length
+          ? [{ name: "sushii-delegate", factory: opts.subagents.extension({ depth: 0, currentRunId: () => observerRef.current?.currentRunId() ?? null }) }]
+          : []),
       ],
     });
     await loader.reload();
@@ -147,7 +153,6 @@ export function createPiChatSessionFactory(
     // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
     settingsManager.getCacheWarmingMode = () => "off";
 
-    const observerRef: { current: RunObserver | null } = { current: null };
     const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null);
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
     try {
@@ -160,13 +165,13 @@ export function createPiChatSessionFactory(
         settingsManager,
         // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
         // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
-        tools: stubs ? [...WORKSPACE_TOOLS, ...KNOWN_PROXIED_TOOLS] : WORKSPACE_TOOLS,
+        tools: [...WORKSPACE_TOOLS, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
         customTools: [bashTool],
         excludeTools: ["ask_question"],
         sessionManager,
       }));
       sessionRef.current = session;
-      assertExactTools(session, [...WORKSPACE_TOOLS, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...(stubs?.offered() ?? [])]);
+      assertExactTools(session, [...WORKSPACE_TOOLS, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...delegate, ...(stubs?.offered() ?? [])]);
       stubs?.assertOwned(session, "workspace");
     } catch (err) {
       stubs?.release();

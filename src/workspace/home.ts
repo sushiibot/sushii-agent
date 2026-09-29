@@ -16,10 +16,14 @@ const TEMPLATE_FILES: Record<string, string> = {
   "DREAMS.md": "DREAMS.md",
   ".agents/skills/README.md": "agents-skills-README.md",
   ".agents/skills/session-history/SKILL.md": "agents-skills-session-history-SKILL.md",
+  ".agents/agents/explore.md": "agents-agents-explore.md",
+  ".agents/agents/researcher.md": "agents-agents-researcher.md",
+  ".agents/agents/reviewer.md": "agents-agents-reviewer.md",
+  ".agents/agents/coder.md": "agents-agents-coder.md",
   ".gitignore": "gitignore",
 };
 
-const HOME_DIRS = ["memory", ".agents/skills", "projects", "scratch"];
+const HOME_DIRS = ["memory", ".agents/skills", ".agents/agents", "projects", "scratch"];
 
 /** The only paths the workspace itself ever stages in the home repo. */
 export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "SOUL.md", "AGENTS.md", ".agents/"];

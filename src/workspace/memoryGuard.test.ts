@@ -51,6 +51,15 @@ describe("containsSecret", () => {
 });
 
 describe("checkMemoryWrite", () => {
+  test("read-only (a subagent) refuses every memory write but leaves other paths alone", () => {
+    const ro = { ...opts(), readOnly: true };
+    expect(checkMemoryWrite("edit", edit("USER.md", "- Likes tea.", "- Likes green tea."), ro)).toBe("read-only");
+    expect(checkMemoryWrite("write", { path: "memory/2026-09-29.md", content: "- met Sam\n" }, ro)).toBe("read-only");
+    expect(checkMemoryWrite("bash", { command: "echo hi >> memory/2026-09-29.md" }, ro)).toBe("read-only");
+    expect(checkMemoryWrite("bash", { command: "cat MEMORY.md" }, ro)).toBeNull();
+    expect(checkMemoryWrite("write", { path: "scratch/notes.md", content: "x" }, ro)).toBeNull();
+  });
+
   test("allows a normal edit and write to memory files", () => {
     expect(checkMemoryWrite("edit", edit("USER.md", "- Likes tea.", "- Likes green tea."), opts())).toBeNull();
     expect(checkMemoryWrite("write", { path: "memory/2026-09-29.md", content: "- met Sam\n" }, opts())).toBeNull();

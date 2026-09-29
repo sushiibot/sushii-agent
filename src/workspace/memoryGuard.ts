@@ -22,6 +22,8 @@ export interface MemoryGuardOptions {
   home: string;
   /** The session cwd; relative tool paths resolve against it. */
   cwd: string;
+  /** A subagent: every write to a memory file is refused. */
+  readOnly?: boolean;
 }
 
 /** Guarded top-level memory files and their char caps (undefined: no cap). */
@@ -89,6 +91,7 @@ function editPairs(input: Record<string, unknown>): EditPair[] {
 export function checkMemoryWrite(toolName: string, input: Record<string, unknown>, opts: MemoryGuardOptions): string | null {
   if (toolName === "bash") {
     const command = typeof input.command === "string" ? input.command : "";
+    if (opts.readOnly && BASH_WRITE.test(command) && BASH_MEMORY_PATH.test(command)) return "read-only";
     if (BASH_WRITE.test(command) && BASH_MEMORY_PATH.test(command) && containsSecret(command)) return "secret";
     return null;
   }
@@ -96,6 +99,7 @@ export function checkMemoryWrite(toolName: string, input: Record<string, unknown
   if (typeof input.path !== "string") return null;
   const target = memoryTarget(input.path, opts);
   if (!target) return null;
+  if (opts.readOnly) return "read-only";
 
   let added: string;
   let delta: number;
@@ -118,6 +122,12 @@ export function checkMemoryWrite(toolName: string, input: Record<string, unknown
 }
 
 function blockReason(rule: string, toolName: string): string {
+  if (rule === "read-only") {
+    return (
+      "Blocked by the memory guard: subagents can't write USER.md, MEMORY.md or memory/. Put anything worth " +
+      "remembering in your final answer; the main agent decides what to save."
+    );
+  }
   if (rule === "secret") {
     return (
       `Blocked by the memory guard: this ${toolName} would store something that looks like a secret (token, key, ` +
