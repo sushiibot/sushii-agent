@@ -126,7 +126,12 @@ export const RPC_METHODS = {
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
+// Where a chat message came from; replies/events echo it so the bot routes them back to that surface.
+export const chatOrigin = z.object({ surface: z.string(), conversationId: z.string() });
+export type ChatOrigin = z.infer<typeof chatOrigin>;
+
 export const chatMessageParams = z.object({
+  origin: chatOrigin.optional(),
   principalId: z.string(),
   messageId: z.string(),
   text: z.string(),
@@ -170,6 +175,7 @@ export const chatUsage = z.object({
 export type ChatUsage = z.infer<typeof chatUsage>;
 
 export const chatDeliverParams = z.object({
+  origin: chatOrigin.optional(),
   outboxId: z.string(),
   principalId: z.string(),
   kind: z.enum(["reply", "proactive", "ask"]),
@@ -191,6 +197,7 @@ export const chatEventPayload = z.discriminatedUnion("type", [
 export type ChatEventPayload = z.infer<typeof chatEventPayload>;
 
 export const chatEventParams = z.object({
+  origin: chatOrigin.optional(),
   principalId: z.string(),
   turnId: z.string(),
   agentId: z.literal("main"),
