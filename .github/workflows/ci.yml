@@ -54,6 +54,13 @@ jobs:
           persist-credentials: false
       - run: docker build -t sushii-agent:smoke .
       - run: docker run --rm --init --entrypoint sh sushii-agent:smoke scripts/browser-smoke.sh
+      # Workspace target under its production hardening (non-root, no caps, no privilege escalation),
+      # through its own entrypoint. docker-build-workspace needs this job, so a failure blocks the push.
+      - run: docker build --target workspace -t sushii-agent:smoke-workspace .
+      - run: >-
+          docker run --rm --init --user 1000:1000 --cap-drop ALL
+          --security-opt no-new-privileges --shm-size 1g
+          sushii-agent:smoke-workspace sh scripts/browser-smoke.sh
 
   docker-build:
     needs: [typecheck, test, browser-smoke]

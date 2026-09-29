@@ -49,7 +49,7 @@ RUN set -eu; \
     ln -s "/opt/agent-browser/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser; \
     printf '%s\n' '#!/bin/sh' 'exec bun /app/scripts/agent-browser-web.ts "$@"' > /usr/local/bin/agent-browser-web; \
     chmod 755 /usr/local/bin/agent-browser-web
-# Root in a container needs --no-sandbox; Docker's 64MB /dev/shm crashes Chromium without the shm flag.
+# Containers need --no-sandbox (no user namespaces, root or not); Docker's 64MB /dev/shm crashes Chromium without the shm flag.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
     AGENT_BROWSER_SKILLS_DIR=/opt/agent-browser/skill-data \
     AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
