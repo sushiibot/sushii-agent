@@ -2,6 +2,9 @@ import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync, real
 import { basename, join, relative, resolve } from "node:path";
 import { latestRuns, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
 import { resolveStateDir, sessionRoots } from "./sessionPaths.ts";
+import { redact } from "./secretPatterns.ts";
+
+export { redact };
 
 // The sanctioned way for the agent to read its own session files, which live under the secret-guarded
 // agent dir. The session roots come from pinned agent dirs; every path in runs.jsonl is agent-writable,
@@ -22,28 +25,6 @@ export interface WsRunsIo {
   agentDirs: string[];
   out: (line: string) => void;
   err: (line: string) => void;
-}
-
-// --- redaction ---------------------------------------------------------------------------------
-
-const BLOB = /[A-Za-z0-9+_=-]{32,}/g;
-
-// Kebab/snake identifiers, UUIDs and session file names are long runs of the blob class too, but
-// split into short words; random tokens have a long unbroken alphanumeric stretch with a digit.
-function looksRandom(token: string): boolean {
-  if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) return false;
-  return token.split(/[-_]/).some((part) => part.length >= 16 && /[0-9]/.test(part) && /[A-Za-z]/.test(part));
-}
-
-export function redact(text: string): string {
-  return text
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g, "[REDACTED]")
-    .replace(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,}/g, "[REDACTED]")
-    .replace(/\b(?:sk|rk)-[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, "[REDACTED]")
-    .replace(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{40,}(?![0-9A-Fa-f])/g, "[REDACTED]")
-    .replace(BLOB, (m) => (looksRandom(m) ? "[REDACTED]" : m));
 }
 
 // --- confined session file access --------------------------------------------------------------

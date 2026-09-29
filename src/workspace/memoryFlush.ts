@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionFactory, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { redact } from "./wsRuns.ts";
+import { redact } from "./secretPatterns.ts";
 
 type CompactionPreparation = SessionBeforeCompactEvent["preparation"];
 
@@ -24,12 +24,35 @@ export function flushPrompt(reason: FlushReason): string {
   );
 }
 
-/** Under the bot's chat/new request timeout, which also covers the commit and building the new session. */
+/** Cap on a chat/new flush turn; the NEW_BUDGET_MS deadline usually binds first. */
 export const FLUSH_TIMEOUT_MS = 180_000;
 
-/** Room left below Pi's compaction trigger for the flush turn's own reads and edits. */
+/** Cap on a pre-compaction flush: inbound messages and /stop wait behind it. */
+export const COMPACTION_FLUSH_TIMEOUT_MS = 90_000;
+
+/**
+ * The whole chat/new: any soft flush ahead of it, waiting out compaction, the flush, the abort, the commit
+ * and the new session. Under the bot's 240s chat/new timeout (link.ts NEW_SESSION_TIMEOUT_MS).
+ */
+export const NEW_BUDGET_MS = 210_000;
+
+/** Kept back from a chat/new flush for the abort, commit and new session; scales down with small test budgets. */
+export function newFinishReserveMs(budgetMs: number): number {
+  return Math.min(15_000, Math.floor(budgetMs / 10));
+}
+
+/** Below this much time left, chat/new skips the flush and writes the handoff note instead. */
+export function newMinFlushMs(budgetMs: number): number {
+  return Math.min(20_000, Math.floor(budgetMs / 10));
+}
+
+/**
+ * Room left below Pi's compaction trigger for the flush turn's own reads and edits. Pi also compacts
+ * mid-run and at run end before settling (agent-session.js 402/519, 1377), so a tool-heavy turn often
+ * jumps the band; the session_before_compact handoff is the expected path for those.
+ */
 export function flushMarginTokens(contextWindow: number): number {
-  return Math.max(20_000, Math.floor(contextWindow * 0.1));
+  return Math.max(20_000, Math.floor(contextWindow * 0.15));
 }
 
 const MEMORY_FILES = ["USER.md", "MEMORY.md", "DREAMS.md"];
@@ -76,7 +99,12 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-/** Whether a flush prompt was sent since the latest compaction on this branch. */
+const isFlushPrompt = (m: { role?: string; content?: unknown }) => m.role === "user" && textOf(m.content).startsWith(FLUSH_MARKER);
+
+/**
+ * Whether a flush completed since the latest compaction on this branch: a flush prompt whose run's last
+ * assistant message didn't end aborted or in error. A flush still running (no reply yet, nothing after it) counts.
+ */
 export function flushRanThisCycle(entries: SessionEntry[]): boolean {
   let start = 0;
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -85,37 +113,80 @@ export function flushRanThisCycle(entries: SessionEntry[]): boolean {
       break;
     }
   }
-  return entries.slice(start).some((e) => e.type === "message" && e.message.role === "user" && textOf(e.message.content).startsWith(FLUSH_MARKER));
+  const messages = entries.slice(start).flatMap((e) => (e.type === "message" ? [e.message as { role?: string; content?: unknown; stopReason?: string }] : []));
+  for (let i = 0; i < messages.length; i++) {
+    if (!isFlushPrompt(messages[i]!)) continue;
+    let last: { stopReason?: string } | undefined;
+    let j = i + 1;
+    for (; j < messages.length && messages[j]!.role !== "user"; j++) {
+      if (messages[j]!.role === "assistant") last = messages[j];
+    }
+    if (!last) {
+      if (j === messages.length) return true;
+      continue;
+    }
+    if (last.stopReason !== "aborted" && last.stopReason !== "error") return true;
+  }
+  return false;
+}
+
+/** flushRanThisCycle for a live Pi AgentSession; false for anything without a session manager (test fakes). */
+export function sessionFlushRanThisCycle(session: unknown): boolean {
+  const manager = (session as { sessionManager?: { getBranch?: () => SessionEntry[] } }).sessionManager;
+  return typeof manager?.getBranch === "function" ? flushRanThisCycle(manager.getBranch()) : false;
 }
 
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-/** A short, redacted note of what the compacted span was about, or null when it has nothing worth keeping. */
-export function buildHandoff(preparation: Pick<CompactionPreparation, "messagesToSummarize" | "turnPrefixMessages" | "fileOps">, reason: string, now: Date): string | null {
-  const messages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
+interface HandoffInput {
+  messages: ReadonlyArray<{ role: string; content?: unknown }>;
+  files?: Iterable<string>;
+}
+
+/** A short, redacted note of what a conversation span was about, or null when it has nothing worth keeping. */
+export function buildHandoff(input: HandoffInput, heading: { title: string; detail: string }, now: Date): string | null {
+  const messages = input.messages;
   const asks = messages
     .filter((m) => m.role === "user")
-    .map((m) => oneLine(textOf((m as { content: unknown }).content)))
+    .map((m) => oneLine(textOf(m.content)))
     .filter((t) => t && !t.startsWith(FLUSH_MARKER))
     .slice(-3);
   const lastReply = messages
     .filter((m) => m.role === "assistant")
-    .map((m) => oneLine(textOf((m as { content: unknown }).content)))
+    .map((m) => oneLine(textOf(m.content)))
     .filter(Boolean)
     .at(-1);
-  const files = [...new Set([...preparation.fileOps.edited, ...preparation.fileOps.written])].slice(0, 10);
+  const files = [...new Set(input.files ?? [])].slice(0, 10);
   if (!asks.length && !lastReply && !files.length) return null;
 
   const time = now.toISOString().slice(11, 16);
-  const lines = [``, `## Compaction handoff ${time} UTC (${reason}; no memory flush ran)`, ``];
+  const lines = [``, `## ${heading.title} ${time} UTC (${heading.detail})`, ``];
   if (asks.length) {
     lines.push("Last asks:");
     for (const a of asks) lines.push(`- ${clip(a, 300)}`);
   }
-  if (lastReply) lines.push(`Last reply (may list open items): ${clip(lastReply, 500)}`);
+  // Assistant text can echo web or tool output, so whoever reads this note back must not act on it.
+  if (lastReply) lines.push(`Last reply (unverified assistant text; may list open items): ${clip(lastReply, 500)}`);
   if (files.length) lines.push(`Files changed: ${files.join(", ")}`);
   return `${redact(lines.join("\n"))}\n`;
+}
+
+export function compactionHandoff(preparation: Pick<CompactionPreparation, "messagesToSummarize" | "turnPrefixMessages" | "fileOps">, reason: string, now: Date): string | null {
+  return buildHandoff(
+    {
+      messages: [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages],
+      files: [...preparation.fileOps.edited, ...preparation.fileOps.written],
+    },
+    { title: "Compaction handoff", detail: `${reason}; no memory flush ran` },
+    now,
+  );
+}
+
+/** The deterministic fallback when chat/new couldn't run a full flush; returns the note's path, or null when nothing was written. */
+export function writeResetHandoff(home: string, messages: ReadonlyArray<{ role: string; content?: unknown }>, outcome: string, now: Date = new Date()): string | null {
+  const block = buildHandoff({ messages }, { title: "Reset handoff", detail: `memory flush ${outcome}` }, now);
+  return block ? appendDailyNote(home, now, block) : null;
 }
 
 export function appendDailyNote(home: string, now: Date, text: string): string {
@@ -137,7 +208,7 @@ export function createCompactionHandoffExtension(opts: { home: string; log: Log;
       try {
         if (flushRanThisCycle(event.branchEntries)) return undefined;
         const now = opts.now?.() ?? new Date();
-        const block = buildHandoff(event.preparation, event.reason, now);
+        const block = compactionHandoff(event.preparation, event.reason, now);
         if (!block) return undefined;
         const path = appendDailyNote(opts.home, now, block);
         opts.log.info({ reason: event.reason, path }, "wrote a compaction handoff to the daily note");

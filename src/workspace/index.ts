@@ -5,8 +5,9 @@ import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
 import { PersonalSession } from "./personalSession.ts";
 import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
-import { commitHome, scaffoldHome } from "./home.ts";
-import { memoryFilesSignature } from "./memoryFlush.ts";
+import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
+import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
+import { scanMemoryForSecrets } from "./memoryGuard.ts";
 import { RunLog } from "./runLog.ts";
 import { ToolStubs } from "./toolStubs.ts";
 
@@ -47,8 +48,14 @@ async function main(): Promise<void> {
     memory: {
       compactionTrigger,
       reload: reloadContext,
-      commit: (message) => commitHome(message, { home: config.home }),
+      commit: (message) => {
+        const flagged = scanMemoryForSecrets(config.home);
+        if (flagged.length) log.warn({ files: flagged }, "memory files hold something secret-shaped; committing anyway");
+        return commitHome(message, { home: config.home, paths: MEMORY_PATHS });
+      },
       signature: () => memoryFilesSignature(config.home),
+      handoff: (session, outcome) => writeResetHandoff(config.home, session.messages, outcome),
+      flushRanThisCycle: sessionFlushRanThisCycle,
     },
     transport: {
       request: (method, params) => (client ? client.request(method, params) : Promise.reject(new NotConnectedError())),

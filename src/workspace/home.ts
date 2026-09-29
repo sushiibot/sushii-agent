@@ -24,6 +24,9 @@ const HOME_DIRS = ["memory", ".agents/skills", "projects", "scratch"];
 /** The only paths the workspace itself ever stages in the home repo. */
 export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "SOUL.md", "AGENTS.md", ".agents/"];
 
+/** The memory subset of HOME_TRACKED_PATHS, which the workspace auto-commits. */
+export const MEMORY_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/"];
+
 export const USER_MD_CAP = 4000;
 export const MEMORY_MD_CAP = 8000;
 
@@ -157,9 +160,10 @@ async function commitPaths(home: string, paths: string[], message: string, initi
   return { committed: true, sha };
 }
 
-/** Commits changes to the memory/persona files only; a no-op when none changed. One commit at a time. */
-export function commitHome(message: string, opts: { home?: string } = {}): Promise<{ committed: boolean; sha?: string }> {
+/** Commits changes to the memory/persona files only (or the given subset); a no-op when none changed. One commit at a time. */
+export function commitHome(message: string, opts: { home?: string; paths?: string[] } = {}): Promise<{ committed: boolean; sha?: string }> {
   const home = opts.home ?? process.env.HOME;
   if (!home) return Promise.reject(new Error("commitHome: HOME is not set"));
-  return serialized(() => commitPaths(home, HOME_TRACKED_PATHS, message));
+  const paths = opts.paths ? opts.paths.filter((p) => HOME_TRACKED_PATHS.includes(p)) : HOME_TRACKED_PATHS;
+  return serialized(() => commitPaths(home, paths, message));
 }

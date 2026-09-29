@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { FLUSH_MARKER, buildHandoff, createCompactionHandoffExtension, flushPrompt, flushRanThisCycle, memoryFilesSignature } from "./memoryFlush.ts";
+import { FLUSH_MARKER, buildHandoff, compactionHandoff, createCompactionHandoffExtension, flushPrompt, flushRanThisCycle, memoryFilesSignature, writeResetHandoff } from "./memoryFlush.ts";
 
 let home: string;
 beforeEach(() => {
@@ -14,7 +14,7 @@ afterEach(() => rmSync(home, { recursive: true, force: true }));
 
 const NOW = new Date("2026-09-29T14:05:00Z");
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 });
-const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], timestamp: 0 });
+const assistant = (text: string, stopReason = "stop") => ({ role: "assistant", content: [{ type: "text", text }], stopReason, timestamp: 0 });
 const msgEntry = (message: object, id: string) => ({ type: "message", id, parentId: null, timestamp: "", message }) as unknown as SessionEntry;
 const compactionEntry = (id: string) => ({ type: "compaction", id, parentId: null, timestamp: "", summary: "s", firstKeptEntryId: "x", tokensBefore: 1 }) as unknown as SessionEntry;
 const fileOps = (edited: string[] = []) => ({ read: new Set<string>(), written: new Set<string>(), edited: new Set(edited) });
@@ -27,11 +27,21 @@ describe("flushRanThisCycle", () => {
     expect(flushRanThisCycle([flush, compactionEntry("c"), msgEntry(user("hi"), "b")])).toBe(false);
     expect(flushRanThisCycle([compactionEntry("c"), flush])).toBe(true);
   });
+
+  test("a flush whose run ended aborted or in error doesn't count", () => {
+    const flush = msgEntry(user(flushPrompt("compaction")), "f");
+    const next = msgEntry(user("[discord:2 …]\nnext"), "n");
+    expect(flushRanThisCycle([flush, msgEntry(assistant("", "toolUse"), "a1"), msgEntry(assistant("NO_REPLY"), "a2"), next])).toBe(true);
+    expect(flushRanThisCycle([flush, msgEntry(assistant("", "toolUse"), "a1"), msgEntry(assistant("", "aborted"), "a2"), next])).toBe(false);
+    expect(flushRanThisCycle([flush, msgEntry(assistant("", "error"), "a1")])).toBe(false);
+    // Aborted before any reply, then the conversation moved on.
+    expect(flushRanThisCycle([flush, next])).toBe(false);
+  });
 });
 
 describe("buildHandoff", () => {
   test("lists the last asks, the last reply and changed files, redacted and without flush prompts", () => {
-    const text = buildHandoff(
+    const text = compactionHandoff(
       {
         messagesToSummarize: [
           user("[discord:1 2026-09-29 13:00 UTC]\nfirst"),
@@ -52,12 +62,32 @@ describe("buildHandoff", () => {
     expect(text).toContain("[discord:4 2026-09-29 13:03 UTC] fourth");
     expect(text).not.toContain("sk-abc");
     expect(text).not.toContain(FLUSH_MARKER);
-    expect(text).toContain("Open: migrate the DB next.");
+    expect(text).toContain("Last reply (unverified assistant text; may list open items): Done. Open: migrate the DB next.");
     expect(text).toContain("Files changed: projects/app/src/db.ts");
   });
 
   test("nothing worth keeping gives null", () => {
-    expect(buildHandoff({ messagesToSummarize: [], turnPrefixMessages: [], fileOps: fileOps() } as never, "threshold", NOW)).toBeNull();
+    expect(compactionHandoff({ messagesToSummarize: [], turnPrefixMessages: [], fileOps: fileOps() } as never, "threshold", NOW)).toBeNull();
+    expect(buildHandoff({ messages: [] }, { title: "x", detail: "y" }, NOW)).toBeNull();
+  });
+
+  test("JWTs, Discord tokens and cloud keys are redacted from the note", () => {
+    const secrets = [
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
+      "MTA5ODc2NTQzMjEwOTg3NjU0.GaBcDe.abcdefghijklmnopqrstuvwxyz0123456789",
+      `AIza${"Sy0123456789abcdefghijklmnopqrstuv"}`,
+    ];
+    const text = buildHandoff({ messages: secrets.map((s) => user(`[discord:1 …]\nuse ${s}`)) }, { title: "Reset handoff", detail: "x" }, NOW)!;
+    for (const s of secrets) expect(text).not.toContain(s.slice(0, 12));
+  });
+
+  test("the reset handoff lands in today's daily note", () => {
+    const path = writeResetHandoff(home, [user("[discord:1 …]\nplan the trip"), assistant("drafted")], "timeout", NOW)!;
+    expect(path).toBe(join(home, "memory", "2026-09-29.md"));
+    const text = readFileSync(path, "utf8");
+    expect(text).toContain("## Reset handoff 14:05 UTC (memory flush timeout)");
+    expect(text).toContain("plan the trip");
+    expect(writeResetHandoff(home, [], "skipped", NOW)).toBeNull();
   });
 });
 

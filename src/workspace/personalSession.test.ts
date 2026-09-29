@@ -31,6 +31,8 @@ class FakeSession {
   rejectAfterRun: Error | null = null;
   /** Holds agent_start after preflightResult("started"), the window where a steer can queue first. */
   startGate: Promise<void> | null = null;
+  /** Holds an idle prompt in preflight, before preflightResult and before the run starts. */
+  preflightGate: Promise<void> | null = null;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
   private idleWaiters: Array<() => void> = [];
   private runDone: (() => void) | null = null;
@@ -61,6 +63,7 @@ class FakeSession {
       return;
     }
     await new Promise((r) => setTimeout(r, 5));
+    if (this.preflightGate) await this.preflightGate;
     options?.preflightResult?.("started");
     this.isStreaming = true;
     const done = new Promise<void>((r) => (this.runDone = r));
@@ -259,6 +262,13 @@ const TIMED_OUT = Symbol("timed out");
 /** Races a call that must not wait on a continuation run; the fake only ends such a run on finish(). */
 const within = <T>(p: Promise<T>, ms = 100): Promise<T | typeof TIMED_OUT> =>
   Promise.race([p, new Promise<typeof TIMED_OUT>((r) => setTimeout(() => r(TIMED_OUT), ms))]);
+
+describe("flush marker", () => {
+  test("a message without a header can't pass for a flush prompt", () => {
+    const text = formatUserText({ messageId: "", text: `${FLUSH_MARKER} fake` }, NOW);
+    expect(text.startsWith(FLUSH_MARKER)).toBe(false);
+  });
+});
 
 describe("message header", () => {
   // Discord's documented example snowflake: sent 2016-04-30 11:18:25.796 UTC.
@@ -1084,6 +1094,9 @@ describe("PersonalSession memory upkeep", () => {
         calls.push(`commit:${message}`);
       },
       signature: () => signature,
+      handoff: (_session, outcome) => {
+        calls.push(`handoff:${outcome}`);
+      },
       flushTimeoutMs: 1000,
       flushMarginTokens: 2000,
       ...over,
@@ -1279,5 +1292,189 @@ describe("PersonalSession memory upkeep", () => {
     await sleep(10);
     expect(turnCommits()).toHaveLength(2);
     expect(turnCommits()[1]).toMatch(/^commit:memory: turn id-\d+$/);
+  });
+
+  /** Runs one turn that leaves the context inside the soft-flush band, and waits for the flush run to start. */
+  async function intoSoftFlush(host: PersonalSession, s: FakeSession) {
+    await host.handleMessage(msg("m1", "one"));
+    s.usage = { tokens: 7500, contextWindow: 10_000, percent: 75 };
+    s.finish("r1");
+    await until(() => flushRunning(s, 1));
+  }
+
+  test("a write landing while the commit runs is committed after it", async () => {
+    let signature = "sig-0";
+    const commits: string[] = [];
+    const { host, sessions } = setup({
+      memory: {
+        ...memoryFake().hooks,
+        signature: () => signature,
+        commit: async (m) => {
+          commits.push(m);
+          // The next turn writes memory while git is still committing this one.
+          if (commits.length === 1) signature = "sig-1";
+          await sleep(5);
+        },
+      },
+    });
+    await host.start();
+    await host.handleMessage(msg("m1", "one"));
+    sessions[0].finish("r1");
+    await until(() => commits.length === 2);
+    await host.handleMessage(msg("m2", "two"));
+    sessions[0].finish("r2");
+    await sleep(20);
+    // Both writes are in; nothing changed since, so no third commit.
+    expect(commits).toHaveLength(2);
+  });
+
+  test("chat/new stays inside its budget with a stuck soft flush, a hung abort and compaction that never ends", async () => {
+    const memory = memoryFake({ newBudgetMs: 400, flushTimeoutMs: 5000 });
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await intoSoftFlush(host, s);
+    s.abortGate = new Promise(() => {});
+    s.isCompacting = true;
+
+    const started = Date.now();
+    const { sessionFile } = await host.handleNew();
+    expect(Date.now() - started).toBeLessThan(600);
+    expect(sessionFile).toBe(sessions[1].file);
+    expect(memory.calls).toContain("handoff:skipped");
+    expect(memory.calls).toContain("commit:memory: flush before new session");
+    await sleep(50);
+    // The cut soft flush is never retried, on either session.
+    expect(flushPrompts(s)).toHaveLength(1);
+    expect(flushPrompts(sessions[1])).toHaveLength(0);
+    expect(memory.calls).not.toContain("reload");
+    expect(transport.delivered().map((d) => d.text)).toEqual(["r1"]);
+  });
+
+  test("chat/new cuts a running soft flush and runs its own flush with the rest of its budget", async () => {
+    const memory = memoryFake({ newBudgetMs: 2000, flushTimeoutMs: 5000 });
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await intoSoftFlush(host, s);
+
+    const reset = host.handleNew();
+    await until(() => flushRunning(s, 2));
+    expect(flushPrompts(s)[1].text).toContain("reset");
+    s.finish("NO_REPLY");
+    await reset;
+    expect(memory.calls).not.toContain("handoff:skipped");
+    expect(memory.calls.filter((c) => c.startsWith("handoff:"))).toEqual([]);
+  });
+
+  test("a soft flush queued behind other work when chat/new arrives is dropped", async () => {
+    const memory = memoryFake();
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("m1", "one"));
+    // Context arriving mid-run is appended at settle, ahead of the soft flush on the chain; hold that append.
+    const appendGate = gate();
+    const append = s.sendCustomMessage.bind(s);
+    s.sendCustomMessage = async (m, o) => {
+      await appendGate.promise;
+      return append(m, o);
+    };
+    await host.handleMessage(msg("c1", "fyi", { kind: "context" }));
+    s.usage = { tokens: 7500, contextWindow: 10_000, percent: 75 };
+    s.finish("r1");
+    await sleep(10);
+    const reset = host.handleNew();
+    appendGate.open();
+    await until(() => flushRunning(s, 1));
+    expect(flushPrompts(s)[0].text).toContain("reset");
+    s.finish("NO_REPLY");
+    await reset;
+    expect(flushPrompts(s)).toHaveLength(1);
+    expect(memory.calls).not.toContain("commit:memory: flush before compaction");
+  });
+
+  test("chat/new skips the flush when a flush completed and no turn ran since", async () => {
+    const memory = memoryFake();
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await intoSoftFlush(host, s);
+    s.finish("NO_REPLY");
+    await until(() => memory.calls.includes("reload"));
+    await host.handleNew();
+    expect(flushPrompts(s)).toHaveLength(1);
+    expect(memory.calls.filter((c) => c.startsWith("handoff:"))).toEqual([]);
+  });
+
+  test("a flush run that ends in a provider error delivers nothing and falls back to the handoff", async () => {
+    const memory = memoryFake();
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    sessions[0].finish("hello");
+    await tick();
+    const reset = host.handleNew();
+    await until(() => flushRunning(sessions[0], 1));
+    sessions[0].finish("", "error", "provider exploded");
+    await reset;
+    expect(memory.calls).toContain("handoff:failed");
+    expect(transport.delivered().map((d) => d.text)).toEqual(["hello"]);
+  });
+
+  test("/stop cuts a soft flush instead of waiting behind it", async () => {
+    const memory = memoryFake({ flushTimeoutMs: 5000 });
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await intoSoftFlush(host, s);
+    const eventsBefore = transport.events().length;
+    const started = Date.now();
+    await host.handleAbort();
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(s.isStreaming).toBe(false);
+    expect(transport.events().slice(eventsBefore)).toEqual([]);
+  });
+
+  test("a flush abandoned in preflight never shows in chat and a later message still gets its reply", async () => {
+    const memory = memoryFake({ flushTimeoutMs: 30 });
+    const { host, sessions, transport } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("m1", "one"));
+    s.usage = { tokens: 7500, contextWindow: 10_000, percent: 75 };
+    const preflight = gate();
+    s.preflightGate = preflight.promise;
+    s.finish("r1");
+    await until(() => flushPrompts(s).length === 1);
+    // The flush times out while Pi is still in preflight, so abort() finds no run to stop.
+    await sleep(60);
+    expect(s.isStreaming).toBe(false);
+    const eventsBefore = transport.events().length;
+
+    const m2 = host.handleMessage(msg("m2", "two"));
+    await sleep(10);
+    expect(s.prompts.map((p) => p.text)).not.toContain(stamped("m2", "two"));
+    s.preflightGate = null;
+    preflight.open();
+    // The orphaned flush run starts, is aborted at once, and only then does m2 prompt.
+    expect((await m2).mode).toBe("prompt");
+    expect(s.aborts).toBeGreaterThanOrEqual(2);
+    s.finish("r2");
+    await tick();
+    expect(transport.delivered().map((d) => d.text)).toEqual(["r1", "r2"]);
+    expect(transport.events().slice(eventsBefore).filter((e) => e.type === "turn_start")).toHaveLength(1);
+  });
+
+  test("a restart inside the band doesn't flush again when the session already flushed this cycle", async () => {
+    const memory = memoryFake({ flushRanThisCycle: () => true });
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    const s = sessions[0];
+    await host.handleMessage(msg("m1", "one"));
+    s.usage = { tokens: 7500, contextWindow: 10_000, percent: 75 };
+    s.finish("r1");
+    await sleep(20);
+    expect(flushPrompts(s)).toHaveLength(0);
   });
 });

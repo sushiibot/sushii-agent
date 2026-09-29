@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkMemoryWrite, containsSecret, createMemoryGuardExtension } from "./memoryGuard.ts";
+import { checkMemoryWrite, containsSecret, createMemoryGuardExtension, scanMemoryForSecrets } from "./memoryGuard.ts";
+import { redact } from "./wsRuns.ts";
 
 let home: string;
 beforeEach(() => {
@@ -25,6 +26,28 @@ describe("containsSecret", () => {
     expect(containsSecret("- Prefers metric units. (src: 2026-09-29, discord:1234567890123456789)")).toBe(false);
     expect(containsSecret("deployed a90c7902b4e1 to prod")).toBe(false);
   });
+
+  // Fake values in each provider's documented shape.
+  const shaped = {
+    discordBotToken: "MTA5ODc2NTQzMjEwOTg3NjU0.GaBcDe.abcdefghijklmnopqrstuvwxyz0123456789",
+    googleApiKey: `AIza${"Sy0123456789abcdefghijklmnopqrstuv"}`,
+    awsAccessKeyId: "AKIAIOSFODNN7EXAMPLE",
+    slackToken: "xoxb-1234567890-abcdefghij",
+    stripeKey: "sk_live_abcdefghijklmnop1234",
+    lonePayloadJwt: "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ",
+    privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE\n-----END OPENSSH PRIVATE KEY-----",
+  };
+
+  test.each(Object.entries(shaped))("flags a %s, and ws-runs redacts it with the same list", (_name, secret) => {
+    expect(containsSecret(`note: ${secret} end`)).toBe(true);
+    expect(redact(`note: ${secret} end`)).toBe("note: [REDACTED] end");
+  });
+
+  test("leaves ordinary identifiers alone", () => {
+    for (const keep of ["AKIA is a prefix", "xox-style", "the file home.test.ts", "session-history-skill-template-directory"]) {
+      expect(containsSecret(keep)).toBe(false);
+    }
+  });
 });
 
 describe("checkMemoryWrite", () => {
@@ -45,6 +68,12 @@ describe("checkMemoryWrite", () => {
     const existing = "- old sk-abcdefghijklmnopqrstuv";
     writeFileSync(join(home, "MEMORY.md"), `# MEMORY\n${existing}\n`);
     expect(checkMemoryWrite("edit", edit("MEMORY.md", existing, "- old (removed)"), opts())).toBeNull();
+  });
+
+  test("guards DREAMS.md for secrets, without a cap", () => {
+    expect(checkMemoryWrite("write", { path: "DREAMS.md", content: "x".repeat(20_000) }, opts())).toBeNull();
+    expect(checkMemoryWrite("write", { path: "DREAMS.md", content: "AKIAIOSFODNN7EXAMPLE" }, opts())).toBe("secret");
+    expect(checkMemoryWrite("bash", { command: "echo AKIAIOSFODNN7EXAMPLE >> DREAMS.md" }, opts())).toBe("secret");
   });
 
   test("ignores writes elsewhere", () => {
@@ -79,5 +108,13 @@ describe("createMemoryGuardExtension", () => {
     expect(JSON.stringify(warns)).not.toContain("sk-");
     expect(warns).toEqual([{ tool: "write", rule: "cap:USER.md" }, { tool: "write", rule: "secret" }]);
     expect(handler!({ type: "tool_call", toolName: "write", toolCallId: "3", input: { path: "USER.md", content: "ok" } })).toBeUndefined();
+  });
+});
+
+describe("scanMemoryForSecrets", () => {
+  test("names the memory files holding something secret-shaped", () => {
+    writeFileSync(join(home, "memory", "2026-09-29.md"), "- key AKIAIOSFODNN7EXAMPLE\n");
+    writeFileSync(join(home, "notes.md"), "sk-abcdefghijklmnopqrstuv");
+    expect(scanMemoryForSecrets(home)).toEqual(["memory/2026-09-29.md"]);
   });
 });

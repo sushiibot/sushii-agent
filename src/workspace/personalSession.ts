@@ -20,7 +20,17 @@ import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborte
 import { Outbox } from "./outbox.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
-import { FLUSH_TIMEOUT_MS, flushMarginTokens, flushPrompt, type FlushReason } from "./memoryFlush.ts";
+import {
+  COMPACTION_FLUSH_TIMEOUT_MS,
+  FLUSH_MARKER,
+  FLUSH_TIMEOUT_MS,
+  NEW_BUDGET_MS,
+  flushMarginTokens,
+  flushPrompt,
+  newFinishReserveMs,
+  newMinFlushMs,
+  type FlushReason,
+} from "./memoryFlush.ts";
 
 const log = getLogger("workspace.session");
 
@@ -28,6 +38,8 @@ const VOICE_MARKER = "voice message, transcribed";
 const DISCORD_EPOCH_MS = 1420070400000n;
 const SNOWFLAKE = /^\d{17,20}$/;
 const CONTEXT_CUSTOM_TYPE = "workspace_context";
+/** How long a pre-compaction flush's abort may take before the chain moves on. */
+const FLUSH_ABORT_MS = 10_000;
 
 /** The slice of Pi's AgentSession the host drives; tests supply a fake. */
 export type ChatSession = Pick<
@@ -68,14 +80,31 @@ export interface MemoryHooks {
   compactionTrigger(session: ChatSession): number | null;
   /** Re-reads the home context files into `session`'s system prompt. */
   reload(session: ChatSession): Promise<void>;
-  /** Commits the tracked memory files; a no-op when none changed. */
+  /**
+   * Commits the memory files (USER.md, MEMORY.md, DREAMS.md, memory/) with a "memory:" message; a no-op when
+   * none changed. SOUL.md, AGENTS.md and .agents/ are never auto-committed: persona and skill edits are left
+   * for the owner to review and commit.
+   */
   commit(message: string): Promise<unknown>;
-  /** A fingerprint of the tracked memory files, to skip the commit after a turn that changed none. */
+  /** A fingerprint of the memory files, to skip the commit after a turn that changed none. */
   signature(): string;
-  /** Default FLUSH_TIMEOUT_MS. */
+  /** Appends the deterministic handoff note for a chat/new whose flush didn't complete. */
+  handoff?(session: ChatSession, outcome: FlushOutcome): void;
+  /** Whether `session` completed a flush since its last compaction; seeds the once-per-cycle guard on attach. */
+  flushRanThisCycle?(session: ChatSession): boolean;
+  /** Cap on one flush turn. Default FLUSH_TIMEOUT_MS for chat/new, COMPACTION_FLUSH_TIMEOUT_MS before compaction. */
   flushTimeoutMs?: number;
   /** Default flushMarginTokens(contextWindow). */
   flushMarginTokens?: number;
+  /** The whole chat/new, flush included. Default NEW_BUDGET_MS. */
+  newBudgetMs?: number;
+}
+
+export type FlushOutcome = "done" | "timeout" | "cut" | "failed" | "skipped";
+
+/** The flush prompt whose run the next agent_start opens; abandoned once the flush timed out or was cut. */
+interface HiddenPrompt {
+  abandoned: boolean;
 }
 
 export interface PersonalSessionOptions {
@@ -158,7 +187,16 @@ export class PersonalSession {
   private readonly sending = new Set<string>();
   private resendTimer: ReturnType<typeof setInterval> | null = null;
   // The next run to start is a memory flush.
-  private flushing = false;
+  private hiddenNext: HiddenPrompt | null = null;
+  // An abandoned flush prompt still in Pi's preflight: user prompts wait for it so they can't join or become its run.
+  private orphanFlush: Promise<void> | null = null;
+  // Cuts the flush in progress short (chat/new, /stop).
+  private flushCut: { reason: FlushReason; cut: (abortBy?: number) => void } | null = null;
+  private lastHiddenRunOk = false;
+  // settleCount right after the last completed flush; equal to settleCount while no turn has run since.
+  private lastFlushDoneAt = -1;
+  // chat/new calls not yet finished; a soft flush that would run ahead of or after one is dropped.
+  private pendingNew = 0;
   // Once per compaction cycle: cleared by a completed compaction or a session swap.
   private flushedThisCycle = false;
   private memorySignature: string | null = null;
@@ -248,6 +286,8 @@ export class PersonalSession {
   // Chained so a steer can't slip into Pi's queue between clearQueue() and abort(). Queued steers are dropped:
   // otherwise Pi continues on them after the abort and abort() waits out that whole run.
   handleAbort(turnId?: string): Promise<ChatAbortResult> {
+    // A flush holds the chain for minutes; /stop cuts it instead of waiting out the bot's 30s timeout behind it.
+    this.flushCut?.cut();
     return this.enqueue(async () => {
       const session = this.session;
       if (!session) return { aborted: false };
@@ -261,6 +301,12 @@ export class PersonalSession {
   }
 
   handleNew(): Promise<ChatNewResult> {
+    // Stamped before queuing: time spent behind a soft flush or a steer counts against the bot's timeout too.
+    const budgetMs = this.opts.memory?.newBudgetMs ?? NEW_BUDGET_MS;
+    const deadline = Date.now() + budgetMs;
+    const reserve = newFinishReserveMs(budgetMs);
+    this.pendingNew++;
+    if (this.flushCut?.reason === "compaction") this.flushCut.cut(deadline - reserve);
     return this.enqueue(async () => {
       this.resetting = true;
       try {
@@ -273,9 +319,11 @@ export class PersonalSession {
             this.run.suppressReply = true;
           }
           // Abort while still subscribed, so the retired run closes with turn_end{aborted}.
-          if (old.isStreaming) await old.abort();
+          if (old.isStreaming && (await bounded(old.abort(), deadline - reserve - Date.now())) === TIMEOUT) {
+            log.warn("aborting the old session's run before reset didn't finish in time; resetting anyway");
+          }
           // After the abort: a flush sent into a live run would join it as a steer.
-          await this.flushBeforeNew(old);
+          await this.flushBeforeNew(old, deadline, budgetMs);
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
         const { session, sessionFile } = await this.opts.factory({ sessionFile: null });
@@ -288,46 +336,110 @@ export class PersonalSession {
       } finally {
         this.resetting = false;
       }
-    });
+    }).finally(() => this.pendingNew--);
   }
 
   // The replacement session is built fresh from the home files, so it needs no reload.
-  private async flushBeforeNew(old: ChatSession): Promise<void> {
+  private async flushBeforeNew(old: ChatSession, deadline: number, budgetMs: number): Promise<void> {
     const memory = this.opts.memory;
     if (!memory) return;
-    await this.turnCommit;
-    if (hasConversation(old)) await this.flushMemory(old, "new");
-    await this.commitMemory("memory: flush before new session");
+    const reserve = newFinishReserveMs(budgetMs);
+    await bounded(this.turnCommit, deadline - reserve - Date.now());
+    if (hasConversation(old)) {
+      let outcome: FlushOutcome;
+      if (this.lastFlushDoneAt === this.settleCount) outcome = "done";
+      else if (deadline - reserve - Date.now() < newMinFlushMs(budgetMs)) outcome = "skipped";
+      else {
+        const cap = Date.now() + (memory.flushTimeoutMs ?? FLUSH_TIMEOUT_MS);
+        outcome = await this.flushMemory(old, "new", { deadline: Math.min(deadline - reserve, cap), abortDeadline: deadline - reserve / 2 });
+      }
+      if (outcome !== "done") this.writeResetHandoff(old, outcome);
+    }
+    if ((await bounded(this.commitMemory("memory: flush before new session"), Math.max(deadline - Date.now(), 1000))) === TIMEOUT) {
+      log.warn("memory commit before reset didn't finish in time; it completes in the background");
+    }
+  }
+
+  private writeResetHandoff(session: ChatSession, outcome: FlushOutcome): void {
+    log.warn({ outcome }, "memory flush before reset didn't complete; writing the handoff note");
+    try {
+      this.opts.memory?.handoff?.(session, outcome);
+    } catch (err) {
+      log.warn({ err }, "writing the reset handoff note failed");
+    }
   }
 
   /** Runs one hidden flush turn on `session`, bounded; call from inside the inbound chain so messages wait behind it. */
-  private async flushMemory(session: ChatSession, reason: FlushReason): Promise<"done" | "timeout" | "skipped"> {
-    await this.waitForCompaction();
-    await this.waitForSettle();
-    if (session !== this.session || session.isStreaming) return "skipped";
-    const timeoutMs = this.opts.memory?.flushTimeoutMs ?? FLUSH_TIMEOUT_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    this.flushing = true;
+  private async flushMemory(session: ChatSession, reason: FlushReason, bound: { deadline: number; abortDeadline: number }): Promise<FlushOutcome> {
+    if (this.orphanFlush) {
+      log.warn({ reason }, "memory flush skipped: an abandoned flush is still starting");
+      return "skipped";
+    }
+    let abortDeadline = bound.abortDeadline;
+    let cut: (abortBy?: number) => void = () => {};
+    const cutShort = new Promise<"cut">((resolve) => {
+      cut = (abortBy) => {
+        if (abortBy !== undefined) abortDeadline = Math.min(abortDeadline, abortBy);
+        resolve("cut");
+      };
+    });
+    const handle = { reason, cut };
+    this.flushCut = handle;
+    const hidden: HiddenPrompt = { abandoned: false };
+    const timer = deadlineTimer(bound.deadline);
     try {
-      const outcome = await Promise.race([
-        session.prompt(flushPrompt(reason), { expandPromptTemplates: false }).then(() => "done" as const),
-        new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), timeoutMs))),
+      const ready = await Promise.race([
+        this.waitForCompaction()
+          .then(() => this.waitForSettle())
+          .then(() => "ready" as const),
+        cutShort,
+        timer.promise,
       ]);
-      if (outcome === "timeout") {
-        log.warn({ reason, timeoutMs }, "memory flush timed out; aborting it and carrying on");
-        if (this.run?.hidden) this.run.abortRequested = true;
-        await session.abort().catch((err) => log.warn({ err }, "aborting the timed-out memory flush failed"));
-      } else {
+      if (ready !== "ready") {
+        log.warn({ reason, outcome: ready }, "memory flush skipped: the session stayed busy");
+        return ready === "cut" ? "cut" : "skipped";
+      }
+      if (session !== this.session || session.isStreaming || session.isCompacting) return "skipped";
+      this.hiddenNext = hidden;
+      this.lastHiddenRunOk = false;
+      const prompted = session.prompt(flushPrompt(reason), { expandPromptTemplates: false });
+      const outcome = await Promise.race([prompted.then(() => "done" as const), cutShort, timer.promise]);
+      if (outcome === "done") {
+        if (!this.lastHiddenRunOk) {
+          log.warn({ reason }, "memory flush run ended aborted or in error");
+          return "failed";
+        }
+        this.lastFlushDoneAt = this.settleCount;
         log.info({ reason }, "memory flushed");
+        return "done";
+      }
+      log.warn({ reason, outcome }, "memory flush cut short; aborting it and carrying on");
+      hidden.abandoned = true;
+      if (this.run?.hidden) this.run.abortRequested = true;
+      const aborting = session.abort().catch((err) => log.warn({ err }, "aborting the memory flush failed"));
+      if ((await bounded(aborting, abortDeadline - Date.now())) === TIMEOUT) log.warn({ reason }, "aborting the memory flush didn't finish in time");
+      if (this.hiddenNext === hidden) {
+        // Still in preflight, so abort() had no run to stop; agent_start aborts it once it starts.
+        const orphan: Promise<void> = prompted
+          .then(
+            () => {},
+            () => {},
+          )
+          .finally(() => {
+            if (this.hiddenNext === hidden) this.hiddenNext = null;
+            if (this.orphanFlush === orphan) this.orphanFlush = null;
+          });
+        this.orphanFlush = orphan;
       }
       return outcome;
     } catch (err) {
       if (isCompactionBusy(err)) log.info({ reason }, "memory flush skipped: compaction in progress");
       else log.warn({ err, reason }, "memory flush failed");
-      return "skipped";
+      return isCompactionBusy(err) ? "skipped" : "failed";
     } finally {
-      clearTimeout(timer);
-      this.flushing = false;
+      timer.clear();
+      if (this.flushCut === handle) this.flushCut = null;
+      if (this.hiddenNext === hidden && this.orphanFlush === null) this.hiddenNext = null;
     }
   }
 
@@ -335,8 +447,13 @@ export class PersonalSession {
     const memory = this.opts.memory;
     if (!memory) return;
     try {
-      await memory.commit(message);
-      this.memorySignature = memory.signature();
+      // Snapshot before committing: a write landing while git runs must still read as a change afterwards.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const signature = memory.signature();
+        await memory.commit(message);
+        this.memorySignature = signature;
+        if (memory.signature() === signature) return;
+      }
     } catch (err) {
       this.memorySignature = null;
       log.warn({ err }, "memory commit failed");
@@ -358,13 +475,16 @@ export class PersonalSession {
     this.flushedThisCycle = true;
     const gen = this.generation;
     void this.enqueue(async () => {
-      if (gen !== this.generation) return;
+      // A chat/new already asked for runs its own flush; this one would only eat its budget.
+      if (gen !== this.generation || this.pendingNew > 0) return;
       // Settled first, so the turn's commit can't sweep up the flush's edits under its own message.
       await this.turnCommit;
-      const outcome = await this.flushMemory(session, "compaction");
+      const timeoutMs = memory.flushTimeoutMs ?? COMPACTION_FLUSH_TIMEOUT_MS;
+      const deadline = Date.now() + timeoutMs;
+      const outcome = await this.flushMemory(session, "compaction", { deadline, abortDeadline: deadline + Math.min(FLUSH_ABORT_MS, timeoutMs) });
       if (outcome === "skipped") return;
       await this.commitMemory("memory: flush before compaction");
-      if (gen !== this.generation || session.isStreaming) return;
+      if (gen !== this.generation || session.isStreaming || this.pendingNew > 0 || this.orphanFlush) return;
       await memory.reload(session);
     }).catch((err) => log.warn({ err }, "pre-compaction memory flush failed"));
   }
@@ -410,6 +530,7 @@ export class PersonalSession {
   // Pi marks the run active only after async preflight, so gate the queue on preflightResult or a racing idle prompt starts a second run.
   private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined): Promise<"prompt" | "steer"> {
     for (let attempt = 0; ; attempt++) {
+      if (this.orphanFlush) await this.orphanFlush;
       await this.waitForCompaction();
       await this.waitForSettle();
       const session = this.requireSession();
@@ -545,7 +666,8 @@ export class PersonalSession {
 
   private attach(session: ChatSession, sessionFile: string): void {
     const gen = ++this.generation;
-    this.flushedThisCycle = false;
+    this.flushedThisCycle = this.opts.memory?.flushRanThisCycle?.(session) ?? false;
+    this.lastFlushDoneAt = -1;
     this.session = session;
     this.sessionFile = sessionFile;
     this.unsubscribe = session.subscribe((event) => {
@@ -557,6 +679,9 @@ export class PersonalSession {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.generation++;
+    // An abandoned flush on the retired session must not mark the new session's first run hidden.
+    this.hiddenNext = null;
+    this.orphanFlush = null;
     this.closeRunWithoutReply();
     this.releaseCompactionWaiters();
     this.releaseSettleWaiters();
@@ -572,8 +697,10 @@ export class PersonalSession {
       this.consumeInbound(userText(event.message));
     }
     if (event.type === "agent_start" && !this.run) {
-      const prompt = this.nextRunPrompt;
-      this.nextRunPrompt = undefined;
+      const hidden = this.hiddenNext;
+      this.hiddenNext = null;
+      const prompt = hidden ? undefined : this.nextRunPrompt;
+      if (!hidden) this.nextRunPrompt = undefined;
       this.run = {
         turnId: this.newId(),
         origin: prompt?.origin ?? this.lastOrigin,
@@ -581,10 +708,11 @@ export class PersonalSession {
         acc: newRunAccumulator(),
         deltaBuffer: "",
         deltaTimer: null,
-        abortRequested: false,
+        abortRequested: hidden?.abandoned ?? false,
         suppressReply: false,
-        hidden: this.flushing,
+        hidden: hidden !== null,
       };
+      if (hidden?.abandoned) void session.abort().catch((err) => log.warn({ err }, "aborting an abandoned memory flush failed"));
       this.emit({ type: "turn_start" });
       return;
     }
@@ -619,7 +747,10 @@ export class PersonalSession {
 
   // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.
   private finishRun(session: ChatSession, run: OpenRun): SettleOutcome {
-    if (run.hidden) return "suppressed";
+    if (run.hidden) {
+      this.lastHiddenRunOk = !runAborted(run.acc, run.abortRequested) && run.acc.errorMessage === undefined;
+      return "suppressed";
+    }
     this.flushDelta(run);
     const aborted = runAborted(run.acc, run.abortRequested);
     this.emitFor(run, { type: "turn_end", aborted: aborted || run.suppressReply });
@@ -761,6 +892,8 @@ export function formatUserText(
 ): string {
   const header = messageHeader(params.messageId, receivedAt, { surface: params.origin?.surface, voice: params.voice === true });
   let text = header ? `${header}\n${params.text}` : params.text;
+  // Only the host's own flush prompts may start with the marker; flushRanThisCycle trusts it.
+  if (text.startsWith(FLUSH_MARKER)) text = `[message]\n${text}`;
   // The workspace model is text-only; attachments reach it as links it can fetch with its tools.
   for (const a of params.attachments ?? []) text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}]`;
   return text;
@@ -774,6 +907,19 @@ function userText(message: { content?: unknown }): string {
     .filter((c): c is { type: "text"; text: string } => c?.type === "text" && typeof c.text === "string")
     .map((c) => c.text)
     .join("");
+}
+
+const TIMEOUT = Symbol("timeout");
+
+function bounded<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMEOUT> {
+  const timer = deadlineTimer(Date.now() + ms);
+  return Promise.race([p, timer.promise.then((): typeof TIMEOUT => TIMEOUT)]).finally(timer.clear);
+}
+
+function deadlineTimer(deadline: number): { promise: Promise<"timeout">; clear: () => void } {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<"timeout">((resolve) => (handle = setTimeout(() => resolve("timeout"), Math.max(0, deadline - Date.now()))));
+  return { promise, clear: () => clearTimeout(handle) };
 }
 
 function isCompactionBusy(err: unknown): boolean {

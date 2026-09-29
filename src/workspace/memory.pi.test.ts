@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { WorkspaceConfig } from "./config.ts";
-import { commitHome, scaffoldHome } from "./home.ts";
-import { FLUSH_MARKER, memoryFilesSignature } from "./memoryFlush.ts";
+import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
+import { FLUSH_MARKER, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
 import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
 import { runnerGit } from "../orchestration/runner/runnerGit.ts";
@@ -109,8 +109,10 @@ async function host() {
     memory: {
       compactionTrigger,
       reload: reloadContext,
-      commit: (m) => commitHome(m, { home: cfg.home }),
+      commit: (m) => commitHome(m, { home: cfg.home, paths: MEMORY_PATHS }),
       signature: () => memoryFilesSignature(cfg.home),
+      handoff: (session, outcome) => writeResetHandoff(cfg.home, session.messages, outcome),
+      flushRanThisCycle: sessionFlushRanThisCycle,
     },
   });
   await personal.start();
@@ -165,6 +167,15 @@ describe("memory upkeep on a real Pi session", () => {
     expect(lastUserText(1)).toContain(FLUSH_MARKER);
     expect(delivered.map((d) => d.text)).toEqual(["big answer"]);
     expect(await log()).toContain("memory: flush before compaction");
+
+    // The reloaded session still answers, with its settings overrides intact.
+    const session = (personal as unknown as { session: AgentSession }).session;
+    const trigger = compactionTrigger(session);
+    script({ text: "after reload" });
+    await personal.handleMessage(user("m2", "still there?"));
+    await until(() => delivered.length === 2);
+    expect(delivered[1].text).toBe("after reload");
+    expect(compactionTrigger(session)).toBe(trigger);
     await personal.dispose();
   }, 20_000);
 

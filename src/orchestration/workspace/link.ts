@@ -38,7 +38,7 @@ const log = getLogger("orchestration/workspace/link");
 
 export const MESSAGE_TIMEOUT_MS = 10_000;
 const CONTROL_TIMEOUT_MS = 30_000;
-// chat/new first runs the workspace's memory flush turn, bounded at 3 min.
+// The workspace bounds the whole chat/new, memory flush included, at 3m30s (NEW_BUDGET_MS).
 const NEW_SESSION_TIMEOUT_MS = 240_000;
 /** Tool lines kept per persisted progress view. */
 const PERSISTED_LINES = 8;

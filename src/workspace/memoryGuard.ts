@@ -1,14 +1,19 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionFactory, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { MEMORY_MD_CAP, USER_MD_CAP } from "./home.ts";
-import { redact } from "./wsRuns.ts";
+import { containsSecret } from "./secretPatterns.ts";
+
+export { containsSecret };
 
 /**
- * Seatbelt on the agent's own memory writes: no secrets in USER.md / MEMORY.md / memory/, and no write
- * that grows USER.md or MEMORY.md past its cap. Edits and writes are checked exactly; bash is
- * best-effort text matching on redirects, tee and in-place edits that name a memory path.
+ * Seatbelt on the agent's own memory writes: no secrets in USER.md / MEMORY.md / DREAMS.md / memory/, and
+ * no write that grows USER.md or MEMORY.md past its cap. Edits and writes are checked exactly. Bash is
+ * best-effort text matching on redirects, tee, cp/mv/dd and in-place sed/perl that name a memory path; it
+ * misses secrets that arrive by expansion (`echo "$TOKEN" >> MEMORY.md`, `$(cat f)`), interpreter writes
+ * (`python -c`, `node -e`), a relative path after `cd memory`, install/ln/rsync, and never checks caps.
+ * scanMemoryForSecrets backs this up with a warn before each memory commit.
  */
 
 type Log = { warn: (obj: object, msg: string) => void };
@@ -19,14 +24,10 @@ export interface MemoryGuardOptions {
   cwd: string;
 }
 
-const CAPS: Record<string, number> = { "USER.md": USER_MD_CAP, "MEMORY.md": MEMORY_MD_CAP };
-const JWT = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\beyJ[A-Za-z0-9_-]{30,}/;
+/** Guarded top-level memory files and their char caps (undefined: no cap). */
+const MEMORY_FILES: Record<string, number | undefined> = { "USER.md": USER_MD_CAP, "MEMORY.md": MEMORY_MD_CAP, "DREAMS.md": undefined };
 const BASH_WRITE = /(?:>>?|\btee\b|\bsed\b[^|;&]*\s-i|\bperl\b[^|;&]*\s-[a-z]*i|\bcp\b|\bmv\b|\bdd\b)/;
-const BASH_MEMORY_PATH = /(?:^|[\s"'=/>])(?:USER\.md|MEMORY\.md|memory\/)/;
-
-export function containsSecret(text: string): boolean {
-  return redact(text) !== text || JWT.test(text);
-}
+const BASH_MEMORY_PATH = /(?:^|[\s"'=/>])(?:USER\.md|MEMORY\.md|DREAMS\.md|memory\/)/;
 
 function realpathDeep(p: string): string {
   let head = p;
@@ -56,8 +57,8 @@ export function memoryTarget(raw: string, opts: MemoryGuardOptions): MemoryTarge
   else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
   const real = realpathDeep(resolve(opts.cwd, p));
   const home = realpathDeep(resolve(opts.home));
-  for (const name of Object.keys(CAPS)) {
-    if (real === join(home, name)) return { path: real, cap: CAPS[name] };
+  for (const [name, cap] of Object.entries(MEMORY_FILES)) {
+    if (real === join(home, name)) return { path: real, cap };
   }
   if (real.startsWith(`${join(home, "memory")}/`)) return { path: real, cap: undefined };
   return null;
@@ -76,10 +77,11 @@ interface EditPair {
   newText: string;
 }
 
+// Pi normalizes edit input to an `edits` array before tool_call fires (tools/edit.js).
 function editPairs(input: Record<string, unknown>): EditPair[] {
-  const raw = Array.isArray(input.edits) ? input.edits : [input];
+  const raw: unknown[] = Array.isArray(input.edits) ? input.edits : [];
   return raw
-    .filter((e): e is EditPair => typeof e?.oldText === "string" && typeof e?.newText === "string")
+    .filter((e): e is EditPair => typeof (e as EditPair)?.oldText === "string" && typeof (e as EditPair)?.newText === "string")
     .map((e) => ({ oldText: e.oldText, newText: e.newText }));
 }
 
@@ -140,4 +142,36 @@ export function createMemoryGuardExtension(opts: MemoryGuardOptions & { log: Log
       return { block: true, reason: blockReason(rule, event.toolName) };
     });
   };
+}
+
+/** Memory files (relative to home) that hold something secret-shaped; reads names only, never logs content. */
+export function scanMemoryForSecrets(home: string): string[] {
+  const found: string[] = [];
+  const check = (rel: string) => {
+    try {
+      if (containsSecret(readFileSync(join(home, rel), "utf8"))) found.push(rel);
+    } catch {
+      // Missing or unreadable.
+    }
+  };
+  for (const name of Object.keys(MEMORY_FILES)) check(name);
+  const walk = (rel: string) => {
+    let names: string[];
+    try {
+      names = readdirSync(join(home, rel));
+    } catch {
+      return;
+    }
+    for (const name of names.sort()) {
+      const child = `${rel}/${name}`;
+      try {
+        if (statSync(join(home, child)).isDirectory()) walk(child);
+        else check(child);
+      } catch {
+        // Vanished between readdir and stat.
+      }
+    }
+  };
+  walk("memory");
+  return found;
 }
