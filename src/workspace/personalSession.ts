@@ -2,8 +2,10 @@ import { existsSync } from "node:fs";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
   RPC_METHODS,
+  chatAbortParams,
   chatAckParams,
   chatMessageParams,
+  chatNewParams,
   type ChatAbortResult,
   type ChatDeliverParams,
   type ChatEventPayload,
@@ -13,7 +15,7 @@ import {
 } from "../orchestration/contracts.ts";
 import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
-import { mapSessionEvent, newRunAccumulator, replyText, runUsage, type RunAccumulator } from "./events.ts";
+import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborted, runUsage, type RunAccumulator } from "./events.ts";
 import { Outbox } from "./outbox.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
@@ -26,7 +28,16 @@ const CONTEXT_CUSTOM_TYPE = "workspace_context";
 /** The slice of Pi's AgentSession the host drives; tests supply a fake. */
 export type ChatSession = Pick<
   AgentSession,
-  "isStreaming" | "isCompacting" | "pendingMessageCount" | "prompt" | "abort" | "subscribe" | "sendCustomMessage" | "getContextUsage" | "dispose"
+  | "isStreaming"
+  | "isCompacting"
+  | "pendingMessageCount"
+  | "prompt"
+  | "abort"
+  | "clearQueue"
+  | "subscribe"
+  | "sendCustomMessage"
+  | "getContextUsage"
+  | "dispose"
 >;
 
 /** Opens `sessionFile` when given, else creates a fresh chat session. */
@@ -54,6 +65,14 @@ interface OpenRun {
   acc: RunAccumulator;
   deltaBuffer: string;
   deltaTimer: ReturnType<typeof setTimeout> | null;
+  abortRequested: boolean;
+  suppressReply: boolean;
+}
+
+/** A user message handed to Pi that it hasn't yet turned into a user message_start. */
+interface PendingInbound {
+  messageId: string;
+  text: string;
 }
 
 /** The owner's single long-lived Pi session behind the chat/* verbs, replying through the outbox. */
@@ -72,6 +91,10 @@ export class PersonalSession {
   private resetting = false;
   private run: OpenRun | null = null;
   private lastInboundId: string | undefined;
+  private unconsumed: PendingInbound[] = [];
+  // Ids being handled right now; recent-ids.json only records a message once it's accepted.
+  private readonly inFlightIds = new Set<string>();
+  private lastSettleNotified = false;
   private pendingContext: string[] = [];
   private compactionWaiters: Array<() => void> = [];
 
@@ -107,35 +130,49 @@ export class PersonalSession {
 
   handlers(): Record<string, (params: unknown) => Promise<unknown>> {
     return {
-      [RPC_METHODS.chatMessage]: (p) => this.handleMessage(chatMessageParams.parse(p)),
-      [RPC_METHODS.chatAbort]: () => this.handleAbort(),
-      [RPC_METHODS.chatNew]: () => this.handleNew(),
+      [RPC_METHODS.chatMessage]: async (p) => {
+        const params = chatMessageParams.parse(p);
+        this.assertPrincipal(params.principalId);
+        return this.handleMessage(params);
+      },
+      [RPC_METHODS.chatAbort]: async (p) => {
+        this.assertPrincipal(chatAbortParams.parse(p).principalId);
+        return this.handleAbort();
+      },
+      [RPC_METHODS.chatNew]: async (p) => {
+        this.assertPrincipal(chatNewParams.parse(p).principalId);
+        return this.handleNew();
+      },
       [RPC_METHODS.chatAck]: async (p) => this.handleAck(chatAckParams.parse(p).outboxId),
     };
   }
 
   async handleMessage(params: ChatMessageParams): Promise<ChatMessageResult> {
-    if (this.recentIds.has(params.messageId)) return { accepted: true, mode: "duplicate" };
-    // Recorded before queueing so a resend while this one is held still counts as a duplicate.
-    this.recentIds.add(params.messageId);
+    const id = params.messageId;
+    if (this.recentIds.has(id) || this.inFlightIds.has(id)) return { accepted: true, mode: "duplicate" };
+    this.inFlightIds.add(id);
     try {
+      let mode: ChatMessageResult["mode"];
       if (params.kind === "context") {
         await this.enqueue(() => this.appendContext(params.text));
-        return { accepted: true, mode: "context" };
+        mode = "context";
+      } else {
+        mode = await this.enqueue(() => this.promptOrSteer(id, formatUserText(params)));
       }
-      const mode = await this.enqueue(() => this.promptOrSteer(params.messageId, formatUserText(params)));
+      this.recentIds.add(id);
       return { accepted: true, mode };
-    } catch (err) {
-      this.recentIds.delete(params.messageId); // not taken: let the bot's retry through
-      throw err;
+    } finally {
+      this.inFlightIds.delete(id);
     }
   }
 
+  // Queued steers are dropped: otherwise Pi continues on them after the abort and abort() waits out that whole run.
   async handleAbort(): Promise<ChatAbortResult> {
     const session = this.session;
     if (!session) return { aborted: false };
     const aborted = session.isStreaming;
-    if (this.run) this.run.acc.aborted = true;
+    this.dropQueued(session);
+    if (this.run) this.run.abortRequested = true;
     await session.abort();
     return { aborted };
   }
@@ -146,11 +183,19 @@ export class PersonalSession {
       try {
         await this.beforeNewSession();
         const old = this.session;
-        // Abort while still subscribed, so the retired run closes with turn_end{aborted}.
-        if (old?.isStreaming) await old.abort();
+        if (old) {
+          this.dropQueued(old);
+          if (this.run) {
+            this.run.abortRequested = true;
+            this.run.suppressReply = true;
+          }
+          // Abort while still subscribed, so the retired run closes with turn_end{aborted}.
+          if (old.isStreaming) await old.abort();
+        }
+        // Build the replacement first: if that fails, the old session stays attached and usable.
+        const { session, sessionFile } = await this.opts.factory({ sessionFile: null });
         this.detach();
         old?.dispose();
-        const { session, sessionFile } = await this.opts.factory({ sessionFile: null });
         this.attach(session, sessionFile);
         writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile });
         log.info({ sessionFile }, "started a new chat session");
@@ -193,6 +238,10 @@ export class PersonalSession {
       await this.waitForCompaction();
       const session = this.requireSession();
       const mode = session.isStreaming ? "steer" : "prompt";
+      // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
+      const pending: PendingInbound = { messageId, text };
+      this.unconsumed.push(pending);
+      let accepted = false;
       try {
         await new Promise<void>((resolve, reject) => {
           session
@@ -200,21 +249,50 @@ export class PersonalSession {
               streamingBehavior: "steer",
               preflightResult: (ok) => {
                 if (!ok) return;
-                this.lastInboundId = messageId;
+                accepted = true;
                 resolve();
               },
             })
             .then(resolve, (err) => {
-              reject(err);
-              log.error({ err, messageId }, "chat prompt failed");
+              if (!accepted) return reject(err);
+              log.error({ err, messageId }, "chat prompt failed after it was accepted");
+              // Pi settles the run before this rejection lands; don't repeat a notice that settle already sent.
+              if (!this.lastSettleNotified) this.deliverFailure(err, messageId);
             });
         });
         return mode;
       } catch (err) {
+        this.unconsumed = this.unconsumed.filter((p) => p !== pending);
         if (attempt === 0 && isCompactionBusy(err)) continue;
+        log.error({ err, messageId }, "chat prompt failed");
         throw err;
       }
     }
+  }
+
+  private dropQueued(session: ChatSession): void {
+    const { steering, followUp } = session.clearQueue();
+    if (steering.length || followUp.length) log.info({ dropped: steering.length + followUp.length }, "dropped queued messages");
+    this.unconsumed = [];
+  }
+
+  // Pi drains the steer queue only at the start of its next run, so a steer queued after the loop's last drain would wait for the next inbound message.
+  private requeueStranded(session: ChatSession): void {
+    const { steering, followUp } = session.clearQueue();
+    for (const text of [...steering, ...followUp]) {
+      const i = this.unconsumed.findIndex((p) => p.text === text);
+      const messageId = i === -1 ? undefined : this.unconsumed.splice(i, 1)[0].messageId;
+      log.info({ messageId }, "re-prompting a steer stranded at settle");
+      void this.enqueue(() => this.promptOrSteer(messageId ?? "", text)).catch((err) => this.deliverFailure(err, messageId));
+    }
+  }
+
+  private consumeInbound(text: string): void {
+    const i = this.unconsumed.findIndex((p) => p.text === text);
+    if (i === -1) return;
+    // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
+    this.lastInboundId = this.unconsumed[i].messageId || this.lastInboundId;
+    this.unconsumed.splice(0, i + 1);
   }
 
   // Mid-run, sendCustomMessage(triggerTurn:false) would mutate the live message list; wait for settle.
@@ -227,7 +305,9 @@ export class PersonalSession {
     await session.sendCustomMessage({ customType: CONTEXT_CUSTOM_TYPE, content: text, display: true }, { triggerTurn: false });
   }
 
-  private async flushPendingContext(session: ChatSession): Promise<void> {
+  private async flushPendingContext(): Promise<void> {
+    const session = this.requireSession();
+    if (session.isStreaming || this.run) return;
     const texts = this.pendingContext;
     this.pendingContext = [];
     for (const text of texts) {
@@ -267,13 +347,23 @@ export class PersonalSession {
       this.releaseCompactionWaiters();
       return;
     }
+    if (event.type === "message_start" && event.message.role === "user") {
+      this.consumeInbound(userText(event.message));
+    }
     if (event.type === "agent_start" && !this.run) {
-      this.run = { turnId: this.newId(), acc: newRunAccumulator(), deltaBuffer: "", deltaTimer: null };
+      this.run = {
+        turnId: this.newId(),
+        acc: newRunAccumulator(),
+        deltaBuffer: "",
+        deltaTimer: null,
+        abortRequested: false,
+        suppressReply: false,
+      };
       this.emit({ type: "turn_start" });
       return;
     }
     if (event.type === "agent_settled") {
-      void this.settle(session);
+      this.settle(session);
       return;
     }
     const run = this.run;
@@ -284,31 +374,51 @@ export class PersonalSession {
     }
   }
 
-  private async settle(session: ChatSession): Promise<void> {
+  private settle(session: ChatSession): void {
     const run = this.run;
     this.run = null;
+    this.lastSettleNotified = false;
     if (run) {
       this.flushDelta(run);
-      this.emitFor(run, { type: "turn_end", aborted: run.acc.aborted });
-      if (session.pendingMessageCount > 0 || session.isCompacting) {
-        log.warn({ turnId: run.turnId, pending: session.pendingMessageCount }, "agent_settled with queued work; delivering anyway");
-      }
-      const text = replyText(run.acc);
-      if (text !== null) {
-        const entry: ChatDeliverParams = {
-          outboxId: this.newId(),
-          principalId: this.opts.principalId,
-          kind: "reply",
-          text,
-          ...(this.lastInboundId ? { replyTo: this.lastInboundId } : {}),
-          usage: runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent),
-        };
-        this.outbox.append(entry);
-        this.send(entry);
+      const aborted = runAborted(run.acc, run.abortRequested);
+      this.emitFor(run, { type: "turn_end", aborted });
+      if (!aborted && !run.suppressReply) {
+        const usage = runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent);
+        if (run.acc.errorMessage !== undefined) {
+          this.lastSettleNotified = true;
+          this.deliver(failureNotice(run.acc.errorMessage), this.lastInboundId, usage);
+        } else {
+          const text = replyText(run.acc);
+          if (text !== null) this.deliver(text, this.lastInboundId, usage);
+        }
       }
     }
     if (this.pendingContext.length) {
-      await this.flushPendingContext(session).catch((err) => log.error({ err }, "failed to append buffered context"));
+      void this.enqueue(() => this.flushPendingContext()).catch((err) => log.error({ err }, "failed to append buffered context"));
+    }
+    if (session.pendingMessageCount > 0 && !session.isCompacting) this.requeueStranded(session);
+  }
+
+  private deliver(text: string, replyTo: string | undefined, usage?: ChatDeliverParams["usage"]): void {
+    const entry: ChatDeliverParams = {
+      outboxId: this.newId(),
+      principalId: this.opts.principalId,
+      kind: "reply",
+      text,
+      ...(replyTo ? { replyTo } : {}),
+      ...(usage ? { usage } : {}),
+    };
+    this.outbox.append(entry);
+    this.send(entry);
+  }
+
+  private deliverFailure(err: unknown, replyTo: string | undefined): void {
+    this.deliver(failureNotice(err instanceof Error ? err.message : String(err)), replyTo || undefined);
+  }
+
+  private assertPrincipal(principalId: string): void {
+    if (principalId !== this.opts.principalId) {
+      throw new Error(`principal mismatch: this workspace serves ${this.opts.principalId}, got ${principalId}`);
     }
   }
 
@@ -361,6 +471,16 @@ export function formatUserText(params: Pick<ChatMessageParams, "text" | "voice" 
   // The workspace model is text-only; attachments reach it as links it can fetch with its tools.
   for (const a of params.attachments ?? []) text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}]`;
   return text;
+}
+
+function userText(message: { content?: unknown }): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((c): c is { type: "text"; text: string } => c?.type === "text" && typeof c.text === "string")
+    .map((c) => c.text)
+    .join("");
 }
 
 function isCompactionBusy(err: unknown): boolean {

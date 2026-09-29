@@ -7,21 +7,28 @@ import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../o
 import { PersonalSession, type ChatSession, type ChatSessionFactory, type ChatTransport } from "./personalSession.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
-// Mirrors the Pi behaviour the host relies on: an idle prompt() awaits preflight before flipping
-// isStreaming and then resolves only when the run ends; a streaming prompt() queues a steer.
+// Mirrors the Pi 0.84 behaviour the host relies on (core/agent-session.js, pi-agent-core agent-loop.js):
+// - an idle prompt() awaits preflight, flips isStreaming, emits the user message, and resolves when the run settles;
+// - a streaming prompt() queues a steer, which the loop drains (a user message_start each) before a normal finish;
+// - abort() skips the drain, and with steers still queued Pi continues on them, so abort() waits out that run;
+// - clearQueue() empties the steer queue and returns it.
 class FakeSession {
   isStreaming = false;
   isCompacting = false;
-  pendingMessageCount = 0;
   prompts: Array<{ text: string; options?: PromptOptions }> = [];
   steers: string[] = [];
+  queue: string[] = [];
   customs: Array<{ content: unknown; options: unknown }> = [];
   aborts = 0;
   disposed = false;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
-  private endRun: (() => void) | null = null;
+  private idleWaiters: Array<() => void> = [];
 
   constructor(readonly file: string) {}
+
+  get pendingMessageCount(): number {
+    return this.queue.length;
+  }
 
   subscribe(listener: (e: AgentSessionEvent) => void): () => void {
     this.listeners.add(listener);
@@ -37,6 +44,7 @@ class FakeSession {
     if (this.isStreaming) {
       if (!options?.streamingBehavior) throw new Error("Agent is already processing");
       this.steers.push(text);
+      this.queue.push(text);
       options.preflightResult?.(true);
       return;
     }
@@ -44,30 +52,37 @@ class FakeSession {
     options?.preflightResult?.(true);
     this.isStreaming = true;
     this.emit({ type: "agent_start" });
-    await new Promise<void>((r) => (this.endRun = r));
+    this.emitUser(text);
+    await this.waitForIdle();
   }
 
-  finish(text: string, stopReason = "stop"): void {
+  clearQueue(): { steering: string[]; followUp: string[] } {
+    const steering = this.queue;
+    this.queue = [];
+    return { steering, followUp: [] };
+  }
+
+  finish(text: string, stopReason = "stop", errorMessage?: string): void {
+    this.drain();
     this.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls -la" } });
     this.emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: "ok", isError: false });
-    this.emit({
-      type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text }],
-        stopReason,
-        usage: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, cost: { total: 0 } },
-      },
-    });
-    this.isStreaming = false;
-    this.emit({ type: "agent_settled" });
-    this.endRun?.();
-    this.endRun = null;
+    this.endMessage(text, stopReason, errorMessage);
+    this.settle();
+  }
+
+  /** A steer queued after the loop's last drain: the run settles with it still pending. */
+  settleStranded(text: string): void {
+    this.endMessage(text, "stop");
+    this.settle();
   }
 
   async abort(): Promise<void> {
     this.aborts++;
-    if (this.isStreaming) this.finish("", "aborted");
+    if (!this.isStreaming) return;
+    this.endMessage("", "aborted");
+    if (this.queue.length === 0) return this.settle();
+    this.drain(); // _handlePostAgentRun sees queued messages and continues
+    await this.waitForIdle();
   }
 
   async sendCustomMessage(message: { content: unknown }, options?: unknown): Promise<void> {
@@ -80,6 +95,37 @@ class FakeSession {
 
   dispose(): void {
     this.disposed = true;
+  }
+
+  private emitUser(text: string): void {
+    this.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text }] } });
+  }
+
+  private drain(): void {
+    for (const text of this.queue.splice(0)) this.emitUser(text);
+  }
+
+  private endMessage(text: string, stopReason: string, errorMessage?: string): void {
+    this.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+        stopReason,
+        ...(errorMessage ? { errorMessage } : {}),
+        usage: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, cost: { total: 0 } },
+      },
+    });
+  }
+
+  private settle(): void {
+    this.isStreaming = false;
+    this.emit({ type: "agent_settled" });
+    for (const w of this.idleWaiters.splice(0)) w();
+  }
+
+  private waitForIdle(): Promise<void> {
+    return this.isStreaming ? new Promise((r) => this.idleWaiters.push(r)) : Promise.resolve();
   }
 }
 
@@ -158,6 +204,11 @@ const msg = (messageId: string, text: string, extra: Partial<ChatMessageParams> 
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+const TIMED_OUT = Symbol("timed out");
+/** Races a call that must not wait on a continuation run; the fake only ends such a run on finish(). */
+const within = <T>(p: Promise<T>, ms = 100): Promise<T | typeof TIMED_OUT> =>
+  Promise.race([p, new Promise<typeof TIMED_OUT>((r) => setTimeout(() => r(TIMED_OUT), ms))]);
+
 describe("PersonalSession routing", () => {
   test("idle message starts a turn; a message during the turn steers the same session", async () => {
     const { host, sessions } = setup();
@@ -212,6 +263,27 @@ describe("PersonalSession idempotency", () => {
     await second.host.start();
     expect(await second.host.handleMessage(msg("m1", "hi"))).toEqual({ accepted: true, mode: "duplicate" });
     expect(second.sessions[0].prompts).toHaveLength(0);
+  });
+
+  test("an id is recorded as seen only once accepted, but an in-flight resend is still a duplicate", async () => {
+    const stateDir = tempDir();
+    const { host, sessions } = setup({ stateDir });
+    await host.start();
+    const s = sessions[0];
+    s.isCompacting = true;
+    const pending = host.handleMessage(msg("m1", "hi"));
+    await tick();
+    expect(await host.handleMessage(msg("m1", "hi"))).toEqual({ accepted: true, mode: "duplicate" });
+
+    // A host restarted before acceptance must not treat the bot's retry as a duplicate.
+    const restarted = setup({ stateDir });
+    await restarted.host.start();
+    expect((await restarted.host.handleMessage(msg("m1", "hi"))).mode).toBe("prompt");
+
+    s.isCompacting = false;
+    s.emit({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false });
+    expect((await pending).mode).toBe("prompt");
+    expect(await host.handleMessage(msg("m1", "hi"))).toEqual({ accepted: true, mode: "duplicate" });
   });
 
   test("a message whose prompt fails is not remembered, so a retry goes through", async () => {
@@ -340,10 +412,90 @@ describe("PersonalSession chat/abort", () => {
     expect(s.prompts).toHaveLength(2);
   });
 
+  test("drops a queued steer instead of running it, so the abort returns and nothing is delivered", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "long job"));
+    expect((await host.handleMessage(msg("m2", "and also"))).mode).toBe("steer");
+    const s = sessions[0];
+
+    expect(await within(host.handleAbort())).toEqual({ aborted: true });
+    expect(s.isStreaming).toBe(false);
+    expect(s.pendingMessageCount).toBe(0);
+    await tick();
+    expect(transport.delivered()).toHaveLength(0);
+    expect(transport.events().filter((e) => e.type === "turn_end")).toEqual([{ type: "turn_end", aborted: true }]);
+    expect(s.prompts).toHaveLength(2);
+  });
+
   test("reports aborted:false when idle", async () => {
     const { host } = setup();
     await host.start();
     expect(await host.handleAbort()).toEqual({ aborted: false });
+  });
+});
+
+describe("PersonalSession stranded steers", () => {
+  test("a steer still queued at settle is re-prompted, and each reply points at the message it answers", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    expect((await host.handleMessage(msg("m2", "second"))).mode).toBe("steer");
+    const s = sessions[0];
+
+    s.settleStranded("answer to first");
+    await tick();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(transport.delivered().map((d) => [d.text, d.replyTo])).toEqual([["answer to first", "m1"]]);
+    expect(s.pendingMessageCount).toBe(0);
+    expect(s.isStreaming).toBe(true);
+    expect(s.prompts.map((p) => p.text)).toEqual(["first", "second", "second"]);
+
+    s.finish("answer to second");
+    await tick();
+    expect(transport.delivered().map((d) => [d.text, d.replyTo])).toEqual([
+      ["answer to first", "m1"],
+      ["answer to second", "m2"],
+    ]);
+  });
+});
+
+describe("PersonalSession failures", () => {
+  test("an errored run delivers a one-line failure notice instead of its partial text", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    sessions[0].finish("partial answ", "error", "provider returned 502\nretry budget exhausted");
+    await tick();
+    expect(transport.delivered()).toMatchObject([{ kind: "reply", text: "⚠️ Turn failed: provider returned 502", replyTo: "m1" }]);
+    expect(transport.events().at(-1)).toEqual({ type: "turn_end", aborted: false });
+  });
+
+  test("a prompt rejected after acceptance delivers a failure notice", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const s = sessions[0];
+    s.prompt = async (_text, options) => {
+      options?.preflightResult?.(true);
+      throw new Error("extension blew up");
+    };
+    expect((await host.handleMessage(msg("m1", "hi"))).mode).toBe("prompt");
+    await tick();
+    expect(transport.delivered()).toMatchObject([{ kind: "reply", text: "⚠️ Turn failed: extension blew up", replyTo: "m1" }]);
+  });
+});
+
+describe("PersonalSession principal", () => {
+  test("chat verbs for another principal are rejected", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    const handlers = host.handlers();
+    await expect(handlers["chat/message"]({ ...msg("m1", "hi"), principalId: "mallory" })).rejects.toThrow("principal mismatch");
+    await expect(handlers["chat/abort"]({ principalId: "mallory" })).rejects.toThrow("principal mismatch");
+    await expect(handlers["chat/new"]({ principalId: "mallory" })).rejects.toThrow("principal mismatch");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].prompts).toHaveLength(0);
+    expect((await handlers["chat/message"](msg("m1", "hi"))) as unknown).toEqual({ accepted: true, mode: "prompt" });
   });
 });
 
@@ -367,7 +519,7 @@ describe("PersonalSession chat/new", () => {
     await tick();
     expect(host.isResetting).toBe(true);
     expect(old.aborts).toBe(1);
-    expect(old.disposed).toBe(true);
+    expect(old.disposed).toBe(false);
 
     const held = host.handleMessage(msg("m2", "first in new"));
     await tick();
@@ -380,6 +532,50 @@ describe("PersonalSession chat/new", () => {
     expect((await held).mode).toBe("prompt");
     expect(sessions[1].prompts.map((p) => p.text)).toEqual(["first in new"]);
     expect(host.isResetting).toBe(false);
+    expect(old.disposed).toBe(true);
+  });
+
+  test("a steer queued on the old session is dropped, not answered from the retired conversation", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "old convo"));
+    await host.handleMessage(msg("m2", "old steer"));
+    const old = sessions[0];
+    expect(old.pendingMessageCount).toBe(1);
+
+    const result = await within(host.handleNew());
+    expect(result).not.toBe(TIMED_OUT);
+    expect(old.isStreaming).toBe(false);
+    expect(old.pendingMessageCount).toBe(0);
+    expect(transport.delivered()).toHaveLength(0);
+    expect(sessions).toHaveLength(2);
+    expect(host.currentSessionFile).toBe(sessions[1].file);
+  });
+
+  test("a factory failure keeps the old session attached and usable", async () => {
+    const stateDir = tempDir();
+    const sessions: FakeSession[] = [];
+    const factory: ChatSessionFactory = async ({ sessionFile }) => {
+      if (sessions.length > 0) throw new Error("network down");
+      const s = new FakeSession(sessionFile ?? join(stateDir, "chat-1.jsonl"));
+      sessions.push(s);
+      return { session: s as unknown as ChatSession, sessionFile: s.file };
+    };
+    const { host, transport } = setup({ stateDir, factory });
+    await host.start();
+    const before = readWorkspaceState(stateDir);
+
+    await expect(host.handleNew()).rejects.toThrow("network down");
+    const old = sessions[0];
+    expect(old.disposed).toBe(false);
+    expect(host.isResetting).toBe(false);
+    expect(host.currentSessionFile).toBe(old.file);
+    expect(readWorkspaceState(stateDir)).toEqual(before);
+
+    expect((await host.handleMessage(msg("m1", "still there?"))).mode).toBe("prompt");
+    old.finish("yes");
+    await tick();
+    expect(transport.delivered().map((d) => d.text)).toEqual(["yes"]);
   });
 });
 

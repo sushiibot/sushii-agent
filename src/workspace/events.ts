@@ -14,17 +14,19 @@ export interface RunAccumulator {
   cacheRead: number;
   cacheWrite: number;
   costUsd: number;
-  aborted: boolean;
+  lastStopReason: string | undefined;
+  errorMessage: string | undefined;
 }
 
 export function newRunAccumulator(): RunAccumulator {
-  return { finalText: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, aborted: false };
+  return { finalText: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, lastStopReason: undefined, errorMessage: undefined };
 }
 
 interface AssistantLike {
   role: "assistant";
   content: Array<{ type: string; text?: string }>;
   stopReason?: string;
+  errorMessage?: string;
   usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
 }
 
@@ -65,7 +67,8 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
       acc.cacheRead += u?.cacheRead ?? 0;
       acc.cacheWrite += u?.cacheWrite ?? 0;
       acc.costUsd += u?.cost?.total ?? 0;
-      if (msg.stopReason === "aborted") acc.aborted = true;
+      acc.lastStopReason = msg.stopReason;
+      acc.errorMessage = msg.stopReason === "error" ? (msg.errorMessage ?? "unknown error") : undefined;
       acc.finalText = assistantText(msg);
       return [];
     }
@@ -74,9 +77,15 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
   }
 }
 
-/** The reply to deliver for a settled run, or null when there is nothing to say. */
+/** Aborted when the last message says so, or when an abort landed before the run produced a complete reply. */
+export function runAborted(acc: RunAccumulator, abortRequested: boolean): boolean {
+  if (acc.lastStopReason === "aborted") return true;
+  return abortRequested && acc.lastStopReason !== "stop" && acc.lastStopReason !== "length";
+}
+
+/** The reply to deliver for a settled, non-aborted run, or null when there is nothing to say. */
 export function replyText(acc: RunAccumulator): string | null {
-  if (acc.aborted) return null;
+  if (acc.lastStopReason === "error") return null;
   const text = acc.finalText.trim();
   if (!text || text === NO_REPLY) return null;
   return acc.finalText;
@@ -93,4 +102,9 @@ export function runUsage(acc: RunAccumulator, model: string, contextPercent: num
     ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}),
     ...(contextPercent != null ? { contextPct: contextPercent } : {}),
   };
+}
+
+export function failureNotice(reason: string): string {
+  const line = reason.split("\n").map((l) => l.trim()).find(Boolean) ?? "unknown error";
+  return `⚠️ Turn failed: ${line.length > 200 ? `${line.slice(0, 199)}…` : line}`;
 }
