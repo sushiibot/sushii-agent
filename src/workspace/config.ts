@@ -26,6 +26,10 @@ export interface WorkspaceConfig {
   heartbeat: JobSchedule | null;
   /** Most proactive messages all scheduled jobs together may send in any 24 h. */
   proactiveDailyCap: number;
+  /** Model-judged gate on the main agent's risky tool calls. Absent means off. */
+  autoMode?: boolean;
+  /** OpenRouter model id of the auto-mode judge. */
+  judgeModel?: string;
 }
 
 export const DEFAULT_HEARTBEAT_MINUTES = 120;
@@ -43,6 +47,9 @@ function loadHeartbeat(env: NodeJS.ProcessEnv): JobSchedule | null {
   if (!active) throw new WorkspaceConfigError(`WORKSPACE_HEARTBEAT_ACTIVE must be HH:MM-HH:MM or "always", got "${activeRaw}"`);
   return { when, active };
 }
+
+/** Cheap and fast on OpenRouter; already the screening image judge. */
+export const DEFAULT_JUDGE_MODEL = "google/gemini-3.5-flash-lite";
 
 export class WorkspaceConfigError extends Error {}
 
@@ -64,6 +71,8 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
   const heartbeat = loadHeartbeat(env);
   const capRaw = env.WORKSPACE_PROACTIVE_DAILY_CAP?.trim() || String(DEFAULT_PROACTIVE_DAILY_CAP);
   if (!/^\d+$/.test(capRaw)) throw new WorkspaceConfigError(`WORKSPACE_PROACTIVE_DAILY_CAP must be a whole number, got "${capRaw}"`);
+  const autoMode = env.WORKSPACE_AUTO_MODE?.trim().toLowerCase() || "on";
+  if (autoMode !== "on" && autoMode !== "off") throw new WorkspaceConfigError(`WORKSPACE_AUTO_MODE must be "on" or "off", got "${autoMode}"`);
   return {
     orchUrl: env.ORCH_URL || "ws://localhost:8788",
     orchSecret,
@@ -82,5 +91,7 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
     consolidateAt,
     heartbeat,
     proactiveDailyCap: Number(capRaw),
+    autoMode: autoMode === "on",
+    judgeModel: env.WORKSPACE_JUDGE_MODEL?.trim() || DEFAULT_JUDGE_MODEL,
   };
 }

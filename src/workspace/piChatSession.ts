@@ -2,7 +2,8 @@ import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "..
 import type { AgentSession, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
-import type { WorkspaceConfig } from "./config.ts";
+import { DEFAULT_JUDGE_MODEL, type WorkspaceConfig } from "./config.ts";
+import { createAutoModeExtension, judgeCompletion, registerJudgeModel } from "./autoMode.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
 import { createMemoryGuardExtension } from "./memoryGuard.ts";
@@ -19,6 +20,7 @@ type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
 const log = getLogger("workspace.model");
 const guardLog = getLogger("workspace.guard");
 const memoryLog = getLogger("workspace.memory");
+const autoModeLog = getLogger("workspace.automode");
 
 const PROVIDER_ID = "sushii-workspace-openrouter";
 const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
@@ -91,6 +93,9 @@ export function createPiChatSessionFactory(
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
     });
+    const judge = config.autoMode
+      ? registerJudgeModel(modelRuntime, { model: config.judgeModel ?? DEFAULT_JUDGE_MODEL, apiKey: config.apiKey, baseUrl: config.baseUrl })
+      : null;
     const chatgptModel = config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
     const model = await selectInitialModel({
       config,
@@ -134,6 +139,21 @@ export function createPiChatSessionFactory(
         { name: "sushii-model-fallback", factory: fallbackExtension },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
+        // After the deterministic guards, so their blocks cost no judge call or owner prompt.
+        ...(judge
+          ? [
+              {
+                name: "sushii-auto-mode",
+                factory: createAutoModeExtension({
+                  judge,
+                  complete: judgeCompletion(modelRuntime),
+                  agentDir: config.agentDir,
+                  currentRunId: () => observerRef.current?.currentRunId() ?? null,
+                  log: autoModeLog,
+                }),
+              },
+            ]
+          : []),
         { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
         ...(opts.subagents && delegate.length
           ? [{ name: "sushii-delegate", factory: opts.subagents.extension({ depth: 0, currentRunId: () => observerRef.current?.currentRunId() ?? null }) }]
