@@ -258,6 +258,11 @@ export class OrchestrationServer {
             error: { code: -32602, message: "invalid register params" },
           }),
         );
+        ws.close(1008, "invalid register params");
+        return;
+      }
+      if (ws.data.conn) {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.data.id, error: { code: -32600, message: "already registered" } }));
         return;
       }
       const params = paramsResult.data;
@@ -277,13 +282,23 @@ export class OrchestrationServer {
         state: params.state,
       };
       const existing = this.sockets.get(params.runnerId);
+      const existingConn = existing?.data.conn;
+      if (existing && existingConn && (existingConn.role !== conn.role || existingConn.principalId !== conn.principalId)) {
+        // Taking over would silently move a task runner's dispatch slot onto a workspace (or vice versa).
+        const reason = existingConn.role !== conn.role ? "runnerId in use by another role" : "runnerId in use by another principal";
+        logger.warn({ runnerId: params.runnerId, role: conn.role, liveRole: existingConn.role }, reason);
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.data.id, error: { code: -32001, message: reason } }));
+        ws.close(ORCH_CLOSE.replaced, reason);
+        return;
+      }
       if (existing && existing !== ws) {
         existing.data.runnerId = null;
-        existing.close();
+        if (conn.role === "workspace") existing.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection");
+        else existing.close();
       }
       if (conn.role === "workspace" && conn.principalId) {
         const previous = this.workspaces.get(conn.principalId);
-        if (previous && previous !== ws) {
+        if (previous && previous !== ws && previous !== existing) {
           logger.info({ principalId: conn.principalId, runnerId: conn.runnerId }, "replacing previous workspace connection");
           previous.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection");
         }

@@ -59,6 +59,7 @@ export class OrchestrationClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private resolveClosed: (() => void) | null = null;
   private lastCloseCode: number | null = null;
+  private socketClosed: Promise<void> = Promise.resolve();
 
   constructor(options: OrchestrationClientOptions) {
     this.options = options;
@@ -72,6 +73,7 @@ export class OrchestrationClient {
     let backoff = 500;
     const cap = this.options.backoffCapMs ?? 30_000;
     while (this.shouldRun) {
+      this.lastCloseCode = null;
       try {
         await this.connect();
         this.listen();
@@ -81,14 +83,27 @@ export class OrchestrationClient {
         await new Promise<void>((res) => (this.resolveClosed = res));
       } catch (err) {
         logger.warn({ err }, "runner connection attempt failed");
+        // The server sends its rejection before its close frame; wait for the close code so the delay below sees it.
+        await this.awaitSocketClosed(2_000);
       } finally {
         this.stopHeartbeat();
       }
       if (!this.shouldRun) break;
-      // Two live workspaces for one principal would evict each other on every reconnect; wait the cap.
+      // Two live workspaces (or a runnerId clash) would evict each other on every reconnect; wait the cap.
       const delay = this.lastCloseCode === ORCH_CLOSE.replaced ? cap : backoff;
       await new Promise((r) => setTimeout(r, delay));
       backoff = Math.min(backoff * 2, cap);
+    }
+  }
+
+  private async awaitSocketClosed(timeoutMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<boolean>((r) => (timer = setTimeout(() => r(true), timeoutMs)));
+    const timedOutFirst = await Promise.race([this.socketClosed.then(() => false), timedOut]);
+    clearTimeout(timer);
+    if (timedOutFirst && this.ws) {
+      this.ws.close();
+      this.ws = null;
     }
   }
 
@@ -117,8 +132,11 @@ export class OrchestrationClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.options.url);
       this.ws = ws;
+      let markClosed = () => {};
+      this.socketClosed = new Promise<void>((r) => (markClosed = r));
 
       ws.addEventListener("close", (event) => {
+        markClosed();
         this.lastCloseCode = event.code;
         if (event.code === ORCH_CLOSE.unauthorized || event.code === ORCH_CLOSE.unsupportedVersion) {
           logger.error(
@@ -126,10 +144,10 @@ export class OrchestrationClient {
             "orchestrator rejected registration; retrying with backoff",
           );
         } else if (event.code === ORCH_CLOSE.replaced) {
-          logger.warn({ runnerId: this.options.runnerId, reason: event.reason }, "connection replaced by a newer one for the same principal");
+          logger.warn({ runnerId: this.options.runnerId, reason: event.reason }, "orchestrator closed the connection as a duplicate");
         }
         this.rejectAllPending(new Error("connection closed"));
-        this.ws = null;
+        if (this.ws === ws) this.ws = null;
         this.resolveClosed?.();
         this.resolveClosed = null;
       });

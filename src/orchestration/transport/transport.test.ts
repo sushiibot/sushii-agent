@@ -510,6 +510,98 @@ describe("runner registration auth", () => {
     }
   });
 
+  test("a workspace re-registering with the same runnerId closes the old socket with 4409", async () => {
+    const { server } = authServer();
+    try {
+      const first = await rawRegister(server.url, { runnerId: "ws", role: "workspace", secret: SECRET });
+      expect(first.ok).toBe(true);
+      const firstClosed = waitForClose(first.ws);
+      const second = await rawRegister(server.url, { runnerId: "ws", role: "workspace", secret: SECRET });
+      expect(second.ok).toBe(true);
+      expect(await firstClosed).toBe(ORCH_CLOSE.replaced);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(second.ws.readyState).toBe(second.ws.OPEN);
+      expect(server.isConnected("ws")).toBe(true);
+      expect(server.getWorkspaceConnection(PRINCIPAL)?.runnerId).toBe("ws");
+      second.ws.close();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a register whose runnerId is live under another role is refused without disturbing the live one", async () => {
+    const disconnects: string[] = [];
+    const registered: string[] = [];
+    const server = new OrchestrationServer({
+      onEvent: () => {},
+      onRegister: (id) => registered.push(id),
+      onDisconnect: (id) => disconnects.push(id),
+      secretPrincipals: { [SECRET]: PRINCIPAL },
+    });
+    server.listen();
+    try {
+      const runner = await rawRegister(server.url, { runnerId: "r1", secret: SECRET });
+      expect(runner.ok).toBe(true);
+      const hijack = await rawRegister(server.url, { runnerId: "r1", role: "workspace", secret: SECRET });
+      expect(hijack.ok).toBe(false);
+      expect(hijack.closeCode).toBe(ORCH_CLOSE.replaced);
+      expect(hijack.closeReason).toBe("runnerId in use by another role");
+      expect(runner.ws.readyState).toBe(runner.ws.OPEN);
+      expect(server.getConnection("r1")?.role).toBe("task-runner");
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toBeUndefined();
+      expect(registered).toEqual(["r1"]);
+      expect(disconnects).toEqual([]);
+      runner.ws.close();
+
+      const ws = await rawRegister(server.url, { runnerId: "w1", role: "workspace", secret: SECRET });
+      expect(ws.ok).toBe(true);
+      const clash = await rawRegister(server.url, { runnerId: "w1", secret: SECRET });
+      expect(clash.closeCode).toBe(ORCH_CLOSE.replaced);
+      expect(server.getConnection("w1")?.role).toBe("workspace");
+      expect(registered).toEqual(["r1"]);
+      ws.ws.close();
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a malformed register closes the socket", async () => {
+    const { server } = authServer();
+    try {
+      for (const bad of [{ protocolVersion: "2" }, { protocolVersion: null }, { secret: null }, { role: "admin" }]) {
+        const r = await rawRegister(server.url, { runnerId: "r1", ...bad });
+        expect(r.ok).toBe(false);
+        expect(r.closeCode).toBe(1008);
+      }
+      expect(server.isConnected("r1")).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a second register on an already-registered socket is refused and leaves the first intact", async () => {
+    const { server, registered } = authServer();
+    try {
+      const first = await rawRegister(server.url, { runnerId: "w", role: "workspace", secret: SECRET });
+      expect(first.ok).toBe(true);
+      const reply = new Promise<{ error?: { message: string } }>((resolve) =>
+        first.ws.addEventListener("message", (e) => resolve(JSON.parse(e.data.toString()))),
+      );
+      first.ws.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "runner/register", params: { kind: "mock", runnerId: "t", secret: SECRET } }));
+      expect((await reply).error?.message).toBe("already registered");
+      expect(server.isConnected("t")).toBe(false);
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toMatchObject({ runnerId: "w", role: "workspace" });
+      expect(registered).toEqual([]);
+      first.ws.close();
+      await waitForClose(first.ws);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(server.isConnected("w")).toBe(false);
+      expect(server.getWorkspaceConnection(PRINCIPAL)).toBeUndefined();
+    } finally {
+      server.stop();
+    }
+  });
+
   test("principalForSecret compares in constant time and never on unequal lengths", () => {
     const spy = spyOn(crypto, "timingSafeEqual");
     try {
@@ -535,6 +627,69 @@ describe("runner registration auth", () => {
       expect(defaultSecretPrincipals()).toEqual({ [SECRET]: ownerPrincipalId() ?? DEFAULT_OWNER_PRINCIPAL_ID });
     } finally {
       config.orchSecret = saved;
+    }
+  });
+});
+
+describe("client reconnect loop", () => {
+  // A bare server that counts upgrades and answers every register the way `onRegister` says.
+  function fakeOrchestrator(onRegister: (ws: import("bun").ServerWebSocket<undefined>, id: unknown) => void) {
+    let attempts = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req, srv) => (srv.upgrade(req) ? undefined : new Response("", { status: 426 })),
+      websocket: {
+        open: () => {
+          attempts++;
+        },
+        message: (ws, raw) => {
+          const msg = JSON.parse(raw.toString());
+          if (msg.method === "runner/register") onRegister(ws, msg.id);
+        },
+      },
+    });
+    return { server, url: `ws://localhost:${server.port}`, attempts: () => attempts };
+  }
+
+  function runClient(url: string, backoffCapMs: number) {
+    const client = new OrchestrationClient({ url, runnerId: "loop", kind: "mock", heartbeatMs: 0, backoffCapMs, adapter: new MockRunnerAdapter() });
+    const done = client.run();
+    return { client, done };
+  }
+
+  test("a 4401 rejection backs off exponentially instead of tight-looping", async () => {
+    const orch = fakeOrchestrator((ws, id) => {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32001, message: "unauthorized" } }));
+      ws.close(ORCH_CLOSE.unauthorized, "unauthorized");
+    });
+    const { client, done } = runClient(orch.url, 30_000);
+    try {
+      // Attempts at ~0, 500, 1500 ms; a tight loop would be far more.
+      await new Promise((r) => setTimeout(r, 1_200));
+      expect(orch.attempts()).toBe(2);
+    } finally {
+      client.close();
+      await done;
+      orch.server.stop(true);
+    }
+  });
+
+  test("a 4409 close after a successful register waits the full backoff cap", async () => {
+    const orch = fakeOrchestrator((ws, id) => {
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id, result: { ok: true } }));
+      setTimeout(() => ws.close(ORCH_CLOSE.replaced, "replaced by a newer workspace connection"), 10);
+    });
+    const { client, done } = runClient(orch.url, 1_500);
+    try {
+      // backoff resets to 500 ms after a successful connect; 4409 must use the 1.5 s cap instead.
+      await new Promise((r) => setTimeout(r, 1_000));
+      expect(orch.attempts()).toBe(1);
+      await new Promise((r) => setTimeout(r, 900));
+      expect(orch.attempts()).toBe(2);
+    } finally {
+      client.close();
+      await done;
+      orch.server.stop(true);
     }
   });
 });
