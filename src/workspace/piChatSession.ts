@@ -7,6 +7,8 @@ import { createAutoModeExtension, judgeCompletion, registerJudgeModel } from "./
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
 import { createMemoryGuardExtension } from "./memoryGuard.ts";
+import { createLoopGuardExtension } from "./loopGuard.ts";
+import { createVerifyGateExtension } from "./verifyGate.ts";
 import { createCompactionHandoffExtension } from "./memoryFlush.ts";
 import { RunLog, type RunRecorder } from "./runLog.ts";
 import { observeRuns, type RunObserver } from "./runObserver.ts";
@@ -139,6 +141,8 @@ export function createPiChatSessionFactory(
         { name: "sushii-model-fallback", factory: fallbackExtension },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
+        { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log }) },
+        { name: "sushii-verify-gate", factory: createVerifyGateExtension({ home: config.home, cwd, log }) },
         // After the deterministic guards, so their blocks cost no judge call or owner prompt.
         ...(judge
           ? [
