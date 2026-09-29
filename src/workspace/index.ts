@@ -63,7 +63,16 @@ async function main(): Promise<void> {
     turns.observe(method, params);
     client?.notify(method, params);
   };
-  const subagents = new SubagentHost({ config, runs, toolStubs, notify, currentTurn: () => turns.current() });
+  // Late-bound: background results only arrive after personal.start().
+  let personalRef: PersonalSession | null = null;
+  const subagents = new SubagentHost({
+    config,
+    runs,
+    toolStubs,
+    notify,
+    currentTurn: () => turns.current(),
+    wake: (r, consumed) => personalRef?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
+  });
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
@@ -78,7 +87,14 @@ async function main(): Promise<void> {
         return commitHome(message, { home: config.home, paths: MEMORY_PATHS });
       },
       signature: () => memoryFilesSignature(config.home),
-      handoff: (session, outcome) => writeResetHandoff(config.home, session.messages, outcome),
+      handoff: (session, outcome) => {
+        const end = subagents.watch.mainWrite(["memory"]);
+        try {
+          writeResetHandoff(config.home, session.messages, outcome);
+        } finally {
+          end();
+        }
+      },
       flushRanThisCycle: sessionFlushRanThisCycle,
     },
     transport: {
@@ -96,8 +112,12 @@ async function main(): Promise<void> {
   });
   reauth = new ReauthNotifier({ stateDir: config.stateDir, deliver: (d) => personal.deliverOutOfBand(d), suppressed: () => authLogin.isPending });
   await personal.start();
+  personalRef = personal;
+  subagents.redeliverPending();
   const scheduler = new Scheduler({ stateDir: config.stateDir, at: config.consolidateAt, tz: config.tz, log: getLogger("workspace.scheduler") });
-  scheduler.register(createConsolidationJob(config, { runs, live: personal }));
+  const consolidation = createConsolidationJob(config, { runs, live: personal });
+  // Its memory writes are main-side: the subagents' protected watch must not undo them.
+  scheduler.register({ ...consolidation, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md"]) });
   void scheduler.start();
 
   client = new OrchestrationClient({
@@ -120,8 +140,9 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     log.info({ signal }, "workspace shutting down");
     client?.close();
-    await Promise.all([scheduler.stop(), personal.dispose()]);
+    // Children first: they record their runs and persist background results while main can still take them.
     await subagents.dispose();
+    await Promise.all([scheduler.stop(), personal.dispose()]);
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
   };

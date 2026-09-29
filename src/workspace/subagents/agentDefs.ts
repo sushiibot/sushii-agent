@@ -33,7 +33,7 @@ export interface AgentDef {
   maxTurns?: number;
   /** Default mode when the caller doesn't say. */
   background: boolean;
-  /** Can edit files: counts against the single writer slot and runs in its own git worktree. */
+  /** Can edit files: counts against the single writer slot and runs in its own git worktree. Only writers get bash. */
   writer: boolean;
   /** The system prompt: the file body. */
   prompt: string;
@@ -72,7 +72,10 @@ export function parseAgentDef(path: string, content: string): AgentDef {
   const { frontmatter: fm, body } = parseFrontmatter(content);
   const name = typeof fm.name === "string" && fm.name.trim() ? fm.name.trim() : basename(path, ".md");
   const disallowed = new Set(mapTools(list(fm.disallowedTools) ?? []));
-  const tools = mapTools(list(fm.tools)).filter((t) => !disallowed.has(t));
+  const listed = mapTools(list(fm.tools)).filter((t) => !disallowed.has(t));
+  const writer = listed.includes("edit") || listed.includes("write");
+  // Bash can write anywhere the process can, so a read-only def never gets it, whatever its file says.
+  const tools = writer ? listed : listed.filter((t) => t !== "bash");
   return {
     name,
     description: typeof fm.description === "string" ? fm.description.trim() : name,
@@ -80,7 +83,7 @@ export function parseAgentDef(path: string, content: string): AgentDef {
     model: modelId(fm.model),
     maxTurns: positiveInt(fm.maxTurns ?? fm.max_turns),
     background: fm.background === true,
-    writer: tools.includes("edit") || tools.includes("write"),
+    writer,
     prompt: body.trim(),
     path,
   };

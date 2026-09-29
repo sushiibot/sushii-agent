@@ -60,6 +60,23 @@ describe("checkMemoryWrite", () => {
     expect(checkMemoryWrite("write", { path: "scratch/notes.md", content: "x" }, ro)).toBeNull();
   });
 
+  test("read-only also covers persona and agent files; writable roots confine a writer's edits", () => {
+    const ro = { ...opts(), readOnly: true };
+    expect(checkMemoryWrite("write", { path: "AGENTS.md", content: "x" }, ro)).toBe("read-only");
+    expect(checkMemoryWrite("edit", edit("SOUL.md", "a", "b"), ro)).toBe("read-only");
+    expect(checkMemoryWrite("write", { path: ".agents/agents/evil.md", content: "x" }, ro)).toBe("read-only");
+    expect(checkMemoryWrite("bash", { command: "echo x >> AGENTS.md" }, ro)).toBe("read-only");
+    expect(checkMemoryWrite("write", { path: "AGENTS.md", content: "x" }, opts())).toBeNull();
+
+    const wt = join(home, "projects", "repo-wt-1");
+    mkdirSync(wt, { recursive: true });
+    const writer = { home, cwd: wt, readOnly: true, writableRoots: [wt, join(home, "scratch")] };
+    expect(checkMemoryWrite("write", { path: "src/a.ts", content: "x" }, writer)).toBeNull();
+    expect(checkMemoryWrite("write", { path: join(home, "scratch", "n.md"), content: "x" }, writer)).toBeNull();
+    expect(checkMemoryWrite("write", { path: "../other/a.ts", content: "x" }, writer)).toBe("outside");
+    expect(checkMemoryWrite("edit", edit("../../SOUL.md", "a", "b"), writer)).toBe("read-only");
+  });
+
   test("allows a normal edit and write to memory files", () => {
     expect(checkMemoryWrite("edit", edit("USER.md", "- Likes tea.", "- Likes green tea."), opts())).toBeNull();
     expect(checkMemoryWrite("write", { path: "memory/2026-09-29.md", content: "- met Sam\n" }, opts())).toBeNull();

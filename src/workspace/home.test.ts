@@ -80,7 +80,8 @@ describe("scaffoldHome", () => {
     expect([...defs.keys()].sort()).toEqual(["coder", "explore", "researcher", "reviewer"]);
     expect(defs.get("explore")!.description).toBe("mine");
     expect(defs.get("coder")).toMatchObject({ writer: true, background: true, tools: ["read", "grep", "find", "ls", "bash", "edit", "write"] });
-    expect(defs.get("reviewer")).toMatchObject({ writer: false, tools: ["read", "grep", "find", "ls", "bash"] });
+    expect(defs.get("reviewer")).toMatchObject({ writer: false, tools: ["read", "grep", "find", "ls"] });
+    expect(defs.get("researcher")).toMatchObject({ writer: false, tools: ["read", "grep", "find", "ls"] });
   });
 
   test("scaffolds the session-history skill but never overwrites an existing one", async () => {

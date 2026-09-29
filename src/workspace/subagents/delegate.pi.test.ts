@@ -12,13 +12,14 @@ import { createPiChatSessionFactory } from "../piChatSession.ts";
 import { RunLog } from "../runLog.ts";
 import { ToolStubs } from "../toolStubs.ts";
 import { runWsRuns } from "../wsRuns.ts";
-import { SubagentHost, type SubagentLimits } from "./host.ts";
+import { SubagentHost, type SubagentHostOptions, type SubagentLimits } from "./host.ts";
+import { PendingResults } from "./pendingResults.ts";
 import { MainTurnTracker } from "./turnTracker.ts";
 
 // Real Pi 0.99.1 sessions (main from the workspace factory, children from the delegate host); the only fake is fetch.
 const BASE = "http://openrouter.test/v1";
 
-type Reply = { text?: string; tool?: { name: string; args: object } };
+type Reply = { text?: string; tool?: { name: string; args: object }; usage?: object };
 type Body = { messages: Array<{ role: string; content: unknown; tool_calls?: Array<{ id: string; function: { name: string } }> }>; tools?: Array<{ function: { name: string } }> };
 type Responder = (body: Body) => Reply | Promise<Reply>;
 
@@ -34,7 +35,8 @@ function sse(reply: Reply, n: number): Response {
   const delta = reply.tool
     ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${n}`, type: "function", function: { name: reply.tool.name, arguments: JSON.stringify(reply.tool.args) } }] }
     : { role: "assistant", content: reply.text ?? "" };
-  const body = chunk(delta, null) + chunk({}, reply.tool ? "tool_calls" : "stop", { usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } }) + "data: [DONE]\n\n";
+  const usage = reply.usage ?? { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 };
+  const body = chunk(delta, null) + chunk({}, reply.tool ? "tool_calls" : "stop", { usage }) + "data: [DONE]\n\n";
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
@@ -122,7 +124,16 @@ async function host(limits: Partial<SubagentLimits> = {}) {
     turns.observe(method, params);
     if (method === RPC_METHODS.chatEvent) events.push(params as ChatEventParams);
   };
-  const subagents = new SubagentHost({ config: cfg, runs, toolStubs, notify, currentTurn: () => turns.current(), limits });
+  let personalRef: PersonalSession | null = null;
+  const subagents = new SubagentHost({
+    config: cfg,
+    runs,
+    toolStubs,
+    notify,
+    currentTurn: () => turns.current(),
+    limits,
+    wake: (r, consumed) => personalRef?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
+  });
   const transport: ChatTransport = {
     request: async (method, params) => {
       if (method === RPC_METHODS.chatDeliver) delivered.push(params as ChatDeliverParams);
@@ -139,9 +150,10 @@ async function host(limits: Partial<SubagentLimits> = {}) {
     textDeltaMs: null,
   });
   await personal.start();
+  personalRef = personal;
   const dispose = async () => {
-    await personal.dispose();
     await subagents.dispose();
+    await personal.dispose();
   };
   return { cfg, runs, personal, subagents, delivered, events, toolCalls, dispose };
 }
@@ -324,6 +336,86 @@ describe("delegate on real Pi sessions", () => {
     await h.dispose();
   }, 30_000);
 
+  test("a coder that deletes a memory file through bash is stopped, the file restored, and main told why", async () => {
+    const h = await host();
+    await initRepo(h.cfg.home, "repo");
+    const memoryPath = join(h.cfg.home, "MEMORY.md");
+    writeFileSync(memoryPath, "- drk likes tea\n");
+    let step = 0;
+    respond = (b) => {
+      if (isChild(b)) {
+        step++;
+        // `rm` names no redirect or copy, so the bash text guard lets it through; the watch catches it.
+        if (step === 1) return { tool: { name: "bash", args: { command: `rm ${memoryPath} && echo gone` } } };
+        return { text: "deleted it" };
+      }
+      return mainTurn(b) === 0 ? { tool: { name: "delegate", args: { agent: "coder", task: "clean up", repo: "repo", background: false } } } : { text: "done" };
+    };
+    await h.personal.handleMessage(user("m1", "go"));
+    await until(() => h.delivered.length === 1);
+    expect(readFileSync(memoryPath, "utf8")).toBe("- drk likes tea\n");
+    const [child] = h.runs.listRuns({ agentName: "coder" });
+    expect(child.status).toBe("failed");
+    // The child's bash result became the notice, and the child was stopped before another model call.
+    expect(bodies.filter(isChild)).toHaveLength(1);
+    expect(readFileSync(child.sessionFile, "utf8")).toContain("changed protected paths (MEMORY.md)");
+    const toMain = lastMessage(bodies.filter((b) => !isChild(b))[1]);
+    expect(toMain).toContain("changed protected paths");
+    expect(toMain).toContain("MEMORY.md");
+    await h.dispose();
+  }, 30_000);
+
+  test("read-only defs get no bash tool, even when their file lists Bash", async () => {
+    const h = await host();
+    writeFileSync(join(h.cfg.home, ".agents/agents/legacy.md"), "---\nname: legacy\ndescription: old reviewer\ntools: Read, Grep, Bash\n---\nReview.\n");
+    const seen = new Map<string, string[]>();
+    let call = 0;
+    respond = (b) => {
+      if (isChild(b)) {
+        seen.set(/`(\w+)` subagent/.exec(system(b))?.[1] ?? "?", toolNames(b));
+        return { text: "ok" };
+      }
+      const agents = ["researcher", "reviewer", "explore", "legacy"];
+      return call < agents.length ? { tool: { name: "delegate", args: { agent: agents[call++], task: "look" } } } : { text: "done" };
+    };
+    await h.personal.handleMessage(user("m1", "go"));
+    await until(() => h.delivered.length === 1);
+    for (const name of ["researcher", "reviewer", "explore"]) expect(seen.get(name)).toEqual(["find", "grep", "ls", "read", "web_search"]);
+    expect(seen.get("legacy")).toEqual(["grep", "read", "web_search"]);
+    await h.dispose();
+  }, 30_000);
+
+  test("a background result answers on the spawn-time origin, and its record is consumed once main has it", async () => {
+    const h = await host();
+    const WEB = { surface: "web", conversationId: "tab-1" };
+    let releaseChild!: () => void;
+    const childGate = new Promise<void>((r) => (releaseChild = r));
+    respond = async (b) => {
+      if (isChild(b)) {
+        await childGate;
+        return { text: "bg finding: 7" };
+      }
+      const last = lastMessage(b);
+      if (last.includes("dig in the DM")) return { tool: { name: "delegate", args: { agent: "explore", task: "dig", background: true } } };
+      if (last.includes("bg finding: 7")) return { text: "result: 7" };
+      return { text: last.includes("web question") ? "web answer" : "started" };
+    };
+    await h.personal.handleMessage(user("m1", "dig in the DM"));
+    await until(() => h.delivered.length === 1);
+    await h.personal.handleMessage({ ...user("m2", "web question"), origin: WEB });
+    await until(() => h.delivered.length === 2);
+    expect(h.delivered[1]).toMatchObject({ text: "web answer", origin: WEB });
+    const pending = new PendingResults(h.cfg.stateDir);
+    expect(pending.list()).toHaveLength(0);
+
+    releaseChild();
+    await until(() => h.delivered.length === 3);
+    expect(h.delivered[2]).toMatchObject({ text: "result: 7", origin: { surface: "discord", conversationId: "dm" } });
+    expect(h.delivered[2].replyTo).toBeUndefined();
+    expect(new PendingResults(h.cfg.stateDir).list()).toHaveLength(0);
+    await h.dispose();
+  }, 30_000);
+
   test("depth: children are leaves by default; with maxDepth 2 a child can delegate once more", async () => {
     const h = await host({ maxDepth: 2 });
     respond = (b) => {
@@ -353,11 +445,11 @@ describe("limits, driving the host directly", () => {
   const ctx = { sessionManager: { getSessionFile: () => undefined, getBranch: () => [] } } as unknown as Pick<ExtensionContext, "sessionManager">;
   const parent = { depth: 0, currentRunId: () => "PARENTRUN" };
 
-  async function direct(limits: Partial<SubagentLimits>) {
+  async function direct(limits: Partial<SubagentLimits>, extra: Partial<SubagentHostOptions> = {}) {
     const cfg = config();
     await scaffoldHome(cfg.home);
     const runs = new RunLog(cfg.stateDir);
-    const host = new SubagentHost({ config: cfg, runs, limits });
+    const host = new SubagentHost({ config: cfg, runs, limits, ...extra });
     const pi = { sendMessage: () => {} } as never;
     const call = (task: string, extra: object = {}) => host.delegate({ agent: "explore", task, ...extra }, { parent, pi, toolCallId: "t", ctx });
     return { cfg, runs, host, call };
@@ -444,4 +536,113 @@ describe("limits, driving the host directly", () => {
     await expect(call("again", { continue: live })).rejects.toThrow("still running");
     await host.dispose();
   });
+
+  test("token cap counts cache reads", async () => {
+    const { host, call } = await direct({ maxTokens: 500 });
+    respond = () => ({ tool: { name: "ls", args: { path: "." } }, usage: { prompt_tokens: 1000, completion_tokens: 3, total_tokens: 1003, prompt_tokens_details: { cached_tokens: 990 } } });
+    const out = await call("cached");
+    expect(out.status).toBe("aborted");
+    expect(out.text).toContain("token cap");
+    await host.dispose();
+  }, 30_000);
+
+  test("cost cap prices the child's tokens and aborts past it", async () => {
+    const priced: string[] = [];
+    const { host, call, runs } = await direct(
+      { maxCostUsd: 0.01 },
+      {
+        priceOf: async (id) => {
+          priced.push(id);
+          return { input: 1000, output: 1000, cacheRead: 100, cacheWrite: 1000 };
+        },
+      },
+    );
+    respond = () => ({ tool: { name: "ls", args: { path: "." } } });
+    const out = await call("pricey");
+    expect(priced).toEqual(["openai/gpt-6-luna"]);
+    expect(out.status).toBe("aborted");
+    expect(out.text).toContain("cost cap");
+    expect(runs.getRun(out.runId)?.usage?.costUsd).toBeGreaterThan(0.01);
+    await host.dispose();
+  }, 30_000);
+
+  test("two continues of one run in the same message: the second is refused", async () => {
+    const { host, call } = await direct({});
+    respond = () => ({ text: "first" });
+    const first = await call("start");
+    respond = () => new Promise<Reply>((r) => setTimeout(() => r({ text: "again" }), 100));
+    const results = await Promise.allSettled([call("a", { continue: first.runId }), call("b", { continue: first.runId })]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(String(rejected.reason)).toContain("in use");
+    await host.dispose();
+  }, 30_000);
+
+  test("a foreground child queued for a slot is bounded by its wall clock", async () => {
+    const { host, call, runs } = await direct({ maxReaders: 1, foregroundTimeoutMs: 300 });
+    respond = () => new Promise<Reply>(() => {});
+    // Background, so its own (longer) wall clock keeps the slot held past the second call's.
+    await call("holds the slot", { background: true });
+    await until(() => bodies.length === 1);
+    const started = Date.now();
+    const second = await call("waits");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(second.status).toBe("timeout");
+    expect(second.text).toContain("wall-clock cap");
+    expect(runs.getRun(second.runId)?.status).toBe("timeout");
+    expect(bodies).toHaveLength(1);
+    await host.dispose();
+  }, 30_000);
+
+  test("at most maxWriters writers run at once", async () => {
+    const { cfg, host, call } = await direct({ maxWriters: 1 });
+    await initRepo(cfg.home, "repo");
+    const gates: Array<() => void> = [];
+    respond = async () => {
+      await new Promise<void>((r) => gates.push(r));
+      return { text: "coded" };
+    };
+    const a = call("one", { agent: "coder", repo: "repo", background: false });
+    const b = call("two", { agent: "coder", repo: "repo", background: false });
+    await until(() => gates.length === 1);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(gates).toHaveLength(1);
+    gates.shift()!();
+    await until(() => gates.length === 1);
+    gates.shift()!();
+    expect((await Promise.all([a, b])).map((r) => r.status)).toEqual(["done", "done"]);
+    await host.dispose();
+  }, 30_000);
+
+  test("pending background results are redelivered by a fresh host after a restart until consumed", async () => {
+    const cfg = config();
+    await scaffoldHome(cfg.home);
+    new PendingResults(cfg.stateDir).add({ runId: "01OLD", agent: "explore", status: "done", text: "<subagent-result>x</subagent-result>", createdAt: "2026-09-29T00:00:00Z" });
+    const woken: string[] = [];
+    let consume: (() => void) | null = null;
+    const host = new SubagentHost({
+      config: cfg,
+      runs: new RunLog(cfg.stateDir),
+      wake: (r, consumed) => {
+        woken.push(r.runId);
+        consume = consumed;
+      },
+    });
+    host.redeliverPending();
+    expect(woken).toEqual(["01OLD"]);
+    expect(new PendingResults(cfg.stateDir).list()).toHaveLength(1);
+    consume!();
+    expect(new PendingResults(cfg.stateDir).list()).toHaveLength(0);
+    await host.dispose();
+  });
 });
+
+async function initRepo(home: string, name: string): Promise<void> {
+  const dir = join(home, "projects", name);
+  mkdirSync(dir, { recursive: true });
+  const g = runnerGit(dir);
+  await g.init();
+  await g.addConfig("user.name", "t").addConfig("user.email", "t@t").addConfig("commit.gpgsign", "false");
+  writeFileSync(join(dir, "a.txt"), "a\n");
+  await g.add(".").commit("init");
+}

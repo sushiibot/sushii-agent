@@ -13,7 +13,8 @@ export { containsSecret };
  * best-effort text matching on redirects, tee, cp/mv/dd and in-place sed/perl that name a memory path; it
  * misses secrets that arrive by expansion (`echo "$TOKEN" >> MEMORY.md`, `$(cat f)`), interpreter writes
  * (`python -c`, `node -e`), a relative path after `cd memory`, install/ln/rsync, and never checks caps.
- * scanMemoryForSecrets backs this up with a warn before each memory commit.
+ * scanMemoryForSecrets backs this up with a warn before each memory commit. For subagents the subagent
+ * host's protected-file watch (subagents/protectedFiles.ts) is the backstop that catches what this misses.
  */
 
 type Log = { warn: (obj: object, msg: string) => void };
@@ -22,14 +23,20 @@ export interface MemoryGuardOptions {
   home: string;
   /** The session cwd; relative tool paths resolve against it. */
   cwd: string;
-  /** A subagent: every write to a memory file is refused. */
+  /** A subagent: every write to a memory, persona or agent-def file is refused. */
   readOnly?: boolean;
+  /** When set, edit/write outside these directories is refused (a writer subagent's worktree and scratch dir). */
+  writableRoots?: string[];
 }
 
 /** Guarded top-level memory files and their char caps (undefined: no cap). */
 const MEMORY_FILES: Record<string, number | undefined> = { "USER.md": USER_MD_CAP, "MEMORY.md": MEMORY_MD_CAP, "DREAMS.md": undefined };
 const BASH_WRITE = /(?:>>?|\btee\b|\bsed\b[^|;&]*\s-i|\bperl\b[^|;&]*\s-[a-z]*i|\bcp\b|\bmv\b|\bdd\b)/;
 const BASH_MEMORY_PATH = /(?:^|[\s"'=/>])(?:USER\.md|MEMORY\.md|DREAMS\.md|memory\/)/;
+const BASH_PERSONA_PATH = /(?:^|[\s"'=/>])(?:AGENTS\.md|SOUL\.md|\.agents\/)/;
+/** Files main loads into its own prompt; a subagent writing them could plant instructions for main. */
+const PERSONA_FILES = ["AGENTS.md", "SOUL.md"];
+const PERSONA_DIR = ".agents";
 
 function realpathDeep(p: string): string {
   let head = p;
@@ -54,16 +61,35 @@ interface MemoryTarget {
 
 /** The memory file `raw` names, or null for any other path. */
 export function memoryTarget(raw: string, opts: MemoryGuardOptions): MemoryTarget | null {
-  let p = raw.startsWith("@") ? raw.slice(1) : raw;
-  if (p === "~") p = homedir();
-  else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
-  const real = realpathDeep(resolve(opts.cwd, p));
+  const real = resolveReal(raw, opts.cwd);
   const home = realpathDeep(resolve(opts.home));
   for (const [name, cap] of Object.entries(MEMORY_FILES)) {
     if (real === join(home, name)) return { path: real, cap };
   }
   if (real.startsWith(`${join(home, "memory")}/`)) return { path: real, cap: undefined };
   return null;
+}
+
+function resolveReal(raw: string, cwd: string): string {
+  let p = raw.startsWith("@") ? raw.slice(1) : raw;
+  if (p === "~") p = homedir();
+  else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
+  return realpathDeep(resolve(cwd, p));
+}
+
+/** Whether `raw` names AGENTS.md, SOUL.md or anything under .agents/ in home. */
+export function isPersonaPath(raw: string, opts: MemoryGuardOptions): boolean {
+  const real = resolveReal(raw, opts.cwd);
+  const home = realpathDeep(resolve(opts.home));
+  return PERSONA_FILES.some((f) => real === join(home, f)) || real === join(home, PERSONA_DIR) || real.startsWith(`${join(home, PERSONA_DIR)}/`);
+}
+
+function outsideRoots(raw: string, cwd: string, roots: string[]): boolean {
+  const real = resolveReal(raw, cwd);
+  return !roots.some((r) => {
+    const root = realpathDeep(resolve(r));
+    return real === root || real.startsWith(`${root}/`);
+  });
 }
 
 function readOrEmpty(path: string): string {
@@ -91,15 +117,16 @@ function editPairs(input: Record<string, unknown>): EditPair[] {
 export function checkMemoryWrite(toolName: string, input: Record<string, unknown>, opts: MemoryGuardOptions): string | null {
   if (toolName === "bash") {
     const command = typeof input.command === "string" ? input.command : "";
-    if (opts.readOnly && BASH_WRITE.test(command) && BASH_MEMORY_PATH.test(command)) return "read-only";
+    if (opts.readOnly && BASH_WRITE.test(command) && (BASH_MEMORY_PATH.test(command) || BASH_PERSONA_PATH.test(command))) return "read-only";
     if (BASH_WRITE.test(command) && BASH_MEMORY_PATH.test(command) && containsSecret(command)) return "secret";
     return null;
   }
   if (toolName !== "edit" && toolName !== "write") return null;
   if (typeof input.path !== "string") return null;
   const target = memoryTarget(input.path, opts);
+  if (opts.readOnly && (target || isPersonaPath(input.path, opts))) return "read-only";
+  if (opts.writableRoots && outsideRoots(input.path, opts.cwd, opts.writableRoots)) return "outside";
   if (!target) return null;
-  if (opts.readOnly) return "read-only";
 
   let added: string;
   let delta: number;
@@ -124,9 +151,12 @@ export function checkMemoryWrite(toolName: string, input: Record<string, unknown
 function blockReason(rule: string, toolName: string): string {
   if (rule === "read-only") {
     return (
-      "Blocked by the memory guard: subagents can't write USER.md, MEMORY.md or memory/. Put anything worth " +
-      "remembering in your final answer; the main agent decides what to save."
+      "Blocked by the memory guard: subagents can't write USER.md, MEMORY.md, DREAMS.md, memory/, AGENTS.md, SOUL.md or " +
+      ".agents/. Put anything worth remembering in your final answer; the main agent decides what to save."
     );
+  }
+  if (rule === "outside") {
+    return "Blocked: a subagent writes only inside its working directory (its worktree) and its scratch dir.";
   }
   if (rule === "secret") {
     return (

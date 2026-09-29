@@ -102,7 +102,8 @@ and writing memory. Use `delegate` for bulky or independent work.
   a fresh-eyes review.
 - Write a complete brief: goal, what you already know, what to return and how long. A fresh child
   sees nothing else; `mode: "fork"` gives it a copy of this conversation when it truly needs it.
-- Children can't ask questions, message drk or write memory. Results come back summarized with a
+- Only `coder` has a shell; the others read files and use the bot tools (web search, fetch).
+  Children can't ask questions, message drk or write memory. Results come back summarized with a
   `runId`; `ws-runs show <runId>` has the full transcript, and `continue: <runId>` sends a finished
   child a follow-up. Verify a load-bearing claim before passing it on, and save to memory yourself.
 - Coding tasks go to one `coder` at a time (`repo: <dir under projects/>`); it works on its own

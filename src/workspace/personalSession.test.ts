@@ -1656,3 +1656,109 @@ describe("PersonalSession extension dialogs", () => {
     expect(await confirmed).toBe(true);
   });
 });
+
+describe("PersonalSession wake", () => {
+  const WEB = { surface: "web", conversationId: "tab-1" };
+  const until = async (cond: () => boolean, ms = 1000) => {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) throw new Error("condition not met in time");
+      await sleep(2);
+    }
+  };
+  const RESULT = "<subagent-result runId=\"R1\">found it</subagent-result>";
+
+  test("waits out a running turn, then runs as its own turn answering on the wake's origin", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "busy in the web tab", { origin: WEB }));
+    let consumed = 0;
+    host.wake({ id: "R1", text: RESULT, origin: DM_ORIGIN, onConsumed: () => consumed++ });
+    await sleep(20);
+    // Never a steer into another conversation's run.
+    expect(sessions[0].steers).toEqual([]);
+    expect(consumed).toBe(0);
+    sessions[0].finish("web reply");
+    await until(() => sessions[0].prompts.length === 2 && sessions[0].isStreaming);
+    expect(sessions[0].prompts[1].text).toBe(RESULT);
+    expect(consumed).toBe(1);
+    sessions[0].finish("the child found it");
+    await until(() => transport.delivered().length === 2);
+    const [web, wake] = transport.delivered();
+    expect(web).toMatchObject({ text: "web reply", origin: WEB, replyTo: "m1" });
+    // No replyTo: the last message drk sent is in the web tab, not the DM the result goes to.
+    expect(wake).toMatchObject({ text: "the child found it", origin: DM_ORIGIN });
+    expect(wake.replyTo).toBeUndefined();
+    // A repeat of a delivered id is ignored.
+    host.wake({ id: "R1", text: RESULT, origin: DM_ORIGIN, onConsumed: () => consumed++ });
+    await sleep(20);
+    expect(sessions[0].prompts).toHaveLength(2);
+  });
+
+  test("survives /stop of the turn it waited behind", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "long job"));
+    let consumed = 0;
+    host.wake({ id: "R1", text: RESULT, origin: DM_ORIGIN, onConsumed: () => consumed++ });
+    await sleep(10);
+    await host.handleAbort();
+    await until(() => sessions[0].prompts.some((p) => p.text === RESULT) && sessions[0].isStreaming);
+    expect(consumed).toBe(1);
+    sessions[0].finish("result relayed");
+    await until(() => transport.delivered().length === 1);
+    expect(transport.delivered()[0]).toMatchObject({ text: "result relayed", origin: DM_ORIGIN });
+  });
+
+  test("survives chat/new and its hidden flush: it lands in the new session, not the flush run", async () => {
+    const hooks: MemoryHooks = {
+      compactionTrigger: () => 9000,
+      reload: async () => {},
+      commit: async () => {},
+      signature: () => "sig",
+      flushTimeoutMs: 1000,
+      flushMarginTokens: 2000,
+    };
+    const { host, sessions, transport } = setup({ memory: hooks });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    sessions[0].finish("hello");
+    await tick();
+    const reset = host.handleNew();
+    await until(() => sessions[0].isStreaming && sessions[0].prompts.some((p) => p.text.startsWith(FLUSH_MARKER)));
+    let consumed = 0;
+    host.wake({ id: "R1", text: RESULT, origin: DM_ORIGIN, onConsumed: () => consumed++ });
+    await sleep(10);
+    sessions[0].finish("NO_REPLY");
+    await reset;
+    await until(() => sessions.length === 2 && sessions[1].isStreaming);
+    expect(sessions[0].prompts.map((p) => p.text)).not.toContain(RESULT);
+    expect(sessions[1].prompts[0].text).toBe(RESULT);
+    expect(consumed).toBe(1);
+    sessions[1].finish("result after reset");
+    await until(() => transport.delivered().length === 2);
+    expect(transport.delivered()[1]).toMatchObject({ text: "result after reset", origin: DM_ORIGIN });
+  });
+
+  test("a prompt that fails before Pi takes it is retried at the next settle", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    const s = sessions[0];
+    const realPrompt = s.prompt.bind(s);
+    let fail = true;
+    s.prompt = async (text, options) => {
+      if (text === RESULT && fail) {
+        fail = false;
+        throw new Error("provider hiccup");
+      }
+      return realPrompt(text, options);
+    };
+    let consumed = 0;
+    host.wake({ id: "R1", text: RESULT, onConsumed: () => consumed++ });
+    await sleep(20);
+    expect(consumed).toBe(0);
+    await host.handleMessage(msg("m1", "hi"));
+    s.finish("hello");
+    await until(() => consumed === 1);
+  });
+});

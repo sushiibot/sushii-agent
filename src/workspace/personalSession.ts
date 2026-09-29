@@ -148,7 +148,27 @@ interface PendingInbound {
   messageId: string;
   text: string;
   origin: ChatOrigin | undefined;
+  /** Set for a wake: consuming it marks the wake received. */
+  wakeId?: string;
 }
+
+/** A host-initiated prompt (a background subagent's result) that must reach the session exactly when it is idle. */
+export interface Wake {
+  id: string;
+  text: string;
+  /** The run it starts replies here. */
+  origin?: ChatOrigin;
+  /** Called once the session has the message. */
+  onConsumed: () => void;
+}
+
+interface WakeState extends Wake {
+  /** idle: waiting for a chain slot; queued: a chain item will prompt it; prompted: Pi accepted it. */
+  state: "idle" | "queued" | "prompted";
+  failures: number;
+}
+
+const WAKE_MAX_FAILURES = 5;
 
 interface BufferedContext {
   messageId: string;
@@ -210,6 +230,8 @@ export class PersonalSession {
   private readonly asks: ChatAsks;
   /** Bound into every session the factory builds, so extension dialogs reach the owner as asks. */
   readonly ui: ExtensionUIContext;
+  private readonly wakes = new Map<string, WakeState>();
+  private readonly wakesDone = new Set<string>();
 
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
@@ -566,6 +588,53 @@ export class PersonalSession {
     }
   }
 
+  /**
+   * Prompts `w.text` as its own run once the session is idle, never as a steer or through Pi's queues, so a
+   * queue clear (stop, /new, a stranded-steer requeue) or a hidden flush can't drop it. A wake whose run ends
+   * before Pi took the message is prompted again; a repeat of a known id is ignored.
+   */
+  wake(w: Wake): void {
+    if (this.wakes.has(w.id) || this.wakesDone.has(w.id)) return;
+    this.wakes.set(w.id, { ...w, state: "idle", failures: 0 });
+    this.pumpWakes();
+  }
+
+  private pumpWakes(): void {
+    for (const w of this.wakes.values()) {
+      if (w.state !== "idle") continue;
+      w.state = "queued";
+      void this.enqueue(() => this.promptWake(w)).catch((err) => {
+        w.state = "idle";
+        if (++w.failures >= WAKE_MAX_FAILURES) {
+          this.wakes.delete(w.id);
+          log.error({ err, wakeId: w.id }, "giving up on a wake; it stays pending for the next start");
+        } else {
+          log.warn({ err, wakeId: w.id }, "a wake prompt failed; retrying at the next settle");
+        }
+      });
+    }
+  }
+
+  private async promptWake(w: WakeState): Promise<void> {
+    if (this.wakes.get(w.id) !== w || w.state !== "queued") return;
+    if (this.orphanFlush) await this.orphanFlush;
+    await this.waitForCompaction();
+    await this.waitForSettle();
+    // Joining a live run as a steer would answer in that run's conversation; the next settle pumps it again.
+    if (this.requireSession().isStreaming || this.resetting) {
+      w.state = "idle";
+      return;
+    }
+    await this.promptOrSteer("", w.text, w.origin, w.id);
+    if (this.wakes.get(w.id) === w && w.state === "queued") w.state = "prompted";
+  }
+
+  /** Called at settle and on a session swap: a prompted wake that never became a message goes around again. */
+  private retryWakes(): void {
+    for (const w of this.wakes.values()) if (w.state === "prompted") w.state = "idle";
+    this.pumpWakes();
+  }
+
   async dispose(): Promise<void> {
     if (this.resendTimer) clearInterval(this.resendTimer);
     this.resendTimer = null;
@@ -585,7 +654,7 @@ export class PersonalSession {
   }
 
   // Pi marks the run active only after async preflight, so gate the queue on preflightResult or a racing idle prompt starts a second run.
-  private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined): Promise<"prompt" | "steer"> {
+  private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined, wakeId?: string): Promise<"prompt" | "steer"> {
     for (let attempt = 0; ; attempt++) {
       if (this.orphanFlush) await this.orphanFlush;
       await this.waitForCompaction();
@@ -595,7 +664,7 @@ export class PersonalSession {
       // Context that arrived during the last run belongs before this prompt, not after its reply.
       if (mode === "prompt" && this.pendingContext.length) await this.flushPendingContext();
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
-      const pending: PendingInbound = { messageId, text, origin };
+      const pending: PendingInbound = { messageId, text, origin, ...(wakeId ? { wakeId } : {}) };
       this.unconsumed.push(pending);
       if (mode === "prompt") this.nextRunPrompt = pending;
       let accepted = false;
@@ -660,9 +729,23 @@ export class PersonalSession {
     const i = this.unconsumed.findIndex((p) => p.text === text);
     if (i === -1) return;
     // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
-    this.lastInboundId = this.unconsumed[i].messageId || this.lastInboundId;
-    this.lastOrigin = this.unconsumed[i].origin ?? this.lastOrigin;
+    const entry = this.unconsumed[i];
     this.unconsumed.splice(0, i + 1);
+    if (entry.wakeId) {
+      // A wake isn't drk speaking: the reply threading keeps following drk's last message.
+      const w = this.wakes.get(entry.wakeId);
+      this.wakes.delete(entry.wakeId);
+      this.wakesDone.add(entry.wakeId);
+      if (this.wakesDone.size > 500) this.wakesDone.delete(this.wakesDone.values().next().value!);
+      try {
+        w?.onConsumed();
+      } catch (err) {
+        log.warn({ err, wakeId: entry.wakeId }, "marking a wake consumed failed");
+      }
+      return;
+    }
+    this.lastInboundId = entry.messageId || this.lastInboundId;
+    this.lastOrigin = entry.origin ?? this.lastOrigin;
   }
 
   // Mid-run, sendCustomMessage(triggerTurn:false) would mutate the live message list; wait for settle.
@@ -731,6 +814,7 @@ export class PersonalSession {
     this.unsubscribe = session.subscribe((event) => {
       if (gen === this.generation) this.onEvent(session, event);
     });
+    this.retryWakes();
   }
 
   private detach(): void {
@@ -803,6 +887,7 @@ export class PersonalSession {
     if (session.pendingMessageCount > 0 && !session.isCompacting) this.requeueStranded(session);
     if (run && !run.hidden) this.afterTurn(session, run.turnId);
     if (this.reloadDue) this.scheduleReload();
+    this.retryWakes();
   }
 
   // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.

@@ -23,6 +23,11 @@ describe("agent defs", () => {
     expect(mapTools(["Edit"])).toEqual(["edit"]);
     expect(parseAgentDef("/x/w.md", "---\ntools: [read, write]\n---\n").writer).toBe(true);
   });
+
+  test("only a writer keeps bash: a read-only def listing Bash loses it", () => {
+    expect(parseAgentDef("/x/r.md", "---\ntools: Read, Bash\n---\n")).toMatchObject({ tools: ["read"], writer: false });
+    expect(parseAgentDef("/x/c.md", "---\ntools: Read, Bash, Edit\n---\n")).toMatchObject({ tools: ["read", "bash", "edit"], writer: true });
+  });
 });
 
 describe("ChildSlots", () => {

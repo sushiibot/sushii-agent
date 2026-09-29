@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentSession, AgentSessionEvent, AgentToolResult, ExtensionAPI, ExtensionContext, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { ConcurrencyLimiter } from "../../../vendor/pi-subagents/src/lifecycle/concurrency-limiter.ts";
@@ -9,7 +9,7 @@ import type { ParentSnapshot } from "../../../vendor/pi-subagents/src/lifecycle/
 import { SubagentManager, type SpawnTypeResolver } from "../../../vendor/pi-subagents/src/lifecycle/subagent-manager.ts";
 import { SubagentSession } from "../../../vendor/pi-subagents/src/lifecycle/subagent-session.ts";
 import type { AgentConfig } from "../../../vendor/pi-subagents/src/types.ts";
-import { RPC_METHODS, type ChatEventParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
+import { RPC_METHODS, type ChatEventParams, type ChatEventPayload, type ChatOrigin } from "../../orchestration/contracts.ts";
 import { assertExactTools, createOpenRouterModel } from "../../orchestration/runner/piShared.ts";
 import { runnerGit } from "../../orchestration/runner/runnerGit.ts";
 import { getLogger } from "../../logger.ts";
@@ -24,6 +24,9 @@ import { SESSION_DIRS, subagentSessionDir } from "../sessionPaths.ts";
 import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "../toolStubs.ts";
 import { ulid } from "../ulid.ts";
 import { loadAgentDefs, type AgentDef } from "./agentDefs.ts";
+import { PendingResults, type PendingResult } from "./pendingResults.ts";
+import { costUsd, fetchOpenRouterPrice, totalTokens, type TokenPrice } from "./pricing.ts";
+import { ProtectedWatch, type TamperReport } from "./protectedFiles.ts";
 import { ChildSlots, type SlotKind } from "./slots.ts";
 import type { ParentTurn } from "./turnTracker.ts";
 
@@ -33,7 +36,6 @@ const memoryLog = getLogger("workspace.memory");
 
 export const DELEGATE_TOOL = "delegate";
 const PROVIDER_ID = "sushii-subagent-openrouter";
-export const RESULT_CUSTOM_TYPE = "subagent-result";
 
 type SettledStatus = Exclude<RunStatus, "running">;
 
@@ -47,10 +49,12 @@ export interface SubagentLimits {
   graceTurns: number;
   foregroundTimeoutMs: number;
   backgroundTimeoutMs: number;
-  /** Input + output tokens across the child's run. */
+  /** Input, output, cache-read and cache-write tokens across the child's run. */
   maxTokens: number;
-  /** Only enforced where Pi reports a price (ChatGPT and our OpenRouter registration report none). */
+  /** Priced from OpenRouter's catalog for the child's model, else from `fallbackPrice`. */
   maxCostUsd: number;
+  /** USD per million tokens when the catalog has no price for the model. */
+  fallbackPrice: TokenPrice;
   resultChars: number;
 }
 
@@ -64,6 +68,7 @@ export const DEFAULT_LIMITS: SubagentLimits = {
   backgroundTimeoutMs: 60 * 60_000,
   maxTokens: 3_000_000,
   maxCostUsd: 2,
+  fallbackPrice: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   resultChars: 6000,
 };
 
@@ -75,6 +80,13 @@ export interface SubagentHostOptions {
   currentTurn?: () => ParentTurn | null;
   /** Sends chat/event notifications to the bot. */
   notify?: (method: string, params: unknown) => void;
+  /**
+   * Hands a background result to the main session; call `consumed` once main's session has the message.
+   * Results stay in the state dir until then, so they survive a queue clear, /new and a restart.
+   */
+  wake?: (result: PendingResult, consumed: () => void) => void;
+  /** The model's price (USD per million tokens), or null for the fallback. Default: OpenRouter's catalog. */
+  priceOf?: (modelId: string) => Promise<TokenPrice | null>;
   limits?: Partial<SubagentLimits>;
 }
 
@@ -106,8 +118,13 @@ interface Spawn {
   sessionManager: PiSessionManager;
   sessionFile: string;
   turn: ParentTurn | null;
+  /** The delegating turn's origin, captured at spawn: a background result is answered there. */
+  origin: ChatOrigin | undefined;
   acc: RunAccumulator;
-  capHit: "timeout" | "tokens" | "cost" | "turns" | null;
+  price: TokenPrice;
+  costUsd: number;
+  capHit: "timeout" | "tokens" | "cost" | "turns" | "tamper" | null;
+  tamper: TamperReport | null;
   turns: number;
   /** turn_start was sent, so a turn_end is owed. */
   started: boolean;
@@ -131,14 +148,18 @@ export class SubagentHost {
   private readonly activeFiles = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly models = new Map<string, ReturnType<typeof createOpenRouterModel>>();
+  private readonly prices = new Map<string, Promise<TokenPrice | null>>();
   private readonly manager: SubagentManager;
-  private mainPi: ExtensionAPI | null = null;
+  private readonly results: PendingResults;
+  readonly watch: ProtectedWatch;
   private disposed = false;
 
   constructor(opts: SubagentHostOptions) {
     this.opts = opts;
     this.limits = { ...DEFAULT_LIMITS, ...opts.limits };
     this.slots = new ChildSlots({ reader: this.limits.maxReaders, writer: this.limits.maxWriters });
+    this.results = new PendingResults(opts.config.stateDir);
+    this.watch = new ProtectedWatch({ home: opts.config.home, log: guardLog });
     const registry: SpawnTypeResolver = {
       resolveType: (name) => (this.defsBySpawn.has(name) ? name : undefined),
       isValidType: (name) => this.defsBySpawn.has(name),
@@ -157,10 +178,53 @@ export class SubagentHost {
   /** Extension factory that registers `delegate` on a session at `parent.depth`; a no-op at the depth cap. */
   extension(parent: DelegateParent): ExtensionFactory {
     return (pi) => {
+      if (parent.depth === 0) this.leaseMainWrites(pi);
       if (parent.depth >= this.limits.maxDepth) return;
-      if (parent.depth === 0) this.mainPi = pi;
       pi.registerTool(this.toolDefinition(parent, pi));
     };
+  }
+
+  /** Main's own writes (tool calls, compaction handoff) take a lease, so the protected watch doesn't undo them. */
+  private leaseMainWrites(pi: ExtensionAPI): void {
+    const home = this.opts.config.home;
+    const leases = new Map<string, () => void>();
+    pi.on("tool_call", (event) => {
+      if (!WRITING_TOOLS.has(event.toolName)) return undefined;
+      const input = event.input as { path?: unknown };
+      let paths: string[] | null = null;
+      if (event.toolName !== "bash" && typeof input.path === "string") {
+        const rel = relative(home, resolve(home, input.path));
+        paths = rel.startsWith("..") || isAbsolute(rel) ? [] : [rel];
+      }
+      leases.get(event.toolCallId)?.();
+      leases.set(event.toolCallId, this.watch.mainWrite(paths));
+      return undefined;
+    });
+    pi.on("tool_result", (event) => {
+      leases.get(event.toolCallId)?.();
+      leases.delete(event.toolCallId);
+      return undefined;
+    });
+    let compaction: (() => void) | null = null;
+    pi.on("session_before_compact", () => {
+      compaction?.();
+      compaction = this.watch.mainWrite(["memory"], 2 * 60_000);
+      return undefined;
+    });
+    pi.on("session_compact", () => {
+      compaction?.();
+      compaction = null;
+    });
+  }
+
+  /** A main-side write outside main's tool calls (consolidation, the reset handoff) runs under this. */
+  whileMainWrites<T>(fn: () => Promise<T>, paths: string[] | null = null): Promise<T> {
+    return this.watch.whileMainWrites(fn, paths);
+  }
+
+  /** Hands every background result main hasn't received to `wake` again; call once main's session is up. */
+  redeliverPending(): void {
+    for (const r of this.results.list()) this.wakeMain(r);
   }
 
   /** Whether a session at `depth` gets the delegate tool. */
@@ -168,7 +232,7 @@ export class SubagentHost {
     return depth < this.limits.maxDepth;
   }
 
-  /** Aborts every child and waits for their runs to be recorded. */
+  /** Aborts every child and waits for their runs (and background results) to be recorded. */
   async dispose(): Promise<void> {
     this.disposed = true;
     this.slots.rejectWaiting(new Error("the workspace is shutting down"));
@@ -179,7 +243,7 @@ export class SubagentHost {
 
   private toolDefinition(parent: DelegateParent, pi: ExtensionAPI): ToolDefinition {
     const defs = loadAgentDefs(this.opts.config.home);
-    const agentList = [...defs.values()].map((d) => `- ${d.name}${d.writer ? " (writer)" : ""}: ${d.description}`).join("\n") || "- (none defined)";
+    const agentList = [...defs.values()].map((d) => `- ${d.name}${d.writer ? " (writer, has a shell)" : " (read-only, no shell)"}: ${d.description}`).join("\n") || "- (none defined)";
     const cap = this.limits.resultChars;
     return {
       name: DELEGATE_TOOL,
@@ -194,7 +258,9 @@ export class SubagentHost {
         "Write a complete brief in `task`: goal, what you already know, what to return. With mode \"fresh\" (default) " +
         "the child sees nothing else; mode \"fork\" starts it from a copy of this conversation. `continue` with a " +
         "finished child's runId sends it a follow-up in its own session. `background: true` returns at once; the " +
-        "result arrives later as a message. Children can't ask questions, message drk, or write memory files. " +
+        "result arrives later as a message. Children can't ask questions, message drk, or write memory, persona or " +
+        "agent files; read-only agents have no shell (they read files and use the bot tools such as web_search and " +
+        "fetch_url_content). A child that changes a protected file is stopped and the change is undone. " +
         `At most ${this.limits.maxReaders} read-only children and ${this.limits.maxWriters} writer run at once; ` +
         "writers need `repo` (a git repo under projects/) and work in their own worktree on a new branch.",
       parameters: Type.Object({
@@ -223,39 +289,67 @@ export class SubagentHost {
     const task = args.task?.trim();
     if (!task) throw new Error("delegate: `task` is empty");
     const depth = call.parent.depth + 1;
+    const turn = this.opts.currentTurn?.() ?? null;
 
-    const { def, sessionManager, worktree } = args.continue ? await this.planContinue(args.continue) : await this.planNew(args, call, parentRunId);
+    // Reserved before any await: two continues of one run in the same assistant message must not share its file.
+    const reserved = args.continue ? this.reserveContinue(args.continue) : null;
+    let planned: Awaited<ReturnType<SubagentHost["planNew"]>>;
+    try {
+      planned = reserved ? await this.planContinue(reserved) : await this.planNew(args, call, parentRunId);
+    } catch (err) {
+      if (reserved) this.activeFiles.delete(reserved.file);
+      throw err;
+    }
+    const { def, sessionManager, worktree } = planned;
     // Nested children run in the foreground: their parent's session is gone once it returns.
     const background = call.parent.depth === 0 && (args.background ?? def.background);
     const sessionFile = sessionManager.getSessionFile();
-    if (!sessionFile) throw new Error("delegate: the child session has no file");
+    const release = () => {
+      if (sessionFile) this.activeFiles.delete(resolve(sessionFile));
+    };
+    if (!sessionFile) {
+      if (reserved) this.activeFiles.delete(reserved.file);
+      throw new Error("delegate: the child session has no file");
+    }
     this.activeFiles.add(resolve(sessionFile));
+    let runId: string;
+    try {
+      runId = this.opts.runs.startRun({ agentName: def.name, parentRunId, task, sessionFile });
+    } catch (err) {
+      release();
+      if (worktree) log.warn({ worktree: worktree.path }, "subagent run not recorded; its new worktree is left in place");
+      throw err;
+    }
     const spawnKey = `${def.name}#${ulid()}`;
     this.defsBySpawn.set(spawnKey, def);
 
     const snapshot: ParentSnapshot = { cwd: sessionManager.getCwd(), systemPrompt: "", model: undefined, modelRegistry: { find: () => undefined, getAll: () => [] } };
     const spawn: Spawn = {
-      runId: "",
+      runId,
       parentRunId,
       def,
       depth,
       background,
       sessionManager,
       sessionFile,
-      turn: this.opts.currentTurn?.() ?? null,
+      turn,
+      origin: turn?.origin,
       acc: newRunAccumulator(),
+      price: this.limits.fallbackPrice,
+      costUsd: 0,
       capHit: null,
+      tamper: null,
       turns: 0,
       started: false,
       abortChild: null,
       ...(worktree ? { worktree } : {}),
     };
-    spawn.runId = this.opts.runs.startRun({ agentName: def.name, parentRunId, task, sessionFile });
     this.spawns.set(snapshot, spawn);
     log.info({ runId: spawn.runId, parentRunId, agent: def.name, background, mode: args.continue ? "continue" : (args.mode ?? "fresh") }, "subagent spawned");
 
-    const kind: SlotKind = def.writer ? "writer" : "reader";
-    const queued = this.slots.running(kind) >= this.limits[kind === "writer" ? "maxWriters" : "maxReaders"];
+    // Nested children run inside their parent's slot: taking another could deadlock a full pool of parents.
+    const kind: SlotKind | null = depth > 1 ? null : def.writer ? "writer" : "reader";
+    const queued = kind !== null && this.slots.running(kind) >= this.limits[kind === "writer" ? "maxWriters" : "maxReaders"];
     const run = this.runSpawn(spawnKey, snapshot, spawn, task, kind, background ? undefined : call.signal);
     if (!background) {
       const outcome = await run;
@@ -275,14 +369,23 @@ export class SubagentHost {
     };
   }
 
-  private async runSpawn(spawnKey: string, snapshot: ParentSnapshot, spawn: Spawn, task: string, kind: SlotKind, signal: AbortSignal | undefined): Promise<DelegateOutcome> {
+  private async runSpawn(spawnKey: string, snapshot: ParentSnapshot, spawn: Spawn, task: string, kind: SlotKind | null, signal: AbortSignal | undefined): Promise<DelegateOutcome> {
     let release: (() => void) | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let status: SettledStatus = "failed";
     let text = "";
+    // The wall clock starts at the call, so a foreground child queued for a slot can't hold main's turn forever.
+    const timeoutMs = spawn.background ? this.limits.backgroundTimeoutMs : this.limits.foregroundTimeoutMs;
+    const deadline = new AbortController();
+    const timer = setTimeout(() => {
+      this.hitCap(spawn, "timeout");
+      deadline.abort();
+    }, timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
     try {
-      release = await this.slots.acquire(kind, signal);
+      if (kind) release = await this.slots.acquire(kind, waitSignal);
       if (this.disposed) throw new Error("the workspace is shutting down");
+      if (spawn.capHit) throw new Error("timed out waiting for a free subagent slot");
+      spawn.price = (await this.priceOf(spawn.def.model ?? this.opts.config.model)) ?? this.limits.fallbackPrice;
       const id = this.manager.spawn(snapshot, spawnKey, task, {
         description: spawn.def.name,
         maxTurns: spawn.def.maxTurns ?? this.limits.maxTurns,
@@ -291,17 +394,18 @@ export class SubagentHost {
         signal,
       });
       const record = this.manager.getRecord(id)!;
-      const timeoutMs = spawn.background ? this.limits.backgroundTimeoutMs : this.limits.foregroundTimeoutMs;
-      timer = setTimeout(() => this.hitCap(spawn, "timeout"), timeoutMs);
       await record.promise;
       text = (record.result ?? record.error ?? "").trim();
-      status = outcomeStatus(record.status, spawn.capHit);
       await record.releaseSession();
+      // A last look after the child stopped: a write it left running in the background lands here.
+      if (this.watch.watching) this.watch.check(spawn.runId);
+      status = outcomeStatus(record.status, spawn.capHit);
     } catch (err) {
       text = err instanceof Error ? err.message : String(err);
-      status = signal?.aborted ? "aborted" : "failed";
+      status = spawn.capHit === "timeout" ? "timeout" : signal?.aborted ? "aborted" : "failed";
     } finally {
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
+      this.watch.detach(spawn.runId);
       release?.();
       this.defsBySpawn.delete(spawnKey);
       this.activeFiles.delete(resolve(spawn.sessionFile));
@@ -311,7 +415,7 @@ export class SubagentHost {
     try {
       this.opts.runs.endRun(spawn.runId, {
         status,
-        usage: { inputTokens: spawn.acc.inputTokens, outputTokens: spawn.acc.outputTokens, costUsd: spawn.acc.costUsd },
+        usage: { inputTokens: spawn.acc.inputTokens, outputTokens: spawn.acc.outputTokens, costUsd: spawn.costUsd },
         ...(text ? { resultSummary: text } : {}),
       });
     } catch (err) {
@@ -322,30 +426,80 @@ export class SubagentHost {
   }
 
   private hitCap(spawn: Spawn, cap: NonNullable<Spawn["capHit"]>): void {
-    if (spawn.capHit) return;
-    spawn.capHit = cap;
-    log.warn({ runId: spawn.runId, cap }, "subagent hit a cap; aborting it");
+    if (spawn.capHit && spawn.capHit !== cap) return;
+    if (!spawn.capHit) {
+      spawn.capHit = cap;
+      log.warn({ runId: spawn.runId, cap }, "subagent hit a cap; aborting it");
+    }
     spawn.abortChild?.();
+  }
+
+  private onTamper(spawn: Spawn, report: TamperReport): void {
+    const seen = new Set(spawn.tamper?.paths ?? []);
+    spawn.tamper = {
+      paths: [...(spawn.tamper?.paths ?? []), ...report.paths.filter((p) => !seen.has(p))],
+      unrestored: [...new Set([...(spawn.tamper?.unrestored ?? []), ...report.unrestored])],
+    };
+    // Tamper outranks every other cap: the result must say so.
+    spawn.capHit = null;
+    this.hitCap(spawn, "tamper");
   }
 
   private resultText(spawn: Spawn, status: RunStatus, raw: string): string {
     const cap = this.limits.resultChars;
-    const body = raw.length > cap ? `${raw.slice(0, cap)}\n[… cut at ${cap} of ${raw.length} chars; full text in the transcript]` : raw || "(no reply)";
+    const body = raw.length > cap ? `${cutAt(raw, cap)}\n[… cut at ${cap} of ${raw.length} chars; full text in the transcript]` : raw || "(no reply)";
     const why = spawn.capHit ? ` (${capReason(spawn.capHit)})` : "";
     const head = `[${spawn.def.name} · runId ${spawn.runId} · ${status}${why}]`;
+    const tamper = spawn.tamper ? `\n${tamperNotice(spawn.tamper)}` : "";
     const wt = spawn.worktree ? `\nWorktree: ${spawn.worktree.path} (branch ${spawn.worktree.branch})` : "";
-    return `${head}\n${body}${wt}\nFull transcript: ws-runs show ${spawn.runId}`;
+    return `${head}${tamper}\n${body}${wt}\nFull transcript: ws-runs show ${spawn.runId}`;
   }
 
+  /** Persists the result first, then wakes main; the record is dropped only once main's session has it. */
   private deliverBackground(spawn: Spawn, outcome: DelegateOutcome): void {
-    const pi = this.mainPi;
-    if (!pi || this.disposed) return;
-    const content = `<subagent-result runId="${outcome.runId}" agent="${spawn.def.name}" status="${outcome.status}">\n${outcome.text}\n</subagent-result>`;
+    const attrs = `runId="${outcome.runId}" agent="${spawn.def.name}" status="${outcome.status}"`;
+    const body = outcome.text.replace(/<\/?subagent-result/gi, (m) => m.replace("<", "&lt;"));
+    const result: PendingResult = {
+      runId: outcome.runId,
+      agent: spawn.def.name,
+      status: outcome.status,
+      text: `<subagent-result ${attrs}>\n${body}\n</subagent-result>`,
+      ...(spawn.origin ? { origin: spawn.origin } : {}),
+      createdAt: new Date().toISOString(),
+    };
     try {
-      pi.sendMessage({ customType: RESULT_CUSTOM_TYPE, content, display: true, details: { runId: outcome.runId, status: outcome.status } }, { deliverAs: "followUp", triggerTurn: true });
+      this.results.add(result);
     } catch (err) {
-      log.warn({ err, runId: outcome.runId }, "could not wake the main session with a background result; it stays in runs.jsonl");
+      log.error({ err, runId: outcome.runId }, "could not persist a background result; delivering it without a record");
     }
+    if (!this.disposed) this.wakeMain(result);
+  }
+
+  private wakeMain(result: PendingResult): void {
+    if (!this.opts.wake) {
+      log.warn({ runId: result.runId }, "no main session to wake; the result stays pending in the state dir");
+      return;
+    }
+    try {
+      this.opts.wake(result, () => {
+        this.results.consume(result.runId);
+      });
+    } catch (err) {
+      log.warn({ err, runId: result.runId }, "waking the main session failed; the result stays pending in the state dir");
+    }
+  }
+
+  private priceOf(modelId: string): Promise<TokenPrice | null> {
+    let p = this.prices.get(modelId);
+    if (!p) {
+      p = (this.opts.priceOf ?? fetchOpenRouterPrice)(modelId).catch(() => null);
+      // A failed lookup is retried by the next child rather than pinned for the process lifetime.
+      void p.then((v) => {
+        if (v === null) this.prices.delete(modelId);
+      });
+      this.prices.set(modelId, p);
+    }
+    return p;
   }
 
   private async planNew(
@@ -373,7 +527,8 @@ export class SubagentHost {
     return { def, worktree, sessionManager };
   }
 
-  private async planContinue(runId: string): Promise<{ def: AgentDef; sessionManager: PiSessionManager; worktree?: undefined }> {
+  /** Checks a continue target and claims its session file, synchronously. */
+  private reserveContinue(runId: string): { runId: string; agentName: string; file: string } {
     const rec = this.opts.runs.getRun(runId);
     if (!rec || !rec.parentRunId) throw new Error(`delegate: no subagent run ${runId}`);
     if (rec.status === "running") throw new Error(`delegate: run ${runId} is still running`);
@@ -381,11 +536,21 @@ export class SubagentHost {
     const file = resolve(rec.sessionFile);
     if (!file.startsWith(root + sep) || !existsSync(file)) throw new Error(`delegate: run ${runId} has no subagent session file`);
     if (this.activeFiles.has(file)) throw new Error(`delegate: run ${runId}'s session is in use by another child`);
-    const def = loadAgentDefs(this.opts.config.home).get(rec.agentName);
-    if (!def) throw new Error(`delegate: agent ${rec.agentName} of run ${runId} no longer exists`);
+    this.activeFiles.add(file);
+    return { runId, agentName: rec.agentName, file };
+  }
+
+  private async planContinue(r: { runId: string; agentName: string; file: string }): Promise<{ def: AgentDef; sessionManager: PiSessionManager; worktree?: { path: string; branch: string } }> {
+    const def = loadAgentDefs(this.opts.config.home).get(r.agentName);
+    if (!def) throw new Error(`delegate: agent ${r.agentName} of run ${r.runId} no longer exists`);
     const { SessionManager } = await import("@earendil-works/pi-coding-agent");
     // No cwd override: the header keeps a writer's worktree.
-    return { def, sessionManager: SessionManager.open(file, dirname(file)) };
+    const sessionManager = SessionManager.open(r.file, dirname(r.file));
+    if (!def.writer) return { def, sessionManager };
+    const cwd = sessionManager.getCwd();
+    const worktree = worktreeInfo(this.opts.config.home, cwd);
+    if (!worktree) throw new Error(`delegate: run ${r.runId}'s worktree ${cwd} is gone`);
+    return { def, sessionManager, worktree: { path: cwd, branch: worktree.branch } };
   }
 
   private async createWorktree(repo: string | undefined): Promise<{ path: string; branch: string }> {
@@ -393,6 +558,9 @@ export class SubagentHost {
     const projects = join(this.opts.config.home, "projects");
     const src = join(projects, repo);
     if (!existsSync(join(src, ".git"))) throw new Error(`delegate: projects/${repo} is not a git repo`);
+    // A symlinked repo would put the worktree's git internals, and the child's commits, outside projects/.
+    const realProjects = realpathSync(projects);
+    if (dirname(realpathSync(src)) !== realProjects) throw new Error(`delegate: projects/${repo} must be a real directory under projects/, not a link`);
     const id = ulid().toLowerCase();
     const path = join(projects, `${repo}-wt-${id}`);
     const branch = `agent/${id}`;
@@ -440,6 +608,12 @@ export class SubagentHost {
     const cwd = sessionManager.getCwd();
     const file = spawn.sessionFile;
 
+    const scratch = join(config.home, "scratch", "subagents", spawn.runId);
+    mkdirSync(scratch, { recursive: true });
+    const wt = spawn.def.writer ? worktreeInfo(config.home, cwd) : null;
+    if (spawn.def.writer && !wt) throw new Error(`subagent ${spawn.def.name}: its working directory ${cwd} is not a worktree under projects/`);
+    this.watch.attach({ runId: spawn.runId, writer: spawn.def.writer, allowedProjectPaths: wt?.projectPaths ?? [], onTamper: (r) => this.onTamper(spawn, r) });
+
     const stubs = this.opts.toolStubs?.binding({ agentId: spawn.runId, agentName: spawn.def.name, parentRunId: spawn.parentRunId });
     const nested = this.offersDelegate(spawn.depth);
     const loader = new DefaultResourceLoader({
@@ -453,11 +627,15 @@ export class SubagentHost {
       systemPromptOverride: () => childSystemPrompt(spawn, cwd, config.home, this.limits.resultChars),
       appendSystemPromptOverride: () => [],
       extensionFactories: [
+        { name: "sushii-protected-watch", factory: this.watchExtension(spawn) },
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
-        { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, readOnly: true, log: memoryLog }) },
+        {
+          name: "sushii-memory-guard",
+          factory: createMemoryGuardExtension({ home: config.home, cwd, readOnly: true, ...(spawn.def.writer ? { writableRoots: [cwd, scratch] } : {}), log: memoryLog }),
+        },
         // Rooted in the child's scratch dir, so its compaction handoff never lands in drk's daily notes.
-        { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: join(config.home, "scratch", "subagents", spawn.runId), log: memoryLog }) },
+        { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: scratch, log: memoryLog }) },
         ...(nested ? [{ name: "sushii-delegate", factory: this.extension({ depth: spawn.depth, currentRunId: () => spawn.runId }) }] : []),
       ],
     });
@@ -468,7 +646,8 @@ export class SubagentHost {
       const settingsManager = SettingsManager.create(cwd, config.agentDir);
       settingsManager.applyOverrides({ compaction: { reserveTokens: maxTokens } });
       settingsManager.getCacheWarmingMode = () => "off";
-      const builtins = spawn.def.tools;
+      // Bash writes wherever the process can, so only a writer (confined to its worktree by the watch) gets it.
+      const builtins = spawn.def.writer ? spawn.def.tools : spawn.def.tools.filter((t) => t !== "bash");
       const extra = [...(nested ? [DELEGATE_TOOL] : [])];
       const customTools = builtins.includes("bash") ? [await createWorkspaceBashTool(cwd, () => spawn.runId)] : [];
       ({ session } = await createAgentSession({
@@ -487,6 +666,7 @@ export class SubagentHost {
       stubs?.assertOwned(session, `subagent ${spawn.def.name}`);
     } catch (err) {
       stubs?.release();
+      this.watch.detach(spawn.runId);
       throw err;
     }
 
@@ -525,9 +705,78 @@ export class SubagentHost {
       spawn.capHit = "turns";
     }
     if (event.type !== "message_end") return;
-    if (spawn.acc.inputTokens + spawn.acc.outputTokens > this.limits.maxTokens) this.hitCap(spawn, "tokens");
-    else if (spawn.acc.costUsd > this.limits.maxCostUsd) this.hitCap(spawn, "cost");
+    spawn.costUsd = costUsd(spawn.acc, spawn.price);
+    if (totalTokens(spawn.acc) > this.limits.maxTokens) this.hitCap(spawn, "tokens");
+    else if (spawn.costUsd > this.limits.maxCostUsd) this.hitCap(spawn, "cost");
   }
+
+  /** Checks the protected set at both ends of every child tool call; a change fails the child. */
+  private watchExtension(spawn: Spawn): ExtensionFactory {
+    return (pi) => {
+      pi.on("tool_call", () => {
+        this.watch.check(spawn.runId);
+        return spawn.tamper ? { block: true, reason: tamperNotice(spawn.tamper) } : undefined;
+      });
+      pi.on("tool_result", () => {
+        this.watch.check(spawn.runId);
+        return spawn.tamper ? { isError: true, content: [{ type: "text", text: tamperNotice(spawn.tamper) }] } : undefined;
+      });
+    };
+  }
+}
+
+const WRITING_TOOLS = new Set(["bash", "edit", "write"]);
+
+/** A writer's worktree: its branch and the paths under projects/ it may change (worktree, git admin dir, its branch, objects). */
+export function worktreeInfo(home: string, worktree: string): { branch: string; projectPaths: string[] } | null {
+  let projects: string;
+  let wt: string;
+  let admin: string;
+  try {
+    projects = realpathSync(join(home, "projects"));
+    wt = realpathSync(worktree);
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(join(wt, ".git"), "utf8"));
+    if (!m) return null;
+    admin = realpathSync(resolve(wt, m[1].trim()));
+  } catch {
+    return null;
+  }
+  const rel = (p: string): string | null => {
+    const r = relative(projects, p);
+    return !r || r.startsWith("..") || isAbsolute(r) ? null : r;
+  };
+  const wtRel = rel(wt);
+  if (!wtRel) return null;
+  let ref: string | undefined;
+  try {
+    ref = /^ref:\s*(refs\/heads\/\S+)/.exec(readFileSync(join(admin, "HEAD"), "utf8"))?.[1];
+  } catch {
+    // Detached or unreadable HEAD: no branch paths.
+  }
+  const paths = [wtRel];
+  const adminRel = rel(admin);
+  const commonRel = rel(dirname(dirname(admin)));
+  if (adminRel) paths.push(adminRel);
+  if (commonRel) {
+    paths.push(`${commonRel}/objects`);
+    if (ref) paths.push(`${commonRel}/${ref}`, `${commonRel}/logs/${ref}`);
+  }
+  return { branch: ref?.replace(/^refs\/heads\//, "") ?? "", projectPaths: paths };
+}
+
+/** `text` cut at `cap` chars without splitting a surrogate pair. */
+function cutAt(text: string, cap: number): string {
+  const end = /[\uD800-\uDBFF]/.test(text.charAt(cap - 1)) ? cap - 1 : cap;
+  return text.slice(0, end);
+}
+
+function tamperNotice(t: TamperReport): string {
+  const list = (xs: string[]) => xs.slice(0, 10).join(", ") + (xs.length > 10 ? `, … (${xs.length} in all)` : "");
+  const undone = t.unrestored.length ? ` Could not restore: ${list(t.unrestored)}.` : "";
+  return (
+    `Stopped: this subagent changed protected paths (${list(t.paths)}). Subagents may not change memory, persona or ` +
+    `agent files, or anything under projects/ outside their own worktree. Protected files were restored.${undone}`
+  );
 }
 
 /** The vendored manager's view of one of our defs; the turn cap is the only field it acts on. */
@@ -544,6 +793,7 @@ function agentConfig(def: AgentDef | undefined): AgentConfig {
 
 /** Maps the vendored record status (and our own caps) onto the run log's. */
 export function outcomeStatus(status: string, capHit: Spawn["capHit"]): SettledStatus {
+  if (capHit === "tamper") return "failed";
   if (capHit === "timeout") return "timeout";
   if (capHit) return "aborted";
   if (status === "completed" || status === "steered") return "done";
@@ -555,6 +805,7 @@ function capReason(cap: NonNullable<Spawn["capHit"]>): string {
   if (cap === "timeout") return "hit its wall-clock cap";
   if (cap === "tokens") return "hit its token cap";
   if (cap === "turns") return "hit its turn cap";
+  if (cap === "tamper") return "changed protected paths";
   return "hit its cost cap";
 }
 
