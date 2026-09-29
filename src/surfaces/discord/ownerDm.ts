@@ -166,17 +166,20 @@ export function selectCatchUp<T extends CatchUpCandidate>(messages: T[], input: 
     .slice(0, CATCH_UP_LIMIT);
 }
 
-/** Feeds owner DMs sent while the bot was down through the normal handler, in order. */
+/** Feeds owner DMs sent while the bot was down through the normal handler, in order. Pass the cursor
+ *  read at ready: a live DM handled meanwhile advances the stored one past the backlog. */
 export async function catchUpOwnerDms<T extends CatchUpCandidate>(input: {
   cursor: string | null;
   ownerId: string;
   now: number;
   fetchAfter: (after: string, limit: number) => Promise<T[]>;
   handle: (message: T) => Promise<void>;
+  /** DMs the live handler already took since startup; the fallback path has no dedupe of its own. */
+  alreadyHandled?: (id: string) => boolean;
 }): Promise<number> {
   if (input.cursor === null) return 0;
   const fetched = await input.fetchAfter(input.cursor, CATCH_UP_LIMIT);
-  const pending = selectCatchUp(fetched, input);
+  const pending = selectCatchUp(fetched, input).filter((m) => !input.alreadyHandled?.(m.id));
   for (const m of pending) {
     await input.handle(m).catch((err) => log.error({ err, messageId: m.id }, "catch-up DM failed"));
   }

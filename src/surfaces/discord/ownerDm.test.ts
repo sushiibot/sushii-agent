@@ -251,6 +251,28 @@ describe("DM catch-up on ready", () => {
     expect(deps.cursor.get()).toBe("1003");
   });
 
+  test("a live DM handled before the fetch doesn't hide the backlog and isn't handled twice", async () => {
+    const { deps, calls } = fakeDeps({ connected: false });
+    deps.cursor = memCursor("1000");
+    const cursorAtReady = deps.cursor.get();
+    const handledLive = new Set<string>();
+    // A live DM arrives while ready is still waiting for the workspace.
+    handledLive.add("1005");
+    await handleOwnerDm(fakeMessage({ id: "1005", content: "live" }).msg, deps);
+    expect(deps.cursor.get()).toBe("1005");
+
+    await catchUpOwnerDms({
+      cursor: cursorAtReady,
+      ownerId: "owner-1",
+      now: NOW,
+      fetchAfter: async () => [owner("1005"), owner("1002"), owner("1001")],
+      handle: (m) => handleOwnerDm(fakeMessage({ id: m.id, content: `backlog ${m.id}` }).msg, deps),
+      alreadyHandled: (id) => handledLive.has(id),
+    });
+    expect(calls.inProcess.map((c) => c.text)).toEqual(["live", "backlog 1001", "backlog 1002"]);
+    expect(deps.cursor.get()).toBe("1005");
+  });
+
   test("no cursor yet: nothing is fetched", async () => {
     let fetched = false;
     const count = await catchUpOwnerDms({

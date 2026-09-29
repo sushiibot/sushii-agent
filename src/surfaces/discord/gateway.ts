@@ -52,7 +52,7 @@ import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
 import { DEFAULT_OWNER_PRINCIPAL_ID } from "../../orchestration/transport/server.ts";
 import { ownerPrincipalId } from "../../orchestration/principals.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
-import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, type DmChannelPort } from "./workspaceLink.ts";
+import { ACCENT, WS_ASK_PREFIX, WS_STOP_PREFIX, WorkspaceLink, answeredAsk, type DmChannelPort } from "./workspaceLink.ts";
 import { OWNER_DM_CURSOR_KEY, catchUpOwnerDms, handleOwnerDm as routeOwnerDm, type DmCursor, type OwnerDmMessage } from "./ownerDm.ts";
 import { SCREENING_IGNORE_PREFIX, handleScreeningAuditEntry, handleScreeningAutomod, handleScreeningDeletes, handleScreeningIgnore, screenDiscordMessage } from "./screening.ts";
 
@@ -394,9 +394,13 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     });
   }
 
+  // Owner DMs handled since startup, until catch-up has run; null afterwards.
+  let handledBeforeCatchUp: Set<string> | null = new Set();
+
   async function handleOwnerDm(message: Message): Promise<void> {
     const dm = ownerDmMessage(message);
     if (!dm) return;
+    handledBeforeCatchUp?.add(message.id);
     await routeOwnerDm(dm, {
       workspaceEnabled: config.dmWorkspaceEnabled,
       transcriptionEnabled: config.transcriptionEnabled,
@@ -417,7 +421,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   }
 
   /** Replays owner DMs sent while the bot was down. The workspace dedupes by message id. */
-  async function catchUpOwnerDmsOnReady(): Promise<void> {
+  async function catchUpOwnerDmsOnReady(cursor: string | null): Promise<void> {
     if (!config.dmWorkspaceEnabled || !config.ownerDiscordId) return;
     const ownerId = config.ownerDiscordId;
     // The workspace reconnects with backoff after a bot restart; give it a moment so caught-up DMs
@@ -426,12 +430,14 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     const user = await client.users.fetch(ownerId).catch(() => null);
     const dmChannel = user ? await user.createDM().catch(() => null) : null;
     if (!dmChannel) return;
+    const handled = handledBeforeCatchUp ?? new Set<string>();
     const count = await catchUpOwnerDms({
-      cursor: dmCursor.get(),
+      cursor,
       ownerId,
       now: Date.now(),
       fetchAfter: async (after, limit) => [...(await dmChannel.messages.fetch({ after, limit })).values()],
       handle: (m) => handleOwnerDm(m),
+      alreadyHandled: (id) => handled.has(id),
     });
     if (count > 0) logger.info({ count }, "caught up owner DMs sent while offline");
   }
@@ -441,11 +447,13 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await interaction.reply({ content: "Only the owner can stop this.", flags: MessageFlags.Ephemeral }).catch(() => {});
       return;
     }
+    // abort waits for the run to unwind, which can outlast Discord's 3 s interaction deadline.
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
     try {
       const res = await workspaceLink.abort();
-      await interaction.reply({ content: res.aborted ? "Stopping…" : "Nothing is running.", flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.editReply(res.aborted ? "Stopping…" : "Nothing is running.").catch(() => {});
     } catch (err) {
-      await interaction.reply({ content: `Couldn't stop: ${err instanceof Error ? err.message : String(err)}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.editReply(`Couldn't stop: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
     }
   }
 
@@ -461,6 +469,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await interaction.reply({ content: "This question is no longer active.", flags: MessageFlags.Ephemeral }).catch(() => {});
       return;
     }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
     try {
       await workspaceLink.sendMessage({
         messageId: `wsask:${interaction.id}`,
@@ -468,9 +477,11 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
         kind: "user",
         author: { id: interaction.user.id, name: interaction.user.globalName ?? interaction.user.username },
       });
-      await interaction.reply({ content: `Answered: ${answer}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.editReply(`Answered: ${answer}`).catch(() => {});
+      // Drop the buttons so a second click can't send the answer again.
+      await interaction.message.edit(answeredAsk(interaction.message, answer)).catch(() => {});
     } catch (err) {
-      await interaction.reply({ content: `Couldn't deliver the answer: ${err instanceof Error ? err.message : String(err)}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      await interaction.editReply(`Couldn't deliver the answer: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
     }
   }
 
@@ -1162,11 +1173,14 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   client.on(Events.AutoModerationActionExecution, (execution) => handleScreeningAutomod(client, execution));
 
   client.once(Events.ClientReady, async (c) => {
+    // Read before any await: a live DM handled meanwhile would move the stored cursor past the backlog.
+    const dmCursorAtReady = dmCursor.get();
     logger.info({ tag: c.user.tag }, "Logged in");
     logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
     void notifyOwner(`🟢 sushii-agent online — version \`${process.env["APP_VERSION"] ?? "unknown"}\``);
     await registerWikiSyncCommands(c).catch((err) => logger.error({ err }, "failed to register wiki-sync commands"));
-    await catchUpOwnerDmsOnReady().catch((err) => logger.error({ err }, "owner DM catch-up failed"));
+    await catchUpOwnerDmsOnReady(dmCursorAtReady).catch((err) => logger.error({ err }, "owner DM catch-up failed"));
+    handledBeforeCatchUp = null;
   });
 
   // Startup cleanup schedules (ported from the old startBot()).

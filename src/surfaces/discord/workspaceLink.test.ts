@@ -5,7 +5,7 @@ import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { RPC_METHODS, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/transport/server.ts";
-import { WorkspaceLink, formatDuration, progressEditDelay, progressEditGap, type Timers, type WorkspaceRpc } from "./workspaceLink.ts";
+import { WorkspaceLink, answeredAsk, formatDuration, progressEditDelay, progressEditGap, type Timers, type WorkspaceRpc } from "./workspaceLink.ts";
 
 const P = "drk";
 const CONN: ConnectionInfo = { runnerId: `workspace-${P}`, role: "workspace", principalId: P, protocolVersion: 1, state: "idle" };
@@ -189,6 +189,15 @@ describe("chat/deliver", () => {
     expect(ask).toContain('"custom_id":"wsask:ask9:1"');
     expect(link.askChoice("ask9", 1, null)).toBe("Wait");
     expect(link.askChoice("unknown", 0, "Label")).toBe("Label");
+  });
+
+  test("an answered ask keeps its question and drops the buttons", async () => {
+    const { link } = setup();
+    const [ask] = link.renderDelivery(deliverParams({ kind: "ask", ask: { askId: "a", question: "Merge now?", choices: ["Yes", "No"] } }));
+    const edited = textOf(answeredAsk({ components: ask!.components as Array<{ toJSON(): unknown }> }, "Yes"));
+    expect(edited).toContain("Merge now?");
+    expect(edited).toContain("-# → Yes");
+    expect(edited).not.toContain("wsask:");
   });
 
   test("a delivery for another principal is refused", async () => {

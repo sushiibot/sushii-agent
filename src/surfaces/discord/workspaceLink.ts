@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ComponentType,
   ContainerBuilder,
   MessageFlags,
   TextDisplayBuilder,
@@ -444,4 +445,20 @@ export class WorkspaceLink {
     const container = new ContainerBuilder().setAccentColor(accent).addTextDisplayComponents(new TextDisplayBuilder({ content: label }));
     return { components: [container], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
   }
+}
+
+/** The ask message once answered: its question text with the choice noted, and no buttons. */
+export function answeredAsk(message: { components: Array<{ toJSON(): unknown }> }, answer: string): MessageEditOptions {
+  const texts: string[] = [];
+  const walk = (node: unknown) => {
+    const n = node as { type?: number; content?: unknown; components?: unknown[] };
+    if (n?.type === ComponentType.TextDisplay && typeof n.content === "string") texts.push(n.content);
+    n?.components?.forEach(walk);
+  };
+  message.components.forEach((c) => walk(c.toJSON()));
+  const question = (texts[0] ?? "🙋 **Question**").split("\n-# ")[0];
+  const container = new ContainerBuilder()
+    .setAccentColor(ACCENT.success)
+    .addTextDisplayComponents(new TextDisplayBuilder({ content: `${question}\n-# → ${answer}` }));
+  return { components: [container], allowedMentions: { parse: [] } };
 }
