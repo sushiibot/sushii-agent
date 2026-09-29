@@ -5,14 +5,21 @@ import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
+import { createSecretGuardExtension } from "./secretGuard.ts";
 import { BackendSelector, CHATGPT_PROVIDER, chatGptSignedIn, createModelFallbackExtension, selectInitialModel } from "./chatgptFallback.ts";
 
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
 
 const log = getLogger("workspace.model");
+const guardLog = getLogger("workspace.guard");
 
 const PROVIDER_ID = "sushii-workspace-openrouter";
 const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
+
+/** Pi's bash under the agent env allowlist, minus PI_* (PI_CODING_AGENT_DIR and PI_SESSION_FILE point at the agent dir). */
+export function createWorkspaceBashTool(cwd: string) {
+  return createAgentBashTool(cwd, undefined, { dropPrefixes: ["PI_"], exposeSessionEnvironment: false });
+}
 
 /** In-memory settings overrides per live session, re-applied after a reload drops them. */
 const sessionOverrides = new WeakMap<object, { session: AgentSession; overrides: Settings }>();
@@ -85,7 +92,10 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
       cwd,
       agentDir: config.agentDir,
       agentsFilesOverride: homeAgentsFilesOverride(cwd),
-      extensionFactories: [{ name: "sushii-model-fallback", factory: fallbackExtension }],
+      extensionFactories: [
+        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
+        { name: "sushii-model-fallback", factory: fallbackExtension },
+      ],
     });
     await loader.reload();
 
@@ -99,7 +109,7 @@ export function createPiChatSessionFactory(config: WorkspaceConfig): ChatSession
     };
     settingsManager.applyOverrides(overrides);
 
-    const bashTool = await createAgentBashTool(cwd);
+    const bashTool = await createWorkspaceBashTool(cwd);
     const { session } = await createAgentSession({
       cwd,
       agentDir: config.agentDir,

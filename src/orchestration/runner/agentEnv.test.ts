@@ -31,6 +31,15 @@ describe("buildAgentEnv", () => {
     expect(env.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
   });
+
+  test("keeps PI_* by default; dropPrefixes removes it, from extra too", () => {
+    const withPi = { ...base, PI_CODING_AGENT_DIR: "/data/pi-agent", PI_SESSION_FILE: "/data/pi-agent/chat/s.jsonl" };
+    expect(buildAgentEnv(withPi).PI_CODING_AGENT_DIR).toBe("/data/pi-agent");
+    const env = buildAgentEnv(withPi, { PI_MODEL: "x", GH_TOKEN: "ghs" }, { dropPrefixes: ["PI_"] });
+    expect(Object.keys(env).filter((k) => k.startsWith("PI_"))).toEqual([]);
+    expect(env.GH_TOKEN).toBe("ghs");
+    expect(env.PATH).toBe("/usr/bin");
+  });
 });
 
 describe("orchestrator secrets never reach an agent", () => {

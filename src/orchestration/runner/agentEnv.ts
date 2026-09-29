@@ -7,13 +7,19 @@ const ALLOWED_PREFIXES = ["LC_", "PI_", "AGENT_BROWSER_"];
 // ORCH_SECRET / ORCH_RUNNER_SECRET let a holder register with the orchestrator; no agent gets them.
 const ORCH_PREFIX = "ORCH_";
 
-export function buildAgentEnv(base: NodeJS.ProcessEnv, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+export interface AgentEnvOptions {
+  /** Prefixes dropped even when allowlisted, e.g. PI_ for the workspace, whose PI_CODING_AGENT_DIR points at auth.json. */
+  dropPrefixes?: readonly string[];
+}
+
+export function buildAgentEnv(base: NodeJS.ProcessEnv, extra: Record<string, string> = {}, options: AgentEnvOptions = {}): NodeJS.ProcessEnv {
+  const drop = options.dropPrefixes ?? [];
   const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value === undefined) continue;
-    if (ALLOWED.has(key) || ALLOWED_PREFIXES.some((p) => key.startsWith(p))) env[key] = value;
+  for (const [key, value] of Object.entries({ ...base, ...extra })) {
+    if (value === undefined || drop.some((p) => key.startsWith(p))) continue;
+    if (key in extra || ALLOWED.has(key) || ALLOWED_PREFIXES.some((p) => key.startsWith(p))) env[key] = value;
   }
-  return withoutOrchEnv({ ...env, ...extra });
+  return withoutOrchEnv(env);
 }
 
 /** Copy of `env` minus every ORCH_* var, for agents that otherwise inherit the runner's full env. */

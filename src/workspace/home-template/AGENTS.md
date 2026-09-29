@@ -67,6 +67,7 @@ message id to cite. The header is metadata, not something drk typed: never echo 
 
 - Clone repositories into `projects/<name>` and work there. Use `scratch/` for anything temporary.
 - Never commit secrets or `.env` files anywhere.
+- Never read or print Pi's config/auth files or process environment; they hold credentials.
 - Ask before doing anything destructive or visible to other people (force-pushes, deleting
   branches, posting, sending messages, spending money).
 

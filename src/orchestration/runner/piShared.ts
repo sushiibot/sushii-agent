@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../../logger.ts";
-import { buildAgentEnv } from "./agentEnv.ts";
+import { buildAgentEnv, type AgentEnvOptions } from "./agentEnv.ts";
 
 const log = getLogger("orchestration.runner.pi");
 
@@ -96,10 +96,15 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
 }
 
 /** Pi's bash tool under the allowlisted agent env; `extraEnv` is read per spawn (e.g. a fresh git token). */
-export async function createAgentBashTool(cwd: string, extraEnv: () => Record<string, string> = () => ({})): Promise<ToolDefinition> {
+export async function createAgentBashTool(
+  cwd: string,
+  extraEnv: () => Record<string, string> = () => ({}),
+  options: AgentEnvOptions & { exposeSessionEnvironment?: boolean } = {},
+): Promise<ToolDefinition> {
   const { createBashToolDefinition } = await import("@earendil-works/pi-coding-agent");
   const tool = createBashToolDefinition(cwd, {
-    spawnHook: (context) => ({ ...context, env: buildAgentEnv(context.env, extraEnv()) }),
+    exposeSessionEnvironment: options.exposeSessionEnvironment,
+    spawnHook: (context) => ({ ...context, env: buildAgentEnv(context.env, extraEnv(), options) }),
   });
   // Cast: the bash factory returns a specialized ToolDefinition; customTools wants the generic one.
   return tool as unknown as ToolDefinition;
