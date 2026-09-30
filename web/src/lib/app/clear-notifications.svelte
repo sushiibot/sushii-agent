@@ -14,10 +14,12 @@
 		return () => document.removeEventListener('visibilitychange', sync);
 	});
 
+	// Keyed on the tag set, so a streaming reply's frames don't each reach the worker.
+	const tagKey = $derived([...tagsShownBy(store.items, store.approvals)].sort().join('\n'));
+
 	$effect(() => {
 		if (!store.viewing || !visible) return;
-		const tags = tagsShownBy(store.items, store.approvals);
-		void closeShownNotifications(tags).catch(() => {
+		void closeShownNotifications(new Set(tagKey.split('\n'))).catch(() => {
 			// Nothing to clear if the worker is gone; the next visit tries again.
 		});
 	});
