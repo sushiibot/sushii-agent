@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Outbox } from "./outbox.ts";
+import { isStoreName, Outbox } from "./outbox.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -60,6 +60,59 @@ describe("outbox files", () => {
     writeFileSync(join(outbox.filesDir, "orphan"), "x");
     new Outbox(state);
     expect(readdirSync(outbox.filesDir)).toEqual([]);
+  });
+});
+
+describe("outbox file names from disk", () => {
+  function forged(state: string, file: string) {
+    mkdirSync(state, { recursive: true });
+    const line = { type: "entry", entry: { ...entry("f1"), stagedFiles: [{ name: "notes.txt", contentType: "text/plain", file, bytes: 6, sha256: "00" }] } };
+    writeFileSync(join(state, "outbox.jsonl"), `${JSON.stringify(line)}\n`);
+  }
+
+  test("only a plain name inside the store is accepted", () => {
+    for (const bad of ["../x", "a/b", "/etc/passwd", ".", "..", "", "a\0b", 3, null]) expect(isStoreName(bad), String(bad)).toBe(false);
+    expect(isStoreName("0b7c-chart.png")).toBe(true);
+  });
+
+  test("a forged entry pointing outside the store neither reads nor deletes the target", () => {
+    const root = temp();
+    const state = join(root, ".workspace");
+    const victim = join(root, "auth.json");
+    writeFileSync(victim, "SECRET");
+    forged(state, "../auth.json");
+    const outbox = new Outbox(state);
+    const [loaded] = outbox.unacked();
+    expect(loaded!.stagedFiles).toEqual([]);
+    expect(outbox.wire(loaded!).files).toBeUndefined();
+    expect(outbox.ack("f1")).toBe(true);
+    expect(existsSync(victim)).toBe(true);
+  });
+
+  test("wire and discard refuse an escaping name even on an in-memory entry", () => {
+    const root = temp();
+    const outbox = new Outbox(join(root, ".workspace"));
+    const victim = join(root, "keep.txt");
+    writeFileSync(victim, "SECRET");
+    const escaping = { name: "keep.txt", contentType: "text/plain", file: "../keep.txt", bytes: 6, sha256: "00" };
+    outbox.append({ ...entry("o1"), stagedFiles: [escaping] });
+    const wire = outbox.wire(outbox.unacked()[0]!);
+    expect(wire.files).toBeUndefined();
+    expect(wire.text).toContain("couldn't attach: keep.txt");
+    outbox.ack("o1");
+    expect(existsSync(victim)).toBe(true);
+  });
+
+  test("a symlink planted in the store is not followed", () => {
+    const root = temp();
+    const outbox = new Outbox(join(root, ".workspace"));
+    const staged = outbox.stage(Buffer.from("SECRET"), "a.txt", "text/plain", 100);
+    const target = join(root, "secret.txt");
+    writeFileSync(target, "SECRET");
+    rmSync(join(outbox.filesDir, staged.file));
+    symlinkSync(target, join(outbox.filesDir, staged.file));
+    outbox.append({ ...entry("o1"), stagedFiles: [staged] });
+    expect(outbox.wire(outbox.unacked()[0]!).files).toBeUndefined();
   });
 });
 

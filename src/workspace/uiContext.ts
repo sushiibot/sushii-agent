@@ -30,7 +30,9 @@ export type AnswerOutcome = "answered" | "stale" | null;
 
 /**
  * Extension dialogs as chat asks. A `wsask:<askId>` message answers its own ask; any other user message
- * answers the oldest pending ask whose parser accepts it (any text for `input`).
+ * answers the oldest pending ask whose parser accepts it (any text for `input`). A typed yes/no answers a
+ * confirm only while it is the sole open confirm: with two open, the agent's ordering would decide which one
+ * drk's "yes" approves, so each then needs its button.
  */
 export class ChatAsks {
   private readonly pending: PendingAsk[] = [];
@@ -105,7 +107,9 @@ export class ChatAsks {
       entry.settle(parsed ? parsed.value : entry.fallback);
       return "answered";
     }
+    const confirms = this.pending.filter((p) => p.parse === parseConfirm).length;
     for (const entry of this.pending) {
+      if (entry.parse === parseConfirm && confirms > 1) continue;
       const parsed = entry.parse(answer);
       if (parsed) {
         entry.settle(parsed.value);

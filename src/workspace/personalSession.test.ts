@@ -2368,7 +2368,7 @@ describe("send_file", () => {
     const [ask] = asks(transport);
     expect(ask!.ask).toEqual({
       askId: expect.any(String),
-      question: `\`token.txt\` looks like it contains a secret (JWT). Send it anyway?\nPath: ${join(home, "token.txt")}`,
+      question: `\`token.txt\` looks like it contains a secret (JWT). Send it anyway?\nPath: \`${join(home, "token.txt")}\``,
       choices: ["Yes", "No"],
     });
     await host.handleMessage(fileMsg(`wsask:${ask!.ask!.askId}`, "Yes"));
@@ -2394,7 +2394,9 @@ describe("send_file", () => {
 
     const unscannable = run(t, { path: "run.txt" });
     await until(() => asks(transport).length === 2);
-    expect(asks(transport)[1]!.ask!.question).toStartWith("`run.txt` is too large to scan for secrets. Send it anyway?");
+    expect(asks(transport)[1]!.ask!.question).toStartWith(
+      "`run.txt` (195.3 KB) was not checked for secrets: it has runs of token-like characters too long for the detector to scan. Send it unchecked?",
+    );
     await host.handleMessage(fileMsg(`wsask:${asks(transport)[1]!.ask!.askId}`, "No"));
     await expect(unscannable).rejects.toThrow(/too long for the secret detector.*didn't approve/);
 

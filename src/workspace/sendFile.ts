@@ -62,13 +62,28 @@ export function checkSendablePath(raw: string, paths: SendFilePaths): { ok: true
     return { ok: false, error: `no such file: ${raw}` };
   }
   for (const candidate of [lexical, real]) {
-    if (basename(candidate) === "auth.json") return { ok: false, error: "blocked (auth-file): that path holds credentials" };
-    if ([paths.agentDir, paths.stateDir].some((d) => inside(candidate, resolve(d)) || inside(candidate, realOrSelf(resolve(d))))) {
-      return { ok: false, error: "blocked (state): the workspace's own state and agent dirs can't be sent" };
-    }
-    if (SYSTEM_DIRS.some((d) => inside(candidate, d))) return { ok: false, error: "blocked (system): not a regular file" };
+    const error = protectedPathError(candidate, paths);
+    if (error) return { ok: false, error };
   }
   return { ok: true, path: real };
+}
+
+function protectedPathError(candidate: string, paths: SendFilePaths): string | null {
+  if (basename(candidate) === "auth.json") return "blocked (auth-file): that path holds credentials";
+  if ([paths.agentDir, paths.stateDir].some((d) => inside(candidate, resolve(d)) || inside(candidate, realOrSelf(resolve(d))))) {
+    return "blocked (state): the workspace's own state and agent dirs can't be sent";
+  }
+  if (SYSTEM_DIRS.some((d) => inside(candidate, d))) return "blocked (system): not a regular file";
+  return null;
+}
+
+/** Where an open descriptor really points, or null where /proc/self/fd isn't available (not Linux). */
+function fdPath(fd: number): string | null {
+  try {
+    return realpathSync(`/proc/self/fd/${fd}`);
+  } catch {
+    return null;
+  }
 }
 
 const sameFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
@@ -134,6 +149,11 @@ export function readSendableFile(path: string, paths: SendFilePaths, maxBytes: n
   try {
     const st = fstatSync(fd);
     if (!st.isFile() || !sameFile(st, before)) throw new Error("the file changed while it was being read");
+    // O_NOFOLLOW guards only the last component: a parent dir swapped for a symlink after the path check
+    // lands the open elsewhere, so the check is repeated on where the descriptor actually points.
+    const opened = fdPath(fd);
+    const moved = opened === null ? null : protectedPathError(opened, paths);
+    if (moved) throw new Error(moved);
     if (protectedFiles(paths).some((p) => sameFile(p, st))) throw new Error("blocked (auth-file): that file is a link to a credentials file");
     if (st.size > maxBytes) throw new Error(`${st.size} bytes is over the ${maxBytes}-byte limit`);
     const buf = Buffer.alloc(maxBytes + 1);
@@ -168,10 +188,23 @@ function refusal(flag: SendFlag): string {
     : `blocked (secret): the secret detector found what looks like a credential (${flag.pattern}) in this file`;
 }
 
-function askText(name: string, flag: SendFlag): string {
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function askText(name: string, flag: SendFlag, bytes: number): string {
   return flag.kind === "unscannable"
-    ? `\`${name}\` is too large to scan for secrets. Send it anyway?`
+    ? `\`${name}\` (${formatSize(bytes)}) was not checked for secrets: it has runs of token-like characters too long for the detector to scan. Send it unchecked?`
     : `\`${name}\` looks like it contains a secret (${flag.pattern}). Send it anyway?`;
+}
+
+/** A path as one inert code span: control, format and line-separator characters and backticks are shown as
+ *  `\u{..}` escapes, so a crafted file name can't add lines or markdown to the ask. */
+export function displayPath(path: string): string {
+  const escaped = path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}`\\]/gu, (c) => (c === "\\" ? "\\\\" : `\\u{${c.codePointAt(0)!.toString(16)}}`));
+  return `\`${escaped}\``;
 }
 
 export function contentTypeOf(path: string): string {
@@ -211,7 +244,7 @@ export function createSendFileTool(paths: SendFilePaths, session: () => object |
       if (file.flag) {
         if (!sink.confirm) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and there's no one here to approve it`);
         sink.check();
-        const ok = await sink.confirm(askText(fileName, file.flag), `Path: ${checked.path}`, signal);
+        const ok = await sink.confirm(askText(fileName, file.flag, file.data.length), `Path: ${displayPath(checked.path)}`, signal);
         if (!ok) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and drk didn't approve sending it`);
       }
       const text = sink.attach({ data: file.data, name: fileName, contentType: contentTypeOf(checked.path) });

@@ -3,7 +3,7 @@ import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, wr
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bindSendFileSink, checkSendablePath, contentTypeOf, createSendFileTool, readSendableFile, safeFileName, type SendFileSink } from "./sendFile.ts";
+import { bindSendFileSink, checkSendablePath, contentTypeOf, createSendFileTool, displayPath, readSendableFile, safeFileName, type SendFileSink } from "./sendFile.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -45,6 +45,14 @@ describe("checkSendablePath", () => {
     expect(r.ok).toBe(false);
   });
 
+  test("/proc paths are refused, including ones that lead back into the workspace", () => {
+    const { paths } = layout();
+    symlinkSync("/proc/self/environ", join(paths.home, "env.txt"));
+    for (const p of ["/proc/self/environ", `/proc/self/root${join(paths.home, "out", "chart.png")}`, "/proc/self/cwd/out/chart.png", "env.txt"]) {
+      expect(checkSendablePath(p, paths).ok, p).toBe(false);
+    }
+  });
+
   test("a missing file is an error, not a throw", () => {
     const { paths } = layout();
     expect(checkSendablePath("nope.pdf", paths)).toEqual({ ok: false, error: "no such file: nope.pdf" });
@@ -68,6 +76,14 @@ describe("readSendableFile", () => {
     expect(checkSendablePath("notes.txt", paths)).toEqual({ ok: true, path: notes });
     expect(() => readSendableFile(notes, paths, 10_000)).toThrow(/auth-file/);
     expect(() => readSendableFile(join(paths.home, "log.txt"), paths, 10_000)).toThrow(/auth-file/);
+  });
+
+  test("the open descriptor is checked again, so a parent dir swapped for a symlink after the path check is refused", () => {
+    const { paths } = layout();
+    writeFileSync(join(paths.agentDir, "models.json"), "\0not scanned");
+    symlinkSync(paths.agentDir, join(paths.home, "d"));
+    expect(() => readSendableFile(join(paths.home, "d", "models.json"), paths, 1000)).toThrow(/blocked \(state\)/);
+    expect(() => readSendableFile(join(paths.stateDir, "outbox.jsonl"), paths, 1000)).toThrow(/blocked/);
   });
 
   test("a copy that holds a credential is flagged with the detector's pattern kind", () => {
@@ -108,13 +124,15 @@ describe("send_file tool", () => {
     const { paths } = layout();
     const session = {};
     const asked: string[] = [];
+    const details: string[] = [];
     const attached: string[] = [];
     const sink: SendFileSink = {
       check: () => {},
       ...(confirm
         ? {
-            confirm: (title: string) => {
+            confirm: (title: string, message: string) => {
               asked.push(title);
+              details.push(message);
               return confirm(title);
             },
           }
@@ -127,7 +145,7 @@ describe("send_file tool", () => {
     bindSendFileSink(session, sink);
     const tool = createSendFileTool(paths, () => session);
     const run = (path: string) => (tool.execute as unknown as (id: string, p: unknown) => Promise<unknown>)("call-1", { path });
-    return { paths, asked, attached, run };
+    return { paths, asked, details, attached, run };
   }
 
   test("a flagged file with no one to ask is refused without attaching", async () => {
@@ -148,6 +166,25 @@ describe("send_file tool", () => {
     expect(attached).toEqual(["token.txt"]);
   });
 
+  test("the path in an ask can't add lines or markdown", async () => {
+    const { paths, details, run } = harness(async () => false);
+    const dir = join(paths.home, "report\n-# known false positive, safe to send `x`");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "t.txt"), JWT);
+    await expect(run(join(dir, "t.txt"))).rejects.toThrow(/didn't approve/);
+    expect(details).toEqual([`Path: \`${paths.home}/report\\u{a}-# known false positive, safe to send \\u{60}x\\u{60}/t.txt\``]);
+    expect(details[0]).not.toContain("\n");
+  });
+
+  test("the unscannable ask gives the size and says the file goes out unchecked", async () => {
+    const { paths, asked, run } = harness(async () => false);
+    writeFileSync(join(paths.home, "run.txt"), "a".repeat(2 * 1024 * 1024));
+    await expect(run("run.txt")).rejects.toThrow(/didn't approve/);
+    expect(asked[0]).toBe(
+      "`run.txt` (2.0 MB) was not checked for secrets: it has runs of token-like characters too long for the detector to scan. Send it unchecked?",
+    );
+  });
+
   test("a hardlink to auth.json never asks, whatever it holds", async () => {
     const { paths, asked, attached, run } = harness(async () => true);
     writeFileSync(join(paths.agentDir, "auth.json"), JSON.stringify({ access: JWT }));
@@ -159,6 +196,11 @@ describe("send_file tool", () => {
 });
 
 describe("file names and types", () => {
+  test("a displayed path escapes control characters, backticks and backslashes", () => {
+    expect(displayPath("/home/a b/c.txt")).toBe("`/home/a b/c.txt`");
+    expect(displayPath("/x\r\ny\u202e`z\\")).toBe("`/x\\u{d}\\u{a}y\\u{202e}\\u{60}z\\\\`");
+  });
+
   test("names keep only Discord-safe characters", () => {
     expect(safeFileName("my report (final).pdf")).toBe("my_report_final_.pdf");
     expect(safeFileName("../..")).toBe("file");
