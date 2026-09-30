@@ -157,7 +157,7 @@
 	{@attach keyMenu}
 >
 	{#each messages as message (message.id)}
-		{@const owner = message.role === 'user' && !message.unverified}
+		{@const owner = message.role === 'user'}
 		{@const firstTool = message.parts.findIndex(isTool)}
 		{@const menu = !!onmessagemenu && !message.streaming && hasText(message)}
 		{@const hold = menu && selecting !== message.id}
@@ -178,11 +178,6 @@
 						'-mx-2 bg-muted px-2 py-2 ring-2 ring-brand/50 transition-colors'
 				)}
 			>
-				{#if message.unverified}
-					<span class="text-xs text-muted-foreground"
-						>{message.role === 'user' ? 'You · ' : ''}from workspace history (unverified)</span
-					>
-				{/if}
 				{#each message.parts as part, i (i)}
 					{#if part.type === 'text' && message.role === 'assistant'}
 						<div
@@ -205,9 +200,7 @@
 								hold && holdable,
 								owner
 									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[15px] leading-snug text-primary-foreground'
-									: message.role === 'user'
-										? 'rounded-2xl border border-dashed px-3.5 py-2 text-[15px] leading-snug'
-										: 'text-[15px] leading-relaxed [overflow-wrap:anywhere]',
+									: 'text-[15px] leading-relaxed [overflow-wrap:anywhere]',
 								message.streaming &&
 									"min-h-[4.5lh] after:ml-0.5 after:inline-block after:h-[1.1em] after:w-0.5 after:translate-y-[3px] after:animate-pulse after:bg-foreground after:content-[''] motion-reduce:after:animate-none"
 							)}

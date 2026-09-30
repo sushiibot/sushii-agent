@@ -314,8 +314,41 @@ test('history that is unavailable offers a retry', async ({ page, context }) => 
 	];
 	await page.getByRole('button', { name: 'Retry' }).click();
 	await expect(page.getByText('Old owner message')).toBeVisible();
-	await expect(page.getByText('from workspace history (unverified)')).toBeVisible();
+	await expect(page.getByText('Only in the transcript')).toBeVisible();
 	await expect(page.getByText('Earlier messages unavailable right now')).toBeHidden();
+});
+
+test('a history-only message looks like a live one but offers only the read actions', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'user',
+				id: 'u1',
+				at: 'x',
+				text: 'From the transcript',
+				attachments: [],
+				verified: false
+			}
+		],
+		messageStatus: 400
+	});
+	await open(page);
+	await type(page, 'Sent just now');
+	await expect(bubble(page, 'Sent just now')).toContainText('Failed');
+	const classes = (text: string) =>
+		bubble(page, text).locator('[data-message-text]').getAttribute('class');
+	expect(await classes('From the transcript')).toBe(await classes('Sent just now'));
+	await expect(page.getByText(/workspace history/)).toHaveCount(0);
+
+	await bubble(page, 'From the transcript')
+		.locator('[data-message-text]')
+		.click({ button: 'right' });
+	const sheet = page.getByRole('dialog', { name: 'Message actions' });
+	await expect(sheet.getByRole('button', { name: 'Copy text' })).toBeVisible();
+	await expect(sheet.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(0);
 });
 
 test('older pages load above with the server cursor, and a stale cursor reloads from the head', async ({

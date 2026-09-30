@@ -206,7 +206,7 @@ export type ChatEnvelope = {
 // ── HTTP API ──
 
 /** GET /api/chat/history. A `user`, `assistant` or `ask` item with `verified: false` came only from the
- *  workspace transcript and renders with the "unverified" label; owner bubbles need `verified: true`. */
+ *  workspace transcript; it renders like any other message but never gets Retry/Delete. */
 export type WebHistoryItem =
 	| {
 			type: 'user';
