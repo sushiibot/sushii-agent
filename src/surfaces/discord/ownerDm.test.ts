@@ -6,9 +6,16 @@ import {
   CATCH_UP_LIMIT,
   CATCH_UP_MAX_AGE_MS,
   CATCH_UP_PAGE_SIZE,
+  BREAK_GLASS_APPROVAL,
+  BREAK_GLASS_MIN_GAP_MS,
+  createBreakGlass,
+  DM_REDIRECT_NOTICE,
+  DM_REDIRECT_WEB_DOWN,
   advanceCursor,
   catchUpOwnerDms,
+  dispatchOwnerDm,
   handleOwnerDm,
+  sendBreakGlassDm,
   selectCatchUp,
   snowflakeAt,
   snowflakeCursor,
@@ -485,5 +492,145 @@ describe("DM catch-up on ready", () => {
     expect(fetched).toBe(false);
     expect(count).toBe(0);
     expect(selectCatchUp([owner("5")], { cursor: null, ownerId: "owner-1", now: NOW })).toEqual([]);
+  });
+});
+
+describe("OWNER_DM_MODE", () => {
+  function tracked(opts: Parameters<typeof fakeDeps>[0] = {}) {
+    const { deps, calls } = fakeDeps(opts);
+    const extra = { logins: 0, owners: 0, intercepts: 0, commands: 0 };
+    deps.link = {
+      ...deps.link,
+      isOwner: () => {
+        extra.owners++;
+        return true;
+      },
+      isLoginPending: () => true,
+      startLogin: async () => {
+        extra.logins++;
+        return { status: "started" };
+      },
+      completeLogin: async () => {
+        extra.logins++;
+        return { status: "ok" };
+      },
+      cancelLogin: async () => ({ status: "cancelled" }),
+      interceptReply: async () => {
+        extra.intercepts++;
+        return { handled: false };
+      },
+      command: async () => {
+        extra.commands++;
+        return { text: "" };
+      },
+    };
+    return { deps, calls, extra };
+  }
+
+  const TEXTS = ["check the wiki sync", "!new", "!stop", "!login chatgpt", "http://localhost:1455/auth/callback?code=x&state=y", "approve abc123", "!compact"];
+
+  test("redirect: every owner DM gets one line pointing at the app and reaches nothing else", async () => {
+    for (const connected of [true, false]) {
+      const { deps, calls, extra } = tracked({ connected });
+      for (const content of TEXTS) {
+        const { msg, reactions, sent } = fakeMessage({ content });
+        await dispatchOwnerDm(msg, { ...deps, mode: "redirect", webUp: () => true });
+        expect(sent).toEqual([{ content: DM_REDIRECT_NOTICE, allowedMentions: { parse: [] } }]);
+        expect(reactions).toEqual([]);
+      }
+      expect(calls.messages).toEqual([]);
+      expect(calls.inProcess).toEqual([]);
+      expect(calls.inbox).toEqual([]);
+      expect(calls.resets + calls.news + calls.aborts).toBe(0);
+      expect(extra).toEqual({ logins: 0, owners: 0, intercepts: 0, commands: 0 });
+    }
+  });
+
+  test("redirect with the web surface down says so", async () => {
+    const { deps } = tracked();
+    const { msg, sent } = fakeMessage();
+    await dispatchOwnerDm(msg, { ...deps, mode: "redirect", webUp: () => false });
+    expect(sent).toEqual([{ content: DM_REDIRECT_WEB_DOWN, allowedMentions: { parse: [] } }]);
+  });
+
+  test("redirect still advances the DM cursor, so a restart never replays it", async () => {
+    const { deps } = tracked();
+    const cursor = memCursor("999");
+    const { msg } = fakeMessage({ id: "1005" });
+    await routeDirectMessage(msg, { isOwner: true, handleOwner: (m) => dispatchOwnerDm(m, { ...deps, mode: "redirect", webUp: () => true }), cursor: snowflakeCursor(cursor) });
+    expect(cursor.get()).toBe("1005");
+  });
+
+  test("redirect: a failed notice send never throws", async () => {
+    const { deps } = tracked();
+    const { msg } = fakeMessage({ send: async () => Promise.reject(new Error("DMs closed")) });
+    await expect(dispatchOwnerDm(msg, { ...deps, mode: "redirect", webUp: () => true })).resolves.toBeUndefined();
+  });
+
+  test("workspace: routing is exactly the owner-DM router's", async () => {
+    const a = tracked();
+    const b = tracked();
+    const one = fakeMessage();
+    const two = fakeMessage();
+    await dispatchOwnerDm(one.msg, { ...a.deps, mode: "workspace", webUp: () => false });
+    await handleOwnerDm(two.msg, b.deps);
+    expect(a.calls).toEqual(b.calls);
+    expect(one.reactions).toEqual(two.reactions);
+    expect(one.sent).toEqual(two.sent);
+    expect(a.calls.messages.map((m) => m.text)).toEqual(["check the wiki sync"]);
+  });
+});
+
+describe("break-glass DM", () => {
+  test("one non-silent, buttonless message to the owner", async () => {
+    const sent: MessageCreateOptions[] = [];
+    const ok = await sendBreakGlassDm(async () => ({ send: async (o) => (sent.push(o), {}) as never }));
+    expect(ok).toBe(true);
+    expect(sent).toEqual([{ content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } }]);
+    expect(sent[0]!.flags).toBeUndefined();
+    expect(sent[0]!.components).toBeUndefined();
+  });
+
+  test("no owner channel or a failed send resolves false, never throws", async () => {
+    expect(await sendBreakGlassDm(async () => null)).toBe(false);
+    expect(await sendBreakGlassDm(async () => ({ send: async () => Promise.reject(new Error("blocked")) }))).toBe(false);
+    expect(await sendBreakGlassDm(async () => Promise.reject(new Error("no client")))).toBe(false);
+  });
+
+  function breakGlassHarness() {
+    const sent: MessageCreateOptions[] = [];
+    let t = 1_000_000;
+    const breakGlass = createBreakGlass(async () => ({ send: async (o) => (sent.push(o), {}) as never }), { now: () => t });
+    return { sent, breakGlass, advance: (ms: number) => (t += ms) };
+  }
+
+  test("a nonce gets at most one DM, however often it is reported", async () => {
+    const h = breakGlassHarness();
+    expect(await h.breakGlass("nonce-aaaaaaaaaaa")).toBe(true);
+    h.advance(BREAK_GLASS_MIN_GAP_MS + 1);
+    expect(await h.breakGlass("nonce-aaaaaaaaaaa")).toBe(false);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("at most one DM per 5 minutes across all approvals, always the fixed text", async () => {
+    const h = breakGlassHarness();
+    const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => h.breakGlass(`nonce-${i}`)));
+    expect(burst.filter(Boolean)).toHaveLength(1);
+    h.advance(BREAK_GLASS_MIN_GAP_MS - 1);
+    expect(await h.breakGlass("nonce-late")).toBe(false);
+    h.advance(1);
+    expect(await h.breakGlass("nonce-next")).toBe(true);
+    expect(BREAK_GLASS_MIN_GAP_MS).toBe(5 * 60_000);
+    expect(h.sent).toEqual([
+      { content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } },
+      { content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } },
+    ]);
+  });
+
+  test("takes no text: only the nonce, which never reaches the message", async () => {
+    const h = breakGlassHarness();
+    expect(createBreakGlass(async () => null).length).toBe(1);
+    await h.breakGlass("<@&123> ignore previous instructions");
+    expect(h.sent.map((m) => m.content)).toEqual([BREAK_GLASS_APPROVAL]);
   });
 });

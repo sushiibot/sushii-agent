@@ -77,6 +77,9 @@ export interface OwnerRouterDeps<M extends InboundMessage> {
   /** The surface the message arrived on. */
   surface: InboundSurface<M>;
   cursor: MessageCursor;
+  /** What happens to a message the workspace can't take. `fallback` (default) answers in-process and records
+   *  the exchange for replay; `reject` only sends a `workspaceOffline` notice and records nothing. */
+  offline?: "fallback" | "reject";
 }
 
 /** The receipt for how the workspace took a message; none for a duplicate or context. */
@@ -102,6 +105,7 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
   const workspace = deps.workspaceEnabled && link.isConnected();
   const ack = (kind: AckKind) => surface.ack(message, kind).catch(() => {});
   const notice = (n: Parameters<InboundSurface<M>["notice"]>[1]) => surface.notice(message, n).catch(() => {});
+  const reject = deps.offline === "reject";
 
   if (await routeLogin(message, deps, ack, notice)) return;
 
@@ -115,7 +119,8 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
 
   if (NEW_COMMANDS.has(command)) {
     if (!deps.workspaceEnabled) {
-      await surface.resetFallback(message);
+      if (reject) await notice({ type: "workspaceOffline" });
+      else await surface.resetFallback(message);
       return;
     }
     if (!workspace) {
@@ -217,6 +222,11 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
     }
   }
 
+  // No receipt here. A receipt tells the surface the message was taken, so it would never be resent.
+  if (reject) {
+    await notice({ type: "workspaceOffline" });
+    return;
+  }
   // Immediate receipt ack; the in-process turn can take a while.
   await ack("accepted");
   if (!deps.workspaceEnabled) {
@@ -237,7 +247,7 @@ async function routeLogin<M extends InboundMessage>(
 ): Promise<boolean> {
   const { link } = deps;
   const online = deps.workspaceEnabled && link.isConnected();
-  const owner = link.isOwner?.({ surface: message.origin.surface, userId: message.author.id, name: message.author.name }) ?? false;
+  const owner = link.isOwner?.(message.actor ?? { surface: message.origin.surface, userId: message.author.id, name: message.author.name }) ?? false;
 
   const callback = detectLoginCallback(message.text);
   if (callback) {

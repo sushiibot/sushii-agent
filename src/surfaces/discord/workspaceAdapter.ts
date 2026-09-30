@@ -175,6 +175,8 @@ function noticeMessage(notice: RouterNotice): string | MessageCreateOptions {
       return "-# ⚠️ workspace offline — try again once it's back";
     case "commandFailed":
       return `Command failed: ${notice.error}`;
+    case "workspaceOffline":
+      return "-# ⚠️ workspace offline — send it again once it's back";
   }
 }
 

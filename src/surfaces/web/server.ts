@@ -5,6 +5,8 @@ import type { Server } from "bun";
 import { z } from "zod";
 import { parseWebConfig, type WebConfig } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
+import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
+import { mintWebActor, normalizeLogin } from "./actor.ts";
 import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
   PushSubscriptionStore,
@@ -72,8 +74,6 @@ export function decodeEncodedWords(value: string): string {
   });
 }
 
-const normalizeLogin = (s: string) => s.trim().toLowerCase();
-
 /** Ambient Serve identity makes cross-site writes a CSRF risk, so writes must be same-origin. */
 function isSameOrigin(req: Request): boolean {
   const site = req.headers.get("Sec-Fetch-Site");
@@ -133,7 +133,8 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
   const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
   const cspCache = new HtmlCspCache();
 
-  async function api(req: Request, path: string, login: string): Promise<Response> {
+  /** `actor` is the only identity a route may hand to the workspace's owner checks. */
+  async function api(req: Request, path: string, login: string, actor: SurfaceActor): Promise<Response> {
     const method = req.method;
     if (method !== "GET" && method !== "HEAD" && !isSameOrigin(req)) return forbidden();
 
@@ -201,7 +202,11 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     }
 
     const path = new URL(req.url).pathname;
-    const res = path === "/api" || path.startsWith("/api/") ? await api(req, path, login) : await staticFile(req, path);
+    let res: Response;
+    if (path === "/api" || path.startsWith("/api/")) {
+      const name = req.headers.get("Tailscale-User-Name");
+      res = await api(req, path, login, mintWebActor(login, name ? decodeEncodedWords(name) : undefined));
+    } else res = await staticFile(req, path);
     if (!res.headers.has("Content-Security-Policy")) withSecurityHeaders(res);
     return res;
   };

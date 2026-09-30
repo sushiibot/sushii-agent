@@ -20,7 +20,10 @@ import { createMemoryDeriver } from "./agent/memoryDeriver.ts";
 import type { LanguageModelProvider } from "./core/contracts.ts";
 import { BEHAVIOR_INSTRUCTIONS } from "./modules/moderation/prompt.ts";
 import { buildCapabilitySections } from "./orchestration/capabilityPrompt.ts";
-import { startDiscordSurface } from "./surfaces/discord/gateway.ts";
+import { createDiscordWorkspace, startDiscordSurface } from "./surfaces/discord/gateway.ts";
+import { bootWorkspace, listenWorkspace } from "./orchestration/workspace/boot.ts";
+import { resolveOwnerPrincipalId } from "./orchestration/transport/server.ts";
+import { WorkspaceLinkStore } from "./db/workspaceLink.ts";
 import { closeSharedSushiMcpClients } from "./surfaces/discord/hosts/sushiMcpHost.ts";
 import { startWikiSyncScheduler } from "./modules/wiki-sync/index.ts";
 import { createWikiFsHost } from "./modules/wiki-sync/wikiHost.ts";
@@ -101,7 +104,37 @@ async function main() {
     getSlack: () => slackWiki,
   });
 
-  startDiscordSurface({ client: client as Client<true>, core, store, memory, hookBus, makeWikiSourceContext });
+  const discordWorkspace = createDiscordWorkspace({ client: client as Client<true>, core, store });
+  const workspace = bootWorkspace(
+    {
+      principalId: resolveOwnerPrincipalId(),
+      preferredSurface: config.workspacePreferredSurface,
+      enabled: config.dmWorkspaceEnabled,
+      orchPort: config.orchPort,
+      ownerDiscordId: config.ownerDiscordId,
+      ownerDmMode: config.ownerDmMode,
+      webOwnerLogin: process.env["WEB_OWNER_LOGIN"],
+      store,
+      memory,
+      linkStore: new WorkspaceLinkStore(db),
+    },
+    [discordWorkspace.adapter],
+  );
+  startDiscordSurface({
+    client: client as Client<true>,
+    core,
+    store,
+    memory,
+    hookBus,
+    makeWikiSourceContext,
+    workspace: discordWorkspace,
+    boot: workspace,
+    ownerDmMode: config.ownerDmMode,
+  });
+  // Before the workspace transport listens, so a web adapter is registered by the time a workspace
+  // connects and drains its outbox; register it into workspace.registry only when this started.
+  const webServer = await startWebGateway(process.env, db);
+  listenWorkspace(workspace, config.orchPort);
   await client.login(config.discordBotToken);
 
   // Non-conversational drivers bootstrap here, not inside a surface, so they don't depend on the
@@ -213,8 +246,6 @@ async function main() {
   // one of those. 60s just quiets that noise; nothing here relies on the connection outliving it.
   const mcpServer = Bun.serve({ port: config.mcpBridgePort, fetch: mcpApp.fetch, idleTimeout: 60 });
   logger.info({ port: mcpServer.port }, "MCP bridge HTTP server listening");
-
-  const webServer = await startWebGateway(process.env, db);
 
   let shuttingDown = false;
   const shutdown = async () => {

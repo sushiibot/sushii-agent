@@ -93,9 +93,18 @@ interface PendingApproval {
   conn: ConnectionInfo;
   callId: string;
   resolve: (d: ApprovalDecision) => void;
+  timer: unknown;
+  /** Waiting for the preferred surface to register; counts toward MAX_HELD_APPROVALS. */
+  held: boolean;
+  /** The surface the prompt was posted to, set just before posting; only that surface may decide it. */
+  surface?: string;
   /** The reply code on a surface without buttons. */
   code?: { code: string; surface: string };
 }
+
+/** Held approvals per link. A prompt-injected workspace could otherwise queue enough to flood the owner
+ *  with prompts once the surface returns. */
+export const MAX_HELD_APPROVALS = 20;
 
 export type DecideResult = "decided" | "forbidden" | "expired";
 
@@ -111,6 +120,8 @@ function newNonce(): string {
 
 const DENIED: ToolCallResult = { ok: false, error: "denied by owner", denied: true };
 const CANCELLED: ToolCallResult = { ok: false, error: "cancelled" };
+const HELD_DENIED: ToolCallResult = { ok: false, error: "denied: the owner's approval surface is unavailable, so they were never asked", denied: true };
+const HELD_OVER_CAP: ToolCallResult = { ok: false, error: `denied: ${MAX_HELD_APPROVALS} approvals are already waiting for the owner's approval surface`, denied: true };
 const APPROVAL_TIMED_OUT: ToolCallResult = { ok: false, error: "approval timed out (owner didn't respond within 30 min); do not retry it unless drk asks in chat" };
 
 // Default-ignorable and format characters render as nothing or reorder text, so an approved prompt could
@@ -277,19 +288,18 @@ export class WorkspaceTools {
   }
 
   private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, fields: ApprovalField[]): Promise<ToolCallResult> {
-    let target: ResolvedSurface;
-    try {
-      target = this.opts.surfaces.resolve(null);
-    } catch (err) {
-      if (err instanceof SurfaceUnavailableError) return { ok: false, error: `${err.message}; cannot ask for approval` };
-      return { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` };
-    }
-    const { adapter, origin } = target;
     const nonce = newNonce();
-    const code = adapter.capabilities.richButtons ? undefined : { code: this.newCode(), surface: adapter.surface };
-    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code.code } : {}) };
-    // Pending before the prompt exists, so a click racing the post's return still counts.
-    const decided = this.awaitDecision(conn, p.callId, nonce, code);
+    // Pending before the prompt exists. A racing click, a cancel, a closed socket or the timeout then settles
+    // it, even while it is held.
+    const decided = this.awaitDecision(conn, p.callId, nonce);
+    const target = await this.approvalTarget(nonce, p, decided);
+    if ("result" in target) return target.result;
+    const { adapter, origin } = target;
+    const posting = this.pending.get(nonce);
+    if (!posting) return this.settledBeforePosting(await decided, p);
+    posting.surface = adapter.surface;
+    const code = adapter.capabilities.richButtons ? undefined : this.attachCode(nonce, adapter.surface);
+    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code } : {}) };
     let prompt: SurfaceMessageHandle;
     let resolve: (decision: ApprovalDecision, result?: ToolCallResult) => Promise<void>;
     try {
@@ -317,6 +327,63 @@ export class WorkspaceTools {
     return result;
   }
 
+  /** The preferred surface to ask on. Without one, the approval is held and never sent elsewhere. It waits
+   *  for that surface to register, or is denied once it settles. */
+  private async approvalTarget(nonce: string, p: ToolCallParams, decided: Promise<ApprovalDecision>): Promise<ResolvedSurface | { result: ToolCallResult }> {
+    for (;;) {
+      try {
+        return this.opts.surfaces.resolve(null);
+      } catch (err) {
+        if (!(err instanceof SurfaceUnavailableError)) {
+          this.settle(nonce, "expired");
+          return { result: { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` } };
+        }
+        if (this.heldCount() >= MAX_HELD_APPROVALS) {
+          this.settle(nonce, "expired");
+          log.warn({ tool: p.name, callId: p.callId }, "approval denied: too many held approvals");
+          return { result: { ...HELD_OVER_CAP } };
+        }
+        log.error({ err, tool: p.name, callId: p.callId }, "approval held: the preferred surface has no adapter");
+      }
+      const entry = this.pending.get(nonce);
+      if (entry) entry.held = true;
+      const wait = this.opts.surfaces.whenPreferred();
+      const outcome = await Promise.race([wait.ready.then(() => null), decided]);
+      wait.cancel();
+      if (outcome === null) {
+        const current = this.pending.get(nonce);
+        if (!current) return { result: this.settledBeforePosting(await decided, p) };
+        current.held = false;
+        // The owner gets a full window from when the prompt can actually reach them.
+        this.timers.clear(current.timer);
+        current.timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
+        continue;
+      }
+      return { result: this.settledBeforePosting(outcome, p) };
+    }
+  }
+
+  /** The result for an approval that settled before any prompt was posted: never an approval. */
+  private settledBeforePosting(decision: ApprovalDecision, p: ToolCallParams): ToolCallResult {
+    log.warn({ tool: p.name, callId: p.callId, decision }, "held approval settled without asking");
+    return decision === "cancelled" ? { ...CANCELLED } : { ...HELD_DENIED };
+  }
+
+  private heldCount(): number {
+    let n = 0;
+    for (const p of this.pending.values()) if (p.held) n++;
+    return n;
+  }
+
+  private attachCode(nonce: string, surface: string): string | undefined {
+    const pending = this.pending.get(nonce);
+    if (!pending) return undefined;
+    const code = this.newCode();
+    pending.code = { code, surface };
+    this.codes.set(code, nonce);
+    return code;
+  }
+
   private newCode(): string {
     for (;;) {
       let code = "";
@@ -325,19 +392,20 @@ export class WorkspaceTools {
     }
   }
 
-  private awaitDecision(conn: ConnectionInfo, callId: string, nonce: string, code: PendingApproval["code"]): Promise<ApprovalDecision> {
+  private awaitDecision(conn: ConnectionInfo, callId: string, nonce: string): Promise<ApprovalDecision> {
     return new Promise((resolve) => {
-      const timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
-      if (code) this.codes.set(code.code, nonce);
-      this.pending.set(nonce, {
+      const entry: PendingApproval = {
         conn,
         callId,
-        ...(code ? { code } : {}),
+        held: false,
+        timer: undefined,
         resolve: (d) => {
-          this.timers.clear(timer);
+          this.timers.clear(entry.timer);
           resolve(d);
         },
-      });
+      };
+      entry.timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
+      this.pending.set(nonce, entry);
     });
   }
 
@@ -356,10 +424,13 @@ export class WorkspaceTools {
     return !!owner && actor.surface === this.opts.toolSpace.surface && actor.userId === owner;
   }
 
-  /** The owner's decision on the prompt carrying `nonce`. `expired` when that prompt is no longer pending
-   *  (decided, timed out, expired, or posted by an earlier process). */
+  /** The owner's decision on the prompt carrying `nonce`, only from the surface it was posted to. `expired`
+   *  when it is no longer pending (settled, or posted by an earlier process). */
   decide(nonce: string, decision: "approve" | "deny", actor: SurfaceActor): DecideResult {
     if (!this.isOwner(actor)) return "forbidden";
+    const pending = this.pending.get(nonce);
+    if (!pending) return "expired";
+    if (pending.surface !== actor.surface) return "forbidden";
     return this.settle(nonce, decision) ? "decided" : "expired";
   }
 
