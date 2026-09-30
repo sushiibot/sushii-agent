@@ -462,10 +462,72 @@ describe("GET /api/chat/history", () => {
     expect((await get(h, `?before=${head.before}`)).items).toHaveLength(2);
   });
 
+  describe("a reply sorts where its turn started", () => {
+    const user = (h: ReturnType<typeof setup>, key: string) => h.log.append("user", { key, text: key, uploadIds: [], at: "2026-09-30T00:00:00.000Z" }, key);
+    const turn = (turnId: string) => ({ turnId, startedAt: 0, lines: [], toolCount: 0, text: "" });
+    const reply = (h: ReturnType<typeof setup>, turnId: string, outboxId: string) =>
+      h.adapter.sendReply(null, { kind: "reply", text: outboxId, turnId, toolCount: null }, { ledger, plain: false, outboxId });
+    const label = (i: HistoryResponse["items"][number]) => (i.type === "user" ? i.text : i.type === "assistant" ? i.text : i.type);
+    const walk = async (h: ReturnType<typeof setup>, limit: number) => {
+      const pages: string[][] = [];
+      let before: string | null = null;
+      do {
+        const page: HistoryResponse = await get(h, `?limit=${limit}${before ? `&before=${before}` : ""}`);
+        pages.unshift(page.items.map(label));
+        before = page.before;
+      } while (before !== null && pages.length < 20);
+      return pages.flat();
+    };
+
+    /** U1 starts turn t1; U2 is steered in while t1 streams, and its answer runs as turn t2. */
+    async function steered(h: ReturnType<typeof setup>) {
+      user(h, "U1");
+      h.log.append("status", { clientId: "U1", state: "accepted" });
+      await h.adapter.progressCreate(null, turn("t1"));
+      user(h, "U2");
+      h.log.append("status", { clientId: "U2", state: "steer" });
+      await h.adapter.progressFinalize(null, { id: "t1" }, { outcome: "done", summary: null });
+      await h.adapter.progressCreate(null, turn("t2"));
+      return h;
+    }
+
+    test("the answer before a steer comes before the steered message, as it did live", async () => {
+      const h = await steered(setup());
+      await reply(h, "t1", "R1");
+      // Asked during t2, so it sits below t2's bubble, where the reply lands.
+      await h.adapter.askPrompt(null, { askId: "k1", question: "Which?", choices: ["A"] }, { ledger, plain: false, outboxId: "ask" });
+      await reply(h, "t2", "R2");
+      await h.adapter.sendReply(null, { kind: "proactive", text: "P", toolCount: null }, { ledger, plain: false, outboxId: "P" });
+      expect((await get(h)).items.map(label)).toEqual(["U1", "R1", "U2", "R2", "ask", "P"]);
+    });
+
+    test("paging walks that order at every page size, with nothing skipped or repeated", async () => {
+      const h = await steered(setup());
+      await reply(h, "t1", "R1");
+      await reply(h, "t2", "R2");
+      user(h, "U3");
+      const all = (await get(h)).items.map(label);
+      expect(all).toEqual(["U1", "R1", "U2", "R2", "U3"]);
+      for (let limit = 1; limit <= all.length; limit++) expect(await walk(h, limit)).toEqual(all);
+      const split = await get(h, "?limit=3");
+      expect(split.items.map(label)).toEqual(["U2", "R2", "U3"]);
+      expect((await get(h, `?limit=1&before=${split.before}`)).items.map(label)).toEqual(["R1"]);
+    });
+
+    test("a turn's start survives a bot restart, and a reply with no known start keeps its own place", async () => {
+      const first = await steered(setup());
+      const h = setup({ db: first.db });
+      await h.adapter.progressReopen(null, "t1");
+      await reply(h, "t1", "R1");
+      await reply(h, "unseen", "R3");
+      expect((await get(h)).items.map(label)).toEqual(["U1", "R1", "U2", "R3"]);
+    });
+  });
+
   test("the cursor is a seq, which may be zero or negative; anything else is a 400", async () => {
     const h = setup();
-    for (const bad of ["abc", "1.5", "", "1e3", "--1"]) expect((await call(h.handler, `/api/chat/history?before=${bad}`)).status).toBe(400);
-    for (const ok of ["0", "-3", "12"]) expect((await call(h.handler, `/api/chat/history?before=${ok}`)).status).toBe(200);
+    for (const bad of ["abc", "1.5", "", "1e3", "--1", "1:", ":1", "1:2:3"]) expect((await call(h.handler, `/api/chat/history?before=${bad}`)).status).toBe(400);
+    for (const ok of ["0", "-3", "12", "4:9", "-2:-1"]) expect((await call(h.handler, `/api/chat/history?before=${ok}`)).status).toBe(200);
     expect((await call(h.handler, "/api/chat/history?limit=0")).status).toBe(400);
   });
 

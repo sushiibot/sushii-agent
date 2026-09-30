@@ -185,6 +185,9 @@ export interface SurfaceAdapter<M extends InboundMessage = InboundMessage, H ext
   /** Minimum gap between progress updates of a turn `ageMs` old; 0 updates on every change. */
   progressEditGap(ageMs: number): number;
   progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<H>;
+  /** Opens the turn's view as soon as the turn starts, before any content; the handle becomes the turn's view.
+   *  Without it the view opens on the turn's first tool or text. */
+  turnStarted?(origin: ChatOrigin | null, view: ProgressView): Promise<H>;
   progressUpdate(handle: H, view: ProgressView): Promise<void>;
   /** A streaming surface's live text: called per delta, unthrottled, instead of a full update. */
   progressDelta?(handle: H, delta: string, view: ProgressView): Promise<void>;

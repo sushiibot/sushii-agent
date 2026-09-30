@@ -244,6 +244,39 @@ describe("surface routing", () => {
     expect(discord.calls).toEqual([]);
   });
 
+  test("a surface with turnStarted opens the view at turn_start, and later edits and the final use that view", async () => {
+    const { link, test, event } = setup({ streaming: true });
+    const started: string[] = [];
+    Object.assign(test, {
+      turnStarted: async (origin: ChatOrigin | null, view: ProgressView) => {
+        started.push(view.turnId);
+        test.calls.push({ method: "turnStarted", origin, arg: structuredClone(view) });
+        return { id: `started-${view.turnId}` };
+      },
+    });
+    event("t1", { type: "turn_start" }, TEST);
+    await tick();
+    expect(started).toEqual(["t1"]);
+    expect(test.of("progressCreate")).toEqual([]);
+    event("t1", { type: "tool_start", name: "bash", summary: "ls" }, TEST);
+    event("t1", { type: "turn_end", aborted: false }, TEST);
+    await link.settled();
+    await tick();
+    expect(test.of("progressCreate")).toEqual([]);
+    expect((test.of("progressFinalize")[0]!.arg as { id: string }).id).toBe("started-t1");
+  });
+
+  test("a turn_start closes any other open main turn, whose turn_end was lost", async () => {
+    const { link, test, event } = setup();
+    event("t1", { type: "turn_start" }, TEST);
+    event("t1", { type: "tool_start", name: "bash", summary: "ls" }, TEST);
+    await tick();
+    event("t2", { type: "turn_start" }, TEST);
+    await link.settled();
+    await tick();
+    expect(test.of("progressFinalize").map((c) => (c.arg as { id: string; final: ProgressFinal }).final.outcome)).toEqual(["done"]);
+  });
+
   test("a turn_end for a turn never seen to start is ignored, however often it repeats", async () => {
     const { test, event } = setup();
     for (let i = 0; i < 50; i++) event("ghost", { type: "turn_end", aborted: true }, TEST);

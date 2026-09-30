@@ -200,6 +200,21 @@ describe("web adapter progress", () => {
     expect(first.data).toMatchObject({ turnId: "t1", view: { text: "Hel" } });
   });
 
+  test("a turn shows as working from its turn_start, and a silent one still gets its final", async () => {
+    const h = setup();
+    h.event("t1", { type: "turn_start" });
+    await h.link.settled();
+    expect(h.events.filter((e) => e.type === "snapshot").map((e) => e.data)).toEqual([
+      { turnId: "t1", view: { turnId: "t1", startedAt: expect.any(Number), lines: [], toolCount: 0, text: "" } },
+    ]);
+    expect(h.adapter.openTurns().map((t) => t.turnId)).toEqual(["t1"]);
+    h.event("t1", { type: "turn_end", aborted: false });
+    await h.link.settled();
+    await tick();
+    expect(h.adapter.openTurns()).toEqual([]);
+    expect(h.events.filter((e) => e.type === "turn_final").map((e) => e.data)).toMatchObject([{ turnId: "t1", outcome: "done" }]);
+  });
+
   test("tool lines stream as tool events, and the final state is durable", async () => {
     const h = setup();
     h.event("t1", { type: "tool_start", name: "bash", summary: "ls" });

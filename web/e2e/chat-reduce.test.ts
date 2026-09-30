@@ -75,6 +75,21 @@ test('a reply with a turn id replaces the streamed text, and late deltas are dro
 	expect(openTurns(s)).toHaveLength(0);
 });
 
+test('after a steer splits the turn, the new turn is working from its empty snapshot, before any output', () => {
+	const s = createState();
+	const view = (turnId: string) => ({ turnId, startedAt: 0, lines: [], toolCount: 0, text: '' });
+	run(s, [
+		{ type: 'snapshot', data: { turnId: 't1', view: view('t1') } },
+		{ type: 'delta', data: { turnId: 't1', offset: 0, text: 'first answer' } },
+		{ type: 'turn_final', seq: 1, data: { turnId: 't1', outcome: 'done', summary: null } },
+		{ type: 'reply', seq: 2, data: { key: 'o1', turnId: 't1', text: 'first answer', files: [] } }
+	]);
+	expect(openTurns(s)).toHaveLength(0);
+	run(s, [{ type: 'snapshot', data: { turnId: 't2', view: view('t2') } }]);
+	expect(openTurns(s).map((t) => t.turnId)).toEqual(['t2']);
+	expect(texts(s)).toEqual(['first answer']);
+});
+
 test('a snapshot resyncs text after a gap, and tool events pair start with finish', () => {
 	const s = createState();
 	run(s, [
