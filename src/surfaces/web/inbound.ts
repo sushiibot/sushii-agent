@@ -55,6 +55,11 @@ export class WebInboundStore {
     this.db.run("UPDATE web_inbound SET state = 'pending' WHERE client_id = ? AND state = 'rejected'", [clientId]);
   }
 
+  /** A delete for a message the bot never stored: a late POST of it must not be delivered. */
+  tombstone(clientId: string, now: number): void {
+    this.db.run("INSERT INTO web_inbound (client_id, text, upload_ids, seq, created_at, state) VALUES (?, '', '[]', 0, ?, 'discarded') ON CONFLICT(client_id) DO NOTHING", [clientId, now]);
+  }
+
   /** True when the row was pending or rejected and is now discarded. */
   discard(clientId: string): boolean {
     return this.db.run("UPDATE web_inbound SET state = 'discarded' WHERE client_id = ? AND state IN ('pending', 'rejected')", [clientId]).changes > 0;
