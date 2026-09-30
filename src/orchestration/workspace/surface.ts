@@ -132,7 +132,9 @@ export type RouterNotice =
   // A workspace command's (!compact, !model, !tasks) answer, as plain markdown.
   | { type: "commandResult"; text: string }
   | { type: "commandOffline" }
-  | { type: "commandFailed"; error: string };
+  | { type: "commandFailed"; error: string }
+  // The router's `offline: "reject"` mode: nothing was recorded, so the surface resends the same message later.
+  | { type: "workspaceOffline" };
 
 /** A user's message as the core sees it; adapters extend it with whatever they need to answer it. */
 export interface InboundMessage {
@@ -142,6 +144,9 @@ export interface InboundMessage {
   author: { id: string; name: string };
   isVoice: boolean;
   attachments: Array<{ url: string; name: string; contentType: string }>;
+  /** The sender as an owner check sees it. Web sets the actor its gateway minted from the verified login;
+   *  without one, the router builds a plain actor from `origin` and `author`. */
+  actor?: SurfaceActor;
 }
 
 /** The surface an inbound message arrived on, answering that message. */
@@ -195,34 +200,63 @@ export interface ResolvedSurface {
   origin: ChatOrigin | null;
 }
 
-/** Adapters keyed by surface id. Anything without a registered origin goes to the preferred surface. */
+/** Adapters keyed by surface id. Anything without a registered origin goes to the preferred surface.
+ *  A pinned registry sends everything to the preferred surface, whatever the origin, and never to another. */
 export class SurfaceRegistry {
   private readonly adapters = new Map<string, SurfaceAdapter>();
+  private readonly waiters = new Set<() => void>();
   readonly preferredSurface: string;
+  readonly pinned: boolean;
 
-  constructor(preferredSurface: string) {
+  constructor(preferredSurface: string, opts: { pinned?: boolean } = {}) {
     this.preferredSurface = preferredSurface.trim().toLowerCase();
+    this.pinned = opts.pinned === true;
   }
 
   /** Throws unless the preferred surface has an adapter: without one, proactive messages and approvals can't be sent. */
   assertPreferredRegistered(): void {
-    if (this.adapters.has(this.preferredSurface)) return;
-    throw new Error(`WORKSPACE_PREFERRED_SURFACE "${this.preferredSurface}" has no adapter; registered: ${[...this.adapters.keys()].join(", ") || "none"}`);
+    if (this.hasPreferred()) return;
+    throw new Error(`WORKSPACE_PREFERRED_SURFACE "${this.preferredSurface}" has no adapter; registered: ${this.registered().join(", ") || "none"}`);
   }
 
+  registered(): string[] {
+    return [...this.adapters.keys()];
+  }
+
+  hasPreferred(): boolean {
+    return this.adapters.has(this.preferredSurface);
+  }
+
+  /** Adapters may register after boot; a surface that starts late wakes anything waiting for the preferred one. */
   register(adapter: SurfaceAdapter): this {
     this.adapters.set(adapter.surface, adapter);
+    if (adapter.surface === this.preferredSurface) {
+      const waiters = [...this.waiters];
+      this.waiters.clear();
+      for (const w of waiters) w();
+    }
     return this;
+  }
+
+  /** Resolves once the preferred surface has an adapter. `cancel` drops the wait without resolving. */
+  whenPreferred(): { ready: Promise<void>; cancel(): void } {
+    if (this.hasPreferred()) return { ready: Promise.resolve(), cancel: () => {} };
+    let waiter!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      waiter = resolve;
+      this.waiters.add(waiter);
+    });
+    return { ready, cancel: () => this.waiters.delete(waiter) };
   }
 
   get(surface: string): SurfaceAdapter | undefined {
     return this.adapters.get(surface);
   }
 
-  /** The adapter for `origin`, or the preferred surface's default conversation when there is no origin or
-   *  its surface isn't registered. Throws when the preferred surface isn't registered either. */
+  /** The adapter for `origin`, or the preferred surface's default conversation when there is no origin, its
+   *  surface isn't registered, or the registry is pinned. Throws when the preferred surface isn't registered. */
   resolve(origin: ChatOrigin | null | undefined): ResolvedSurface {
-    const own = origin ? this.adapters.get(origin.surface) : undefined;
+    const own = origin && (!this.pinned || origin.surface === this.preferredSurface) ? this.adapters.get(origin.surface) : undefined;
     if (own) return { adapter: own, origin: origin! };
     const preferred = this.adapters.get(this.preferredSurface);
     if (!preferred) throw new SurfaceUnavailableError(`no adapter for the preferred surface "${this.preferredSurface}"`);

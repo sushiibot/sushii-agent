@@ -111,6 +111,7 @@ function newNonce(): string {
 
 const DENIED: ToolCallResult = { ok: false, error: "denied by owner", denied: true };
 const CANCELLED: ToolCallResult = { ok: false, error: "cancelled" };
+const HELD_DENIED: ToolCallResult = { ok: false, error: "denied: the owner's approval surface is unavailable, so they were never asked", denied: true };
 const APPROVAL_TIMED_OUT: ToolCallResult = { ok: false, error: "approval timed out (owner didn't respond within 30 min); do not retry it unless drk asks in chat" };
 
 // Default-ignorable and format characters render as nothing or reorder text, so an approved prompt could
@@ -277,19 +278,15 @@ export class WorkspaceTools {
   }
 
   private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, fields: ApprovalField[]): Promise<ToolCallResult> {
-    let target: ResolvedSurface;
-    try {
-      target = this.opts.surfaces.resolve(null);
-    } catch (err) {
-      if (err instanceof SurfaceUnavailableError) return { ok: false, error: `${err.message}; cannot ask for approval` };
-      return { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` };
-    }
-    const { adapter, origin } = target;
     const nonce = newNonce();
-    const code = adapter.capabilities.richButtons ? undefined : { code: this.newCode(), surface: adapter.surface };
-    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code.code } : {}) };
-    // Pending before the prompt exists, so a click racing the post's return still counts.
-    const decided = this.awaitDecision(conn, p.callId, nonce, code);
+    // Pending before the prompt exists, so a click racing the post's return, a cancel, a closed socket or
+    // the timeout all settle it, also while it is held for a missing surface.
+    const decided = this.awaitDecision(conn, p.callId, nonce);
+    const target = await this.approvalTarget(nonce, p, decided);
+    if ("result" in target) return target.result;
+    const { adapter, origin } = target;
+    const code = adapter.capabilities.richButtons ? undefined : this.attachCode(nonce, adapter.surface);
+    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code } : {}) };
     let prompt: SurfaceMessageHandle;
     let resolve: (decision: ApprovalDecision, result?: ToolCallResult) => Promise<void>;
     try {
@@ -317,6 +314,37 @@ export class WorkspaceTools {
     return result;
   }
 
+  /** The preferred surface to ask on. Without one the approval is held, never sent to another surface, until
+   *  that surface registers or the approval settles (timeout, cancel, closed socket), which denies it. */
+  private async approvalTarget(nonce: string, p: ToolCallParams, decided: Promise<ApprovalDecision>): Promise<ResolvedSurface | { result: ToolCallResult }> {
+    for (;;) {
+      try {
+        return this.opts.surfaces.resolve(null);
+      } catch (err) {
+        if (!(err instanceof SurfaceUnavailableError)) {
+          this.settle(nonce, "expired");
+          return { result: { ok: false, error: `failed to post the approval prompt: ${errorText(err)}` } };
+        }
+        log.error({ err, tool: p.name, callId: p.callId }, "approval held: the preferred surface has no adapter");
+      }
+      const wait = this.opts.surfaces.whenPreferred();
+      const outcome = await Promise.race([wait.ready.then(() => null), decided]);
+      wait.cancel();
+      if (outcome === null) continue;
+      log.warn({ tool: p.name, callId: p.callId, outcome }, "held approval denied without asking");
+      return { result: outcome === "cancelled" ? { ...CANCELLED } : { ...HELD_DENIED } };
+    }
+  }
+
+  private attachCode(nonce: string, surface: string): string | undefined {
+    const pending = this.pending.get(nonce);
+    if (!pending) return undefined;
+    const code = this.newCode();
+    pending.code = { code, surface };
+    this.codes.set(code, nonce);
+    return code;
+  }
+
   private newCode(): string {
     for (;;) {
       let code = "";
@@ -325,14 +353,12 @@ export class WorkspaceTools {
     }
   }
 
-  private awaitDecision(conn: ConnectionInfo, callId: string, nonce: string, code: PendingApproval["code"]): Promise<ApprovalDecision> {
+  private awaitDecision(conn: ConnectionInfo, callId: string, nonce: string): Promise<ApprovalDecision> {
     return new Promise((resolve) => {
       const timer = this.timers.set(() => this.settle(nonce, "timeout"), APPROVAL_TIMEOUT_MS);
-      if (code) this.codes.set(code.code, nonce);
       this.pending.set(nonce, {
         conn,
         callId,
-        ...(code ? { code } : {}),
         resolve: (d) => {
           this.timers.clear(timer);
           resolve(d);

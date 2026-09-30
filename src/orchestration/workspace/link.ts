@@ -379,7 +379,7 @@ export class WorkspaceLink {
     const adapter = this.opts.surfaces.get(surface);
     if (!adapter || adapter.capabilities.richButtons) return { handled: false };
     const text = message.text.trim();
-    const actor: SurfaceActor = { surface, userId: message.author.id, name: message.author.name };
+    const actor: SurfaceActor = message.actor ?? { surface, userId: message.author.id, name: message.author.name };
     const approval = APPROVAL_REPLY_RE.exec(text);
     if (approval) {
       const decision = approval[1]!.toLowerCase() as "approve" | "deny";
