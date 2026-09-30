@@ -11,7 +11,12 @@
 		ask,
 		focused = false,
 		onanswer
-	}: { ask: AskView; focused?: boolean; onanswer?: (answer: string) => void } = $props();
+	}: {
+		ask: AskView;
+		focused?: boolean;
+		/** `index` is set for a tapped choice, so the caller can POST `{index, label}`; typed text has none. */
+		onanswer?: (answer: string, index?: number) => void;
+	} = $props();
 	const uid = $props.id();
 	let text = $state('');
 	const live = $derived(ask.state === 'pending' || ask.state === 'answering');
@@ -19,6 +24,7 @@
 
 <section
 	aria-labelledby="{uid}-q"
+	data-surface="ask"
 	class={cn(
 		'flex flex-col gap-3 text-[15px] leading-relaxed',
 		focused && '-mx-2 rounded-xl px-2 py-2 ring-2 ring-brand/60'
@@ -39,13 +45,13 @@
 		</p>
 		{#if live}
 			<div role="group" aria-label="Answers" class="flex flex-wrap gap-2">
-				{#each ask.choices as choice (choice)}
+				{#each ask.choices as choice, index (index)}
 					{@const picked = ask.state === 'answering' && ask.answer === choice}
 					<Button
 						variant="outline"
 						class={cn('rounded-full px-4 font-medium', picked && 'border-foreground')}
 						disabled={ask.state === 'answering'}
-						onclick={() => onanswer?.(choice)}
+						onclick={() => onanswer?.(choice, index)}
 					>
 						{#if picked}<LoaderCircle
 								class="animate-spin motion-reduce:animate-none"

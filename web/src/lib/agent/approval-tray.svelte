@@ -18,17 +18,20 @@
 		state: phase = 'ready',
 		details: initialDetails = false,
 		collapsed = false,
+		holdMs = 1000,
 		onapprove,
 		ondeny
 	}: {
 		items: PendingApproval[];
-		/** False for about 1s after the tray appears or its top item changes; the caller owns the timer. */
+		/** The caller's extra hold, e.g. after the tray moves. The tray also holds Approve itself for
+		 *  `holdMs` whenever it appears or its top item changes; both must clear. */
 		armed?: boolean;
 		state?: 'ready' | 'submitting' | 'timeout';
 		/** Start with the exact input shown. */
 		details?: boolean;
 		/** Set a few seconds after a timeout so the tray folds into its chat marker; the caller owns the timer. */
 		collapsed?: boolean;
+		holdMs?: number;
 		onapprove?: (nonce: string) => void;
 		ondeny?: (nonce: string) => void;
 	} = $props();
@@ -37,6 +40,18 @@
 	// svelte-ignore state_referenced_locally
 	let details = $state(initialDetails);
 	const top = $derived(items[0]);
+	// Held from the first render, so Approve is never enabled before the timer starts.
+	// svelte-ignore state_referenced_locally
+	let heldNonce = $state<string | null>(items[0]?.nonce ?? null);
+	$effect(() => {
+		const nonce = top.nonce;
+		heldNonce = nonce;
+		const timer = setTimeout(() => {
+			if (heldNonce === nonce) heldNonce = null;
+		}, holdMs);
+		return () => clearTimeout(timer);
+	});
+	const ready = $derived(armed && heldNonce !== top.nonce);
 	const view = $derived(top.view);
 	const timedOut = $derived(phase === 'timeout');
 	const still = () =>
@@ -46,6 +61,7 @@
 {#if !collapsed}
 	<section
 		aria-labelledby="{uid}-h"
+		data-surface="approval"
 		out:slide={{ duration: still() ? 0 : 320, easing: cubicOut }}
 		class={cn(
 			'relative mx-2 mt-2 mb-3 flex flex-col gap-2 rounded-2xl border-2 border-approval/60 bg-approval-surface p-3 text-foreground shadow-[0_-8px_24px_-16px_rgb(0_0_0/0.45)]',
@@ -114,7 +130,7 @@
 				hidden={!details}
 				class="flex max-h-40 flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg border bg-background/70 p-2.5"
 			>
-				{#each view.fields as field (field.key)}
+				{#each view.fields as field, i (i)}
 					<div class="flex flex-col gap-0.5">
 						<dt class="text-xs text-muted-foreground">{field.key}</dt>
 						<dd
@@ -156,12 +172,12 @@
 					>
 					<Button
 						class="relative min-w-0 flex-1 overflow-hidden"
-						disabled={!armed}
+						disabled={!ready}
 						aria-label="Approve {view.tool}"
-						aria-describedby={armed ? undefined : `${uid}-hold`}
-						onclick={() => onapprove?.(top.nonce)}
+						aria-describedby={ready ? undefined : `${uid}-hold`}
+						onclick={() => ready && onapprove?.(top.nonce)}
 					>
-						{#if !armed}
+						{#if !ready}
 							<span
 								class="absolute inset-x-0 bottom-0 h-1 origin-left animate-[arm_1s_linear_forwards] bg-primary-foreground/60 motion-reduce:animate-none"
 								aria-hidden="true"
@@ -170,7 +186,7 @@
 						<Check />Approve
 					</Button>
 				</div>
-				{#if !armed}
+				{#if !ready}
 					<p id="{uid}-hold" class="-mt-1 text-right text-xs text-muted-foreground">
 						Approve unlocks in a moment.
 					</p>
