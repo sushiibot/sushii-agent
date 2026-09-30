@@ -97,6 +97,12 @@ async function touch(page: Page) {
 			await page.waitForTimeout(ms);
 			await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 		},
+		async tap(target: Locator) {
+			const p = await at(target);
+			await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [p] });
+			await page.waitForTimeout(60);
+			await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+		},
 		async drag(target: Locator, dy: number) {
 			const p = await at(target);
 			await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [p] });
@@ -167,6 +173,23 @@ test('Copy text puts the rendered text on the clipboard and announces it', async
 	await sheet(page).getByRole('button', { name: 'Copy text' }).click();
 	await expect(sheet(page)).toHaveCount(0);
 	await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toBeAttached();
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(REPLY_PLAIN);
+});
+
+test('the first tap on the sheet right after a hold is not swallowed', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+	await chatServer(context, [item('assistant', 'r1', REPLY)]);
+	await open(page);
+	await page.evaluate(() => navigator.clipboard.writeText('SENTINEL'));
+	const t = await touch(page);
+	await t.hold(bubble(page, 'Booked Eastside').locator('[data-message-text]'));
+	await expect(sheet(page)).toBeVisible();
+	await page.waitForTimeout(100);
+	await t.tap(sheet(page).getByRole('button', { name: 'Copy text' }));
+	await expect(sheet(page)).toHaveCount(0);
 	expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(REPLY_PLAIN);
 });
 

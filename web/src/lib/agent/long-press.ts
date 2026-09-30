@@ -47,18 +47,27 @@ export function longPress(
 			start = null;
 		};
 
-		// A hold ends in pointerup, which still clicks, possibly on the sheet's scrim that opened
-		// under the finger: swallow it so it neither closes the sheet nor opens a held link.
+		// A hold ends in pointerup, which may still click, possibly on the sheet's scrim that opened
+		// under the finger: swallow it so it neither closes the sheet nor opens a held link. Often no
+		// click comes at all, so the next gesture's pointerdown disarms the guard: that tap is the user's.
 		const swallowClick = () => {
+			const types = ['touchend', 'click'];
 			const stop = (e: Event) => {
 				e.preventDefault();
 				e.stopPropagation();
+				window.removeEventListener(e.type, stop, { capture: true });
+			};
+			const disarm = () => {
+				clearTimeout(expiry);
+				for (const type of types) window.removeEventListener(type, stop, { capture: true });
+				window.removeEventListener('pointerdown', disarm, { capture: true });
 			};
 			// Cancelling touchend also drops the compat mousedown that would blur the sheet's focus.
-			for (const type of ['touchend', 'click']) {
-				window.addEventListener(type, stop, { capture: true, once: true, passive: false });
-				setTimeout(() => window.removeEventListener(type, stop, { capture: true }), 400);
+			for (const type of types) {
+				window.addEventListener(type, stop, { capture: true, passive: false });
 			}
+			window.addEventListener('pointerdown', disarm, { capture: true });
+			const expiry = setTimeout(disarm, 400);
 		};
 
 		const onPointerDown = (e: PointerEvent) => {
