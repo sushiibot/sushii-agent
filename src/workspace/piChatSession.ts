@@ -25,6 +25,7 @@ import { observeRuns, type RunObserver } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
 import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
 import type { SubagentHost } from "./subagents/host.ts";
+import type { GitHubCredentials } from "./githubCredentials.ts";
 import {
   BackendSelector,
   CHATGPT_PROVIDER,
@@ -47,12 +48,13 @@ const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
 
 /** Pi's bash under the agent env allowlist, minus PI_* (PI_CODING_AGENT_DIR and PI_SESSION_FILE point at the agent dir).
  *  `WS_RUN_ID` is the run in progress at spawn time, so `ws-runs` can default to it. */
-export function createWorkspaceBashTool(cwd: string, currentRunId: () => string | null = () => null) {
+export function createWorkspaceBashTool(cwd: string, currentRunId: () => string | null = () => null, github?: Pick<GitHubCredentials, "envFor">) {
   const extraEnv = (): Record<string, string> => {
     const runId = currentRunId();
     return runId ? { WS_RUN_ID: runId } : {};
   };
-  return createAgentBashTool(cwd, extraEnv, { dropPrefixes: ["PI_"], exposeSessionEnvironment: false });
+  const prepareEnv = github ? (command: string, dir: string) => github.envFor(command, dir) : undefined;
+  return createAgentBashTool(cwd, extraEnv, { dropPrefixes: ["PI_"], exposeSessionEnvironment: false, prepareEnv });
 }
 
 const runObservers = new WeakMap<object, RunObserver>();
@@ -140,7 +142,7 @@ function chatgptJudgeModel(runtime: Pick<ModelRuntime, "getModel">, config: Work
  *  configured and signed in; OpenRouter is the fallback. */
 export function createPiChatSessionFactory(
   config: WorkspaceConfig,
-  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost; choice?: ModelChoice } = {},
+  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost; choice?: ModelChoice; github?: GitHubCredentials } = {},
 ): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
   // The process-wide selector in production; a fallback instance only for tests that build a factory alone.
@@ -275,7 +277,7 @@ export function createPiChatSessionFactory(
     // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
     settingsManager.getCacheWarmingMode = () => "off";
 
-    const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null);
+    const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null, opts.github);
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
     try {
       ({ session } = await createAgentSession({

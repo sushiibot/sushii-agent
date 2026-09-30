@@ -26,6 +26,7 @@ import { mapSessionEvent, newRunAccumulator, type RunAccumulator } from "../even
 import { createMemoryGuardExtension, resolveReal } from "../memoryGuard.ts";
 import { createCompactionHandoffExtension } from "../memoryFlush.ts";
 import { createWorkspaceBashTool } from "../piChatSession.ts";
+import type { GitHubCredentials } from "../githubCredentials.ts";
 import type { RunRecorder, RunStatus } from "../runLog.ts";
 import { createSecretGuardExtension } from "../secretGuard.ts";
 import { SESSION_DIRS, subagentSessionDir } from "../sessionPaths.ts";
@@ -86,6 +87,8 @@ export interface SubagentHostOptions {
   /** The process-wide backend selector: children start on its backend, and a child's ChatGPT failure flips it for everyone. */
   selector: BackendSelector;
   toolStubs?: ToolStubs;
+  /** Repo-scoped GitHub App credentials for writer bash calls. */
+  github?: Pick<GitHubCredentials, "envFor">;
   /** The main turn in progress; child progress nests under it. */
   currentTurn?: () => ParentTurn | null;
   /** Sends chat/event notifications to the bot. */
@@ -711,7 +714,7 @@ export class SubagentHost {
       // Bash writes wherever the process can, so only a writer (confined to its worktree by the watch) gets it.
       const builtins = spawn.def.writer ? spawn.def.tools : spawn.def.tools.filter((t) => t !== "bash");
       const extra = [...(nested ? [DELEGATE_TOOL] : [])];
-      const customTools = builtins.includes("bash") ? [await createWorkspaceBashTool(cwd, () => spawn.runId)] : [];
+      const customTools = builtins.includes("bash") ? [await createWorkspaceBashTool(cwd, () => spawn.runId, this.opts.github)] : [];
       ({ session } = await createAgentSession({
         cwd,
         agentDir: config.agentDir,

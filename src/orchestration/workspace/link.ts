@@ -15,6 +15,7 @@ import {
   type ChatMessageParams,
   type ChatMessageResult,
   type ChatOrigin,
+  type GitHubTokenResult,
   type ToolCallResult,
   type ToolCancelResult,
   type ToolManifestEntry,
@@ -22,6 +23,7 @@ import {
 import { MethodNotFoundError, mayHaveBeenAccepted, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { getLogger } from "../../logger.ts";
+import type { GitHubTokenBroker } from "./githubToken.ts";
 import { progressEditDelay, realTimers, type Timers } from "./progress.ts";
 import {
   SurfaceUnavailableError,
@@ -134,6 +136,8 @@ export interface WorkspaceLinkOptions {
   enabled?: boolean;
   /** Where the login path logs; default the module logger. */
   authLog?: AuthLog;
+  /** Serves `github/token`; absent → every request is refused as unconfigured. */
+  github?: Pick<GitHubTokenBroker, "handle">;
 }
 
 const MAIN_AGENT = "main";
@@ -673,6 +677,10 @@ export class WorkspaceLink {
   private async onRequest(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown> {
     if (method === RPC_METHODS.toolCall && this.toolsEnabled) return this.opts.tools!.handleCall(conn, params);
     if (method === RPC_METHODS.toolCancel && this.toolsEnabled) return this.opts.tools!.handleCancel(conn, params);
+    if (method === RPC_METHODS.githubToken) {
+      if (this.opts.github && this.opts.enabled !== false) return this.opts.github.handle(conn, params);
+      return { ok: false, error: "the GitHub App is not configured on the bot" } satisfies GitHubTokenResult;
+    }
     if (method !== RPC_METHODS.chatDeliver) throw new MethodNotFoundError(`method not found: ${method}`);
     const p = chatDeliverParams.parse(params);
     if (p.principalId !== conn.principalId || p.principalId !== this.opts.principalId) throw new Error("principal mismatch");
