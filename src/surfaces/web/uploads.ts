@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { and, asc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -22,6 +22,10 @@ const TMP_DIR = ".tmp";
 const OCTET = "application/octet-stream";
 const PHOTO_WARNED_KEY = "web_uploads:photo_quota_warned";
 const LOW_DISK_ALERT_EVERY_MS = 60 * 60 * 1000;
+const PURGE_DELETED_AFTER_MS = 30 * DAY_MS;
+/** Agent files are charged in filesystem blocks, so a flood of empty files still costs disk and quota. */
+const BLOCK = 4096;
+const charged = (bytes: number) => Math.max(1, Math.ceil(bytes / BLOCK)) * BLOCK;
 
 export interface UploadLimits {
   photoCapBytes: number;
@@ -30,6 +34,8 @@ export interface UploadLimits {
   photosPerDay: number;
   agentCapBytes: number;
   agentBytesPerDay: number;
+  agentFileCap: number;
+  agentFilesPerDay: number;
   /** Free disk that must remain after a write; below it agent files are evicted, then the write is refused. */
   minFreeBytes: number;
   /** Free disk under which each write logs an alert. */
@@ -42,6 +48,8 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   photosPerDay: 200,
   agentCapBytes: 1 * GB,
   agentBytesPerDay: 200 * MB,
+  agentFileCap: 5000,
+  agentFilesPerDay: 500,
   minFreeBytes: 512 * 1024 * 1024,
   alertFreeBytes: 2 * 1024 * 1024 * 1024,
 };
@@ -59,6 +67,12 @@ export class UploadError extends Error {
 
 export type StoredUpload = UploadRef & { width?: number; height?: number };
 
+/** Every input id lands in exactly one list. `missing` covers malformed, unknown, agent-file and deleted ids. */
+export interface MarkReferencedResult {
+  referenced: string[];
+  missing: string[];
+}
+
 export interface PutInput {
   bytes: Uint8Array;
   name: string;
@@ -71,7 +85,7 @@ export interface PutInput {
 export interface UploadStore {
   put(i: PutInput): Promise<StoredUpload>;
   get(id: string): Promise<{ meta: UploadRef; body: ReadableStream | Blob } | null>;
-  markReferenced(ids: string[], messageClientId: string): void;
+  markReferenced(ids: string[], messageClientId: string): MarkReferencedResult;
   gcOrphans(now: number): Promise<number>;
 }
 
@@ -233,27 +247,46 @@ export class DiskUploadStore implements UploadStore {
     return { meta: toRef(row), body: file };
   }
 
-  markReferenced(ids: string[], messageClientId: string): void {
-    const valid = ids.filter((id) => UPLOAD_ID_RE.test(id));
-    if (!valid.length) return;
-    ormFor(this.db)
-      .update(webUploads)
-      .set({ referencedAt: this.now(), messageClientId })
-      .where(and(inArray(webUploads.id, valid), eq(webUploads.direction, "in"), isNull(webUploads.referencedAt), isNull(webUploads.deletedAt)))
-      .run();
+  /** An id already referenced by an earlier send counts as referenced, so a retried message is not refused. */
+  markReferenced(ids: string[], messageClientId: string): MarkReferencedResult {
+    const unique = [...new Set(ids)];
+    const valid = unique.filter((id) => UPLOAD_ID_RE.test(id));
+    const orm = ormFor(this.db);
+    const live = this.db.transaction(() => {
+      if (!valid.length) return new Set<string>();
+      orm
+        .update(webUploads)
+        .set({ referencedAt: this.now(), messageClientId })
+        .where(and(inArray(webUploads.id, valid), eq(webUploads.direction, "in"), isNull(webUploads.referencedAt), isNull(webUploads.deletedAt)))
+        .run();
+      const rows = orm
+        .select({ id: webUploads.id })
+        .from(webUploads)
+        .where(and(inArray(webUploads.id, valid), eq(webUploads.direction, "in"), isNotNull(webUploads.referencedAt), isNull(webUploads.deletedAt)))
+        .all();
+      return new Set(rows.map((r) => r.id));
+    })();
+    return { referenced: unique.filter((id) => live.has(id)), missing: unique.filter((id) => !live.has(id)) };
   }
 
-  /** Deletes owner photos never attached to a message within a day, plus stale temp files. */
+  /** Deletes owner photos never attached to a message within a day, stale temp files, and rows deleted
+   *  over 30 days ago. */
   async gcOrphans(now: number): Promise<number> {
     const orphans = ormFor(this.db)
       .select()
       .from(webUploads)
       .where(and(eq(webUploads.direction, "in"), isNull(webUploads.referencedAt), isNull(webUploads.deletedAt), lt(webUploads.createdAt, now - DAY_MS)))
       .all();
-    for (const row of orphans) await this.remove(row, now);
+    let removed = 0;
+    for (const row of orphans) if (await this.remove(row, now)) removed++;
     await this.sweepTmp(now);
-    if (orphans.length) log.info({ count: orphans.length }, "removed orphaned web uploads");
-    return orphans.length;
+    const purged = ormFor(this.db)
+      .delete(webUploads)
+      .where(and(isNotNull(webUploads.deletedAt), lt(webUploads.deletedAt, now - PURGE_DELETED_AFTER_MS)))
+      .returning({ id: webUploads.id })
+      .all().length;
+    if (removed || purged) log.info({ removed, purged }, "cleaned up web uploads");
+    return removed;
   }
 
   /** Known, still-stored uploads among `ids`, for the history rewrite's existence check. */
@@ -322,6 +355,12 @@ export class DiskUploadStore implements UploadStore {
     return { name: row.name, contentType: row.contentType, bytes: new Uint8Array(await file.arrayBuffer()) };
   }
 
+  /** Stored size of a photo readReferenced would serve, read from the row without touching the file. */
+  referencedSize(id: string): number | null {
+    const row = this.liveRow(id);
+    return row && row.direction === "in" && row.referencedAt !== null ? row.bytes : null;
+  }
+
   photoUsage(): { usedBytes: number; capBytes: number } {
     return { usedBytes: this.sumBytes("in"), capBytes: this.limits.photoCapBytes };
   }
@@ -354,17 +393,25 @@ export class DiskUploadStore implements UploadStore {
     return abs.startsWith(this.root + sep) ? abs : null;
   }
 
-  private sumBytes(direction: "in" | "out", since?: number): number {
+  /** Live rows, or with `since` every row created since then, deleted or not. */
+  private usage(direction: "in" | "out", since?: number): { files: number; bytes: number; blocks: number } {
     const where = [eq(webUploads.direction, direction)];
     if (since === undefined) where.push(isNull(webUploads.deletedAt));
     else where.push(gte(webUploads.createdAt, since));
-    return (
-      ormFor(this.db)
-        .select({ n: sql<number>`coalesce(sum(${webUploads.bytes}), 0)` })
-        .from(webUploads)
-        .where(and(...where))
-        .get()?.n ?? 0
-    );
+    const r = ormFor(this.db)
+      .select({
+        files: sql<number>`count(*)`,
+        bytes: sql<number>`coalesce(sum(${webUploads.bytes}), 0)`,
+        blocks: sql<number>`coalesce(sum(max(1, (${webUploads.bytes} + ${BLOCK - 1}) / ${BLOCK}) * ${BLOCK}), 0)`,
+      })
+      .from(webUploads)
+      .where(and(...where))
+      .get();
+    return { files: r?.files ?? 0, bytes: r?.bytes ?? 0, blocks: r?.blocks ?? 0 };
+  }
+
+  private sumBytes(direction: "in" | "out"): number {
+    return this.usage(direction).bytes;
   }
 
   private checkQuota(direction: "in" | "out", size: number, now: number): void {
@@ -380,8 +427,13 @@ export class DiskUploadStore implements UploadStore {
       if (this.sumBytes("in") + size > l.photoCapBytes) throw new UploadError(507, "quota", "photo storage is full");
       return;
     }
-    if (this.sumBytes("out", now - DAY_MS) + size > l.agentBytesPerDay) throw new UploadError(507, "quota", "agent daily file quota reached");
-    if (this.sumBytes("out") + size > l.agentCapBytes) throw new UploadError(507, "quota", "agent file storage is full");
+    const cost = charged(size);
+    const today = this.usage("out", now - DAY_MS);
+    if (today.files >= l.agentFilesPerDay) throw new UploadError(507, "quota", "agent daily file count reached");
+    if (today.blocks + cost > l.agentBytesPerDay) throw new UploadError(507, "quota", "agent daily file quota reached");
+    const total = this.usage("out");
+    if (total.files >= l.agentFileCap) throw new UploadError(507, "quota", "agent file count is at its cap");
+    if (total.blocks + cost > l.agentCapBytes) throw new UploadError(507, "quota", "agent file storage is full");
   }
 
   private async ensureDiskSpace(size: number): Promise<void> {
@@ -403,8 +455,8 @@ export class DiskUploadStore implements UploadStore {
     let evicted = 0;
     for (const row of agentFiles) {
       if (free - size >= this.limits.minFreeBytes) break;
-      await this.remove(row, now);
-      free += row.bytes;
+      if (!(await this.remove(row, now))) continue;
+      free += charged(row.bytes);
       evicted++;
     }
     if (evicted) log.warn({ evicted }, "evicted agent files to free disk space");
@@ -431,13 +483,22 @@ export class DiskUploadStore implements UploadStore {
     } else if (!over && warned) orm.delete(kv).where(eq(kv.key, PHOTO_WARNED_KEY)).run();
   }
 
-  private async remove(row: Row, now: number): Promise<void> {
+  /** Soft-deletes the row, then its bytes. False when a reference or another delete got there first. */
+  private async remove(row: Row, now: number): Promise<boolean> {
+    // The guard re-checks referenced_at in the same statement: a photo attached since it was selected is kept.
+    // Clearing the client key lets a later put with the same key store afresh.
+    const gone = ormFor(this.db)
+      .update(webUploads)
+      .set({ deletedAt: now, clientKey: null })
+      .where(and(eq(webUploads.id, row.id), isNull(webUploads.referencedAt), isNull(webUploads.deletedAt)))
+      .returning({ id: webUploads.id })
+      .all();
+    if (!gone.length) return false;
     const abs = this.absPath(row.path);
     if (abs) await unlink(abs).catch((err: NodeJS.ErrnoException) => {
       if (err.code !== "ENOENT") log.warn({ err, id: row.id }, "failed to delete upload bytes");
     });
-    // Frees the client key, so a later put with the same key stores afresh.
-    ormFor(this.db).update(webUploads).set({ deletedAt: now, clientKey: null }).where(eq(webUploads.id, row.id)).run();
+    return true;
   }
 
   private async sweepTmp(now: number): Promise<void> {

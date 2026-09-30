@@ -139,7 +139,7 @@ describe("files out", () => {
   });
 
   test("files over the agent daily quota are dropped, not thrown", async () => {
-    const s = store({ limits: { agentBytesPerDay: 10 } });
+    const s = store({ limits: { agentBytesPerDay: 6000 } });
     const text = (t: string) => ({ name: "f", contentType: "text/plain", dataBase64: b64(new TextEncoder().encode(t)) });
     const out = await s.storeDelivery("ob-3", [text("12345678"), text("12345678")]);
     expect(out.files.length).toBe(1);
@@ -147,11 +147,32 @@ describe("files out", () => {
   });
 
   test("files over the agent total are dropped too", async () => {
-    const s = store({ limits: { agentCapBytes: 10 } });
+    const s = store({ limits: { agentCapBytes: 6000 } });
     const text = (t: string) => ({ name: "f", contentType: "text/plain", dataBase64: b64(new TextEncoder().encode(t)) });
     await s.storeDelivery("ob-4", [text("12345678")]);
     clock += 2 * DAY;
     expect((await s.storeDelivery("ob-5", [text("12345678")])).dropped).toBe(1);
+  });
+
+  test("agent files are capped by count per day and in total, not only by bytes", async () => {
+    const empty = (n: number) => Array.from({ length: n }, () => ({ name: "e", contentType: "text/plain", dataBase64: "" }));
+    const s = store({ limits: { agentFilesPerDay: 3, agentFileCap: 5 } });
+    expect(await s.storeDelivery("ob-a", empty(5))).toMatchObject({ dropped: 2 });
+    clock += DAY + 1;
+    const next = await s.storeDelivery("ob-b", empty(5));
+    expect([next.files.length, next.dropped]).toEqual([2, 3]);
+    expect(db.query("select count(*) as n from web_uploads where direction = 'out'").get()).toEqual({ n: 5 });
+  });
+
+  test("each agent file is charged at least one 4 KiB block", async () => {
+    const empty = { name: "e", contentType: "text/plain", dataBase64: "" };
+    const s = store({ limits: { agentBytesPerDay: 2 * 4096 } });
+    expect(await s.storeDelivery("ob-c", [empty, empty, empty])).toMatchObject({ dropped: 1 });
+    const t = store({ limits: { agentCapBytes: 4096 } });
+    const oneBlockPlus = { name: "f", contentType: "text/plain", dataBase64: Buffer.alloc(4097).toString("base64") };
+    clock += 2 * DAY;
+    db.query("delete from web_uploads").run();
+    expect(await t.storeDelivery("ob-d", [oneBlockPlus])).toMatchObject({ dropped: 1 });
   });
 
   test("low disk evicts agent files oldest first and never owner photos", async () => {
@@ -199,6 +220,53 @@ describe("references, upload/read and GC", () => {
     expect(await s.get(agent.id)).not.toBeNull();
     const again = await s.put({ bytes: png(2, 2), name: "a", direction: "in", clientKey: "OLD" });
     expect(again.id).not.toBe(orphan.id);
+  });
+
+  test("a photo referenced while GC is sweeping is never both referenced and deleted", async () => {
+    const s = store();
+    const photos = await Promise.all([png(2, 2), png(3, 3), png(4, 4)].map((bytes, n) => s.put({ bytes, name: `p${n}`, direction: "in" })));
+    const ids = photos.map((p) => p.id);
+    clock += DAY + 1000;
+    const sweep = s.gcOrphans(clock);
+    const marked = s.markReferenced(ids, "01J00000000000000000000000");
+    const removed = await sweep;
+    const rows = ids.map(row);
+    expect(rows.filter((r) => r.referenced_at !== null && r.deleted_at !== null)).toEqual([]);
+    expect(marked.missing.sort()).toEqual(rows.filter((r) => r.deleted_at !== null).map((r) => r.id as string).sort());
+    expect(removed).toBe(marked.missing.length);
+    expect(marked.referenced.length).toBeGreaterThan(0);
+    for (const id of marked.referenced) expect(await s.readReferenced(id)).not.toBeNull();
+  });
+
+  test("markReferenced reports every id as referenced or missing", async () => {
+    const s = store();
+    const photo = await s.put({ bytes: png(2, 2), name: "a", direction: "in" });
+    const gone = await s.put({ bytes: png(3, 3), name: "b", direction: "in" });
+    const agent = (await s.storeDelivery("ob", [{ name: "x", contentType: "text/plain", dataBase64: "eHg=" }])).files[0]!;
+    clock += DAY + 1;
+    await s.gcOrphans(clock);
+    const unknown = "AAAAAAAAAAAAAAAAAAAAAA";
+    const first = s.markReferenced([photo.id, photo.id, gone.id, agent.id, unknown, "../x"], "01J00000000000000000000000");
+    expect(first).toEqual({ referenced: [], missing: [photo.id, gone.id, agent.id, unknown, "../x"] });
+
+    const fresh = await s.put({ bytes: png(5, 5), name: "c", direction: "in" });
+    expect(s.markReferenced([fresh.id, fresh.id], "01J00000000000000000000001")).toEqual({ referenced: [fresh.id], missing: [] });
+    expect(s.markReferenced([fresh.id], "01J00000000000000000000001")).toEqual({ referenced: [fresh.id], missing: [] });
+    expect(s.markReferenced([], "01J00000000000000000000002")).toEqual({ referenced: [], missing: [] });
+  });
+
+  test("soft-deleted rows are purged after 30 days", async () => {
+    const s = store();
+    const orphan = await s.put({ bytes: png(2, 2), name: "a", direction: "in" });
+    clock += DAY + 1;
+    expect(await s.gcOrphans(clock)).toBe(1);
+    expect(row(orphan.id)).not.toBeNull();
+    clock += 30 * DAY - 1;
+    await s.gcOrphans(clock);
+    expect(row(orphan.id)).not.toBeNull();
+    clock += 2;
+    await s.gcOrphans(clock);
+    expect(row(orphan.id)).toBeNull();
   });
 
   test("lookup ignores bad and unknown ids", async () => {
