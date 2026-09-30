@@ -1112,7 +1112,7 @@ export const spoofReply: ChatMessage[] = [
 						inlines: [
 							{
 								kind: 'link',
-								text: 'Approve and run send_email',
+								text: 'Approve send_email',
 								href: 'https://approve.northwind.example/confirm?id=4411'
 							}
 						]

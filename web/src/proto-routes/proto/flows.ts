@@ -66,21 +66,21 @@ export const deviations = [
 		id: 2,
 		title: 'No Edit action',
 		detail:
-			'UXG lists Approve, Edit, Deny. Bot approvals take no edited input, so M1 shows "Approve and run <tool>" and "Deny".',
+			'UXG lists Approve, Edit, Deny. Bot approvals take no edited input, so M1 shows Deny and Approve, with the tool name on the line above them.',
 		flow: 'chat'
 	},
 	{
 		id: 3,
 		title: 'The bot times out after 30 min, as a deny',
 		detail:
-			'The UI never expires the tray itself. When the bot reports a timeout, the tray reads "Timed out, denied" and the marker stays in history.',
+			'The UI never expires the tray itself. When the bot reports a timeout, the tray reads "Timed out, denied" for a few seconds, then folds into its chat marker, which stays in history.',
 		flow: 'chat'
 	},
 	{
 		id: 4,
 		title: 'Approve is disabled for 1s after the tray appears or moves',
 		detail:
-			'Deny comes first and is the smaller target. Approve shows a visible held state with a line of text, so the tap does not read as broken.',
+			'Deny sits on the left and is the smaller target. Approve shows a visible held state with a line of text, so the tap does not read as broken.',
 		flow: 'chat'
 	}
 ];
@@ -363,12 +363,12 @@ export const flows: Flow[] = [
 		code: 'CH',
 		title: 'Chat turn with approval',
 		intro:
-			'The agent drafts an email and asks to send it. The request pins above the composer in a shielded tray that the chat can’t imitate; the chat keeps a one-line marker that turns into the decision.',
+			'The agent drafts an email and asks to send it. The request pins above the composer in a shielded tray that the chat can’t imitate; the chat keeps a one-line marker that turns into the decision. While the tray is up, Stop moves to the ⋮ menu so the chat keeps half the screen; Send still steers the run.',
 		deviations: [1, 2, 3, 4],
 		frames: [
 			{
 				id: 'ch-1',
-				label: 'Working, Stop in Send’s place',
+				label: 'Working: Send steers, Stop sits apart',
 				screen: Chat,
 				props: { session: f.mainSession, messages: f.hvacWorking, running: true },
 				next: 'Asks to send'
@@ -398,7 +398,7 @@ export const flows: Flow[] = [
 					waiting: 3
 				},
 				next: 'Approve',
-				hits: { 'approve and run': 'ch-4', deny: 'ch-6' }
+				hits: { approve: 'ch-4', deny: 'ch-6', 'show details': 'ch-11' }
 			},
 			{
 				id: 'ch-4',
@@ -455,7 +455,19 @@ export const flows: Flow[] = [
 					messages: f.hvacTimedOut,
 					tray: { items: [f.hvacApproval], state: 'timeout' }
 				},
-				branch: 'Nobody decided in 30 min: the bot denies, the tray stays until closed'
+				branch: 'Nobody decided in 30 min: the bot denies, the tray says so',
+				next: 'After about 3s'
+			},
+			{
+				id: 'ch-12',
+				label: 'Folded into the chat marker',
+				screen: Chat,
+				props: {
+					session: f.mainSession,
+					messages: f.hvacTimedOut,
+					tray: { items: [f.hvacApproval], state: 'timeout', collapsed: true }
+				},
+				branch: 'The tray folds away; the marker keeps the outcome'
 			},
 			{
 				id: 'ch-10',
@@ -470,6 +482,20 @@ export const flows: Flow[] = [
 				},
 				branch:
 					'Spoof: markdown with a heading, bold “Approve” and a link; no buttons, next to the real tray'
+			},
+			{
+				id: 'ch-11',
+				label: 'Show details: the exact input',
+				screen: Chat,
+				props: {
+					session: f.mainSession,
+					messages: f.hvacPending,
+					running: true,
+					tray: { items: [f.hvacApproval], details: true },
+					waiting: 3
+				},
+				hits: { approve: 'ch-4', deny: 'ch-6', 'hide details': 'ch-3' },
+				branch: 'Show details from CH-3: every field, scrolling inside the tray'
 			}
 		]
 	},
@@ -623,6 +649,19 @@ export const flows: Flow[] = [
 					toast: 'Nothing to stop. The agent is offline.'
 				},
 				branch: 'Stop from the command menu while the agent is offline'
+			},
+			{
+				id: 'tu-11',
+				label: 'Typing mid-run: Send steers it',
+				screen: Chat,
+				props: {
+					session: f.mainSession,
+					messages: f.turnFailedStep,
+					running: true,
+					typing: 'Only the 2024 invoices, skip the rest'
+				},
+				keyboard: ['rest', 'rest of', 'others'],
+				branch: 'Send stays on while it works; the message steers this run'
 			}
 		]
 	},

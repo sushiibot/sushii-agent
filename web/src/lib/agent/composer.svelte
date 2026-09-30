@@ -16,6 +16,7 @@
 		placeholder = 'Message your agent',
 		running = false,
 		stopping = false,
+		stop = true,
 		photos = [],
 		quotaFull = false,
 		attach = true,
@@ -23,9 +24,11 @@
 	}: {
 		value?: string;
 		placeholder?: string;
-		/** A turn is running: Stop takes Send's place. */
+		/** A turn is running: Send steers it, and Stop shows as its own control. */
 		running?: boolean;
 		stopping?: boolean;
+		/** Show Stop while running. Off while an approval tray is up: Deny is the way out, and the chat keeps its room. */
+		stop?: boolean;
 		photos?: PhotoDraft[];
 		quotaFull?: boolean;
 		attach?: boolean;
@@ -121,6 +124,26 @@
 			</ul>
 		{/if}
 	{/if}
+	{#if running && stop}
+		<div class="flex items-center gap-3">
+			<Button
+				variant="outline"
+				class="shrink-0 gap-1.5 rounded-full border-foreground/30 px-4"
+				disabled={stopping}
+				onclick={onstop}
+			>
+				{#if stopping}<LoaderCircle
+						class="animate-spin motion-reduce:animate-none"
+						aria-hidden="true"
+					/>Stopping…{:else}<Square class="size-3.5 fill-current" aria-hidden="true" />Stop{/if}
+			</Button>
+			<p id="{uid}-steer" class="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+				{stopping
+					? 'Your next message starts a new turn.'
+					: 'The agent is working. A message now steers this run.'}
+			</p>
+		</div>
+	{/if}
 	{#if quotaFull}
 		<p class="flex items-start gap-2 rounded-lg bg-failed-soft px-3 py-2 text-sm text-failed">
 			<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -145,26 +168,13 @@
 			aria-describedby={blocked ? `${uid}-blocked` : undefined}
 			class="max-h-40 min-h-12 flex-1 resize-none rounded-3xl bg-card px-4 py-3 text-base kb:ring-2 kb:ring-ring/40"
 		/>
-		{#if running}
-			<Button
-				variant="outline"
-				class="size-12 shrink-0 rounded-full border-foreground/40 px-0"
-				aria-label={stopping ? 'Stopping' : 'Stop the agent'}
-				disabled={stopping}
-				onclick={onstop}
-			>
-				{#if stopping}<LoaderCircle
-						class="size-5 animate-spin motion-reduce:animate-none"
-					/>{:else}<Square class="size-4 fill-current" />{/if}
-			</Button>
-		{:else}
-			<Button
-				type="submit"
-				aria-label="Send message"
-				class="size-12 shrink-0 rounded-full px-0"
-				disabled={!canSend}><ArrowUp class="size-5" /></Button
-			>
-		{/if}
+		<Button
+			type="submit"
+			aria-label="Send message"
+			aria-describedby={running && stop ? `${uid}-steer` : undefined}
+			class="size-12 shrink-0 rounded-full px-0"
+			disabled={!canSend}><ArrowUp class="size-5" /></Button
+		>
 	</div>
 	{#if blocked}
 		<p id="{uid}-blocked" class="px-1 text-xs text-muted-foreground">{blocked}</p>
