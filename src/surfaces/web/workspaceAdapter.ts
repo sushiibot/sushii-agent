@@ -38,10 +38,14 @@ export interface WebHandle extends SurfaceMessageHandle {
   readonly id: string;
 }
 
-/** The slice of the upload store the web surface uses; the pinned UploadStore satisfies it. */
+/** The slice of DiskUploadStore the chat surface uses. */
 export interface WebUploadPort {
-  put(i: { bytes: Uint8Array; name: string; direction: "in" | "out"; clientKey?: string; outboxId?: string }): Promise<UploadRef>;
-  get(id: string): Promise<{ meta: UploadRef; body: ReadableStream | Blob } | null>;
+  /** Known, still-stored uploads among `ids`. */
+  lookup(ids: string[]): Map<string, UploadRef>;
+  /** Agent files stored for each delivery. */
+  forOutbox(outboxIds: string[]): Map<string, UploadRef[]>;
+  /** Idempotent per delivery; files over quota are dropped and counted, not thrown. */
+  storeDelivery(outboxId: string, files: DeliverFile[]): Promise<{ files: UploadRef[]; dropped: number }>;
   markReferenced(ids: string[], messageClientId: string): void;
 }
 
@@ -263,22 +267,12 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     }, wait);
   }
 
+  /** A store failure other than quota throws, leaving the delivery unacked for the workspace to resend. */
   private async storeFiles(files: DeliverFile[], outboxId: string): Promise<{ files: UploadRef[]; dropped: string[] }> {
-    const stored: UploadRef[] = [];
-    const dropped: string[] = [];
-    for (const f of files) {
-      if (!this.deps.uploads) {
-        dropped.push("storage unavailable");
-        continue;
-      }
-      try {
-        stored.push(await this.deps.uploads.put({ bytes: new Uint8Array(Buffer.from(f.dataBase64, "base64")), name: f.name, direction: "out", outboxId }));
-      } catch (err) {
-        log.warn({ err, outboxId }, "failed to store a delivered file");
-        dropped.push(/quota/i.test(String(err)) ? "quota" : "storage error");
-      }
-    }
-    return { files: stored, dropped };
+    if (!files.length) return { files: [], dropped: [] };
+    if (!this.deps.uploads) return { files: [], dropped: files.map(() => "storage unavailable") };
+    const res = await this.deps.uploads.storeDelivery(outboxId, files);
+    return { files: res.files, dropped: Array.from({ length: res.dropped }, () => "quota") };
   }
 
   /** Pushes unless a seen receipt for `seq` arrives first. Resolves to the devices reached, null when suppressed. */

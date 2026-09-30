@@ -176,7 +176,11 @@ export function internalErrorResponse(err: unknown): Response {
   return withSecurityHeaders(json({ error: "internal" }, 500));
 }
 
-export async function startWebServer(config: WebConfig, db: Database, chat?: ChatRoutes): Promise<Server<undefined>> {
+export interface WebServerOptions {
+  chat?: ChatRoutes;
+}
+
+export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined>> {
   let pushStore: PushSubscriptionStore | undefined;
   let pushSender: PushSender | undefined;
   let push = config.push;
@@ -193,7 +197,7 @@ export async function startWebServer(config: WebConfig, db: Database, chat?: Cha
     pushSender = createPushSender(pushStore, createWebPushTransport(push));
   }
   const effective: WebConfig = { ...config, push };
-  const handler = createWebHandler({ config: effective, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender, ...(chat ? { chat } : {}) });
+  const handler = createWebHandler({ config: effective, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender, ...(opts.chat ? { chat: opts.chat } : {}) });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
   }
@@ -212,7 +216,7 @@ export async function startWebServer(config: WebConfig, db: Database, chat?: Cha
 }
 
 /** Never throws, so a bad web config disables only the web surface. */
-export async function startWebGateway(env: Record<string, string | undefined>, db: Database, chat?: ChatRoutes): Promise<Server<undefined> | undefined> {
+export async function startWebGateway(env: Record<string, string | undefined>, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined> | undefined> {
   let config: WebConfig | undefined;
   try {
     config = parseWebConfig(env);
@@ -225,7 +229,7 @@ export async function startWebGateway(env: Record<string, string | undefined>, d
     return undefined;
   }
   try {
-    return await startWebServer(config, db, chat);
+    return await startWebServer(config, db, opts);
   } catch (err) {
     logger.error({ err, bindAddr: config.bindAddr }, "web gateway failed to start");
     return undefined;

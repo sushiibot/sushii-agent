@@ -17,6 +17,7 @@ import {
   type PostApprovalResponse,
   type PostAskResponse,
   type PostMessageResponse,
+  type UploadRef,
 } from "./events.ts";
 import { buildHistoryPage, RpcHistorySource, type HistorySource } from "./history.ts";
 import { forbidden, isJson, json, readJson } from "./http.ts";
@@ -111,12 +112,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   function drive(row: { clientId: string; text: string; uploadIds: string[] }, actor: SurfaceActor): void {
     if (routing.has(row.clientId)) return;
     const run = (async () => {
-      const attachments: InboundMessage["attachments"] = [];
-      for (const id of row.uploadIds) {
-        const found = await deps.uploads?.get(id).catch(() => null);
-        if (found?.body instanceof ReadableStream) await found.body.cancel().catch(() => {});
-        if (found) attachments.push({ url: uploadUrl(id), name: found.meta.name, contentType: found.meta.contentType });
-      }
+      const known = row.uploadIds.length && deps.uploads ? deps.uploads.lookup(row.uploadIds) : new Map<string, UploadRef>();
+      const attachments: InboundMessage["attachments"] = row.uploadIds.flatMap((id) => {
+        const ref = known.get(id);
+        return ref ? [{ url: uploadUrl(id), name: ref.name, contentType: ref.contentType }] : [];
+      });
       const message: InboundMessage = {
         origin: WEB_ORIGIN,
         id: row.clientId,
@@ -171,23 +171,21 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     }
     if (uploadIds.length) {
       if (!deps.uploads) return json({ error: "uploads are not available" }, 400);
-      for (const id of uploadIds) {
-        const found = await deps.uploads.get(id).catch(() => null);
-        if (found?.body instanceof ReadableStream) await found.body.cancel().catch(() => {});
-        if (!found) return json({ error: "unknown upload" }, 400);
-      }
+      const known = deps.uploads.lookup(uploadIds);
+      if (uploadIds.some((id) => !known.has(id))) return json({ error: "unknown upload" }, 400);
     }
     const at = now();
     const row = chatLog.transaction(() => {
-      // A concurrent duplicate may have been stored while the uploads were checked.
+      // A concurrent duplicate may have been stored while this request's body was read.
       const raced = inbound.get(body.clientId);
       if (raced) return raced;
       const seq = chatLog.append("user", { key: body.clientId, text: body.text, uploadIds, at: new Date(at).toISOString() }, body.clientId);
       const stored = { clientId: body.clientId, text: body.text, uploadIds, seq, createdAt: at };
       inbound.insert(stored);
+      // With the insert, so a message held for days never loses its photos to orphan GC.
+      if (uploadIds.length) deps.uploads?.markReferenced(uploadIds, body.clientId);
       return { ...stored, routedAt: null };
     });
-    if (uploadIds.length) deps.uploads?.markReferenced(uploadIds, body.clientId);
     if (row.routedAt === null) drive(row, actor);
     return json({ seq: row.seq } satisfies PostMessageResponse, 202);
   }

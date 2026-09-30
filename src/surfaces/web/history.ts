@@ -17,7 +17,7 @@ export class RpcHistorySource implements HistorySource {
   }
 }
 
-type UploadLookup = Pick<WebUploadPort, "get">;
+type UploadLookup = Pick<WebUploadPort, "lookup" | "forOutbox">;
 
 /** One page of history: the workspace transcript joined with the bot's own record. An item matched to a bot
  *  event by clientId or outboxId renders from that event and is verified; anything else is workspace-only
@@ -36,7 +36,12 @@ export async function buildHistoryPage(
   const asks = byKey(log.list(["ask"], { keys: outboxIds }));
   const askIds = page.items.flatMap((i) => (i.type === "ask" ? [i.askId] : []));
   const answers = byKey(log.list(["ask_resolved"], { keys: askIds }));
-  const refs = uploadRefs(deps.uploads);
+  const attachmentIds = page.items.flatMap((i) => (i.type === "user" ? i.attachments.flatMap((a) => (a.uploadId ? [a.uploadId] : [])) : []));
+  for (const ev of users.values()) attachmentIds.push(...(ev as StoredEvent<"user">).data.uploadIds);
+  const known = deps.uploads && attachmentIds.length ? deps.uploads.lookup([...new Set(attachmentIds)]) : new Map<string, UploadRef>();
+  const refs = (id: string) => known.get(id) ?? null;
+  const unmatched = outboxIds.filter((id) => !replies.has(id));
+  const outboxFiles = deps.uploads && unmatched.length ? deps.uploads.forOutbox(unmatched) : new Map<string, UploadRef[]>();
 
   const items: WebHistoryItem[] = [];
   for (const item of page.items) {
@@ -44,17 +49,13 @@ export async function buildHistoryPage(
       case "user": {
         const ev = item.clientId ? (users.get(item.clientId) as StoredEvent<"user"> | undefined) : undefined;
         if (ev) {
-          const attachments = await Promise.all(
-            ev.data.uploadIds.map(async (id) => {
-              const file = await refs(id);
-              return { name: file?.name ?? "file", contentType: file?.contentType ?? "application/octet-stream", file };
-            }),
-          );
+          const attachments = ev.data.uploadIds.map((id) => {
+            const file = refs(id);
+            return { name: file?.name ?? "file", contentType: file?.contentType ?? "application/octet-stream", file };
+          });
           items.push({ type: "user", id: item.id, clientId: ev.data.key, at: ev.data.at, text: ev.data.text, attachments, verified: true });
         } else {
-          const attachments = await Promise.all(
-            item.attachments.map(async (a) => ({ name: a.name, contentType: a.contentType, file: a.uploadId ? await refs(a.uploadId) : null })),
-          );
+          const attachments = item.attachments.map((a) => ({ name: a.name, contentType: a.contentType, file: a.uploadId ? refs(a.uploadId) : null }));
           items.push({ type: "user", id: item.id, ...(item.clientId ? { clientId: item.clientId } : {}), at: item.at, text: item.text, attachments, verified: false });
         }
         break;
@@ -71,7 +72,7 @@ export async function buildHistoryPage(
           ...((ev?.data.turnId ?? item.turnId) ? { turnId: ev?.data.turnId ?? item.turnId } : {}),
           tools: item.tools,
           ...(usage ? { usage } : {}),
-          files: ev ? ev.data.files : [],
+          files: ev ? ev.data.files : item.outboxId ? (outboxFiles.get(item.outboxId) ?? []) : [],
           verified: ev !== undefined,
         });
         break;
@@ -106,23 +107,6 @@ function byKey(events: StoredEvent[]): Map<string, StoredEvent> {
   const out = new Map<string, StoredEvent>();
   for (const ev of events) if (ev.key !== null) out.set(ev.key, ev);
   return out;
-}
-
-function uploadRefs(uploads: UploadLookup | undefined): (id: string) => Promise<UploadRef | null> {
-  const cache = new Map<string, Promise<UploadRef | null>>();
-  return (id) => {
-    let hit = cache.get(id);
-    if (!hit) {
-      hit = (async () => {
-        if (!uploads) return null;
-        const found = await uploads.get(id).catch(() => null);
-        if (found?.body instanceof ReadableStream) await found.body.cancel().catch(() => {});
-        return found?.meta ?? null;
-      })();
-      cache.set(id, hit);
-    }
-    return hit;
-  };
 }
 
 const atMs = (at: string) => {

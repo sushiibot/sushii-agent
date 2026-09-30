@@ -141,7 +141,7 @@ async function main() {
     workspaceEnabled: config.dmWorkspaceEnabled,
     breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
   });
-  const webServer = await startWebGateway(process.env, db, webChat.routes);
+  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) workspace.registry.register(webChat.adapter);
   listenWorkspace(workspace, config.orchPort);
