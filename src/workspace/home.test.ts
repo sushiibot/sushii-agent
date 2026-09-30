@@ -42,7 +42,7 @@ describe("scaffoldHome", () => {
   test("creates the layout, git-inits and commits the scaffold", async () => {
     const result = await scaffoldHome(home);
 
-    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks/README.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".gitignore"]) {
+    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks/README.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".agents/skills/documents/SKILL.md", ".gitignore"]) {
       expect(existsSync(join(home, f))).toBe(true);
     }
     for (const d of ["memory", "tasks/archive", "projects", "scratch", ".agents/skills"]) expect(existsSync(join(home, d))).toBe(true);
@@ -60,6 +60,7 @@ describe("scaffoldHome", () => {
       ".agents/agents/researcher.md",
       ".agents/agents/reviewer.md",
       ".agents/skills/README.md",
+      ".agents/skills/documents/SKILL.md",
       ".agents/skills/session-history/SKILL.md",
       ".gitignore",
       "AGENTS.md",
@@ -142,6 +143,13 @@ describe("scaffoldHome", () => {
     } finally {
       rmSync(fresh, { recursive: true, force: true });
     }
+  });
+
+  test("scaffolds the documents skill with agentskills frontmatter", async () => {
+    await scaffoldHome(home);
+    const content = readFileSync(join(home, ".agents/skills/documents/SKILL.md"), "utf8");
+    expect(content).toBe(readHomeTemplate(".agents/skills/documents/SKILL.md"));
+    expect(content).toMatch(/^---\nname: documents\ndescription: .+\n---/);
   });
 
   test("never overwrites existing files and git-inits only once", async () => {

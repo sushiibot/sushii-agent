@@ -90,6 +90,15 @@ RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-consolidate.ts "$@"' > /usr/
 # `ws-schedule`: lists the scheduled jobs, or queues a run of one for the workspace's scheduler.
 RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-schedule.ts "$@"' > /usr/local/bin/ws-schedule \
     && chmod 755 /usr/local/bin/ws-schedule
+# Document extraction for the documents skill (PDF is poppler-utils, in base). pandoc: docx/odt/pptx/epub
+# → markdown; upstream static build because Debian's is larger and can't read pptx. xlsx2csv: pandoc's
+# xlsx reader fails or drops text cells on common files (e.g. openpyxl output).
+RUN apt-get update && apt-get install -y --no-install-recommends xlsx2csv \
+    && rm -rf /var/lib/apt/lists/*
+ARG PANDOC_VERSION=3.11
+ARG TARGETARCH
+RUN curl -fsSL "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-${TARGETARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=2 "pandoc-${PANDOC_VERSION}/bin/pandoc"
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]
