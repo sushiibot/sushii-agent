@@ -1,8 +1,5 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
-	import { pushState, replaceState } from '$app/navigation';
-	import { page } from '$app/state';
-	import { resolve } from '$app/paths';
+	import { tick } from 'svelte';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronUp from '@lucide/svelte/icons/chevron-up';
 	import Download from '@lucide/svelte/icons/download';
@@ -15,60 +12,137 @@
 	import ShieldOff from '@lucide/svelte/icons/shield-off';
 	import Square from '@lucide/svelte/icons/square';
 	import AppShell from '$lib/ui/shell/app-shell.svelte';
-	import ApprovalTray from '$lib/features/chat/components/approval-tray.svelte';
-	import Composer from '$lib/features/chat/components/composer.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
-	import Conversation from '$lib/features/chat/components/conversation.svelte';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
-	import type { FileRef } from './types';
-	import MessageSheet from '$lib/features/chat/components/message-sheet.svelte';
-	import { messagePlainText } from '$lib/features/chat/render/plain-text';
 	import InstallHint from '$lib/ui/pwa/install-hint.svelte';
 	import UpdateToast from '$lib/ui/pwa/update-toast.svelte';
-	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { Button } from '$lib/ui/button';
-	import type { ChatStore } from './store.svelte';
+	import ApprovalTray from './components/approval-tray.svelte';
+	import Composer from './components/composer.svelte';
+	import Conversation from './components/conversation.svelte';
+	import MessageSheet from './components/message-sheet.svelte';
+	import { messagePlainText } from './render/plain-text';
+	import type { ChatMessage, ChatSheet, ChatTray, FileRef, PhotoDraft } from './types';
 
-	let { store }: { store: ChatStore } = $props();
+	let {
+		messages,
+		history = 'ready',
+		hasOlder = false,
+		olderLoading = false,
+		olderError = false,
+		running = false,
+		stopping = false,
+		tray,
+		draft = '',
+		photos = [],
+		quotaFull = false,
+		connection,
+		commandsOffline = false,
+		toast,
+		updateReady = false,
+		canInstall = false,
+		announce = '',
+		focusAsk,
+		sheet,
+		heldId,
+		viewer,
+		newMessages: initialNewMessages = false,
+		openTurn,
+		openStep,
+		settingsHref = '/settings',
+		onopensheet,
+		onclosesheet,
+		onopenfile,
+		ondraft,
+		onsend,
+		onstop,
+		oncommand,
+		onattach,
+		onremovephoto,
+		onretryphoto,
+		onloadolder,
+		onretryhistory,
+		onretrysend,
+		ondeletesend,
+		onanswer,
+		ondecide,
+		oninstall,
+		onreload
+	}: {
+		messages: ChatMessage[];
+		history?: 'loading' | 'ready' | 'error';
+		hasOlder?: boolean;
+		olderLoading?: boolean;
+		olderError?: boolean;
+		running?: boolean;
+		stopping?: boolean;
+		/** Pending approvals, or a timed-out one that is about to fold into its chat marker. */
+		tray?: ChatTray;
+		draft?: string;
+		photos?: PhotoDraft[];
+		quotaFull?: boolean;
+		connection?: ConnectionState | 'forbidden';
+		commandsOffline?: boolean;
+		toast?: string | null;
+		updateReady?: boolean;
+		canInstall?: boolean;
+		/** Screen-reader text, set once per completed reply. */
+		announce?: string;
+		focusAsk?: string;
+		sheet?: ChatSheet;
+		/** The message whose actions sheet is open. */
+		heldId?: string;
+		viewer?: FileRef;
+		/** Start with the pill shown, as if the reader had scrolled up while something arrived. */
+		newMessages?: boolean;
+		openTurn?: string;
+		openStep?: string;
+		settingsHref?: string;
+		onopensheet?: (sheet: ChatSheet, messageId?: string) => void;
+		/** Closes the open sheet; called once per close. */
+		onclosesheet?: () => void;
+		onopenfile?: (file: FileRef) => void;
+		ondraft?: (text: string) => void;
+		onsend?: () => void;
+		onstop?: () => void | Promise<void>;
+		oncommand?: (command: 'new' | 'compact') => void | Promise<void>;
+		onattach?: (files: File[]) => void;
+		onremovephoto?: (id: string) => void;
+		onretryphoto?: (id: string) => void;
+		onloadolder?: () => Promise<void>;
+		onretryhistory?: () => void;
+		onretrysend?: (messageId: string) => void;
+		ondeletesend?: (messageId: string) => void;
+		onanswer?: (askId: string, answer: string) => void;
+		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
+		oninstall?: () => Promise<'accepted' | 'dismissed' | 'failed'>;
+		onreload?: () => void;
+	} = $props();
 
 	const ARM_MS = 1000;
 	const NEAR_BOTTOM_PX = 48;
 
 	let scroller = $state<HTMLElement | null>(null);
-	let newMessages = $state(false);
+	// svelte-ignore state_referenced_locally
+	let newMessages = $state(initialNewMessages);
 	let armedFor = $state<string | null>(null);
 	let armGen = $state(0);
-	let viewer = $state<FileRef | undefined>();
-	let now = $state(Date.now());
 	let slowLoad = $state(false);
 	let older = $state<HTMLElement | null>(null);
 
-	const sheet = $derived(page.state.sheet);
-	const heldId = $derived(sheet === 'message' ? page.state.messageId : undefined);
-	const held = $derived(heldId ? store.messages.find((m) => m.id === heldId) : undefined);
+	const held = $derived(
+		sheet === 'message' && heldId ? messages.find((m) => m.id === heldId) : undefined
+	);
+	const pressed = $derived(sheet === 'message' ? heldId : undefined);
 	const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
 	let selecting = $state<string | undefined>();
 	let pendingSelect: string | undefined;
 	let copyNote = $state('');
-	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
-	const commandsOffline = $derived(store.workspace === 'offline');
-	const empty = $derived(store.history !== 'loading' && store.messages.length === 0);
-
-	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
-		if (!pwa.online) return { kind: 'offline' };
-		if (store.connection === 'forbidden') return 'forbidden';
-		if (store.connection === 'reconnecting' && store.reconnectingSince !== null) {
-			const secs = Math.floor((now - store.reconnectingSince) / 1000);
-			return { kind: 'reconnecting', elapsed: secs >= 5 ? `${secs}s` : undefined };
-		}
-		if (store.workspace === 'offline') return { kind: 'agent-offline' };
-		if (store.reset) return { kind: 'reset' };
-		return undefined;
-	});
+	const empty = $derived(history !== 'loading' && messages.length === 0);
 
 	// Approve stays locked for a moment whenever a new request reaches the top of the tray or the
 	// tray moves. Derived, so a new top request is locked in the same frame it first paints.
-	const topNonce = $derived(store.approvals[0]?.nonce);
+	const topNonce = $derived(tray && tray.state !== 'timeout' ? tray.items[0]?.nonce : undefined);
 	const armKey = $derived(topNonce ? `${topNonce}:${armGen}` : null);
 	const armed = $derived(armKey !== null && armedFor === armKey);
 	$effect(() => {
@@ -96,22 +170,10 @@
 		};
 	});
 
-	const tray = $derived(
-		store.approvals.length
-			? { items: store.approvals, armed, state: store.trayPhase }
-			: store.timedOut
-				? { items: [store.timedOut], armed: false, state: 'timeout' as const }
-				: undefined
-	);
+	const shownTray = $derived(tray && { ...tray, armed: tray.armed ?? armed });
 
 	$effect(() => {
-		if (store.connection !== 'reconnecting') return;
-		const t = setInterval(() => (now = Date.now()), 1000);
-		return () => clearInterval(t);
-	});
-
-	$effect(() => {
-		if (store.history !== 'loading') {
+		if (history !== 'loading') {
 			slowLoad = false;
 			return;
 		}
@@ -124,7 +186,7 @@
 
 	let lastTail = '';
 	$effect(() => {
-		const tail = store.messages.at(-1);
+		const tail = messages.at(-1);
 		const sig = tail ? `${tail.id}:${JSON.stringify(tail.parts).length}` : '';
 		if (sig === lastTail) return;
 		const first = !lastTail;
@@ -166,8 +228,8 @@
 		try {
 			// Bounded, in case a server hands back a cursor that never moves.
 			for (let n = 0; n < 20; n++) {
-				if (!store.hasOlder || store.olderError || store.olderLoading || !olderInView()) break;
-				await store.loadOlder();
+				if (!onloadolder || !hasOlder || olderError || olderLoading || !olderInView()) break;
+				await onloadolder();
 				await tick();
 			}
 		} finally {
@@ -188,46 +250,17 @@
 		return () => io.disconnect();
 	});
 
-	onMount(() => {
-		store.setViewing(true);
-		return () => store.setViewing(false);
-	});
-
-	onMount(() => {
-		if (!focusAsk) return;
-		let done = false;
-		const stop = $effect.root(() => {
-			$effect(() => {
-				const item = store.items.find((i) => i.kind === 'ask' && i.askId === focusAsk);
-				if (!item || done) return;
-				done = true;
-				void tick().then(() =>
-					document
-						.querySelector(`[data-message-id="${CSS.escape(item.id)}"]`)
-						?.scrollIntoView({ block: 'center' })
-				);
-			});
-		});
-		return stop;
-	});
-
-	function openSheet(next: NonNullable<App.PageState['sheet']>, messageId?: string) {
-		const state = messageId ? { sheet: next, messageId } : { sheet: next };
-		if (sheet) replaceState('', state);
-		else pushState('', state);
-	}
-
 	const messageEl = (id: string) =>
 		document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
 
 	function openMessageMenu(id: string) {
 		selecting = undefined;
-		if (heldId === id) return;
+		if (pressed === id) return;
 		// Focus returns here when the sheet closes, whether a hold or the button opened it.
 		messageEl(id)?.querySelector<HTMLElement>('[data-message-focus]')?.focus({
 			preventScroll: true
 		});
-		openSheet('message', id);
+		onopensheet?.('message', id);
 	}
 
 	async function copyHeld() {
@@ -261,8 +294,8 @@
 		if (!held) return;
 		const id = held.id;
 		closeSheet();
-		if (action === 'retry') store.retry(id);
-		else void store.discard(id);
+		if (action === 'retry') onretrysend?.(id);
+		else ondeletesend?.(id);
 	}
 
 	// Select mode waits for the sheet to close, since focus returning to the opener comes first.
@@ -302,18 +335,18 @@
 		return () => clearTimeout(t);
 	});
 	function closeSheet() {
-		if (sheet) history.back();
+		if (sheet) onclosesheet?.();
 	}
 
 	function send() {
-		void store.send(store.draft);
+		onsend?.();
 		toBottom();
 	}
 
 	async function runCommand(c: 'new' | 'compact' | 'stop') {
 		closeSheet();
-		if (c === 'stop') await store.stopTurn();
-		else await store.command(c);
+		if (c === 'stop') await onstop?.();
+		else await oncommand?.(c);
 	}
 
 	const commands = $derived([
@@ -330,8 +363,8 @@
 			id: 'stop' as const,
 			icon: Square,
 			label: 'Stop',
-			note: store.running ? 'Stop the turn that is running now.' : 'Nothing is running right now.',
-			disabled: commandsOffline || !store.running
+			note: running ? 'Stop the turn that is running now.' : 'Nothing is running right now.',
+			disabled: commandsOffline || !running
 		},
 		{
 			id: 'compact' as const,
@@ -341,7 +374,9 @@
 			disabled: commandsOffline
 		}
 	]);
-	const sheetLabels = {
+	const install = () => oninstall?.() ?? Promise.resolve('failed' as const);
+
+	const sheetLabels: Record<ChatSheet, string> = {
 		commands: 'Chat commands',
 		new: 'Start a new chat',
 		viewer: 'Image',
@@ -374,7 +409,7 @@
 						<button
 							type="button"
 							disabled={c.disabled}
-							onclick={() => (c.id === 'new' ? openSheet('new') : runCommand(c.id))}
+							onclick={() => (c.id === 'new' ? onopensheet?.('new') : runCommand(c.id))}
 							class="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-55"
 						>
 							<c.icon class="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -434,7 +469,7 @@
 
 {#snippet subtitle()}
 	<span class="text-xs text-muted-foreground">
-		{#if store.running}The agent is working{:else}Your agent{/if}
+		{#if running}The agent is working{:else}Your agent{/if}
 	</span>
 {/snippet}
 
@@ -443,10 +478,10 @@
 		variant="ghost"
 		class="size-12 px-0"
 		aria-label="Chat commands"
-		onclick={() => openSheet('commands')}><EllipsisVertical class="size-5" /></Button
+		onclick={() => onopensheet?.('commands')}><EllipsisVertical class="size-5" /></Button
 	>
 	<a
-		href={resolve('/settings')}
+		href={settingsHref}
 		aria-label="Settings"
 		class="grid size-12 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
 	>
@@ -468,8 +503,8 @@
 	{/if}
 {/snippet}
 
-{#snippet toast()}
-	{#if store.toast}{store.toast}{:else}<UpdateToast onreload={() => pwa.applyUpdate()} />{/if}
+{#snippet toastBody()}
+	{#if toast}{toast}{:else}<UpdateToast onreload={() => onreload?.()} />{/if}
 {/snippet}
 
 {#snippet footer()}
@@ -483,25 +518,25 @@
 		</div>
 	{/if}
 	<div class="border-t">
-		{#if tray}
+		{#if shownTray}
 			<ApprovalTray
-				{...tray}
-				onapprove={(nonce) => store.decide(nonce, 'approve')}
-				ondeny={(nonce) => store.decide(nonce, 'deny')}
+				{...shownTray}
+				onapprove={(nonce) => ondecide?.(nonce, 'approve')}
+				ondeny={(nonce) => ondecide?.(nonce, 'deny')}
 			/>
 		{/if}
 		<Composer
-			bind:value={() => store.draft, (v) => store.setDraft(v)}
-			running={store.running}
-			stopping={store.stopping}
-			stop={!tray}
-			photos={store.photos}
-			quotaFull={store.quotaFull}
+			bind:value={() => draft, (v) => ondraft?.(v)}
+			{running}
+			{stopping}
+			stop={!shownTray || !!shownTray.collapsed}
+			{photos}
+			{quotaFull}
 			onsend={send}
-			onstop={() => store.stopTurn()}
-			onattach={(files) => void store.attach(files)}
-			onremovephoto={(id) => store.removePhoto(id)}
-			onretryphoto={(id) => store.retryPhoto(id)}
+			onstop={() => void onstop?.()}
+			onattach={(files) => onattach?.(files)}
+			onremovephoto={(id) => onremovephoto?.(id)}
+			onretryphoto={(id) => onretryphoto?.(id)}
 		/>
 	</div>
 {/snippet}
@@ -513,7 +548,7 @@
 	{actions}
 	{banner}
 	{footer}
-	toast={store.toast || pwa.waiting ? toast : undefined}
+	toast={toast || updateReady ? toastBody : undefined}
 	sheet={sheet ? sheetBody : undefined}
 	sheetLabel={sheet ? sheetLabels[sheet] : undefined}
 	sheetOnDesktop={sheet === 'message'}
@@ -524,7 +559,7 @@
 >
 	{#if empty}
 		<div class="mx-auto flex h-full max-w-2xl flex-col gap-6 px-4 py-6">
-			<InstallHint canInstall={pwa.canInstall} oninstall={() => pwa.install()} />
+			<InstallHint {canInstall} oninstall={install} />
 			<div class="flex flex-1 flex-col items-center justify-center gap-4 text-center">
 				<span
 					class="grid size-14 place-items-center rounded-2xl bg-foreground text-background"
@@ -552,19 +587,19 @@
 	{:else}
 		<div class="mx-auto max-w-2xl">
 			<div class="px-4 pt-4">
-				<InstallHint canInstall={pwa.canInstall} oninstall={() => pwa.install()} />
+				<InstallHint {canInstall} oninstall={install} />
 			</div>
-			{#if store.hasOlder && !store.olderError}
+			{#if hasOlder && !olderError}
 				<div bind:this={older} class="flex justify-center px-4 pt-2">
-					<Button variant="ghost" disabled={store.olderLoading} onclick={() => store.loadOlder()}>
-						{#if store.olderLoading}<LoaderCircle
+					<Button variant="ghost" disabled={olderLoading} onclick={() => onloadolder?.()}>
+						{#if olderLoading}<LoaderCircle
 								class="animate-spin motion-reduce:animate-none"
 								aria-hidden="true"
 							/>Loading earlier messages…{:else}<ChevronUp />Show earlier messages{/if}
 					</Button>
 				</div>
 			{/if}
-			{#if store.history === 'loading' && slowLoad && !store.messages.length}
+			{#if history === 'loading' && slowLoad && !messages.length}
 				<div class="flex flex-col gap-4 px-4 py-4" aria-hidden="true">
 					{#each [60, 85, 45, 70] as w, i (i)}
 						<span
@@ -578,22 +613,21 @@
 				<p role="status" class="sr-only">Loading messages…</p>
 			{/if}
 			<Conversation
-				messages={store.messages}
+				{messages}
 				{focusAsk}
-				onopenfile={(f) => {
-					viewer = f;
-					openSheet('viewer');
-				}}
-				onretrysend={(id) => store.retry(id)}
-				ondeletesend={(id) => void store.discard(id)}
-				onanswer={(askId, answer) => store.answer(askId, answer)}
-				onretryhistory={() => store.retryHistory()}
+				{openTurn}
+				{openStep}
+				onopenfile={(f) => onopenfile?.(f)}
+				onretrysend={(id) => onretrysend?.(id)}
+				ondeletesend={(id) => ondeletesend?.(id)}
+				onanswer={(askId, answer) => onanswer?.(askId, answer)}
+				onretryhistory={() => onretryhistory?.()}
 				onmessagemenu={openMessageMenu}
-				pressed={heldId}
+				{pressed}
 				{selecting}
 			/>
 		</div>
 	{/if}
-	<p role="status" class="sr-only">{store.announce}</p>
+	<p role="status" class="sr-only">{announce}</p>
 	<p role="status" class="sr-only">{copyNote}</p>
 </AppShell>

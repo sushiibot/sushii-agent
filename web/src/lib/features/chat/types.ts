@@ -147,3 +147,14 @@ export interface ThreadReport {
 	title: string;
 	line: string;
 }
+
+export type ChatSheet = 'commands' | 'new' | 'viewer' | 'message';
+
+export interface ChatTray {
+	items: PendingApproval[];
+	/** Leave unset to let the screen hold Approve for a moment whenever the tray moves. */
+	armed?: boolean;
+	state?: 'ready' | 'submitting' | 'timeout';
+	details?: boolean;
+	collapsed?: boolean;
+}
