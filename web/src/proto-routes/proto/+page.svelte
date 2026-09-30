@@ -6,7 +6,7 @@
 	import CornerDownRight from '@lucide/svelte/icons/corner-down-right';
 	import Frame from './components/frame.svelte';
 	import Connector from './components/connector.svelte';
-	import CircleDashed from '@lucide/svelte/icons/circle-dashed';
+	import BadgeCheck from '@lucide/svelte/icons/badge-check';
 	import { deviations, flows } from './flows';
 
 	let width = $state(412);
@@ -98,10 +98,10 @@
 	</header>
 
 	<main class="flex flex-col gap-16 px-4 py-8 sm:px-6">
-		{#snippet pending()}
+		{#snippet signedOff()}
 			<span
-				class="inline-flex shrink-0 items-center gap-1 rounded-full bg-waiting-soft px-2 py-0.5 text-xs font-medium text-waiting"
-				><CircleDashed class="size-3.5" aria-hidden="true" />Pending drk sign-off</span
+				class="inline-flex shrink-0 items-center gap-1 rounded-full bg-review-soft px-2 py-0.5 text-xs font-medium text-review"
+				><BadgeCheck class="size-3.5" aria-hidden="true" />Signed off by drk (2026-09-30)</span
 			>
 		{/snippet}
 		<section
@@ -114,7 +114,7 @@
 			</h2>
 			<p class="text-[15px] text-muted-foreground">
 				M1 differs from <code class="font-mono text-sm">docs/ux-guidelines.md</code> in these four places.
-				Each needs drk's sign-off before the real screens ship (UX gate, step 3).
+				drk signed off all four on 2026-09-30 (UX gate, step 3).
 			</p>
 			<ol class="flex flex-col divide-y">
 				{#each deviations as d (d.id)}
@@ -122,7 +122,7 @@
 						<span class="flex flex-wrap items-center gap-2">
 							<span class="font-mono text-sm text-muted-foreground">{d.id}</span>
 							<a href="#{d.flow}" class="font-medium hover:underline">{d.title}</a>
-							{@render pending()}
+							{@render signedOff()}
 						</span>
 						<span class="text-sm text-muted-foreground">{d.detail}</span>
 					</li>
@@ -150,7 +150,7 @@
 									<a href="#deviations" class="text-muted-foreground hover:text-foreground"
 										>Deviation {d.id}: {d.title}</a
 									>
-									{@render pending()}
+									{@render signedOff()}
 								</li>
 							{/each}
 						</ul>

@@ -71,6 +71,8 @@
 			items: PendingApproval[];
 			armed?: boolean;
 			state?: 'ready' | 'submitting' | 'timeout';
+			details?: boolean;
+			collapsed?: boolean;
 		};
 		running?: boolean;
 		stopping?: boolean;
@@ -318,12 +320,13 @@
 		</div>
 	{:else}
 		<div class="border-t">
-			{#if tray}<ApprovalTray items={tray.items} armed={tray.armed} state={tray.state} />{/if}
+			{#if tray}<ApprovalTray {...tray} />{/if}
 			<Composer
 				value={typing}
 				placeholder={thread ? `Message in ${session.title}` : 'Message your agent'}
 				{running}
 				{stopping}
+				stop={!tray || !!tray.collapsed}
 				{photos}
 				{quotaFull}
 			/>
