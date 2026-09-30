@@ -1,12 +1,14 @@
 import { expect, test } from '@playwright/test';
-import { CLIENT_ID_RE, type ChatEnvelope } from '../src/lib/chat/events';
+import { CLIENT_ID_RE, type ChatEnvelope, type RouterNotice } from '../src/lib/chat/events';
 import { fileRef, toMessages } from '../src/lib/chat/project';
 import {
 	addLocalSend,
 	applyEvent,
 	createState,
+	dropApproval,
 	mergeHistory,
 	openTurns,
+	PENDING_TURN_ID,
 	type ChatState
 } from '../src/lib/chat/reduce';
 import { SseParser, toEnvelope } from '../src/lib/chat/sse';
@@ -111,6 +113,146 @@ test('status accepted marks the send delivered and shows a Working row', () => {
 	expect(toMessages(s.items)).toHaveLength(2);
 });
 
+const labels = (s: ChatState) =>
+	toMessages(s.items).flatMap((m) =>
+		m.parts.flatMap((p) => (p.type === 'data-turn' && p.data.label ? [p.data.label] : []))
+	);
+
+test('a reply with no progress before it takes the Working slot, and the turn ends', () => {
+	const s = createState();
+	addLocalSend(s, { clientId: 'A', text: 'first', attachments: [], at: 'x', delivery: 'sending' });
+	run(s, [
+		{ type: 'status', seq: 1, data: { clientId: 'A', state: 'accepted' } },
+		{ type: 'reply', seq: 2, data: { key: 'o1', turnId: 't1', text: 'Done.', files: [] } },
+		{
+			type: 'turn_final',
+			seq: 3,
+			data: { turnId: 't1', outcome: 'done', summary: { durationMs: 900, toolCount: 0 } }
+		}
+	]);
+	expect(openTurns(s)).toHaveLength(0);
+	expect(s.items.some((i) => i.id === PENDING_TURN_ID)).toBe(false);
+	expect(labels(s)).not.toContain('Working…');
+	expect(texts(s)).toEqual(['first', 'Done.']);
+
+	addLocalSend(s, { clientId: 'B', text: 'second', attachments: [], at: 'y', delivery: 'sending' });
+	run(s, [
+		{ type: 'status', seq: 4, data: { clientId: 'B', state: 'accepted' } },
+		{ type: 'delta', data: { turnId: 't2', offset: 0, text: 'Streaming' } }
+	]);
+	expect(texts(s)).toEqual(['first', 'Done.', 'second', 'Streaming']);
+	expect(openTurns(s).map((t) => t.turnId)).toEqual(['t2']);
+});
+
+test('after backgrounding, a replay of only durable events leaves no turn running', () => {
+	const s = createState();
+	run(s, [{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [] } }]);
+	addLocalSend(s, { clientId: 'A', text: 'hi', attachments: [], at: 'x', delivery: 'sending' });
+	run(s, [
+		{ type: 'user', seq: 1, data: { key: 'A', text: 'hi', uploadIds: [], at: 'x' } },
+		{ type: 'status', seq: 2, data: { clientId: 'A', state: 'accepted' } }
+	]);
+	expect(openTurns(s)).toHaveLength(1);
+	// The stream closed on hidden; the resume replays only what was stored meanwhile.
+	run(s, [
+		{ type: 'hello', data: { headSeq: 5, workspace: 'online', openTurns: [] } },
+		{ type: 'reply', seq: 3, data: { key: 'o', turnId: 't', text: 'Hello.', files: [] } },
+		{
+			type: 'turn_final',
+			seq: 4,
+			data: { turnId: 't', outcome: 'interrupted', summary: null }
+		},
+		{
+			type: 'turn_final',
+			seq: 5,
+			data: { turnId: 't', outcome: 'done', summary: { durationMs: 3000, toolCount: 0 } }
+		}
+	]);
+	expect(openTurns(s)).toHaveLength(0);
+	expect(labels(s)).toEqual([]);
+	expect(texts(s)).toEqual(['hi', 'Hello.']);
+	expect(s.items.at(-1)).toMatchObject({ kind: 'assistant', turn: { phase: 'done' } });
+	expect(s.cursor).toBe(5);
+});
+
+test('a cursor resume applies replayed events at or below the new head', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'hello', data: { headSeq: 10, workspace: 'online', openTurns: [] } },
+		{ type: 'hello', data: { headSeq: 20, workspace: 'online', openTurns: [] } },
+		...Array.from({ length: 10 }, (_, i) => ({
+			type: 'proactive' as const,
+			seq: 11 + i,
+			data: { key: `p${i}`, text: `n${i}`, files: [] }
+		}))
+	]);
+	expect(texts(s)).toHaveLength(10);
+	expect(s.cursor).toBe(20);
+});
+
+test('a second reply for the same turn shows as its own bubble', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'delta', data: { turnId: 't', offset: 0, text: 'a' } },
+		{ type: 'reply', seq: 1, data: { key: 'o1', turnId: 't', text: 'First.', files: [] } },
+		{ type: 'reply', seq: 2, data: { key: 'o2', turnId: 't', text: 'Failed: x', files: [] } }
+	]);
+	expect(texts(s)).toEqual(['First.', 'Failed: x']);
+});
+
+test('a restored send that history already holds settles in its history position', () => {
+	const s = createState();
+	addLocalSend(s, { clientId: 'C', text: 'hi', attachments: [], at: 'z', delivery: 'sending' });
+	const fx = mergeHistory(s, [
+		{ type: 'user', id: '1', clientId: 'C', at: 'z', text: 'hi', attachments: [], verified: true },
+		{
+			type: 'assistant',
+			id: '2',
+			outboxId: 'o1',
+			at: 'z',
+			text: 'reply',
+			tools: [],
+			files: [],
+			verified: true
+		}
+	]);
+	expect(fx).toEqual([{ type: 'delivered', clientId: 'C' }]);
+	expect(texts(s)).toEqual(['hi', 'reply']);
+	expect(s.items[0]).toMatchObject({ kind: 'user', clientId: 'C', delivery: 'sent' });
+	expect(s.items).toHaveLength(2);
+});
+
+test('a notice naming a client id settles that send, or queues it when the agent is offline', () => {
+	const s = createState();
+	addLocalSend(s, { clientId: 'A', text: 'a', attachments: [], at: 'x', delivery: 'sending' });
+	addLocalSend(s, { clientId: 'B', text: 'b', attachments: [], at: 'x', delivery: 'queued' });
+	const fx = run(s, [
+		{ type: 'notice', seq: 1, data: { type: 'commandOffline', clientId: 'A' } as RouterNotice },
+		{ type: 'notice', seq: 2, data: { type: 'workspaceOffline', clientId: 'B' } as RouterNotice }
+	]);
+	expect(fx).toContainEqual({ type: 'delivered', clientId: 'A' });
+	expect(fx).not.toContainEqual({ type: 'delivered', clientId: 'B' });
+	expect(s.items[0]).toMatchObject({ delivery: 'sent' });
+	expect(s.items[1]).toMatchObject({ delivery: 'queued-agent' });
+});
+
+test('a cancelled approval from history reads as cancelled, not timed out', () => {
+	const s = createState();
+	mergeHistory(s, [
+		{
+			type: 'approval',
+			id: '1',
+			at: 'x',
+			nonce: 'n',
+			view: { tool: 't', agentId: 'a', agentName: 'A', fields: [] },
+			decision: 'cancelled' as 'deny'
+		}
+	]);
+	expect(s.items[0]).toMatchObject({ outcome: 'cancelled' });
+	dropApproval(s, 'x', 'timeout');
+	expect(s.items[0]).toMatchObject({ outcome: 'cancelled' });
+});
+
 test('history merges before local items and dedupes live events by key', () => {
 	const s = createState();
 	addLocalSend(s, { clientId: 'C', text: 'queued', attachments: [], at: 'z', delivery: 'queued' });
@@ -161,12 +303,12 @@ test('history merges before local items and dedupes live events by key', () => {
 			data: { nonce: 'n1', view: { tool: 'send_email', agentId: 'a', agentName: 'A', fields: [] } }
 		}
 	]);
-	expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'approval', 'ask', 'user']);
+	expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'approval', 'ask']);
 	expect(s.approvals.map((a) => a.nonce)).toEqual(['n1']);
-	expect(s.items[2]).toMatchObject({ kind: 'ask', state: 'history' });
+	expect(s.items[3]).toMatchObject({ kind: 'ask', state: 'history' });
 	run(s, [{ type: 'approval_resolved', seq: 3, data: { nonce: 'n1', decision: 'approve' } }]);
 	expect(s.approvals).toEqual([]);
-	expect(s.items[1]).toMatchObject({ outcome: 'approved-elsewhere' });
+	expect(s.items[2]).toMatchObject({ outcome: 'approved-elsewhere' });
 });
 
 test('an unknown approval decision reads as no longer needed, never as approved', () => {

@@ -141,17 +141,20 @@ function assistantFor(s: ChatState, turnId: string) {
 	);
 }
 
+/** Gives the "Working…" placeholder to a turn, so the turn renders in the placeholder's slot. */
+function adoptPlaceholder(s: ChatState, turnId: string) {
+	const placeholder = s.items.find((i) => i.id === PENDING_TURN_ID);
+	if (placeholder?.kind !== 'assistant') return undefined;
+	placeholder.id = uid(s, 'turn');
+	placeholder.turnId = turnId;
+	if (placeholder.turn) placeholder.turn.label = undefined;
+	return placeholder;
+}
+
 /** The live item for a turn, adopting the "Working…" placeholder or appending a new one. */
 function turnItem(s: ChatState, turnId: string, now: number) {
-	const found = assistantFor(s, turnId);
+	const found = assistantFor(s, turnId) ?? adoptPlaceholder(s, turnId);
 	if (found) return found;
-	const placeholder = s.items.find((i) => i.id === PENDING_TURN_ID);
-	if (placeholder?.kind === 'assistant') {
-		placeholder.id = uid(s, 'turn');
-		placeholder.turnId = turnId;
-		if (placeholder.turn) placeholder.turn.label = undefined;
-		return placeholder;
-	}
 	const item: Extract<ChatItem, { kind: 'assistant' }> = {
 		kind: 'assistant',
 		id: uid(s, 'turn'),
@@ -233,6 +236,12 @@ export function noticeText(n: RouterNotice): { line?: string; toast?: string } {
 		case 'commandFailed':
 			return { line: `The command failed: ${n.error}` };
 	}
+}
+
+/** A notice may name the message it answers; the field is newer than the shared type. */
+function noticeClientId(n: RouterNotice): string | undefined {
+	const id = (n as { clientId?: unknown }).clientId;
+	return typeof id === 'string' && id ? id : undefined;
 }
 
 function applyToolEvent(item: Extract<ChatItem, { kind: 'assistant' }>, e: ChatEventMap['tool']) {
@@ -370,10 +379,8 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		case 'turn_final': {
 			const item = assistantFor(s, ev.data.turnId);
 			s.stopping = false;
-			if (!item) {
-				dropPlaceholder(s);
-				break;
-			}
+			dropPlaceholder(s);
+			if (!item) break;
 			item.streaming = false;
 			const phase: TurnPhase =
 				ev.data.outcome === 'done'
@@ -471,9 +478,16 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			resolveApproval(s, ev.data, fx);
 			break;
 		case 'notice': {
+			const clientId = noticeClientId(ev.data);
+			if (clientId && ev.data.type !== 'workspaceOffline') {
+				// The router handled the message, so the notice settles it.
+				setDelivery(s, clientId, 'sent');
+				fx.push({ type: 'delivered', clientId });
+			}
 			if (ev.data.type === 'workspaceOffline') {
 				for (const i of s.items) {
-					if (i.kind === 'user' && i.delivery === 'sending') i.delivery = 'queued-agent';
+					if (i.kind !== 'user' || !i.delivery || i.delivery === 'failed') continue;
+					if (i.delivery === 'sending' || i.clientId === clientId) i.delivery = 'queued-agent';
 				}
 				dropPlaceholder(s);
 				if (s.workspace !== 'offline') {
@@ -582,29 +596,51 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 							? 'approved'
 							: h.decision === 'deny'
 								? 'denied'
-								: 'timeout'
+								: (h.decision as string) === 'cancelled'
+									? 'cancelled'
+									: 'timeout'
 			};
 	}
 }
 
 /**
  * Merges one history page, which is ordered oldest first. The newest page goes before any item
- * already held (queued sends restored from the outbox); older pages go before everything.
+ * already held (queued sends restored from the outbox); older pages go before everything. A held
+ * send that the page already contains reached the workspace: it moves to its place in the page
+ * and settles.
  */
-export function mergeHistory(s: ChatState, items: WebHistoryItem[]) {
-	const local = new Map<string, ChatItem>();
+export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
+	const fx: Effect[] = [];
+	const local = new Map<string, Extract<ChatItem, { kind: 'user' }>>();
 	for (const i of s.items) if (i.kind === 'user' && i.clientId) local.set(i.clientId, i);
+	const moved = new Set<ChatItem>();
 	const mapped: ChatItem[] = [];
 	for (const h of items) {
-		if (h.type === 'user' && h.clientId && local.has(h.clientId)) {
-			const mine = local.get(h.clientId)!;
-			if (mine.kind === 'user' && h.verified) mine.verified = true;
+		const mine = h.type === 'user' && h.clientId ? local.get(h.clientId) : undefined;
+		if (mine && h.type === 'user' && h.clientId) {
+			if (h.verified) mine.verified = true;
+			if (mine.delivery && mine.delivery !== 'sent') {
+				mine.delivery = 'sent';
+				fx.push({ type: 'delivered', clientId: h.clientId });
+			}
+			moved.add(mine);
+			mapped.push(mine);
 			continue;
 		}
 		const item = fromHistory(s, h);
 		if (item) mapped.push(item);
 	}
-	s.items = [...mapped, ...s.items];
+	s.items = [...mapped, ...s.items.filter((i) => !moved.has(i))];
+	return fx;
+}
+
+/** Takes an approval off the tray without an event, when the bot says it is no longer pending. */
+export function dropApproval(s: ChatState, nonce: string, outcome: 'timeout' | 'cancelled') {
+	s.approvals = s.approvals.filter((a) => a.nonce !== nonce);
+	s.mine.delete(`p:${nonce}`);
+	for (const i of s.items) {
+		if (i.kind === 'approval' && i.nonce === nonce && i.outcome === 'pending') i.outcome = outcome;
+	}
 }
 
 /** The optimistic bubble for a send, before any network call. */

@@ -16,13 +16,15 @@ export interface FetchSseOptions {
 	fetch?: typeof fetch;
 	/** Three missed 15s heartbeats. */
 	idleMs?: number;
-	/** A stream that ends sooner than this counts as a failure, so a broken proxy can't hot-loop. */
+	/** A stream must stay up this long before the backoff resets, so a hello-then-drop loop still backs off. */
 	minHealthyMs?: number;
 	backoff?: (attempt: number) => number;
 }
 
-const defaultBackoff = (attempt: number) =>
-	Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5)) * (0.75 + Math.random() * 0.5);
+export const BACKOFF_CAP_MS = 30_000;
+
+export const defaultBackoff = (attempt: number) =>
+	Math.min(BACKOFF_CAP_MS, 1000 * 2 ** Math.min(attempt, 5) * (0.5 + Math.random() * 0.5));
 
 /**
  * SSE over fetch, so the stream can send Fetch Metadata and be read incrementally. Resumes from the
@@ -31,7 +33,7 @@ const defaultBackoff = (attempt: number) =>
 export function fetchSse(opts: FetchSseOptions = {}): ChatTransport {
 	const url = opts.url ?? '/api/chat/stream';
 	const idleMs = opts.idleMs ?? 45_000;
-	const minHealthyMs = opts.minHealthyMs ?? 5_000;
+	const minHealthyMs = opts.minHealthyMs ?? 10_000;
 	const backoff = opts.backoff ?? defaultBackoff;
 
 	return {
@@ -72,6 +74,9 @@ export function fetchSse(opts: FetchSseOptions = {}): ChatTransport {
 					idle = setTimeout(() => ctrl?.abort(new DOMException('idle', 'TimeoutError')), idleMs);
 				};
 				const opened = Date.now();
+				let greeted = false;
+				const outcome = () =>
+					greeted && Date.now() - opened >= minHealthyMs ? ('ok' as const) : ('fail' as const);
 				try {
 					kick();
 					const q = after === null ? '' : `?after=${after}`;
@@ -94,7 +99,7 @@ export function fetchSse(opts: FetchSseOptions = {}): ChatTransport {
 							if (!ev) continue;
 							if (ev.type === 'hello' || ev.type === 'reset') {
 								if (ev.type === 'reset' || after === null) after = ev.data.headSeq;
-								attempt = 0;
+								greeted = true;
 								set('open');
 							} else if (ev.seq !== undefined) {
 								after = ev.seq;
@@ -102,9 +107,9 @@ export function fetchSse(opts: FetchSseOptions = {}): ChatTransport {
 							on(ev);
 						}
 					}
-					return Date.now() - opened < minHealthyMs ? 'fail' : 'ok';
+					return outcome();
 				} catch {
-					return signal.aborted && stopped ? 'aborted' : 'fail';
+					return signal.aborted && stopped ? 'aborted' : outcome();
 				} finally {
 					if (idle) clearTimeout(idle);
 				}
