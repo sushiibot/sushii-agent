@@ -4,7 +4,7 @@ Rules for every screen in the personal agent web app. The bar: better than the D
 
 Every rule has a one-line why and a check. A rule without a check is a wish, so review goes rule by rule and asks "did the check pass?"
 
-The clickable prototype (`src/routes/proto`, `src/lib/agent`) sets the design direction. Where the prototype breaks a rule below, the rule wins; see [Known gaps](#known-gaps-in-the-prototype).
+The clickable prototype (`src/proto-routes/proto`, `src/lib/agent`) sets the design direction. Where the prototype breaks a rule below, the rule wins; see [Known gaps](#known-gaps-in-the-prototype).
 
 ## Check key
 
@@ -24,7 +24,7 @@ The primary device is an Android phone running the installed PWA (Chrome WebAPK,
 ### Reach and touch targets
 
 - **Every tappable element is at least 48x48 CSS px, including padding.** Why: Android and Material specify 48dp as the minimum for reliable touch ([Android API defaults](https://developer.android.com/develop/ui/compose/accessibility/api-defaults), [Android accessibility help](https://support.google.com/accessibility/android/answer/7101858)); 1 CSS px = 1dp on Android Chrome. Check: `pw` bounding-box assertion (below). axe does NOT cover this: its `target-size` rule tests the WCAG 2.5.8 floor of 24px (`minSize: 24` in axe-core 4.13).
-- **Use `min-h-12` (48px) for primary actions and icon buttons; the shadcn sizes are too small.** Why: `Button` renders `h-8` (32px) by default and `h-9` (36px) at `lg`. Check: `pw`.
+- **Use the `Button` `default` or `lg` size (`h-12`, 48px) for primary actions and icon buttons.** Why: the stock shadcn sizes (32 and 36px) are below the minimum; the app's `Button` overrides them. Check: `pw`.
 - **Adjacent targets have at least 8px between their hit areas.** Why: Material spacing guidance; mis-taps on approve/deny rows are costly. Check: `shot`, `pw`.
 - **Inline text links inside prose are exempt from the 48px rule, but nothing important is reachable only through one.** Why: WCAG 2.5.8 exempts inline links because they are small and easy to miss. Check: `review`.
 - **Primary actions sit in the bottom third of the screen: composer, approve/deny, the main button of a sheet.** Why: about half of observed phone grips are one-handed, and the top corners are the hardest reach for that thumb ([Hoober, How do users really hold mobile devices](https://www.uxmatters.com/mt/archives/2013/02/how-do-users-really-hold-mobile-devices.php)). Check: `shot` at 412x915; the primary action's top edge is below y=610.
@@ -61,7 +61,7 @@ expect(small).toEqual([]);
 
 - **The keyboard never covers the composer or the focused field.** Why: the most common "this app is broken" moment on phones; also WCAG 2.4.11 Focus Not Obscured. Check: `phone`: open a chat, tap the composer, type three lines; the composer and its send button stay fully visible.
 - **Keep the `--kb` visualViewport fallback for iOS, where `interactive-widget` has not shipped.** Why: iOS overlays the keyboard; the layout does not resize. Check: `review` (the fallback is already in `app-shell.svelte`).
-- **The app root uses `100dvh` or `inset: 0`, never `100vh`.** Why: `100vh` ignores the dynamic browser UI and the keyboard. Check: `rg -n -g '!src/routes/proto/**' '100vh|h-screen' src` returns nothing (`h-screen`, `min-h-screen` and `max-h-screen` compile to `100vh`).
+- **The app root uses `100dvh` or `inset: 0`, never `100vh`.** Why: `100vh` ignores the dynamic browser UI and the keyboard. Check: `rg -n -g '!src/proto-routes/**' '100vh|h-screen' src` returns nothing (`h-screen`, `min-h-screen` and `max-h-screen` compile to `100vh`).
 - **Anything pinned to the top or bottom pads with `env(safe-area-inset-*)`: the header adds `--safe-top`, the tab bar and composer add `--safe-bottom`.** Why: edge-to-edge content otherwise sits under the status bar and the gesture bar. Check: `phone` with gesture navigation on; nothing tappable overlaps the gesture pill.
 - **The bottom tab bar hides while the keyboard is open.** Why: it eats a quarter of the space left above the keyboard. Check: `phone`.
 - **Text inputs use a font size of at least 16px.** Why: iOS zooms the page on focus below 16px; the same size reads well on Android. Check: `pw` computed style on `textarea, input`.
@@ -213,7 +213,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 
 ### Tokens
 
-- **Colors come only from the tokens in `src/routes/layout.css`, never literal colors (`#hex`, `oklch(...)` in a class, `bg-[#...]`) or Tailwind palette colors (`text-red-500`).** Why: literal colors break dark mode and drift. Check: `rg -n -g '*.svelte' -e '-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]{2,3}\b' -e '\[#[0-9a-fA-F]{3,8}\]' -e '#[0-9a-fA-F]{6}\b' -g '!src/routes/proto/**' src` is empty (the proto's fake phone chrome is exempt); `layout.css` is the only file that defines color values.
+- **Colors come only from the tokens in `src/app.css`, never literal colors (`#hex`, `oklch(...)` in a class, `bg-[#...]`) or Tailwind palette colors (`text-red-500`).** Why: literal colors break dark mode and drift. Check: `rg -n -g '*.svelte' -e '-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]{2,3}\b' -e '\[#[0-9a-fA-F]{3,8}\]' -e '#[0-9a-fA-F]{6}\b' -g '!src/proto-routes/**' src` is empty (the proto's fake phone chrome is exempt); `layout.css` is the only file that defines color values.
 - **Status meaning uses the status tokens, each paired with an icon and a label: `waiting`, `running`, `review`, `failed`, `taint`, plus `neutral`, via `StatePill`/`toneClass` in `status.ts`.** Why: one vocabulary across Home, chat and runs; color is never the only signal (WCAG 1.4.1). Check: `review`.
 - **`--brand` (indigo) is for focus rings, selection and small accents; primary buttons stay `--primary`.** Why: one accent keeps status colors readable. Check: `shot`.
 - **Every token pair used for text meets 4.5:1, and UI boundaries 3:1, in both themes.** Why: WCAG 1.4.3 / 1.4.11. Check: `axe` `color-contrast` in light and dark runs; for `*-soft` backgrounds, which axe can miss behind translucent layers, check by hand when a token changes.
@@ -358,13 +358,9 @@ Seen in open-source agent UIs and chat apps. Don't ship any of these.
 
 The prototype currently breaks these rules. Fix each when its screen is ported out of `/proto`:
 
-- `Button` sizes `default` (32px) and `lg` (36px) are below 48px; approval actions and the thread offer use `lg`. The header back link is 40px tall.
-- `app.html`'s viewport meta lacks `viewport-fit=cover` and `interactive-widget=resizes-content`, and there is no `theme-color`.
 - The app-shell sheet is a `div role="dialog"`, so the Android back gesture does not close it.
 - Tool calls render as one `<details>` per call instead of one collapsed "Working" row per turn.
 - The chat has no "New messages" pill, no delivery states, and no offline or reconnecting banner.
-- `src/routes/+page.svelte` uses `min-h-screen`.
-- `bun run check` does not yet pass `--fail-on-warnings`, and there is no Playwright or axe suite yet.
 
 ## Sources
 

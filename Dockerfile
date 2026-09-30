@@ -4,10 +4,10 @@ WORKDIR /web
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY web/ ./
-# Declared after the install so a new version only invalidates the build step. CI's reusable workflow passes GIT_HASH.
+# No commit SHA here: it would change the web version (and re-prompt "Update ready") on bot-only deploys.
+# Without APP_VERSION the build versions itself from a hash of web/'s inputs.
 ARG APP_VERSION
-ARG GIT_HASH
-RUN APP_VERSION="${APP_VERSION:-${GIT_HASH:-dev}}" bun run build
+RUN APP_VERSION="${APP_VERSION}" bun run build
 
 FROM oven/bun:1 AS tools
 
