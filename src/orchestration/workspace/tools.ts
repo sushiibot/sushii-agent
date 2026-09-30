@@ -424,9 +424,8 @@ export class WorkspaceTools {
     return !!owner && actor.surface === this.opts.toolSpace.surface && actor.userId === owner;
   }
 
-  /** The owner's decision on the prompt carrying `nonce`, from the surface that prompt was posted to.
-   *  `expired` when that prompt is no longer pending (decided, timed out, expired, or posted by an earlier
-   *  process). */
+  /** The owner's decision on the prompt carrying `nonce`, only from the surface it was posted to. `expired`
+   *  when it is no longer pending (settled, or posted by an earlier process). */
   decide(nonce: string, decision: "approve" | "deny", actor: SurfaceActor): DecideResult {
     if (!this.isOwner(actor)) return "forbidden";
     const pending = this.pending.get(nonce);
