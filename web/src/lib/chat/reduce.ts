@@ -97,6 +97,8 @@ export interface ChatState {
 	items: ChatItem[];
 	/** Pending approvals, oldest first. Filled only from the bot's approval events and approval log. */
 	approvals: TrayItem[];
+	/** Nonces the last first frame listed as waiting; a history item may re-open only these. */
+	waiting: Set<string>;
 	/** The tray item that just timed out; the store clears it after a few seconds. */
 	timedOut: TrayItem | null;
 	cursor: number | null;
@@ -123,6 +125,7 @@ export function createState(): ChatState {
 	return {
 		items: [],
 		approvals: [],
+		waiting: new Set(),
 		timedOut: null,
 		cursor: null,
 		workspace: null,
@@ -292,6 +295,7 @@ const PENDING_ASK_PREFIX = 'pending:';
  */
 function applyPending(s: ChatState, p: PendingState) {
 	const waiting = new Set(p.approvals.map((a) => a.nonce));
+	s.waiting = waiting;
 	for (const a of s.approvals) if (!waiting.has(a.nonce)) dropApproval(s, a.nonce, 'timeout');
 	for (const a of p.approvals) addApproval(s, a.nonce, a.view);
 	for (const a of p.asks) {
@@ -309,17 +313,26 @@ function applyPending(s: ChatState, p: PendingState) {
 	}
 }
 
-/** Drops everything but unsent messages ahead of a history reload. The tray and cursor stay. */
+/** Drops everything but unsent messages and first-frame asks ahead of a history reload. The tray and
+ *  cursor stay. */
 export function restartHistory(s: ChatState): Effect[] {
-	const keep = s.items.filter((i) => i.kind === 'user' && i.delivery && i.delivery !== 'sent');
+	const keep = s.items.filter(
+		(i) =>
+			(i.kind === 'user' && i.delivery && i.delivery !== 'sent') ||
+			(i.kind === 'ask' && i.id.startsWith(PENDING_ASK_PREFIX))
+	);
 	Object.assign(s, createState(), {
 		items: keep,
 		workspace: s.workspace,
 		mine: s.mine,
 		approvals: s.approvals,
+		waiting: s.waiting,
 		cursor: s.cursor
 	});
-	for (const i of keep) if (i.kind === 'user' && i.clientId) s.keys.add(`u:${i.clientId}`);
+	for (const i of keep) {
+		if (i.kind === 'user' && i.clientId) s.keys.add(`u:${i.clientId}`);
+		if (i.kind === 'ask') s.keys.add(`a:${i.askId}`);
+	}
 	return [{ type: 'reload' }];
 }
 
@@ -493,10 +506,11 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			break;
 		}
 		case 'approval': {
+			// The bot's own event always reaches the tray, even when history already drew the marker.
+			addApproval(s, ev.data.nonce, ev.data.view);
 			const key = `p:${ev.data.nonce}`;
 			if (s.keys.has(key)) break;
 			s.keys.add(key);
-			addApproval(s, ev.data.nonce, ev.data.view);
 			s.items.push({
 				kind: 'approval',
 				id: uid(s, 'approval'),
@@ -615,7 +629,8 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 		case 'approval':
 			if (s.keys.has(`p:${h.nonce}`)) return null;
 			s.keys.add(`p:${h.nonce}`);
-			if (h.decision === null) addApproval(s, h.nonce, h.view);
+			// An undecided row the first frame didn't list is stale (e.g. its timeout was lost in a restart).
+			if (h.decision === null && s.waiting.has(h.nonce)) addApproval(s, h.nonce, h.view);
 			return {
 				kind: 'approval',
 				id: `h:${h.id}`,

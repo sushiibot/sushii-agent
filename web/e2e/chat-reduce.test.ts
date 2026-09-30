@@ -521,3 +521,44 @@ test('a stale history cursor restarts history but keeps the tray and the cursor'
 	expect(s.approvals.map((a) => a.nonce)).toEqual(['n1']);
 	expect(s.cursor).toBe(4);
 });
+
+test('an undecided history approval the first frame did not list draws its marker but stays off the tray', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'hello',
+			data: {
+				headSeq: 5,
+				workspace: 'online',
+				openTurns: [],
+				pending: { approvals: [pendingApproval('n2')], asks: [] }
+			}
+		}
+	]);
+	mergeHistory(s, [
+		{ type: 'approval', id: 'p1', at: 'x', nonce: 'n1', view: view('bash'), decision: null },
+		{ type: 'approval', id: 'p2', at: 'x', nonce: 'n2', view: view('send_email'), decision: null }
+	]);
+	expect(s.approvals.map((a) => a.nonce)).toEqual(['n2']);
+	expect(s.items.filter((i) => i.kind === 'approval').map((i) => i.id)).toEqual(['h:p1', 'h:p2']);
+});
+
+test('a stale history cursor keeps the asks the first frame seeded', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'hello',
+			data: {
+				headSeq: 5,
+				workspace: 'online',
+				openTurns: [],
+				pending: { approvals: [], asks: [pendingAsk('k1')] }
+			}
+		}
+	]);
+	restartHistory(s);
+	expect(s.items).toMatchObject([{ kind: 'ask', askId: 'k1', state: 'pending' }]);
+	mergeHistory(s, []);
+	run(s, [{ type: 'ask', seq: 6, data: { key: 'o-k1', askId: 'k1', question: 'q', choices: [] } }]);
+	expect(s.items.filter((i) => i.kind === 'ask')).toHaveLength(1);
+});
