@@ -43,7 +43,6 @@ export type ChatItem =
 			text: string;
 			attachments: Attachment[];
 			at: string;
-			verified: boolean;
 			delivery?: Delivery;
 	  }
 	| {
@@ -59,7 +58,6 @@ export type ChatItem =
 			streaming: boolean;
 			/** The durable reply landed; later deltas and snapshots for the turn are stale. */
 			replied: boolean;
-			verified: boolean;
 	  }
 	| {
 			kind: 'ask';
@@ -171,8 +169,7 @@ function turnItem(s: ChatState, turnId: string, now: number) {
 		files: [],
 		turn: { phase: 'working', lines: [], startedAt: now },
 		streaming: true,
-		replied: false,
-		verified: true
+		replied: false
 	};
 	s.items.push(item);
 	return item;
@@ -195,8 +192,7 @@ export function addPlaceholder(s: ChatState, now: number, label?: string) {
 		files: [],
 		turn: { phase: 'working', lines: [], startedAt: now, label },
 		streaming: false,
-		replied: false,
-		verified: true
+		replied: false
 	});
 }
 
@@ -383,8 +379,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 					name: 'Photo',
 					ref: { id, contentType: 'image/jpeg', bytes: 0, name: 'Photo', inline: true }
 				})),
-				at: ev.data.at,
-				verified: true
+				at: ev.data.at
 			});
 			break;
 		}
@@ -421,8 +416,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 					files: ev.data.files,
 					usage: ev.data.usage,
 					streaming: false,
-					replied: true,
-					verified: true
+					replied: true
 				});
 			}
 			fx.push({ type: 'announce', text: 'Agent replied' });
@@ -593,8 +587,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 				clientId: h.clientId,
 				text: h.text,
 				attachments: h.attachments.map((a) => ({ name: a.name, ref: a.file })),
-				at: h.at,
-				verified: h.verified
+				at: h.at
 			};
 		case 'assistant':
 			if (h.outboxId) {
@@ -621,8 +614,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 						}
 					: undefined,
 				streaming: false,
-				replied: true,
-				verified: h.verified
+				replied: true
 			};
 		case 'ask':
 			if (s.keys.has(`a:${h.askId}`)) return null;
@@ -633,8 +625,8 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 				askId: h.askId,
 				question: h.question,
 				choices: h.choices,
-				// Only a bot-verified ask with no answer yet is still answerable; a null answer is a dead ask.
-				state: h.verified && h.answer === undefined ? 'pending' : 'history',
+				// Only an ask with no answer yet is still answerable; a null answer is a dead ask.
+				state: h.answer === undefined ? 'pending' : 'history',
 				answer: h.answer ?? undefined
 			};
 		case 'divider':
@@ -664,32 +656,11 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 }
 
 /**
- * The transcript's copy of a turn still running: its unverified, undelivered assistant items at the end
- * of the newest page. The live card already shows that turn, so these would repeat its steps.
- */
-function liveTurnTail(items: WebHistoryItem[]): Set<WebHistoryItem> {
-	const tail = new Set<WebHistoryItem>();
-	for (let i = items.length - 1; i >= 0; i--) {
-		const h = items[i];
-		if (h.type === 'approval') continue;
-		if (h.type !== 'assistant' || h.verified || h.outboxId) break;
-		tail.add(h);
-	}
-	return tail;
-}
-
-/**
  * Merges one oldest-first history page ahead of the items held. A held send the page contains already
  * reached the workspace, so it moves into the page and settles; so does an ask seeded from the first frame.
- * `newest` marks the page at the head of the conversation.
  */
-export function mergeHistory(
-	s: ChatState,
-	items: WebHistoryItem[],
-	opts: { newest?: boolean } = {}
-): Effect[] {
+export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const fx: Effect[] = [];
-	const running = opts.newest && openTurns(s).length ? liveTurnTail(items) : null;
 	const local = new Map<string, Extract<ChatItem, { kind: 'user' }>>();
 	const seededAsks = new Map<string, ChatItem>();
 	for (const i of s.items) {
@@ -699,7 +670,6 @@ export function mergeHistory(
 	const moved = new Set<ChatItem>();
 	const mapped: ChatItem[] = [];
 	for (const h of items) {
-		if (running?.has(h)) continue;
 		const seeded = h.type === 'ask' ? seededAsks.get(h.askId) : undefined;
 		if (seeded && !moved.has(seeded)) {
 			moved.add(seeded);
@@ -708,7 +678,6 @@ export function mergeHistory(
 		}
 		const mine = h.type === 'user' && h.clientId ? local.get(h.clientId) : undefined;
 		if (mine && h.type === 'user' && h.clientId) {
-			if (h.verified) mine.verified = true;
 			if (mine.delivery && mine.delivery !== 'sent') {
 				mine.delivery = 'sent';
 				fx.push({ type: 'delivered', clientId: h.clientId });
@@ -739,7 +708,7 @@ export function addLocalSend(
 	m: { clientId: string; text: string; attachments: Attachment[]; at: string; delivery: Delivery }
 ) {
 	s.keys.add(`u:${m.clientId}`);
-	s.items.push({ kind: 'user', id: `local:${m.clientId}`, verified: true, ...m });
+	s.items.push({ kind: 'user', id: `local:${m.clientId}`, ...m });
 }
 
 export function setDelivery(s: ChatState, clientId: string, delivery: Delivery | undefined) {

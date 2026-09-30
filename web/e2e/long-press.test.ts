@@ -12,8 +12,7 @@ const item = (type: 'user' | 'assistant', id: string, text: string) => ({
 	text,
 	attachments: [],
 	tools: [],
-	files: [],
-	verified: true
+	files: []
 });
 
 const filler = (n: number) =>

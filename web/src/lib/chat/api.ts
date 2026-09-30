@@ -1,8 +1,5 @@
 import type {
-	HistoryOfflineResponse,
-	HistoryResetResponse,
 	HistoryResponse,
-	HistoryUnsupportedResponse,
 	PostAskBody,
 	PostAskResponse,
 	PostApprovalBody,
@@ -30,10 +27,7 @@ export class ChatHttpError extends Error {
 	}
 }
 
-export type HistoryFailure = 'offline' | 'unsupported' | 'reset' | 'error';
-
-export type HistoryResult =
-	{ ok: true; page: HistoryResponse } | { ok: false; reason: HistoryFailure };
+export type HistoryResult = { ok: true; page: HistoryResponse } | { ok: false };
 
 export interface ChatApi {
 	history(q: { before?: string; limit: number }): Promise<HistoryResult>;
@@ -74,21 +68,6 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
 	return res;
 }
 
-type HistoryErrorBody = Partial<
-	HistoryOfflineResponse & HistoryUnsupportedResponse & HistoryResetResponse
->;
-
-/** Known statuses decide; a body flag only names the reason when the status doesn't. */
-export function historyFailure(status: number, body: unknown): HistoryFailure {
-	const byStatus = ({ 503: 'offline', 501: 'unsupported', 409: 'reset' } as const)[status];
-	if (byStatus) return byStatus;
-	const b = (typeof body === 'object' && body !== null ? body : {}) as HistoryErrorBody;
-	if (b.reset === true) return 'reset';
-	if (b.unsupported === true) return 'unsupported';
-	if (b.offline === true) return 'offline';
-	return 'error';
-}
-
 /** The upload ids a message POST was refused for (409 upload_missing), or null for any other failure. */
 export function uploadMissingIds(err: unknown): string[] | null {
 	if (!(err instanceof ChatHttpError) || err.status !== 409) return null;
@@ -112,9 +91,8 @@ export const httpChatApi: ChatApi = {
 		try {
 			const res = await send('GET', `/chat/history?${q}`);
 			return { ok: true, page: await json<HistoryResponse>(res) };
-		} catch (err) {
-			const e = err instanceof ChatHttpError ? err : new ChatHttpError(0, String(err));
-			return { ok: false, reason: historyFailure(e.status, e.body) };
+		} catch {
+			return { ok: false };
 		}
 	},
 	async postMessage(body) {

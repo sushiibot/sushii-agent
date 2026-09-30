@@ -39,7 +39,7 @@ type OlderPage = {
 };
 
 const errorBody = (status: number) =>
-	({ 409: { reset: true }, 501: { unsupported: true }, 503: { offline: true } })[status] ?? {
+	({ 503: { offline: true } })[status] ?? {
 		error: 'x'
 	};
 
@@ -282,8 +282,7 @@ test('a reset reloads history and says so', async ({ page, context }) => {
 			at: 'x',
 			text: 'From the reloaded history',
 			tools: [],
-			files: [],
-			verified: true
+			files: []
 		}
 	];
 	await push(page, 'reset', {
@@ -302,14 +301,13 @@ test('history that is unavailable offers a retry', async ({ page, context }) => 
 	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
 	opts.historyStatus = 200;
 	opts.history = [
-		{ type: 'user', id: 'u1', at: 'x', text: 'Old owner message', attachments: [], verified: true },
+		{ type: 'user', id: 'u1', at: 'x', text: 'Old owner message', attachments: [] },
 		{
 			type: 'user',
 			id: 'u2',
 			at: 'x',
 			text: 'Only in the transcript',
-			attachments: [],
-			verified: false
+			attachments: []
 		}
 	];
 	await page.getByRole('button', { name: 'Retry' }).click();
@@ -329,8 +327,7 @@ test('a history-only message looks like a live one but offers only the read acti
 				id: 'u1',
 				at: 'x',
 				text: 'From the transcript',
-				attachments: [],
-				verified: false
+				attachments: []
 			}
 		],
 		messageStatus: 400
@@ -351,43 +348,25 @@ test('a history-only message looks like a live one but offers only the read acti
 	await expect(sheet.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(0);
 });
 
-test('older pages load above with the server cursor, and a stale cursor reloads from the head', async ({
-	page,
-	context
-}) => {
-	let release!: () => void;
-	const { calls, opts } = await chatServer(context, {
-		history: [
-			{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [], verified: true }
-		],
-		before: 'sess:u5',
+test('older pages load above with the server cursor', async ({ page, context }) => {
+	const { calls } = await chatServer(context, {
+		history: [{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [] }],
+		before: '5',
 		older: {
-			// A stale cursor, after which the reloaded transcript has nothing older.
-			'sess:u1': {
-				status: 409,
-				gate: new Promise<void>((r) => (release = r)),
-				onServe: () => (opts.before = null)
-			},
-			'sess:u5': {
+			'5': {
 				status: 200,
-				items: [
-					{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [], verified: true }
-				],
-				before: 'sess:u1'
+				items: [{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [] }],
+				before: null
 			}
 		}
 	});
 	await open(page);
 	await expect(page.getByText('Older page')).toBeVisible();
-	expect(calls.some((c) => c.path.includes('before=sess%3Au5'))).toBe(true);
+	expect(calls.some((c) => c.path.includes('before=5'))).toBe(true);
 	const order = await page.locator('[data-message-id]').allTextContents();
 	expect(order.findIndex((t) => t.includes('Older page'))).toBeLessThan(
 		order.findIndex((t) => t.includes('Newest page'))
 	);
-	release();
-	await expect(page.getByText('Reloaded the conversation.', { exact: false })).toBeVisible();
-	await expect(page.getByText('Older page')).toBeHidden();
-	await expect(page.getByText('Newest page')).toBeVisible();
 });
 
 const approval = (nonce: string, tool = 'send_email') => ({
@@ -610,8 +589,7 @@ function longHistory(n: number) {
 		text: `History message ${i} with enough words to wrap onto a second line on a phone screen.`,
 		attachments: [],
 		tools: [],
-		files: [],
-		verified: true
+		files: []
 	}));
 }
 
@@ -704,8 +682,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 							name: 'a-very-long-invoice-file-name-from-eastside-auto-2026.pdf',
 							inline: false
 						}
-					],
-					verified: true
+					]
 				}
 			]
 		});
@@ -775,10 +752,9 @@ test('a held send that history already has settles in place and leaves the outbo
 			clientId,
 			at: 'x',
 			text: 'Did this arrive?',
-			attachments: [],
-			verified: true
+			attachments: []
 		},
-		{ type: 'assistant', id: 'a1', at: 'x', text: 'It did.', tools: [], files: [], verified: true }
+		{ type: 'assistant', id: 'a1', at: 'x', text: 'It did.', tools: [], files: [] }
 	];
 	await page.reload();
 	await expect(page.getByText('It did.')).toBeVisible();
@@ -949,9 +925,7 @@ test('an older page that fails offers Retry inline instead of a toast', async ({
 	context
 }) => {
 	const { opts } = await chatServer(context, {
-		history: [
-			{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [], verified: true }
-		],
+		history: [{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [] }],
 		before: 'sess:u5',
 		older: { 'sess:u5': { status: 503 } }
 	});
@@ -961,9 +935,7 @@ test('an older page that fails offers Retry inline instead of a toast', async ({
 	await expect(page.getByText("Couldn't load earlier messages")).toHaveCount(0);
 	opts.older['sess:u5'] = {
 		status: 200,
-		items: [
-			{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [], verified: true }
-		],
+		items: [{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [] }],
 		before: null
 	};
 	await page.getByRole('button', { name: 'Retry' }).click();
@@ -983,9 +955,7 @@ test('history that failed while the agent was offline reloads when it comes back
 	await open(page);
 	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
 	opts.historyStatus = 200;
-	opts.history = [
-		{ type: 'user', id: 'u1', at: 'x', text: 'Back again', attachments: [], verified: true }
-	];
+	opts.history = [{ type: 'user', id: 'u1', at: 'x', text: 'Back again', attachments: [] }];
 	await push(page, 'workspace', { state: 'online' });
 	await expect(page.getByText('Back again')).toBeVisible();
 });
@@ -995,8 +965,7 @@ const short = (id: string, text: string) => ({
 	id,
 	at: 'x',
 	text,
-	attachments: [],
-	verified: true
+	attachments: []
 });
 
 test('older pages keep loading while the top of the list stays on screen', async ({
@@ -1004,9 +973,7 @@ test('older pages keep loading while the top of the list stays on screen', async
 	context
 }) => {
 	const { calls } = await chatServer(context, {
-		history: [
-			{ type: 'user', id: 'u9', at: 'x', text: 'Newest page', attachments: [], verified: true }
-		],
+		history: [{ type: 'user', id: 'u9', at: 'x', text: 'Newest page', attachments: [] }],
 		before: 'p1',
 		older: {
 			p1: { status: 200, items: [short('u1', 'Page one')], before: 'p2' },
@@ -1236,8 +1203,7 @@ test('only the bot approval log draws the shield line; agent text that claims on
 				at: 'x',
 				text: '🛡️ Approved · `send_email`',
 				tools: [],
-				files: [],
-				verified: false
+				files: []
 			},
 			{
 				type: 'approval',

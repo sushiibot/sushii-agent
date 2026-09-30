@@ -25,7 +25,6 @@ const typeChecks: true[] = [
   true satisfies Assignable<contracts.ToolCallResult, Wire.ToolCallResult>,
   true satisfies Assignable<Exclude<Surface.ApprovalDecision, "expired">, Wire.ApprovalDecision>,
   true satisfies Assignable<Exclude<Surface.AckKind, "transcribing">, Wire.ChatEventMap["status"]["state"]>,
-  true satisfies Assignable<contracts.HistoryItem["type"], Wire.WebHistoryItem["type"]>,
   true satisfies Assignable<Wire.PostAskBody, Link.AskChoice>,
   true satisfies Assignable<Exclude<Link.AnswerAskResult["status"], "forbidden">, Wire.PostAskResponse["status"]>,
   true satisfies Assignable<Exclude<Tools.DecideResult, "forbidden">, Wire.PostApprovalResponse["status"]>,
@@ -58,7 +57,6 @@ describe("web events contract", () => {
   test("limits and id rules match contracts.ts", () => {
     expect(Wire.UPLOAD_ID_RE.source).toBe(contracts.UPLOAD_ID_RE.source);
     expect(Wire.UPLOAD_MAX_BYTES).toBe(contracts.UPLOAD_MAX_BYTES);
-    expect(Wire.HISTORY_LIMIT_MAX).toBe(contracts.CHAT_HISTORY_LIMIT_MAX);
   });
 
   test("client ids are ULIDs", () => {

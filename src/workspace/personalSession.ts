@@ -33,7 +33,7 @@ import {
   uploadFileName,
   type ImageFetchOptions,
 } from "./inboundImages.ts";
-import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker } from "./chatHistory.ts";
+import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker } from "./chatExport.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { dailyFileRel } from "./history.ts";
 import { RecentIds } from "./recentIds.ts";

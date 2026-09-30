@@ -6,8 +6,8 @@ import { type WorkspaceConfig } from "./config.ts";
 import { scaffoldHome } from "./home.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
 import { createPiChatSessionFactory } from "./piChatSession.ts";
-import { ChatHistoryReader, DELIVERY_ENTRY, SESSION_ENTRY } from "./chatHistory.ts";
-import { chatHistoryResult, type ChatDeliverParams } from "../orchestration/contracts.ts";
+import { ChatExportReader, DELIVERY_ENTRY, SESSION_ENTRY } from "./chatExport.ts";
+import { chatExportResult, type ChatDeliverParams } from "../orchestration/contracts.ts";
 
 // Real Pi 0.99.1 sessions from the workspace factory; the only fake is fetch.
 const OPENROUTER_BASE = "http://openrouter.test/v1";
@@ -35,7 +35,7 @@ function script(...rs: Array<Reply | (() => Reply)>): void {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "ws-history-pi-"));
+  root = mkdtempSync(join(tmpdir(), "ws-export-pi-"));
   replies = [];
   calls = 0;
   delete process.env.OPENAI_API_KEY;
@@ -92,7 +92,7 @@ async function host() {
   };
   const personal = new PersonalSession({ principalId: "drk", model: cfg.model, stateDir: cfg.stateDir, factory: createPiChatSessionFactory(cfg), transport, textDeltaMs: null });
   await personal.start();
-  return { personal, delivered, reader: new ChatHistoryReader({ agentDir: cfg.agentDir }) };
+  return { personal, delivered, reader: new ChatExportReader({ agentDir: cfg.agentDir }) };
 }
 
 const web = (clientId: string, text: string) => ({
@@ -131,27 +131,17 @@ describe("delivery markers on a real Pi session", () => {
     expect(entries[midRun + 1]!.message?.role).toBe("assistant");
     expect(entries.at(-1)).toBe(markers[1]!);
 
-    const page = chatHistoryResult.parse(await reader.page({ limit: 40 }));
+    const page = chatExportResult.parse(await reader.page({ limit: 40 }));
     expect(page.before).toBeNull();
     expect(page.items).toEqual([
-      { type: "user", id: expect.any(String), clientId: "01J00000000000000000000001", at: expect.any(String), text: "list my home", attachments: [] },
-      { type: "assistant", id: expect.any(String), at: expect.any(String), text: "", tools: [{ name: "ls", summary: ".", ok: true }] },
-      { type: "assistant", id: expect.any(String), at: expect.any(String), text: "mid-run ping", outboxId: delivered[0]!.outboxId, tools: [] },
-      {
-        type: "assistant",
-        id: expect.any(String),
-        at: expect.any(String),
-        text: "here are the files",
-        outboxId: delivered[1]!.outboxId,
-        turnId: delivered[1]!.turnId,
-        usage: delivered[1]!.usage,
-        tools: [],
-      },
+      { id: expect.any(String), role: "user", at: expect.any(String), text: "list my home", clientId: "01J00000000000000000000001" },
+      { id: expect.any(String), role: "assistant", at: expect.any(String), text: "mid-run ping", outboxId: delivered[0]!.outboxId },
+      { id: expect.any(String), role: "assistant", at: expect.any(String), text: "here are the files", outboxId: delivered[1]!.outboxId },
     ]);
     await personal.dispose();
   }, 20_000);
 
-  test("chat/new starts a new file marked new; history pages back across the boundary", async () => {
+  test("chat/new starts a new file marked new; the export pages back across the boundary", async () => {
     const { personal, delivered, reader } = await host();
     script({ text: "first answer" });
     await personal.handleMessage(web("01J00000000000000000000001", "first"));
@@ -165,10 +155,10 @@ describe("delivery markers on a real Pi session", () => {
     expect(personal.currentSessionFile).not.toBe(oldFile);
     expect(linesOf(personal.currentSessionFile).find((e) => e.customType === SESSION_ENTRY)?.data).toEqual({ reason: "new" });
 
-    const newest = chatHistoryResult.parse(await reader.page({ limit: 2 }));
-    expect(newest.items.map((i) => (i.type === "assistant" || i.type === "user" ? i.text : i.type))).toEqual(["second", "second answer"]);
-    const older = chatHistoryResult.parse(await reader.page({ before: newest.before!, limit: 40 }));
-    expect(older.items.map((i) => (i.type === "divider" ? `divider:${i.kind}` : i.type === "ask" ? i.question : i.text))).toEqual(["first", "first answer", "divider:new"]);
+    const newest = chatExportResult.parse(await reader.page({ limit: 2 }));
+    expect(newest.items.map((i) => i.text)).toEqual(["second", "second answer"]);
+    const older = chatExportResult.parse(await reader.page({ before: newest.before!, limit: 40 }));
+    expect(older.items.map((i) => i.text)).toEqual(["first", "first answer"]);
     expect(older.before).toBeNull();
     await personal.dispose();
   }, 20_000);

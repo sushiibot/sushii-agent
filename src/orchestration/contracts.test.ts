@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   chatDeliverParams,
-  chatHistoryParams,
-  chatHistoryResult,
-  historyItem,
+  chatExportParams,
+  chatExportResult,
   ID_MAX,
   isHttpsUrl,
   parseUploadUrl,
@@ -83,77 +82,42 @@ describe("upload urls", () => {
   ])("rejects %p", (url) => expect(parseUploadUrl(url)).toBeNull());
 });
 
-describe("chat/history params", () => {
-  test("method name", () => expect(RPC_METHODS.chatHistory).toBe("chat/history"));
+describe("chat/export", () => {
+  test("method name", () => expect(RPC_METHODS.chatExport).toBe("chat/export"));
 
-  test("defaults limit to 40 and allows no cursor", () => {
-    expect(chatHistoryParams.parse({ principalId: "drk" })).toEqual({ principalId: "drk", limit: 40 });
-  });
-
-  test("accepts a cursor and limits 1..100", () => {
-    expect(chatHistoryParams.safeParse({ principalId: "drk", before: "2026-09-30T00-00-00_abc:e1f2", limit: 1 }).success).toBe(true);
-    expect(chatHistoryParams.safeParse({ principalId: "drk", limit: 100 }).success).toBe(true);
+  test("params default to a full page from the newest", () => {
+    expect(chatExportParams.parse({ principalId: "drk" })).toEqual({ principalId: "drk", limit: 100 });
+    expect(chatExportParams.safeParse({ principalId: "drk", before: "2026-09-30T00-00-00_abc:e1f2", limit: 1 }).success).toBe(true);
   });
 
   test.each([
     { principalId: "drk", limit: 0 },
     { principalId: "drk", limit: 101 },
-    { principalId: "drk", limit: 1.5 },
     { principalId: "drk", before: long },
     { principalId: "drk", before: 5 },
     { limit: 10 },
-  ])("rejects %j", (p) => expect(chatHistoryParams.safeParse(p).success).toBe(false));
-});
+  ])("rejects params %j", (p) => expect(chatExportParams.safeParse(p).success).toBe(false));
 
-describe("chat/history result", () => {
-  const user = {
-    type: "user",
-    id: "e1",
-    clientId: "01J9ZQ8M3V7B6XKQ2T4R5S6Y7Z",
-    at: "2026-09-30T10:00:00.000Z",
-    text: "look at this",
-    attachments: [{ uploadId: UID, name: "photo.jpg", contentType: "image/jpeg" }],
-  };
-  const assistant = {
-    type: "assistant",
-    id: "e2",
-    at: "2026-09-30T10:00:05.000Z",
-    text: "done",
-    outboxId: "o1",
-    turnId: "t1",
-    tools: [{ name: "bash", summary: "ls", ok: true }],
-    usage: { model: "gpt-5", inputTokens: 10, outputTokens: 2 },
-  };
-  const ask = { type: "ask", id: "e3", at: "2026-09-30T10:01:00.000Z", outboxId: "o2", askId: "a1", question: "Which?", choices: ["A", "B"] };
-  const divider = { type: "divider", id: "e4", at: "2026-09-30T10:02:00.000Z", kind: "compacted", summary: "recap" };
+  const user = { id: "s:e1", role: "user", at: "2026-09-30T10:00:00.000Z", text: "hi", clientId: "01J9ZQ8M3V7B6XKQ2T4R5S6Y7Z" };
+  const reply = { id: "s:e2", role: "assistant", at: "2026-09-30T10:00:05.000Z", text: "hello", outboxId: "o1" };
 
-  test("accepts every item type and a null cursor", () => {
-    const r = chatHistoryResult.parse({ items: [user, assistant, ask, divider], before: null });
-    expect(r.items.map((i) => i.type)).toEqual(["user", "assistant", "ask", "divider"]);
-  });
-
-  test("accepts a user item with a JSONL-only attachment (no upload id) and no clientId", () => {
-    const { clientId: _, ...bare } = user;
-    expect(historyItem.safeParse({ ...bare, attachments: [{ name: "old.png", contentType: "image/png" }] }).success).toBe(true);
+  test("accepts owner messages and replies with a null cursor", () => {
+    expect(chatExportResult.parse({ items: [user, reply], before: null }).items.map((i) => i.role)).toEqual(["user", "assistant"]);
   });
 
   test.each([
-    ["an unknown type", { ...divider, type: "approval" }],
-    ["a bad upload id", { ...user, attachments: [{ uploadId: "../x", name: "a", contentType: "image/png" }] }],
+    ["an unknown role", { ...user, role: "tool" }],
+    ["an empty id", { ...user, id: "" }],
+    ["an oversized id", { ...user, id: long }],
     ["an oversized clientId", { ...user, clientId: long }],
-    ["an empty id", { ...assistant, id: "" }],
-    ["an oversized outboxId", { ...assistant, outboxId: long }],
-    ["an oversized turnId", { ...assistant, turnId: long }],
-    ["an oversized askId", { ...ask, askId: long }],
-    ["an ask without outboxId", { ...ask, outboxId: undefined }],
-    ["an unknown divider kind", { ...divider, kind: "forked" }],
-    ["a tool without ok", { ...assistant, tools: [{ name: "bash", summary: "ls" }] }],
-  ])("rejects %s", (_, item) => expect(historyItem.safeParse(item).success).toBe(false));
+    ["an oversized outboxId", { ...reply, outboxId: long }],
+    ["an oversized time", { ...reply, at: long }],
+  ])("rejects %s", (_, item) => expect(chatExportResult.safeParse({ items: [item], before: null }).success).toBe(false));
 
-  test("rejects more than 100 items and an oversized cursor", () => {
-    expect(chatHistoryResult.safeParse({ items: Array.from({ length: 101 }, (_, i) => ({ ...divider, id: `d${i}` })), before: null }).success).toBe(false);
-    expect(chatHistoryResult.safeParse({ items: [], before: long }).success).toBe(false);
-    expect(chatHistoryResult.safeParse({ items: [] }).success).toBe(false);
+  test("rejects more than 100 items, an oversized cursor and a missing one", () => {
+    expect(chatExportResult.safeParse({ items: Array.from({ length: 101 }, (_, i) => ({ ...user, id: `s:${i}` })), before: null }).success).toBe(false);
+    expect(chatExportResult.safeParse({ items: [], before: long }).success).toBe(false);
+    expect(chatExportResult.safeParse({ items: [] }).success).toBe(false);
   });
 });
 

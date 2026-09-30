@@ -117,19 +117,68 @@ describe("SqliteChatLog", () => {
     expect(log.subscribers).toBe(1);
   });
 
-  test("the row cap never evicts the owner's messages or an undecided approval", () => {
-    const { log } = setup({ maxRows: 100 });
+  test("chat rows are permanent: neither age nor the row cap removes them, even when they outnumber the cap", () => {
+    const { log, advance, now } = setup({ maxRows: 5 });
     const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
-    log.append("approval", { nonce: "decided", view }, "decided");
-    log.append("approval_resolved", { nonce: "decided", decision: "deny" }, "decided");
-    log.append("approval", { nonce: "waiting", view }, "waiting");
-    log.append("user", { key: "u1", text: "owner", uploadIds: [], at: "t" }, "u1");
-    for (let i = 0; i < 200; i++) log.append("turn_final", { turnId: `t${i}`, outcome: "stopped", summary: null }, `t${i}:stopped`);
+    const files = [{ id: "F".repeat(22), contentType: "image/png", bytes: 1, name: "f.png", inline: true }];
+    for (let i = 0; i < 4; i++) {
+      log.append("user", { key: `u${i}`, text: "owner", uploadIds: [], at: "t" }, `u${i}`);
+      log.append("reply", { key: `r${i}`, text: "reply", files }, `r${i}`);
+      log.append("proactive", { key: `p${i}`, text: "ping", files: [] }, `p${i}`);
+      log.append("approval", { nonce: `n${i}`, view }, `n${i}`);
+      log.append("approval_resolved", { nonce: `n${i}`, decision: "deny" }, `n${i}`);
+      log.append("ask", { key: `a${i}`, askId: `k${i}`, question: "q", choices: [] }, `a${i}`);
+      log.append("ask_resolved", { askId: `k${i}`, answer: "x" }, `k${i}`);
+      log.append("session", { kind: "new" });
+    }
+    const permanent = log.list(["user", "reply", "proactive", "approval", "approval_resolved", "ask", "ask_resolved", "session"]).length;
+    expect(permanent).toBe(32);
+    for (let i = 0; i < 20; i++) {
+      log.append("status", { clientId: `c${i}`, state: "accepted" });
+      log.append("notice", notice(String(i)));
+      log.append("turn_final", { turnId: `t${i}`, outcome: "done", summary: null }, `t${i}:done`);
+      log.append("auth", { key: `l${i}`, url: "https://x", instructions: "" }, `l${i}`);
+    }
     log.prune(0);
-    expect(log.find("approval", "waiting")).not.toBeNull();
-    expect(log.find("user", "u1")).not.toBeNull();
-    expect(log.find("approval", "decided")).toBeNull();
-    expect(log.list(["turn_final"])).toHaveLength(100);
+    expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(5);
+    advance(365 * 24 * 60 * 60 * 1000);
+    log.prune(now());
+    expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(0);
+    expect(log.list(["user", "reply", "proactive", "approval", "approval_resolved", "ask", "ask_resolved", "session"])).toHaveLength(permanent);
+    expect(log.find("reply", "r0")!.data.files).toEqual(files);
+  });
+
+  test("prepend stores rows below every seq, newest first, skips ones it has, and fans nothing out", () => {
+    const { log } = setup();
+    const got: ChatEnvelope[] = [];
+    const live = log.append("user", { key: "live", text: "live", uploadIds: [], at: "t" }, "live");
+    log.subscribe(null, (ev) => got.push(ev));
+    const row = (k: string, at: number) => ({ type: "reply" as const, key: k, data: { key: k, text: k, files: [] }, createdAt: at });
+    expect(log.prepend([row("pi:3", 3), row("pi:2", 2)])).toBe(2);
+    expect(log.prepend([row("pi:2", 2), row("pi:1", 1)])).toBe(1);
+    expect(got).toHaveLength(0);
+    expect(log.page(["user", "reply"], { limit: 10 }).map((e) => [e.seq, e.key])).toEqual([
+      [live, "live"],
+      [0, "pi:3"],
+      [-1, "pi:2"],
+      [-2, "pi:1"],
+    ]);
+    // Imported rows don't move the stream's head or count as live rows.
+    expect(log.head()).toBe(live);
+    expect(log.firstLiveAt()).toBe(log.find("user", "live")!.createdAt);
+    expect(log.subscribe(0, () => {}).reset).toBe(false);
+    expect(log.append("notice", notice("next"))).toBe(live + 1);
+  });
+
+  test("with only imported rows, a fresh stream neither resets nor replays them", () => {
+    const { log } = setup();
+    log.prepend([{ type: "user", key: "pi:1", data: { key: "pi:1", text: "old", uploadIds: [], at: "t" }, createdAt: 1 }]);
+    expect(log.head()).toBe(0);
+    expect(log.firstLiveAt()).toBeNull();
+    const replayed: ChatEnvelope[] = [];
+    expect(log.subscribe(0, (ev) => replayed.push(ev)).reset).toBe(false);
+    expect(replayed).toEqual([]);
+    expect(log.append("notice", notice("first"))).toBe(1);
   });
 
   test("a cursor inside a gap the cap left above an exempt row still resets", () => {
