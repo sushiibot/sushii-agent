@@ -2,10 +2,12 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
 import {
+  MAX_PAYLOAD_BYTES,
   PushSubscriptionStore,
   checkVapidKeys,
   createPushSender,
   createWebPushTransport,
+  fitPayload,
   isAllowedPushEndpoint,
   sendPush,
   setActivePushSender,
@@ -150,9 +152,14 @@ describe("createPushSender", () => {
     expect(JSON.parse(seen[0]!)).toEqual({ title: "t", body: "b", url: "/" });
   });
 
-  test("rejects payloads larger than the padded record allows", async () => {
-    const sender = createPushSender(store(), async () => 201);
-    await expect(sender.send({ title: "t", body: "x".repeat(4000), url: "/" })).rejects.toThrow("exceeds");
+  test("an oversized payload is sent with its body cut to fit, never refused", async () => {
+    const s = store();
+    s.upsert(sub(1));
+    const seen: string[] = [];
+    const sender = createPushSender(s, async (_t, data) => (seen.push(data), 201));
+    expect(await sender.send({ title: "t", body: "x".repeat(4000), url: "/" })).toEqual({ sent: 1, pruned: 0, failed: 0 });
+    expect(new TextEncoder().encode(seen[0]!).byteLength).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+    expect(JSON.parse(seen[0]!).body.endsWith("…")).toBe(true);
   });
 
   test("sendPush is a no-op without an active sender", async () => {
@@ -229,5 +236,36 @@ describe("createWebPushTransport redirects", () => {
       await inner.stop(true);
       await outer.stop(true);
     }
+  });
+});
+
+describe("fitPayload", () => {
+  const bytes = (s: string) => new TextEncoder().encode(s).byteLength;
+
+  test("a payload that fits is serialized unchanged, with the widened fields", () => {
+    const p = { title: "t", body: "b", url: "/", tag: "chat", silent: true, requireInteraction: false, renotify: false };
+    expect(JSON.parse(fitPayload(p))).toEqual(p);
+  });
+
+  test.each([
+    ["4-byte emoji", "😀"],
+    ["3-byte CJK", "漢"],
+    ["JSON-escaped quote", '"'],
+    ["JSON-escaped newline", "\n"],
+    ["six-byte control escape", "\u0001"],
+  ])("cuts a %s body on a code point and stays within the cap", (_name, unit) => {
+    const out = fitPayload({ title: "Approval needed", body: unit.repeat(5000), url: "/?ask=a", tag: "ask:a" });
+    expect(bytes(out)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+    const body: string = JSON.parse(out).body;
+    expect(body.endsWith("…")).toBe(true);
+    expect(Array.from(body.slice(0, -1)).every((c) => c === unit)).toBe(true);
+    // The cut is as long as fits: one more escaped unit (at most 6 bytes) would cross the cap.
+    expect(bytes(out)).toBeGreaterThan(MAX_PAYLOAD_BYTES - 6);
+  });
+
+  test("oversized title and tag are capped too", () => {
+    const out = fitPayload({ title: "t".repeat(5000), body: "b", url: "/", tag: "x".repeat(5000) });
+    expect(bytes(out)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+    expect(JSON.parse(out).body).toBe("b");
   });
 });

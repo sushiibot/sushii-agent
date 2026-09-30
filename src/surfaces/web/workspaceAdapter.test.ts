@@ -10,7 +10,8 @@ import { SurfaceRegistry, type ApprovalView, type InboundMessage } from "../../o
 import { SqliteChatLog } from "./chatLog.ts";
 import type { ChatEnvelope, UploadRef } from "./events.ts";
 import { WebInboundStore } from "./inbound.ts";
-import { createPresence } from "./presence.ts";
+import { SEEN_WAIT_MS, createPresence } from "./presence.ts";
+import type { PushPayload } from "./push.ts";
 import { REPLY_TEXT_MAX, TOOL_SUMMARY_MAX, TURN_TEXT_MAX, WebWorkspaceAdapter, type WebUploadPort } from "./workspaceAdapter.ts";
 
 const P = "drk";
@@ -56,13 +57,31 @@ class FakeRpc implements WorkspaceRpc {
   }
 }
 
-function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number } } = {}) {
+/** Timers on a fake clock: `advance` fires what falls due. */
+function clockTimers() {
+  let now = 0;
+  let id = 0;
+  const pending = new Map<number, { at: number; fn: () => void }>();
+  const timers: Timers = {
+    set: (fn, ms) => (pending.set(++id, { at: now + ms, fn }), id),
+    clear: (h) => void pending.delete(h as number),
+  };
+  return {
+    timers,
+    advance(ms: number) {
+      now += ms;
+      for (const [k, t] of [...pending]) if (t.at <= now) (pending.delete(k), t.fn());
+    },
+  };
+}
+
+function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number }; quiet?: () => boolean; presenceTimers?: Timers } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
   const t = manualTimers();
-  const presence = createPresence({ head: () => log.head(), timers: t.timers, waitMs: 10 });
-  const pushes: Array<{ tag?: string; body: string }> = [];
+  const presence = opts.presenceTimers ? createPresence({ head: () => log.head(), timers: opts.presenceTimers }) : createPresence({ head: () => log.head(), timers: t.timers, waitMs: 10 });
+  const pushes: PushPayload[] = [];
   const breakGlass: string[] = [];
   const adapter = new WebWorkspaceAdapter({
     log,
@@ -70,6 +89,7 @@ function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; ap
     presence,
     push: { send: async (p) => (pushes.push(p), { sent: opts.sent ?? 1 }) },
     breakGlass: async (nonce) => (breakGlass.push(nonce), true),
+    ...(opts.quiet ? { quietHours: opts.quiet } : {}),
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.appendBudget ? { appendBudget: opts.appendBudget } : {}),
     timers: t.timers,
@@ -261,6 +281,127 @@ describe("web adapter approvals and push", () => {
     expect(h.pushes).toHaveLength(1);
     expect(h.breakGlass).toHaveLength(1);
     close();
+  });
+});
+
+describe("web adapter push rules", () => {
+  const view: ApprovalView = { tool: "file_linear_issue", agentId: "main", agentName: "Main", fields: [] };
+  const attempt = (outboxId: string) => ({ ledger: { isSent: () => false, markSent: () => {} }, plain: false, outboxId });
+
+  test("each durable event maps to its push; deltas, tools and non-interrupted finals never push", async () => {
+    const h = setup();
+    await h.adapter.approvalPrompt(null, view, "n".repeat(16));
+    await h.adapter.askPrompt(null, { askId: "A", question: "Which **one**?", choices: ["x"] }, attempt("o1"));
+    await h.adapter.authPrompt(null, { url: "https://example.com/login", instructions: "Sign in" }, attempt("o2"));
+    await h.adapter.sendReply(null, { kind: "reply", text: `# Title\n${"word ".repeat(60)}`, toolCount: null }, attempt("o3"));
+    await h.adapter.sendReply(null, { kind: "proactive", text: "Reminder", toolCount: null }, attempt("o4"));
+    const handle = await h.adapter.progressCreate(null, { turnId: "t1", startedAt: 0, lines: [{ name: "bash", summary: "ls", state: "run" }], toolCount: 1, text: "" });
+    await h.adapter.progressDelta(handle, "hi", { turnId: "t1", startedAt: 0, lines: [], toolCount: 1, text: "hi" });
+    await h.adapter.progressFinalize(null, handle, { outcome: "done", summary: null });
+    await h.adapter.progressFinalize(null, { id: "t2" }, { outcome: "stopped", summary: null });
+    await h.adapter.progressFinalize(null, { id: "t3" }, { outcome: "interrupted", summary: null });
+    await tick();
+    expect(h.pushes.map((p) => [p.tag, p.url])).toEqual([
+      [`approval:${"n".repeat(16)}`, `/?approve=${"n".repeat(16)}`],
+      ["ask:A", "/?ask=A"],
+      ["auth", "/"],
+      ["chat", "/"],
+      ["chat", "/"],
+      ["chat", "/"],
+    ]);
+    expect(h.pushes[0]!.requireInteraction).toBe(true);
+    expect(h.pushes[1]!.body).toBe("Which one?");
+    expect(h.pushes[3]!.renotify).toBe(false);
+    expect(h.pushes[3]!.body.startsWith("Title word")).toBe(true);
+    expect(Array.from(h.pushes[3]!.body)).toHaveLength(140);
+    expect(h.pushes[5]!.body).toBe("Turn interrupted");
+    expect(h.pushes.some((p) => p.silent)).toBe(false);
+  });
+
+  test("an approval waits 8s for a seen receipt with a stream open, then pushes", async () => {
+    const clock = clockTimers();
+    const h = setup({ presenceTimers: clock.timers });
+    const close = h.presence.open("s1");
+
+    await h.adapter.approvalPrompt(null, view, "a".repeat(16));
+    clock.advance(SEEN_WAIT_MS - 1);
+    await tick();
+    expect(h.pushes).toHaveLength(0);
+    h.presence.seen(h.log.head());
+    clock.advance(1);
+    await tick();
+    expect(h.pushes).toHaveLength(0);
+    expect(h.breakGlass).toHaveLength(0);
+
+    await h.adapter.approvalPrompt(null, view, "b".repeat(16));
+    clock.advance(SEEN_WAIT_MS);
+    await tick();
+    expect(h.pushes.map((p) => p.tag)).toEqual([`approval:${"b".repeat(16)}`]);
+    // A receipt after the window is too late to take the push back.
+    h.presence.seen(h.log.head());
+    await tick();
+    expect(h.pushes).toHaveLength(1);
+    close();
+  });
+
+  test("with no stream open an approval pushes at once", async () => {
+    const clock = clockTimers();
+    const h = setup({ presenceTimers: clock.timers });
+    await h.adapter.approvalPrompt(null, view, "c".repeat(16));
+    await tick();
+    expect(h.pushes).toHaveLength(1);
+  });
+
+  test("an approval pushed to no device breaks glass even in quiet hours; a suppressed one never does", async () => {
+    const h = setup({ sent: 0, quiet: () => true });
+    await h.adapter.approvalPrompt(null, view, "d".repeat(16));
+    await tick();
+    expect(h.pushes[0]!.silent).toBeUndefined();
+    expect(h.breakGlass).toEqual(["d".repeat(16)]);
+  });
+
+  test("the photo quota warning pushes as quota, silent in quiet hours, and a newer seen receipt suppresses it", async () => {
+    let quiet = false;
+    const clock = clockTimers();
+    const h = setup({ quiet: () => quiet, presenceTimers: clock.timers });
+    await h.adapter.sendReply(null, { kind: "reply", text: "earlier", toolCount: null }, attempt("o1"));
+    await tick();
+    // A receipt for what was already on screen does not cover a warning raised after it.
+    h.presence.seen(h.log.head());
+    await h.adapter.notifyPhotoQuota(80, 100);
+    expect(h.pushes.map((p) => [p.tag, p.body, p.silent])).toEqual([
+      ["chat", "earlier", undefined],
+      ["quota", "80% of the photo quota is used.", undefined],
+    ]);
+
+    quiet = true;
+    await h.adapter.notifyPhotoQuota(85, 100);
+    expect(h.pushes.at(-1)).toMatchObject({ tag: "quota", silent: true });
+
+    const close = h.presence.open("s1");
+    const pending = h.adapter.notifyPhotoQuota(90, 100);
+    await h.adapter.sendReply(null, { kind: "reply", text: "later", toolCount: null }, attempt("o2"));
+    h.presence.seen(h.log.head());
+    clock.advance(SEEN_WAIT_MS);
+    await pending;
+    await tick();
+    expect(h.pushes.filter((p) => p.tag === "quota")).toHaveLength(2);
+    close();
+  });
+
+  test("quiet hours send replies silent and never drop them", async () => {
+    let quiet = true;
+    const h = setup({ quiet: () => quiet });
+    await h.adapter.sendReply(null, { kind: "reply", text: "night", toolCount: null }, attempt("o1"));
+    await h.adapter.askPrompt(null, { askId: "Q", question: "ok?", choices: [] }, attempt("o2"));
+    quiet = false;
+    await h.adapter.sendReply(null, { kind: "reply", text: "day", toolCount: null }, attempt("o3"));
+    await tick();
+    expect(h.pushes.map((p) => [p.body, p.silent])).toEqual([
+      ["night", true],
+      ["ok?", undefined],
+      ["day", undefined],
+    ]);
   });
 });
 

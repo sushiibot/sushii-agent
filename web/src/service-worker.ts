@@ -3,7 +3,13 @@
 /// <reference lib="webworker" />
 /// <reference types="@sveltejs/kit" />
 import { build, files, version } from '$service-worker';
-import { navigationResponse, notificationFor, openTarget, resubscribe } from '$lib/sw/handlers';
+import {
+	navigationResponse,
+	notificationFor,
+	openTarget,
+	resubscribe,
+	safeTarget
+} from '$lib/sw/handlers';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 const CACHE = `shell-${version}`;
@@ -53,14 +59,15 @@ sw.addEventListener('fetch', (event) => {
 });
 
 sw.addEventListener('push', (event) => {
-	const { title, options } = notificationFor(event.data);
+	const { title, options } = notificationFor(event.data, sw.location.origin);
 	// Chrome shows its own generic notice if a push ends without a notification, so always show one.
 	event.waitUntil(sw.registration.showNotification(title, options));
 });
 
 sw.addEventListener('notificationclick', (event) => {
 	event.notification.close();
-	const target = new URL(event.notification.data?.url ?? '/', sw.location.origin).href;
+	const origin = sw.location.origin;
+	const target = new URL(safeTarget(event.notification.data?.url, origin), origin).href;
 	event.waitUntil(
 		sw.clients
 			.matchAll({ type: 'window', includeUncontrolled: true })

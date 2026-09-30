@@ -47,11 +47,47 @@ export const pushPayloadSchema = z.object({
   body: z.string(),
   url: z.string().min(1),
   tag: z.string().optional(),
+  silent: z.boolean().optional(),
+  requireInteraction: z.boolean().optional(),
+  renotify: z.boolean().optional(),
 });
 export type PushPayload = z.infer<typeof pushPayloadSchema>;
 
 /** The encrypted aes128gcm record is padded to 4096 octets, which leaves this much plaintext. */
 export const MAX_PAYLOAD_BYTES = 3993;
+
+const FIELD_CAP = 256;
+const utf8Bytes = (s: string) => new TextEncoder().encode(s).byteLength;
+
+function cutPoints(text: string, n: number): string {
+  const points = Array.from(text);
+  return points.length <= n ? text : `${points.slice(0, Math.max(0, n - 1)).join("")}…`;
+}
+
+/** Serializes `payload` within MAX_PAYLOAD_BYTES, cutting the body (by code point) rather than failing.
+ *  JSON escaping can grow a character to six bytes, so the fit is measured on the encoded string. */
+export function fitPayload(payload: PushPayload): string {
+  const parsed = pushPayloadSchema.parse(payload);
+  const fits = (p: PushPayload) => utf8Bytes(JSON.stringify(p)) <= MAX_PAYLOAD_BYTES;
+  if (fits(parsed)) return JSON.stringify(parsed);
+  // Title, url and tag are ours and short; capping them only matters for a pathological caller.
+  const base: PushPayload = {
+    ...parsed,
+    title: cutPoints(parsed.title, FIELD_CAP),
+    url: parsed.url.length > FIELD_CAP * 8 ? "/" : parsed.url,
+    ...(parsed.tag !== undefined ? { tag: cutPoints(parsed.tag, FIELD_CAP) } : {}),
+    body: "",
+  };
+  const points = Array.from(parsed.body).length;
+  let lo = 0;
+  let hi = points;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits({ ...base, body: cutPoints(parsed.body, mid) })) lo = mid;
+    else hi = mid - 1;
+  }
+  return JSON.stringify({ ...base, body: cutPoints(parsed.body, lo) });
+}
 
 export interface StoredSubscription {
   endpoint: string;
@@ -166,10 +202,7 @@ export interface PushSender {
 export function createPushSender(store: PushSubscriptionStore, transport: PushTransport): PushSender {
   return {
     async send(payload) {
-      const data = JSON.stringify(pushPayloadSchema.parse(payload));
-      if (new TextEncoder().encode(data).byteLength > MAX_PAYLOAD_BYTES) {
-        throw new Error(`push payload exceeds ${MAX_PAYLOAD_BYTES} bytes`);
-      }
+      const data = fitPayload(payload);
       const subs = store.list();
       const results = await Promise.allSettled(subs.map((s) => transport(s, data)));
       const out: PushResult = { sent: 0, pruned: 0, failed: 0 };

@@ -2,6 +2,8 @@ export type Me = { login: string; displayName?: string };
 export type PushKey = { publicKey: string };
 export type Ok = { ok: true };
 export type PushTestResult = { sent: number; pruned: number };
+export type QuietHours = { enabled: boolean; start: string; end: string };
+export type QuietHoursSetting = QuietHours & { timeZone: string };
 
 export class ApiError extends Error {
 	constructor(
@@ -52,5 +54,8 @@ export const api = {
 	subscribe: (subscription: PushSubscriptionJSON) =>
 		request<Ok>('POST', '/push/subscribe', subscription),
 	unsubscribe: (endpoint: string) => request<Ok>('DELETE', '/push/subscribe', { endpoint }),
-	testPush: () => request<PushTestResult>('POST', '/push/test')
+	testPush: () => request<PushTestResult>('POST', '/push/test'),
+	quietHours: () => request<QuietHoursSetting>('GET', '/settings/quiet-hours'),
+	setQuietHours: (value: QuietHours) =>
+		request<QuietHoursSetting>('PUT', '/settings/quiet-hours', value)
 };
