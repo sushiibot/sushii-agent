@@ -99,6 +99,13 @@
       "when": 1790789426778,
       "tag": "0013_web_uploads",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1790793363224,
+      "tag": "0014_web_events",
+      "breakpoints": true
     }
   ]
 }

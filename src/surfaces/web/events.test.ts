@@ -23,6 +23,7 @@ const typeChecks: true[] = [
   true satisfies Assignable<Surface.ApprovalView, Wire.ApprovalView>,
   true satisfies Assignable<Surface.RouterNotice, Wire.RouterNotice>,
   true satisfies Assignable<contracts.ToolCallResult, Wire.ToolCallResult>,
+  true satisfies Assignable<Exclude<Surface.ApprovalDecision, "expired">, Wire.ApprovalDecision>,
   true satisfies Assignable<Exclude<Surface.AckKind, "transcribing">, Wire.ChatEventMap["status"]["state"]>,
   true satisfies Assignable<contracts.HistoryItem["type"], Wire.WebHistoryItem["type"]>,
   true satisfies Assignable<Wire.PostAskBody, Link.AskChoice>,

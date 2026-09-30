@@ -5,10 +5,11 @@ import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import type { ToolEntry, ToolHosts } from "../../core/contracts.ts";
 import { AUTH_METHODS, LOGIN_ALREADY_PENDING, RPC_METHODS, chatDeliverParams, chatEventParams, chatMessageParams, type ChatDeliverParams, type ChatEventPayload, type ChatMessageParams, type ChatOrigin } from "../contracts.ts";
 import { RpcTimeoutError, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
-import { LOGIN_PENDING_MS, WorkspaceLink, type WorkspaceRpc } from "./link.ts";
+import { LOGIN_PENDING_MS, MAX_OPEN_TURNS, WorkspaceLink, type WorkspaceRpc } from "./link.ts";
 import type { Timers } from "./progress.ts";
 import { detectLoginCallback, handleOwnerMessage } from "./router.ts";
 import {
+  DeliveryRejectedError,
   SurfaceRegistry,
   SurfaceUnavailableError,
   type AckKind,
@@ -40,6 +41,8 @@ type Call = { method: string; origin?: ChatOrigin | null; arg?: unknown };
 class FakeAdapter implements SurfaceAdapter {
   calls: Call[] = [];
   unavailable = false;
+  /** Every send refuses the delivery for good. */
+  rejects = false;
   /** The adapter's progress edit gap, whatever the turn's age. */
   gap = 0;
   /** Holds approvalPrompt's post until opened. */
@@ -60,6 +63,7 @@ class FakeAdapter implements SurfaceAdapter {
 
   private check(): void {
     if (this.unavailable) throw new SurfaceUnavailableError("test surface unreachable");
+    if (this.rejects) throw new DeliveryRejectedError("not for this surface");
   }
 
   async sendReply(origin: ChatOrigin | null, reply: ReplyView, _attempt: SendAttempt): Promise<void> {
@@ -229,12 +233,50 @@ describe("surface routing", () => {
     expect(test.calls).toEqual([]);
   });
 
-  test("a stopped tool-less turn posts its final state on the origin surface", async () => {
+  test("a stopped tool-less turn posts its final state, with its turnId, on the origin surface", async () => {
     const { test, discord, event } = setup();
+    event("t2", { type: "turn_start" }, TEST);
     event("t2", { type: "turn_end", aborted: true }, TEST);
     await tick();
-    expect(test.of("progressFinalize")).toEqual([{ method: "progressFinalize", origin: TEST, arg: { id: null, final: { outcome: "stopped", summary: { durationMs: 0, toolCount: 0 } } } }]);
+    expect(test.of("progressFinalize")).toEqual([
+      { method: "progressFinalize", origin: TEST, arg: { id: null, final: { outcome: "stopped", summary: { durationMs: 0, toolCount: 0 }, turnId: "t2" } } },
+    ]);
     expect(discord.calls).toEqual([]);
+  });
+
+  test("a turn_end for a turn never seen to start is ignored, however often it repeats", async () => {
+    const { test, event } = setup();
+    for (let i = 0; i < 50; i++) event("ghost", { type: "turn_end", aborted: true }, TEST);
+    await tick();
+    expect(test.calls).toEqual([]);
+  });
+
+  test("chat/event refuses an empty or oversized turnId", async () => {
+    const { test, event } = setup({ streaming: true });
+    event("", { type: "tool_start", name: "t", summary: "s" }, TEST);
+    event("x".repeat(257), { type: "tool_start", name: "t", summary: "s" }, TEST);
+    await tick();
+    expect(test.calls).toEqual([]);
+  });
+
+  test("past MAX_OPEN_TURNS the oldest open turn is finalized as interrupted", async () => {
+    const { test, event } = setup();
+    for (let i = 0; i <= MAX_OPEN_TURNS; i++) event(`t${i}`, { type: "tool_start", name: "t", summary: "s" }, TEST);
+    await tick();
+    await tick();
+    const finals = test.of("progressFinalize").map((c) => (c.arg as { id: string | null; final: ProgressFinal }).final.outcome);
+    expect(finals).toEqual(["interrupted"]);
+    expect(test.of("progressCreate")).toHaveLength(MAX_OPEN_TURNS + 1);
+  });
+
+  test("a delivery the surface refuses for good is acked once and not resent", async () => {
+    const { link, rpc, store, test } = setup();
+    test.rejects = true;
+    await link.deliver(deliverParams());
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+    expect(store.hasSeenOutbox("o1")).toBe(true);
+    await link.deliver(deliverParams());
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck, RPC_METHODS.chatAck]);
   });
 });
 

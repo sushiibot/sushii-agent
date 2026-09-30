@@ -1,8 +1,12 @@
 import {
   AUTH_METHODS,
   LOGIN_ALREADY_PENDING,
+  CHAT_HISTORY_TIMEOUT_MS,
   RPC_METHODS,
   chatDeliverParams,
+  chatHistoryResult,
+  type ChatHistoryParams,
+  type ChatHistoryResult,
   type AuthCancelResult,
   type AuthCompleteResult,
   type AuthStartResult,
@@ -27,6 +31,7 @@ import { getLogger } from "../../logger.ts";
 import type { GitHubTokenBroker } from "./githubToken.ts";
 import { progressEditDelay, realTimers, type Timers } from "./progress.ts";
 import {
+  DeliveryRejectedError,
   SurfaceUnavailableError,
   type AckKind,
   type AskView,
@@ -56,6 +61,8 @@ const NEW_SESSION_TIMEOUT_MS = 240_000;
 const PERSISTED_LINES = 8;
 const OUTBOX_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const ENDED_TURNS_KEPT = 100;
+// One main turn runs at a time; more open views than this are stale or a workspace flooding turnIds.
+export const MAX_OPEN_TURNS = 20;
 /** Consecutive failed sends of one delivery before it goes out as plain text instead. */
 export const DELIVERY_MAX_FAILURES = 3;
 /** chat/message id of an ask's answer: one per ask, whichever surface or button answered it, so the
@@ -211,6 +218,7 @@ export class WorkspaceLink {
   // Surface id → the ask whose choices a bare number answers there; only surfaces without buttons.
   private readonly numberedAsks = new Map<string, { askId: string; count: number }>();
   private connectWaiters: Array<() => void> = [];
+  private readonly connectionListeners = new Set<(connected: boolean) => void>();
   private replaying: Promise<void> | null = null;
   private replayAgain = false;
   // turnId → tool count for turns that have ended; null when the count is unknown (a restart).
@@ -253,13 +261,38 @@ export class WorkspaceLink {
     return {
       onRegister: (conn) => this.onRegister(conn),
       onDisconnect: (conn) => {
-        if (conn.principalId === this.opts.principalId) log.info({ runnerId: conn.runnerId }, "workspace disconnected");
+        if (conn.principalId !== this.opts.principalId) return;
+        log.info({ runnerId: conn.runnerId }, "workspace disconnected");
+        this.notifyConnection();
       },
       onSocketClosed: (conn) => this.opts.tools?.onSocketClosed(conn),
       toolManifest: (conn) => (conn.principalId === this.opts.principalId && this.toolsEnabled ? this.opts.tools!.manifest() : []),
       onRequest: (conn, method, params) => this.onRequest(conn, method, params),
       onNotification: (conn, method, params) => this.onNotification(conn, method, params),
     };
+  }
+
+  /** Called on every register and disconnect of the principal's workspace; returns an unsubscribe. */
+  onConnectionChange(listener: (connected: boolean) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => void this.connectionListeners.delete(listener);
+  }
+
+  private notifyConnection(): void {
+    const connected = this.isConnected();
+    for (const l of [...this.connectionListeners]) {
+      try {
+        l(connected);
+      } catch (err) {
+        log.warn({ err }, "workspace connection listener threw");
+      }
+    }
+  }
+
+  /** One page of the Main transcript. An old workspace without the method rejects with MethodNotFound. */
+  async chatHistory(q: Omit<ChatHistoryParams, "principalId">): Promise<ChatHistoryResult> {
+    const params: ChatHistoryParams = { principalId: this.opts.principalId, ...q };
+    return chatHistoryResult.parse(await this.request(RPC_METHODS.chatHistory, params, CHAT_HISTORY_TIMEOUT_MS));
   }
 
   isConnected(): boolean {
@@ -595,6 +628,7 @@ export class WorkspaceLink {
     const waiters = this.connectWaiters;
     this.connectWaiters = [];
     for (const w of waiters) w();
+    this.notifyConnection();
     this.restoreOrphans(conn.state === "streaming");
     // An idle workspace has no run in flight, so any turn still shown as working ended unobserved.
     if (conn.state === "idle") {
@@ -734,15 +768,22 @@ export class WorkspaceLink {
         };
         const send = (plain: boolean) =>
           delivery.type === "ask"
-            ? adapter.askPrompt(origin, delivery.view, { ledger, plain })
+            ? adapter.askPrompt(origin, delivery.view, { ledger, plain, outboxId: p.outboxId })
             : delivery.type === "auth"
-              ? adapter.authPrompt(origin, delivery.view, { ledger, plain })
-              : adapter.sendReply(origin, delivery.view, { ledger, plain });
+              ? adapter.authPrompt(origin, delivery.view, { ledger, plain, outboxId: p.outboxId })
+              : adapter.sendReply(origin, delivery.view, { ledger, plain, outboxId: p.outboxId });
         try {
           await send(false);
           this.opts.store.deleteKv(failureKey(p.outboxId));
         } catch (err) {
           if (err instanceof SurfaceUnavailableError) throw err;
+          if (err instanceof DeliveryRejectedError) {
+            log.warn({ err, outboxId: p.outboxId, surface: adapter.surface }, "the surface refused a delivery; acking it so it isn't resent");
+            this.opts.store.deleteKv(failureKey(p.outboxId));
+            this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
+            await this.ackDelivery(p.outboxId);
+            return;
+          }
           // Persisted: the workspace resends mostly after a register, which usually follows a bot restart.
           const failures = Number(this.opts.store.getKv(failureKey(p.outboxId)) ?? "0") + 1;
           this.opts.store.setKv(failureKey(p.outboxId), String(failures));
@@ -753,14 +794,18 @@ export class WorkspaceLink {
         }
         this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
       }
-      await this.request(RPC_METHODS.chatAck, { outboxId: p.outboxId }, CONTROL_TIMEOUT_MS).catch((err) =>
-        log.warn({ err, outboxId: p.outboxId }, "chat/ack failed; the workspace will resend and be re-acked"),
-      );
+      await this.ackDelivery(p.outboxId);
     } catch (err) {
       log.warn({ err, outboxId: p.outboxId }, "failed to deliver workspace message");
     } finally {
       this.delivering.delete(p.outboxId);
     }
+  }
+
+  private async ackDelivery(outboxId: string): Promise<void> {
+    await this.request(RPC_METHODS.chatAck, { outboxId }, CONTROL_TIMEOUT_MS).catch((err) =>
+      log.warn({ err, outboxId }, "chat/ack failed; the workspace will resend and be re-acked"),
+    );
   }
 
   /** Finalizes the reply's progress view if it is still open; returns the turn's tool count if known. */
@@ -801,12 +846,9 @@ export class WorkspaceLink {
         this.endToolLine(this.turns.get(p.turnId), ev.name, ev.ok, undefined);
         return;
       case "turn_end": {
+        // A turn this process never saw start has nothing to finalize; the workspace can repeat these at will.
         const turn = this.turns.get(p.turnId);
         if (turn) this.finishTurn(turn, ev.aborted ? "stopped" : "done");
-        else if (ev.aborted && !this.endedTurns.has(p.turnId)) {
-          // A tool-less run that was stopped: no progress message exists, and no reply will follow.
-          void this.postFinal(origin, { outcome: "stopped", summary: { durationMs: 0, toolCount: 0 } });
-        }
         return;
       }
       case "text_delta": {
@@ -874,6 +916,7 @@ export class WorkspaceLink {
   private turnFor(turnId: string, origin: ChatOrigin | null): TurnProgress {
     let turn = this.turns.get(turnId);
     if (!turn) {
+      if (this.turns.size >= MAX_OPEN_TURNS) this.finishTurn(this.turns.values().next().value!, "interrupted");
       turn = {
         turnId,
         origin,
@@ -909,10 +952,10 @@ export class WorkspaceLink {
   }
 
   /** Posts a final state with no view to edit. */
-  private async postFinal(origin: ChatOrigin | null, final: ProgressFinal): Promise<void> {
+  private async postFinal(origin: ChatOrigin | null, turnId: string, final: ProgressFinal): Promise<void> {
     try {
       const s = this.surfaceFor(origin);
-      await s.adapter.progressFinalize(s.origin, null, final);
+      await s.adapter.progressFinalize(s.origin, null, { ...final, turnId });
     } catch (err) {
       log.warn({ err }, "failed to send workspace progress message");
     }
@@ -983,7 +1026,7 @@ export class WorkspaceLink {
       turn.timer = null;
     }
     if (turn.message) void this.queueFinal(turn, outcome);
-    else if (outcome !== "done") void this.postFinal(turn.origin, { outcome, summary: { durationMs: this.now() - turn.startedAt, toolCount: 0 } });
+    else if (outcome !== "done") void this.postFinal(turn.origin, turn.turnId, { outcome, summary: { durationMs: this.now() - turn.startedAt, toolCount: 0 } });
     this.persistProgress();
   }
 }

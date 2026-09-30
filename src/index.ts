@@ -44,6 +44,7 @@ import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
 import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
 import { startWebGateway } from "./surfaces/web/server.ts";
+import { createWebChat } from "./surfaces/web/chat.ts";
 import { createUploadReadHandler } from "./surfaces/web/uploadRoutes.ts";
 import { DiskUploadStore } from "./surfaces/web/uploads.ts";
 import { sendPush } from "./surfaces/web/push.ts";
@@ -142,9 +143,19 @@ async function main() {
     boot: workspace,
     ownerDmMode: config.ownerDmMode,
   });
-  // Before the workspace transport listens, so a web adapter is registered by the time a workspace
-  // connects and drains its outbox; register it into workspace.registry only when this started.
-  const webServer = await startWebGateway(process.env, db, { uploads });
+  // Before the workspace transport listens, so the web adapter is registered by the time a workspace
+  // connects and drains its outbox. It is registered only when the gateway started.
+  const webChat = createWebChat({
+    db,
+    link: workspace.link,
+    tools: workspace.tools,
+    workspaceEnabled: config.dmWorkspaceEnabled,
+    breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
+    uploads,
+  });
+  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, uploads });
+  const stopWebChat = webServer ? webChat.start() : undefined;
+  if (webServer) workspace.registry.register(webChat.adapter);
   listenWorkspace(workspace, config.orchPort);
   await client.login(config.discordBotToken);
 
@@ -265,6 +276,8 @@ async function main() {
     logger.info("Shutting down...");
     client.destroy();
     mcpServer.stop();
+    // Open chat streams never end on their own, so a graceful stop would wait out its whole bound.
+    stopWebChat?.();
     // Graceful so in-flight push writes finish before the DB closes, but bounded to stay inside docker's 10s stop grace.
     const webStopped = webServer
       ? Promise.race([webServer.stop(), Bun.sleep(5000).then(() => webServer.stop(true))])
@@ -280,6 +293,8 @@ async function main() {
       logger.error({ err }, "sushii-mcp client close failed");
     }
     await webStopped;
+    // A message still being routed marks itself routed in the DB; bounded, inside docker's 10s grace.
+    if (webServer) await webChat.routes.drain();
     closeDb();
     try {
       await otelSDK?.shutdown();

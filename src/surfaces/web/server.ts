@@ -7,6 +7,7 @@ import { parseWebConfig, type WebConfig } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { mintWebActor, normalizeLogin } from "./actor.ts";
+import type { ChatRoutes } from "./chatRoutes.ts";
 import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
   PushSubscriptionStore,
@@ -17,16 +18,17 @@ import {
   subscriptionSchema,
   type PushSender,
 } from "./push.ts";
+import { NO_STORE, forbidden, isJson, isSameOrigin, json, readJson } from "./http.ts";
 import { BASE_CSP, HtmlCspCache, cacheControlFor, resolveStatic } from "./static.ts";
 import { handleFileGet, handleUploadPost } from "./uploadRoutes.ts";
 import { scheduleUploadGc, type DiskUploadStore } from "./uploads.ts";
 
+export { readBodyCapped } from "./http.ts";
+
 const logger = getLogger("web");
 
-const MAX_BODY_BYTES = 8 * 1024;
 /** Transport-level ceiling, sized for uploads; each route enforces its own cap while streaming. */
 const MAX_REQUEST_BODY_BYTES = 12 * 1024 * 1024;
-const NO_STORE = "no-store";
 
 export interface WebHandlerDeps {
   config: WebConfig;
@@ -36,9 +38,14 @@ export interface WebHandlerDeps {
   pushSender?: PushSender;
   /** Absent: /api/uploads and /f/ answer 404. */
   uploads?: DiskUploadStore;
+  /** The /api/chat routes; absent when the chat surface is not wired. */
+  chat?: ChatRoutes;
 }
 
-export type WebHandler = (req: Request, peerIp: string | null | undefined) => Promise<Response>;
+/** The slice of Bun's server a route may use: lifting the idle timeout for a stream. */
+export type RequestTimeouts = { timeout(req: Request, seconds: number): void };
+
+export type WebHandler = (req: Request, peerIp: string | null | undefined, server?: RequestTimeouts) => Promise<Response>;
 
 function withSecurityHeaders(res: Response, csp = BASE_CSP): Response {
   const h = res.headers;
@@ -50,14 +57,6 @@ function withSecurityHeaders(res: Response, csp = BASE_CSP): Response {
   h.set("Cross-Origin-Resource-Policy", "same-origin");
   h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   return res;
-}
-
-function forbidden(): Response {
-  return new Response("Forbidden\n", { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": NO_STORE } });
-}
-
-function json(body: unknown, status = 200): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": NO_STORE } });
 }
 
 /** Decodes RFC 2047 encoded-words, which Serve uses for non-ASCII identity header values. */
@@ -78,69 +77,28 @@ export function decodeEncodedWords(value: string): string {
   });
 }
 
-/** Ambient Serve identity makes cross-site writes a CSRF risk, so writes must be same-origin. */
-function isSameOrigin(req: Request): boolean {
-  const site = req.headers.get("Sec-Fetch-Site");
-  return site !== null ? site === "same-origin" : req.headers.get("Origin") === null;
-}
-
-function isJson(req: Request): boolean {
-  const type = req.headers.get("Content-Type") ?? "";
-  return type.split(";")[0]!.trim().toLowerCase() === "application/json";
-}
-
-/** Reads at most `limit` bytes, whether or not the body is chunked; undefined once the limit is exceeded. */
-export async function readBodyCapped(req: Request, limit: number): Promise<Uint8Array | undefined> {
-  if (!req.body) return new Uint8Array(0);
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel().catch(() => {});
-      return undefined;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
-
-async function readJson(req: Request): Promise<unknown | Response> {
-  const lengthHeader = req.headers.get("Content-Length");
-  if (lengthHeader !== null && !(/^\d+$/.test(lengthHeader) && Number(lengthHeader) <= MAX_BODY_BYTES)) {
-    return json({ error: "body too large" }, 413);
-  }
-  const bytes = await readBodyCapped(req, MAX_BODY_BYTES);
-  if (!bytes) return json({ error: "body too large" }, 413);
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return json({ error: "invalid json" }, 400);
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return json({ error: "invalid json" }, 400);
-  }
-}
-
 const unsubscribeSchema = z.object({ endpoint: z.string().min(1).max(2048) });
 
 export function createWebHandler(deps: WebHandlerDeps): WebHandler {
-  const { config, peers, pushStore, pushSender, uploads } = deps;
+  const { config, peers, pushStore, pushSender, uploads, chat } = deps;
   const owner = normalizeLogin(config.ownerLogin);
   // Also enforced at parse time; repeated here because a WebConfig can be built without the parser.
   const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
   const cspCache = new HtmlCspCache();
 
   /** `actor` is the only identity a route may hand to the workspace's owner checks. */
-  async function api(req: Request, path: string, login: string, actor: SurfaceActor): Promise<Response> {
+  async function api(req: Request, path: string, login: string, actor: SurfaceActor, server?: RequestTimeouts): Promise<Response> {
     const method = req.method;
-    if (method !== "GET" && method !== "HEAD" && !isSameOrigin(req)) return forbidden();
+    if (method === "GET" || method === "HEAD") {
+      // Fetch Metadata: a browser always sends it, so only a non-browser client may omit it.
+      const site = req.headers.get("Sec-Fetch-Site");
+      if (site !== null && site !== "same-origin") return forbidden();
+    } else if (!isSameOrigin(req)) return forbidden();
+
+    if (chat) {
+      const res = await chat.handle(req, path, actor, server);
+      if (res) return res;
+    }
 
     if (path === "/api/me") {
       if (method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -195,7 +153,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     return res;
   }
 
-  return async (req, peerIp) => {
+  return async (req, peerIp, server) => {
     if (!peers(peerIp)) {
       logger.warn({ peer: peerIp ?? null }, "web request from untrusted peer rejected");
       return withSecurityHeaders(forbidden());
@@ -211,7 +169,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     let res: Response;
     if (path === "/api" || path.startsWith("/api/")) {
       const name = req.headers.get("Tailscale-User-Name");
-      res = await api(req, path, login, mintWebActor(login, name ? decodeEncodedWords(name) : undefined));
+      res = await api(req, path, login, mintWebActor(login, name ? decodeEncodedWords(name) : undefined), server);
     } else if (path === "/f" || path.startsWith("/f/")) {
       res = uploads ? await handleFileGet(req, path, uploads) : json({ error: "not found" }, 404);
     } else res = await staticFile(req, path);
@@ -228,6 +186,7 @@ export function internalErrorResponse(err: unknown): Response {
 
 export interface WebServerOptions {
   uploads?: DiskUploadStore;
+  chat?: ChatRoutes;
 }
 
 export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined>> {
@@ -247,7 +206,14 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     pushSender = createPushSender(pushStore, createWebPushTransport(push));
   }
   const effective: WebConfig = { ...config, push };
-  const handler = createWebHandler({ config: effective, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender, uploads: opts.uploads });
+  const handler = createWebHandler({
+    config: effective,
+    peers: createPeerMatcher(config.trustedPeers),
+    pushStore,
+    pushSender,
+    ...(opts.uploads ? { uploads: opts.uploads } : {}),
+    ...(opts.chat ? { chat: opts.chat } : {}),
+  });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
   }
@@ -257,7 +223,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     development: false,
     idleTimeout: 30,
     maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
-    fetch: (req, srv) => handler(req, srv.requestIP(req)?.address),
+    fetch: (req, srv) => handler(req, srv.requestIP(req)?.address, srv),
     error: internalErrorResponse,
   });
   setActivePushSender(pushSender);
