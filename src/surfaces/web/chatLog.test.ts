@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
-import { INBOUND_RETENTION_MS, SqliteChatLog } from "./chatLog.ts";
+import { INBOUND_RETENTION_MS, PERMANENT_EVENTS, SqliteChatLog } from "./chatLog.ts";
 import { WebInboundStore } from "./inbound.ts";
 import type { ChatEnvelope } from "./events.ts";
 
@@ -146,6 +146,38 @@ describe("SqliteChatLog", () => {
     expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(0);
     expect(log.list(["user", "reply", "proactive", "approval", "approval_resolved", "ask", "ask_resolved", "session"])).toHaveLength(permanent);
     expect(log.find("reply", "r0")!.data.files).toEqual(files);
+  });
+
+  test("the database trigger protects exactly the permanent types", () => {
+    const { db } = setup();
+    const sql = (db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'web_events_keep_chat'").get() as { sql: string }).sql;
+    const listed = /old\.type IN \(([^)]*)\)/.exec(sql)![1]!.split(",").map((t) => t.trim().replace(/'/g, ""));
+    expect([...listed].sort()).toEqual([...PERMANENT_EVENTS].sort());
+  });
+
+  test("the pre-retention prune, as rolled-back code would run it, deletes no chat and keeps pruned_through on real deletes", () => {
+    const { db, log, advance, now } = setup();
+    const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+    log.prepend([{ type: "user", key: "pi:1", data: { key: "pi:1", text: "imported", uploadIds: [], at: "t" }, createdAt: 1 }]);
+    log.append("user", { key: "u1", text: "owner", uploadIds: [], at: "t" }, "u1");
+    log.append("reply", { key: "r1", text: "reply", files: [] }, "r1");
+    log.append("approval", { nonce: "n1", view }, "n1");
+    log.append("approval_resolved", { nonce: "n1", decision: "approve" }, "n1");
+    log.append("ask", { key: "a1", askId: "k1", question: "q", choices: [] }, "a1");
+    log.append("ask_resolved", { askId: "k1", answer: "x" }, "k1");
+    log.append("session", { kind: "new" });
+    const noticeSeq = log.append("notice", notice("old"));
+    const chat = () => db.query("SELECT count(*) AS n FROM web_events WHERE type != 'notice'").get() as { n: number };
+    const before = chat().n;
+    advance(60 * 24 * 60 * 60 * 1000);
+    // The prune from before chat was permanent: untyped by age, then a cap exempting only owner messages and undecided approvals.
+    const aged = db.query("DELETE FROM web_events WHERE created_at < ? RETURNING seq").all(now() - 30 * 24 * 60 * 60 * 1000) as { seq: number }[];
+    const capExempt = `e.type = 'user' OR (e.type = 'approval' AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key))`;
+    const evicted = db.query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events e WHERE NOT (${capExempt}) ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`).all(0) as { seq: number }[];
+    expect(chat().n).toBe(before);
+    expect([...aged, ...evicted].map((r) => r.seq)).toEqual([noticeSeq]);
+    expect(Math.max(...aged.map((r) => r.seq), ...evicted.map((r) => r.seq))).toBe(noticeSeq);
+    expect(log.find("user", "pi:1")).not.toBeNull();
   });
 
   test("prepend stores rows below every seq, newest first, skips ones it has, and fans nothing out", () => {

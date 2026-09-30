@@ -38,10 +38,7 @@ type OlderPage = {
 	onServe?: () => void;
 };
 
-const errorBody = (status: number) =>
-	({ 503: { offline: true } })[status] ?? {
-		error: 'x'
-	};
+const errorBody = () => ({ error: 'x' });
 
 async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) {
 	const opts: Opts = {
@@ -75,12 +72,11 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 			const o = opts.older[url.searchParams.get('before')!] ?? { status: 200 };
 			await o.gate;
 			o.onServe?.();
-			if (o.status !== 200) return json(errorBody(o.status), o.status);
+			if (o.status !== 200) return json(errorBody(), o.status);
 			return json({ items: o.items ?? [], before: o.before ?? null });
 		}
 		if (path === '/api/chat/history') {
-			if (opts.historyStatus !== 200)
-				return json(errorBody(opts.historyStatus), opts.historyStatus);
+			if (opts.historyStatus !== 200) return json(errorBody(), opts.historyStatus);
 			return json({ items: opts.history, before: opts.before });
 		}
 		if (path.startsWith('/api/chat/messages/') && req.method() === 'DELETE') {

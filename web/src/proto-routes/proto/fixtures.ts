@@ -1288,13 +1288,11 @@ export const historyItems: ChatMessage[] = [
 	{
 		id: 'g1',
 		role: 'user',
-		unverified: true,
 		parts: [{ type: 'text', text: 'Draft the quarterly note for the acme/billing team.' }]
 	},
 	{
 		id: 'g2',
 		role: 'assistant',
-		unverified: true,
 		parts: [
 			{
 				type: 'text',

@@ -166,8 +166,6 @@ export interface ChatMessage {
 	delivery?: Delivery;
 	/** Still receiving deltas; the bubble reserves its height. */
 	streaming?: boolean;
-	/** Found only in the workspace transcript, with no matching bot record. */
-	unverified?: boolean;
 	/** The bot's files for this reply, as sent; the markdown renderer inlines only these. */
 	uploads?: readonly UploadRef[];
 }

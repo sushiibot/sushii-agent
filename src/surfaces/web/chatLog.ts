@@ -12,6 +12,9 @@ const PRUNED_THROUGH_KEY = "web_events:pruned_through";
 export const PERMANENT_EVENTS = ["user", "reply", "proactive", "ask", "ask_resolved", "approval", "approval_resolved", "session"] as const satisfies readonly DurableEventType[];
 const PRUNABLE = `type NOT IN (${PERMANENT_EVENTS.map((t) => `'${t}'`).join(",")})`;
 
+/** A row for `prepend`, its data typed by its event type. */
+export type PrependRow = { [T in DurableEventType]: { type: T; key: string; data: ChatEventMap[T]; createdAt: number } }[DurableEventType];
+
 export type EphemeralEnvelope = Extract<ChatEnvelope, { type: EphemeralEventType }>;
 export type ChatSink = (ev: ChatEnvelope) => void;
 
@@ -232,7 +235,7 @@ export class SqliteChatLog implements ChatLog {
 
   /** Stores rows below every seq already held, in the order given (newest first), without fanning them out.
    *  A (type, key) already stored is skipped. Returns how many were stored. */
-  prepend(rows: readonly { type: DurableEventType; key: string; data: unknown; createdAt: number }[]): number {
+  prepend(rows: readonly PrependRow[]): number {
     return this.db.transaction(() => {
       let next = Math.min((this.db.query("SELECT min(seq) AS m FROM web_events").get() as { m: number | null }).m ?? 1, 1) - 1;
       let stored = 0;

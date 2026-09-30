@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { CHAT_EXPORT_LIMIT_MAX, chatExportResult, type ChatExportResult } from "../../orchestration/contracts.ts";
 import { getLogger } from "../../logger.ts";
-import type { SqliteChatLog } from "./chatLog.ts";
+import type { PrependRow, SqliteChatLog } from "./chatLog.ts";
 import { MESSAGE_TEXT_MAX } from "./events.ts";
 import { capText, REPLY_TEXT_MAX } from "./workspaceAdapter.ts";
 
@@ -21,8 +21,10 @@ export interface ExportSource {
 
 export interface ImportOutcome {
   imported: number;
-  /** Items past the message or byte cap, oldest part of the transcript. */
-  skipped: number;
+  /** A cap was reached: everything older was left out, and the export wasn't read any further. */
+  capped: boolean;
+  /** Items whose time didn't parse, so they couldn't be placed against the cutoff. */
+  undated: number;
 }
 
 /**
@@ -52,40 +54,46 @@ export async function importPiChat(deps: {
   let taken = 0;
   let bytes = 0;
   let imported = 0;
-  let skipped = 0;
+  let undated = 0;
+  let capped = false;
   let before: string | undefined;
   for (;;) {
     const page = chatExportResult.parse(await source.chatExport({ ...(before !== undefined ? { before } : {}), limit: CHAT_EXPORT_LIMIT_MAX }));
-    const rows: Parameters<SqliteChatLog["prepend"]>[0][number][] = [];
+    const rows: PrependRow[] = [];
     for (const item of [...page.items].reverse()) {
       const at = Date.parse(item.at);
-      if (!Number.isFinite(at) || at >= cutoff) continue;
+      if (!Number.isFinite(at)) {
+        undated++;
+        continue;
+      }
+      if (at >= cutoff) continue;
       // Delivered to the web app before this cutoff was taken, so the bot already has it under its own key.
       if (item.clientId && chatLog.find("user", item.clientId)) continue;
       if (item.outboxId && (chatLog.find("reply", item.outboxId) || chatLog.find("proactive", item.outboxId))) continue;
       const key = `${IMPORT_KEY_PREFIX}${item.id}`;
-      const iso = new Date(at).toISOString();
-      const row =
+      const row: PrependRow =
         item.role === "user"
-          ? { type: "user" as const, key, data: { key, text: capText(item.text, MESSAGE_TEXT_MAX), uploadIds: [], at: iso }, createdAt: at }
-          : { type: "reply" as const, key, data: { key, text: capText(item.text, REPLY_TEXT_MAX), files: [] }, createdAt: at };
+          ? { type: "user", key, data: { key, text: capText(item.text, MESSAGE_TEXT_MAX), uploadIds: [], at: new Date(at).toISOString() }, createdAt: at }
+          : { type: "reply", key, data: { key, text: capText(item.text, REPLY_TEXT_MAX), files: [] }, createdAt: at };
       const size = Buffer.byteLength(row.data.text);
+      // Stop at the first item past a cap, so what's kept is one unbroken newest stretch.
       if (taken >= maxMessages || bytes + size > maxBytes) {
-        skipped++;
-        continue;
+        capped = true;
+        break;
       }
       taken++;
       bytes += size;
       rows.push(row);
     }
     imported += chatLog.prepend(rows);
-    if (page.before === null) break;
+    if (capped || page.before === null) break;
     before = page.before;
   }
-  kvSet(db, IMPORT_DONE_KEY, JSON.stringify({ imported, skipped, at: (deps.now ?? Date.now)() }));
-  if (skipped) log.warn({ imported, skipped, maxMessages, maxBytes }, "chat import hit its cap; the oldest messages were left out");
-  else log.info({ imported }, "imported the pre-web chat");
-  return { imported, skipped };
+  kvSet(db, IMPORT_DONE_KEY, JSON.stringify({ imported, capped, undated, at: (deps.now ?? Date.now)() }));
+  if (capped) log.warn({ imported, maxMessages, maxBytes }, "chat import hit its cap; the older messages were left out");
+  if (undated) log.warn({ undated }, "chat import left out messages with no readable time");
+  log.info({ imported, capped, undated }, "imported the pre-web chat");
+  return { imported, capped, undated };
 }
 
 /** Runs the import on each workspace connect until it has finished once; never two at a time. */

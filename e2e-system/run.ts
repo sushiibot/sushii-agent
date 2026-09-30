@@ -46,6 +46,19 @@ const P = {
 for (const d of Object.values(P)) mkdirSync(d, { recursive: true });
 const DB_PATH = join(P.botData, "sushii-agent.db");
 
+/** A Main session from before the web app, which the bot imports once from the workspace (flows/history-import). */
+function seedPreWebSession(): void {
+  mkdirSync(join(P.piAgent, "chat"), { recursive: true });
+  const at = (s: number) => new Date(Date.UTC(2025, 0, 1, 12, 0, s)).toISOString();
+  const lines = [
+    { type: "session", version: 3, id: "e2e-pre-web", timestamp: at(0), cwd: P.wsHome },
+    { type: "message", id: "pre00001", parentId: null, timestamp: at(1), message: { role: "user", content: [{ type: "text", text: "[discord:100000000000000001 2025-01-01 12:00 UTC]\nE2E-PREWEB question from Discord" }] } },
+    { type: "message", id: "pre00002", parentId: "pre00001", timestamp: at(2), message: { role: "assistant", content: [{ type: "text", text: "E2E-PREWEB answer from before the app" }], stopReason: "stop" } },
+  ];
+  writeFileSync(join(P.piAgent, "chat", "2025-01-01T12-00-00-000Z_e2e-pre-web.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+seedPreWebSession();
+
 async function vapidPair() {
   const kp = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
   const jwk = await crypto.subtle.exportKey("jwk", kp.privateKey);

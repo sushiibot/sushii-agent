@@ -31,7 +31,6 @@
 
 	const unsent = $derived(
 		message.role === 'user' &&
-			!message.unverified &&
 			(message.delivery === 'failed' ||
 				message.delivery === 'queued' ||
 				message.delivery === 'queued-agent')

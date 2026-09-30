@@ -47,7 +47,7 @@ describe("importPiChat", () => {
     const h = setup();
     h.log.append("user", { key: CLIENT, text: "live", uploadIds: [], at: at(100) }, CLIENT);
     const out = await importPiChat({ db: h.db, log: h.log, source: source([u(1), a(2), u(3), a(4)], { pageSize: 3 }), now: h.now });
-    expect(out).toEqual({ imported: 4, skipped: 0 });
+    expect(out).toEqual({ imported: 4, capped: false, undated: 0 });
     expect(texts(h.log)).toEqual(["user:question 1", "assistant:answer 2", "user:question 3", "assistant:answer 4", "user:live"]);
     const [first, second] = historyPage(h.log, { limit: 100 }, { maxBytes: 2_000_000 }).items;
     expect(first).toEqual({ type: "user", id: expect.any(String), at: at(1), text: "question 1", attachments: [] });
@@ -61,7 +61,7 @@ describe("importPiChat", () => {
     h.log.append("reply", { key: "o1", text: "delivered", files: [] }, "o1");
     h.log.append("user", { key: CLIENT, text: "sent", uploadIds: [], at: at(49) }, CLIENT);
     const items = [u(10), a(20, { outboxId: "o1" }), u(30, { clientId: CLIENT }), a(40), u(60), a(70), { ...u(5), at: "not a time" }];
-    await importPiChat({ db: h.db, log: h.log, source: source(items), now: h.now });
+    expect(await importPiChat({ db: h.db, log: h.log, source: source(items), now: h.now })).toEqual({ imported: 2, capped: false, undated: 1 });
     expect(texts(h.log)).toEqual(["user:question 10", "assistant:answer 40", "assistant:delivered", "user:sent"]);
   });
 
@@ -82,7 +82,7 @@ describe("importPiChat", () => {
     expect(h.db.query("SELECT value FROM kv WHERE key = ?").get(IMPORT_DONE_KEY)).toBeNull();
     expect(h.db.query("SELECT value FROM kv WHERE key = ?").get(IMPORT_CUTOFF_KEY)).not.toBeNull();
 
-    expect(await importPiChat({ db: h.db, log: h.log, source: source(items, { pageSize: 2 }), now: h.now })).toEqual({ imported: 4, skipped: 0 });
+    expect(await importPiChat({ db: h.db, log: h.log, source: source(items, { pageSize: 2 }), now: h.now })).toEqual({ imported: 4, capped: false, undated: 0 });
     expect(texts(h.log)).toEqual(items.map((i) => (i.role === "user" ? `user:${i.text}` : `assistant:${i.text}`)));
   });
 
@@ -99,21 +99,31 @@ describe("importPiChat", () => {
 
   test("an empty history marks the import done", async () => {
     const h = setup();
-    expect(await importPiChat({ db: h.db, log: h.log, source: source([]), now: h.now })).toEqual({ imported: 0, skipped: 0 });
+    expect(await importPiChat({ db: h.db, log: h.log, source: source([]), now: h.now })).toEqual({ imported: 0, capped: false, undated: 0 });
     expect(h.db.query("SELECT value FROM kv WHERE key = ?").get(IMPORT_DONE_KEY)).not.toBeNull();
   });
 
-  test("the message and byte caps keep the newest and count what they left out, the same way on a resumed run", async () => {
+  test("the message cap keeps the newest stretch, the same way on a resumed run", async () => {
     const h = setup();
     const items = [u(1), a(2), u(3), a(4), u(5)];
     await expect(importPiChat({ db: h.db, log: h.log, source: source(items, { pageSize: 2, failOn: (n) => n === 2 }), now: h.now, maxMessages: 3 })).rejects.toThrow();
-    expect(await importPiChat({ db: h.db, log: h.log, source: source(items, { pageSize: 2 }), now: h.now, maxMessages: 3 })).toEqual({ imported: 1, skipped: 2 });
+    expect(await importPiChat({ db: h.db, log: h.log, source: source(items, { pageSize: 2 }), now: h.now, maxMessages: 3 })).toEqual({ imported: 1, capped: true, undated: 0 });
     expect(texts(h.log)).toEqual(["user:question 3", "assistant:answer 4", "user:question 5"]);
+  });
 
-    const b = setup();
-    const big = [u(1, { text: "x".repeat(100) }), a(2, { text: "y".repeat(100) }), u(3, { text: "z".repeat(100) })];
-    expect(await importPiChat({ db: b.db, log: b.log, source: source(big), now: b.now, maxBytes: 250 })).toEqual({ imported: 2, skipped: 1 });
-    expect(texts(b.log).map((t) => t.slice(0, 12))).toEqual(["assistant:yy", "user:zzzzzzz"]);
+  test("the byte cap stops at the first item over it, leaving no holes, even when older ones would fit", async () => {
+    const h = setup();
+    const items = [u(1, { text: "x" }), a(2, { text: "y".repeat(200) }), u(3, { text: "z".repeat(100) })];
+    expect(await importPiChat({ db: h.db, log: h.log, source: source(items), now: h.now, maxBytes: 250 })).toEqual({ imported: 1, capped: true, undated: 0 });
+    expect(texts(h.log)).toEqual([`user:${"z".repeat(100)}`]);
+  });
+
+  test("once a cap is reached the export isn't read further, so an unreadable old session can't block the done mark", async () => {
+    const h = setup();
+    const src = source([u(1), a(2), u(3)], { pageSize: 1, failOn: (n) => n >= 3 });
+    expect(await importPiChat({ db: h.db, log: h.log, source: src, now: h.now, maxMessages: 1 })).toEqual({ imported: 1, capped: true, undated: 0 });
+    expect(src.calls()).toBe(2);
+    expect(h.db.query("SELECT value FROM kv WHERE key = ?").get(IMPORT_DONE_KEY)).not.toBeNull();
   });
 
   test("workspace text is capped to the bot's own limits", async () => {
