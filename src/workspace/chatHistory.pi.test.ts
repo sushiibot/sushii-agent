@@ -131,7 +131,7 @@ describe("delivery markers on a real Pi session", () => {
     expect(entries[midRun + 1]!.message?.role).toBe("assistant");
     expect(entries.at(-1)).toBe(markers[1]!);
 
-    const page = chatHistoryResult.parse(reader.page({ limit: 40 }));
+    const page = chatHistoryResult.parse(await reader.page({ limit: 40 }));
     expect(page.before).toBeNull();
     expect(page.items).toEqual([
       { type: "user", id: expect.any(String), clientId: "01J00000000000000000000001", at: expect.any(String), text: "list my home", attachments: [] },
@@ -165,9 +165,9 @@ describe("delivery markers on a real Pi session", () => {
     expect(personal.currentSessionFile).not.toBe(oldFile);
     expect(linesOf(personal.currentSessionFile).find((e) => e.customType === SESSION_ENTRY)?.data).toEqual({ reason: "new" });
 
-    const newest = chatHistoryResult.parse(reader.page({ limit: 2 }));
+    const newest = chatHistoryResult.parse(await reader.page({ limit: 2 }));
     expect(newest.items.map((i) => (i.type === "assistant" || i.type === "user" ? i.text : i.type))).toEqual(["second", "second answer"]);
-    const older = chatHistoryResult.parse(reader.page({ before: newest.before!, limit: 40 }));
+    const older = chatHistoryResult.parse(await reader.page({ before: newest.before!, limit: 40 }));
     expect(older.items.map((i) => (i.type === "divider" ? `divider:${i.kind}` : i.type === "ask" ? i.question : i.text))).toEqual(["first", "first answer", "divider:new"]);
     expect(older.before).toBeNull();
     await personal.dispose();

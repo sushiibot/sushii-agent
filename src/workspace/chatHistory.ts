@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { constants, readdirSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   ID_MAX,
@@ -73,13 +74,7 @@ export class HistoryCursorError extends Error {
   }
 }
 
-interface ParsedFile {
-  size: number;
-  mtimeMs: number;
-  items: HistoryItem[];
-  startAt: string;
-  reason: SessionMarker["reason"];
-}
+type Converted = { items: HistoryItem[]; startAt: string; reason: SessionMarker["reason"] };
 
 interface RawEntry {
   type?: string;
@@ -98,17 +93,127 @@ interface RawEntry {
   };
 }
 
+/** An entry cut down to what the conversion reads: no image data, no tool arguments, no tool output. */
+interface SlimEntry {
+  type: string;
+  id: string;
+  parentId: string | null;
+  timestamp?: string;
+  customType?: string;
+  data?: unknown;
+  summary?: string;
+  message?: {
+    role?: string;
+    text: string;
+    stopReason?: string;
+    toolCallId?: string;
+    isError?: boolean;
+    tools: Array<{ id?: string; name: string; summary: string }>;
+  };
+}
+
 const str = (v: unknown): v is string => typeof v === "string";
 const idOf = (v: unknown): string | undefined => (str(v) && v.length > 0 && v.length <= ID_MAX ? v : undefined);
 const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max - 1)}…`);
 
+function slim(e: RawEntry & { id: string }): SlimEntry {
+  const out: SlimEntry = { type: str(e.type) ? e.type : "", id: e.id, parentId: str(e.parentId) ? e.parentId : null };
+  if (str(e.timestamp)) out.timestamp = e.timestamp;
+  if (str(e.customType)) out.customType = e.customType;
+  if (e.type === "custom" && (e.customType === DELIVERY_ENTRY || e.customType === SESSION_ENTRY)) out.data = e.data;
+  if (e.type === "compaction" && str(e.summary)) out.summary = e.summary;
+  if (e.type === "message" && e.message) {
+    const m = e.message;
+    const content = Array.isArray(m.content) ? (m.content as Array<Record<string, unknown>>) : [];
+    out.message = {
+      ...(str(m.role) ? { role: m.role } : {}),
+      text: m.role === "toolResult" ? "" : textOf(m.content),
+      ...(str(m.stopReason) ? { stopReason: m.stopReason } : {}),
+      ...(str(m.toolCallId) ? { toolCallId: m.toolCallId } : {}),
+      ...(m.isError === true ? { isError: true } : {}),
+      tools:
+        m.role === "assistant"
+          ? content
+              .filter((c) => c?.type === "toolCall" && str(c.name))
+              .map((c) => ({
+                ...(str(c.id) ? { id: c.id } : {}),
+                name: clip(c.name as string, ID_MAX),
+                summary: summarizeToolArgs(c.arguments).replace(/\s+/g, " ").trim().slice(0, TOOL_SUMMARY_MAX),
+              }))
+          : [],
+    };
+  }
+  return out;
+}
+
+/** A session file's entries as they are appended, indexed so the branch can be re-derived after each append. */
+class SessionIndex {
+  header: { timestamp?: string } | null = null;
+  private readonly byId = new Map<string, SlimEntry>();
+  private leaf: string | null = null;
+  private lines = 0;
+
+  /** One JSONL line; a line that doesn't parse (a torn write) is skipped. Throws when the file doesn't open with a session header. */
+  add(line: string): void {
+    const e = parseEntry(line) as RawEntry | null;
+    if (this.lines++ === 0 && e?.type !== "session") throw new Error("not a session file");
+    if (!e) return;
+    if (e.type === "session") {
+      this.header ??= str(e.timestamp) ? { timestamp: e.timestamp } : {};
+      return;
+    }
+    if (!str(e.id)) return;
+    this.byId.set(e.id, slim(e as RawEntry & { id: string }));
+    this.leaf = e.id;
+  }
+
+  /** The entries on the path from the last entry back to the root, root first (Pi's own leaf rule). */
+  branch(): SlimEntry[] {
+    const path: SlimEntry[] = [];
+    const seen = new Set<string>();
+    for (let e = this.leaf ? this.byId.get(this.leaf) : undefined; e && !seen.has(e.id); e = e.parentId ? this.byId.get(e.parentId) : undefined) {
+      seen.add(e.id);
+      path.push(e);
+    }
+    return path.reverse();
+  }
+}
+
+interface FileState {
+  dev: number;
+  ino: number;
+  /** Bytes consumed: everything up to and including the last complete line. */
+  offset: number;
+  /** The bytes just before `offset`, compared before each incremental read so an in-place rewrite forces a full re-parse. */
+  tail: Buffer;
+  index: SessionIndex;
+  size: number;
+  mtimeMs: number;
+  result: Converted | null;
+}
+
+const READ_CHUNK = 1024 * 1024;
+const TAIL_BYTES = 256;
+
+export type OpenFile = (path: string, flags: number) => Promise<FileHandle>;
+
 export class ChatHistoryReader {
-  private readonly cache = new Map<string, ParsedFile>();
+  private readonly cache = new Map<string, FileState>();
+  private queue: Promise<unknown> = Promise.resolve();
+  private newest: string | undefined;
 
-  constructor(private readonly opts: { agentDir: string; maxBytes?: number }) {}
+  constructor(private readonly opts: { agentDir: string; maxBytes?: number; open?: OpenFile }) {}
 
-  page(q: { before?: string; limit: number }): ChatHistoryResult {
+  /** Serialized: two pages at once would feed the same file's index twice. */
+  page(q: { before?: string; limit: number }): Promise<ChatHistoryResult> {
+    const run = this.queue.then(() => this.pageNow(q));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  private async pageNow(q: { before?: string; limit: number }): Promise<ChatHistoryResult> {
     const files = this.listFiles();
+    this.newest = files.at(-1);
     let fi = files.length - 1;
     let end = Number.POSITIVE_INFINITY;
     if (q.before !== undefined) {
@@ -116,14 +221,14 @@ export class ChatHistoryReader {
       const base = at > 0 ? q.before.slice(0, at) : "";
       fi = files.indexOf(base);
       if (fi === -1) throw new HistoryCursorError();
-      end = this.itemsOf(files, fi).findIndex((i) => i.id === q.before);
+      end = (await this.itemsOf(files, fi)).findIndex((i) => i.id === q.before);
       if (end === -1) throw new HistoryCursorError();
     }
     const maxBytes = this.opts.maxBytes ?? HISTORY_MAX_BYTES;
     const out: HistoryItem[] = [];
     let bytes = 0;
     for (; fi >= 0; fi--, end = Number.POSITIVE_INFINITY) {
-      const items = this.itemsOf(files, fi);
+      const items = await this.itemsOf(files, fi);
       for (let i = Math.min(end, items.length) - 1; i >= 0; i--) {
         const item = items[i]!;
         const size = Buffer.byteLength(JSON.stringify(item)) + 1;
@@ -158,72 +263,110 @@ export class ChatHistoryReader {
     return realRoots([this.opts.agentDir]).find((r) => basename(r) === SESSION_DIRS.chat) ?? null;
   }
 
-  /** A file's items, led by the boundary divider when an older session precedes it. */
-  private itemsOf(files: string[], fi: number): HistoryItem[] {
+  /** A file's items, led by the boundary divider when an older session precedes it. An unreadable file has none. */
+  private async itemsOf(files: string[], fi: number): Promise<HistoryItem[]> {
     const base = files[fi]!;
-    const parsed = this.parse(base);
+    const parsed = await this.parse(base);
     if (!parsed) return [];
     if (fi === 0) return parsed.items;
     const divider: HistoryItem = { type: "divider", id: `${base}:${START_ID}`, at: parsed.startAt, kind: parsed.reason };
     return [divider, ...parsed.items];
   }
 
-  private parse(base: string): ParsedFile | null {
+  private async parse(base: string): Promise<Converted | null> {
     const root = this.chatRoot();
     if (!root) return null;
     const file = confineSessionFile(join(root, `${base}.jsonl`), [root]);
     if (!file) return null;
-    let st;
+    let fh: FileHandle | undefined;
     try {
-      st = statSync(file);
-    } catch {
-      return null;
-    }
-    const cached = this.cache.get(base);
-    if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+      // Read through the fd confinement vetted, never by re-opening the path.
+      fh = await (this.opts.open ?? open)(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const st = await fh.stat();
+      if (!st.isFile() || st.nlink > 1) throw new Error("not a regular, singly linked file");
+      let state = this.cache.get(base);
+      if (state && (state.dev !== st.dev || state.ino !== st.ino || st.size < state.offset || !(await tailMatches(fh, state)))) state = undefined;
+      if (state?.result && state.size === st.size && state.mtimeMs === st.mtimeMs) {
+        this.touch(base, state);
+        return state.result;
+      }
+      state ??= { dev: st.dev, ino: st.ino, offset: 0, tail: Buffer.alloc(0), index: new SessionIndex(), size: 0, mtimeMs: 0, result: null };
+      // Dropped first, so a read that fails halfway can't leave a half-fed index behind.
       this.cache.delete(base);
-      this.cache.set(base, cached);
-      return cached;
+      await readNewLines(fh, state, st.size);
+      state.size = st.size;
+      state.mtimeMs = st.mtimeMs;
+      state.result = convertEntries(state.index.header, state.index.branch(), base);
+      this.touch(base, state);
+      return state.result;
+    } catch (err) {
+      this.cache.delete(base);
+      log.warn({ err, base }, "reading a chat session file failed; leaving it out of history");
+      return null;
+    } finally {
+      await fh?.close().catch(() => {});
     }
-    const parsed: ParsedFile = { size: st.size, mtimeMs: st.mtimeMs, ...convertSession(readFileSync(file, "utf8"), base) };
-    this.cache.set(base, parsed);
-    if (this.cache.size > CACHE_FILES) this.cache.delete(this.cache.keys().next().value!);
-    return parsed;
+  }
+
+  /** LRU, except the live (newest) file, which changes every turn and is the one worth keeping warm. */
+  private touch(base: string, state: FileState): void {
+    this.cache.delete(base);
+    this.cache.set(base, state);
+    if (this.cache.size <= CACHE_FILES) return;
+    for (const key of this.cache.keys()) {
+      if (key === this.newest) continue;
+      this.cache.delete(key);
+      return;
+    }
   }
 }
 
-/** The entries on the path from the file's last entry back to its root, root first (Pi's own leaf rule). */
-function branchOf(raw: string): { header: RawEntry | null; entries: RawEntry[] } {
-  let header: RawEntry | null = null;
-  const byId = new Map<string, RawEntry>();
-  let leaf: RawEntry | null = null;
-  // A torn last line (a write in progress) fails to parse and is skipped.
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
-    const e = parseEntry(line) as RawEntry | null;
-    if (!e) continue;
-    if (e.type === "session") {
-      header ??= e;
-      continue;
+async function tailMatches(fh: FileHandle, state: FileState): Promise<boolean> {
+  if (!state.tail.length) return true;
+  const buf = Buffer.alloc(state.tail.length);
+  const { bytesRead } = await fh.read(buf, 0, buf.length, state.offset - buf.length);
+  return bytesRead === buf.length && buf.equals(state.tail);
+}
+
+/** Feeds the complete lines past `state.offset` into the index. A trailing partial line (a write in progress) waits for the next read. */
+async function readNewLines(fh: FileHandle, state: FileState, size: number): Promise<void> {
+  const buf = Buffer.alloc(READ_CHUNK);
+  let pending: Buffer[] = [];
+  let pos = state.offset;
+  while (pos < size) {
+    const { bytesRead } = await fh.read(buf, 0, Math.min(buf.length, size - pos), pos);
+    if (bytesRead === 0) break;
+    pos += bytesRead;
+    const chunk = buf.subarray(0, bytesRead);
+    let start = 0;
+    for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, start)) {
+      const line = pending.length ? Buffer.concat([...pending, chunk.subarray(start, nl)]) : chunk.subarray(start, nl);
+      state.offset += line.length + 1;
+      pending = [];
+      if (line.length) state.index.add(line.toString("utf8"));
+      start = nl + 1;
     }
-    if (!str(e.id)) continue;
-    byId.set(e.id, e);
-    leaf = e;
+    if (start < chunk.length) pending.push(Buffer.from(chunk.subarray(start)));
   }
-  const path: RawEntry[] = [];
-  const seen = new Set<string>();
-  for (let e = leaf; e && str(e.id) && !seen.has(e.id); e = str(e.parentId) ? (byId.get(e.parentId) ?? null) : null) {
-    seen.add(e.id);
-    path.push(e);
-  }
-  return { header, entries: path.reverse() };
+  const n = Math.min(TAIL_BYTES, state.offset);
+  state.tail = Buffer.alloc(n);
+  if (n) await fh.read(state.tail, 0, n, state.offset - n);
 }
 
 type AssistantItem = Extract<HistoryItem, { type: "assistant" }>;
 type Tool = AssistantItem["tools"][number];
 
-export function convertSession(raw: string, base: string): Pick<ParsedFile, "items" | "startAt" | "reason"> {
-  const { header, entries } = branchOf(raw);
+export function convertSession(raw: string, base: string): Converted {
+  const index = new SessionIndex();
+  try {
+    for (const line of raw.split("\n")) if (line) index.add(line);
+  } catch {
+    return { items: [], startAt: "", reason: "new" };
+  }
+  return convertEntries(index.header, index.branch(), base);
+}
+
+function convertEntries(header: { timestamp?: string } | null, entries: SlimEntry[], base: string): Converted {
   const items: HistoryItem[] = [];
   const tools = new Map<string, Tool>();
   let open: AssistantItem | null = null;
@@ -232,8 +375,8 @@ export function convertSession(raw: string, base: string): Pick<ParsedFile, "ite
   let hidden = false;
   let recap = false;
   let reason: SessionMarker["reason"] | null = null;
-  const at = (e: RawEntry) => (str(e.timestamp) ? clip(e.timestamp, ID_MAX) : "");
-  const itemId = (e: RawEntry) => `${base}:${e.id}`;
+  const at = (e: SlimEntry) => (str(e.timestamp) ? clip(e.timestamp, ID_MAX) : "");
+  const itemId = (e: SlimEntry) => `${base}:${e.id}`;
 
   for (const e of entries) {
     if (e.type === "message" && e.message) {
@@ -241,10 +384,9 @@ export function convertSession(raw: string, base: string): Pick<ParsedFile, "ite
       if (m.role === "user") {
         open = null;
         turnReply = null;
-        const text = textOf(m.content);
-        hidden = isFlushPrompt(text);
+        hidden = isFlushPrompt(m.text);
         if (!hidden) {
-          const user = userItem(text, itemId(e), at(e));
+          const user = userItem(m.text, itemId(e), at(e));
           if (user) items.push(user);
         }
       } else if (m.role === "assistant" && !hidden) {
@@ -254,13 +396,12 @@ export function convertSession(raw: string, base: string): Pick<ParsedFile, "ite
           turnReply = open;
         }
         open.at = at(e);
-        const text = textOf(m.content);
-        if (text.trim() && m.stopReason !== "error" && m.stopReason !== "aborted") open.text = text;
-        for (const c of Array.isArray(m.content) ? (m.content as Array<Record<string, unknown>>) : []) {
-          if (c?.type !== "toolCall" || !str(c.name)) continue;
-          const tool: Tool = { name: clip(c.name, ID_MAX), summary: summarizeToolArgs(c.arguments).replace(/\s+/g, " ").trim().slice(0, TOOL_SUMMARY_MAX), ok: false };
+        // What the host delivers: the last assistant message's text, and nothing after an error or an abort.
+        open.text = m.stopReason === "error" || m.stopReason === "aborted" ? "" : m.text;
+        for (const c of m.tools) {
+          const tool: Tool = { name: c.name, summary: c.summary, ok: false };
           open.tools.push(tool);
-          if (str(c.id)) tools.set(c.id, tool);
+          if (c.id) tools.set(c.id, tool);
         }
       } else if (m.role === "toolResult" && !hidden && str(m.toolCallId)) {
         const tool = tools.get(m.toolCallId);
@@ -374,7 +515,7 @@ export function chatHistoryHandlers(opts: { principalId: string; reader: ChatHis
     [RPC_METHODS.chatHistory]: async (p) => {
       const params = chatHistoryParams.parse(p);
       if (params.principalId !== opts.principalId) throw new Error(`principal mismatch: this workspace serves ${opts.principalId}, got ${params.principalId}`);
-      return opts.reader.page(params);
+      return await opts.reader.page(params);
     },
   };
 }

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChatHistoryReader, HistoryCursorError, chatHistoryHandlers, convertSession } from "./chatHistory.ts";
+import { ChatHistoryReader, HistoryCursorError, chatHistoryHandlers, convertSession, type OpenFile } from "./chatHistory.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { chatHistoryResult, type HistoryItem } from "../orchestration/contracts.ts";
 
@@ -166,6 +167,27 @@ describe("convertSession", () => {
     expect(items[3]).toMatchObject({ outboxId: "r1", turnId: "t1" });
   });
 
+  test("the reply text is the last assistant message's, as the host delivers it: an empty or failed final message leaves none", () => {
+    const d = agentDir();
+    const file = session(d, "s1", [
+      user(WEB("01J00000000000000000000006", "check")),
+      assistant([text("Let me check"), call("c1", "bash", { command: "ls" })], "toolUse"),
+      result("c1"),
+      assistant([], "stop"),
+      user(WEB("01J00000000000000000000007", "again")),
+      assistant([text("Looking"), call("c2", "bash", { command: "ls" })], "toolUse"),
+      result("c2"),
+      assistant([text("half an answer")], "error"),
+      user(WEB("01J00000000000000000000008", "last")),
+      assistant([text("Checking"), call("c3", "bash", { command: "ls" })], "toolUse"),
+      result("c3"),
+      assistant([text("done")]),
+    ]);
+    const { items } = convertSession(readFileSync(file, "utf8"), "s1");
+    expect(labels(items)).toEqual(["user:check", "assistant:", "user:again", "assistant:", "user:last", "assistant:done"]);
+    expect(items[1]).toMatchObject({ tools: [{ name: "bash", ok: true }] });
+  });
+
   test("a compaction is a collapsed divider; only the leaf's branch is shown; a torn last line is skipped", () => {
     const d = agentDir();
     const file = session(d, "s1", [
@@ -181,7 +203,7 @@ describe("convertSession", () => {
   });
 });
 
-describe("ChatHistoryReader", () => {
+describe("ChatHistoryReader", async () => {
   function threeSessions() {
     const d = agentDir();
     session(d, "2026-09-28T10-00-00-000Z_a", [user(WEB("01J0000000000000000000000A", "a1")), assistant([text("A1")])]);
@@ -198,12 +220,12 @@ describe("ChatHistoryReader", () => {
     return d;
   }
 
-  test("pages walk back through session files, oldest first within a page, with a divider at each boundary", () => {
+  test("pages walk back through session files, oldest first within a page, with a divider at each boundary", async () => {
     const reader = new ChatHistoryReader({ agentDir: threeSessions() });
     const pages: HistoryItem[][] = [];
     let before: string | undefined;
     for (;;) {
-      const page = chatHistoryResult.parse(reader.page({ before, limit: 2 }));
+      const page = chatHistoryResult.parse(await reader.page({ before, limit: 2 }));
       pages.push(page.items);
       if (page.before === null) break;
       expect(page.before).toBe(page.items[0]!.id);
@@ -213,48 +235,115 @@ describe("ChatHistoryReader", () => {
     expect(pages[1]![1]).toMatchObject({ id: "2026-09-30T10-00-00-000Z_c:start", type: "divider" });
   });
 
-  test("a page never exceeds the byte budget, but always holds at least one item", () => {
+  test("a page never exceeds the byte budget, but always holds at least one item", async () => {
     const d = agentDir();
     session(d, "s1", [user(WEB("01J00000000000000000000001", "x".repeat(600))), assistant([text("y".repeat(600))])]);
     const reader = new ChatHistoryReader({ agentDir: d, maxBytes: 1000 });
-    const first = reader.page({ limit: 40 });
+    const first = await reader.page({ limit: 40 });
     expect(labels(first.items)).toEqual([`assistant:${"y".repeat(600)}`]);
     expect(first.before).toBe("s1:s10001");
-    const second = reader.page({ before: first.before!, limit: 40 });
+    const second = await reader.page({ before: first.before!, limit: 40 });
     expect(second.items.length).toBe(1);
     expect(second.before).toBeNull();
   });
 
-  test("a cursor naming an unknown file or entry is an error, never a fallback to the newest page", () => {
+  test("a cursor naming an unknown file or entry is an error, never a fallback to the newest page", async () => {
     const reader = new ChatHistoryReader({ agentDir: threeSessions() });
     for (const before of ["nope:abc", "../../etc/passwd:x", "2026-09-30T10-00-00-000Z_c:ffffffff", "no-colon", "2026-09-30T10-00-00-000Z_c"]) {
-      expect(() => reader.page({ before, limit: 5 })).toThrow(HistoryCursorError);
+      await expect(reader.page({ before, limit: 5 })).rejects.toThrow(HistoryCursorError);
     }
   });
 
-  test("an empty or missing chat dir is an empty history", () => {
+  test("an empty or missing chat dir is an empty history", async () => {
     const d = mkdtempSync(join(tmpdir(), "ws-chat-history-"));
     dirs.push(d);
-    expect(new ChatHistoryReader({ agentDir: d }).page({ limit: 5 })).toEqual({ items: [], before: null });
+    expect(await new ChatHistoryReader({ agentDir: d }).page({ limit: 5 })).toEqual({ items: [], before: null });
   });
 
-  test("a symlink in chat/ pointing outside the session roots is not read", () => {
+  test("a symlink in chat/ pointing outside the session roots is not read", async () => {
     const d = agentDir();
     const outside = mkdtempSync(join(tmpdir(), "ws-chat-outside-"));
     dirs.push(outside);
     mkdirSync(join(outside, "chat"));
     session(outside, "evil", [user(WEB("01J00000000000000000000009", "secret"))]);
     symlinkSync(join(outside, "chat", "evil.jsonl"), join(d, "chat", "evil.jsonl"));
-    expect(new ChatHistoryReader({ agentDir: d }).page({ limit: 5 }).items).toEqual([]);
+    expect((await new ChatHistoryReader({ agentDir: d }).page({ limit: 5 })).items).toEqual([]);
   });
 
-  test("a file that grows is re-read; an unchanged one comes from the cache", () => {
+  /** Wraps the reader's file opening so a test can count reads, fail a file, or act between open and read. */
+  function openSeam(hook: { fail?: (path: string) => boolean; afterOpen?: (path: string) => void; bytes?: { n: number } } = {}): OpenFile {
+    return async (path, flags) => {
+      if (hook.fail?.(path)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+      const fh = await open(path, flags);
+      hook.afterOpen?.(path);
+      if (hook.bytes) {
+        const read = fh.read.bind(fh) as (...args: unknown[]) => Promise<{ bytesRead: number; buffer: Buffer }>;
+        (fh as unknown as { read: unknown }).read = async (...args: unknown[]) => {
+          const r = await read(...args);
+          hook.bytes!.n += r.bytesRead;
+          return r;
+        };
+      }
+      return fh;
+    };
+  }
+
+  const assistantLine = (id: string, parentId: string, body: string) =>
+    JSON.stringify({ type: "message", id, parentId, timestamp: at(), message: { role: "assistant", content: [text(body)], stopReason: "stop" } }) + "\n";
+
+  test("a file that grows is read only past what was already parsed; an unchanged one comes from the cache", async () => {
     const d = agentDir();
-    const file = session(d, "s1", [user(WEB("01J00000000000000000000001", "one"))]);
+    const file = session(d, "s1", [user(WEB("01J00000000000000000000001", "one")), assistant([text("x".repeat(50_000))])]);
+    const bytes = { n: 0 };
+    const reader = new ChatHistoryReader({ agentDir: d, open: openSeam({ bytes }) });
+    const first = await reader.page({ limit: 5 });
+    expect(labels(first.items)).toEqual(["user:one", `assistant:${"x".repeat(50_000)}`]);
+    expect((await reader.page({ limit: 5 })).items[0]).toBe(first.items[0]!);
+
+    bytes.n = 0;
+    const line = assistantLine("late0001", "s10001", "two");
+    // A write in progress: the partial line waits, then the rest of it is read on the next page.
+    appendFileSync(file, line.slice(0, 20));
+    expect(labels((await reader.page({ limit: 5 })).items).at(-1)).toBe(`assistant:${"x".repeat(50_000)}`);
+    appendFileSync(file, line.slice(20));
+    expect(labels((await reader.page({ limit: 5 })).items)).toEqual(["user:one", "assistant:two"]);
+    expect(bytes.n).toBeLessThan(2_000);
+  });
+
+  test("a file rewritten in place, even to a larger size, is parsed again from the start", async () => {
+    const d = agentDir();
+    const file = session(d, "s1", [user(WEB("01J00000000000000000000001", "one")), assistant([text("first")])]);
     const reader = new ChatHistoryReader({ agentDir: d });
-    expect(labels(reader.page({ limit: 5 }).items)).toEqual(["user:one"]);
-    appendFileSync(file, JSON.stringify({ type: "message", id: "late0001", parentId: "s10000", timestamp: at(), message: { role: "assistant", content: [text("two")], stopReason: "stop" } }) + "\n");
-    expect(labels(reader.page({ limit: 5 }).items)).toEqual(["user:one", "assistant:two"]);
+    expect(labels((await reader.page({ limit: 5 })).items)).toEqual(["user:one", "assistant:first"]);
+    const raw = readFileSync(file, "utf8").replace('"first"', '"FIRST"');
+    writeFileSync(file, raw + assistantLine("late0001", "s10001", "later"));
+    expect(labels((await reader.page({ limit: 5 })).items)).toEqual(["user:one", "assistant:later"]);
+    writeFileSync(file, raw);
+    expect(labels((await reader.page({ limit: 5 })).items)).toEqual(["user:one", "assistant:FIRST"]);
+  });
+
+  test("a file that can't be read is left out without failing the page; a cursor into it is an unknown cursor", async () => {
+    const d = threeSessions();
+    let failing = "2026-09-29T10-00-00-000Z_b";
+    const reader = new ChatHistoryReader({ agentDir: d, open: openSeam({ fail: (p) => p.includes(failing) }) });
+    const page = await reader.page({ limit: 40 });
+    expect(labels(page.items)).toEqual(["user:a1", "assistant:A1", "divider:new", "user:c1", "assistant:C1"]);
+    await expect(reader.page({ before: "2026-09-29T10-00-00-000Z_b:0Z_b0001", limit: 5 })).rejects.toThrow(HistoryCursorError);
+
+    failing = "none";
+    const cursor = (await reader.page({ limit: 40 })).items.find((i) => i.id === "2026-09-29T10-00-00-000Z_b:0Z_b0001")!.id;
+    rmSync(join(d, "chat", "2026-09-29T10-00-00-000Z_b.jsonl"));
+    await expect(reader.page({ before: cursor, limit: 5 })).rejects.toThrow("unknown history cursor");
+    expect(labels((await reader.page({ limit: 40 })).items)).toEqual(["user:a1", "assistant:A1", "divider:new", "user:c1", "assistant:C1"]);
+  });
+
+  test("reads come from the descriptor that was vetted, not the path re-opened after a swap", async () => {
+    const d = agentDir();
+    const file = session(d, "s1", [user(WEB("01J00000000000000000000001", "real"))]);
+    const decoy = join(d, "decoy.jsonl");
+    writeFileSync(decoy, readFileSync(file, "utf8").replace('real"', 'decoy"'));
+    const reader = new ChatHistoryReader({ agentDir: d, open: openSeam({ afterOpen: () => renameSync(decoy, file) }) });
+    expect(labels((await reader.page({ limit: 5 })).items)).toEqual(["user:real"]);
   });
 });
 
