@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { WorkspaceConfig } from "./config.ts";
+import { DEFAULT_ECONOMY, type WorkspaceConfig } from "./config.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { FLUSH_MARKER, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
@@ -13,8 +13,6 @@ import type { ChatDeliverParams } from "../orchestration/contracts.ts";
 
 // Real Pi 0.99.1 sessions from the workspace factory, a real git home; the only fake is fetch.
 const OPENROUTER_BASE = "http://openrouter.test/v1";
-const DEFAULT_WINDOW = 800_000;
-const MAX_TOKENS = 65_536;
 
 let root: string;
 let bodies: Array<{ messages: Array<{ role: string; content: unknown }> }>;
@@ -130,9 +128,9 @@ const user = (messageId: string, text: string) => ({
 });
 
 describe("memory upkeep on a real Pi session", () => {
-  test("the compaction trigger is the model window minus the reserve override", async () => {
+  test("the compaction trigger sits at the configured token count, not near the window's edge", async () => {
     const { session } = await createPiChatSessionFactory(config())({ sessionFile: null });
-    expect(compactionTrigger(session)).toBe(DEFAULT_WINDOW - MAX_TOKENS);
+    expect(compactionTrigger(session)).toBe(DEFAULT_ECONOMY.compactTokens);
     session.dispose();
   });
 
@@ -158,7 +156,7 @@ describe("memory upkeep on a real Pi session", () => {
     const { personal, delivered, home, log } = await host();
     expect(readFileSync(join(home, "USER.md"), "utf8")).not.toContain("Likes tea");
     // The reply's usage puts the context inside the flush band, below Pi's own trigger.
-    script({ text: "big answer", promptTokens: 700_000 });
+    script({ text: "big answer", promptTokens: 180_000 });
     script({ tool: { name: "edit", args: { path: "USER.md", edits: [{ oldText: "# USER.md", newText: "# USER.md\n- Likes tea. (src: 2026-09-29)" }] } } }, { text: "NO_REPLY" });
     await personal.handleMessage(user("m1", "long question"));
     await until(() => bodies.length === 3);
@@ -190,8 +188,7 @@ describe("memory upkeep on a real Pi session", () => {
   }, 20_000);
 
   test("a compaction with no flush this cycle leaves a handoff in today's daily note", async () => {
-    writeFileSync(join(root, "agent", "settings.json"), JSON.stringify({ compaction: { keepRecentTokens: 1 } }));
-    const cfg = config();
+    const cfg = { ...config(), economy: { ...DEFAULT_ECONOMY, keepRecentTokens: 1 } };
     await scaffoldHome(cfg.home);
     const { session } = await createPiChatSessionFactory(cfg)({ sessionFile: null });
     script({ text: "Sure, the plan is drafted. Open: book the hotel." }, { text: "and more" }, { text: "## Summary\ncompacted" }, { text: "## Prefix\ncompacted" });

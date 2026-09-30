@@ -32,6 +32,108 @@ export interface WorkspaceConfig {
   judgeModel?: string;
   /** Model id on Pi's `openai` provider for the judge while the shared backend is on ChatGPT. */
   judgeChatgptModel?: string;
+  /** Context thresholds of the main session; defaults when absent. */
+  economy?: EconomyConfig;
+  /** The fixed `!model` list; DEFAULT_MODELS when absent. */
+  models?: ModelEntry[];
+  /** TASKS.md staleness and cap rules; DEFAULT_TASK_RULES when absent. */
+  tasks?: TaskRules;
+}
+
+export interface EconomyConfig {
+  /** Past this many context tokens, old tool output is cleared. */
+  hygieneTokens: number;
+  /** Pi auto-compacts past this many tokens (at most COMPACT_MAX_FILL of the window). */
+  compactTokens: number;
+  /** Tokens kept verbatim after a compaction. */
+  keepRecentTokens: number;
+  /** Idle minutes before a big session rotates; OPENROUTER_IDLE_ROTATE_MIN caps it on OpenRouter. */
+  idleRotateMin: number;
+  /** A session rotates at idle only past this many tokens. */
+  idleRotateTokens: number;
+}
+
+export const DEFAULT_ECONOMY: EconomyConfig = {
+  hygieneTokens: 150_000,
+  compactTokens: 200_000,
+  keepRecentTokens: 40_000,
+  idleRotateMin: 25,
+  idleRotateTokens: 100_000,
+};
+
+/** OpenRouter's sticky provider routing lapses after 10 idle minutes; rotate before it does. */
+export const OPENROUTER_IDLE_ROTATE_MIN = 8;
+
+export type ModelBackend = "chatgpt" | "openrouter";
+
+export interface ModelEntry {
+  alias: string;
+  backend: ModelBackend;
+  /** Model id on Pi's `openai` provider (chatgpt) or on OpenRouter. */
+  id: string;
+}
+
+export const DEFAULT_MODELS_SPEC = "sol=chatgpt:gpt-6.1-sol,luna=chatgpt:gpt-6-luna";
+
+export interface TaskRules {
+  staleDaysQuick: number;
+  autodropDaysQuick: number;
+  staleDaysProject: number;
+  autodropDaysProject: number;
+  /** Open quick items plus projects in the index. */
+  maxOpen: number;
+}
+
+export const DEFAULT_TASK_RULES: TaskRules = { staleDaysQuick: 2, autodropDaysQuick: 5, staleDaysProject: 7, autodropDaysProject: 21, maxOpen: 15 };
+
+export function economyOf(config: Pick<WorkspaceConfig, "economy">): EconomyConfig {
+  return config.economy ?? DEFAULT_ECONOMY;
+}
+
+export function taskRulesOf(config: Pick<WorkspaceConfig, "tasks">): TaskRules {
+  return config.tasks ?? DEFAULT_TASK_RULES;
+}
+
+/** `alias=backend:id,…`; throws WorkspaceConfigError on a malformed or duplicate entry. */
+export function parseModelList(spec: string): ModelEntry[] {
+  const entries: ModelEntry[] = [];
+  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
+    const m = /^([a-z0-9][a-z0-9._-]*)=(chatgpt|openrouter):(\S+)$/i.exec(part);
+    if (!m) throw new WorkspaceConfigError(`WORKSPACE_MODELS entry must be alias=chatgpt:<id> or alias=openrouter:<id>, got "${part}"`);
+    const alias = m[1]!.toLowerCase();
+    if (entries.some((e) => e.alias === alias)) throw new WorkspaceConfigError(`WORKSPACE_MODELS lists "${alias}" twice`);
+    entries.push({ alias, backend: m[2]!.toLowerCase() as ModelBackend, id: m[3]! });
+  }
+  if (!entries.length) throw new WorkspaceConfigError("WORKSPACE_MODELS is empty");
+  return entries;
+}
+
+function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  if (!/^\d+$/.test(raw) || Number(raw) <= 0) throw new WorkspaceConfigError(`${name} must be a positive whole number, got "${raw}"`);
+  return Number(raw);
+}
+
+function loadEconomy(env: NodeJS.ProcessEnv): EconomyConfig {
+  return {
+    hygieneTokens: positiveInt(env, "WORKSPACE_HYGIENE_TOKENS", DEFAULT_ECONOMY.hygieneTokens),
+    compactTokens: positiveInt(env, "WORKSPACE_COMPACT_TOKENS", DEFAULT_ECONOMY.compactTokens),
+    keepRecentTokens: positiveInt(env, "WORKSPACE_KEEP_RECENT_TOKENS", DEFAULT_ECONOMY.keepRecentTokens),
+    idleRotateMin: positiveInt(env, "WORKSPACE_IDLE_ROTATE_MIN", DEFAULT_ECONOMY.idleRotateMin),
+    idleRotateTokens: positiveInt(env, "WORKSPACE_IDLE_ROTATE_TOKENS", DEFAULT_ECONOMY.idleRotateTokens),
+  };
+}
+
+function loadTaskRules(env: NodeJS.ProcessEnv): TaskRules {
+  const d = DEFAULT_TASK_RULES;
+  return {
+    staleDaysQuick: positiveInt(env, "WORKSPACE_TASK_STALE_DAYS_QUICK", d.staleDaysQuick),
+    autodropDaysQuick: positiveInt(env, "WORKSPACE_TASK_AUTODROP_DAYS_QUICK", d.autodropDaysQuick),
+    staleDaysProject: positiveInt(env, "WORKSPACE_TASK_STALE_DAYS", d.staleDaysProject),
+    autodropDaysProject: positiveInt(env, "WORKSPACE_TASK_AUTODROP_DAYS", d.autodropDaysProject),
+    maxOpen: positiveInt(env, "WORKSPACE_TASK_MAX_OPEN", d.maxOpen),
+  };
 }
 
 export const DEFAULT_HEARTBEAT_MINUTES = 120;
@@ -99,5 +201,8 @@ export function loadWorkspaceConfig(env: NodeJS.ProcessEnv = process.env): Works
     autoMode: autoMode === "on",
     judgeModel: env.WORKSPACE_JUDGE_MODEL?.trim() || DEFAULT_JUDGE_MODEL,
     judgeChatgptModel: env.WORKSPACE_JUDGE_CHATGPT_MODEL?.trim() || DEFAULT_JUDGE_CHATGPT_MODEL,
+    economy: loadEconomy(env),
+    models: parseModelList(env.WORKSPACE_MODELS?.trim() || DEFAULT_MODELS_SPEC),
+    tasks: loadTaskRules(env),
   };
 }

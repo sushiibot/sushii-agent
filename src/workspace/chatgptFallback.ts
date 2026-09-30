@@ -192,8 +192,9 @@ function lastAssistant(context: AgentBeforeSettleEvent["context"]): { entryId: s
 
 export interface FallbackExtensionDeps<M extends ModelRef> {
   selector: BackendSelector;
-  primary: M | undefined;
-  fallback: M;
+  /** A getter when the owner's `!model` choice can change it between turns. */
+  primary: M | undefined | (() => M | undefined);
+  fallback: M | (() => M);
   signedIn: () => Promise<boolean>;
   /** The live session's setModel; checks auth against the credential store rather than Pi's cached snapshot. */
   setModel: (model: M) => Promise<void>;
@@ -206,22 +207,26 @@ export interface FallbackExtensionDeps<M extends ModelRef> {
  * or auth error it switches to OpenRouter and re-runs that turn once, inside the same run.
  */
 export function createModelFallbackExtension<M extends ModelRef>(deps: FallbackExtensionDeps<M>): ExtensionFactory {
-  const { selector, primary, fallback, log } = deps;
+  const { selector, log } = deps;
+  const primaryModel = (): M | undefined => (typeof deps.primary === "function" ? deps.primary() : deps.primary);
+  const fallbackModel = (): M => (typeof deps.fallback === "function" ? deps.fallback() : deps.fallback);
+  const same = (a: ModelRef | undefined, b: ModelRef) => a?.provider === b.provider && a.id === b.id;
   return (pi) => {
     let retriedThisRun = false;
 
-    // Moves the session onto the selector's current backend.
+    // Moves the session onto the selector's current backend and the chosen model there.
     const align = async (current: ModelRef | undefined): Promise<void> => {
-      if (!primary) return;
-      const want = selector.select(await deps.signedIn());
-      const onChatGpt = current?.provider === CHATGPT_PROVIDER;
+      const primary = primaryModel();
+      const fallback = fallbackModel();
+      const want = primary ? selector.select(await deps.signedIn()) : "openrouter";
       try {
-        if (want === "chatgpt" && !onChatGpt) {
+        if (want === "chatgpt" && primary && !same(current, primary)) {
           await deps.setModel(primary);
-          log.info({ model: primary.id }, "back on ChatGPT");
-        } else if (want === "openrouter" && onChatGpt) {
+          log.info({ model: primary.id }, current?.provider === CHATGPT_PROVIDER ? "switched ChatGPT model" : "back on ChatGPT");
+        } else if (want === "openrouter" && !same(current, fallback)) {
           await deps.setModel(fallback);
-          log.warn({ model: fallback.id, until: selector.coolingDownUntil }, "ChatGPT unavailable; turn runs on OpenRouter");
+          if (current?.provider === CHATGPT_PROVIDER && primary) log.warn({ model: fallback.id, until: selector.coolingDownUntil }, "ChatGPT unavailable; turn runs on OpenRouter");
+          else log.info({ model: fallback.id }, "switched OpenRouter model");
         }
       } catch (err) {
         const message = `Authentication failed: ${messageOf(err)}`;
@@ -254,6 +259,7 @@ export function createModelFallbackExtension<M extends ModelRef>(deps: FallbackE
       const decision = selector.onChatGptFailure(error);
       if (!decision) return undefined;
       retriedThisRun = true;
+      const fallback = fallbackModel();
       try {
         await deps.setModel(fallback);
       } catch (err) {

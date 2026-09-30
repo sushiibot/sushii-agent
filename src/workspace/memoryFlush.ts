@@ -10,11 +10,12 @@ type Log = { info: (obj: object, msg: string) => void; warn: (obj: object, msg: 
 /** Every flush prompt starts with this; chat messages always start with a header, so they can't spoof it. */
 export const FLUSH_MARKER = "[memory flush]";
 
-export type FlushReason = "new" | "compaction";
+export type FlushReason = "new" | "compaction" | "rotate";
 
 const FLUSH_WHY: Record<FlushReason, string> = {
   new: "The session is about to reset.",
   compaction: "The context is about to be compacted; older detail will be summarized away.",
+  rotate: "The session is idle and about to be replaced by a fresh one that starts from a recap.",
 };
 
 export function flushPrompt(reason: FlushReason): string {
@@ -47,15 +48,15 @@ export function newMinFlushMs(budgetMs: number): number {
 }
 
 /**
- * Room left below Pi's compaction trigger for the flush turn's own reads and edits. Pi also compacts
- * mid-run and at run end before settling (agent-session.js 402/519, 1377), so a tool-heavy turn often
+ * Room left below Pi's compaction trigger for the flush turn's own reads and edits; sized from the trigger,
+ * since 15% of a large window can exceed the trigger itself. Pi also compacts mid-run and at run end before settling (agent-session.js 402/519, 1377), so a tool-heavy turn often
  * jumps the band; the session_before_compact handoff is the expected path for those.
  */
-export function flushMarginTokens(contextWindow: number): number {
-  return Math.max(20_000, Math.floor(contextWindow * 0.15));
+export function flushMarginTokens(trigger: number): number {
+  return Math.max(20_000, Math.floor(trigger * 0.15));
 }
 
-const MEMORY_FILES = ["USER.md", "MEMORY.md", "DREAMS.md"];
+const MEMORY_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md"];
 
 /** A cheap fingerprint (name, size, mtime) of the tracked memory files; any write changes it. */
 export function memoryFilesSignature(home: string): string {
@@ -87,6 +88,7 @@ export function memoryFilesSignature(home: string): string {
     }
   };
   walk("memory");
+  walk("tasks");
   return parts.join("\n");
 }
 

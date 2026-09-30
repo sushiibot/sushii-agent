@@ -39,6 +39,14 @@ const VOICE_MARKER = "voice message, transcribed";
 const DISCORD_EPOCH_MS = 1420070400000n;
 const SNOWFLAKE = /^\d{17,20}$/;
 const CONTEXT_CUSTOM_TYPE = "workspace_context";
+const RECAP_CUSTOM_TYPE = "workspace_recap";
+const IDLE_CHECK_MS = 60_000;
+/** How long a workspace-initiated ask (the stale-task review) stays answerable. */
+const OWNER_ASK_TIMEOUT_MS = 24 * 60 * 60_000;
+/** How long `!compact` waits for a running turn to end before compacting anyway. */
+const COMPACT_WAIT_MS = 5 * 60_000;
+export const STOP_NOTE =
+  "[note] drk stopped the previous turn with !stop. If it concerned an item in TASKS.md, reconcile that item now (mark it [-] with a one-line reason, or update it).";
 /** How long a pre-compaction flush's abort may take before the chain moves on. */
 const FLUSH_ABORT_MS = 10_000;
 
@@ -98,13 +106,40 @@ export interface MemoryHooks {
   flushRanThisCycle?(session: ChatSession): boolean;
   /** Cap on one flush turn. Default FLUSH_TIMEOUT_MS for chat/new, COMPACTION_FLUSH_TIMEOUT_MS before compaction. */
   flushTimeoutMs?: number;
-  /** Default flushMarginTokens(contextWindow). */
+  /** Default flushMarginTokens(trigger). */
   flushMarginTokens?: number;
   /** The whole chat/new, flush included. Default NEW_BUDGET_MS. */
   newBudgetMs?: number;
 }
 
 export type FlushOutcome = "done" | "timeout" | "cut" | "failed" | "skipped";
+
+/** Context upkeep beyond memory: `!compact` and idle rotation. Tests supply fakes. */
+export interface ContextHooks {
+  /** Compacts `session` now; tokens before and (estimated) after. */
+  compact(session: ChatSession): Promise<{ tokensBefore: number; tokensAfter: number | null }>;
+  /** A recap of `session` for the next one to start from; null when none could be made. */
+  recap(session: ChatSession): Promise<string | null>;
+  /** How long `session` must be idle before it rotates. */
+  idleRotateMs(session: ChatSession): number;
+  /** Rotation only happens above this many context tokens. */
+  rotateTokens: number;
+  /** Work for main still running outside the session (a background subagent): no rotation meanwhile. */
+  busy?(): boolean;
+  /** After a rotation, for the run log. */
+  onRotated?(r: RotationRecord): void;
+  /** How often idleness is checked. Default 60s; null leaves it to checkIdle() calls. */
+  checkEveryMs?: number | null;
+}
+
+export interface RotationRecord {
+  previousSessionFile: string;
+  sessionFile: string;
+  tokensBefore: number;
+  tokensAfter: number | null;
+  recapped: boolean;
+  startedAt: Date;
+}
 
 /** The flush prompt whose run the next agent_start opens; abandoned once the flush timed out or was cut. */
 interface HiddenPrompt {
@@ -130,6 +165,9 @@ export interface PersonalSessionOptions {
   memory?: MemoryHooks;
   /** How long an extension dialog waits for the owner. Default ASK_TIMEOUT_MS. */
   askTimeoutMs?: number;
+  context?: ContextHooks;
+  /** Idle-time clock (ms). Default Date.now. */
+  clock?: () => number;
 }
 
 interface OpenRun {
@@ -232,10 +270,16 @@ export class PersonalSession {
   private queued = 0;
   private reloadDue = false;
   private readonly asks: ChatAsks;
+  // Asks the workspace itself sends outside any turn (the TASKS.md review): never cancelled by a run ending.
+  private readonly ownerAsks: ChatAsks;
   /** Bound into every session the factory builds, so extension dialogs reach the owner as asks. */
   readonly ui: ExtensionUIContext;
   private readonly wakes = new Map<string, WakeState>();
   private readonly wakesDone = new Set<string>();
+  private lastActivityAt = 0;
+  // lastActivityAt of the idle window that already rotated (or tried to).
+  private rotatedWindow = -1;
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
@@ -244,6 +288,16 @@ export class PersonalSession {
     this.newId = opts.newId ?? ulid;
     this.asks = new ChatAsks({ deliver: (ask) => this.deliverAsk(ask), timeoutMs: opts.askTimeoutMs, newId: this.newId });
     this.ui = createHeadlessUIContext(this.asks);
+    this.ownerAsks = new ChatAsks({ deliver: (ask) => this.deliverOwnerAsk(ask), timeoutMs: OWNER_ASK_TIMEOUT_MS, newId: this.newId });
+    this.lastActivityAt = this.clock();
+  }
+
+  private clock(): number {
+    return this.opts.clock?.() ?? Date.now();
+  }
+
+  private touch(): void {
+    this.lastActivityAt = this.clock();
   }
 
   get state(): "idle" | "streaming" {
@@ -289,6 +343,11 @@ export class PersonalSession {
     return this.resetting;
   }
 
+  /** The live chat session, or null before start(). */
+  get chatSession(): ChatSession | null {
+    return this.session;
+  }
+
   get currentSessionFile(): string {
     return this.sessionFile;
   }
@@ -300,7 +359,19 @@ export class PersonalSession {
     const reopen = recorded && exists(recorded.chatSessionFile) ? recorded.chatSessionFile : null;
     const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen, ui: this.ui });
     this.attach(session, sessionFile);
-    if (recorded?.chatSessionFile !== sessionFile) writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile });
+    // A rotation's recap lives only in memory until the new session's first message; a restart before then re-seeds it.
+    const stash = recorded?.recap;
+    if (stash && reopen === null && stash.sessionFile === recorded?.chatSessionFile) {
+      await this.seedRecap(session, stash.text).catch((err) => log.warn({ err }, "re-seeding the rotation recap failed"));
+      writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: { sessionFile, text: stash.text } });
+      log.info({ sessionFile }, "re-seeded the recap of the rotated session");
+    } else if (recorded?.chatSessionFile !== sessionFile) writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: undefined });
+    this.touch();
+    const every = this.opts.context?.checkEveryMs === undefined ? IDLE_CHECK_MS : this.opts.context.checkEveryMs;
+    if (this.opts.context && every !== null && !this.idleTimer) {
+      this.idleTimer = setInterval(() => void this.checkIdle().catch((err) => log.warn({ err }, "idle rotation check failed")), every);
+      this.idleTimer.unref?.();
+    }
     log.info({ sessionFile, reopened: reopen !== null }, "personal session ready");
   }
 
@@ -325,12 +396,13 @@ export class PersonalSession {
   }
 
   async handleMessage(params: ChatMessageParams): Promise<ChatMessageResult> {
+    this.touch();
     const id = params.messageId;
     if (this.isSeen(id)) return DUPLICATE;
     const original = this.inFlight.get(id);
     if (original) return original.then(() => DUPLICATE);
     // Ahead of the chain: the run waiting on the dialog holds up everything queued behind it.
-    const answered = params.kind === "user" ? this.asks.answer(id, params.text) : null;
+    const answered = params.kind === "user" ? (this.ownerAsks.answer(id, params.text, { foreignIds: true }) ?? this.asks.answer(id, params.text)) : null;
     if (answered) {
       this.recentIds.add(id);
       return answered === "answered" ? { accepted: true, mode: "prompt" } : DUPLICATE;
@@ -375,24 +447,44 @@ export class PersonalSession {
       const aborted = session.isStreaming;
       this.dropQueued(session);
       if (this.run) this.run.abortRequested = true;
+      // Lands before the next prompt, like context that arrives mid-run.
+      if (aborted && this.run && !this.run.hidden) this.pendingContext.push({ messageId: `stop:${this.newId()}`, text: STOP_NOTE });
       await session.abort();
       return { aborted };
     }).finally(release);
   }
 
   handleNew(): Promise<ChatNewResult> {
+    return this.replaceSession("new").then(({ sessionFile }) => ({ sessionFile }));
+  }
+
+  /**
+   * Swaps in a fresh session: aborts the old one's run, flushes memory, and for a rotation seeds the new
+   * session with a recap of the old one. Messages arriving meanwhile queue behind it on the chain and
+   * land in the new session.
+   */
+  private replaceSession(
+    reason: "new" | "rotate",
+    rotate?: { guard: () => boolean },
+  ): Promise<{ sessionFile: string; rotated: RotationRecord | null }> {
     // Stamped before queuing: time spent behind a soft flush or a steer counts against the bot's timeout too.
     const budgetMs = this.opts.memory?.newBudgetMs ?? NEW_BUDGET_MS;
     const deadline = Date.now() + budgetMs;
     const reserve = newFinishReserveMs(budgetMs);
     this.pendingNew++;
     // The flush turn on the old session can open dialogs; nobody is left to answer them.
-    const release = this.asks.hold("new session");
-    if (this.flushCut?.reason === "compaction") this.flushCut.cut(deadline - reserve);
+    const release = this.asks.hold(reason === "new" ? "new session" : "session rotation");
+    if (reason === "new" && this.flushCut?.reason === "compaction") this.flushCut.cut(deadline - reserve);
     return this.enqueue(async () => {
+      const old = this.session;
+      // Re-checked on the chain: a message may have arrived since the idle check.
+      if (rotate && (!old || !rotate.guard())) return { sessionFile: this.sessionFile, rotated: null };
       this.resetting = true;
       try {
-        const old = this.session;
+        const startedAt = new Date();
+        const previousSessionFile = this.sessionFile;
+        const tokensBefore = old?.getContextUsage()?.tokens ?? 0;
+        let recap: string | null = null;
         if (old) {
           this.dropQueued(old);
           this.retireContext();
@@ -405,18 +497,39 @@ export class PersonalSession {
             log.warn("aborting the old session's run before reset didn't finish in time; resetting anyway");
           }
           // After the abort: a flush sent into a live run would join it as a steer.
-          await this.flushBeforeNew(old, deadline, budgetMs);
+          await this.flushBeforeNew(old, deadline, budgetMs, reason);
+          if (reason === "rotate") recap = await this.makeRecap(old, deadline - reserve);
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
         const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui });
         this.detach();
         old?.dispose();
         this.attach(session, sessionFile);
-        writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile });
-        log.info({ sessionFile }, "started a new chat session");
-        return { sessionFile };
+        const text = recap === null ? null : recapMessage(recap, previousSessionFile);
+        if (text !== null) await this.seedRecap(session, text).catch((err) => log.warn({ err }, "seeding the recap failed"));
+        writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: text === null ? undefined : { sessionFile, text } });
+        if (reason === "new") {
+          log.info({ sessionFile }, "started a new chat session");
+          return { sessionFile, rotated: null };
+        }
+        const rotated: RotationRecord = {
+          previousSessionFile,
+          sessionFile,
+          tokensBefore,
+          tokensAfter: session.getContextUsage()?.tokens ?? null,
+          recapped: text !== null,
+          startedAt,
+        };
+        log.info({ ...rotated, startedAt: undefined }, "rotated the idle chat session");
+        try {
+          this.opts.context?.onRotated?.(rotated);
+        } catch (err) {
+          log.warn({ err }, "recording the rotation failed");
+        }
+        return { sessionFile, rotated };
       } finally {
         this.resetting = false;
+        this.touch();
       }
     }).finally(() => {
       this.pendingNew--;
@@ -424,8 +537,93 @@ export class PersonalSession {
     });
   }
 
+  private async makeRecap(session: ChatSession, deadline: number): Promise<string | null> {
+    const recap = this.opts.context?.recap;
+    if (!recap) return null;
+    try {
+      const out = await bounded(recap(session), Math.max(deadline - Date.now(), 1000));
+      if (out === TIMEOUT) {
+        log.warn("the recap didn't finish in time; rotating without one");
+        return null;
+      }
+      return out;
+    } catch (err) {
+      log.warn({ err }, "the recap failed; rotating without one");
+      return null;
+    }
+  }
+
+  private async seedRecap(session: ChatSession, text: string): Promise<void> {
+    await session.sendCustomMessage({ customType: RECAP_CUSTOM_TYPE, content: text, display: true }, { triggerTurn: false });
+  }
+
+  /** Whether the session has sat idle long enough, and is big enough, to rotate now. */
+  private rotationDue(): boolean {
+    const ctx = this.opts.context;
+    const session = this.session;
+    if (!ctx || !session || !this.isIdle() || this.wakes.size > 0 || ctx.busy?.()) return false;
+    if (this.rotatedWindow === this.lastActivityAt) return false;
+    if (this.clock() - this.lastActivityAt < ctx.idleRotateMs(session)) return false;
+    const tokens = session.getContextUsage()?.tokens;
+    return tokens != null && tokens > ctx.rotateTokens;
+  }
+
+  /** Rotates the session when it is idle and big: at most once per idle window. */
+  async checkIdle(): Promise<RotationRecord | null> {
+    if (!this.rotationDue()) return null;
+    this.rotatedWindow = this.lastActivityAt;
+    const { rotated } = await this.replaceSession("rotate", { guard: () => this.rotationDueOnChain() });
+    // The swap touched the clock; this window counts as rotated too.
+    this.rotatedWindow = this.lastActivityAt;
+    return rotated;
+  }
+
+  // On the chain the task itself counts as queued, so isIdle() can't be used as is.
+  private rotationDueOnChain(): boolean {
+    const s = this.session;
+    if (!s || s.isStreaming || s.isCompacting || s.pendingMessageCount > 0 || this.run || this.hiddenNext || this.orphanFlush) return false;
+    return this.queued === 1 && this.inFlight.size === 0 && this.pendingContext.length === 0 && this.pendingNew === 1 && !this.opts.context?.busy?.();
+  }
+
+  /** `!compact`: after the turn in progress, flush memory, compact with the anchored summary, reload the context files. */
+  compactNow(): Promise<{ tokensBefore: number; tokensAfter: number | null } | { error: string }> {
+    const ctx = this.opts.context;
+    if (!ctx) return Promise.resolve({ error: "compaction isn't available here" });
+    this.touch();
+    return this.enqueue(async () => {
+      const session = this.requireSession();
+      const waitEnd = Date.now() + COMPACT_WAIT_MS;
+      await this.waitForCompaction();
+      while ((this.run || session.isStreaming) && Date.now() < waitEnd) {
+        await bounded(new Promise<void>((r) => this.settleWaiters.push(r)), waitEnd - Date.now());
+      }
+      if (session !== this.session) return { error: "the session changed while waiting" };
+      if (session.isStreaming) return { error: "a turn is still running; try again when it ends" };
+      const memory = this.opts.memory;
+      if (memory && this.lastFlushDoneAt !== this.settleCount && hasConversation(session)) {
+        const deadline = Date.now() + (memory.flushTimeoutMs ?? COMPACTION_FLUSH_TIMEOUT_MS);
+        await this.flushMemory(session, "compaction", { deadline, abortDeadline: deadline + FLUSH_ABORT_MS });
+        await this.commitMemory("memory: flush before compaction");
+      }
+      if (session !== this.session) return { error: "the session changed during the memory flush" };
+      try {
+        const result = await ctx.compact(session);
+        this.flushedThisCycle = false;
+        if (memory) await memory.reload(session).catch((err) => log.warn({ err }, "context reload after !compact failed"));
+        log.info(result, "compacted on request");
+        return result;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn({ err }, "!compact failed");
+        return { error: message };
+      } finally {
+        this.touch();
+      }
+    });
+  }
+
   // The replacement session is built fresh from the home files, so it needs no reload.
-  private async flushBeforeNew(old: ChatSession, deadline: number, budgetMs: number): Promise<void> {
+  private async flushBeforeNew(old: ChatSession, deadline: number, budgetMs: number, reason: "new" | "rotate" = "new"): Promise<void> {
     const memory = this.opts.memory;
     if (!memory) return;
     const reserve = newFinishReserveMs(budgetMs);
@@ -436,11 +634,12 @@ export class PersonalSession {
       else if (deadline - reserve - Date.now() < newMinFlushMs(budgetMs)) outcome = "skipped";
       else {
         const cap = Date.now() + (memory.flushTimeoutMs ?? FLUSH_TIMEOUT_MS);
-        outcome = await this.flushMemory(old, "new", { deadline: Math.min(deadline - reserve, cap), abortDeadline: deadline - reserve / 2 });
+        outcome = await this.flushMemory(old, reason, { deadline: Math.min(deadline - reserve, cap), abortDeadline: deadline - reserve / 2 });
       }
       if (outcome !== "done") this.writeResetHandoff(old, outcome);
     }
-    if ((await bounded(this.commitMemory("memory: flush before new session"), Math.max(deadline - Date.now(), 1000))) === TIMEOUT) {
+    const message = reason === "new" ? "memory: flush before new session" : "memory: flush before session rotation";
+    if ((await bounded(this.commitMemory(message), Math.max(deadline - Date.now(), 1000))) === TIMEOUT) {
       log.warn("memory commit before reset didn't finish in time; it completes in the background");
     }
   }
@@ -555,7 +754,7 @@ export class PersonalSession {
     const trigger = memory.compactionTrigger(session);
     if (usage?.tokens == null || trigger === null) return;
     // At or past the trigger the flush's own prompt would compact first; the session_before_compact handoff covers that.
-    const soft = trigger - (memory.flushMarginTokens ?? flushMarginTokens(usage.contextWindow));
+    const soft = trigger - (memory.flushMarginTokens ?? flushMarginTokens(trigger));
     if (usage.tokens < soft || usage.tokens >= trigger) return;
     this.flushedThisCycle = true;
     const gen = this.generation;
@@ -646,7 +845,10 @@ export class PersonalSession {
   async dispose(): Promise<void> {
     if (this.resendTimer) clearInterval(this.resendTimer);
     this.resendTimer = null;
+    if (this.idleTimer) clearInterval(this.idleTimer);
+    this.idleTimer = null;
     this.asks.hold("shutdown");
+    this.ownerAsks.hold("shutdown");
     const session = this.session;
     this.detach();
     if (session?.isStreaming) await session.abort().catch(() => {});
@@ -882,6 +1084,7 @@ export class PersonalSession {
   private settle(session: ChatSession): void {
     const run = this.run;
     this.run = null;
+    this.touch();
     this.asks.cancelAll("run ended");
     this.settleCount++;
     this.lastSettle = { outcome: run ? this.finishRun(session, run) : "silent", turnId: run?.turnId };
@@ -949,6 +1152,24 @@ export class PersonalSession {
       ...(d.auth ? { auth: d.auth } : {}),
       ...(d.authResult ? { authResult: d.authResult } : {}),
       ...(d.loginId ? { loginId: d.loginId } : {}),
+    };
+    this.outbox.append(entry);
+    this.send(entry);
+  }
+
+  /** Asks drk something outside any turn; resolves to the parsed answer, or undefined when it expires. */
+  askOwner<T>(question: string, choices: string[], parse: (text: string) => { value: T } | null): Promise<T | undefined> {
+    return this.ownerAsks.ask<T | undefined>(question, choices, parse, undefined);
+  }
+
+  // Like a proactive message: no turn, and the preferred surface.
+  private deliverOwnerAsk(ask: AskRequest): void {
+    const entry: ChatDeliverParams = {
+      outboxId: this.newId(),
+      principalId: this.opts.principalId,
+      kind: "ask",
+      text: ask.question,
+      ask: ask.choices.length ? ask : { askId: ask.askId, question: ask.question },
     };
     this.outbox.append(entry);
     this.send(entry);
@@ -1043,6 +1264,14 @@ export class PersonalSession {
 }
 
 const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
+
+function recapMessage(recap: string, previousSessionFile: string): string {
+  return [
+    `Recap of our previous session (its transcript: ${previousSessionFile}; \`ws-runs\` has the detail):`,
+    "",
+    recap,
+  ].join("\n");
+}
 
 function hasConversation(session: ChatSession): boolean {
   return session.messages.some((m) => m.role === "user" || m.role === "assistant");

@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ulid } from "./ulid.ts";
+import type { RotationRecord } from "./personalSession.ts";
 
 // No logger import: the ws-runs CLI uses this module and pino would write JSON onto its stdout.
 
@@ -231,4 +232,16 @@ export class RunLog implements RunRecorder {
       closeSync(fd);
     }
   }
+}
+
+/** An idle rotation as a finished `main:rotate` run: tokens before/after, on the retired session's file. */
+export function recordRotation(runs: RunRecorder, r: RotationRecord): string {
+  const runId = runs.startRun({
+    agentName: "main:rotate",
+    task: `idle rotation: ${r.tokensBefore} → ${r.tokensAfter ?? "?"} tokens${r.recapped ? ", recap seeded" : ", no recap"}`,
+    sessionFile: r.previousSessionFile,
+    startedAt: r.startedAt,
+  });
+  runs.endRun(runId, { status: "done", resultSummary: `new session ${r.sessionFile}` });
+  return runId;
 }

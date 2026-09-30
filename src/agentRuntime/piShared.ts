@@ -57,6 +57,8 @@ export interface OpenRouterModelOptions {
   baseUrl: string;
   maxOutputTokens?: number;
   fallbackContextWindow?: number;
+  /** More OpenRouter model ids to register on the same provider (e.g. a `!model` list). */
+  extraModels?: string[];
 }
 
 /** A ModelRuntime with one OpenRouter model registered inline, plus the limits it was sized with. */
@@ -69,30 +71,31 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   if (!existsSync(authPath)) writeFileSync(authPath, "{}");
   if (!existsSync(modelsPath)) writeFileSync(modelsPath, "{}");
   const modelRuntime: ModelRuntime = await ModelRuntime.create({ authPath, modelsPath });
-  const contextWindow = await resolveContextWindow(options.model, options.fallbackContextWindow ?? 800_000);
-  const maxTokens = Math.min(options.maxOutputTokens ?? 65_536, contextWindow);
+  const ids = [options.model, ...(options.extraModels ?? []).filter((id) => id !== options.model)];
+  const windows = await Promise.all(ids.map((id) => resolveContextWindow(id, options.fallbackContextWindow ?? 800_000)));
+  const limits = ids.map((id, i) => ({ id, contextWindow: windows[i]!, maxTokens: Math.min(options.maxOutputTokens ?? 65_536, windows[i]!) }));
   modelRuntime.registerProvider(options.providerId, {
     name: options.providerName,
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     api: "openai-completions",
-    models: [
-      {
-        id: options.model,
-        name: options.model,
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow,
-        maxTokens,
-        samplingParams: { provider: { data_collection: "deny" } },
-        compat: { sendSessionAffinityHeaders: true },
-      },
-    ],
+    models: limits.map(({ id, contextWindow, maxTokens }) => ({
+      id,
+      name: id,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow,
+      maxTokens,
+      samplingParams: { provider: { data_collection: "deny" } },
+      compat: { sendSessionAffinityHeaders: true },
+    })),
   });
-  const model = modelRuntime.getModel(options.providerId, options.model);
-  if (!model) throw new Error(`pi model ${options.providerId}/${options.model} failed to register`);
-  return { modelRuntime, model, contextWindow, maxTokens };
+  const models = new Map(ids.map((id) => [id, modelRuntime.getModel(options.providerId, id)] as const));
+  const model = models.get(options.model);
+  if (!model || [...models.values()].some((m) => !m)) throw new Error(`pi models ${options.providerId}/${ids.join(",")} failed to register`);
+  const { contextWindow, maxTokens } = limits[0]!;
+  return { modelRuntime, model, contextWindow, maxTokens, models: models as Map<string, NonNullable<typeof model>> };
 }
 
 /** Pi's bash tool under the allowlisted agent env; `extraEnv` is read per spawn (e.g. a fresh git token). */

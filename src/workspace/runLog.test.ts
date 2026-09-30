@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RunLog, TASK_MAX, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
+import { RunLog, TASK_MAX, recordRotation, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
 
 let dir: string;
 beforeEach(() => {
@@ -102,5 +102,21 @@ describe("RunLog", () => {
     writeFileSync(path, `${want.join("\n")}\n`);
     expect([...tailLines(path, 7)]).toEqual([...want].reverse());
     expect([...tailLines(join(dir, "missing"))]).toEqual([]);
+  });
+});
+
+describe("recordRotation", () => {
+  test("an idle rotation is a finished main:rotate run on the retired session, with tokens before and after", () => {
+    const log = new RunLog(dir);
+    const startedAt = new Date("2026-09-29T12:00:00Z");
+    const runId = recordRotation(log, { previousSessionFile: "/s/old.jsonl", sessionFile: "/s/new.jsonl", tokensBefore: 150_000, tokensAfter: 4_200, recapped: true, startedAt });
+    expect(log.getRun(runId)).toMatchObject({
+      agentName: "main:rotate",
+      task: "idle rotation: 150000 → 4200 tokens, recap seeded",
+      sessionFile: "/s/old.jsonl",
+      startedAt: startedAt.toISOString(),
+      status: "done",
+      resultSummary: "new session /s/new.jsonl",
+    });
   });
 });

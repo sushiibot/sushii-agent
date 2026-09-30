@@ -91,13 +91,16 @@ export class ChatAsks {
     });
   }
 
-  /** Routes an owner message to a pending ask. "stale": a button answer for an ask no longer open. */
-  answer(messageId: string, text: string): AnswerOutcome {
+  /**
+   * Routes an owner message to a pending ask. "stale": a button answer for an ask no longer open. With
+   * `foreignIds`, a button answer for an id this registry never issued is null, so another registry can take it.
+   */
+  answer(messageId: string, text: string, opts: { foreignIds?: boolean } = {}): AnswerOutcome {
     const answer = text.trim();
     if (messageId.startsWith(ASK_ANSWER_PREFIX)) {
       const askId = messageId.slice(ASK_ANSWER_PREFIX.length);
       const entry = this.pending.find((p) => p.askId === askId);
-      if (!entry) return "stale";
+      if (!entry) return opts.foreignIds && !this.closed.includes(askId) ? null : "stale";
       const parsed = entry.parse(answer);
       entry.settle(parsed ? parsed.value : entry.fallback);
       return "answered";

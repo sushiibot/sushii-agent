@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
-import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type MemoryHooks } from "./personalSession.ts";
+import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, STOP_NOTE } from "./personalSession.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
@@ -207,6 +207,8 @@ function setup(
     deliverTimeoutMs?: number;
     memory?: MemoryHooks;
     askTimeoutMs?: number;
+    context?: ContextHooks;
+    clock?: () => number;
   } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
@@ -239,6 +241,8 @@ function setup(
     now: () => NOW,
     memory: opts.memory,
     askTimeoutMs: opts.askTimeoutMs,
+    context: opts.context,
+    clock: opts.clock,
   });
   return { host, sessions, factoryCalls, boundUis, transport, stateDir };
 }
@@ -1826,5 +1830,256 @@ describe("PersonalSession wake", () => {
     await host.handleMessage(msg("m1", "hi"));
     s.finish("hello");
     await until(() => consumed === 1);
+  });
+});
+
+describe("PersonalSession context economy", () => {
+  const MIN = 60_000;
+  const until = async (cond: () => boolean, ms = 1000) => {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) throw new Error("condition not met in time");
+      await sleep(2);
+    }
+  };
+
+  function contextFake(over: Partial<ContextHooks> = {}) {
+    const calls: string[] = [];
+    const rotations: unknown[] = [];
+    let busy = false;
+    const hooks: ContextHooks = {
+      compact: async () => {
+        calls.push("compact");
+        return { tokensBefore: 120_000, tokensAfter: 30_000 };
+      },
+      recap: async () => {
+        calls.push("recap");
+        return "## Goals\n- ship u22";
+      },
+      idleRotateMs: () => 25 * MIN,
+      rotateTokens: 100_000,
+      busy: () => busy,
+      onRotated: (r) => rotations.push(r),
+      checkEveryMs: null,
+      ...over,
+    };
+    return { hooks, calls, rotations, setBusy: (b: boolean) => (busy = b) };
+  }
+
+  function memoryHooks(calls: string[]): MemoryHooks {
+    return {
+      compactionTrigger: () => 500_000,
+      reload: async () => {
+        calls.push("reload");
+      },
+      commit: async (m) => {
+        calls.push(`commit:${m}`);
+      },
+      signature: () => "sig",
+      flushTimeoutMs: 1000,
+    };
+  }
+
+  async function idleBigHost(over: Partial<ContextHooks> = {}, withMemory = false) {
+    let now = Date.parse("2026-09-29T12:00:00Z");
+    const ctx = contextFake(over);
+    const calls = ctx.calls;
+    const t = setup({ context: ctx.hooks, clock: () => now, ...(withMemory ? { memory: memoryHooks(calls) } : {}) });
+    await t.host.start();
+    await t.host.handleMessage(msg("m1", "hi"));
+    t.sessions[0].finish("hello");
+    await until(() => t.host.isIdle());
+    t.sessions[0].usage = { tokens: 150_000, contextWindow: 400_000, percent: 37 };
+    return { ...t, ctx, calls, advance: (ms: number) => (now += ms) };
+  }
+
+  test("an idle, big session rotates once: recap seeded into a fresh session, state and run-log record written", async () => {
+    const { host, sessions, ctx, stateDir, advance, factoryCalls } = await idleBigHost();
+    advance(24 * MIN);
+    expect(await host.checkIdle()).toBeNull();
+    advance(2 * MIN);
+    const rotated = await host.checkIdle();
+    expect(rotated).toMatchObject({ previousSessionFile: sessions[0].file, sessionFile: sessions[1].file, tokensBefore: 150_000, recapped: true });
+    expect(sessions[0].disposed).toBe(true);
+    // A fresh build, which reads the home context files anew.
+    expect(factoryCalls.at(-1)).toBeNull();
+    expect(ctx.rotations).toHaveLength(1);
+    const seeded = sessions[1].customs[0];
+    expect(String(seeded.content)).toStartWith(`Recap of our previous session (its transcript: ${sessions[0].file}`);
+    expect(String(seeded.content)).toContain("- ship u22");
+    expect(readWorkspaceState(stateDir)).toMatchObject({ chatSessionFile: sessions[1].file, recap: { sessionFile: sessions[1].file } });
+    // Once per idle window, however long it stays idle and even if the new session were big.
+    sessions[1].usage = { tokens: 150_000, contextWindow: 400_000, percent: 37 };
+    advance(60 * MIN);
+    expect(await host.checkIdle()).toBeNull();
+    expect(sessions).toHaveLength(2);
+  });
+
+  test("no rotation below the token threshold, while busy with background work, or mid-turn; activity resets the window", async () => {
+    const { host, sessions, ctx, advance } = await idleBigHost();
+    sessions[0].usage = { tokens: 90_000, contextWindow: 400_000, percent: 22 };
+    advance(30 * MIN);
+    expect(await host.checkIdle()).toBeNull();
+    sessions[0].usage = { tokens: 150_000, contextWindow: 400_000, percent: 37 };
+    ctx.setBusy(true);
+    expect(await host.checkIdle()).toBeNull();
+    ctx.setBusy(false);
+    await host.handleMessage(msg("m2", "still here"));
+    advance(30 * MIN);
+    expect(await host.checkIdle()).toBeNull();
+    sessions[0].finish("yes");
+    await until(() => host.isIdle());
+    advance(10 * MIN);
+    expect(await host.checkIdle()).toBeNull();
+    advance(16 * MIN);
+    expect(await host.checkIdle()).not.toBeNull();
+  });
+
+  test("the idle window comes from the hook, e.g. shorter on OpenRouter", async () => {
+    const { host, advance } = await idleBigHost({ idleRotateMs: () => 8 * MIN });
+    advance(9 * MIN);
+    expect(await host.checkIdle()).not.toBeNull();
+  });
+
+  test("the memory flush runs before the recap, and a message arriving mid-rotation lands in the new session", async () => {
+    const { host, sessions, calls, transport, advance } = await idleBigHost(
+      {
+        recap: async () => {
+          calls.push("recap");
+          return "## Goals\n- trip";
+        },
+      },
+      true,
+    );
+    advance(26 * MIN);
+    const rotating = host.checkIdle();
+    await until(() => sessions[0].isStreaming && sessions[0].prompts.some((p) => p.text.startsWith(FLUSH_MARKER)));
+    expect(sessions[0].prompts.at(-1)!.text).toContain("replaced by a fresh one");
+    const reply = host.handleMessage(msg("m9", "are you there?"));
+    await sleep(10);
+    expect(sessions[0].prompts.map((p) => p.text)).not.toContain(stamped("m9", "are you there?"));
+    sessions[0].finish("NO_REPLY");
+    await rotating;
+    expect(calls.indexOf("recap")).toBeGreaterThan(calls.indexOf("commit:memory: flush before session rotation"));
+    await reply;
+    await until(() => sessions.length === 2 && sessions[1].isStreaming);
+    expect(sessions[1].customs.length).toBe(1);
+    expect(sessions[1].prompts[0].text).toBe(stamped("m9", "are you there?"));
+    sessions[1].finish("yes, fresh session");
+    await until(() => transport.delivered().length === 2);
+    expect(transport.delivered().map((d) => d.text)).toEqual(["hello", "yes, fresh session"]);
+  });
+
+  test("a failed recap still rotates, without a seed", async () => {
+    const { host, sessions, stateDir, advance } = await idleBigHost({ recap: async () => Promise.reject(new Error("backend down")) });
+    advance(26 * MIN);
+    expect(await host.checkIdle()).toMatchObject({ recapped: false });
+    expect(sessions[1].customs).toHaveLength(0);
+    expect(readWorkspaceState(stateDir)?.recap).toBeUndefined();
+  });
+
+  test("a restart before the rotated session reached disk re-seeds the stashed recap", async () => {
+    const { host, sessions, stateDir, advance } = await idleBigHost();
+    advance(26 * MIN);
+    await host.checkIdle();
+    await host.dispose();
+    const recap = readWorkspaceState(stateDir)!.recap!;
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(String(again.sessions[0].customs[0].content)).toBe(recap.text);
+    expect(readWorkspaceState(stateDir)).toMatchObject({ chatSessionFile: again.sessions[0].file, recap: { sessionFile: again.sessions[0].file, text: recap.text } });
+    expect(sessions).toHaveLength(2);
+    await again.host.dispose();
+  });
+
+  test("chat/new clears a stashed recap", async () => {
+    const { host, stateDir, advance } = await idleBigHost();
+    advance(26 * MIN);
+    await host.checkIdle();
+    await host.handleNew();
+    expect(readWorkspaceState(stateDir)?.recap).toBeUndefined();
+  });
+
+  test("!compact waits for the running turn, flushes memory first, compacts, then reloads the context files", async () => {
+    const calls: string[] = [];
+    const ctx = contextFake({
+      compact: async () => {
+        calls.push("compact");
+        return { tokensBefore: 120_000, tokensAfter: 30_000 };
+      },
+    });
+    const { host, sessions } = setup({ context: ctx.hooks, memory: memoryHooks(calls) });
+    await host.start();
+    await host.handleMessage(msg("m1", "work"));
+    const compacting = host.compactNow();
+    await sleep(10);
+    expect(calls).not.toContain("compact");
+    sessions[0].finish("done");
+    await until(() => sessions[0].isStreaming && sessions[0].prompts.some((p) => p.text.startsWith(FLUSH_MARKER)));
+    sessions[0].finish("NO_REPLY");
+    expect(await compacting).toEqual({ tokensBefore: 120_000, tokensAfter: 30_000 });
+    expect(calls.filter((c) => !c.startsWith("commit:memory: turn"))).toEqual(["commit:memory: flush before compaction", "compact", "reload"]);
+  });
+
+  test("!compact reports Pi's refusal", async () => {
+    const ctx = contextFake({ compact: async () => Promise.reject(new Error("Nothing to compact (session too small)")) });
+    const { host } = setup({ context: ctx.hooks });
+    await host.start();
+    expect(await host.compactNow()).toEqual({ error: "Nothing to compact (session too small)" });
+  });
+
+  test("after !stop aborts a turn, the next turn's context carries a note to reconcile TASKS.md", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "book the hotel"));
+    expect(await host.handleAbort()).toEqual({ aborted: true });
+    await until(() => sessions[0].customs.length === 1);
+    expect(sessions[0].customs[0].content).toBe(STOP_NOTE);
+    expect(await host.handleAbort()).toEqual({ aborted: false });
+    await sleep(10);
+    expect(sessions[0].customs).toHaveLength(1);
+  });
+});
+
+describe("PersonalSession owner asks", () => {
+  const parseKeep = (t: string) => (/^(keep|drop) 1$/i.test(t.trim()) ? { value: t.trim().toLowerCase() } : null);
+
+  test("sent outside any turn, survive a chat turn, answered by button or a matching reply", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const answer = host.askOwner("Stale: 1. Dentist. Keep or drop?", ["Keep 1", "Drop 1"], parseKeep);
+    const ask = transport.delivered()[0]!;
+    expect(ask).toMatchObject({ kind: "ask", text: "Stale: 1. Dentist. Keep or drop?", ask: { choices: ["Keep 1", "Drop 1"] } });
+    expect(ask.turnId).toBeUndefined();
+    expect(ask.origin).toBeUndefined();
+
+    // An ordinary turn runs and settles; the ask stays open and the chat text isn't taken as its answer.
+    await host.handleMessage(msg("m1", "what's up"));
+    sessions[0].finish("not much");
+    await tick();
+    expect(sessions[0].prompts.map((p) => p.text)).toEqual([stamped("m1", "what's up")]);
+
+    expect(await host.handleMessage(msg(`wsask:${ask.ask!.askId}`, "Drop 1"))).toEqual({ accepted: true, mode: "prompt" });
+    expect(await answer).toBe("drop 1");
+    // A second click on the same ask is a duplicate, and nothing reached the model.
+    expect(await host.handleMessage(msg(`wsask:${ask.ask!.askId}`, "Keep 1"))).toEqual({ accepted: true, mode: "duplicate" });
+    expect(sessions[0].prompts).toHaveLength(1);
+
+    const second = host.askOwner("again?", ["Keep 1", "Drop 1"], parseKeep);
+    await host.handleMessage(msg("m2", "keep 1"));
+    expect(await second).toBe("keep 1");
+  });
+
+  test("a button answer for an extension dialog still reaches that dialog", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    void host.askOwner("review?", ["Keep 1"], parseKeep);
+    await host.handleMessage(msg("m1", "go"));
+    const confirm = host.ui.confirm("Run it?", "rm -rf scratch");
+    await tick();
+    const dialog = transport.delivered().find((d) => d.turnId !== undefined)!;
+    await host.handleMessage(msg(`wsask:${dialog.ask!.askId}`, "Yes"));
+    expect(await confirm).toBe(true);
+    sessions[0].finish("done");
   });
 });

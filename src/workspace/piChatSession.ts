@@ -2,7 +2,17 @@ import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "..
 import type { AgentSession, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
-import { DEFAULT_JUDGE_CHATGPT_MODEL, DEFAULT_JUDGE_MODEL, type WorkspaceConfig } from "./config.ts";
+import { DEFAULT_JUDGE_CHATGPT_MODEL, DEFAULT_JUDGE_MODEL, OPENROUTER_IDLE_ROTATE_MIN, economyOf, taskRulesOf, type WorkspaceConfig } from "./config.ts";
+import {
+  anchoredInstruction,
+  continueWithInstruction,
+  createAnchoredCompactionExtension,
+  createHygieneExtension,
+  reserveTokensFor,
+  type ContinuationResult,
+  type HygieneState,
+} from "./contextEconomy.ts";
+import type { ModelChoice } from "./modelChoice.ts";
 import { createAutoModeExtension, judgeCompletion, judgeForBackend, registerJudgeModel } from "./autoMode.ts";
 import { homeAgentsFilesOverride } from "./home.ts";
 import { createSecretGuardExtension } from "./secretGuard.ts";
@@ -27,6 +37,7 @@ import {
 type Settings = Parameters<SettingsManager["applyOverrides"]>[0];
 
 const log = getLogger("workspace.model");
+const economyLog = getLogger("workspace.context");
 const guardLog = getLogger("workspace.guard");
 const memoryLog = getLogger("workspace.memory");
 const autoModeLog = getLogger("workspace.automode");
@@ -75,6 +86,48 @@ export function compactionTrigger(session: ChatSession): number | null {
   return settings.enabled ? model.contextWindow - settings.reserveTokens : null;
 }
 
+function piSession(session: ChatSession, what: string): AgentSession {
+  const entry = sessionOverrides.get(session);
+  if (!entry) throw new Error(`${what}: session was not built by the pi chat session factory`);
+  return entry.session;
+}
+
+/** The latest compaction summary on the session's branch, the base a recap merges into. */
+function latestSummary(session: AgentSession): string | undefined {
+  const branch = session.sessionManager.getBranch();
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const e = branch[i]!;
+    if (e.type === "compaction") return e.summary;
+  }
+  return undefined;
+}
+
+/** A recap of `session` in the anchored-summary layout, generated as a cached continuation of its context. */
+export async function recapSession(session: ChatSession, signal?: AbortSignal): Promise<ContinuationResult | null> {
+  const s = piSession(session, "recapSession");
+  return continueWithInstruction(s, anchoredInstruction("recap", latestSummary(s)), signal);
+}
+
+/** Compacts `session` now (our anchored summary via session_before_compact); tokens before and after. */
+export async function compactSession(session: ChatSession): Promise<{ tokensBefore: number; tokensAfter: number | null }> {
+  const s = piSession(session, "compactSession");
+  const result = await s.compact();
+  return { tokensBefore: result.tokensBefore, tokensAfter: result.estimatedTokensAfter ?? null };
+}
+
+/** How long `session` must sit idle before it rotates: OpenRouter's sticky routing lapses sooner than ChatGPT's cache. */
+export function idleRotateMs(session: ChatSession, config: Pick<WorkspaceConfig, "economy">): number {
+  const minutes = economyOf(config).idleRotateMin;
+  const onChatGpt = sessionOverrides.get(session)?.session.model?.provider === CHATGPT_PROVIDER;
+  return (onChatGpt ? minutes : Math.min(minutes, OPENROUTER_IDLE_ROTATE_MIN)) * 60_000;
+}
+
+/** The session's current model label, as the footer shows it. */
+export function sessionModelLabel(session: ChatSession): string | null {
+  const model = sessionOverrides.get(session)?.session.model;
+  return model ? (model.provider === CHATGPT_PROVIDER ? `chatgpt/${model.id}` : model.id) : null;
+}
+
 function chatgptJudgeModel(runtime: Pick<ModelRuntime, "getModel">, config: WorkspaceConfig) {
   const id = config.judgeChatgptModel ?? DEFAULT_JUDGE_CHATGPT_MODEL;
   const model = runtime.getModel(CHATGPT_PROVIDER, id);
@@ -87,7 +140,7 @@ function chatgptJudgeModel(runtime: Pick<ModelRuntime, "getModel">, config: Work
  *  configured and signed in; OpenRouter is the fallback. */
 export function createPiChatSessionFactory(
   config: WorkspaceConfig,
-  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost } = {},
+  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost; choice?: ModelChoice } = {},
 ): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
   // The process-wide selector in production; a fallback instance only for tests that build a factory alone.
@@ -95,19 +148,29 @@ export function createPiChatSessionFactory(
 
   return async ({ sessionFile, ui }) => {
     const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
-    const { modelRuntime, model: openrouterModel, maxTokens } = await createOpenRouterModel({
+    const economy = economyOf(config);
+    const {
+      modelRuntime,
+      model: openrouterModel,
+      maxTokens,
+      models: openrouterModels,
+    } = await createOpenRouterModel({
       agentDir: config.agentDir,
       providerId: PROVIDER_ID,
       providerName: "sushii workspace OpenRouter",
       model: config.model,
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
+      extraModels: opts.choice?.openrouterIds() ?? [],
     });
     const openrouterJudge = config.autoMode
       ? registerJudgeModel(modelRuntime, { model: config.judgeModel ?? DEFAULT_JUDGE_MODEL, apiKey: config.apiKey, baseUrl: config.baseUrl })
       : null;
     const chatgptJudge = openrouterJudge && config.provider === "chatgpt" ? chatgptJudgeModel(modelRuntime, config) : undefined;
     const chatgptModel = config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
+    // Read per turn: `!model` rewrites the shared config between turns.
+    const currentPrimary = () => (config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined);
+    const currentFallback = () => openrouterModels.get(config.model) ?? openrouterModel;
     const model = await selectInitialModel({
       config,
       runtime: modelRuntime,
@@ -125,8 +188,8 @@ export function createPiChatSessionFactory(
     const sessionRef: { current: AgentSession | null } = { current: null };
     const fallbackExtension = createModelFallbackExtension({
       selector,
-      primary: chatgptModel,
-      fallback: openrouterModel,
+      primary: currentPrimary,
+      fallback: currentFallback,
       signedIn: () => chatGptSignedIn(modelRuntime),
       setModel: async (m) => {
         const session = sessionRef.current;
@@ -140,10 +203,11 @@ export function createPiChatSessionFactory(
     const observerRef: { current: RunObserver | null } = { current: null };
     const delegate = opts.subagents?.offersDelegate(0) ? ["delegate"] : [];
     const loopState: LoopGuardState = { nudged: false };
+    const hygieneState: HygieneState = { armed: true };
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: config.agentDir,
-      agentsFilesOverride: homeAgentsFilesOverride(cwd),
+      agentsFilesOverride: homeAgentsFilesOverride(cwd, { tasks: taskRulesOf(config) }),
       // Only the factories below: the agent can write ~/.pi and <cwd>/.pi, so discovered extensions would run its code in-process.
       noExtensions: true,
       extensionFactories: [
@@ -175,16 +239,35 @@ export function createPiChatSessionFactory(
           ? [{ name: "sushii-delegate", factory: opts.subagents.extension({ depth: 0, currentRunId: () => observerRef.current?.currentRunId() ?? null }) }]
           : []),
         { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
+        { name: "sushii-hygiene", factory: createHygieneExtension({ thresholdTokens: economy.hygieneTokens, state: hygieneState, log: economyLog }) },
+        // After the handoff: the last session_before_compact result wins.
+        {
+          name: "sushii-anchored-compaction",
+          factory: createAnchoredCompactionExtension({
+            summarize: ({ previous, signal }) => {
+              const session = sessionRef.current;
+              if (!session) throw new Error("pi chat session not ready");
+              return continueWithInstruction(session, anchoredInstruction("compaction", previous), signal);
+            },
+            log: economyLog,
+          }),
+        },
       ],
     });
     await loader.reload();
 
     // In-memory only (session.reload() drops it): a 16k default reserve overflows on a maxTokens-sized turn.
     const settingsManager = SettingsManager.create(cwd, config.agentDir);
+    // Every model `!model` can pick, so the trigger holds across a switch.
+    const modelOverrides: Record<string, { reserveTokens: number }> = {};
+    const chatgptIds = new Set([config.chatgptModel, ...(config.models ?? []).filter((e) => e.backend === "chatgpt").map((e) => e.id)]);
+    const known = [...openrouterModels.values(), ...[...chatgptIds].flatMap((id) => modelRuntime.getModel(CHATGPT_PROVIDER, id) ?? [])];
+    for (const m of known) modelOverrides[`${m.provider}/${m.id}`] = { reserveTokens: reserveTokensFor(m.contextWindow, economy.compactTokens) };
     const overrides: Settings = {
       compaction: {
-        reserveTokens: maxTokens,
-        ...(chatgptModel ? { modelOverrides: { [`${CHATGPT_PROVIDER}/${chatgptModel.id}`]: { reserveTokens: chatgptModel.maxTokens } } } : {}),
+        reserveTokens: reserveTokensFor(openrouterModel.contextWindow, economy.compactTokens),
+        keepRecentTokens: economy.keepRecentTokens,
+        modelOverrides,
       },
     };
     settingsManager.applyOverrides(overrides);
