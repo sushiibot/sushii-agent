@@ -42,8 +42,9 @@ jobs:
           DISCORD_BOT_TOKEN: test-token
           OPENAI_API_KEY: test-key
 
-  # The personal web app, installed and built the way the Dockerfile's web-build stage does it. Its unit
-  # tests (reducer, SSE parser, service worker handlers) run under Playwright with the e2e suite.
+  # The personal web app, installed and built the way the Dockerfile's web-build stage does it. `lint`
+  # runs the raw-HTML rule and the bun unit tests; `test:e2e` starts both Playwright servers itself:
+  # the app on :4173 and the render harness on :4174.
   web:
     runs-on: ubuntu-latest
     defaults:
