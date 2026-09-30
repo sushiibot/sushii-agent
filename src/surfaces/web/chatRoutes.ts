@@ -14,6 +14,8 @@ import {
   MESSAGE_TEXT_MAX,
   MESSAGE_UPLOADS_MAX,
   UPLOAD_ID_RE,
+  type DiscardMessageResponse,
+  type DiscardMessageRoutedResponse,
   type HistoryResetResponse,
   type HistoryUnsupportedResponse,
   type PostApprovalResponse,
@@ -39,6 +41,8 @@ const HISTORY_DEFAULT_LIMIT = 40;
 const PENDING_ASKS_MAX = 10;
 const HISTORY_FLOORS_KEPT = 256;
 const SHUTDOWN_IDLE_MS = 2_000;
+/** How long a delete waits for a route already in flight to settle before calling the message delivered. */
+const DISCARD_WAIT_MS = 20_000;
 /** Every RPC one history request makes shares this budget, which stays under Bun's 30s idle timeout. */
 export const HISTORY_DEADLINE_MS = 25_000;
 
@@ -77,6 +81,7 @@ export interface ChatRouteDeps {
   sse?: { heartbeatMs: number; maxLifetimeMs: number };
   historyMaxBytes?: number;
   historyDeadlineMs?: number;
+  discardWaitMs?: number;
 }
 
 export interface ChatRoutes {
@@ -135,7 +140,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   /** Routes a persisted message through the owner router. A receipt (or a consuming notice) marks it
    *  routed; a workspaceOffline notice leaves it for the client to resend. */
   function drive(row: { clientId: string; text: string; uploadIds: string[] }, actor: SurfaceActor): void {
-    if (routing.has(row.clientId)) return;
+    // Checked in the same tick routing starts, so a delete either sees this route in flight or wins outright.
+    if (routing.has(row.clientId) || inbound.get(row.clientId)?.state !== "pending") return;
     const run = (async () => {
       const known = row.uploadIds.length && deps.uploads ? deps.uploads.lookup(row.uploadIds) : new Map<string, UploadRef>();
       const attachments: InboundMessage["attachments"] = row.uploadIds.flatMap((id) => {
@@ -210,8 +216,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     const existing = inbound.get(body.clientId);
     if (existing) {
       if (existing.text !== body.text) log.warn({ clientId: body.clientId }, "a resent web message differs from the stored one; keeping the stored one");
-      if (existing.routedAt === null) drive(existing, actor);
-      return json({ seq: existing.seq, routed: existing.routedAt !== null } satisfies PostMessageResponse, 202);
+      if (existing.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse, 410);
+      // A resend of a refused message is the owner's retry: it goes back to pending and is routed again.
+      if (existing.state === "rejected") inbound.markPending(existing.clientId);
+      if (existing.state !== "routed") drive(existing, actor);
+      return json({ seq: existing.seq, routed: existing.state === "routed" } satisfies PostMessageResponse, 202);
     }
     if (uploadIds.length && !deps.uploads) return json({ error: "uploads are not available" }, 400);
     const at = now();
@@ -227,14 +236,32 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
         const seq = chatLog.append("user", { key: body.clientId, text: body.text, uploadIds, at: new Date(at).toISOString() }, body.clientId);
         const stored = { clientId: body.clientId, text: body.text, uploadIds, seq, createdAt: at };
         inbound.insert(stored);
-        return { ...stored, routedAt: null };
+        return { ...stored, routedAt: null, state: "pending" as const };
       });
     } catch (err) {
       if (err instanceof UploadMissing) return json({ error: "upload_missing", ids: err.ids } satisfies PostMessageUploadMissingResponse, 409);
       throw err;
     }
-    if (row.routedAt === null) drive(row, actor);
-    return json({ seq: row.seq, routed: row.routedAt !== null } satisfies PostMessageResponse, 202);
+    if (row.state !== "routed") drive(row, actor);
+    return json({ seq: row.seq, routed: row.state === "routed" } satisfies PostMessageResponse, 202);
+  }
+
+  /** The owner deleted a posted message: it must never reach the agent, unless it already did. */
+  async function deleteMessage(clientId: string): Promise<Response> {
+    if (!CLIENT_ID_RE.test(clientId)) return json({ error: "not found" }, 404);
+    const inFlight = routing.get(clientId);
+    if (inFlight) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([inFlight, new Promise<void>((r) => (timer = setTimeout(r, deps.discardWaitMs ?? DISCARD_WAIT_MS)))]);
+      clearTimeout(timer);
+      // Still out with the workspace, which may already have it: it can't be called back.
+      if (routing.has(clientId)) return json({ routed: true } satisfies DiscardMessageRoutedResponse, 409);
+    }
+    const row = inbound.get(clientId);
+    if (!row) return json({ error: "not found" }, 404);
+    if (inbound.discard(clientId)) return json({ discarded: true } satisfies DiscardMessageResponse);
+    if (row.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse);
+    return json({ routed: true } satisfies DiscardMessageRoutedResponse, 409);
   }
 
   async function postStop(req: Request, actor: SurfaceActor): Promise<Response> {
@@ -387,6 +414,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       const sub = path.slice("/api/chat/".length);
       if (sub === "stream") return method === "GET" ? getStream(req, server) : methodNotAllowed();
       if (sub === "history") return method === "GET" ? getHistory(req) : methodNotAllowed();
+      const message = /^messages\/([^/]+)$/.exec(sub);
+      if (message) return method === "DELETE" ? deleteMessage(decodeSegment(message[1]!) ?? "") : methodNotAllowed();
       if (method !== "POST") return methodNotAllowed();
       if (sub === "messages") return postMessage(req, actor);
       if (sub === "stop") return postStop(req, actor);

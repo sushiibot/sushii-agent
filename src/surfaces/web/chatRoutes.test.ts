@@ -75,7 +75,7 @@ function webConfig(): WebConfig {
   return { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW], push: undefined };
 }
 
-function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number; historyDeadlineMs?: number } = {}) {
+function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number; historyDeadlineMs?: number; discardWaitMs?: number } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -101,6 +101,7 @@ function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; 
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.historyMaxBytes ? { historyMaxBytes: opts.historyMaxBytes } : {}),
     ...(opts.historyDeadlineMs ? { historyDeadlineMs: opts.historyDeadlineMs } : {}),
+    ...(opts.discardWaitMs ? { discardWaitMs: opts.discardWaitMs } : {}),
     sse: { heartbeatMs: 20, maxLifetimeMs: 5_000 },
   });
   const config = webConfig();
@@ -798,3 +799,121 @@ describe("holistic fix round: delivery, refusals, dead asks, history time", () =
 async function until(check: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !check(); i++) await Bun.sleep(1);
 }
+
+describe("row states and discard", () => {
+  const del = (h: WebHandler, clientId: string, site?: string) => call(h, `/api/chat/messages/${clientId}`, { method: "DELETE", ...(site ? { site } : {}) });
+  const rejectAll = (link: FakeLink) => {
+    const send = link.sendMessage;
+    link.sendMessage = async () => {
+      throw new RpcErrorReply("model auth failed", -32000);
+    };
+    return () => (link.sendMessage = send);
+  };
+
+  test("delete then reconnect: the message never reaches the workspace, and a resend is refused", async () => {
+    const h = setup();
+    h.link.connected = false;
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "never mind" });
+    await h.routes.idle();
+    const res = await del(h.handler, CLIENT);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ discarded: true });
+    expect(h.inbound.get(CLIENT)!.state).toBe("discarded");
+
+    h.link.connected = true;
+    h.routes.workspaceConnected();
+    await h.routes.idle();
+    const again = await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "never mind" });
+    expect(again.status).toBe(410);
+    await h.routes.idle();
+    expect(h.link.sent).toEqual([]);
+    expect(h.inbound.get(CLIENT)!.state).toBe("discarded");
+  });
+
+  test("delete after routed is 409 routed; an unknown id is 404; a cross-site delete is refused", async () => {
+    const h = setup();
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await h.routes.idle();
+    const res = await del(h.handler, CLIENT);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ routed: true });
+    expect(h.inbound.get(CLIENT)!.state).toBe("routed");
+    expect((await del(h.handler, CLIENT2)).status).toBe(404);
+    expect((await del(h.handler, "not-a-ulid")).status).toBe(404);
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "x" });
+    await h.routes.idle();
+    expect((await del(h.handler, CLIENT2, "cross-site")).status).toBe(403);
+  });
+
+  test("rejected then reconnect: not re-routed, and no second refusal line", async () => {
+    const h = setup();
+    const restore = rejectAll(h.link);
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await h.routes.idle();
+    expect(h.inbound.get(CLIENT)!.state).toBe("rejected");
+    restore();
+    h.routes.workspaceConnected();
+    await h.routes.idle();
+    expect(h.link.sent).toEqual([]);
+    expect(h.log.list(["notice"]).filter((e) => e.data.type === "messageRejected")).toHaveLength(1);
+  });
+
+  test("rejected then Retry: routed once, back through pending", async () => {
+    const h = setup();
+    const restore = rejectAll(h.link);
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await h.routes.idle();
+    restore();
+    expect(await (await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toMatchObject({ routed: false });
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(h.inbound.get(CLIENT)!.state).toBe("routed");
+    expect(await (await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toMatchObject({ routed: true });
+    await h.routes.idle();
+    expect(h.link.sent).toHaveLength(1);
+  });
+
+  test("a rejected message can be discarded", async () => {
+    const h = setup();
+    rejectAll(h.link);
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await h.routes.idle();
+    expect((await del(h.handler, CLIENT)).status).toBe(200);
+    expect(h.inbound.get(CLIENT)!.state).toBe("discarded");
+  });
+
+  test("discard racing a re-drive: a delete during the route waits and reports it delivered; one first stops the route", async () => {
+    const h = setup();
+    h.link.connected = false;
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "one" });
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "two" });
+    await h.routes.idle();
+    h.link.connected = true;
+
+    // The delete for CLIENT2 lands before the re-drive reaches it: it is never sent.
+    let release!: () => void;
+    h.link.hold = new Promise((r) => (release = r));
+    h.routes.workspaceConnected();
+    await until(() => h.link.sent.length === 1);
+    expect(h.link.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    const late = del(h.handler, CLIENT);
+    const early = await del(h.handler, CLIENT2);
+    expect(early.status).toBe(200);
+    release();
+    const lateRes = await late;
+    expect(lateRes.status).toBe(409);
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(h.inbound.get(CLIENT)!.state).toBe("routed");
+    expect(h.inbound.get(CLIENT2)!.state).toBe("discarded");
+  });
+
+  test("a route that never settles is reported delivered, never discarded under it", async () => {
+    const h = setup({ discardWaitMs: 30 });
+    h.link.hold = new Promise(() => {});
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "stuck" });
+    const res = await del(h.handler, CLIENT);
+    expect(res.status).toBe(409);
+    expect(h.inbound.get(CLIENT)!.state).toBe("pending");
+  });
+});

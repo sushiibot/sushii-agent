@@ -22,6 +22,7 @@ type Opts = {
 	approvalStatus: number;
 	askStatus: number;
 	uploadStatus: number;
+	discardStatus: number;
 	/** Older pages by the `before` cursor they answer. */
 	older: Record<string, OlderPage>;
 };
@@ -49,6 +50,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 		approvalStatus: 200,
 		askStatus: 200,
 		uploadStatus: 200,
+		discardStatus: 200,
 		older: {},
 		...initial
 	};
@@ -77,6 +79,12 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 			if (opts.historyStatus !== 200)
 				return json(errorBody(opts.historyStatus), opts.historyStatus);
 			return json({ items: opts.history, before: opts.before });
+		}
+		if (path.startsWith('/api/chat/messages/') && req.method() === 'DELETE') {
+			const body = { 200: { discarded: true }, 409: { routed: true } }[opts.discardStatus] ?? {
+				error: 'x'
+			};
+			return json(body, opts.discardStatus);
 		}
 		if (path === '/api/chat/messages') {
 			if (opts.messageStatus === 'abort') return route.abort('internetdisconnected');
@@ -169,7 +177,7 @@ test('a rejected send stays with Retry and Delete, and Retry reuses the client i
 	page,
 	context
 }) => {
-	const { posts, opts } = await chatServer(context, { messageStatus: 400 });
+	const { posts, opts, calls } = await chatServer(context, { messageStatus: 400 });
 	await open(page);
 	await type(page, 'This one fails');
 	await expect(bubble(page, 'This one fails')).toContainText('Failed');
@@ -184,6 +192,8 @@ test('a rejected send stays with Retry and Delete, and Retry reuses the client i
 	await expect(bubble(page, 'Delete me')).toContainText('Failed');
 	await bubble(page, 'Delete me').getByRole('button', { name: 'Delete' }).click();
 	await expect(bubble(page, 'Delete me')).toHaveCount(0);
+	// Never posted, so nothing to withdraw from the bot.
+	expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
 });
 
 test('offline sends queue, survive a reload, and go out with the same id', async ({
@@ -1279,4 +1289,69 @@ test('a message the connected agent refused fails with Retry and no offline bann
 	await page.getByRole('button', { name: 'Retry send' }).click();
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
 	expect((posts('/api/chat/messages')[1].body as { clientId: string }).clientId).toBe(clientId);
+});
+
+/** A queued message has no inline Delete; it is in the message actions sheet. */
+async function deleteFromSheet(page: Page, text: string) {
+	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
+	await page
+		.getByRole('dialog', { name: 'Message actions' })
+		.getByRole('button', { name: 'Delete' })
+		.click();
+}
+
+async function heldForAgent(
+	page: Page,
+	context: BrowserContext,
+	text: string,
+	discardStatus = 200
+) {
+	const server = await chatServer(context, { discardStatus });
+	await open(page);
+	await type(page, text);
+	await expect.poll(() => server.posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'workspace', { state: 'offline' });
+	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
+	await expect(bubble(page, text)).toContainText('Queued, sends when the agent is back');
+	const { clientId } = server.posts('/api/chat/messages')[0].body as { clientId: string };
+	return { ...server, clientId };
+}
+
+test('deleting a message the bot holds withdraws it there first, then removes it', async ({
+	page,
+	context
+}) => {
+	const { calls, clientId } = await heldForAgent(page, context, 'Never mind this');
+	await deleteFromSheet(page, 'Never mind this');
+	await expect(bubble(page, 'Never mind this')).toHaveCount(0);
+	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
+		`/api/chat/messages/${clientId}`
+	]);
+	await expect.poll(() => outboxSize(page)).toBe(0);
+});
+
+test('deleting a message that already reached the agent keeps it, marked sent', async ({
+	page,
+	context
+}) => {
+	await heldForAgent(page, context, 'Too late', 409);
+	await deleteFromSheet(page, 'Too late');
+	await expect(page.getByText('Already delivered')).toBeVisible();
+	await expect(bubble(page, 'Too late')).toContainText('Sent');
+	await expect.poll(() => outboxSize(page)).toBe(0);
+});
+
+test('a delete the bot never heard of removes the message locally', async ({ page, context }) => {
+	await heldForAgent(page, context, 'Unknown to the bot', 404);
+	await deleteFromSheet(page, 'Unknown to the bot');
+	await expect(bubble(page, 'Unknown to the bot')).toHaveCount(0);
+	await expect.poll(() => outboxSize(page)).toBe(0);
+});
+
+test('a delete that fails keeps the message and says so', async ({ page, context }) => {
+	await heldForAgent(page, context, 'Keep me for now', 500);
+	await deleteFromSheet(page, 'Keep me for now');
+	await expect(page.getByText("Couldn't delete the message. Try again.")).toBeVisible();
+	await expect(bubble(page, 'Keep me for now')).toBeVisible();
+	expect(await outboxSize(page)).toBe(1);
 });

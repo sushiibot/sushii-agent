@@ -307,7 +307,8 @@ export const webEvents = sqliteTable(
   (table) => [uniqueIndex("uq_web_events_type_key").on(table.type, table.key), index("idx_web_events_created").on(table.createdAt)],
 );
 
-/** Owner web messages, persisted before the 202; `routedAt` is set once the workspace gave a receipt. */
+/** Owner web messages, persisted before the 202; `routedAt` is set once the workspace gave a receipt.
+ *  `state`: pending (not routed yet), routed, rejected (the workspace refused it) or discarded (the owner deleted it). */
 export const webInbound = sqliteTable(
   "web_inbound",
   {
@@ -317,6 +318,7 @@ export const webInbound = sqliteTable(
     seq: integer("seq").notNull(),
     createdAt: integer("created_at").notNull(),
     routedAt: integer("routed_at"),
+    state: text("state").notNull().default("pending"),
   },
   (table) => [index("idx_web_inbound_created").on(table.createdAt)],
 );

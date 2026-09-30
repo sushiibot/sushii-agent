@@ -293,6 +293,18 @@ export interface PostMessageUploadMissingResponse {
 	ids: string[];
 }
 
+/**
+ * `DELETE /api/chat/messages/:clientId`, before the client drops a posted message. 200: the bot will never
+ * deliver it. 409 with `DiscardMessageRoutedResponse`: it already reached the agent. 404: the bot never
+ * stored it. A later POST of a discarded clientId answers 410 with `DiscardMessageResponse`.
+ */
+export interface DiscardMessageResponse {
+	discarded: true;
+}
+export interface DiscardMessageRoutedResponse {
+	routed: true;
+}
+
 export interface PostStopBody {
 	turnId?: string;
 }

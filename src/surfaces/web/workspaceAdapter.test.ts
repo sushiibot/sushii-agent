@@ -502,7 +502,9 @@ describe("web adapter bounds on what the workspace sends", () => {
     await h.adapter.notice(message, { type: "messageRejected", error: "boom" });
     expect(h.log.list(["notice"]).map((e) => e.data)).toEqual([{ type: "messageRejected", error: "boom", clientId: id }]);
     expect(inbound.get(id)!.routedAt).toBeNull();
+    expect(inbound.get(id)!.state).toBe("rejected");
+    inbound.markPending(id);
     await h.adapter.notice(message, { type: "loginUsage" });
-    expect(inbound.get(id)!.routedAt).not.toBeNull();
+    expect(inbound.get(id)!.state).toBe("routed");
   });
 });

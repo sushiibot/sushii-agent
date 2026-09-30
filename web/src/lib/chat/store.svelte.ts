@@ -637,13 +637,33 @@ export class ChatStore {
 		if (entry) void this.#deliver(entry);
 	}
 
-	/** Deletes an unsent message. */
-	discard(messageId: string) {
+	/** Deletes an unsent message. One the bot already holds is withdrawn there first, so it is never delivered. */
+	async discard(messageId: string) {
 		const clientId = this.#clientIdOf(messageId);
-		if (!clientId || !this.#pending.has(clientId)) return;
+		const entry = clientId && this.#pending.get(clientId);
+		if (!clientId || !entry) return;
+		if (entry.posted) {
+			let outcome: 'discarded' | 'routed' | 'unknown';
+			try {
+				outcome = await this.#api.discardMessage(clientId);
+			} catch {
+				this.showToast("Couldn't delete the message. Try again.");
+				return;
+			}
+			if (!this.#pending.has(clientId)) return;
+			if (outcome === 'routed') {
+				setDelivery(this.#s, clientId, 'sent');
+				this.#effect({ type: 'delivered', clientId });
+				this.#commit();
+				this.showToast('Already delivered');
+				return;
+			}
+		}
 		this.#pending.delete(clientId);
 		this.#failed.delete(clientId);
 		this.#retrying.delete(clientId);
+		clearTimeout(this.#unacked.get(clientId));
+		this.#unacked.delete(clientId);
 		void this.#outbox.delete(clientId).catch(() => {});
 		removeLocal(this.#s, clientId);
 		this.#commit();

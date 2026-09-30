@@ -203,6 +203,10 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			if (!turn) void runTurn(text);
 			return { seq, routed: true };
 		},
+		async discardMessage() {
+			await sleep(150);
+			return 'discarded';
+		},
 		async stop() {
 			await sleep(200);
 			if (turn) turn.stopped = true;
