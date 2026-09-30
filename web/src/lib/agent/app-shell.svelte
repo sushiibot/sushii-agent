@@ -47,12 +47,14 @@
 		sheetLabel,
 		toast,
 		stickToBottom = false,
+		tabBar = true,
+		banner,
 		children
 	}: {
 		active: NavId;
 		title: string;
 		subtitle?: Snippet;
-		back?: { href: string; label: string };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		waiting?: number;
 		unread?: boolean;
 		actions?: Snippet;
@@ -61,6 +63,8 @@
 		sheetLabel?: string;
 		toast?: Snippet;
 		stickToBottom?: boolean;
+		tabBar?: boolean;
+		banner?: Snippet;
 		children: Snippet;
 	} = $props();
 
@@ -128,8 +132,9 @@
 				{#if phoneBack}
 					<a
 						href={phoneBack.href}
+						onclick={back?.onclick}
 						class={cn(
-							'-ml-0.5 flex h-10 shrink-0 items-center rounded-md pr-1.5 pl-0.5 text-sm text-muted-foreground hover:text-foreground',
+							'-ml-0.5 flex h-12 min-w-12 shrink-0 items-center rounded-md pr-1.5 pl-0.5 text-sm text-muted-foreground hover:text-foreground',
 							!back && '@3xl:hidden'
 						)}
 					>
@@ -144,6 +149,7 @@
 				</div>
 				<div class="ml-auto flex shrink-0 items-center gap-1">{@render actions?.()}</div>
 			</header>
+			{@render banner?.()}
 
 			<!-- column-reverse keeps a chat pinned to its newest message without scripting. -->
 			<main
@@ -165,7 +171,7 @@
 					</div>
 				{/if}
 				{@render footer?.()}
-				{#if !phoneBack}
+				{#if tabBar && !phoneBack}
 					<nav
 						aria-label="Main"
 						class="grid grid-cols-4 border-t select-none [-webkit-touch-callout:none] @3xl:hidden kb:hidden"

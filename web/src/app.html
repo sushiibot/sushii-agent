@@ -2,14 +2,34 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+		/>
 		<meta name="text-scale" content="scale" />
+		<meta name="theme-color" content="#ffffff" />
+		<link rel="manifest" href="/manifest.webmanifest" />
+		<link rel="apple-touch-icon" href="/icons/icon-192.png" />
 		<script>
-			try {
-				const t = localStorage.getItem('theme');
-				const dark = t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
-				document.documentElement.classList.toggle('dark', dark);
-			} catch {}
+			addEventListener('beforeinstallprompt', (e) => {
+				e.preventDefault();
+				window.__installPrompt = e;
+			});
+			(() => {
+				const meta = document.querySelector('meta[name="theme-color"]');
+				const system = matchMedia('(prefers-color-scheme: dark)');
+				const apply = () => {
+					let t = null;
+					try {
+						t = localStorage.getItem('theme');
+					} catch {}
+					const dark = t ? t === 'dark' : system.matches;
+					document.documentElement.classList.toggle('dark', dark);
+					meta.content = dark ? '#0a0a0a' : '#ffffff';
+				};
+				apply();
+				system.addEventListener('change', apply);
+			})();
 		</script>
 		%sveltekit.head%
 	</head>

@@ -24,3 +24,8 @@ vite.config.ts.timestamp-*
 
 # Prototype captures
 /proto-screenshots
+
+# Prototype single-file build and test output
+/build-proto
+/test-results
+/playwright-report

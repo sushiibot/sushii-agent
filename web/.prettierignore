@@ -7,3 +7,6 @@ bun.lockb
 
 # Miscellaneous
 /static/
+/build-proto/
+/test-results/
+/playwright-report/

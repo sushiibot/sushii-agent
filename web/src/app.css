@@ -172,6 +172,7 @@
 	}
 	html {
 		@apply font-sans;
+		overscroll-behavior: none;
 		color-scheme: light;
 	}
 	html.dark {
