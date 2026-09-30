@@ -2,10 +2,10 @@ import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, stat
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Type } from "typebox";
-import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { DELIVER_FILE_MAX_BYTES } from "../orchestration/contracts.ts";
 import { checkToolCall, guardedPaths } from "./secretGuard.ts";
-import { containsSecret } from "./secretPatterns.ts";
+import { secretKind } from "./secretPatterns.ts";
 
 export const SEND_FILE_TOOL = "send_file";
 
@@ -20,6 +20,8 @@ export interface SendFilePaths {
 
 /** Takes a checked file's bytes into the current turn's reply; returns the tool's answer, throws to refuse. */
 export interface SendFileSink {
+  /** Throws when this turn can't take a file at all, so the owner isn't asked about a send that would fail. */
+  check(): void;
   attach(file: { data: Buffer; name: string; contentType: string }): string;
 }
 
@@ -112,9 +114,17 @@ function looksLikeText(data: Buffer): boolean {
   return !data.subarray(0, TEXT_SNIFF_BYTES).includes(0);
 }
 
+/** Why a readable file needs the owner's go-ahead before it is sent. */
+export type SendFlag = { kind: "secret"; pattern: string } | { kind: "unscannable" };
+
+export interface SendableFile {
+  data: Buffer;
+  flag: SendFlag | null;
+}
+
 /** Reads a checked file once, through one descriptor, so the identity check, the secret scan and the
- *  bytes sent can't diverge. Throws to refuse. */
-export function readSendableFile(path: string, paths: SendFilePaths, maxBytes: number): Buffer {
+ *  bytes sent can't diverge. Throws to refuse; a secret-detector hit comes back as a flag. */
+export function readSendableFile(path: string, paths: SendFilePaths, maxBytes: number): SendableFile {
   const before = statSync(path);
   // A FIFO would block open() and the whole event loop with it.
   if (!before.isFile()) throw new Error("not a regular file");
@@ -134,13 +144,10 @@ export function readSendableFile(path: string, paths: SendFilePaths, maxBytes: n
       if (n > maxBytes) throw new Error(`over the ${maxBytes}-byte limit`);
     }
     const data = buf.subarray(0, n);
-    if (looksLikeText(data) && scanCost(data) > SCAN_COST_MAX) {
-      throw new Error("blocked (secret): the file has runs of token characters too long for the secret detector to check, so it won't be sent");
-    }
-    if (looksLikeText(data) && containsSecret(data.toString("utf8"))) {
-      throw new Error("blocked (secret): the secret detector found what looks like a credential (a token, key or long hash) in this file, so it won't be sent");
-    }
-    return data;
+    if (!looksLikeText(data)) return { data, flag: null };
+    if (scanCost(data) > SCAN_COST_MAX) return { data, flag: { kind: "unscannable" } };
+    const pattern = secretKind(data.toString("utf8"));
+    return { data, flag: pattern ? { kind: "secret", pattern } : null };
   } finally {
     closeSync(fd);
   }
@@ -151,6 +158,18 @@ export function safeFileName(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "");
   const clipped = cleaned.length > 100 ? cleaned.slice(cleaned.length - 100) : cleaned;
   return clipped || "file";
+}
+
+function refusal(flag: SendFlag): string {
+  return flag.kind === "unscannable"
+    ? "blocked (secret): the file has runs of token characters too long for the secret detector to check"
+    : `blocked (secret): the secret detector found what looks like a credential (${flag.pattern}) in this file`;
+}
+
+function askText(name: string, flag: SendFlag): string {
+  return flag.kind === "unscannable"
+    ? `\`${name}\` is too large to scan for secrets. Send it anyway?`
+    : `\`${name}\` looks like it contains a secret (${flag.pattern}). Send it anyway?`;
 }
 
 export function contentTypeOf(path: string): string {
@@ -167,26 +186,33 @@ export function createSendFileTool(paths: SendFilePaths, session: () => object |
       "Attach a file from the workspace to your reply to drk (a screenshot, PDF, chart, export). The file is " +
       "copied when you call this and goes out with the reply that ends this turn. Limits: 8 MB per file, 10 files " +
       "and 11 MB in total per turn. Files under Pi's config/auth dirs or the workspace state dir can't be sent, " +
-      "and neither can a text file the secret detector flags (tokens, keys, long hex hashes).",
+      "and a text file the secret detector flags (tokens, keys, long hex hashes) goes out only if drk approves it.",
     parameters: Type.Object({
       path: Type.String({ description: "Path of the file, absolute or relative to the working directory." }),
       name: Type.Optional(Type.String({ description: "File name drk sees; defaults to the file's own name." })),
     }) as ToolDefinition["parameters"],
-    execute: async (_toolCallId: string, params: unknown) => {
+    execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal, _onUpdate?: unknown, ctx?: ExtensionToolContext) => {
       const { path, name } = params as { path: string; name?: string };
       const current = session();
       const sink = current ? sinks.get(current) : undefined;
       if (!sink) throw new Error("send_file isn't available in this session");
       const checked = checkSendablePath(path, paths);
       if (!checked.ok) throw new Error(checked.error);
-      let data: Buffer;
+      let file: SendableFile;
       try {
-        data = readSendableFile(checked.path, paths, maxBytes);
+        file = readSendableFile(checked.path, paths, maxBytes);
       } catch (err) {
         const why = err instanceof Error ? err.message : String(err);
         throw new Error(`can't send ${path}: ${why}`);
       }
-      const text = sink.attach({ data, name: safeFileName(name?.trim() || basename(checked.path)), contentType: contentTypeOf(checked.path) });
+      const fileName = safeFileName(name?.trim() || basename(checked.path));
+      if (file.flag) {
+        if (!ctx?.hasUI) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and there's no one here to approve it`);
+        sink.check();
+        const ok = await ctx.ui.confirm(askText(fileName, file.flag), `Path: ${checked.path}`, { signal });
+        if (!ok) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and drk didn't approve sending it`);
+      }
+      const text = sink.attach({ data: file.data, name: fileName, contentType: contentTypeOf(checked.path) });
       return { content: [{ type: "text", text }], details: {} } satisfies AgentToolResult<unknown>;
     },
   } as ToolDefinition;

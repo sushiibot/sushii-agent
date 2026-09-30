@@ -25,7 +25,7 @@ import { Outbox, type OutboxEntry, type StagedFile } from "./outbox.ts";
 import { acceptsImages, loadImageAttachments, prepareSteerImages, type ImageFetchOptions } from "./inboundImages.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { RecentIds } from "./recentIds.ts";
-import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import { readFileSurfaces, readWorkspaceState, writeWorkspaceState } from "./state.ts";
 import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
 import {
   COMPACTION_FLUSH_TIMEOUT_MS,
@@ -303,6 +303,7 @@ export class PersonalSession {
     this.ui = createHeadlessUIContext(this.asks);
     this.ownerAsks = new ChatAsks({ deliver: (ask) => this.deliverOwnerAsk(ask), timeoutMs: OWNER_ASK_TIMEOUT_MS, newId: this.newId });
     this.lastActivityAt = this.clock();
+    for (const [surface, uploads] of Object.entries(readFileSurfaces(opts.stateDir))) this.fileSurfaces.set(surface, uploads);
   }
 
   private clock(): number {
@@ -437,7 +438,7 @@ export class PersonalSession {
       await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
-    this.fileSurfaces.set(params.origin.surface, params.fileUploads === true);
+    this.recordFileUploads(params.origin.surface, params.fileUploads === true);
     // Downloaded in parallel with the queue, awaited in it, so a slow download can't let a later message overtake.
     const images = this.imagesFor(params);
     const mode = await this.enqueue(async () => this.promptOrSteer(id, text, params.origin, undefined, await images));
@@ -1192,14 +1193,31 @@ export class PersonalSession {
     this.send(entry);
   }
 
+  private fileRun(): OpenRun {
+    const run = this.run;
+    if (!run || run.hidden) throw new Error("send_file only works during a reply to drk");
+    if (!run.origin || !this.fileSurfaces.get(run.origin.surface)) {
+      throw new Error("the chat this turn replies to can't carry file attachments; share the file's contents or a link instead");
+    }
+    if (run.files.length >= DELIVER_FILES_MAX) throw new Error(`already ${DELIVER_FILES_MAX} files this turn; that's the limit`);
+    return run;
+  }
+
+  /** Persisted, so a wake or proactive run after a restart can send files before drk's next message. */
+  private recordFileUploads(surface: string, uploads: boolean): void {
+    if (this.fileSurfaces.get(surface) === uploads) return;
+    this.fileSurfaces.set(surface, uploads);
+    try {
+      writeWorkspaceState(this.opts.stateDir, { fileSurfaces: Object.fromEntries(this.fileSurfaces) });
+    } catch (err) {
+      log.warn({ err, surface }, "persisting a surface's file-upload capability failed");
+    }
+  }
+
   private readonly fileSink: SendFileSink = {
+    check: () => void this.fileRun(),
     attach: ({ data, name, contentType }) => {
-      const run = this.run;
-      if (!run || run.hidden) throw new Error("send_file only works during a reply to drk");
-      if (!run.origin || !this.fileSurfaces.get(run.origin.surface)) {
-        throw new Error("the chat this turn replies to can't carry file attachments; share the file's contents or a link instead");
-      }
-      if (run.files.length >= DELIVER_FILES_MAX) throw new Error(`already ${DELIVER_FILES_MAX} files this turn; that's the limit`);
+      const run = this.fileRun();
       const left = DELIVER_FILES_TOTAL_MAX_BYTES - run.files.reduce((n, f) => n + f.bytes, 0);
       let staged: StagedFile;
       try {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
@@ -2273,8 +2273,24 @@ describe("send_file", () => {
   function tool(stateDir: string, cwd: string, session: () => object | null) {
     return createSendFileTool({ cwd, home: cwd, agentDir: join(cwd, ".pi-agent"), stateDir }, session);
   }
-  const run = (t: ReturnType<typeof tool>, params: unknown) =>
-    (t.execute as unknown as (id: string, p: unknown) => Promise<{ content: Array<{ text: string }> }>)("call-1", params);
+  type ToolCtx = { hasUI: boolean; ui: ExtensionUIContext };
+  const run = (t: ReturnType<typeof tool>, params: unknown, ctx?: ToolCtx) =>
+    (t.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: ToolCtx) => Promise<{ content: Array<{ text: string }> }>)(
+      "call-1",
+      params,
+      undefined,
+      undefined,
+      ctx,
+    );
+  const until = async (cond: () => boolean, ms = 1000) => {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) throw new Error("condition not met in time");
+      await sleep(2);
+    }
+  };
+  const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTcwMDAwMDAwMH0.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
+  const asks = (t: FakeTransport) => t.delivered().filter((d) => d.kind === "ask");
   const fileMsg = (messageId: string, text: string) => msg(messageId, text, { fileUploads: true });
   const stagedDir = (stateDir: string) => join(stateDir, "outbox-files");
 
@@ -2346,5 +2362,88 @@ describe("send_file", () => {
     await host.handleMessage(msg("m1", "go"));
     await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "ok.txt" })).rejects.toThrow(/can't carry file attachments/);
     sessions[0]!.finish("done");
+  });
+
+  test("a file the secret detector flags is sent once drk approves the ask", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "token.txt"), `token=${JWT}\n`);
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "send the token file"));
+    const sending = run(tool(stateDir, home, () => sessions[0]!), { path: "token.txt" }, { hasUI: true, ui: host.ui });
+    await until(() => asks(transport).length === 1);
+    const [ask] = asks(transport);
+    expect(ask!.ask).toEqual({
+      askId: expect.any(String),
+      question: `\`token.txt\` looks like it contains a secret (JWT). Send it anyway?\nPath: ${join(home, "token.txt")}`,
+      choices: ["Yes", "No"],
+    });
+    await host.handleMessage(fileMsg(`wsask:${ask!.ask!.askId}`, "Yes"));
+    expect((await sending).content[0]!.text).toContain("Attached token.txt");
+    sessions[0]!.finish("sent");
+    await until(() => transport.delivered().some((d) => d.kind === "reply"));
+    expect(transport.delivered().find((d) => d.kind === "reply")!.files?.map((f) => f.name)).toEqual(["token.txt"]);
+  });
+
+  test("a denied or unanswerable ask refuses the file; a file too long to scan asks too", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "token.txt"), JWT);
+    writeFileSync(join(home, "run.txt"), "a".repeat(200_000));
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "go"));
+    const t = tool(stateDir, home, () => sessions[0]!);
+
+    const denied = run(t, { path: "token.txt" }, { hasUI: true, ui: host.ui });
+    await until(() => asks(transport).length === 1);
+    await host.handleMessage(fileMsg(`wsask:${asks(transport)[0]!.ask!.askId}`, "No"));
+    await expect(denied).rejects.toThrow(/secret detector found .*\(JWT\).*didn't approve/);
+
+    const unscannable = run(t, { path: "run.txt" }, { hasUI: true, ui: host.ui });
+    await until(() => asks(transport).length === 2);
+    expect(asks(transport)[1]!.ask!.question).toStartWith("`run.txt` is too large to scan for secrets. Send it anyway?");
+    await host.handleMessage(fileMsg(`wsask:${asks(transport)[1]!.ask!.askId}`, "No"));
+    await expect(unscannable).rejects.toThrow(/too long for the secret detector.*didn't approve/);
+
+    await expect(run(t, { path: "token.txt" })).rejects.toThrow(/no one here to approve/);
+    await expect(run(t, { path: "token.txt" }, { hasUI: false, ui: host.ui })).rejects.toThrow(/no one here to approve/);
+    expect(asks(transport)).toHaveLength(2);
+    sessions[0]!.finish("nothing sent");
+    await until(() => transport.delivered().some((d) => d.kind === "reply"));
+    expect(transport.delivered().find((d) => d.kind === "reply")!.files).toBeUndefined();
+  });
+
+  test("a hardlink to auth.json is refused without asking, even with a UI", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    const agentDir = join(home, ".pi-agent");
+    mkdirSync(agentDir);
+    writeFileSync(join(agentDir, "auth.json"), JSON.stringify({ access: JWT }));
+    linkSync(join(agentDir, "auth.json"), join(home, "notes.txt"));
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "go"));
+    await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "notes.txt" }, { hasUI: true, ui: host.ui })).rejects.toThrow(/auth-file/);
+    expect(asks(transport)).toEqual([]);
+    sessions[0]!.finish("done");
+  });
+
+  test("a surface's upload capability survives a restart, so a wake can send files before drk writes again", async () => {
+    const stateDir = tempDir();
+    const home = tempDir();
+    writeFileSync(join(home, "chart.png"), PNG);
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleMessage(fileMsg("m1", "hi"));
+    first.sessions[0]!.finish("hello");
+    await until(() => first.transport.delivered().length === 1);
+
+    const { host, sessions, transport } = setup({ stateDir });
+    await host.start();
+    host.wake({ id: "W1", text: "scheduled chart", origin: DM_ORIGIN, onConsumed: () => {} });
+    await until(() => sessions[0]?.isStreaming === true);
+    expect((await run(tool(stateDir, home, () => sessions[0]!), { path: "chart.png" })).content[0]!.text).toContain("Attached chart.png");
+    sessions[0]!.finish("today's chart");
+    await until(() => transport.delivered().length === 1);
+    expect(transport.delivered()[0]!.files?.map((f) => f.name)).toEqual(["chart.png"]);
   });
 });

@@ -56,40 +56,41 @@ const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTcwMDAwMDAwMH
 describe("readSendableFile", () => {
   test("an ordinary file is read whole", () => {
     const { paths } = layout();
-    expect(readSendableFile(join(paths.home, "out", "chart.png"), paths, 100).toString()).toBe("png");
+    expect(readSendableFile(join(paths.home, "out", "chart.png"), paths, 100)).toEqual({ data: Buffer.from("png"), flag: null });
   });
 
   test("a hardlink to auth.json or the outbox is refused by identity, whatever it holds or is called", () => {
     const { paths } = layout();
+    writeFileSync(join(paths.agentDir, "auth.json"), JSON.stringify({ "openai-codex": { access: JWT } }));
     linkSync(join(paths.agentDir, "auth.json"), join(paths.home, "notes.txt"));
     linkSync(join(paths.stateDir, "outbox.jsonl"), join(paths.home, "log.txt"));
     const notes = join(paths.home, "notes.txt");
     expect(checkSendablePath("notes.txt", paths)).toEqual({ ok: true, path: notes });
-    expect(() => readSendableFile(notes, paths, 100)).toThrow(/auth-file/);
-    expect(() => readSendableFile(join(paths.home, "log.txt"), paths, 100)).toThrow(/auth-file/);
+    expect(() => readSendableFile(notes, paths, 10_000)).toThrow(/auth-file/);
+    expect(() => readSendableFile(join(paths.home, "log.txt"), paths, 10_000)).toThrow(/auth-file/);
   });
 
-  test("a copy that holds a credential is refused by the secret detector", () => {
+  test("a copy that holds a credential is flagged with the detector's pattern kind", () => {
     const { paths } = layout();
     writeFileSync(join(paths.agentDir, "auth.json"), JSON.stringify({ "openai-codex": { access: JWT } }));
     copyFileSync(join(paths.agentDir, "auth.json"), join(paths.home, "copy.txt"));
-    expect(() => readSendableFile(join(paths.home, "copy.txt"), paths, 10_000)).toThrow(/secret detector/);
+    expect(readSendableFile(join(paths.home, "copy.txt"), paths, 10_000).flag).toEqual({ kind: "secret", pattern: "JWT" });
   });
 
-  test("text the detector would take too long on is refused quickly; long rules and ordinary text pass", () => {
+  test("text the detector would take too long on is flagged without scanning; long rules and ordinary text pass", () => {
     const { paths } = layout();
     writeFileSync(join(paths.home, "run.txt"), "a".repeat(200_000));
     const started = performance.now();
-    expect(() => readSendableFile(join(paths.home, "run.txt"), paths, 1_000_000)).toThrow(/too long for the secret detector/);
+    expect(readSendableFile(join(paths.home, "run.txt"), paths, 1_000_000).flag).toEqual({ kind: "unscannable" });
     expect(performance.now() - started).toBeLessThan(500);
     writeFileSync(join(paths.home, "table.txt"), `${"-".repeat(300)}\n| a | b |\n`.repeat(200));
-    expect(readSendableFile(join(paths.home, "table.txt"), paths, 1_000_000).length).toBeGreaterThan(0);
+    expect(readSendableFile(join(paths.home, "table.txt"), paths, 1_000_000).flag).toBeNull();
   });
 
   test("binary files are not scanned", () => {
     const { paths } = layout();
     writeFileSync(join(paths.home, "img.bin"), Buffer.concat([Buffer.from([0x89, 0x50, 0, 0]), Buffer.from(JWT)]));
-    expect(readSendableFile(join(paths.home, "img.bin"), paths, 10_000).length).toBe(4 + JWT.length);
+    expect(readSendableFile(join(paths.home, "img.bin"), paths, 10_000)).toMatchObject({ flag: null, data: { length: 4 + JWT.length } });
   });
 
   test("oversize files and non-regular files are refused without blocking", () => {

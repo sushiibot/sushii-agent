@@ -12,6 +12,8 @@ export interface WorkspaceState {
   /** The owner's `!model` choice; absent means the configured default. */
   modelAlias?: string;
   recap?: StashedRecap;
+  /** Per surface, whether the bot last said it can upload the files a reply carries. */
+  fileSurfaces?: Record<string, boolean>;
 }
 
 export function statePath(stateDir: string): string {
@@ -27,6 +29,12 @@ export function readWorkspaceState(stateDir: string): WorkspaceState | null {
     ...(typeof state.modelAlias === "string" && state.modelAlias ? { modelAlias: state.modelAlias } : {}),
     ...(recap && typeof recap.sessionFile === "string" && typeof recap.text === "string" ? { recap: { sessionFile: recap.sessionFile, text: recap.text } } : {}),
   };
+}
+
+export function readFileSurfaces(stateDir: string): Record<string, boolean> {
+  const raw = readJson<{ fileSurfaces?: unknown }>(statePath(stateDir))?.fileSurfaces;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.entries(raw).filter((e): e is [string, boolean] => typeof e[1] === "boolean"));
 }
 
 /** Merges `patch` into the stored state; a field set to `undefined` is removed. */
