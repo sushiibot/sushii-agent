@@ -57,3 +57,15 @@ describe("outbox files", () => {
     expect(readdirSync(outbox.filesDir)).toEqual([]);
   });
 });
+
+test("files that would push the delivery past one WebSocket frame are left out and noted", () => {
+  const state = temp();
+  const src = join(temp(), "a.bin");
+  writeFileSync(src, new Uint8Array(1024));
+  const outbox = new Outbox(state);
+  const staged = outbox.stage(src, "a.bin", "application/octet-stream", 2048);
+  outbox.append({ ...entry("o1"), text: "x".repeat(16 * 1024 * 1024), stagedFiles: [staged] });
+  const wire = outbox.wire(outbox.unacked()[0]!);
+  expect(wire.files).toBeUndefined();
+  expect(wire.text.endsWith("(couldn't attach: a.bin)")).toBe(true);
+});

@@ -36,6 +36,8 @@ class FakeSession {
   startGate: Promise<void> | null = null;
   /** Holds an idle prompt in preflight, before preflightResult and before the run starts. */
   preflightGate: Promise<void> | null = null;
+  /** Mimics Pi appending a resize note to a prompt that carries images. */
+  imageHint: string | null = null;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
   private idleWaiters: Array<() => void> = [];
   private runDone: (() => void) | null = null;
@@ -72,7 +74,7 @@ class FakeSession {
     const done = new Promise<void>((r) => (this.runDone = r));
     if (this.startGate) await this.startGate;
     this.emit({ type: "agent_start" });
-    this.emitUser(text);
+    this.emitUser(this.imageHint && options?.images?.length ? `${text}\n\n${this.imageHint}` : text);
     await done;
     if (this.rejectAfterRun) throw this.rejectAfterRun;
   }
@@ -2130,6 +2132,19 @@ describe("image attachments", () => {
     await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
     expect(fetched).toBe(0);
     expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
+  });
+
+  test("a prompt whose text Pi extends with an image note still threads the reply to its message", async () => {
+    const { host, sessions, transport } = setup({ images: { fetch: async () => new Response(PNG) } });
+    await host.start();
+    sessions[0]!.imageHint = "[Image: original 4000x3000, displayed at 2000x1500.]";
+    await host.handleMessage(msg("m0", "hi"));
+    sessions[0]!.finish("hello");
+    await sleep(10);
+    await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    sessions[0]!.finish("a cat");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m0", "m1"]);
   });
 
   test("a steer carries its images too", async () => {

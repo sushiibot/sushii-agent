@@ -6,6 +6,7 @@ import {
   DELIVER_FILES_TOTAL_MAX_BYTES,
   DELIVER_FILE_MAX_BYTES,
   RPC_METHODS,
+  base64Bytes,
   chatAbortParams,
   chatAckParams,
   chatMessageParams,
@@ -42,6 +43,8 @@ import {
 const log = getLogger("workspace.session");
 
 const VOICE_MARKER = "voice message, transcribed";
+// Under the strictest provider's per-image cap (Anthropic: 5 MB of base64).
+const STEER_IMAGE_MAX_BYTES = 3.5 * 1024 * 1024;
 const DISCORD_EPOCH_MS = 1420070400000n;
 const SNOWFLAKE = /^\d{17,20}$/;
 const CONTEXT_CUSTOM_TYPE = "workspace_context";
@@ -896,6 +899,8 @@ export class PersonalSession {
       const pending: PendingInbound = { messageId, text, origin, ...(wakeId ? { wakeId } : {}), ...(images ? { images } : {}) };
       this.unconsumed.push(pending);
       if (mode === "prompt") this.nextRunPrompt = pending;
+      // Pi resizes a prompt's images but queues a steer's as they are.
+      const sent = mode === "steer" ? images?.filter((i) => base64Bytes(i.data) <= STEER_IMAGE_MAX_BYTES) : images;
       let accepted = false;
       let settlesAtAccept = 0;
       try {
@@ -905,7 +910,7 @@ export class PersonalSession {
               streamingBehavior: "steer",
               // Chat text is literal: a Discord message starting with "/" must not run a skill or extension command.
               expandPromptTemplates: false,
-              ...(images ? { images } : {}),
+              ...(sent?.length ? { images: sent } : {}),
               // Called only for an accepted input ("started" | "queued" | "handled"); a rejection rejects prompt().
               preflightResult: () => {
                 accepted = true;
@@ -956,7 +961,8 @@ export class PersonalSession {
   }
 
   private consumeInbound(text: string): void {
-    const i = this.unconsumed.findIndex((p) => p.text === text);
+    // Pi appends image notes (a resize, a conversion) after a blank line.
+    const i = this.unconsumed.findIndex((p) => p.text === text || (p.images !== undefined && text.startsWith(`${p.text}\n\n`)));
     if (i === -1) return;
     // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
     const entry = this.unconsumed[i];

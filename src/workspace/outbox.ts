@@ -24,6 +24,9 @@ type OutboxLine = { type: "entry"; entry: OutboxEntry } | { type: "ack"; outboxI
 const AUTH_URL_SECRET_PARAMS = ["state", "code_challenge", "nonce"];
 const REDACTED_PARAM = "redacted";
 export const OUTBOX_FILES_DIR = "outbox-files";
+// Under the bot's 16 MiB WebSocket frame cap: an oversized frame closes the link, and the resend after
+// reconnect would close it again.
+export const WIRE_MAX_BYTES = 15.5 * 1024 * 1024;
 
 /** The sign-in URL without the values that bind a callback to this login. */
 export function redactAuthUrl(url: string): string {
@@ -121,7 +124,12 @@ export class Outbox {
       total += data.length;
       files.push({ name: f.name, contentType: f.contentType, dataBase64: data.toString("base64") });
     }
-    if (missing.length) log.warn({ outboxId: entry.outboxId, missing }, "outbox files missing at send");
+    const withFiles = { ...params, ...(files.length ? { files } : {}) };
+    if (files.length && Buffer.byteLength(JSON.stringify(withFiles)) > WIRE_MAX_BYTES) {
+      missing.push(...files.map((f) => f.name));
+      files.length = 0;
+    }
+    if (missing.length) log.warn({ outboxId: entry.outboxId, missing }, "outbox files left out of a delivery");
     const note = missing.length ? `\n-# (couldn't attach: ${missing.join(", ")})` : "";
     return { ...params, text: `${params.text}${note}`, ...(files.length ? { files } : {}) };
   }
