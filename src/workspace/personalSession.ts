@@ -1181,7 +1181,7 @@ export class PersonalSession {
     }
     if (event.type === "message_start" && event.message.role === "user") {
       // Before consumeInbound: the reply to the earlier message must not thread to the steer.
-      if (this.run?.answered && !this.run.hidden && !this.run.abortRequested && !this.run.suppressReply) this.splitRun(session, this.run);
+      if (this.run && steerEndsTurn(this.run)) this.splitRun(session, this.run);
       this.consumeInbound(userText(event.message));
     }
     if (event.type === "agent_start" && !this.run) {
@@ -1530,6 +1530,11 @@ export class PersonalSession {
 }
 
 const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
+
+/** After an errored message Pi may be auto-retrying; the retry's answer, not the error, answers the turn. */
+function steerEndsTurn(run: OpenRun): boolean {
+  return run.answered && run.acc.lastStopReason !== "error" && !run.hidden && !run.abortRequested && !run.suppressReply;
+}
 
 function recapMessage(recap: string, dailyFile: string): string {
   return [

@@ -103,8 +103,8 @@ class FakeSession {
   }
 
   /** One assistant message of a run that goes on; steers queued meanwhile are drained after it, as Pi's loop does. */
-  answerThenDrain(text: string): void {
-    this.endMessage(text, "stop");
+  answerThenDrain(text: string, stopReason = "stop", errorMessage?: string): void {
+    this.endMessage(text, stopReason, errorMessage);
     this.drain();
   }
 
@@ -811,6 +811,18 @@ describe("PersonalSession steer after an answer", () => {
     await tick();
     expect(transport.delivered().map((d) => [d.text, d.replyTo, d.turnId])).toEqual([["one answer to both", "m2", "id-1"]]);
     expect(transport.events().filter((e) => e.type === "turn_start")).toHaveLength(1);
+  });
+
+  test("a steer drained into Pi's retry of an errored message does not end the turn on the error", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    await host.handleMessage(msg("m2", "second"));
+    const s = sessions[0];
+    s.answerThenDrain("", "error", "overloaded");
+    s.finish("retried answer");
+    await tick();
+    expect(transport.delivered().map((d) => [d.text, d.turnId])).toEqual([["retried answer", "id-1"]]);
   });
 
   test("after a split, Stop ends the new turn with no second reply", async () => {
