@@ -79,6 +79,8 @@ export interface WorkspaceToolsOptions {
   toolSpace: { surface: SurfaceId; spaceId: string };
   /** Where approval prompts go (the preferred surface). */
   surfaces: SurfaceRegistry;
+  /** Wakes the owner another way when an approval is held because the preferred surface is missing. */
+  onHeld?: (nonce: string) => void;
   /** Who may decide an approval. Default: `ownerUserId` on `toolSpace.surface`. */
   isOwner?: (actor: SurfaceActor) => boolean;
   store: ConversationStore;
@@ -330,6 +332,7 @@ export class WorkspaceTools {
   /** The preferred surface to ask on. Without one, the approval is held and never sent elsewhere. It waits
    *  for that surface to register, or is denied once it settles. */
   private async approvalTarget(nonce: string, p: ToolCallParams, decided: Promise<ApprovalDecision>): Promise<ResolvedSurface | { result: ToolCallResult }> {
+    let woken = false;
     for (;;) {
       try {
         return this.opts.surfaces.resolve(null);
@@ -347,6 +350,14 @@ export class WorkspaceTools {
       }
       const entry = this.pending.get(nonce);
       if (entry) entry.held = true;
+      if (!woken && this.opts.onHeld) {
+        woken = true;
+        try {
+          this.opts.onHeld(nonce);
+        } catch (err) {
+          log.warn({ err }, "waking the owner for a held approval failed");
+        }
+      }
       const wait = this.opts.surfaces.whenPreferred();
       const outcome = await Promise.race([wait.ready.then(() => null), decided]);
       wait.cancel();

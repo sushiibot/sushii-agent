@@ -127,6 +127,7 @@ async function main() {
       store,
       memory,
       linkStore: new WorkspaceLinkStore(db),
+      breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
       uploadRead: createUploadReadHandler(uploads, ownerPrincipalId),
     },
     [discordWorkspace.adapter],
@@ -295,6 +296,8 @@ async function main() {
     await webStopped;
     // A message still being routed marks itself routed in the DB; bounded, inside docker's 10s grace.
     if (webServer) await webChat.routes.drain();
+    // Before the DB closes, so no late workspace delivery writes to it.
+    workspace.server.stop();
     closeDb();
     try {
       await otelSDK?.shutdown();

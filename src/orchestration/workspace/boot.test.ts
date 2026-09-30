@@ -398,6 +398,29 @@ describe("held approvals", () => {
     expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining("approval timed out") });
   });
 
+  test("a held approval wakes the owner through break-glass once, and a posted one never does", async () => {
+    const timers = new ManualTimers();
+    const woken: string[] = [];
+    const b = bootWorkspace({ ...cfg("web", timers), breakGlass: async (nonce) => (woken.push(nonce), true) }, [new RecordingAdapter("discord")]);
+    const rpc = new FakeRpc();
+    b.link.attach(rpc);
+    const call = (callId: string) =>
+      rpc.handler!.onRequest!(CONN, RPC_METHODS.toolCall, { principalId: P, callId, name: "file_linear_issue", args: { title: "T", description: "D", repo_label: "r" }, agentId: "main", agentName: "main" });
+    const held = [call("c1"), call("c2")];
+    await tick();
+    expect(woken).toHaveLength(2);
+    expect(new Set(woken).size).toBe(2);
+
+    const web = new RecordingAdapter("web");
+    b.registry.register(web);
+    await until(() => web.of("approvalPrompt").length === 2);
+    const posted = call("c3");
+    await until(() => web.of("approvalPrompt").length === 3);
+    expect(woken).toHaveLength(2);
+    timers.fire(APPROVAL_TIMEOUT_MS);
+    await Promise.all([...held, posted]);
+  });
+
   test("web registering in the same tick the hold times out posts no prompt and never approves", async () => {
     const timers = new ManualTimers();
     const b = boot("web", [new RecordingAdapter("discord")], timers);
