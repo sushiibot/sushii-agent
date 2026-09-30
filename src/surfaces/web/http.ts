@@ -1,7 +1,4 @@
-// Request and response helpers shared by the web gateway's routes.
-
 export const NO_STORE = "no-store";
-/** Default cap for a JSON route's body. */
 export const MAX_BODY_BYTES = 8 * 1024;
 
 export function forbidden(): Response {

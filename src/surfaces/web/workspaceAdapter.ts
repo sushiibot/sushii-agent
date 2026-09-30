@@ -27,7 +27,6 @@ import type { PushPayload } from "./push.ts";
 
 const log = getLogger("web/workspaceAdapter");
 
-/** Snapshots of a running turn go out at most this often. */
 export const SNAPSHOT_GAP_MS = 2_000;
 const PUSH_BODY_MAX = 140;
 
@@ -40,9 +39,7 @@ export interface WebHandle extends SurfaceMessageHandle {
 
 /** The slice of DiskUploadStore the chat surface uses. */
 export interface WebUploadPort {
-  /** Known, still-stored uploads among `ids`. */
   lookup(ids: string[]): Map<string, UploadRef>;
-  /** Agent files stored for each delivery. */
   forOutbox(outboxIds: string[]): Map<string, UploadRef[]>;
   /** Idempotent per delivery; files over quota are dropped and counted, not thrown. */
   storeDelivery(outboxId: string, files: DeliverFile[]): Promise<{ files: UploadRef[]; dropped: number }>;
@@ -57,7 +54,7 @@ export interface WebAdapterDeps {
   push?: { send(p: PushPayload): Promise<{ sent: number }> };
   /** Called with an approval's nonce when its push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
-  /** Absent: the surface does not take files, so the workspace's send_file refuses. */
+  /** Without it the surface takes no files, so the workspace's send_file refuses. */
   uploads?: WebUploadPort;
   now?: () => number;
   timers?: Timers;
@@ -87,12 +84,9 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     this.capabilities = { streaming: true, tables: true, richButtons: true, reactions: false, maxMessageChars: 100_000, fileUploads: deps.uploads !== undefined };
   }
 
-  /** The running turns, for a stream's first frame. */
   openTurns(): TurnView[] {
     return [...this.turns.values()].map((t) => this.view(t));
   }
-
-  // ── Inbound receipts ──
 
   async ack(message: WebInbound, kind: AckKind): Promise<void> {
     if (kind === "transcribing") return;
@@ -161,8 +155,6 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     if (created) void this.notify(seq, { title: "sushii-agent", body: "Sign-in link ready", url: "/", tag: "auth" });
   }
 
-  // ── Live progress: ephemeral, fanned out to open streams only ──
-
   progressEditGap(): number {
     return 0;
   }
@@ -196,7 +188,8 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     if (turn) this.timers.clear(turn.snapshotTimer);
     this.turns.delete(turnId);
     const data = { turnId, outcome: final.outcome, summary: final.summary };
-    const { seq, created } = this.deps.log.appendResult("turn_final", data, turnId || undefined);
+    // One key per outcome, so a turn marked interrupted after a restart can still be marked done by its reply.
+    const { seq, created } = this.deps.log.appendResult("turn_final", data, turnId ? `${turnId}:${final.outcome}` : undefined);
     if (created && final.outcome === "interrupted") void this.notify(seq, { title: "sushii-agent", body: "Turn interrupted", url: "/", tag: "chat" });
   }
 
@@ -206,7 +199,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     return { id };
   }
 
-  // ── Approvals: the only source of approval events ──
+  // The only source of approval events.
 
   async approvalPrompt(_origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<WebHandle> {
     const { replyCode: _code, ...shown } = view;
@@ -217,11 +210,10 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
 
   async resolveApproval(_handle: WebHandle, _view: ApprovalView, nonce: string, decision: ApprovalDecision, result?: ToolCallResult): Promise<void> {
     const wire: WireDecision = decision === "expired" ? "timeout" : decision;
-    // An approve is resolved twice: once when the tool starts, again with its result.
+    // An approve resolves twice, once when the tool starts and again with its result.
     this.deps.log.append("approval_resolved", { nonce, decision: wire, ...(result ? { result } : {}) }, result ? `${nonce}:result` : nonce);
   }
 
-  /** Clears snapshot timers; for shutdown and tests. */
   close(): void {
     for (const t of this.turns.values()) this.timers.clear(t.snapshotTimer);
   }
@@ -235,7 +227,6 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     return turn;
   }
 
-  /** Emits a `tool` event for each new line and each line whose state changed. */
   private applyLines(turn: LiveTurn, view: ProgressView): void {
     view.lines.forEach((line, i) => {
       const prev = turn.lines[i];

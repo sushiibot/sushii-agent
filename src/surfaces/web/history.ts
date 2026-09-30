@@ -8,7 +8,6 @@ export interface HistorySource {
   page(q: { before?: string; limit: number }): Promise<{ items: HistoryItem[]; before: string | null }>;
 }
 
-/** Reads the Main transcript through the workspace's chat/history RPC. */
 export class RpcHistorySource implements HistorySource {
   constructor(private readonly link: Pick<WorkspaceLink, "chatHistory">) {}
 
@@ -19,9 +18,9 @@ export class RpcHistorySource implements HistorySource {
 
 type UploadLookup = Pick<WebUploadPort, "lookup" | "forOutbox">;
 
-/** One page of history: the workspace transcript joined with the bot's own record. An item matched to a bot
- *  event by clientId or outboxId renders from that event and is verified; anything else is workspace-only
- *  and unverified. Approvals come only from the bot's log. Items stay in the workspace's (chronological) order. */
+/** Joins a workspace transcript page with the bot's own record. An item matched to a bot event by clientId
+ *  or outboxId renders from that event and is verified; the rest are unverified. Approvals come only from
+ *  the bot's log. Items keep the workspace's oldest-first order. */
 export async function buildHistoryPage(
   source: HistorySource,
   q: { before?: string; limit: number },
@@ -43,11 +42,19 @@ export async function buildHistoryPage(
   const unmatched = outboxIds.filter((id) => !replies.has(id));
   const outboxFiles = deps.uploads && unmatched.length ? deps.uploads.forOutbox(unmatched) : new Map<string, UploadRef[]>();
 
+  // The workspace can repeat an id; only its first item may claim the bot's record, so a record verifies once.
+  const claimed = new Set<StoredEvent>();
+  const claim = <E extends StoredEvent>(ev: E | undefined): E | undefined => {
+    if (!ev || claimed.has(ev)) return undefined;
+    claimed.add(ev);
+    return ev;
+  };
+
   const items: WebHistoryItem[] = [];
   for (const item of page.items) {
     switch (item.type) {
       case "user": {
-        const ev = item.clientId ? (users.get(item.clientId) as StoredEvent<"user"> | undefined) : undefined;
+        const ev = claim(item.clientId ? (users.get(item.clientId) as StoredEvent<"user"> | undefined) : undefined);
         if (ev) {
           const attachments = ev.data.uploadIds.map((id) => {
             const file = refs(id);
@@ -61,7 +68,7 @@ export async function buildHistoryPage(
         break;
       }
       case "assistant": {
-        const ev = item.outboxId ? (replies.get(item.outboxId) as StoredEvent<"reply"> | undefined) : undefined;
+        const ev = claim(item.outboxId ? (replies.get(item.outboxId) as StoredEvent<"reply"> | undefined) : undefined);
         const usage = ev ? ev.data.usage : item.usage;
         items.push({
           type: "assistant",
@@ -78,7 +85,7 @@ export async function buildHistoryPage(
         break;
       }
       case "ask": {
-        const ev = asks.get(item.outboxId) as StoredEvent<"ask"> | undefined;
+        const ev = claim(asks.get(item.outboxId) as StoredEvent<"ask"> | undefined);
         const askId = ev ? ev.data.askId : item.askId;
         const answer = (answers.get(askId) as StoredEvent<"ask_resolved"> | undefined)?.data.answer;
         items.push({
@@ -114,8 +121,8 @@ const atMs = (at: string) => {
   return Number.isNaN(t) ? null : t;
 };
 
-/** The bot's approvals in this page's span, (at of the next older item, at of this page's newest item]; the
- *  newest page runs on to now. Adjacent pages share a boundary, so an approval lands on exactly one page. */
+/** The bot's approvals after the next older item and up to this page's newest item, or up to now on the
+ *  newest page. Adjacent pages share a boundary, so each approval lands on one page. */
 async function approvalsIn(log: SqliteChatLog, source: HistorySource, items: HistoryItem[], newest: boolean, olderCursor: string | null): Promise<WebHistoryItem[]> {
   const all = log.list(["approval"]) as StoredEvent<"approval">[];
   if (!all.length) return [];
@@ -144,7 +151,6 @@ async function approvalsIn(log: SqliteChatLog, source: HistorySource, items: His
   }));
 }
 
-/** Inserts each approval before the first item that is later than it. */
 function spliceApprovals(items: WebHistoryItem[], approvals: WebHistoryItem[]): WebHistoryItem[] {
   if (!approvals.length) return items;
   const out = [...items];

@@ -32,7 +32,6 @@ const log = getLogger("web/chatRoutes");
 export const MESSAGE_BODY_MAX = 64 * 1024;
 export const HISTORY_RESPONSE_MAX = 2 * 1024 * 1024;
 const HISTORY_DEFAULT_LIMIT = 40;
-/** The workspace's chat/history error for a cursor it can't resolve. */
 const UNKNOWN_HISTORY_CURSOR = "unknown history cursor";
 
 export const WEB_ORIGIN: ChatOrigin = Object.freeze({ surface: WEB_SURFACE, conversationId: WEB_CONVERSATION_ID });
@@ -63,7 +62,6 @@ export interface ChatRouteDeps {
   presence: Presence;
   link: ChatRouteLink;
   tools: Pick<WorkspaceTools, "decide">;
-  /** DM_WORKSPACE_ENABLED. */
   workspaceEnabled: boolean;
   uploads?: WebUploadPort;
   history?: HistorySource;
@@ -72,9 +70,7 @@ export interface ChatRouteDeps {
 }
 
 export interface ChatRoutes {
-  /** Null when `path` is not a chat route. */
   handle(req: Request, path: string, actor: SurfaceActor, server?: { timeout(req: Request, seconds: number): void }): Promise<Response | null>;
-  /** Ends every open stream, e.g. at shutdown. */
   closeStreams(): void;
   /** Resolves once every message being routed has finished; for tests and shutdown. */
   idle(): Promise<void>;

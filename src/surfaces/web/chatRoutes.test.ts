@@ -12,7 +12,7 @@ import type { HistoryResponse } from "./events.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { createPeerMatcher } from "./peers.ts";
 import { createPresence } from "./presence.ts";
-import { createWebHandler, type WebHandler } from "./server.ts";
+import { createWebHandler, startWebServer, type WebHandler } from "./server.ts";
 import { WebWorkspaceAdapter, type WebUploadPort } from "./workspaceAdapter.ts";
 
 const OWNER = "owner@example.com";
@@ -305,6 +305,29 @@ describe("GET /api/chat/stream", () => {
   });
 });
 
+describe("stream over a real Bun server", () => {
+  test("a client that disconnects releases its subscription", async () => {
+    const h = setup();
+    const server = await startWebServer({ ...webConfig(), trustedPeers: ["127.0.0.1"] }, h.db, { chat: h.routes });
+    try {
+      const ctrl = new AbortController();
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/chat/stream`, {
+        headers: { "Tailscale-User-Login": OWNER, "Sec-Fetch-Site": "same-origin" },
+        signal: ctrl.signal,
+      });
+      const reader = res.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toStartWith("event: hello\n");
+      expect(h.log.subscribers).toBe(1);
+      ctrl.abort();
+      for (let i = 0; i < 100 && h.log.subscribers > 0; i++) await Bun.sleep(10);
+      expect(h.log.subscribers).toBe(0);
+    } finally {
+      h.routes.closeStreams();
+      server.stop(true);
+    }
+  });
+});
+
 describe("approvals and asks", () => {
   const NONCE = "abcdefghijklmnop";
 
@@ -385,6 +408,27 @@ describe("GET /api/chat/history", () => {
       ["approval", null, null],
       ["assistant", true, "bot reply"],
       ["assistant", false, "old reply"],
+    ]);
+  });
+});
+
+describe("history with repeated ids", () => {
+  test("a bot record verifies only the first item that names it", async () => {
+    const h = setup();
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "real" });
+    await h.routes.idle();
+    const at = new Date().toISOString();
+    h.link.history = async () => ({
+      items: [
+        { type: "user", id: "s:1", at, text: "real", clientId: CLIENT, attachments: [] },
+        { type: "user", id: "s:2", at, text: "injected", clientId: CLIENT, attachments: [] },
+      ],
+      before: null,
+    });
+    const page = (await (await call(h.handler, "/api/chat/history")).json()) as HistoryResponse;
+    expect(page.items.map((i) => (i.type === "user" ? [i.verified, i.text] : null))).toEqual([
+      [true, "real"],
+      [false, "injected"],
     ]);
   });
 });

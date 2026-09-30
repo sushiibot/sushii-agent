@@ -198,6 +198,23 @@ describe("web adapter progress", () => {
     expect(h.adapter.openTurns()).toEqual([]);
   });
 
+  test("a turn finalized as interrupted after a restart is still marked done when its reply lands", async () => {
+    const before = setup();
+    before.event("t1", { type: "tool_start", name: "bash", summary: "ls" });
+    await before.link.settled();
+    await tick();
+
+    const after = setup({ db: before.db });
+    after.rpc.handler!.onRegister!({ ...CONN, state: "idle" });
+    await after.link.settled();
+    await after.link.deliver(deliver({ turnId: "t1" }));
+    await tick();
+    expect(after.log.list(["turn_final"]).map((e) => [e.key, e.data.outcome])).toEqual([
+      ["t1:interrupted", "interrupted"],
+      ["t1:done", "done"],
+    ]);
+  });
+
   test("snapshots are throttled while a turn runs", async () => {
     const h = setup();
     h.event("t1", { type: "text_delta", text: "a" });

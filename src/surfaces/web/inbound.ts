@@ -5,7 +5,6 @@ export interface InboundRow {
   clientId: string;
   text: string;
   uploadIds: string[];
-  /** Seq of the message's `user` event. */
   seq: number;
   createdAt: number;
   routedAt: number | null;

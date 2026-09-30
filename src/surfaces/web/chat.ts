@@ -31,8 +31,7 @@ export interface WebChat {
   start(): () => void;
 }
 
-/** The web chat surface: the durable log, its adapter and its routes. Push goes through the gateway's
- *  active sender, so it is a no-op (reaching no device) until VAPID is configured. */
+/** Push goes through the gateway's active sender, so until VAPID is configured every push reaches no device. */
 export function createWebChat(deps: WebChatDeps): WebChat {
   const chatLog = new SqliteChatLog(deps.db);
   const inbound = new WebInboundStore(deps.db);

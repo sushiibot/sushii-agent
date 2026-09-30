@@ -13,7 +13,6 @@ export type ChatSink = (ev: ChatEnvelope) => void;
 
 export interface Subscription {
   close(): void;
-  /** The newest seq ever issued. */
   head: number;
   /** `after` is outside the retained range: nothing was replayed and the client must reload history. */
   reset: boolean;
@@ -23,7 +22,6 @@ export interface Subscription {
 export interface ChatLog {
   /** Idempotent on (type, key): a repeat returns the existing seq and is not fanned out again. */
   append<T extends DurableEventType>(type: T, data: ChatEventMap[T], key?: string): number;
-  /** Ephemeral fan-out to open subscriptions; never stored. */
   publish(ev: EphemeralEnvelope): void;
   /** Replays events with seq > `after` into `sink` synchronously, then streams live ones. `after` null
    *  replays nothing. */
@@ -83,7 +81,6 @@ export class SqliteChatLog implements ChatLog {
     return this.appendResult(type, data, key).seq;
   }
 
-  /** As append, and whether this call stored the event. */
   appendResult<T extends DurableEventType>(type: T, data: ChatEventMap[T], key?: string): { seq: number; created: boolean } {
     const json = JSON.stringify(data);
     const res = this.db.transaction(() => {
@@ -141,7 +138,6 @@ export class SqliteChatLog implements ChatLog {
     return row ? (toStored(row) as StoredEvent<T>) : null;
   }
 
-  /** The newest `ask` event carrying `askId`. */
   findAsk(askId: string): StoredEvent<"ask"> | null {
     const row = this.db
       .query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = 'ask' AND json_extract(data, '$.askId') = ? ORDER BY seq DESC LIMIT 1")
@@ -149,7 +145,6 @@ export class SqliteChatLog implements ChatLog {
     return row ? (toStored(row) as StoredEvent<"ask">) : null;
   }
 
-  /** Stored events of the given types, oldest first. */
   list<T extends DurableEventType>(types: readonly T[], opts: { keys?: readonly string[]; since?: number } = {}): StoredEvent<T>[] {
     if (!types.length || (opts.keys && !opts.keys.length)) return [];
     const params: (string | number)[] = [...types];
@@ -173,7 +168,6 @@ export class SqliteChatLog implements ChatLog {
     })();
   }
 
-  /** Open subscriptions; for tests and shutdown. */
   get subscribers(): number {
     return this.sinks.size;
   }
