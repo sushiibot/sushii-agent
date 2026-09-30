@@ -342,7 +342,7 @@ export class ChatStore {
 		if (this.#queue.length) this.#flush();
 		const fx: Effect[] = [];
 		if (r.ok) {
-			fx.push(...mergeHistory(this.#s, r.page.items));
+			fx.push(...mergeHistory(this.#s, r.page.items, { newest: true }));
 			this.#before = r.page.before;
 			this.hasOlder = r.page.before !== null;
 			this.history = 'ready';

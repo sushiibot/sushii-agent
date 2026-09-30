@@ -664,11 +664,32 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 }
 
 /**
+ * The transcript's copy of a turn still running: its unverified, undelivered assistant items at the end
+ * of the newest page. The live card already shows that turn, so these would repeat its steps.
+ */
+function liveTurnTail(items: WebHistoryItem[]): Set<WebHistoryItem> {
+	const tail = new Set<WebHistoryItem>();
+	for (let i = items.length - 1; i >= 0; i--) {
+		const h = items[i];
+		if (h.type === 'approval') continue;
+		if (h.type !== 'assistant' || h.verified || h.outboxId) break;
+		tail.add(h);
+	}
+	return tail;
+}
+
+/**
  * Merges one oldest-first history page ahead of the items held. A held send the page contains already
  * reached the workspace, so it moves into the page and settles; so does an ask seeded from the first frame.
+ * `newest` marks the page at the head of the conversation.
  */
-export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
+export function mergeHistory(
+	s: ChatState,
+	items: WebHistoryItem[],
+	opts: { newest?: boolean } = {}
+): Effect[] {
 	const fx: Effect[] = [];
+	const running = opts.newest && openTurns(s).length ? liveTurnTail(items) : null;
 	const local = new Map<string, Extract<ChatItem, { kind: 'user' }>>();
 	const seededAsks = new Map<string, ChatItem>();
 	for (const i of s.items) {
@@ -678,6 +699,7 @@ export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const moved = new Set<ChatItem>();
 	const mapped: ChatItem[] = [];
 	for (const h of items) {
+		if (running?.has(h)) continue;
 		const seeded = h.type === 'ask' ? seededAsks.get(h.askId) : undefined;
 		if (seeded && !moved.has(seeded)) {
 			moved.add(seeded);

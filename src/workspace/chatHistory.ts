@@ -373,6 +373,9 @@ export function convertSession(raw: string, base: string): Converted {
 function convertEntries(header: { timestamp?: string } | null, entries: SlimEntry[], base: string): Converted {
   const items: HistoryItem[] = [];
   const tools = new Map<string, Tool>();
+  // The current turn's calls still waiting for a result. An earlier turn's never-answered call failed; this
+  // turn's may still be running (say, waiting for an approval), so it is left out rather than shown failed.
+  let awaiting = new Map<Tool, AssistantItem>();
   let open: AssistantItem | null = null;
   // The newest assistant item since the last owner turn: a turn's reply marker lands on it.
   let turnReply: AssistantItem | null = null;
@@ -388,6 +391,7 @@ function convertEntries(header: { timestamp?: string } | null, entries: SlimEntr
       if (m.role === "user") {
         open = null;
         turnReply = null;
+        awaiting = new Map();
         hidden = isFlushPrompt(m.text);
         if (!hidden) {
           const user = userItem(m.text, itemId(e), at(e));
@@ -405,11 +409,15 @@ function convertEntries(header: { timestamp?: string } | null, entries: SlimEntr
         for (const c of m.tools) {
           const tool: Tool = { name: c.name, summary: c.summary, ok: false };
           open.tools.push(tool);
+          awaiting.set(tool, open);
           if (c.id) tools.set(c.id, tool);
         }
       } else if (m.role === "toolResult" && !hidden && str(m.toolCallId)) {
         const tool = tools.get(m.toolCallId);
-        if (tool) tool.ok = m.isError !== true;
+        if (tool) {
+          tool.ok = m.isError !== true;
+          awaiting.delete(tool);
+        }
       }
     } else if (e.type === "custom" && e.customType === DELIVERY_ENTRY) {
       const marker = deliveryMarker(e.data);
@@ -445,6 +453,8 @@ function convertEntries(header: { timestamp?: string } | null, entries: SlimEntr
       items.push({ type: "divider", id: itemId(e), at: at(e), kind: "compacted", ...(str(e.summary) ? { summary: clip(e.summary, ITEM_TEXT_MAX) } : {}) });
     }
   }
+
+  for (const [tool, item] of awaiting) item.tools = item.tools.filter((t) => t !== tool);
 
   const kept: HistoryItem[] = [];
   for (const item of items) {

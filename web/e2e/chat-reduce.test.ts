@@ -633,3 +633,50 @@ test('a stale history cursor keeps the asks the first frame seeded', () => {
 	run(s, [{ type: 'ask', seq: 6, data: { key: 'o-k1', askId: 'k1', question: 'q', choices: [] } }]);
 	expect(s.items.filter((i) => i.kind === 'ask')).toHaveLength(1);
 });
+
+test('the newest page leaves out its copy of a turn still running, so the live card is the only one', () => {
+	const s = createState();
+	const view = { turnId: 't1', startedAt: 0, lines: [], toolCount: 1, text: '' };
+	run(s, [
+		{
+			type: 'hello',
+			data: {
+				headSeq: 0,
+				workspace: 'online',
+				openTurns: [
+					{ ...view, lines: [{ name: 'file_linear_issue', summary: 'T', state: 'run' }] }
+				],
+				pending: NONE
+			}
+		}
+	]);
+	const page = [
+		{
+			type: 'user' as const,
+			id: 'u',
+			at: 'x',
+			text: 'file it',
+			attachments: [],
+			verified: false
+		},
+		{
+			type: 'assistant' as const,
+			id: 'a',
+			at: 'x',
+			text: '',
+			tools: [{ name: 'read', summary: 'x', ok: true }],
+			files: [],
+			verified: false
+		}
+	];
+	mergeHistory(s, page, { newest: true });
+	expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
+	expect(openTurns(s)).toHaveLength(1);
+	expect(s.items[1]).toMatchObject({ turnId: 't1' });
+
+	// With nothing running, or on an older page, the same items all show.
+	const idle = createState();
+	mergeHistory(idle, page, { newest: true });
+	expect(idle.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
+	expect(idle.items[1]).toMatchObject({ id: 'h:a' });
+});
