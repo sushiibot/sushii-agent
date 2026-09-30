@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
-import { CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE, chatHistoryResult, type ChatHistoryResult, type ChatMessageParams, type ChatMessageResult } from "../../orchestration/contracts.ts";
+import type { ChatMessageParams, ChatMessageResult } from "../../orchestration/contracts.ts";
 import { RpcErrorReply } from "../../orchestration/transport/server.ts";
 import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { isVerifiedWebActor, mintWebActor } from "./actor.ts";
@@ -34,7 +34,6 @@ class FakeLink {
   ownerChecks: SurfaceActor[] = [];
   /** When set, sendMessage waits for it (a message still being routed). */
   hold: Promise<void> | null = null;
-  history: ((q: { before?: string; limit: number }) => Promise<ChatHistoryResult>) | null = null;
   answered: Array<{ askId: string; choice: unknown; actor: SurfaceActor }> = [];
 
   isConnected = () => this.connected;
@@ -63,19 +62,13 @@ class FakeLink {
     this.answered.push({ askId, choice, actor });
     return { status: "answered" as const, answer: "yes" };
   };
-  historyTimeouts: Array<number | undefined> = [];
-  chatHistory = async (q: { before?: string; limit: number }, timeoutMs?: number) => {
-    this.historyTimeouts.push(timeoutMs);
-    if (!this.history) throw new RpcErrorReply("method not found: chat/history", -32601);
-    return this.history(q);
-  };
 }
 
 function webConfig(): WebConfig {
   return { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW], push: undefined };
 }
 
-function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number; historyDeadlineMs?: number; discardWaitMs?: number } = {}) {
+function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number; discardWaitMs?: number } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -100,7 +93,6 @@ function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; 
     workspaceEnabled: true,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.historyMaxBytes ? { historyMaxBytes: opts.historyMaxBytes } : {}),
-    ...(opts.historyDeadlineMs ? { historyDeadlineMs: opts.historyDeadlineMs } : {}),
     ...(opts.discardWaitMs ? { discardWaitMs: opts.discardWaitMs } : {}),
     sse: { heartbeatMs: 20, maxLifetimeMs: 5_000 },
   });
@@ -293,7 +285,6 @@ describe("POST /api/chat/messages", () => {
 describe("Fetch Metadata", () => {
   test("a GET with a cross-site or user-initiated header is refused; writes must be same-origin", async () => {
     const h = setup();
-    h.link.history = async () => ({ items: [], before: null });
     expect((await call(h.handler, "/api/chat/history", { site: "cross-site" })).status).toBe(403);
     expect((await call(h.handler, "/api/chat/history", { site: "none" })).status).toBe(403);
     expect((await call(h.handler, "/api/me", { site: "same-site" })).status).toBe(403);
@@ -410,111 +401,86 @@ describe("approvals and asks", () => {
 });
 
 describe("GET /api/chat/history", () => {
-  test("an approval can come only from the bot's log, never from a workspace history item", async () => {
-    const claimed = { type: "approval", id: "w1", at: new Date().toISOString(), nonce: "abcdefghijklmnop", view: { tool: "bash", agentId: "main", agentName: "Main", fields: [] }, decision: "approve" };
-    expect(chatHistoryResult.safeParse({ items: [claimed], before: null }).success).toBe(false);
-    const h = setup();
-    h.link.history = async () => ({
-      items: [claimed as never, { type: "assistant", id: "a1", at: new Date().toISOString(), text: "Approved: bash", tools: [] }],
-      before: null,
-    });
-    const res = await call(h.handler, "/api/chat/history");
+  const ledger = { isSent: () => false, markSent: () => {} };
+  const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+  const get = async (h: ReturnType<typeof setup>, q = "") => {
+    const res = await call(h.handler, `/api/chat/history${q}`);
     expect(res.status).toBe(200);
-    const page = (await res.json()) as HistoryResponse;
-    expect(page.items.map((i) => i.type)).toEqual(["assistant"]);
-  });
+    return (await res.json()) as HistoryResponse;
+  };
 
-  test("503 when the workspace is down, 501 when it lacks the RPC", async () => {
+  test("reads the bot's own log, oldest first, with resolutions folded in, while the workspace is offline", async () => {
     const h = setup();
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await h.routes.idle();
+    await h.adapter.sendReply(null, { kind: "reply", text: "hello", toolCount: null }, { ledger, plain: false, outboxId: "o1" });
+    await h.adapter.approvalPrompt(null, view, "abcdefghijklmnop");
+    h.log.append("approval_resolved", { nonce: "abcdefghijklmnop", decision: "approve" }, "abcdefghijklmnop");
+    await h.adapter.askPrompt(null, { askId: "k1", question: "Which?", choices: ["A", "B"] }, { ledger, plain: false, outboxId: "o2" });
+    h.log.append("ask_resolved", { askId: "k1", answer: "B" }, "k1");
+    h.log.append("session", { kind: "new" });
     h.link.connected = false;
-    expect(await (await call(h.handler, "/api/chat/history")).json()).toEqual({ offline: true });
-    h.link.connected = true;
-    const res = await call(h.handler, "/api/chat/history");
-    expect(res.status).toBe(501);
-    expect(await res.json()).toEqual({ unsupported: true });
-  });
-
-  test("a cursor the workspace no longer knows resets by its error code; one never handed out resets too", async () => {
-    const h = setup();
-    let calls = 0;
-    h.link.history = async (q) => {
-      calls++;
-      if (!q.before) return { items: [], before: "c1" };
-      throw new RpcErrorReply(CHAT_HISTORY_UNKNOWN_CURSOR, q.before === "c1" ? CHAT_HISTORY_UNKNOWN_CURSOR_CODE : -32000);
-    };
-    expect((await call(h.handler, "/api/chat/history?before=never")).status).toBe(409);
-    expect(calls).toBe(0);
-    await call(h.handler, "/api/chat/history");
-    const stale = await call(h.handler, "/api/chat/history?before=c1");
-    expect(stale.status).toBe(409);
-    expect(await stale.json()).toEqual({ reset: true });
-  });
-
-  test("items matching the bot's record render from it and are verified; the rest are not", async () => {
-    const h = setup();
-    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "bot copy" });
-    await h.routes.idle();
-    const ledger = { isSent: () => false, markSent: () => {} };
-    await h.adapter.sendReply(null, { kind: "reply", text: "bot reply", toolCount: null }, { ledger, plain: false, outboxId: "o1" });
-    await h.adapter.approvalPrompt(null, { tool: "t", agentId: "main", agentName: "Main", fields: [] }, "abcdefghijklmnop");
-    const later = new Date(Date.now() + 60_000).toISOString();
-    const earlier = new Date(Date.now() - 60_000).toISOString();
-    h.link.history = async () => ({
-      items: [
-        { type: "user", id: "u0", at: earlier, text: "tampered", clientId: "01J9Z3W8K2M4N6P8Q0R2S4T6VA", attachments: [] },
-        { type: "user", id: "u1", at: earlier, text: "workspace copy", clientId: CLIENT, attachments: [] },
-        { type: "assistant", id: "a1", at: later, text: "workspace reply", outboxId: "o1", tools: [] },
-        { type: "assistant", id: "a2", at: later, text: "old reply", tools: [] },
-      ],
-      before: "cursor-1",
-    });
-    const page = (await (await call(h.handler, "/api/chat/history?limit=10")).json()) as HistoryResponse;
-    expect(page.before).toBe("cursor-1");
-    expect(page.items.map((i) => [i.type, "verified" in i ? i.verified : null, "text" in i ? i.text : null])).toEqual([
-      ["user", false, "tampered"],
-      ["user", true, "bot copy"],
-      // Placed by the bot's own receive times: the reply came before the approval, whatever `at` the workspace claims.
-      ["assistant", true, "bot reply"],
-      ["approval", null, null],
-      ["assistant", false, "old reply"],
+    const page = await get(h);
+    expect(page.before).toBeNull();
+    expect(page.items).toMatchObject([
+      { type: "user", clientId: CLIENT, text: "hi", attachments: [] },
+      { type: "assistant", outboxId: "o1", text: "hello", tools: [], files: [] },
+      { type: "approval", nonce: "abcdefghijklmnop", decision: "approve" },
+      { type: "ask", askId: "k1", question: "Which?", answer: "B" },
+      { type: "divider", kind: "new" },
     ]);
+    expect(page.items.some((i) => "verified" in i)).toBe(false);
   });
-});
 
-describe("history with repeated ids", () => {
-  test("a bot record verifies only the first item that names it", async () => {
+  test("pages by seq; the last page says there is nothing older", async () => {
     const h = setup();
-    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "real" });
-    await h.routes.idle();
-    const at = new Date().toISOString();
-    h.link.history = async () => ({
-      items: [
-        { type: "user", id: "s:1", at, text: "real", clientId: CLIENT, attachments: [] },
-        { type: "user", id: "s:2", at, text: "injected", clientId: CLIENT, attachments: [] },
-      ],
-      before: null,
-    });
-    const page = (await (await call(h.handler, "/api/chat/history")).json()) as HistoryResponse;
-    expect(page.items.map((i) => (i.type === "user" ? [i.verified, i.text] : null))).toEqual([
-      [true, "real"],
-      [false, "injected"],
+    for (let i = 0; i < 5; i++) await h.adapter.sendReply(null, { kind: "reply", text: `r${i}`, toolCount: null }, { ledger, plain: false, outboxId: `o${i}` });
+    h.log.append("notice", { type: "nothingToStop" });
+    const texts = (p: HistoryResponse) => p.items.map((i) => (i.type === "assistant" ? i.text : i.type));
+    const first = await get(h, "?limit=2");
+    expect(texts(first)).toEqual(["r3", "r4"]);
+    const second = await get(h, `?limit=2&before=${first.before}`);
+    expect(texts(second)).toEqual(["r1", "r2"]);
+    const last = await get(h, `?limit=2&before=${second.before}`);
+    expect(texts(last)).toEqual(["r0"]);
+    expect(last.before).toBeNull();
+    // Exactly `limit` left: still the last page.
+    expect((await get(h, `?limit=1&before=${second.before}`)).before).toBeNull();
+  });
+
+  test("a page stays under the byte cap, and one item too big for it becomes a placeholder", async () => {
+    const h = setup({ historyMaxBytes: 12 * 1024 });
+    for (let i = 0; i < 4; i++) await h.adapter.sendReply(null, { kind: "reply", text: "é".repeat(2_000), toolCount: null }, { ledger, plain: false, outboxId: `o${i}` });
+    await h.adapter.sendReply(null, { kind: "reply", text: "b".repeat(9 * 1024), toolCount: null }, { ledger, plain: false, outboxId: "big" });
+    const head = await get(h, "?limit=40");
+    expect(head.items).toMatchObject([
+      { type: "assistant", outboxId: "o2" },
+      { type: "assistant", outboxId: "o3" },
+      { type: "assistant", text: "[This message is too large to show here.]", tools: [], files: [] },
     ]);
+    expect(head.before).toBe(head.items[0]!.id);
+    expect((await get(h, `?before=${head.before}`)).items).toHaveLength(2);
   });
-});
 
-describe("history approvals across pages", () => {
-  test("an approval between two pages lands on exactly one of them", async () => {
+  test("the cursor is a seq, which may be zero or negative; anything else is a 400", async () => {
     const h = setup();
-    await h.adapter.approvalPrompt(null, { tool: "t", agentId: "main", agentName: "Main", fields: [] }, "abcdefghijklmnop");
-    const approvedAt = h.log.list(["approval"])[0]!.createdAt;
-    const at = (d: number) => new Date(approvedAt + d).toISOString();
-    const older = { type: "user" as const, id: "s:1", at: at(-1000), text: "before", attachments: [] };
-    const newer = { type: "assistant" as const, id: "s:2", at: at(1000), text: "after", tools: [] };
-    h.link.history = async (q) => (q.before ? { items: [older], before: null } : { items: [newer], before: "s:2" });
-    const head = (await (await call(h.handler, "/api/chat/history")).json()) as HistoryResponse;
-    const next = (await (await call(h.handler, "/api/chat/history?before=s:2")).json()) as HistoryResponse;
-    expect(head.items.map((i) => i.type)).toEqual(["approval", "assistant"]);
-    expect(next.items.map((i) => i.type)).toEqual(["user"]);
+    for (const bad of ["abc", "1.5", "", "1e3", "--1"]) expect((await call(h.handler, `/api/chat/history?before=${bad}`)).status).toBe(400);
+    for (const ok of ["0", "-3", "12"]) expect((await call(h.handler, `/api/chat/history?before=${ok}`)).status).toBe(200);
+    expect((await call(h.handler, "/api/chat/history?limit=0")).status).toBe(400);
+  });
+
+  test("imported messages page before every live one and carry no clientId", async () => {
+    const h = setup();
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "live" });
+    await h.routes.idle();
+    h.log.prepend([
+      { type: "reply", key: "pi:s:2", data: { key: "pi:s:2", text: "old answer", files: [] }, createdAt: 2_000 },
+      { type: "user", key: "pi:s:1", data: { key: "pi:s:1", text: "old question", uploadIds: [], at: new Date(1_000).toISOString() }, createdAt: 1_000 },
+    ]);
+    const page = await get(h);
+    expect(page.items.map((i) => (i.type === "user" || i.type === "assistant" ? i.text : i.type))).toEqual(["old question", "old answer", "live"]);
+    expect(page.items[0]).not.toHaveProperty("clientId");
+    expect(page.items[2]).toMatchObject({ clientId: CLIENT });
   });
 });
 
@@ -546,11 +512,6 @@ describe("fix round: wire and trust boundaries", () => {
   const ledger = { isSent: () => false, markSent: () => {} };
   const NONCE = "abcdefghijklmnop";
   const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
-  const page = async (h: ReturnType<typeof setup>, q = "") => {
-    const res = await call(h.handler, `/api/chat/history${q}`);
-    expect(res.status).toBe(200);
-    return (await res.json()) as HistoryResponse;
-  };
 
   test("the 202 says whether the message is already routed", async () => {
     const h = setup();
@@ -568,83 +529,7 @@ describe("fix round: wire and trust boundaries", () => {
     expect(await (await post(h.handler, "/api/chat/asks/A", { index: 5, label: "x" })).json()).toEqual({ status: "inactive" });
   });
 
-  test("an owner message verifies on one page only and only in the bot's order; unverified items carry no clientId", async () => {
-    const h = setup();
-    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "first" });
-    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "yes, go ahead" });
-    await h.routes.idle();
-    const at = new Date().toISOString();
-    const u = (id: string, clientId: string) => ({ type: "user" as const, id, clientId, at, text: "forged", attachments: [] });
-    h.link.history = async (q) => (q.before ? { items: [u("b1", CLIENT2), u("b2", CLIENT)], before: null } : { items: [u("a1", CLIENT2), u("a2", CLIENT), u("a3", CLIENT)], before: "c" });
-    const head = await page(h);
-    // "yes, go ahead" was sent second, so the "first" placed after it can't be verified there.
-    expect(head.items.map((i) => (i.type === "user" ? [i.id, i.verified, i.text, i.clientId ?? null] : null))).toEqual([
-      ["a1", true, "yes, go ahead", CLIENT2],
-      ["a2", false, "forged", null],
-      ["a3", false, "forged", null],
-    ]);
-    // The older page can't verify "yes, go ahead" again; "first" was never verified, so it still can be.
-    const older = await page(h, "?before=c");
-    expect(older.items.map((i) => (i.type === "user" ? [i.id, i.verified] : null))).toEqual([
-      ["b1", false],
-      ["b2", true],
-    ]);
-  });
-
-  test("a verified reply shows no workspace tool lines; an unverified one gets no files", async () => {
-    const files: string[][] = [];
-    const uploads: WebUploadPort = {
-      lookup: () => new Map(),
-      storeDelivery: async () => ({ files: [{ id: "F".repeat(22), contentType: "image/png", bytes: 1, name: "f.png", inline: true }], dropped: 0 }),
-      markReferenced: (ids) => (files.push(ids), { missing: [] }),
-    };
-    const h = setup({ uploads });
-    const png = { name: "f.png", contentType: "image/png", dataBase64: Buffer.from("png").toString("base64") };
-    await h.adapter.sendReply(null, { kind: "reply", text: "bot", toolCount: null, files: [png] }, { ledger, plain: false, outboxId: "o1" });
-    const at = new Date().toISOString();
-    const tools = [{ name: "bash", summary: "rm -rf /", ok: true }];
-    h.link.history = async () => ({
-      items: [
-        { type: "assistant", id: "a1", at, text: "ws", outboxId: "o1", tools },
-        { type: "assistant", id: "a2", at, text: "ws", outboxId: "o1", tools },
-      ],
-      before: null,
-    });
-    const items = (await page(h)).items.map((i) => (i.type === "assistant" ? [i.verified, i.tools.length, i.files.length] : null));
-    expect(items).toEqual([
-      [true, 0, 1],
-      [false, 1, 0],
-    ]);
-  });
-
-  test("one oversized item is cut short instead of failing the page", async () => {
-    const h = setup();
-    h.link.history = async () => ({ items: [{ type: "assistant", id: "x", at: new Date().toISOString(), text: "A".repeat(3 * 1024 * 1024), tools: [] }], before: null });
-    const item = (await page(h)).items[0] as { text: string };
-    expect(item.text).toEndWith(`[truncated: ${3 * 1024 * 1024 - 100_000} more characters]`);
-  });
-
-  test("a page over the byte cap is halved until it fits, and a single item still too big becomes a placeholder", async () => {
-    const h = setup({ historyMaxBytes: 64 * 1024 });
-    const at = new Date().toISOString();
-    const all = Array.from({ length: 40 }, (_, i) => ({ type: "assistant" as const, id: `m${i}`, at, text: "é".repeat(5_000), tools: [] }));
-    const limits: number[] = [];
-    h.link.history = async (q) => {
-      limits.push(q.limit);
-      const items = all.slice(-q.limit);
-      return { items, before: items[0]!.id };
-    };
-    const halved = await page(h, "?limit=40");
-    expect(limits).toEqual([40, 20, 10, 5]);
-    expect(halved.items.map((i) => i.id)).toEqual(["m35", "m36", "m37", "m38", "m39"]);
-    expect(halved.before).toBe("m35");
-
-    const tiny = setup({ historyMaxBytes: 4 * 1024 });
-    tiny.link.history = async () => ({ items: [{ type: "assistant", id: "big", at, text: "b".repeat(8 * 1024), tools: [] }], before: null });
-    expect((await page(tiny)).items).toEqual([{ type: "assistant", id: "big", at, text: "[This message is too large to show here.]", tools: [], files: [], verified: false }]);
-  });
-
-  test("a pending approval is on the first frame whatever history says, and survives a failed boundary probe", async () => {
+  test("a pending approval is on the first frame and after a reset", async () => {
     const h = setup();
     await h.adapter.approvalPrompt(null, view, NONCE);
     const hello = (await readFrames(await call(h.handler, "/api/chat/stream"), 1))[0]!;
@@ -652,17 +537,6 @@ describe("fix round: wire and trust boundaries", () => {
     const reset = (await readFrames(await call(h.handler, "/api/chat/stream?after=999"), 1))[0]!;
     expect(reset.event).toBe("reset");
     expect((reset.data as { pending: { approvals: { nonce: string }[] } }).pending.approvals.map((a) => a.nonce)).toEqual([NONCE]);
-
-    const approvedAt = h.log.list(["approval"])[0]!.createdAt;
-    const it = (id: string, d: number) => ({ type: "assistant" as const, id, at: new Date(approvedAt + d).toISOString(), text: id, tools: [] });
-    h.link.history = async (q) => {
-      if (!q.before) return { items: [it("new", 60_000)], before: "c1" };
-      if (q.limit === 1) throw new Error("probe failed");
-      return { items: [it("old", 1_000)], before: "c2" };
-    };
-    await page(h);
-    const middle = await page(h, "?before=c1");
-    expect(middle.items.map((i) => i.type)).toEqual(["approval", "assistant"]);
   });
 
   test("shutdown waits for routing, but only so long", async () => {
@@ -769,30 +643,6 @@ describe("holistic fix round: delivery, refusals, dead asks, history time", () =
     expect(h.log.pending({ approvalsSince: 0, asks: 10 }).asks).toEqual([]);
     const hello = (await readFrames(await call(h.handler, "/api/chat/stream"), 1))[0]!;
     expect((hello.data as { pending: { asks: unknown[] } }).pending.asks).toEqual([]);
-  });
-
-  test("a workspace that never answers history gets a 502 inside the deadline, not a socket closed by the idle timeout", async () => {
-    const h = setup({ historyDeadlineMs: 60 });
-    h.link.history = () => new Promise(() => {});
-    const t0 = Date.now();
-    const res = await call(h.handler, "/api/chat/history");
-    expect(res.status).toBe(502);
-    expect(Date.now() - t0).toBeLessThan(1_000);
-    expect(h.link.historyTimeouts[0]).toBeLessThanOrEqual(60);
-  });
-
-  test("the halving retries share the one deadline", async () => {
-    const h = setup({ historyMaxBytes: 1024, historyDeadlineMs: 120 });
-    const at = new Date().toISOString();
-    const limits: number[] = [];
-    h.link.history = async (q) => {
-      limits.push(q.limit);
-      await Bun.sleep(40);
-      return { items: Array.from({ length: q.limit }, (_, i) => ({ type: "assistant" as const, id: `m${i}`, at, text: "x".repeat(400), tools: [] })), before: "c" };
-    };
-    const res = await call(h.handler, "/api/chat/history?limit=40");
-    expect(res.status).toBe(502);
-    expect(limits.length).toBeLessThan(6);
   });
 });
 

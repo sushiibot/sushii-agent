@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { CHAT_HISTORY_UNKNOWN_CURSOR_CODE, ID_MAX, WEB_CONVERSATION_ID, uploadUrl, type ChatMessageParams, type ChatOrigin } from "../../orchestration/contracts.ts";
-import { RpcErrorReply, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
+import { ID_MAX, WEB_CONVERSATION_ID, uploadUrl, type ChatMessageParams, type ChatOrigin } from "../../orchestration/contracts.ts";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { handleOwnerMessage, type OwnerRouterDeps } from "../../orchestration/workspace/router.ts";
 import type { InboundMessage, RouterNotice, SurfaceActor } from "../../orchestration/workspace/surface.ts";
@@ -16,16 +15,13 @@ import {
   UPLOAD_ID_RE,
   type DiscardMessageResponse,
   type DiscardMessageRoutedResponse,
-  type HistoryResetResponse,
-  type HistoryUnsupportedResponse,
   type PostApprovalResponse,
   type PostAskResponse,
   type PostMessageResponse,
   type PostMessageUploadMissingResponse,
   type UploadRef,
-  type WebHistoryItem,
 } from "./events.ts";
-import { buildHistoryPage, HistoryDeadlineError, RpcHistorySource, type HistorySource } from "./history.ts";
+import { historyPage } from "./history.ts";
 import { forbidden, isJson, json, readJson } from "./http.ts";
 import type { InboundRow, WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
@@ -39,12 +35,9 @@ export const MESSAGE_BODY_MAX = 64 * 1024;
 export const HISTORY_RESPONSE_MAX = 2 * 1024 * 1024;
 const HISTORY_DEFAULT_LIMIT = 40;
 const PENDING_ASKS_MAX = 10;
-const HISTORY_FLOORS_KEPT = 256;
 const SHUTDOWN_IDLE_MS = 2_000;
 /** How long a delete waits for a route already in flight to settle before calling the message delivered. */
 const DISCARD_WAIT_MS = 20_000;
-/** Every RPC one history request makes shares this budget, which stays under Bun's 30s idle timeout. */
-export const HISTORY_DEADLINE_MS = 25_000;
 
 export const WEB_ORIGIN: ChatOrigin = Object.freeze({ surface: WEB_SURFACE, conversationId: WEB_CONVERSATION_ID });
 
@@ -64,7 +57,6 @@ export type ChatRouteLink = Pick<
   | "command"
   | "stopTurn"
   | "answerAsk"
-  | "chatHistory"
 >;
 
 export interface ChatRouteDeps {
@@ -76,11 +68,9 @@ export interface ChatRouteDeps {
   tools: Pick<WorkspaceTools, "decide">;
   workspaceEnabled: boolean;
   uploads?: WebUploadPort;
-  history?: HistorySource;
   now?: () => number;
   sse?: { heartbeatMs: number; maxLifetimeMs: number };
   historyMaxBytes?: number;
-  historyDeadlineMs?: number;
   discardWaitMs?: number;
 }
 
@@ -115,20 +105,11 @@ const seenBody = z.object({ seq: z.number().int().min(0) }).strict();
 export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   const { log: chatLog, inbound, adapter, presence, link, tools } = deps;
   const now = deps.now ?? Date.now;
-  const history = deps.history ?? new RpcHistorySource(link);
   const sseTimes = deps.sse ?? { heartbeatMs: SSE_HEARTBEAT_MS, maxLifetimeMs: SSE_MAX_LIFETIME_MS };
   const historyMax = deps.historyMaxBytes ?? HISTORY_RESPONSE_MAX;
   const shutdown = new AbortController();
   // clientIds being routed right now, so a duplicate POST can't route the same message twice at once.
   const routing = new Map<string, Promise<void>>();
-  // History cursor → the owner-message floor of the pages newer than it; see buildHistoryPage.
-  const userFloors = new Map<string, number>();
-  const rememberFloor = (cursor: string, floor: number) => {
-    const prev = userFloors.get(cursor);
-    userFloors.delete(cursor);
-    userFloors.set(cursor, Math.min(prev ?? Infinity, floor));
-    if (userFloors.size > HISTORY_FLOORS_KEPT) userFloors.delete(userFloors.keys().next().value!);
-  };
 
   const online = () => deps.workspaceEnabled && link.isConnected();
   // Routing needs a verified actor, which only a request carries; a re-drive waits for one.
@@ -357,41 +338,16 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     return new Response(null, { status: 204 });
   }
 
-  async function getHistory(req: Request): Promise<Response> {
+  function getHistory(req: Request): Response {
     const params = new URL(req.url).searchParams;
-    const before = params.get("before") ?? undefined;
+    const rawBefore = params.get("before");
     const rawLimit = params.get("limit");
     const limit = rawLimit === null ? HISTORY_DEFAULT_LIMIT : Number(rawLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_LIMIT_MAX) return json({ error: "invalid limit" }, 400);
-    if (before !== undefined && (before === "" || before.length > ID_MAX)) return json({ error: "invalid cursor" }, 400);
-    if (!online()) return json({ offline: true }, 503);
-    // A cursor this process didn't hand out (a restart, or one evicted) has no floor to verify against.
-    const userFloor = before === undefined ? Infinity : userFloors.get(before);
-    if (userFloor === undefined) return json({ reset: true } satisfies HistoryResetResponse, 409);
-    const ok = (text: string) => new Response(text, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
-    const deadline = { at: now() + (deps.historyDeadlineMs ?? HISTORY_DEADLINE_MS), now };
-    try {
-      // Halve the page until it fits; the workspace's cursors stay valid for any limit.
-      for (let n = limit; ; n = Math.floor(n / 2)) {
-        const page = await buildHistoryPage(history, { limit: n, ...(before ? { before } : {}) }, { log: chatLog, userFloor, deadline, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
-        let text = JSON.stringify(page.response);
-        if (n === 1 && Buffer.byteLength(text) > historyMax) {
-          text = JSON.stringify({ ...page.response, items: page.response.items.map((i) => (Buffer.byteLength(JSON.stringify(i)) > historyMax / 2 ? tooLarge(i) : i)) });
-        }
-        if (Buffer.byteLength(text) <= historyMax || n === 1) {
-          if (page.response.before !== null) rememberFloor(page.response.before, page.userFloor);
-          return ok(text);
-        }
-      }
-    } catch (err) {
-      if (err instanceof RpcErrorReply && err.code === -32601) return json({ unsupported: true } satisfies HistoryUnsupportedResponse, 501);
-      // A cursor from before a session rotation or restart: the client drops its pages and reloads from the head.
-      if (err instanceof RpcErrorReply && err.code === CHAT_HISTORY_UNKNOWN_CURSOR_CODE) return json({ reset: true } satisfies HistoryResetResponse, 409);
-      if (err instanceof WorkspaceNotConnectedError) return json({ offline: true }, 503);
-      if (err instanceof HistoryDeadlineError) log.warn("chat/history ran out of time");
-      else log.warn({ err }, "chat/history failed");
-      return json({ error: "history unavailable" }, 502);
-    }
+    // Imported rows have seqs at or below zero.
+    if (rawBefore !== null && !/^-?\d{1,15}$/.test(rawBefore)) return json({ error: "invalid cursor" }, 400);
+    const page = historyPage(chatLog, { limit, ...(rawBefore !== null ? { before: Number(rawBefore) } : {}) }, { maxBytes: historyMax, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
+    return new Response(JSON.stringify(page), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
   }
 
   function getStream(req: Request, server?: { timeout(req: Request, seconds: number): void }): Response {
@@ -460,10 +416,6 @@ class UploadMissing extends Error {
   constructor(readonly ids: string[]) {
     super("upload missing");
   }
-}
-
-function tooLarge(item: WebHistoryItem): WebHistoryItem {
-  return { type: "assistant", id: item.id, at: item.at, text: "[This message is too large to show here.]", tools: [], files: [], verified: false };
 }
 
 async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T, limit?: number): Promise<z.infer<T> | Response> {

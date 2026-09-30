@@ -1,12 +1,12 @@
 import {
   AUTH_METHODS,
   LOGIN_ALREADY_PENDING,
-  CHAT_HISTORY_TIMEOUT_MS,
+  CHAT_EXPORT_TIMEOUT_MS,
   RPC_METHODS,
   chatDeliverParams,
-  chatHistoryResult,
-  type ChatHistoryParams,
-  type ChatHistoryResult,
+  chatExportResult,
+  type ChatExportParams,
+  type ChatExportResult,
   type AuthCancelResult,
   type AuthCompleteResult,
   type AuthStartResult,
@@ -289,10 +289,10 @@ export class WorkspaceLink {
     }
   }
 
-  /** One page of the Main transcript. An old workspace without the method rejects with MethodNotFound. */
-  async chatHistory(q: Omit<ChatHistoryParams, "principalId">, timeoutMs = CHAT_HISTORY_TIMEOUT_MS): Promise<ChatHistoryResult> {
-    const params: ChatHistoryParams = { principalId: this.opts.principalId, ...q };
-    return chatHistoryResult.parse(await this.request(RPC_METHODS.chatHistory, params, timeoutMs));
+  /** One page of the Main transcript for the import. An old workspace without the method rejects with MethodNotFound. */
+  async chatExport(q: Omit<ChatExportParams, "principalId">): Promise<ChatExportResult> {
+    const params: ChatExportParams = { principalId: this.opts.principalId, ...q };
+    return chatExportResult.parse(await this.request(RPC_METHODS.chatExport, params, CHAT_EXPORT_TIMEOUT_MS));
   }
 
   isConnected(): boolean {

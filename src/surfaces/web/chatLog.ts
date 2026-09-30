@@ -8,8 +8,9 @@ export const EVENTS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const EVENTS_MAX_ROWS = 50_000;
 export const INBOUND_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PRUNED_THROUGH_KEY = "web_events:pruned_through";
-// The row cap never evicts these: the owner's own messages and approvals still waiting for a decision.
-const CAP_EXEMPT = `e.type = 'user' OR (e.type = 'approval' AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key))`;
+/** The chat itself, kept forever: neither the age prune nor the row cap ever deletes these. */
+export const PERMANENT_EVENTS = ["user", "reply", "proactive", "ask", "ask_resolved", "approval", "approval_resolved", "session"] as const satisfies readonly DurableEventType[];
+const PRUNABLE = `type NOT IN (${PERMANENT_EVENTS.map((t) => `'${t}'`).join(",")})`;
 
 export type EphemeralEnvelope = Extract<ChatEnvelope, { type: EphemeralEventType }>;
 export type ChatSink = (ev: ChatEnvelope) => void;
@@ -76,7 +77,8 @@ export class SqliteChatLog implements ChatLog {
       byKey: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = ? AND key = ?"),
       insert: db.query("INSERT INTO web_events (type, key, data, created_at) VALUES (?, ?, ?, ?) RETURNING seq"),
       after: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE seq > ? ORDER BY seq"),
-      min: db.query("SELECT min(seq) AS m FROM web_events"),
+      // Imported rows sit at seq <= 0, below anything a stream can resume from.
+      min: db.query("SELECT min(seq) AS m FROM web_events WHERE seq > 0"),
       head: db.query("SELECT seq FROM sqlite_sequence WHERE name = 'web_events'"),
       prunedThrough: db.query("SELECT value FROM kv WHERE key = ?"),
     };
@@ -194,6 +196,19 @@ export class SqliteChatLog implements ChatLog {
     return row ? (toStored(row) as StoredEvent<"ask">) : null;
   }
 
+  /** The newest `limit` events of `types` with a seq below `before`, newest first. */
+  page<T extends DurableEventType>(types: readonly T[], opts: { before?: number; limit: number }): StoredEvent<T>[] {
+    const params: (string | number)[] = [...types];
+    let sql = `SELECT seq, type, key, data, created_at FROM web_events WHERE type IN (${types.map(() => "?").join(",")})`;
+    if (opts.before !== undefined) {
+      sql += " AND seq < ?";
+      params.push(opts.before);
+    }
+    sql += " ORDER BY seq DESC LIMIT ?";
+    params.push(opts.limit);
+    return (this.db.query(sql).all(...params) as Row[]).map((r) => toStored(r) as StoredEvent<T>);
+  }
+
   list<T extends DurableEventType>(types: readonly T[], opts: { keys?: readonly string[]; since?: number } = {}): StoredEvent<T>[] {
     if (!types.length || (opts.keys && !opts.keys.length)) return [];
     const params: (string | number)[] = [...types];
@@ -210,11 +225,31 @@ export class SqliteChatLog implements ChatLog {
     return (this.db.query(sql).all(...params) as Row[]).map((r) => toStored(r) as StoredEvent<T>);
   }
 
+  /** The oldest live row's time, or null when there is none. Imported rows don't count. */
+  firstLiveAt(): number | null {
+    return (this.db.query("SELECT min(created_at) AS m FROM web_events WHERE seq > 0").get() as { m: number | null }).m;
+  }
+
+  /** Stores rows below every seq already held, in the order given (newest first), without fanning them out.
+   *  A (type, key) already stored is skipped. Returns how many were stored. */
+  prepend(rows: readonly { type: DurableEventType; key: string; data: unknown; createdAt: number }[]): number {
+    return this.db.transaction(() => {
+      let next = Math.min((this.db.query("SELECT min(seq) AS m FROM web_events").get() as { m: number | null }).m ?? 1, 1) - 1;
+      let stored = 0;
+      for (const r of rows) {
+        if (this.q.byKey.get(r.type, r.key)) continue;
+        this.db.run("INSERT INTO web_events (seq, type, key, data, created_at) VALUES (?, ?, ?, ?, ?)", [next--, r.type, r.key, JSON.stringify(r.data), r.createdAt]);
+        stored++;
+      }
+      return stored;
+    })();
+  }
+
   prune(now: number): void {
     this.db.transaction(() => {
-      const aged = this.db.query("DELETE FROM web_events WHERE created_at < ? RETURNING seq").all(now - this.retentionMs) as { seq: number }[];
+      const aged = this.db.query(`DELETE FROM web_events WHERE created_at < ? AND ${PRUNABLE} RETURNING seq`).all(now - this.retentionMs) as { seq: number }[];
       const evicted = this.db
-        .query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events e WHERE NOT (${CAP_EXEMPT}) ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
+        .query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events WHERE ${PRUNABLE} ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
         .all(this.maxRows) as { seq: number }[];
       const through = Math.max(this.prunedThrough(), ...aged.map((r) => r.seq), ...evicted.map((r) => r.seq));
       if (through > this.prunedThrough()) {

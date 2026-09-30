@@ -28,7 +28,6 @@ import {
 	mergeHistory,
 	openTurns,
 	removeLocal,
-	restartHistory,
 	setDelivery,
 	type ChatItem,
 	type ChatState,
@@ -347,7 +346,7 @@ export class ChatStore {
 		if (this.#queue.length) this.#flush();
 		const fx: Effect[] = [];
 		if (r.ok) {
-			fx.push(...mergeHistory(this.#s, r.page.items, { newest: true }));
+			fx.push(...mergeHistory(this.#s, r.page.items));
 			this.#before = r.page.before;
 			this.hasOlder = r.page.before !== null;
 			this.history = 'ready';
@@ -368,13 +367,6 @@ export class ChatStore {
 		this.olderError = false;
 		const r = await this.#api.history({ before: this.#before, limit: HISTORY_PAGE });
 		this.olderLoading = false;
-		if (!r.ok && r.reason === 'reset') {
-			// The cursor went stale: start again from the newest page. The stream is fine, so the tray stays.
-			const fx = restartHistory(this.#s);
-			this.#commit();
-			for (const e of fx) this.#effect(e);
-			return;
-		}
 		if (!r.ok) {
 			this.olderError = true;
 			this.#commit();

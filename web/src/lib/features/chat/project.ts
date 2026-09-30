@@ -88,8 +88,7 @@ export function toMessages(
 					id: item.id,
 					role: 'user',
 					parts,
-					delivery: item.delivery,
-					unverified: !item.verified
+					delivery: item.delivery
 				});
 				break;
 			}
@@ -107,7 +106,6 @@ export function toMessages(
 					role: 'assistant',
 					parts,
 					streaming: item.streaming && !!item.text,
-					unverified: !item.verified,
 					uploads: item.files
 				});
 				break;

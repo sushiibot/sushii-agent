@@ -32,8 +32,7 @@ function history(): WebHistoryItem[] {
 				clientId: undefined,
 				at: at(i * 10 + 5),
 				text: `Earlier question number ${i}`,
-				attachments: [],
-				verified: i < 20
+				attachments: []
 			},
 			{
 				type: 'assistant',
@@ -41,8 +40,7 @@ function history(): WebHistoryItem[] {
 				at: at(i * 10),
 				text: `Earlier answer number ${i}.`,
 				tools: i % 3 ? [] : [{ name: 'search_mail', summary: 'Searched mail', ok: true }],
-				files: [],
-				verified: i < 20
+				files: []
 			}
 		);
 		if (i === 12)

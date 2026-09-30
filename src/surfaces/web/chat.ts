@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import type { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
 import { getLogger } from "../../logger.ts";
+import { createPiChatImporter } from "./chatImport.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import { createChatRoutes, type ChatRoutes } from "./chatRoutes.ts";
 import { WebInboundStore } from "./inbound.ts";
@@ -58,6 +59,8 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
 
+  const importer = createPiChatImporter({ db: deps.db, log: chatLog, source: deps.link });
+
   function prune(): void {
     try {
       const now = Date.now();
@@ -78,8 +81,12 @@ export function createWebChat(deps: WebChatDeps): WebChat {
       timer.unref?.();
       const off = deps.link.onConnectionChange((connected) => {
         chatLog.publish({ type: "workspace", data: { state: connected && deps.workspaceEnabled ? "online" : "offline" } });
-        if (connected) routes.workspaceConnected();
+        if (connected) {
+          routes.workspaceConnected();
+          if (deps.workspaceEnabled) void importer.run();
+        }
       });
+      if (deps.workspaceEnabled && deps.link.isConnected()) void importer.run();
       return () => {
         clearInterval(timer);
         off();

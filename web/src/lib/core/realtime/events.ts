@@ -205,8 +205,7 @@ export type ChatEnvelope = {
 
 // ── HTTP API ──
 
-/** GET /api/chat/history. A `user`, `assistant` or `ask` item with `verified: false` came only from the
- *  workspace transcript; it renders like any other message but never gets Retry/Delete. */
+/** GET /api/chat/history, read from the bot's own chat log. */
 export type WebHistoryItem =
 	| {
 			type: 'user';
@@ -216,7 +215,6 @@ export type WebHistoryItem =
 			text: string;
 			/** `file` is null when the upload is unknown to the bot: render a dead placeholder. */
 			attachments: { name: string; contentType: string; file: UploadRef | null }[];
-			verified: boolean;
 	  }
 	| {
 			type: 'assistant';
@@ -228,7 +226,6 @@ export type WebHistoryItem =
 			tools: { name: string; summary: string; ok: boolean }[];
 			usage?: ChatUsage;
 			files: UploadRef[];
-			verified: boolean;
 	  }
 	| {
 			type: 'ask';
@@ -240,7 +237,6 @@ export type WebHistoryItem =
 			choices: string[];
 			/** Null: no longer waiting, and never answered. */
 			answer?: string | null;
-			verified: boolean;
 	  }
 	| {
 			type: 'divider';
@@ -261,20 +257,8 @@ export type WebHistoryItem =
 
 export interface HistoryResponse {
 	items: WebHistoryItem[];
-	/** Cursor for the next older page; null at the start of the transcript. */
+	/** Cursor for the next older page; null at the start of the chat. */
 	before: string | null;
-}
-/** 503 body when the workspace is down. */
-export interface HistoryOfflineResponse {
-	offline: true;
-}
-/** 501 body when the workspace can't serve history. */
-export interface HistoryUnsupportedResponse {
-	unsupported: true;
-}
-/** 409 body when the workspace no longer knows `before`: drop the loaded pages and reload from the newest. */
-export interface HistoryResetResponse {
-	reset: true;
 }
 
 export interface PostMessageBody {
