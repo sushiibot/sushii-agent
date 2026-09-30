@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ALERT_ERROR_MAX,
   DAILY_GRACE_MS,
+  DEFAULT_MAX_RUN_MS,
+  MAX_TIMER_MS,
   Scheduler,
   alertErrorText,
+  effectiveMaxRunMs,
+  outcomeKind,
   jobAlertText,
   inActiveHours,
   lastOccurrence,
@@ -478,7 +482,7 @@ describe("job alerts", () => {
     expect(alerts.map((a) => a.kind)).toEqual(["failed", "recovered"]);
   });
 
-  test("a run past its max runtime is reported stuck once, left running, and not re-alerted when it then fails", async () => {
+  test("a run past its max runtime is reported stuck once, left running, then reported once more when it fails", async () => {
     const { s, alerts } = alerting();
     let finish!: (o: JobOutcome) => void;
     let fail!: (e: Error) => void;
@@ -488,12 +492,108 @@ describe("job alerts", () => {
     expect(alerts).toEqual([expect.objectContaining({ job: "slow", kind: "stuck", trigger: "manual" })]);
     fail(new Error("gave up"));
     await run;
-    expect(alerts).toHaveLength(1);
+    expect(alerts.map((a) => a.kind)).toEqual(["stuck", "failed"]);
+    expect(alerts[1]!.error).toBe("gave up");
+    expect(readSchedulerState(stateDir).alerts.slow).toMatchObject({ kind: "failed" });
+
+    const failing = s.runJob("slow", { trigger: "manual", force: true });
+    fail(new Error("gave up again"));
+    await failing;
+    expect(alerts).toHaveLength(2);
 
     const again = s.runJob("slow", { trigger: "manual", force: true });
     finish({ status: "sent" });
     await again;
+    expect(alerts.map((a) => a.kind)).toEqual(["stuck", "failed", "recovered"]);
+  });
+
+  test("a stuck run that then succeeds sends only the recovered note", async () => {
+    const { s, alerts } = alerting();
+    let finish!: (o: JobOutcome) => void;
+    s.register({ name: "slow", maxRunMs: 20, run: () => new Promise<JobOutcome>((resolve) => (finish = resolve)) });
+    const run = s.runJob("slow", { trigger: "manual", force: true });
+    await Bun.sleep(80);
+    finish({ status: "sent" });
+    await run;
     expect(alerts.map((a) => a.kind)).toEqual(["stuck", "recovered"]);
+  });
+
+  test("an invalid max runtime falls back to the default instead of firing at once", async () => {
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY, MAX_TIMER_MS + 1]) expect(effectiveMaxRunMs(bad)).toBe(DEFAULT_MAX_RUN_MS);
+    expect(effectiveMaxRunMs(undefined)).toBe(DEFAULT_MAX_RUN_MS);
+    expect(effectiveMaxRunMs(MAX_TIMER_MS)).toBe(MAX_TIMER_MS);
+    expect(effectiveMaxRunMs(20)).toBe(20);
+
+    const { s, alerts } = alerting();
+    let finish!: (o: JobOutcome) => void;
+    s.register({ name: "slow", maxRunMs: 0, run: () => new Promise<JobOutcome>((resolve) => (finish = resolve)) });
+    const run = s.runJob("slow", { trigger: "manual", force: true });
+    await Bun.sleep(40);
+    expect(alerts).toEqual([]);
+    finish({ status: "sent" });
+    await run;
+  });
+
+  test("only known success statuses end a streak; an unknown one is neutral unless it reads like a failure", async () => {
+    expect(outcomeKind("applied")).toBe("success");
+    expect(outcomeKind("skipped")).toBe("neutral");
+    expect(outcomeKind("deferred")).toBe("neutral");
+    expect(outcomeKind("timed_out")).toBe("failure");
+    expect(outcomeKind("partial_failure")).toBe("failure");
+
+    const { s, alerts } = alerting();
+    let outcome: JobOutcome = { status: "error" };
+    s.register({ name: "consolidation", run: async () => outcome });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    outcome = { status: "deferred" };
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    expect(alerts.map((a) => a.kind)).toEqual(["failed"]);
+    expect(readSchedulerState(stateDir).alerts.consolidation).toBeDefined();
+
+    outcome = { status: "sent" };
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    outcome = { status: "upload_failed", summary: "upload failed: 503" };
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    expect(alerts.map((a) => a.kind)).toEqual(["failed", "recovered", "failed"]);
+    expect(alerts[2]!.error).toBe("upload failed: 503");
+  });
+
+  test("a failed state write still sends the alert, deduped in memory", async () => {
+    mkdirSync(schedulerStatePath(stateDir), { recursive: true });
+    const { s, alerts } = alerting();
+    let fail = true;
+    s.register({ name: "consolidation", run: async () => (fail ? Promise.reject(new Error("disk full")) : { status: "applied" }) });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    expect(alerts.map((a) => a.kind)).toEqual(["failed"]);
+
+    fail = false;
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    fail = true;
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    expect(alerts.map((a) => a.kind)).toEqual(["failed", "recovered", "failed"]);
+  });
+
+  test("a run that ends after stop() is recorded but neither alerts nor opens a streak", async () => {
+    const { s, alerts } = alerting();
+    let fail!: (e: Error) => void;
+    s.register({ name: "consolidation", run: () => new Promise<JobOutcome>((_, reject) => (fail = reject)) });
+    const run = s.runJob("consolidation", { trigger: "daily", force: false });
+    const stopping = s.stop(1000);
+    fail(new Error("session disposed"));
+    await run;
+    await stopping;
+    expect(alerts).toEqual([]);
+    expect(readSchedulerState(stateDir).alerts.consolidation).toBeUndefined();
+    expect(readSchedulerState(stateDir).jobs.consolidation!.lastStatus).toBe("error");
+  });
+
+  test("the error's cause is appended", async () => {
+    const { s, alerts } = alerting();
+    s.register({ name: "consolidation", run: async () => Promise.reject(new Error("fetch failed", { cause: new Error("ECONNREFUSED 10.0.0.1:443") })) });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    expect(alerts[0]!.error).toBe("fetch failed: ECONNREFUSED 10.0.0.1:443");
   });
 
   test("a run that finishes within its max runtime sends nothing", async () => {
@@ -536,12 +636,41 @@ describe("job alerts", () => {
     expect(readSchedulerState(stateDir).jobs.consolidation!.lastStatus).toBe("error");
   });
 
+  test("an alert hook whose promise rejects is caught, and the streak is still deduped", async () => {
+    let calls = 0;
+    const s = new Scheduler({
+      stateDir,
+      at: "04:00",
+      tz: "UTC",
+      now: () => clock,
+      onJobAlert: async () => {
+        calls++;
+        await Bun.sleep(1);
+        throw new Error("surface down");
+      },
+    });
+    schedulers.push(s);
+    s.register({ name: "consolidation", run: async () => Promise.reject(new Error("model down")) });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    await Bun.sleep(20);
+    expect(calls).toBe(1);
+    expect(readSchedulerState(stateDir).alerts.consolidation).toMatchObject({ kind: "failed" });
+    await s.runJob("consolidation", { trigger: "daily", force: false });
+    await Bun.sleep(20);
+    expect(calls).toBe(1);
+  });
+
   test("alert text", () => {
     const startedAt = new Date("2026-09-29T04:00:00Z");
     expect(jobAlertText({ job: "consolidation", kind: "failed", trigger: "daily", startedAt, error: "model down", schedule: "daily 04:00" })).toBe(
       "⚠️ scheduled job `consolidation` failed (daily): model down. It will retry on its schedule (daily 04:00).",
     );
     expect(jobAlertText({ job: "brief", kind: "recovered", trigger: "interval", startedAt, schedule: "every 60m" })).toContain("working again");
-    expect(jobAlertText({ job: "brief", kind: "stuck", trigger: "interval", startedAt, schedule: "every 60m" })).toContain("left running");
+    expect(jobAlertText({ job: "brief", kind: "stuck", trigger: "interval", startedAt, schedule: "every 60m" }, new Date("2026-09-29T04:42:10Z"))).toBe(
+      "⚠️ scheduled job `brief` (interval) has been running for 42 min and looks stuck; it was left running. It won't run again until it finishes or the workspace restarts. Schedule: every 60m.",
+    );
+    expect(jobAlertText({ job: "brief", kind: "failed", trigger: "manual", startedAt, error: "boom", schedule: "every 60m (disabled)", disabled: true })).toBe(
+      "⚠️ scheduled job `brief` failed (manual): boom. It won't retry on its own (the job is disabled).",
+    );
   });
 });

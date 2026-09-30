@@ -76,6 +76,8 @@ export interface JobAlert {
   error?: string;
   /** The job's schedule as formatSchedule renders it, e.g. "daily 04:00". */
   schedule: string;
+  /** A disabled job only runs on demand, so it won't retry on its own. */
+  disabled?: boolean;
 }
 
 type Log = { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void; error: (obj: object, msg: string) => void };
@@ -100,11 +102,31 @@ export const DAILY_GRACE_MS = 60 * 60_000;
 export const MIN_EVERY_MINUTES = 5;
 export const MAX_EVERY_MINUTES = 24 * 60;
 export const DEFAULT_MAX_RUN_MS = 30 * 60_000;
+/** setTimeout fires at once for a delay above a signed 32-bit int. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 export const ALERT_ERROR_MAX = 200;
+/** Only these end a failure streak. */
+export const SUCCESS_STATUSES: readonly string[] = ["applied", "sent", "no_reply", "ok", "done"];
 /** Outcome statuses that count as a failed run; "error" is what a thrown run records. */
-export const FAILED_STATUSES: readonly string[] = ["error", "failed", "rejected"];
+export const FAILED_STATUSES: readonly string[] = ["error", "failed", "rejected", "timeout", "aborted"];
 /** Outcome statuses that neither end nor extend a failure streak (e.g. a consolidation skipped on unchanged inputs). */
 export const NEUTRAL_STATUSES: readonly string[] = ["skipped", "rate_limited"];
+const FAILURE_LIKE = /fail|error|reject|timeout|timed_out|abort|crash/i;
+
+/**
+ * An unknown status is neutral: it proves nothing about the job working, so it can't send "recovered", and alerting
+ * on every new status would be noise. One that reads like a failure fails closed so it can't go unreported.
+ */
+export function outcomeKind(status: string): "success" | "failure" | "neutral" {
+  if (SUCCESS_STATUSES.includes(status)) return "success";
+  if (FAILED_STATUSES.includes(status) || FAILURE_LIKE.test(status)) return "failure";
+  return "neutral";
+}
+
+/** `ms` when it is a usable timer delay, else DEFAULT_MAX_RUN_MS. */
+export function effectiveMaxRunMs(ms: number | undefined): number {
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_TIMER_MS ? ms : DEFAULT_MAX_RUN_MS;
+}
 const JOB_NAME = /^[a-z0-9-]+$/;
 const AT = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -145,12 +167,14 @@ export function alertErrorText(text: string, max = ALERT_ERROR_MAX): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-export function jobAlertText(a: JobAlert): string {
+export function jobAlertText(a: JobAlert, now: Date = new Date()): string {
   if (a.kind === "recovered") return `✅ scheduled job \`${a.job}\` is working again (${a.trigger} run succeeded).`;
   if (a.kind === "stuck") {
-    return `⚠️ scheduled job \`${a.job}\` (${a.trigger}) has been running since ${a.startedAt.toISOString()} and looks stuck; it was left running. Schedule: ${a.schedule}.`;
+    const minutes = Math.max(1, Math.round((now.getTime() - a.startedAt.getTime()) / 60_000));
+    return `⚠️ scheduled job \`${a.job}\` (${a.trigger}) has been running for ${minutes} min and looks stuck; it was left running. It won't run again until it finishes or the workspace restarts. Schedule: ${a.schedule}.`;
   }
-  return `⚠️ scheduled job \`${a.job}\` failed (${a.trigger})${a.error ? `: ${a.error}` : ""}. It will retry on its schedule (${a.schedule}).`;
+  const retry = a.disabled ? "It won't retry on its own (the job is disabled)." : `It will retry on its schedule (${a.schedule}).`;
+  return `⚠️ scheduled job \`${a.job}\` failed (${a.trigger})${a.error ? `: ${a.error}` : ""}. ${retry}`;
 }
 
 /** Queues a manual run of `job`; the running scheduler picks it up on its next poll. */
@@ -279,6 +303,8 @@ export class Scheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastCheck: Date | null = null;
   private stopped = false;
+  /** Streak changes whose state write failed; overrides the file so a broken state dir can't drop or repeat alerts. */
+  private readonly unsavedAlerts = new Map<string, JobAlertState | null>();
 
   constructor(private readonly opts: SchedulerOptions) {
     if (!isValidAt(opts.at)) throw new Error(`invalid time of day: ${opts.at}`);
@@ -367,10 +393,16 @@ export class Scheduler {
     const job = this.jobs.get(name) ?? this.currentJobs().get(name);
     if (!job) return Promise.reject(new Error(`unknown job: ${name}`));
     const started = this.now();
-    const schedule = formatSchedule(job.schedule, this.opts.at);
+    const base = {
+      job: name,
+      trigger: ctx.trigger,
+      startedAt: started,
+      schedule: formatSchedule(job.schedule, this.opts.at),
+      ...(job.schedule?.disabled ? { disabled: true } : {}),
+    };
     const watchdog = setTimeout(() => {
-      if (!this.stopped) this.raise(name, { job: name, kind: "stuck", trigger: ctx.trigger, startedAt: started, schedule });
-    }, job.maxRunMs ?? DEFAULT_MAX_RUN_MS);
+      if (!this.stopped) this.raise(name, { ...base, kind: "stuck" });
+    }, effectiveMaxRunMs(job.maxRunMs));
     watchdog.unref?.();
     const run = (async () => {
       let outcome: JobOutcome | null = null;
@@ -381,8 +413,9 @@ export class Scheduler {
       } catch (err) {
         this.opts.log?.error({ err, job: name, trigger: ctx.trigger }, "scheduled job failed");
         error = err instanceof Error ? err.message : String(err);
+        const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
+        if (cause && !error.includes(cause)) error = `${error}: ${cause}`;
       }
-      clearTimeout(watchdog);
       // Recorded after a failure too, so a job that throws retries tomorrow rather than on every restart.
       this.record(name, {
         lastRunAt: started.toISOString(),
@@ -390,13 +423,17 @@ export class Scheduler {
         lastStatus: outcome?.status ?? "error",
         ...(outcome?.summary ? { lastSummary: outcome.summary } : {}),
       });
+      // A run cut short by shutdown is caught up on the next start, so its result says nothing about the job.
+      if (this.stopped) return outcome;
       const status = outcome?.status ?? "error";
-      const base = { job: name, trigger: ctx.trigger, startedAt: started, schedule };
-      if (FAILED_STATUSES.includes(status)) {
+      const kind = outcomeKind(status);
+      if (kind === "failure") {
         const text = error ?? outcome?.summary ?? status;
         this.raise(name, { ...base, kind: "failed", error: alertErrorText(text) });
-      } else if (!NEUTRAL_STATUSES.includes(status)) {
+      } else if (kind === "success") {
         this.clearStreak(name, base);
+      } else if (!NEUTRAL_STATUSES.includes(status)) {
+        this.opts.log?.warn({ job: name, status }, "scheduled job returned an unknown status; the alert streak is unchanged");
       }
       return outcome;
     })().finally(() => {
@@ -457,20 +494,34 @@ export class Scheduler {
     }
   }
 
-  /** Sends `alert` unless this job's current failure streak was already reported. */
+  /**
+   * Sends `alert` unless this job's current failure streak was already reported. A streak opened by "stuck" gets
+   * one follow-up "failed", so the owner learns how the run ended.
+   */
   private raise(name: string, alert: JobAlert & { kind: "failed" | "stuck" }): void {
     const state = readSchedulerState(this.opts.stateDir);
-    if (state.alerts[name]) return;
-    state.alerts[name] = { at: this.now().toISOString(), kind: alert.kind };
-    if (!this.writeState(state, name)) return;
+    const open = this.streak(name, state);
+    if (open && !(open.kind === "stuck" && alert.kind === "failed")) return;
+    this.saveStreak(name, state, { at: this.now().toISOString(), kind: alert.kind });
     this.emit(alert);
   }
 
   private clearStreak(name: string, base: Omit<JobAlert, "kind">): void {
     const state = readSchedulerState(this.opts.stateDir);
-    if (!state.alerts[name]) return;
-    delete state.alerts[name];
-    if (this.writeState(state, name)) this.emit({ ...base, kind: "recovered" });
+    if (!this.streak(name, state)) return;
+    this.saveStreak(name, state, null);
+    this.emit({ ...base, kind: "recovered" });
+  }
+
+  private streak(name: string, state: SchedulerState): JobAlertState | undefined {
+    return this.unsavedAlerts.has(name) ? (this.unsavedAlerts.get(name) ?? undefined) : state.alerts[name];
+  }
+
+  private saveStreak(name: string, state: SchedulerState, alert: JobAlertState | null): void {
+    if (alert) state.alerts[name] = alert;
+    else delete state.alerts[name];
+    if (this.writeState(state, name)) this.unsavedAlerts.delete(name);
+    else this.unsavedAlerts.set(name, alert);
   }
 
   private emit(alert: JobAlert): void {
