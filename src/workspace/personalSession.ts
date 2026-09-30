@@ -221,8 +221,6 @@ interface OpenRun {
   hidden: boolean;
   /** Files send_file staged for the reply. */
   files: StagedFile[];
-  /** An assistant message ended since the turn began, so a steer arriving now answers after it. */
-  answered: boolean;
 }
 
 /** A user message handed to Pi that it hasn't yet turned into a user message_start. */
@@ -1063,10 +1061,10 @@ export class PersonalSession {
     }
   }
 
-  private consumeInbound(text: string): void {
+  private consumeInbound(text: string): PendingInbound | undefined {
     // Pi appends image notes (a resize, a conversion) after a blank line.
     const i = this.unconsumed.findIndex((p) => p.text === text || (p.images !== undefined && text.startsWith(`${p.text}\n\n`)));
-    if (i === -1) return;
+    if (i === -1) return undefined;
     // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
     const entry = this.unconsumed[i];
     this.unconsumed.splice(0, i + 1);
@@ -1081,10 +1079,11 @@ export class PersonalSession {
       } catch (err) {
         log.warn({ err, wakeId: entry.wakeId }, "marking a wake consumed failed");
       }
-      return;
+      return entry;
     }
     this.lastInboundId = entry.messageId || this.lastInboundId;
     this.lastOrigin = entry.origin ?? this.lastOrigin;
+    return entry;
   }
 
   // Mid-run, sendCustomMessage(triggerTurn:false) would mutate the live message list; wait for settle.
@@ -1180,9 +1179,11 @@ export class PersonalSession {
       return;
     }
     if (event.type === "message_start" && event.message.role === "user") {
-      // Before consumeInbound: the reply to the earlier message must not thread to the steer.
-      if (this.run && steerEndsTurn(this.run)) this.splitRun(session, this.run);
-      this.consumeInbound(userText(event.message));
+      // Finished before consumeInbound: the reply to the earlier message must not thread to the steer.
+      const split = this.run && steerEndsTurn(this.run) ? this.run : null;
+      if (split) this.finishRun(session, split);
+      const steer = this.consumeInbound(userText(event.message));
+      if (split) this.startSteeredTurn(split, steer);
     }
     if (event.type === "agent_start" && !this.run) {
       const hidden = this.hiddenNext;
@@ -1200,7 +1201,6 @@ export class PersonalSession {
         suppressReply: false,
         hidden: hidden !== null,
         files: [],
-        answered: false,
       };
       if (hidden?.abandoned) void session.abort().catch((err) => log.warn({ err }, "aborting an abandoned memory flush failed"));
       this.emit({ type: "turn_start" });
@@ -1212,7 +1212,6 @@ export class PersonalSession {
     }
     const run = this.run;
     if (!run) return;
-    if (event.type === "message_end" && event.message.role === "assistant") run.answered = true;
     for (const ev of mapSessionEvent(event, run.acc)) {
       if (ev.type === "text_delta") this.bufferDelta(run, ev.text);
       else this.emit(ev);
@@ -1241,15 +1240,18 @@ export class PersonalSession {
   }
 
   /**
-   * A steer drained after an assistant message starts a new turn in the same run. The answer so far is
+   * A steer drained after a final answer (not a tool round) starts a new turn in the same run. The answer so far is
    * delivered as that turn's reply, the way Pi's transcript records it, so the text streamed for it stays.
    */
-  private splitRun(session: ChatSession, run: OpenRun): void {
-    this.finishRun(session, run);
+  private startSteeredTurn(run: OpenRun, steer: PendingInbound | undefined): void {
     run.turnId = this.newId();
     run.acc = newRunAccumulator();
     run.files = [];
-    run.answered = false;
+    // The new turn answers the steer, so it replies where the steer came from.
+    if (steer && !steer.wakeId) {
+      run.origin = steer.origin ?? run.origin;
+      run.promptMessageId = steer.messageId || undefined;
+    }
     this.emitFor(run, { type: "turn_start" });
   }
 
@@ -1531,9 +1533,13 @@ export class PersonalSession {
 
 const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
 
-/** After an errored message Pi may be auto-retrying; the retry's answer, not the error, answers the turn. */
+/**
+ * Only after a final answer: after a tool round the turn's answer is still to come, and after an error Pi
+ * may be retrying. finishRun never delivers for a hidden run, and chat/new sets suppressReply only with abortRequested.
+ */
 function steerEndsTurn(run: OpenRun): boolean {
-  return run.answered && run.acc.lastStopReason !== "error" && !run.hidden && !run.abortRequested && !run.suppressReply;
+  const stop = run.acc.lastStopReason;
+  return (stop === "stop" || stop === "length") && !run.abortRequested;
 }
 
 function recapMessage(recap: string, dailyFile: string): string {

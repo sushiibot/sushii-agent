@@ -825,6 +825,57 @@ describe("PersonalSession steer after an answer", () => {
     expect(transport.delivered().map((d) => [d.text, d.turnId])).toEqual([["retried answer", "id-1"]]);
   });
 
+  for (const narration of ["Let me look that up.", ""]) {
+    test(`a steer drained after a tool round${narration ? " with narration" : ""} stays in the same turn`, async () => {
+      const { host, sessions, transport } = setup();
+      await host.start();
+      await host.handleMessage(msg("m1", "check X"));
+      await host.handleMessage(msg("m2", "also Y"));
+      const s = sessions[0];
+      s.answerThenDrain(narration, "toolUse");
+      expect(transport.delivered()).toEqual([]);
+      s.finish("X and Y");
+      await tick();
+      expect(transport.delivered().map((d) => [d.text, d.replyTo, d.turnId])).toEqual([["X and Y", "m2", "id-1"]]);
+      expect(transport.events().filter((e) => e.type === "turn_start")).toHaveLength(1);
+    });
+  }
+
+  test("the turn after a split answers on the steer's surface, threaded to the steer", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const web = { surface: "web", conversationId: "main" };
+    await host.handleMessage(msg("m1", "first", { origin: web }));
+    await host.handleMessage(msg("m2", "second"));
+    const s = sessions[0];
+    s.answerThenDrain("answer to first");
+    s.finish("answer to second");
+    await tick();
+    expect(transport.delivered().map((d) => [d.text, d.origin?.surface, d.replyTo])).toEqual([
+      ["answer to first", "web", "m1"],
+      ["answer to second", "discord", "m2"],
+    ]);
+    const starts = transport.notifications.map((n) => n.params as ChatEventParams).filter((p) => p.ev?.type === "turn_start");
+    expect(starts.map((p) => p.origin?.surface)).toEqual(["web", "discord"]);
+  });
+
+  test("a steer Pi drains while a Stop is in flight does not deliver the answer as a split reply", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    const s = sessions[0];
+    s.answerThenDrain("answer to first");
+    const aborting = gate();
+    s.abortGate = aborting.promise;
+    const stop = host.handleAbort();
+    await sleep(5);
+    s.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "a steer Pi already held" }] } });
+    aborting.open();
+    await stop;
+    await tick();
+    expect(transport.delivered()).toEqual([]);
+  });
+
   test("after a split, Stop ends the new turn with no second reply", async () => {
     const { host, sessions, transport } = setup();
     await host.start();
