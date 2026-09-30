@@ -18,7 +18,8 @@ const log = getLogger("workspace.proactive");
 export const HEARTBEAT_JOB = "heartbeat";
 export const HEARTBEAT_PROMPT =
   "Check whether anything needs drk's attention right now: something due or overdue, a follow-up you promised, " +
-  "or a change worth flagging. Look in MEMORY.md and the recent daily notes when it helps. If nothing does, reply NO_REPLY.";
+  "an open TASKS.md item that needs a nudge, or a change worth flagging. Look in TASKS.md (and tasks/<slug>.md for a " +
+  "project), MEMORY.md and the recent daily notes when it helps. If nothing does, reply NO_REPLY.";
 /** Names schedule.md can't use: the built-in jobs. */
 export const RESERVED_JOB_NAMES = [HEARTBEAT_JOB, "consolidation"] as const;
 /** A daily job's window for the one-message-per-window limit; under 24 h so a DST day's 23 h gap still sends. */
@@ -152,6 +153,8 @@ export interface PromptJobDeps {
   /** Test seam. */
   runner?: typeof runToolFreeJob;
   now?: () => Date;
+  /** The heartbeat's daily TASKS.md stale review, run before its prompt. */
+  review?: () => Promise<unknown>;
 }
 
 /**
@@ -201,7 +204,16 @@ export function createPromptJob(spec: PromptJobSpec, deps: PromptJobDeps): Sched
 }
 
 export function createHeartbeatJob(schedule: JobSchedule, deps: PromptJobDeps): ScheduledJob {
-  return createPromptJob({ name: HEARTBEAT_JOB, prompt: HEARTBEAT_PROMPT, schedule }, deps);
+  const job = createPromptJob({ name: HEARTBEAT_JOB, prompt: HEARTBEAT_PROMPT, schedule }, deps);
+  if (!deps.review) return job;
+  const review = deps.review;
+  return {
+    ...job,
+    run: async (ctx) => {
+      await review().catch((err) => log.warn({ err }, "the TASKS.md stale review failed"));
+      return job.run(ctx);
+    },
+  };
 }
 
 /** Jobs from schedule.md, rebuilt only when the file's entries change. */
@@ -227,6 +239,8 @@ export interface ProactiveWiring {
   note: (name: string, text: string) => Promise<void>;
   /** After schedule.md is found changed, e.g. to commit it. */
   onScheduleChange?: () => void;
+  /** Builds the heartbeat's daily stale review from the shared proactive limiter. */
+  review?: (limiter: ProactiveLimiter) => () => Promise<unknown>;
   /** Test seams. */
   runner?: PromptJobDeps["runner"];
   now?: () => Date;
@@ -234,18 +248,19 @@ export interface ProactiveWiring {
 
 /** Registers the heartbeat (when enabled) and the schedule.md jobs on `scheduler`. */
 export function wireProactiveJobs(scheduler: Scheduler, w: ProactiveWiring): void {
+  const limiter = new ProactiveLimiter(w.config.stateDir, w.config.proactiveDailyCap);
   const deps: PromptJobDeps = {
     config: w.config,
     runs: w.runs,
     selector: w.selector,
     ...(w.toolStubs ? { toolStubs: w.toolStubs } : {}),
-    limiter: new ProactiveLimiter(w.config.stateDir, w.config.proactiveDailyCap),
+    limiter,
     deliver: w.deliver,
     note: w.note,
     ...(w.runner ? { runner: w.runner } : {}),
     ...(w.now ? { now: w.now } : {}),
   };
-  if (w.config.heartbeat) scheduler.register(createHeartbeatJob(w.config.heartbeat, deps));
+  if (w.config.heartbeat) scheduler.register(createHeartbeatJob(w.config.heartbeat, { ...deps, ...(w.review ? { review: w.review(limiter) } : {}) }));
   const file = new ScheduleFile(join(w.config.home, "schedule.md"), {
     reserved: RESERVED_JOB_NAMES,
     warn: (error) => log.warn({ error }, "skipped a schedule.md entry"),

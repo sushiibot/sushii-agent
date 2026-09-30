@@ -109,6 +109,25 @@ describe("heartbeat", () => {
     expect(input!.systemPrompt).toContain("Tue, 29/09/2026, 12:00 (UTC)");
   });
 
+  test("the daily task review runs first and shares the proactive cap; a failing review can't break the heartbeat", async () => {
+    const d = deps({ config: config({ proactiveDailyCap: 1 }) });
+    const order: string[] = [];
+    reply = "Something worth saying.";
+    const review = async () => {
+      order.push("review");
+      d.limiter.record("task-review", clock);
+    };
+    const outcome = await createHeartbeatJob(HEARTBEAT, { ...d, review, runner: async (c, i) => (order.push("prompt"), fakeRunner(c, i)) }).run(scheduled);
+    // The review's ask used the day's only proactive slot, so the capped heartbeat doesn't even run its prompt.
+    expect(order).toEqual(["review"]);
+    expect(outcome).toEqual({ status: "rate_limited", summary: "daily_cap" });
+    expect(delivered).toEqual([]);
+
+    const failing = await createHeartbeatJob(HEARTBEAT, { ...deps(), review: () => Promise.reject(new Error("boom")) }).run(scheduled);
+    expect(failing.status).toBe("sent");
+    expect(runnerCalls).toHaveLength(1);
+  });
+
   test("a reply is delivered as a proactive message and noted in the chat", async () => {
     reply = "Your passport renewal is due Friday; the form is still in scratch/.";
     const outcome = await createHeartbeatJob(HEARTBEAT, deps()).run(scheduled);

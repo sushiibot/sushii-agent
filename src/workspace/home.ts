@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runnerGit, runnerGitEnv } from "../agentRuntime/runnerGit.ts";
 import { getLogger } from "../logger.ts";
+import { DEFAULT_TASK_RULES, type TaskRules } from "./config.ts";
+import { upgradeHomeTemplates } from "./homeUpgrade.ts";
+import { TASKS_FILE, renderTasksContext } from "./tasks.ts";
 
 const log = getLogger("workspace.home");
 
@@ -15,6 +18,8 @@ const TEMPLATE_FILES: Record<string, string> = {
   "MEMORY.md": "MEMORY.md",
   "DREAMS.md": "DREAMS.md",
   "schedule.md": "schedule.md",
+  "TASKS.md": "TASKS.md",
+  "tasks/README.md": "tasks-README.md",
   ".agents/skills/README.md": "agents-skills-README.md",
   ".agents/skills/session-history/SKILL.md": "agents-skills-session-history-SKILL.md",
   ".agents/agents/explore.md": "agents-agents-explore.md",
@@ -24,13 +29,13 @@ const TEMPLATE_FILES: Record<string, string> = {
   ".gitignore": "gitignore",
 };
 
-const HOME_DIRS = ["memory", ".agents/skills", ".agents/agents", "projects", "scratch"];
+const HOME_DIRS = ["memory", "tasks/archive", ".agents/skills", ".agents/agents", "projects", "scratch"];
 
 /** The only paths the workspace itself ever stages in the home repo. */
-export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "SOUL.md", "AGENTS.md", "schedule.md", ".agents/"];
+export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "TASKS.md", "tasks/", "SOUL.md", "AGENTS.md", "schedule.md", ".agents/"];
 
-/** The memory subset of HOME_TRACKED_PATHS, which the workspace auto-commits. */
-export const MEMORY_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/"];
+/** The memory subset of HOME_TRACKED_PATHS (tasks included), which the workspace auto-commits. */
+export const MEMORY_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "TASKS.md", "tasks/"];
 
 export const USER_MD_CAP = 4000;
 export const MEMORY_MD_CAP = 8000;
@@ -57,7 +62,7 @@ export interface ScaffoldResult {
 }
 
 /** Creates whatever is missing under `home` (never overwrites) and git-inits it on first run. */
-export async function scaffoldHome(home: string): Promise<ScaffoldResult> {
+export async function scaffoldHome(home: string, opts: { templateHashes?: Record<string, readonly string[]> } = {}): Promise<ScaffoldResult> {
   mkdirSync(home, { recursive: true });
   for (const dir of HOME_DIRS) mkdirSync(join(home, dir), { recursive: true });
 
@@ -72,6 +77,8 @@ export async function scaffoldHome(home: string): Promise<ScaffoldResult> {
   }
 
   allowInGitignore(home, "/schedule.md");
+  allowInGitignore(home, "/TASKS.md");
+  allowInGitignore(home, "/tasks/");
 
   // Keyed on HEAD, not .git, so a first run that died between init and the initial commit is finished here.
   const initialized = await serialized(async () => {
@@ -86,6 +93,14 @@ export async function scaffoldHome(home: string): Promise<ScaffoldResult> {
   });
 
   if (created.length > 0 || initialized) log.info({ home, created, initialized }, "home scaffolded");
+  // A fresh home is already current; an older one gets each untouched template file replaced.
+  if (!initialized) {
+    await upgradeHomeTemplates(home, {
+      commit: (path, message) => serialized(() => commitPaths(home, [path], message)),
+      log,
+      ...(opts.templateHashes ? { hashes: opts.templateHashes } : {}),
+    });
+  }
   return { created, initialized };
 }
 
@@ -114,8 +129,13 @@ export function capContent(content: string, cap: number): { content: string; tru
   return { content: `${content.slice(0, end)}\n[truncated at ${cap} chars — curate this file]\n`, truncated: true };
 }
 
-/** SOUL/USER/MEMORY from `home`, capped; a missing file is skipped. Read fresh on every call. */
-export function loadHomeContextFiles(home: string): ContextFile[] {
+export interface ContextFileOptions {
+  tasks?: TaskRules;
+  now?: () => Date;
+}
+
+/** SOUL/USER/MEMORY/TASKS from `home`, capped; a missing file is skipped. Read fresh on every call. */
+export function loadHomeContextFiles(home: string, opts: ContextFileOptions = {}): ContextFile[] {
   const files: ContextFile[] = [];
   for (const { name, cap } of CONTEXT_FILES) {
     const path = join(home, name);
@@ -133,13 +153,20 @@ export function loadHomeContextFiles(home: string): ContextFile[] {
     if (truncated) log.warn({ path, length: raw.length, cap }, "context file over its cap; truncated at load");
     files.push({ path, content });
   }
+  const tasksPath = join(home, TASKS_FILE);
+  try {
+    const raw = readFileSync(tasksPath, "utf8");
+    files.push({ path: tasksPath, content: renderTasksContext(raw, { home, rules: opts.tasks ?? DEFAULT_TASK_RULES, now: opts.now?.() ?? new Date() }) });
+  } catch {
+    // No TASKS.md: nothing to load.
+  }
   return files;
 }
 
 /** For `DefaultResourceLoader`'s `agentsFilesOverride`: Pi's discovered files, then the home context files. */
-export function homeAgentsFilesOverride(home: string) {
+export function homeAgentsFilesOverride(home: string, opts: ContextFileOptions = {}) {
   return (base: { agentsFiles: ContextFile[] }): { agentsFiles: ContextFile[] } => {
-    const extra = loadHomeContextFiles(home).filter((f) => !base.agentsFiles.some((b) => b.path === f.path));
+    const extra = loadHomeContextFiles(home, opts).filter((f) => !base.agentsFiles.some((b) => b.path === f.path));
     return { agentsFiles: [...base.agentsFiles, ...extra] };
   };
 }

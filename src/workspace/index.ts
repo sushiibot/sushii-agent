@@ -2,20 +2,23 @@
 import { otelSDK } from "../telemetry.ts";
 import { NotConnectedError, OrchestrationClient } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
-import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
+import { WorkspaceConfigError, economyOf, loadWorkspaceConfig, taskRulesOf, type WorkspaceConfig } from "./config.ts";
 import { PersonalSession } from "./personalSession.ts";
-import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
+import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
+import { ModelChoice } from "./modelChoice.ts";
+import { commandHandlers } from "./commands.ts";
+import { TASK_PATHS, renderTasksCommand, runTaskReview } from "./tasks.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { scanMemoryForSecrets } from "./memoryGuard.ts";
-import { RunLog } from "./runLog.ts";
+import { RunLog, recordRotation } from "./runLog.ts";
+import { createConsolidationJob, waitIdle } from "./consolidation.ts";
 import { ToolStubs } from "./toolStubs.ts";
 import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { SubagentHost } from "./subagents/host.ts";
 import { MainTurnTracker } from "./subagents/turnTracker.ts";
 import { Scheduler } from "./scheduler.ts";
-import { createConsolidationJob } from "./consolidation.ts";
 import { wireProactiveJobs } from "./proactive.ts";
 import { ulid } from "./ulid.ts";
 
@@ -62,6 +65,9 @@ async function main(): Promise<void> {
       }
     },
   });
+  // After the selector (its ChatGPT switch follows the deployed provider, not a pinned choice), before any
+  // session or runner reads the config: a saved `!model` choice rewrites its model fields.
+  const choice = new ModelChoice(config, config.stateDir);
   const turns = new MainTurnTracker();
   const notify = (method: string, params: unknown) => {
     turns.observe(method, params);
@@ -82,7 +88,7 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -101,6 +107,20 @@ async function main(): Promise<void> {
         }
       },
       flushRanThisCycle: sessionFlushRanThisCycle,
+    },
+    context: {
+      compact: compactSession,
+      recap: async (session) => (await recapSession(session))?.text ?? null,
+      idleRotateMs: (session) => idleRotateMs(session, config),
+      rotateTokens: economyOf(config).idleRotateTokens,
+      busy: () => subagents.isBusy(),
+      onRotated: (r) => {
+        try {
+          recordRotation(runs, r);
+        } catch (err) {
+          log.warn({ err }, "failed to record the rotation in the run log");
+        }
+      },
     },
     transport: {
       request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
@@ -121,8 +141,8 @@ async function main(): Promise<void> {
   subagents.redeliverPending();
   const scheduler = new Scheduler({ stateDir: config.stateDir, at: config.consolidateAt, tz: config.tz, log: getLogger("workspace.scheduler") });
   const consolidation = createConsolidationJob(config, { runs, selector, live: personal });
-  // Its memory writes are main-side: the subagents' protected watch must not undo them.
-  scheduler.register({ ...consolidation, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md"]) });
+  // Its memory and task writes are main-side: the subagents' protected watch must not undo them.
+  scheduler.register({ ...consolidation, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks"]) });
   wireProactiveJobs(scheduler, {
     config,
     runs,
@@ -139,6 +159,23 @@ async function main(): Promise<void> {
         author: { id: "workspace", name: "scheduler" },
       });
     },
+    review: (limiter) => () =>
+      runTaskReview({
+        home: config.home,
+        stateDir: config.stateDir,
+        rules: taskRulesOf(config),
+        allow: (now) => limiter.check("task-review", 20 * 60 * 60_000, now) === "ok",
+        record: (now) => limiter.record("task-review", now),
+        ask: (question, choices, parse) => personal.askOwner(question, choices, parse),
+        write: async (fn, message) => {
+          // Between turns when possible: the agent may be editing TASKS.md; the edit itself is synchronous.
+          if (!(await waitIdle(personal, 30 * 60_000))) log.warn("applying the stale review while the chat session is busy");
+          await subagents.whileMainWrites(async () => fn(), ["TASKS.md", "tasks"]);
+          await commitHome(message, { home: config.home, paths: TASK_PATHS });
+          personal.requestContextReload();
+        },
+        warn: (obj, msg) => log.warn(obj, msg),
+      }),
     onScheduleChange: () =>
       void commitHome("chore(schedule): update schedule.md", { home: config.home, paths: ["schedule.md"] }).catch((err) =>
         log.warn({ err }, "failed to commit schedule.md"),
@@ -153,7 +190,17 @@ async function main(): Promise<void> {
     secret: config.orchSecret,
     principalId: config.principalId,
     state: () => personal.state,
-    handlers: { ...personal.handlers(), ...authLogin.handlers() },
+    handlers: {
+      ...personal.handlers(),
+      ...authLogin.handlers(),
+      ...commandHandlers({
+        principalId: config.principalId,
+        compact: () => personal.compactNow(),
+        choice,
+        currentModel: () => (personal.chatSession ? sessionModelLabel(personal.chatSession) : null),
+        tasks: (arg) => renderTasksCommand(config.home, taskRulesOf(config), new Date(), arg),
+      }),
+    },
     onRegistered: (result) => {
       toolStubs.update(result?.tools ?? []);
       personal.onRegistered();

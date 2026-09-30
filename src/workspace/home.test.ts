@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import { loadAgentDefs } from "./subagents/agentDefs.ts";
-import { MEMORY_MD_CAP, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
+import { MEMORY_MD_CAP, MEMORY_PATHS, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
+import { UPGRADABLE_TEMPLATES, sha256, upgradeHomeTemplates } from "./homeUpgrade.ts";
+import { SHIPPED_TEMPLATE_HASHES } from "./homeTemplateHashes.ts";
 
 const GIT_ENV = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const savedEnv: Record<string, string | undefined> = {};
@@ -40,10 +42,10 @@ describe("scaffoldHome", () => {
   test("creates the layout, git-inits and commits the scaffold", async () => {
     const result = await scaffoldHome(home);
 
-    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".gitignore"]) {
+    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks/README.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".gitignore"]) {
       expect(existsSync(join(home, f))).toBe(true);
     }
-    for (const d of ["memory", "projects", "scratch", ".agents/skills"]) expect(existsSync(join(home, d))).toBe(true);
+    for (const d of ["memory", "tasks/archive", "projects", "scratch", ".agents/skills"]) expect(existsSync(join(home, d))).toBe(true);
     expect(result.initialized).toBe(true);
     expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe(readHomeTemplate("AGENTS.md"));
 
@@ -64,9 +66,36 @@ describe("scaffoldHome", () => {
       "DREAMS.md",
       "MEMORY.md",
       "SOUL.md",
+      "TASKS.md",
       "USER.md",
       "schedule.md",
+      "tasks/README.md",
     ]);
+  });
+
+  test("an older home's .gitignore is opened up for TASKS.md and tasks/, and they commit with memory", async () => {
+    await scaffoldHome(home);
+    const ignore = join(home, ".gitignore");
+    writeFileSync(ignore, readFileSync(ignore, "utf8").replace("!/TASKS.md\n!/tasks/\n", ""));
+    await scaffoldHome(home);
+    await scaffoldHome(home);
+    const lines = readFileSync(ignore, "utf8").split("\n");
+    expect(lines.filter((l) => l === "!/TASKS.md")).toHaveLength(1);
+    expect(lines.filter((l) => l === "!/tasks/")).toHaveLength(1);
+    writeFileSync(join(home, "TASKS.md"), "# TASKS.md\n\n## Quick\n- [ ] x\n");
+    writeFileSync(join(home, "tasks", "trip.md"), "# Trip\nstatus: active\n");
+    expect((await commitHome("tasks", { home, paths: MEMORY_PATHS })).committed).toBe(true);
+    const tracked = (await runnerGit(home).raw(["ls-files", "tasks"])).trim().split("\n");
+    expect(tracked).toContain("tasks/trip.md");
+  });
+
+  test("scaffolding never overwrites TASKS.md or tasks/README.md", async () => {
+    writeFileSync(join(home, "TASKS.md"), "# mine\n");
+    mkdirSync(join(home, "tasks"), { recursive: true });
+    writeFileSync(join(home, "tasks", "README.md"), "my readme\n");
+    await scaffoldHome(home);
+    expect(readFileSync(join(home, "TASKS.md"), "utf8")).toBe("# mine\n");
+    expect(readFileSync(join(home, "tasks", "README.md"), "utf8")).toBe("my readme\n");
   });
 
   test("an older home's .gitignore is opened up for schedule.md, once", async () => {
@@ -196,7 +225,7 @@ describe("home context files", () => {
       });
       await loader.reload();
       const files = loader.getAgentsFiles().agentsFiles;
-      expect(files.map((f) => f.path)).toEqual(["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md"].map((f) => join(home, f)));
+      expect(files.map((f) => f.path)).toEqual(["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "TASKS.md"].map((f) => join(home, f)));
       expect(files[2]!.content).toContain(`[truncated at ${USER_MD_CAP} chars — curate this file]`);
 
       writeFileSync(join(home, "USER.md"), "- fresh fact (src: migrated)\n");
@@ -204,6 +233,57 @@ describe("home context files", () => {
       expect(loader.getAgentsFiles().agentsFiles[2]!.content).toBe("- fresh fact (src: migrated)\n");
     } finally {
       rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("TASKS.md as a context file", () => {
+  test("loaded last, with stale items marked, capped", () => {
+    writeFileSync(join(home, "TASKS.md"), "# TASKS.md\n\n## Quick\n- [ ] Dentist (id: t-1) updated:2026-09-20\n");
+    const files = loadHomeContextFiles(home, { now: () => new Date("2026-09-29T12:00:00Z") });
+    expect(files.at(-1)).toEqual({ path: join(home, "TASKS.md"), content: "# TASKS.md\n\n## Quick\n- [ ] Dentist (id: t-1) updated:2026-09-20 (stale 9d)\n" });
+    writeFileSync(join(home, "TASKS.md"), `## Quick\n${"- [ ] x updated:2026-09-29\n".repeat(400)}`);
+    expect(loadHomeContextFiles(home).at(-1)!.content.length).toBeLessThan(3100);
+  });
+});
+
+describe("template upgrade", () => {
+  const OLD_MANUAL = "# AGENTS.md: an old shipped manual\n";
+  const OLD_IGNORE = "/*\n!/.gitignore\n!/AGENTS.md\n";
+
+  test("a home file identical to an earlier shipped template is replaced and committed; an edited one is left alone", async () => {
+    await scaffoldHome(home);
+    writeFileSync(join(home, "AGENTS.md"), OLD_MANUAL);
+    writeFileSync(join(home, "SOUL.md"), "drk's own soul\n");
+    writeFileSync(join(home, "USER.md"), OLD_MANUAL);
+    await runnerGit(home).add(["-A", "--", "AGENTS.md", "SOUL.md", "USER.md"]).commit("old home");
+    const infos: string[] = [];
+    const hashes = { "AGENTS.md": [sha256(OLD_MANUAL)], "SOUL.md": [sha256("an older soul\n")], "USER.md": [sha256(OLD_MANUAL)] };
+    const upgraded = await upgradeHomeTemplates(home, {
+      hashes,
+      log: { info: (_o, m) => infos.push(m), warn: () => {} },
+      commit: (path, message) => commitHome(message, { home, paths: [path] }),
+    });
+    expect(upgraded).toEqual(["AGENTS.md"]);
+    expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe(readHomeTemplate("AGENTS.md"));
+    expect(readFileSync(join(home, "SOUL.md"), "utf8")).toBe("drk's own soul\n");
+    expect(readFileSync(join(home, "USER.md"), "utf8")).toBe(OLD_MANUAL);
+    expect(infos).toContain("SOUL.md differs from the shipped template; not upgraded");
+    expect((await runnerGit(home).raw(["log", "-1", "--format=%s"])).trim()).toBe("home: upgrade AGENTS.md template");
+  });
+
+  test("scaffoldHome upgrades an older .gitignore even with the allow lines it appended", async () => {
+    await scaffoldHome(home);
+    writeFileSync(join(home, ".gitignore"), `${OLD_IGNORE}!/schedule.md\n`);
+    await scaffoldHome(home, { templateHashes: { gitignore: [sha256(OLD_IGNORE)] } });
+    expect(readFileSync(join(home, ".gitignore"), "utf8")).toBe(readHomeTemplate(".gitignore"));
+  });
+
+  test("memory and tasks are never upgradable; no current template is listed as an old one", () => {
+    for (const p of ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks/README.md"]) expect(Object.keys(UPGRADABLE_TEMPLATES)).not.toContain(p);
+    for (const [homePath, file] of Object.entries(UPGRADABLE_TEMPLATES)) {
+      expect(SHIPPED_TEMPLATE_HASHES[file]).toBeDefined();
+      expect(SHIPPED_TEMPLATE_HASHES[file]).not.toContain(sha256(readHomeTemplate(homePath)));
     }
   });
 });

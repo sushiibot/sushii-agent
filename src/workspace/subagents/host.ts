@@ -114,7 +114,10 @@ interface DelegateArgs {
   continue?: string;
   background?: boolean;
   repo?: string;
+  taskId?: string;
 }
+
+const TASK_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 type PiSessionManager = import("@earendil-works/pi-coding-agent").SessionManager;
 
@@ -140,6 +143,8 @@ interface Spawn {
   started: boolean;
   abortChild: (() => void) | null;
   worktree?: { path: string; branch: string };
+  /** The TASKS.md item or project slug this background run works on. */
+  taskId?: string;
 }
 
 export interface DelegateOutcome {
@@ -233,6 +238,11 @@ export class SubagentHost {
     for (const r of this.results.list()) this.wakeMain(r);
   }
 
+  /** A child still running, or a background result main hasn't taken yet. */
+  isBusy(): boolean {
+    return this.pending.size > 0 || this.results.list().length > 0;
+  }
+
   /** Whether a session at `depth` gets the delegate tool. */
   offersDelegate(depth: number): boolean {
     return depth < this.limits.maxDepth;
@@ -276,6 +286,7 @@ export class SubagentHost {
         continue: Type.Optional(Type.String({ description: "runId of a finished child to prompt again." })),
         background: Type.Optional(Type.Boolean({ description: "Return at once; the result is delivered later." })),
         repo: Type.Optional(Type.String({ description: "For writer agents: the repo directory under projects/." })),
+        taskId: Type.Optional(Type.String({ description: "With background: the TASKS.md item id (t-…) or project slug this run works on." })),
       }) as ToolDefinition["parameters"],
       execute: async (toolCallId: string, params: unknown, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) => {
         const out = await this.delegate(params as DelegateArgs, { parent, pi, toolCallId, signal, ctx });
@@ -294,6 +305,8 @@ export class SubagentHost {
     if (!parentRunId) throw new Error("delegate: no parent run in progress");
     const task = args.task?.trim();
     if (!task) throw new Error("delegate: `task` is empty");
+    const taskId = args.taskId?.trim().toLowerCase();
+    if (taskId !== undefined && !TASK_ID.test(taskId)) throw new Error("delegate: `taskId` must be a TASKS.md id (t-…) or a project slug");
     const depth = call.parent.depth + 1;
     const turn = this.opts.currentTurn?.() ?? null;
 
@@ -340,6 +353,7 @@ export class SubagentHost {
       sessionFile,
       turn,
       origin: turn?.origin,
+      ...(taskId ? { taskId } : {}),
       acc: newRunAccumulator(),
       price: this.limits.fallbackPrice,
       costUsd: 0,
@@ -471,11 +485,14 @@ export class SubagentHost {
   private deliverBackground(spawn: Spawn, outcome: DelegateOutcome): void {
     const attrs = `runId="${outcome.runId}" agent="${spawn.def.name}" status="${outcome.status}"`;
     const body = outcome.text.replace(/<\/?subagent-result/gi, (m) => m.replace("<", "&lt;"));
+    const taskNote = spawn.taskId
+      ? `\n[This background run was for task ${spawn.taskId}: note its outcome and run:${outcome.runId} on that item's TASKS.md line (or in its project file), keeping the note to one line.]`
+      : "";
     const result: PendingResult = {
       runId: outcome.runId,
       agent: spawn.def.name,
       status: outcome.status,
-      text: `<subagent-result ${attrs}>\n${body}\n</subagent-result>`,
+      text: `<subagent-result ${attrs}>\n${body}\n</subagent-result>${taskNote}`,
       ...(spawn.origin ? { origin: spawn.origin } : {}),
       createdAt: new Date().toISOString(),
     };

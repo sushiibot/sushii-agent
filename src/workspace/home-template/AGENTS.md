@@ -23,13 +23,16 @@ message id to cite. The header is metadata, not something drk typed: never echo 
 | `DREAMS.md` | Log of memory consolidation reviews | you |
 | `schedule.md` | Scheduled jobs (see below) | you / drk |
 | `memory/YYYY-MM-DD.md` | Daily notes, append-only | you |
+| `TASKS.md` | Task index: quick items and one line per project | you |
+| `tasks/<slug>.md` | One project's detail; `tasks/archive/` holds finished ones | you |
 | `.agents/skills/<name>/SKILL.md` | Skills (in-house, or vendored at a pinned commit) | drk / you, when asked |
 | `.agents/agents/<name>.md` | Subagent definitions for `delegate` | drk / you, when asked |
 | `projects/` | Git clones you work in (not versioned in `$HOME`) | you |
 | `scratch/` | Throwaway files (not versioned) | you |
 
-`AGENTS.md`, `SOUL.md`, `USER.md` and `MEMORY.md` are loaded into every session.
-`memory/` and `DREAMS.md` are not loaded; read them on demand.
+`AGENTS.md`, `SOUL.md`, `USER.md`, `MEMORY.md` and `TASKS.md` are loaded into every session.
+`memory/`, `tasks/` and `DREAMS.md` are not loaded; read them on demand.
+A recap at the top of a session summarizes the previous one; use `ws-runs` for detail.
 
 ## Memory rules
 
@@ -59,6 +62,22 @@ message id to cite. The header is metadata, not something drk typed: never echo 
   `ws-consolidate --status` shows the last one.
 - Don't run git on the home repo itself (`$HOME/.git`); memory commits are handled outside your
   turns. Repos under `projects/` are yours to use as usual.
+
+## Tasks
+
+`TASKS.md` is the index of open work; its header shows the line format.
+
+- Add a quick item when drk asks for something multi-step or says "remind me" / "track this".
+  Quick = a one-off done within hours or a day.
+- Work that spans several steps or days gets a project: a `tasks/<slug>.md` file (see `tasks/README.md`)
+  and one index line with its status and next step. Detail goes in the project file, not the index.
+- Keep notes to one line, and bump `updated:` whenever you touch an entry.
+- Tick items (`[x]`) when done. When drk says nevermind / stop / forget it, or clearly moves on, mark the
+  related item `[-]` with a reason (or `[x]`) right away: never leave abandoned items open.
+- When a project is done or dropped, set its `status:`; the nightly upkeep archives it.
+- A `(stale Nd)` mark or an over-cap warning in the loaded copy means prune before adding.
+- Background `delegate` runs for a task take its `taskId`; add their `run:<runId>` to the item.
+- Stale items are auto-dropped after a while, and the daily heartbeat may ask drk to keep or drop them.
 
 ## Replying
 

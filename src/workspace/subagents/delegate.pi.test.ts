@@ -283,7 +283,7 @@ describe("delegate on real Pi sessions", () => {
         return { text: "bg finding: 42" };
       }
       const i = mainTurn(b);
-      if (i === 0) return { tool: { name: "delegate", args: { agent: "explore", task: "slow digging", background: true } } };
+      if (i === 0) return { tool: { name: "delegate", args: { agent: "explore", task: "slow digging", background: true, taskId: "t-dig1" } } };
       if (i === 1) return { text: "started it" };
       return { text: lastMessage(b).includes("bg finding: 42") ? "the answer is 42" : "no result" };
     };
@@ -298,6 +298,9 @@ describe("delegate on real Pi sessions", () => {
     expect(h.delivered[1]).toMatchObject({ text: "the answer is 42", origin: { surface: "discord", conversationId: "dm" } });
     const woke = bodies.filter((b) => !isChild(b))[2];
     expect(lastMessage(woke)).toContain("subagent-result");
+    const runId = h.runs.listRuns({ agentName: "explore" })[0].runId;
+    // Started for a task: the result tells main to note it on that TASKS.md item.
+    expect(lastMessage(woke)).toContain(`was for task t-dig1: note its outcome and run:${runId}`);
     expect(h.runs.listRuns({ agentName: "explore" })[0].status).toBe("done");
     await h.dispose();
   }, 30_000);

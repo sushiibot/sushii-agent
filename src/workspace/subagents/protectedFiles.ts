@@ -7,8 +7,8 @@ import { dirname, join } from "node:path";
  * (they outlive the child), and the home repo's config and hooks (either can run a command during main's next
  * memory commit).
  */
-export const PROTECTED_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "SOUL.md", "AGENTS.md", "schedule.md", ".git/config"] as const;
-export const PROTECTED_DIRS = ["memory", ".agents", ".git/hooks"] as const;
+export const PROTECTED_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "SOUL.md", "AGENTS.md", "schedule.md", ".git/config"] as const;
+export const PROTECTED_DIRS = ["memory", "tasks", ".agents", ".git/hooks"] as const;
 /** Larger files are watched but can't be restored. */
 const MAX_RESTORABLE_BYTES = 4 * 1024 * 1024;
 const MAX_PROJECT_ENTRIES = 200_000;

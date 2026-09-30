@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getLogger } from "../logger.ts";
-import type { WorkspaceConfig } from "./config.ts";
+import { taskRulesOf, type TaskRules, type WorkspaceConfig } from "./config.ts";
 import { readJson, writeFileAtomic } from "./files.ts";
 import { MEMORY_MD_CAP, USER_MD_CAP, commitHome } from "./home.ts";
 import { runToolFreeJob } from "./jobSession.ts";
@@ -10,6 +10,7 @@ import type { BackendSelector } from "./chatgptFallback.ts";
 import type { RunRecorder } from "./runLog.ts";
 import type { JobOutcome, ScheduledJob } from "./scheduler.ts";
 import { containsSecret, redact } from "./secretPatterns.ts";
+import { TASK_PATHS, maintainTasks } from "./tasks.ts";
 
 const log = getLogger("workspace.consolidation");
 
@@ -677,14 +678,59 @@ export async function runConsolidation(deps: ConsolidationDeps, opts: { force?: 
   return { status: "applied", model, ...(commit.sha ? { sha: commit.sha } : {}), summary: commit.sha ? `${line} (${commit.sha.slice(0, 12)})` : line };
 }
 
+/** Resolves true once `live` is idle, false when it stays busy past `ms`. */
+export async function waitIdle(live: Pick<LiveSession, "isIdle">, ms: number, sleep = (t: number) => new Promise<void>((r) => setTimeout(r, t))): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (!live.isIdle()) {
+    if (Date.now() >= deadline) return false;
+    await sleep(Math.min(DEFAULT_LIMITS.idlePollMs, Math.max(deadline - Date.now(), 1)));
+  }
+  return true;
+}
+
+/** The nightly TASKS.md upkeep (see maintainTasks), committed; a one-line summary, or null when nothing changed. */
+export async function runTaskUpkeep(deps: {
+  home: string;
+  rules: TaskRules;
+  now: Date;
+  commit(message: string, paths: string[]): Promise<unknown>;
+  live?: LiveSession;
+  sleep?: (ms: number) => Promise<void>;
+  idleWaitMs?: number;
+}): Promise<string | null> {
+  // Between chat turns only: the agent may be editing TASKS.md itself.
+  if (deps.live && !(await waitIdle(deps.live, deps.idleWaitMs ?? DEFAULT_LIMITS.idleWaitMs, deps.sleep))) {
+    log.warn("TASKS.md upkeep deferred: the chat session stayed busy");
+    return null;
+  }
+  const res = maintainTasks(deps.home, deps.rules, deps.now);
+  if (res.overCap) log.warn({ max: deps.rules.maxOpen }, "TASKS.md is over its open cap with only projects left; flagged, nothing dropped");
+  if (!res.changed) return null;
+  log.info({ actions: res.actions }, "TASKS.md upkeep");
+  await deps.commit("chore(tasks): nightly upkeep", TASK_PATHS).catch((err) => log.warn({ err }, "committing the TASKS.md upkeep failed"));
+  deps.live?.requestContextReload();
+  return `tasks: ${res.actions.length} change${res.actions.length === 1 ? "" : "s"}`;
+}
+
 /** The nightly job, wired to the workspace's model selection, run log, home repo and live chat session. */
 export function createConsolidationJob(
   config: WorkspaceConfig,
-  opts: { runs: RunRecorder; selector: BackendSelector; live?: LiveSession; limits?: Partial<ConsolidationLimits> },
+  opts: { runs: RunRecorder; selector: BackendSelector; live?: LiveSession; limits?: Partial<ConsolidationLimits>; now?: () => Date },
 ): ScheduledJob {
   return {
     name: CONSOLIDATION_JOB,
     run: async ({ force }): Promise<JobOutcome> => {
+      const commit = (message: string, paths: string[]) => commitHome(message, { home: config.home, paths });
+      const tasks = await runTaskUpkeep({
+        home: config.home,
+        rules: taskRulesOf(config),
+        now: opts.now?.() ?? new Date(),
+        commit,
+        ...(opts.live ? { live: opts.live } : {}),
+      }).catch((err) => {
+        log.warn({ err }, "TASKS.md upkeep failed");
+        return null;
+      });
       const result = await runConsolidation(
         {
           home: config.home,
@@ -693,13 +739,13 @@ export function createConsolidationJob(
             const { text, model } = await runToolFreeJob(config, { agentName: CONSOLIDATION_AGENT, systemPrompt, prompt, runs: opts.runs, selector: opts.selector });
             return { text, model };
           },
-          commit: (message, paths) => commitHome(message, { home: config.home, paths }),
+          commit,
           ...(opts.live ? { live: opts.live } : {}),
           ...(opts.limits ? { limits: opts.limits } : {}),
         },
         { force },
       );
-      return { status: result.status, summary: result.summary };
+      return { status: result.status, summary: tasks ? `${result.summary ?? result.status}; ${tasks}` : result.summary };
     },
   };
 }

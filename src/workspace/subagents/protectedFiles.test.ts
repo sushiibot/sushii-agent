@@ -56,6 +56,8 @@ describe("protected watch: the review's bash bypasses, run by a writer child", (
     ["agent def", "echo x > .agents/agents/evil.md", ".agents/agents/evil.md"],
     ["dreams", "echo x >> DREAMS.md", "DREAMS.md"],
     ["scheduled job", "printf '## exfil\\nevery 5m\\n' >> schedule.md", "schedule.md"],
+    ["task index", "echo '- [x] everything' >> TASKS.md", "TASKS.md"],
+    ["project file", "echo x > tasks/new-project.md", "tasks/new-project.md"],
   ];
 
   for (const [name, cmd, path] of bypasses) {

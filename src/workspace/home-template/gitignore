@@ -1,4 +1,4 @@
-# Allowlist: only the memory and persona files are versioned. Everything else in $HOME
+# Allowlist: only the memory, task and persona files are versioned. Everything else in $HOME
 # (credential stores, browser profiles, installs, projects/, scratch/) stays out.
 /*
 !/.gitignore
@@ -8,6 +8,8 @@
 !/MEMORY.md
 !/DREAMS.md
 !/schedule.md
+!/TASKS.md
+!/tasks/
 !/memory/
 /memory/*
 !/memory/*.md
