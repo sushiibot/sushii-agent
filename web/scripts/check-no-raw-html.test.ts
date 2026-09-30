@@ -33,4 +33,93 @@ describe('check-no-raw-html', () => {
 		);
 		expect(rules('src/lib/agent/other.svelte', '<Button>Approve</Button>')).toEqual([]);
 	});
+
+	test('flags raw snippets, computed sink keys and string code', () => {
+		expect(rules('a.ts', "import { createRawSnippet } from 'svelte';")).toEqual([
+			'createRawSnippet'
+		]);
+		expect(rules('a.ts', "el['inner' + 'HTML'] = s;")).toEqual(['computed sink access']);
+		expect(rules('a.ts', 'el[`outer${"HTML"}`] = s;')).toEqual(['computed sink access']);
+		expect(rules('a.ts', "frame?.['src' + 'doc'] = s;")).toEqual(['computed sink access']);
+		expect(rules('a.ts', "el.setAttribute('src' + 'doc', s)")).toEqual(['computed attribute name']);
+		expect(rules('a.ts', 'Reflect.set(el, key, s)')).toEqual(['Reflect.set']);
+		expect(rules('a.ts', "setTimeout('alert(1)', 0)")).toEqual(['string timer']);
+		expect(rules('a.ts', "const x = map['key']; el.dataset['nonce'] = n;")).toEqual([]);
+		expect(rules('a.ts', 'setTimeout(() => go(), 0)')).toEqual([]);
+	});
+
+	test('render components may not pick their element tag at runtime', () => {
+		const tray = 'src/lib/agent/approval-tray.svelte';
+		expect(rules(tray, '<svelte:element this={tag}>x</svelte:element>')).toEqual([
+			'render: dynamic svelte:element'
+		]);
+		expect(rules(tray, '<svelte:element this="h3">x</svelte:element>')).toEqual([]);
+		expect(rules('src/routes/x.svelte', '<svelte:element this={tag} />')).toEqual([]);
+	});
+
+	test('markdown: no svelte:element, spreads or handlers in any spelling', () => {
+		const md = 'src/lib/agent/markdown.svelte';
+		expect(rules(md, '<svelte:element this={"button"}>x</svelte:element>')).toContain(
+			'markdown: svelte:element'
+		);
+		expect(rules(md, '<a {...attrs}>x</a>')).toContain('markdown: spread attributes');
+		expect(rules(md, '<a on:click={go}>x</a>')).toContain('markdown: event handler');
+		expect(rules(md, '<a {onclick}>x</a>')).toContain('markdown: event handler');
+		expect(rules(md, '<a onkeydown={go}>x</a>')).toContain('markdown: event handler');
+	});
+
+	test('markdown imports only its renderer, types and the Copy button', () => {
+		const md = 'src/lib/agent/markdown.svelte';
+		const script = (body: string) => `<script lang="ts">\n${body}\n</script>`;
+		expect(
+			rules(
+				md,
+				script(
+					[
+						"import type { MdBlock } from './types';",
+						"import CodeCopyButton from './code-copy-button.svelte';",
+						"import { parseMarkdown } from './render/markdown';"
+					].join('\n')
+				)
+			)
+		).toEqual([]);
+		for (const icon of ['shield', 'shield-alert', 'shield-check', 'shield-half']) {
+			expect(rules(md, script(`import S from '@lucide/svelte/icons/${icon}';`))).toContain(
+				'markdown: shield icon'
+			);
+		}
+		expect(rules(md, script("import { ShieldAlert } from '@lucide/svelte';"))).toContain(
+			'markdown: shield icon'
+		);
+		expect(rules(md, script("import Check from '@lucide/svelte/icons/check';"))).toEqual([
+			'markdown: import @lucide/svelte/icons/check'
+		]);
+		expect(rules(md, script("import { Button } from '$lib/components/ui/button';"))).toContain(
+			'markdown: import $lib/components/ui/button'
+		);
+		expect(rules(md, script("const m = import('./x');"))).toContain('markdown: dynamic import');
+	});
+
+	test('the Copy button may be a button but never looks like an approval', () => {
+		const copy = 'src/lib/agent/code-copy-button.svelte';
+		expect(rules(copy, '<button type="button" onclick={copy}>x</button>')).toEqual([]);
+		expect(rules(copy, '<button class="bg-approval">x</button>')).toContain(
+			'markdown: approval surface token'
+		);
+		expect(rules(copy, '<ShieldCheck />')).toContain('markdown: shield icon');
+		expect(rules(copy, '<button {...rest}>x</button>')).toContain('markdown: spread attributes');
+	});
+
+	test('the real source tree is clean', async () => {
+		const { readFileSync } = await import('node:fs');
+		for (const file of [
+			'src/lib/agent/markdown.svelte',
+			'src/lib/agent/code-copy-button.svelte',
+			'src/lib/agent/approval-tray.svelte'
+		]) {
+			expect(
+				checkSource(file, readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))
+			).toEqual([]);
+		}
+	});
 });

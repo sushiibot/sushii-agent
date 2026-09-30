@@ -20,50 +20,104 @@ const SINKS: [RegExp, string][] = [
 	[/\bsrcdoc\b/, 'srcdoc'],
 	[/\bnew\s+Function\b/, 'new Function'],
 	[/\beval\s*\(/, 'eval'],
-	[/\bsetHTMLUnsafe\b|\bparseHTMLUnsafe\b/, 'setHTMLUnsafe']
+	[/\bsetHTMLUnsafe\b|\bparseHTMLUnsafe\b/, 'setHTMLUnsafe'],
+	// Svelte routes a raw snippet's string through its pass-through Trusted Types policy.
+	[/\bcreateRawSnippet\b/, 'createRawSnippet'],
+	[/\bReflect\s*\.\s*(set|defineProperty)\b/, 'Reflect.set'],
+	[/\bset(Timeout|Interval)\s*\(\s*['"`]/, 'string timer'],
+	[/\bsetAttribute(NS)?\s*\([^,]*['"`]\s*\+/, 'computed attribute name']
 ];
 
-// The markdown renderer shows agent text, so it may never emit a control or the approval surface.
-const MARKDOWN_FILES = new Set(['src/lib/agent/markdown.svelte']);
+// `el['inner' + 'HTML']`, `` el[`outer${x}`] ``: a quoted key that spells part of a markup sink.
+const COMPUTED_KEY = /(?:[\w)\]]|\?\.)\s*\[([^\]]*['"`][^\]]*)\]/g;
+const SINK_FRAGMENT = /html|inner|outer|adjacent|srcdoc|['"`]doc['"`]/i;
+
+// Components that render agent- or workspace-supplied data.
+const RENDER_DIR = 'src/lib/agent/';
+
+// Agent text renders here, so it may never emit a control, handler or the approval surface.
+const MARKDOWN = 'src/lib/agent/markdown.svelte';
+// Markdown's one control: an icon button that copies its own code block.
+const COPY_BUTTON = 'src/lib/agent/code-copy-button.svelte';
+const MARKDOWN_IMPORTS = new Set(['./types', './render/markdown', './code-copy-button.svelte']);
+
+const APPROVAL_LOOKALIKE: [RegExp, string][] = [
+	[/approval|data-surface/i, 'markdown: approval surface token'],
+	[/Shield\w*|icons\/shield/i, 'markdown: shield icon']
+];
 const MARKDOWN_BANNED: [RegExp, string][] = [
 	[/<button\b|<Button\b/, 'markdown: button'],
 	[/<form\b|<input\b|<textarea\b|<select\b/, 'markdown: form control'],
 	[/\bon[a-z]+\s*=/, 'markdown: event handler'],
-	[/approval|ShieldCheck|data-surface/i, 'markdown: approval surface token']
+	[/\bimport\s*\(/, 'markdown: dynamic import']
 ];
 
 function lineOf(source: string, index: number): number {
 	return source.slice(0, index).split('\n').length;
 }
 
-function findHtmlTags(node: unknown, found: number[]): void {
+type AstNode = {
+	type?: unknown;
+	start?: unknown;
+	name?: unknown;
+	tag?: unknown;
+};
+
+function visit(node: unknown, fn: (n: AstNode & { start: number }) => void): void {
 	if (!node || typeof node !== 'object') return;
 	if (Array.isArray(node)) {
-		for (const child of node) findHtmlTags(child, found);
+		for (const child of node) visit(child, fn);
 		return;
 	}
-	const n = node as { type?: unknown; start?: unknown };
-	if (n.type === 'HtmlTag' && typeof n.start === 'number') found.push(n.start);
+	const n = node as AstNode;
+	if (typeof n.type === 'string' && typeof n.start === 'number') {
+		fn(n as AstNode & { start: number });
+	}
 	for (const [key, value] of Object.entries(node)) {
-		if (key !== 'parent') findHtmlTags(value, found);
+		if (key !== 'parent') visit(value, fn);
 	}
 }
 
-export function checkSource(file: string, source: string): Violation[] {
+function templateRules(file: string, source: string): Violation[] {
 	const out: Violation[] = [];
-	if (file.endsWith('.svelte')) {
-		const starts: number[] = [];
-		findHtmlTags(parse(source, { filename: file, modern: true }), starts);
-		for (const start of starts) out.push({ file, line: lineOf(source, start), rule: '{@html}' });
-	}
-	const lines = source.split('\n');
-	lines.forEach((text, i) => {
-		for (const [re, rule] of SINKS) if (re.test(text)) out.push({ file, line: i + 1, rule });
-		if (MARKDOWN_FILES.has(file)) {
-			for (const [re, rule] of MARKDOWN_BANNED) {
-				if (re.test(text)) out.push({ file, line: i + 1, rule });
+	const at = (start: number, rule: string) => out.push({ file, line: lineOf(source, start), rule });
+	const markdown = file === MARKDOWN;
+	const lookalike = markdown || file === COPY_BUTTON;
+	const ast = parse(source, { filename: file, modern: true });
+	visit(ast.fragment, (n) => {
+		if (n.type === 'HtmlTag') at(n.start, '{@html}');
+		if (n.type === 'SvelteElement' && file.startsWith(RENDER_DIR)) {
+			const tag = n.tag as { type?: string } | string | undefined;
+			if (markdown) at(n.start, 'markdown: svelte:element');
+			else if (typeof tag === 'object' && tag?.type !== 'Literal') {
+				at(n.start, 'render: dynamic svelte:element');
 			}
 		}
+		if (lookalike && n.type === 'SpreadAttribute') at(n.start, 'markdown: spread attributes');
+		if (markdown && n.type === 'OnDirective') at(n.start, 'markdown: event handler');
+		if (markdown && n.type === 'Attribute' && /^on/i.test(String(n.name))) {
+			at(n.start, 'markdown: event handler');
+		}
+	});
+	if (markdown) {
+		for (const m of source.matchAll(/\bimport\b[^'"`;]*?['"`]([^'"`]+)['"`]/g)) {
+			if (!MARKDOWN_IMPORTS.has(m[1])) at(m.index, `markdown: import ${m[1]}`);
+		}
+	}
+	return out;
+}
+
+export function checkSource(file: string, source: string): Violation[] {
+	const out: Violation[] = file.endsWith('.svelte') ? templateRules(file, source) : [];
+	const lookalike = file === MARKDOWN || file === COPY_BUTTON;
+	source.split('\n').forEach((text, i) => {
+		const add = (rule: string) => out.push({ file, line: i + 1, rule });
+		for (const [re, rule] of SINKS) if (re.test(text)) add(rule);
+		for (const m of text.matchAll(COMPUTED_KEY)) {
+			if (SINK_FRAGMENT.test(m[1])) add('computed sink access');
+		}
+		if (lookalike) for (const [re, rule] of APPROVAL_LOOKALIKE) if (re.test(text)) add(rule);
+		if (file === MARKDOWN) for (const [re, rule] of MARKDOWN_BANNED) if (re.test(text)) add(rule);
 	});
 	return out;
 }

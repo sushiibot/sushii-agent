@@ -6,6 +6,7 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import TimerOff from '@lucide/svelte/icons/timer-off';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+	import { untrack } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { Button } from '$lib/components/ui/button';
@@ -39,23 +40,86 @@
 
 	// svelte-ignore state_referenced_locally
 	let details = $state(initialDetails);
-	const top = $derived(items[0]);
-	// Held from the first render, so Approve is never enabled before the timer starts.
-	// svelte-ignore state_referenced_locally
-	let heldNonce = $state<string | null>(items[0]?.nonce ?? null);
-	// Coming back to the app is "appearing" too: a tap meant for the lock screen must not land here.
-	let holdEpoch = $state(0);
+	const top = $derived(items[0] as PendingApproval | undefined);
+
+	// The hold is plain data read directly by the click handler, so a click in the same task as an
+	// `items` change is judged against the item it was rendered for, never a stale flag.
+	let holdNonce: string | undefined = undefined;
+	let holdStart = 0;
+	let holdTimer: ReturnType<typeof setTimeout> | undefined;
+	// Bumped when a hold starts or clears, so the button re-renders.
+	let holdVersion = $state(0);
+
+	function rearm(nonce: string | undefined) {
+		holdNonce = nonce;
+		holdStart = performance.now();
+		clearTimeout(holdTimer);
+		// A frame late, so the re-render never lands a hair before the hold has cleared.
+		holdTimer = setTimeout(() => holdVersion++, holdMs + 16);
+		holdVersion++;
+	}
+
+	function released(nonce: string): boolean {
+		if (nonce !== holdNonce) {
+			rearm(nonce);
+			return false;
+		}
+		return performance.now() - holdStart >= holdMs;
+	}
+
+	// Called during render too, where it must not write state, so a new nonce just reads as held.
+	function shownReleased(nonce: string | undefined): boolean {
+		return nonce !== undefined && nonce === holdNonce && performance.now() - holdStart >= holdMs;
+	}
+
 	$effect(() => {
-		const nonce = top.nonce;
-		void holdEpoch;
-		heldNonce = nonce;
-		const timer = setTimeout(() => {
-			if (heldNonce === nonce) heldNonce = null;
-		}, holdMs);
-		return () => clearTimeout(timer);
+		const nonce = top?.nonce;
+		if (nonce !== holdNonce) untrack(() => rearm(nonce));
 	});
-	const ready = $derived(armed && heldNonce !== top.nonce);
-	const view = $derived(top.view);
+	$effect(() => () => clearTimeout(holdTimer));
+
+	const ready = $derived.by(() => {
+		void holdVersion;
+		return armed && shownReleased(top?.nonce);
+	});
+
+	/** Acts only for the item the button was drawn for, and only once its hold has cleared. */
+	function decide(e: MouseEvent, approve: boolean) {
+		const nonce = (e.currentTarget as HTMLElement).dataset.nonce;
+		if (!nonce || nonce !== top?.nonce) return;
+		if (!approve) return ondeny?.(nonce);
+		if (armed && released(nonce)) onapprove?.(nonce);
+	}
+
+	// A tray that shifts under the finger (keyboard, rotation, its own resize) is "appearing" again.
+	let section = $state<HTMLElement>();
+	$effect(() => {
+		if (!section) return;
+		let last = section.getBoundingClientRect();
+		const check = () => {
+			if (!section) return;
+			const now = section.getBoundingClientRect();
+			if (Math.abs(now.top - last.top) > 2 || Math.abs(now.left - last.left) > 2) {
+				rearm(untrack(() => top?.nonce));
+			}
+			last = now;
+		};
+		const observer = new ResizeObserver(check);
+		observer.observe(section);
+		observer.observe(document.documentElement);
+		const viewport = window.visualViewport;
+		viewport?.addEventListener('resize', check);
+		viewport?.addEventListener('scroll', check);
+		window.addEventListener('resize', check);
+		return () => {
+			observer.disconnect();
+			viewport?.removeEventListener('resize', check);
+			viewport?.removeEventListener('scroll', check);
+			window.removeEventListener('resize', check);
+		};
+	});
+
+	const view = $derived(top?.view);
 	const timedOut = $derived(phase === 'timeout');
 	const still = () =>
 		typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -63,12 +127,14 @@
 
 <svelte:document
 	onvisibilitychange={() => {
-		if (document.visibilityState === 'visible') holdEpoch++;
+		// Coming back to the app is "appearing" too: a tap meant for the lock screen must not land here.
+		if (document.visibilityState === 'visible') rearm(top?.nonce);
 	}}
 />
 
-{#if !collapsed}
+{#if top && view && !collapsed}
 	<section
+		bind:this={section}
 		aria-labelledby="{uid}-h"
 		data-surface="approval"
 		out:slide={{ duration: still() ? 0 : 320, easing: cubicOut }}
@@ -177,20 +243,24 @@
 						variant="outline"
 						class="px-5"
 						aria-label="Deny {view.tool}"
-						onclick={() => ondeny?.(top.nonce)}><X />Deny</Button
+						data-nonce={top.nonce}
+						onclick={(e) => decide(e, false)}><X />Deny</Button
 					>
 					<Button
 						class="relative min-w-0 flex-1 overflow-hidden"
 						disabled={!ready}
 						aria-label="Approve {view.tool}"
 						aria-describedby={ready ? undefined : `${uid}-hold`}
-						onclick={() => ready && onapprove?.(top.nonce)}
+						data-nonce={top.nonce}
+						onclick={(e) => decide(e, true)}
 					>
 						{#if !ready}
-							<span
-								class="absolute inset-x-0 bottom-0 h-1 origin-left animate-[arm_1s_linear_forwards] bg-primary-foreground/60 motion-reduce:animate-none"
-								aria-hidden="true"
-							></span>
+							{#key holdVersion}
+								<span
+									class="absolute inset-x-0 bottom-0 h-1 origin-left animate-[arm_1s_linear_forwards] bg-primary-foreground/60 motion-reduce:animate-none"
+									aria-hidden="true"
+								></span>
+							{/key}
 						{/if}
 						<Check />Approve
 					</Button>
