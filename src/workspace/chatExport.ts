@@ -51,6 +51,9 @@ const VOICE_ONLY = "[voice message, transcribed]";
 const ATTACHMENT_RE = /^\[attachment: (.*) \(([^()]*)\) (\S+)(?: → \S+)?\]$/;
 const IMAGE_NOTE_RE = /^\[Image(?: omitted)?: .*\]$/;
 
+/** A file the reader refuses to read (not a session, or not safely confined); it is skipped, never retried. */
+class RefusedFile extends Error {}
+
 /** Thrown when `before` names no item the reader still has. */
 export class ExportCursorError extends Error {
   constructor() {
@@ -108,7 +111,7 @@ class SessionIndex {
   /** One JSONL line; a line that doesn't parse (a torn write) is skipped. Throws when the file doesn't open with a session header. */
   add(line: string): void {
     const e = parseEntry(line) as RawEntry | null;
-    if (this.lines++ === 0 && e?.type !== "session") throw new Error("not a session file");
+    if (this.lines++ === 0 && e?.type !== "session") throw new RefusedFile("not a session file");
     if (!e) return;
     if (e.type === "session" || !str(e.id)) return;
     this.byId.set(e.id, slim(e as RawEntry & { id: string }));
@@ -198,8 +201,9 @@ export class ChatExportReader {
     let names: string[];
     try {
       names = readdirSync(dir);
-    } catch {
-      return [];
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
     }
     return names
       .filter((n) => n.endsWith(".jsonl") && !n.startsWith("."))
@@ -211,7 +215,8 @@ export class ChatExportReader {
     return realRoots([this.opts.agentDir]).find((r) => basename(r) === SESSION_DIRS.chat) ?? null;
   }
 
-  /** A file's items; an unreadable file has none. */
+  /** A file's items, or null for a refused file. Any other read error throws, so the import fails and is
+   *  retried rather than finishing without that session. */
   private async parse(base: string): Promise<ChatExportItem[] | null> {
     const root = this.chatRoot();
     if (!root) return null;
@@ -222,7 +227,7 @@ export class ChatExportReader {
       // Read through the fd confinement vetted, never by re-opening the path.
       fh = await (this.opts.open ?? open)(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       const st = await fh.stat();
-      if (!st.isFile() || st.nlink > 1) throw new Error("not a regular, singly linked file");
+      if (!st.isFile() || st.nlink > 1) throw new RefusedFile("not a regular, singly linked file");
       let state = this.cache.get(base);
       if (state && (state.dev !== st.dev || state.ino !== st.ino || st.size < state.offset || !(await tailMatches(fh, state)))) state = undefined;
       if (state?.result && state.size === st.size && state.mtimeMs === st.mtimeMs) {
@@ -240,7 +245,8 @@ export class ChatExportReader {
       return state.result;
     } catch (err) {
       this.cache.delete(base);
-      log.warn({ err, base }, "reading a chat session file failed; leaving it out of the export");
+      if (!(err instanceof RefusedFile) && (err as NodeJS.ErrnoException).code !== "ELOOP") throw err;
+      log.warn({ err, base }, "refused a chat session file; leaving it out of the export");
       return null;
     } finally {
       await fh?.close().catch(() => {});

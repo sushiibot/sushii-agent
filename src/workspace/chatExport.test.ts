@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -275,19 +275,29 @@ describe("ChatExportReader", async () => {
     expect(labels((await reader.page({ limit: 5 })).items)).toEqual(["user:one", "assistant:FIRST"]);
   });
 
-  test("a file that can't be read is left out without failing the page; a cursor into it is an unknown cursor", async () => {
+  test("a file that can't be read fails the page, so the import retries; a cursor into a removed file is an unknown cursor", async () => {
     const d = threeSessions();
     let failing = "2026-09-29T10-00-00-000Z_b";
     const reader = new ChatExportReader({ agentDir: d, open: openSeam({ fail: (p) => p.includes(failing) }) });
-    const page = await reader.page({ limit: 40 });
-    expect(labels(page.items)).toEqual(["user:a1", "assistant:A1", "user:c1", "assistant:C1"]);
-    await expect(reader.page({ before: "2026-09-29T10-00-00-000Z_b:0Z_b0001", limit: 5 })).rejects.toThrow(ExportCursorError);
+    await expect(reader.page({ limit: 40 })).rejects.toThrow("ENOENT");
 
     failing = "none";
     const cursor = (await reader.page({ limit: 40 })).items.find((i) => i.id === "2026-09-29T10-00-00-000Z_b:0Z_b0001")!.id;
     rmSync(join(d, "chat", "2026-09-29T10-00-00-000Z_b.jsonl"));
-    await expect(reader.page({ before: cursor, limit: 5 })).rejects.toThrow("unknown export cursor");
+    await expect(reader.page({ before: cursor, limit: 5 })).rejects.toThrow(ExportCursorError);
     expect(labels((await reader.page({ limit: 40 })).items)).toEqual(["user:a1", "assistant:A1", "user:c1", "assistant:C1"]);
+  });
+
+  test("a hardlinked file or one that isn't a session is refused and skipped, not failed", async () => {
+    const d = agentDir();
+    const outside = mkdtempSync(join(tmpdir(), "ws-chat-outside-"));
+    dirs.push(outside);
+    mkdirSync(join(outside, "chat"));
+    const secret = session(outside, "evil", [user(WEB("01J00000000000000000000009", "secret"))]);
+    linkSync(secret, join(d, "chat", "a-linked.jsonl"));
+    writeFileSync(join(d, "chat", "b-junk.jsonl"), '{"type":"message","id":"x"}\n');
+    session(d, "c-real", [user(WEB("01J00000000000000000000001", "real"))]);
+    expect(labels((await new ChatExportReader({ agentDir: d }).page({ limit: 5 })).items)).toEqual(["user:real"]);
   });
 
   test("reads come from the descriptor that was vetted, not the path re-opened after a swap", async () => {
