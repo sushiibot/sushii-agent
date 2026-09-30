@@ -7,11 +7,23 @@ const PUBLIC_KEY =
 const KEY_BYTES = [...Buffer.from(PUBLIC_KEY, 'base64url')];
 
 type Call = { method: string; path: string; body: string | null; contentType?: string };
-type ApiOptions = { meStatus?: number; keyStatus?: number; subscribeStatus?: number };
+type ApiOptions = {
+	meStatus?: number;
+	keyStatus?: number;
+	subscribeStatus?: number;
+	quietStatus?: number;
+};
 
 // Context-level, so requests from the service worker are mocked as well as the page's.
 async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
-	const opts = { meStatus: 200, keyStatus: 200, subscribeStatus: 200, ...initial };
+	const opts = {
+		meStatus: 200,
+		keyStatus: 200,
+		subscribeStatus: 200,
+		quietStatus: 200,
+		...initial
+	};
+	let quiet = { enabled: false, start: '22:00', end: '08:00' };
 	const calls: Call[] = [];
 	await stubStream(context);
 	await context.route('**/api/**', async (route) => {
@@ -40,6 +52,12 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 			return json({ ok: true });
 		}
 		if (path === '/api/push/test') return json({ sent: 1, pruned: 0 });
+		if (path === '/api/settings/quiet-hours') {
+			if (opts.quietStatus !== 200)
+				return route.fulfill({ status: opts.quietStatus, body: 'Broken' });
+			if (req.method() === 'PUT') quiet = JSON.parse(req.postData() ?? '{}');
+			return json({ ...quiet, timeZone: 'Europe/Berlin' });
+		}
 		if (path === '/api/chat/history') return json({ items: [], before: null });
 		if (path === '/api/chat/seen') return route.fulfill({ status: 204 });
 		return route.fulfill({ status: 404, body: 'Not found' });
@@ -133,6 +151,49 @@ test('settings shows the signed-in login', async ({ page, context }) => {
 	await stubPush(page);
 	await page.goto('/settings');
 	await expect(page.getByTestId('login')).toHaveText('drk@example.com');
+});
+
+test('quiet hours turn on, take a time range, and show the zone they run in', async ({
+	page,
+	context
+}) => {
+	const { calls } = await mockApi(context);
+	await stubPush(page);
+	await page.goto('/settings');
+	const quiet = page.getByRole('switch', { name: /silence replies at night/i });
+	await expect(quiet).toHaveAttribute('aria-checked', 'false');
+	await quiet.click();
+	await expect(quiet).toHaveAttribute('aria-checked', 'true');
+	await expect(page.getByTestId('quiet-zone')).toHaveText('Times are in Europe/Berlin.');
+	await page.getByLabel('From').fill('23:15');
+	await page.getByLabel('From').blur();
+	await expect
+		.poll(() =>
+			calls
+				.filter((c) => c.method === 'PUT' && c.path === '/api/settings/quiet-hours')
+				.map((c) => JSON.parse(c.body ?? '{}'))
+		)
+		.toEqual([
+			{ enabled: true, start: '22:00', end: '08:00' },
+			{ enabled: true, start: '23:15', end: '08:00' }
+		]);
+	expect(await axe(page)).toEqual([]);
+	expect(await smallTargets(page)).toEqual([]);
+});
+
+test('a quiet hours save that fails puts the switch back and says so', async ({
+	page,
+	context
+}) => {
+	const { opts } = await mockApi(context);
+	await stubPush(page);
+	await page.goto('/settings');
+	const quiet = page.getByRole('switch', { name: /silence replies at night/i });
+	await expect(quiet).toBeEnabled();
+	opts.quietStatus = 500;
+	await quiet.click();
+	await expect(page.getByRole('alert')).toContainText("Couldn't save quiet hours.");
+	await expect(quiet).toHaveAttribute('aria-checked', 'false');
 });
 
 test('turning notifications on subscribes with the server key, and the test button sends', async ({
@@ -431,11 +492,7 @@ test('a 403 page from the proxy is shown as is', async ({ page, context }) => {
 	await expect(page.getByText('Not the owner')).toBeVisible();
 });
 
-test('a push message shows a notification from the service worker', async ({ page, context }) => {
-	await context.grantPermissions(['notifications']);
-	await mockApi(context);
-	await page.goto('/');
-	await controlled(page);
+async function pushChannel(page: Page, context: BrowserContext) {
 	const cdp = await context.newCDPSession(page);
 	const registered = new Promise<string>((resolve) => {
 		cdp.on('ServiceWorker.workerRegistrationUpdated', ({ registrations }) => {
@@ -445,26 +502,108 @@ test('a push message shows a notification from the service worker', async ({ pag
 	});
 	await cdp.send('ServiceWorker.enable');
 	const registrationId = await registered;
-	await cdp.send('ServiceWorker.deliverPushMessage', {
-		origin: new URL(page.url()).origin,
-		registrationId,
-		data: JSON.stringify({ title: 'Run failed', body: 'Nightly sync', url: '/settings', tag: 'r1' })
+	const origin = new URL(page.url()).origin;
+	return (payload: unknown) =>
+		cdp.send('ServiceWorker.deliverPushMessage', {
+			origin,
+			registrationId,
+			data: JSON.stringify(payload)
+		});
+}
+
+const shownNotifications = (page: Page) =>
+	page.evaluate(async () => {
+		const reg = await navigator.serviceWorker.ready;
+		return (await reg.getNotifications()).map((n) => ({
+			title: n.title,
+			body: n.body,
+			tag: n.tag,
+			data: n.data,
+			silent: n.silent,
+			requireInteraction: n.requireInteraction,
+			renotify: n.renotify
+		}));
 	});
+
+test('a push message shows a notification from the service worker', async ({ page, context }) => {
+	await context.grantPermissions(['notifications']);
+	await mockApi(context);
+	await page.goto('/');
+	await controlled(page);
+	const push = await pushChannel(page, context);
+	await push({ title: 'Run failed', body: 'Nightly sync', url: '/settings', tag: 'r1' });
 	await expect
-		.poll(() =>
-			page.evaluate(async () => {
-				const reg = await navigator.serviceWorker.ready;
-				return (await reg.getNotifications()).map((n) => ({
-					title: n.title,
-					body: n.body,
-					tag: n.tag,
-					data: n.data
-				}));
-			})
+		.poll(async () =>
+			(await shownNotifications(page)).map(({ title, body, tag, data }) => ({
+				title,
+				body,
+				tag,
+				data
+			}))
 		)
 		.toEqual([
 			{ title: 'Run failed', body: 'Nightly sync', tag: 'r1', data: { url: '/settings' } }
 		]);
+});
+
+test('a push honours its flags and never keeps a cross-origin url', async ({ page, context }) => {
+	await context.grantPermissions(['notifications']);
+	await mockApi(context);
+	await page.goto('/settings');
+	await controlled(page);
+	const push = await pushChannel(page, context);
+	await push({
+		title: 'Approval needed',
+		body: 'run bash',
+		url: 'https://evil.example/?approve=n1',
+		tag: 'approval:n1',
+		requireInteraction: true,
+		renotify: true
+	});
+	await push({
+		title: 'Reply',
+		body: 'night',
+		url: '/api/chat/stream',
+		tag: 'quiet',
+		silent: true
+	});
+	await expect
+		.poll(async () => (await shownNotifications(page)).sort((a, b) => a.tag.localeCompare(b.tag)))
+		.toEqual([
+			{
+				title: 'Approval needed',
+				body: 'run bash',
+				tag: 'approval:n1',
+				data: { url: '/' },
+				silent: false,
+				requireInteraction: true,
+				renotify: true
+			},
+			{
+				title: 'Reply',
+				body: 'night',
+				tag: 'quiet',
+				data: { url: '/' },
+				silent: true,
+				requireInteraction: false,
+				renotify: false
+			}
+		]);
+});
+
+test('opening Main closes the chat notification and leaves others', async ({ page, context }) => {
+	await context.grantPermissions(['notifications']);
+	await mockApi(context);
+	await page.goto('/settings');
+	await controlled(page);
+	const push = await pushChannel(page, context);
+	await push({ title: 'sushii-agent', body: 'done', url: '/', tag: 'chat' });
+	await push({ title: 'Other', body: 'x', url: '/', tag: 'other' });
+	await expect.poll(async () => (await shownNotifications(page)).length).toBe(2);
+	await page.goto('/');
+	await expect
+		.poll(async () => (await shownNotifications(page)).map((n) => n.tag))
+		.toEqual(['other']);
 });
 
 test('the settings back chevron returns without stacking history', async ({ page, context }) => {

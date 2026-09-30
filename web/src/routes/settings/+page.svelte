@@ -8,7 +8,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import ConnectionBanner from '$lib/app/connection-banner.svelte';
 	import UpdateToast from '$lib/app/update-toast.svelte';
-	import { api, type Me } from '$lib/api';
+	import { api, type Me, type QuietHours, type QuietHoursSetting } from '$lib/api';
 	import { pwa } from '$lib/app/pwa.svelte';
 	import {
 		currentPushStatus,
@@ -32,6 +32,10 @@
 	let pushError = $state<string | null>(null);
 	let testBusy = $state(false);
 	let testResult = $state<{ ok: boolean; text: string } | null>(null);
+
+	let quiet = $state<QuietHoursSetting | null>(null);
+	let quietError = $state<string | null>(null);
+	let quietBusy = $state(false);
 
 	let theme = $state<ThemeChoice>('system');
 	let installFailed = $state(false);
@@ -129,6 +133,41 @@
 		}
 	}
 
+	async function loadQuiet() {
+		quietError = null;
+		try {
+			quiet = await api.quietHours();
+		} catch (err) {
+			quietError = errorText(err);
+		}
+	}
+
+	async function saveQuiet(next: QuietHours) {
+		if (!quiet || quietBusy) return;
+		const previous = quiet;
+		quiet = { ...quiet, ...next };
+		quietBusy = true;
+		quietError = null;
+		try {
+			quiet = await api.setQuietHours(next);
+		} catch (err) {
+			quiet = previous;
+			quietError = `Couldn't save quiet hours. ${errorText(err)}`;
+		} finally {
+			quietBusy = false;
+		}
+	}
+
+	function quietValue(): QuietHours {
+		const { enabled, start, end } = quiet!;
+		return { enabled, start, end };
+	}
+
+	function setQuietTime(which: 'start' | 'end', value: string) {
+		if (!/^\d{2}:\d{2}$/.test(value)) return;
+		void saveQuiet({ ...quietValue(), [which]: value });
+	}
+
 	function chooseTheme(choice: ThemeChoice) {
 		theme = choice;
 		applyTheme(choice);
@@ -153,6 +192,7 @@
 		theme = readTheme();
 		void loadMe();
 		void loadPush();
+		void loadQuiet();
 		return watchPermission(() => void refreshPush());
 	});
 
@@ -304,6 +344,78 @@
 						In a Chrome tab instead: tap the icon left of the address, then Permissions, then
 						Notifications.
 					</p>
+				</div>
+			{/if}
+		</section>
+
+		<section aria-labelledby="quiet" class="flex flex-col gap-2">
+			<h2 id="quiet" class="text-sm font-medium text-muted-foreground">Quiet hours</h2>
+			<div class="flex flex-col divide-y rounded-xl border bg-card">
+				<button
+					type="button"
+					role="switch"
+					aria-checked={quiet?.enabled ?? false}
+					aria-describedby="quiet-state"
+					disabled={!quiet || quietBusy}
+					onclick={() => quiet && saveQuiet({ ...quietValue(), enabled: !quiet.enabled })}
+					class="flex min-h-16 w-full items-center gap-3 rounded-xl px-4 py-3 text-left disabled:cursor-not-allowed"
+				>
+					<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+						<span class="font-medium">Silence replies at night</span>
+						<span id="quiet-state" class="text-sm text-muted-foreground">
+							Replies still arrive, without sound. Approvals and questions always ring.
+						</span>
+					</span>
+					<span
+						aria-hidden="true"
+						class={cn(
+							'relative inline-flex h-7 w-12 shrink-0 items-center rounded-full p-0.5 transition-colors duration-150',
+							quiet?.enabled ? 'bg-primary' : 'bg-input',
+							(!quiet || quietBusy) && 'opacity-50'
+						)}
+					>
+						<span
+							class={cn(
+								'size-6 rounded-full bg-background shadow-sm transition-transform duration-150 motion-reduce:transition-none',
+								quiet?.enabled && 'translate-x-5'
+							)}
+						></span>
+					</span>
+				</button>
+				{#if quiet?.enabled}
+					<div class="grid grid-cols-2 gap-3 px-4 py-4">
+						<label class="flex flex-col gap-1 text-sm">
+							<span class="text-muted-foreground">From</span>
+							<input
+								type="time"
+								value={quiet.start}
+								disabled={quietBusy}
+								onchange={(e) => setQuietTime('start', e.currentTarget.value)}
+								class="h-12 rounded-lg border bg-background px-3 text-base"
+							/>
+						</label>
+						<label class="flex flex-col gap-1 text-sm">
+							<span class="text-muted-foreground">Until</span>
+							<input
+								type="time"
+								value={quiet.end}
+								disabled={quietBusy}
+								onchange={(e) => setQuietTime('end', e.currentTarget.value)}
+								class="h-12 rounded-lg border bg-background px-3 text-base"
+							/>
+						</label>
+						<p class="col-span-2 text-sm text-muted-foreground" data-testid="quiet-zone">
+							Times are in {quiet.timeZone}.
+						</p>
+					</div>
+				{/if}
+			</div>
+			{#if quietError}
+				<div class="flex flex-col items-start gap-3" role="alert">
+					<p class="text-sm text-failed">{quietError}</p>
+					{#if !quiet}
+						<Button variant="outline" onclick={loadQuiet}><RotateCcw />Try again</Button>
+					{/if}
 				</div>
 			{/if}
 		</section>

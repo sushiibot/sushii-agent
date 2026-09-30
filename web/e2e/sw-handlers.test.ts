@@ -1,10 +1,12 @@
 import { expect, test } from '@playwright/test';
+import { closeTagged, tagsShownBy } from '../src/lib/app/notifications';
 import {
 	base64UrlToBytes,
 	navigationResponse,
 	notificationFor,
 	openTarget,
 	resubscribe,
+	safeTarget,
 	sameKey,
 	type WindowLike
 } from '../src/lib/sw/handlers';
@@ -13,11 +15,15 @@ const PUBLIC_KEY =
 	'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
 
 const message = (raw: string) => ({ json: () => JSON.parse(raw), text: () => raw });
+const ORIGIN = 'https://agent.test';
 
 test.describe('push', () => {
 	test('shows the payload fields', () => {
 		expect(
-			notificationFor(message('{"title":"Run failed","body":"b","url":"/runs/1","tag":"r1"}'))
+			notificationFor(
+				message('{"title":"Run failed","body":"b","url":"/settings?x=1","tag":"r1"}'),
+				ORIGIN
+			)
 		).toEqual({
 			title: 'Run failed',
 			options: {
@@ -25,21 +31,121 @@ test.describe('push', () => {
 				tag: 'r1',
 				icon: '/icons/icon-192.png',
 				badge: '/icons/badge-96.png',
-				data: { url: '/runs/1' }
+				data: { url: '/settings?x=1' }
 			}
 		});
 	});
 
 	test('falls back to plain text and defaults', () => {
-		const spec = notificationFor(message('not json'));
+		const spec = notificationFor(message('not json'), ORIGIN);
 		expect(spec.title).toBe('Agent');
 		expect(spec.options.body).toBe('not json');
 		expect(spec.options.data.url).toBe('/');
 	});
 
 	test('still shows a notification without data', () => {
-		expect(notificationFor(null).title).toBe('Agent');
-		expect(notificationFor(message('null')).options.body).toBe('');
+		expect(notificationFor(null, ORIGIN).title).toBe('Agent');
+		expect(notificationFor(message('null'), ORIGIN).options.body).toBe('');
+	});
+
+	test('passes silent, requireInteraction and renotify through, typed', () => {
+		const spec = notificationFor(
+			message(
+				JSON.stringify({
+					tag: 'approval:n',
+					silent: true,
+					requireInteraction: true,
+					renotify: true
+				})
+			),
+			ORIGIN
+		);
+		expect(spec.options).toMatchObject({
+			tag: 'approval:n',
+			silent: true,
+			requireInteraction: true,
+			renotify: true
+		});
+		const loose = notificationFor(
+			message(JSON.stringify({ title: 5, silent: 'yes', requireInteraction: 1, body: {} })),
+			ORIGIN
+		);
+		expect(loose.title).toBe('Agent');
+		expect(loose.options.body).toBe('');
+		expect('silent' in loose.options || 'requireInteraction' in loose.options).toBe(false);
+	});
+
+	test('drops renotify without a tag, which showNotification would reject', () => {
+		const spec = notificationFor(message(JSON.stringify({ renotify: true, tag: '' })), ORIGIN);
+		expect(spec.options.tag).toBeUndefined();
+		expect('renotify' in spec.options).toBe(false);
+	});
+});
+
+test.describe('safeTarget', () => {
+	test('keeps same-origin app routes with their query', () => {
+		expect(safeTarget('/?ask=a%201', ORIGIN)).toBe('/?ask=a%201');
+		expect(safeTarget('/?approve=n1', ORIGIN)).toBe('/?approve=n1');
+		expect(safeTarget(`${ORIGIN}/settings`, ORIGIN)).toBe('/settings');
+	});
+
+	test('sends anything else to Main', () => {
+		for (const raw of [
+			'https://evil.example/',
+			'//evil.example/x',
+			'/\\evil.example',
+			'javascript:alert(1)',
+			'http://agent.test/',
+			'/api/chat/stream',
+			'/f/abcdefghijklmnopqrstuv',
+			'/runs/1',
+			'',
+			42,
+			null
+		]) {
+			expect(safeTarget(raw, ORIGIN), String(raw)).toBe('/');
+		}
+	});
+});
+
+test.describe('closing notifications on open', () => {
+	const shown = (tags: string[]) => {
+		const closed: string[] = [];
+		const source = {
+			getNotifications: async () => tags.map((tag) => ({ tag, close: () => closed.push(tag) }))
+		};
+		return { source, closed };
+	};
+
+	test('closes chat plus the approvals, asks and sign-in Main shows, and nothing else', async () => {
+		const tags = tagsShownBy(
+			[
+				{ kind: 'approval', id: 'x', nonce: 'done1', tool: 't', outcome: 'approved' },
+				{
+					kind: 'ask',
+					id: 'y',
+					askId: 'q1',
+					question: 'q',
+					choices: [],
+					state: 'answered'
+				},
+				{ kind: 'ask', id: 'z', askId: '', question: 'q', choices: [], state: 'history' },
+				{ kind: 'auth', id: 'w', url: 'https://x.test', instructions: '' }
+			],
+			[{ nonce: 'open1' }]
+		);
+		const { source, closed } = shown([
+			'chat',
+			'approval:done1',
+			'approval:open1',
+			'approval:other',
+			'ask:q1',
+			'ask:q2',
+			'auth',
+			'quota'
+		]);
+		expect(await closeTagged(source, tags)).toBe(5);
+		expect(closed).toEqual(['chat', 'approval:done1', 'approval:open1', 'ask:q1', 'auth']);
 	});
 });
 

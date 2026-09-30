@@ -1,6 +1,14 @@
 // Service-worker logic kept free of worker globals so the page, the worker and tests can share it.
 
-export type PushPayload = { title?: string; body?: string; url?: string; tag?: string };
+export type PushPayload = {
+	title?: unknown;
+	body?: unknown;
+	url?: unknown;
+	tag?: unknown;
+	silent?: unknown;
+	requireInteraction?: unknown;
+	renotify?: unknown;
+};
 
 export type PushMessage = { json(): unknown; text(): string };
 
@@ -11,9 +19,28 @@ export type NotificationSpec = {
 		tag?: string;
 		icon: string;
 		badge: string;
+		silent?: boolean;
+		requireInteraction?: boolean;
+		renotify?: boolean;
 		data: { url: string };
 	};
 };
+
+/** App routes a notification may open; anything else, including /api/ and /f/, opens Main. */
+const ROUTES = ['/', '/settings'];
+
+/** The same-origin app path for a notification's url, or '/' for anything else. */
+export function safeTarget(raw: unknown, origin: string): string {
+	if (typeof raw !== 'string' || !raw) return '/';
+	let url: URL;
+	try {
+		url = new URL(raw, origin);
+	} catch {
+		return '/';
+	}
+	if (url.origin !== origin || !ROUTES.includes(url.pathname)) return '/';
+	return url.pathname + url.search + url.hash;
+}
 
 export function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
 	const base64 = (value + '='.repeat((4 - (value.length % 4)) % 4))
@@ -31,7 +58,13 @@ export function sameKey(a: ArrayBuffer | null | undefined, b: Uint8Array): boole
 	return view.every((byte, i) => byte === b[i]);
 }
 
-export function notificationFor(message: PushMessage | null | undefined): NotificationSpec {
+const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+const bool = (v: unknown) => (typeof v === 'boolean' ? v : undefined);
+
+export function notificationFor(
+	message: PushMessage | null | undefined,
+	origin: string
+): NotificationSpec {
 	let payload: PushPayload = {};
 	if (message) {
 		try {
@@ -41,14 +74,22 @@ export function notificationFor(message: PushMessage | null | undefined): Notifi
 			payload = { body: message.text() };
 		}
 	}
+	const tag = str(payload.tag) || undefined;
+	const silent = bool(payload.silent);
+	const requireInteraction = bool(payload.requireInteraction);
+	// showNotification throws on renotify without a tag, and Chrome then shows its own generic notice.
+	const renotify = tag ? bool(payload.renotify) : undefined;
 	return {
-		title: payload.title || 'Agent',
+		title: str(payload.title) || 'Agent',
 		options: {
-			body: payload.body ?? '',
-			tag: payload.tag,
+			body: str(payload.body) ?? '',
+			tag,
 			icon: '/icons/icon-192.png',
 			badge: '/icons/badge-96.png',
-			data: { url: payload.url || '/' }
+			...(silent !== undefined ? { silent } : {}),
+			...(requireInteraction !== undefined ? { requireInteraction } : {}),
+			...(renotify !== undefined ? { renotify } : {}),
+			data: { url: safeTarget(payload.url, origin) }
 		}
 	};
 }
