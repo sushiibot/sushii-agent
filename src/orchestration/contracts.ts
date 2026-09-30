@@ -92,6 +92,11 @@ export const ID_MAX = 256;
 export const DELIVER_FILES_MAX = 10;
 export const DELIVER_FILE_MAX_BYTES = 8 * 1024 * 1024;
 export const DELIVER_FILES_TOTAL_MAX_BYTES = 11 * 1024 * 1024;
+
+/** Discord keeps only these characters in an attachment name; anything else would break `attachment://` references. */
+export function discordAttachmentName(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "").slice(-100) || "file";
+}
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 const base64Len = (bytes: number) => Math.ceil(bytes / 3) * 4;
 /** Raw byte count of a padded base64 string. */

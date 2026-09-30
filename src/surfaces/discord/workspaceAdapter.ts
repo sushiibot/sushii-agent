@@ -16,7 +16,7 @@ import {
   type MessageCreateOptions,
   type MessageEditOptions,
 } from "discord.js";
-import type { ChatDeliverParams, ChatOrigin, DeliverFile, ToolCallResult } from "../../orchestration/contracts.ts";
+import { discordAttachmentName, type ChatDeliverParams, type ChatOrigin, type DeliverFile, type ToolCallResult } from "../../orchestration/contracts.ts";
 import { deliveryView } from "../../orchestration/workspace/link.ts";
 import { formatDuration, toolsLabel } from "../../orchestration/workspace/progress.ts";
 import { NONCE_RE } from "../../orchestration/workspace/tools.ts";
@@ -360,7 +360,7 @@ const GALLERY_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/we
 function attachmentNames(files: readonly DeliverFile[]): string[] {
   const used = new Set<string>();
   return files.map((f) => {
-    const base = f.name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "").slice(-100) || "file";
+    const base = discordAttachmentName(f.name);
     let name = base;
     for (let i = 2; used.has(name); i++) {
       const dot = base.lastIndexOf(".");

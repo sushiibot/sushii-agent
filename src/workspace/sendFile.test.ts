@@ -3,7 +3,8 @@ import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, wr
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bindSendFileSink, checkSendablePath, contentTypeOf, createSendFileTool, displayPath, readSendableFile, safeFileName, type SendFileSink } from "./sendFile.ts";
+import { discordAttachmentName } from "../orchestration/contracts.ts";
+import { bindSendFileSink, checkSendablePath, contentTypeOf, createSendFileTool, displayPath, readSendableFile, type SendFileSink } from "./sendFile.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -202,9 +203,9 @@ describe("file names and types", () => {
   });
 
   test("names keep only Discord-safe characters", () => {
-    expect(safeFileName("my report (final).pdf")).toBe("my_report_final_.pdf");
-    expect(safeFileName("../..")).toBe("file");
-    expect(safeFileName("x".repeat(150) + ".png").length).toBe(100);
+    expect(discordAttachmentName("my report (final).pdf")).toBe("my_report_final_.pdf");
+    expect(discordAttachmentName("../..")).toBe("file");
+    expect(discordAttachmentName("x".repeat(150) + ".png").length).toBe(100);
   });
 
   test("the content type comes from the extension, without parameters", () => {

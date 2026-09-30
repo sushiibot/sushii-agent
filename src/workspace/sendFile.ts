@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Type } from "typebox";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { DELIVER_FILE_MAX_BYTES } from "../orchestration/contracts.ts";
+import { DELIVER_FILE_MAX_BYTES, discordAttachmentName } from "../orchestration/contracts.ts";
 import { checkToolCall, guardedPaths } from "./secretGuard.ts";
 import { secretKind } from "./secretPatterns.ts";
 
@@ -175,13 +175,6 @@ export function readSendableFile(path: string, paths: SendFilePaths, maxBytes: n
   }
 }
 
-/** Discord keeps only these characters in an attachment name; anything else would break `attachment://` references. */
-export function safeFileName(name: string): string {
-  const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "");
-  const clipped = cleaned.length > 100 ? cleaned.slice(cleaned.length - 100) : cleaned;
-  return clipped || "file";
-}
-
 function refusal(flag: SendFlag): string {
   return flag.kind === "unscannable"
     ? "blocked (secret): the file has runs of token characters too long for the secret detector to check"
@@ -240,7 +233,7 @@ export function createSendFileTool(paths: SendFilePaths, session: () => object |
         const why = err instanceof Error ? err.message : String(err);
         throw new Error(`can't send ${path}: ${why}`);
       }
-      const fileName = safeFileName(name?.trim() || basename(checked.path));
+      const fileName = discordAttachmentName(name?.trim() || basename(checked.path));
       if (file.flag) {
         if (!sink.confirm) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and there's no one here to approve it`);
         sink.check();
