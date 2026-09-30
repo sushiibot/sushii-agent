@@ -1,8 +1,8 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { RPC_METHODS, base64Bytes, parseUploadUrl, uploadReadResult, type ChatMessageParams } from "../orchestration/contracts.ts";
 import { getLogger } from "../logger.ts";
 
@@ -168,48 +168,76 @@ export interface UploadFetchOptions {
 
 /**
  * Pulls each `upload:<id>` attachment's bytes from the bot over upload/read and writes them to
- * `<dir>/<id>.<ext>`. Returns the ones that are images as model input when `images` is set; a failure
- * leaves that attachment out and is never thrown.
+ * `<dir>/<id>.<ext>`. Returns the ids actually written, and the ones that are images as model input when
+ * `images` is set; a failure leaves that attachment out and is never thrown.
  */
-export async function loadUploadAttachments(attachments: readonly Attachment[] | undefined, opts: UploadFetchOptions, images: boolean): Promise<ImageContent[]> {
+export async function loadUploadAttachments(
+  attachments: readonly Attachment[] | undefined,
+  opts: UploadFetchOptions,
+  images: boolean,
+): Promise<{ images: ImageContent[]; saved: Set<string> }> {
   const uploads = (attachments ?? [])
     .map((a) => ({ a, id: parseUploadUrl(a.url) }))
     .filter((u): u is { a: Attachment; id: string } => u.id !== null)
     .slice(0, IMAGES_PER_MESSAGE_MAX);
   const loaded = await Promise.all(uploads.map((u) => fetchUpload(u.a, u.id, opts, images)));
-  return loaded.filter((i): i is ImageContent => i !== null);
+  const saved = new Set<string>();
+  const out: ImageContent[] = [];
+  for (const [i, r] of loaded.entries()) {
+    if (r.saved) saved.add(uploads[i]!.id);
+    if (r.image) out.push(r.image);
+  }
+  return { images: out, saved };
 }
 
-async function fetchUpload(a: Attachment, uploadId: string, opts: UploadFetchOptions, images: boolean): Promise<ImageContent | null> {
+async function fetchUpload(a: Attachment, uploadId: string, opts: UploadFetchOptions, images: boolean): Promise<{ saved: boolean; image: ImageContent | null }> {
+  let saved = false;
   try {
     const res = uploadReadResult.parse(
       await opts.request(RPC_METHODS.uploadRead, { principalId: opts.principalId, uploadId }, opts.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS),
     );
     if (!res.ok) {
       log.info({ uploadId, error: res.error }, "the bot refused an upload's bytes; passing it as a note only");
-      return null;
+      return { saved, image: null };
     }
     const bytes = Buffer.from(res.dataBase64, "base64");
     writeUpload(opts.dir, uploadFileName(uploadId, a.contentType), bytes);
-    if (!images) return null;
+    saved = true;
+    if (!images) return { saved, image: null };
     const mimeType = sniffImageType(bytes);
     if (!mimeType) {
       log.info({ uploadId, declared: a.contentType }, "upload isn't a PNG/JPEG/GIF/WEBP; saved to disk only");
-      return null;
+      return { saved, image: null };
     }
-    return { type: "image", data: res.dataBase64, mimeType };
+    return { saved, image: { type: "image", data: res.dataBase64, mimeType } };
   } catch (err) {
     log.warn({ err, uploadId }, "fetching an upload's bytes failed; passing it as a note only");
-    return null;
+    return { saved, image: null };
   }
+}
+
+/**
+ * `dir` must be a real directory where it says it is: a symlink there (the agent owns home) would steer
+ * the write into its target. Checked again before the rename; a swap in between remains possible.
+ */
+function assertRealDir(dir: string): void {
+  const st = lstatSync(dir);
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`${dir} isn't a plain directory`);
+  if (realpathSync(dir) !== join(realpathSync(dirname(dir)), basename(dir))) throw new Error(`${dir} resolves somewhere else`);
 }
 
 // Rename replaces the directory entry, so a symlink the agent left at the final name is never followed.
 function writeUpload(dir: string, name: string, bytes: Uint8Array): void {
-  mkdirSync(dir, { recursive: true });
+  try {
+    mkdirSync(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+  assertRealDir(dir);
   const tmp = join(dir, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
   try {
     writeFileSync(tmp, bytes, { flag: "wx", mode: 0o644 });
+    assertRealDir(dir);
     renameSync(tmp, join(dir, name));
   } catch (err) {
     rmSync(tmp, { force: true });

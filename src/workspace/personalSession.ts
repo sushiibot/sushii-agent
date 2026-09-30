@@ -464,36 +464,40 @@ export class PersonalSession {
   private async accept(params: ChatMessageParams): Promise<ChatMessageResult> {
     const id = params.messageId;
     // Stamped once here: steers re-prompted from Pi's queue and buffered context already carry it.
-    const text = formatUserText(params, this.opts.now?.() ?? new Date());
+    const receivedAt = this.opts.now?.() ?? new Date();
     if (params.kind === "context") {
+      const text = formatUserText(params, receivedAt);
       await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
     this.recordFileUploads(params.origin.surface, params.fileUploads === true);
     // Downloaded in parallel with the queue, awaited in it, so a slow download can't let a later message overtake.
-    const images = this.imagesFor(params);
-    const mode = await this.enqueue(async () => this.promptOrSteer(id, text, params.origin, undefined, await images));
+    const attachments = this.attachmentsFor(params);
+    const mode = await this.enqueue(async () => {
+      const { images, saved } = await attachments;
+      return this.promptOrSteer(id, formatUserText(params, receivedAt, saved), params.origin, undefined, images);
+    });
     this.recentIds.add(id);
     return { accepted: true, mode };
   }
 
   // Uploads are saved to disk even when the model takes no images: the attachment line points the agent at the file.
-  private async imagesFor(params: ChatMessageParams): Promise<ImageContent[] | undefined> {
-    if (!params.attachments?.length) return undefined;
+  private async attachmentsFor(params: ChatMessageParams): Promise<{ images: ImageContent[] | undefined; saved: ReadonlySet<string> }> {
+    if (!params.attachments?.length) return { images: undefined, saved: new Set() };
     const wantImages = !this.session || acceptsImages(this.session);
     const uploads = this.opts.uploads;
-    const [saved, fetched] = await Promise.all([
+    const [fromUploads, fetched] = await Promise.all([
       uploads
         ? loadUploadAttachments(
             params.attachments,
             { principalId: this.opts.principalId, dir: uploads.dir, timeoutMs: uploads.timeoutMs, request: (m, p, t) => this.opts.transport.request(m, p, t) },
             wantImages,
           )
-        : Promise.resolve([]),
+        : Promise.resolve({ images: [], saved: new Set<string>() }),
       wantImages ? loadImageAttachments(params.attachments, this.opts.images) : Promise.resolve([]),
     ]);
-    const images = [...saved, ...fetched].slice(0, IMAGES_PER_MESSAGE_MAX);
-    return images.length ? images : undefined;
+    const images = [...fromUploads.images, ...fetched].slice(0, IMAGES_PER_MESSAGE_MAX);
+    return { images: images.length ? images : undefined, saved: fromUploads.saved };
   }
 
   private isSeen(id: string): boolean {
@@ -1522,6 +1526,8 @@ export function messageHeader(messageId: string, receivedAt: Date, opts: { surfa
 export function formatUserText(
   params: Pick<ChatMessageParams, "messageId" | "text" | "voice" | "attachments"> & { origin?: ChatOrigin },
   receivedAt: Date,
+  /** Upload ids written to `~/uploads`; only those get a path. */
+  saved: ReadonlySet<string> = new Set(),
 ): string {
   const header = messageHeader(params.messageId, receivedAt, { surface: params.origin?.surface, voice: params.voice === true });
   let text = header ? `${header}\n${params.text}` : params.text;
@@ -1530,8 +1536,8 @@ export function formatUserText(
   // Image attachments also reach the model as images when it accepts them; every attachment stays a link it can fetch.
   for (const a of params.attachments ?? []) {
     const uploadId = parseUploadUrl(a.url);
-    const saved = uploadId ? ` → ~/${UPLOADS_DIR}/${uploadFileName(uploadId, a.contentType)}` : "";
-    text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}${saved}]`;
+    const path = uploadId && saved.has(uploadId) ? ` → ~/${UPLOADS_DIR}/${uploadFileName(uploadId, a.contentType)}` : "";
+    text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}${path}]`;
   }
   return text;
 }

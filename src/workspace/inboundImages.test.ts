@@ -123,17 +123,43 @@ describe("owner uploads", () => {
       const victim = join(dir, "victim.txt");
       writeFileSync(victim, "keep");
       symlinkSync(victim, join(dir, `${ID}.png`));
-      const images = await loadUploadAttachments(
+      const { images, saved } = await loadUploadAttachments(
         [up(), { name: "cdn.png", contentType: "image/png", url: "https://cdn.discordapp.com/a/b/cdn.png" }],
         { principalId: "drk", dir, request: async () => ({ ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") }) },
         true,
       );
       expect(images.map((i) => i.mimeType)).toEqual(["image/png"]);
+      expect([...saved]).toEqual([ID]);
       expect(readFileSync(victim, "utf8")).toBe("keep");
       expect(lstatSync(join(dir, `${ID}.png`)).isSymbolicLink()).toBe(false);
       expect(readdirSync(dir).sort()).toEqual([`${ID}.png`, "victim.txt"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an uploads dir that is a symlink, live or dangling, is refused: nothing is written and nothing counts as saved", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ws-uploads-home-"));
+    const elsewhere = mkdtempSync(join(tmpdir(), "ws-uploads-elsewhere-"));
+    try {
+      const dir = join(home, "uploads");
+      const request = async () => ({ ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") });
+      for (const target of [elsewhere, join(elsewhere, "missing")]) {
+        rmSync(dir, { force: true });
+        symlinkSync(target, dir);
+        const { images, saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request }, true);
+        expect(images).toEqual([]);
+        expect(saved.size).toBe(0);
+        expect(readdirSync(elsewhere)).toEqual([]);
+      }
+      rmSync(dir, { force: true });
+      const { saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request }, true);
+      expect([...saved]).toEqual([ID]);
+      expect(lstatSync(dir).isDirectory()).toBe(true);
+      expect(readdirSync(dir)).toEqual([`${ID}.png`]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
     }
   });
 });

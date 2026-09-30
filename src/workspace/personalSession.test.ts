@@ -2580,6 +2580,7 @@ describe("owner uploads", () => {
     await host.handleMessage(msg("m1", "save this", { attachments: [UPLOAD_ATTACHMENT] }));
     expect(existsSync(join(dir, `${UPLOAD_ID}.jpg`))).toBe(true);
     expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
+    expect(sessions[0]!.prompts[0]!.text).toContain(`→ ~/uploads/${UPLOAD_ID}.jpg]`);
   });
 
   test("a refused or malformed upload/read answer leaves the image out and the message goes through", async () => {
@@ -2589,15 +2590,16 @@ describe("owner uploads", () => {
       await host.handleMessage(msg("m1", "look", { attachments: [UPLOAD_ATTACHMENT] }));
       expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
       expect(existsSync(join(dir, `${UPLOAD_ID}.jpg`))).toBe(false);
+      expect(sessions[0]!.prompts[0]!.text).not.toContain("→");
     }
   });
 
-  test("without an uploads dir the attachment is only a note, and nothing is requested", async () => {
+  test("without an uploads dir the attachment is only a note, with no path, and nothing is requested", async () => {
     const { host, sessions, transport } = setup();
     await host.start();
     await host.handleMessage(msg("m1", "look", { attachments: [UPLOAD_ATTACHMENT] }));
     expect(transport.requests.some((r) => r.method === "upload/read")).toBe(false);
-    expect(sessions[0]!.prompts[0]!.text).toContain(`upload:${UPLOAD_ID} → ~/uploads/${UPLOAD_ID}.jpg]`);
+    expect(sessions[0]!.prompts[0]!.text).toEndWith(`[attachment: photo.jpg (image/jpeg) upload:${UPLOAD_ID}]`);
   });
 });
 
