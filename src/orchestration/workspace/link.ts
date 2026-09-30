@@ -834,11 +834,15 @@ export class WorkspaceLink {
     const origin = p.origin ?? null;
     const ev = p.ev;
     switch (ev.type) {
-      case "turn_start":
-        // One main turn runs at a time, so a restored view of another turn ended while the bot was down.
-        for (const turn of [...this.turns.values()]) if (turn.restored && turn.turnId !== p.turnId) this.finishTurn(turn, "interrupted");
-        this.turnFor(p.turnId, origin);
+      case "turn_start": {
+        // One main turn runs at a time: a restored view ended while the bot was down, and any other one's
+        // turn_end was lost.
+        for (const turn of [...this.turns.values()]) if (turn.turnId !== p.turnId) this.finishTurn(turn, turn.restored ? "interrupted" : "done");
+        const turn = this.turnFor(p.turnId, origin);
+        const target = this.tryTarget(turn, origin);
+        if (!turn.message && target?.adapter.turnStarted) this.openView(turn, () => target.adapter.turnStarted!(target.origin, this.view(turn)));
         return;
+      }
       case "tool_start":
         this.addToolLine(this.turnFor(p.turnId, origin), { name: ev.name, summary: ev.summary, state: "run" });
         return;
@@ -887,17 +891,24 @@ export class WorkspaceLink {
   /** Opens the turn's view on its first content, or schedules an edit of the open one. */
   private touch(turn: TurnProgress): void {
     if (!turn.message) {
-      turn.lastEditAt = this.now();
-      turn.message = this.createView(turn);
-      turn.chain = turn.message;
-      void turn.message.then((m) => {
-        turn.messageId = m?.id ?? null;
-        if (this.turns.get(turn.turnId) === turn) this.persistProgress();
-      });
+      this.openView(turn, () => this.createView(turn));
     } else {
       this.markDirty(turn);
       this.persistProgress();
     }
+  }
+
+  private openView(turn: TurnProgress, create: () => Promise<SurfaceMessageHandle | null>): void {
+    turn.lastEditAt = this.now();
+    turn.message = create().catch((err) => {
+      log.warn({ err }, "failed to send workspace progress message");
+      return null;
+    });
+    turn.chain = turn.message;
+    void turn.message.then((m) => {
+      turn.messageId = m?.id ?? null;
+      if (this.turns.get(turn.turnId) === turn) this.persistProgress();
+    });
   }
 
   private endToolLine(turn: TurnProgress | undefined, name: string, ok: boolean, agentId: string | undefined): void {

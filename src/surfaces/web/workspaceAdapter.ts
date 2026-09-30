@@ -206,6 +206,11 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     return { id: view.turnId };
   }
 
+  /** The working bubble and Stop show at once, and the turn's reply sorts from here in history. */
+  turnStarted(origin: ChatOrigin | null, view: ProgressView): Promise<WebHandle> {
+    return this.progressCreate(origin, view);
+  }
+
   async progressUpdate(handle: WebHandle, view: ProgressView): Promise<void> {
     const turn = this.turnOf(handle, view);
     this.applyLines(turn, view);
