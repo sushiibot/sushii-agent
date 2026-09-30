@@ -299,7 +299,7 @@ export const memoryChanges: MemoryChange[] = [
 		when: 'Today 14:04',
 		commit: '7f3c2a1',
 		run: { id: 'run-hvac', title: 'Reply to Maple Row about the HVAC visit' },
-		taint: 'read external email',
+		taint: 'Read external email',
 		diff: [
 			{ kind: 'ctx', text: '## Home' },
 			{ kind: 'ctx', text: '- Unit 4B, lease renews 2027-03-01.' },
@@ -343,7 +343,7 @@ export const memoryChanges: MemoryChange[] = [
 		when: 'Yesterday 18:15',
 		commit: 'c2290fe',
 		run: { id: 'run-trip', title: 'Book October trip' },
-		taint: 'read external email',
+		taint: 'Read external email',
 		diff: [
 			{ kind: 'add', text: '- Booked NH 107 SFO→HND, Oct 9, conf. QX7R2L.' },
 			{ kind: 'add', text: '- Seat not chosen yet; check-in opens 24h before.' }

@@ -119,8 +119,7 @@
 							aria-current={j.id === selected ? 'true' : undefined}
 							class={cn(
 								'flex flex-col gap-1.5 rounded-md px-2 py-2.5 hover:bg-muted/60',
-								j.id === selected && 'bg-muted',
-								!enabled[j.id] && 'opacity-70'
+								j.id === selected && 'bg-muted'
 							)}
 						>
 							<span class="flex items-baseline justify-between gap-2">

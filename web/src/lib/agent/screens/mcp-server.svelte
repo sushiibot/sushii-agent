@@ -9,6 +9,7 @@
 	import type { McpServer } from '../types';
 
 	let { server, justConnected = false }: { server: McpServer; justConnected?: boolean } = $props();
+	const uid = $props.id();
 </script>
 
 <AppShell
@@ -35,8 +36,8 @@
 				<code class="min-w-0 truncate font-mono text-xs text-muted-foreground">{server.url}</code>
 			</header>
 
-			<section aria-labelledby="tools-h" class="flex flex-col gap-2">
-				<h2 id="tools-h" class="flex items-baseline justify-between text-sm font-semibold">
+			<section aria-labelledby="{uid}-tools-h" class="flex flex-col gap-2">
+				<h2 id="{uid}-tools-h" class="flex items-baseline justify-between text-sm font-semibold">
 					Tools snapshot
 					<span class="text-xs font-normal text-muted-foreground">saved {server.connectedAt}</span>
 				</h2>
@@ -70,8 +71,8 @@
 		</div>
 
 		<div class="flex flex-col gap-5">
-			<section aria-labelledby="hist-h" class="flex flex-col gap-2">
-				<h2 id="hist-h" class="text-sm font-semibold">History</h2>
+			<section aria-labelledby="{uid}-hist-h" class="flex flex-col gap-2">
+				<h2 id="{uid}-hist-h" class="text-sm font-semibold">History</h2>
 				<ol class="flex flex-col gap-2.5 border-l pl-4 text-sm">
 					{#each server.history as h (h.when)}
 						<li>
@@ -81,8 +82,8 @@
 					{/each}
 				</ol>
 			</section>
-			<section aria-labelledby="used-h" class="flex flex-col gap-2">
-				<h2 id="used-h" class="text-sm font-semibold">Used by</h2>
+			<section aria-labelledby="{uid}-used-h" class="flex flex-col gap-2">
+				<h2 id="{uid}-used-h" class="text-sm font-semibold">Used by</h2>
 				{#if server.usedBy.length}
 					<ul class="flex flex-col divide-y rounded-lg border text-sm">
 						{#each server.usedBy as u (u.runId)}

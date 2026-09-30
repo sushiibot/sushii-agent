@@ -39,7 +39,7 @@
 			</p>
 		{/if}
 
-		<DiffView lines={c.diff} file={c.file} class={cn(reverted && 'opacity-60')} />
+		<DiffView lines={c.diff} file={c.file} />
 
 		<section class="flex flex-col gap-1 text-sm">
 			<h3 class="text-xs text-muted-foreground">Written by</h3>

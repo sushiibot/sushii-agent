@@ -26,6 +26,7 @@
 		runHref?: string;
 		actions?: boolean;
 	} = $props();
+	const uid = $props.id();
 
 	type Tab = 'preview' | 'changes' | 'raw';
 	// svelte-ignore state_referenced_locally
@@ -104,10 +105,10 @@
 
 		<div class="px-3 py-3 text-sm">
 			{#if mode === 'editing'}
-				<label for="draft-body" class="mb-1.5 block text-xs text-muted-foreground">
+				<label for="{uid}-draft-body" class="mb-1.5 block text-xs text-muted-foreground">
 					Edit the body. Recipients and subject stay fixed.
 				</label>
-				<Textarea id="draft-body" bind:value={body} rows={9} class="text-sm" />
+				<Textarea id="{uid}-draft-body" bind:value={body} rows={9} class="text-sm" />
 			{:else if tab === 'preview'}
 				<dl class="mb-3 grid grid-cols-[4.5rem_1fr] gap-x-2 gap-y-1">
 					<dt class="text-muted-foreground">To</dt>

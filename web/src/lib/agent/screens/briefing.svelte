@@ -14,6 +14,7 @@
 		dismissed: initialDismissed = [],
 		votes: initialVotes = {}
 	}: { items: BriefItem[]; dismissed?: string[]; votes?: Record<string, Vote> } = $props();
+	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
 	let dismissed = $state<string[]>(initialDismissed);
@@ -42,9 +43,12 @@
 		</header>
 
 		{#each sections as section (section.name)}
-			<section aria-labelledby="s-{section.name.replaceAll(' ', '-')}" class="flex flex-col gap-2">
+			<section
+				aria-labelledby="{uid}-s-{section.name.replaceAll(' ', '-')}"
+				class="flex flex-col gap-2"
+			>
 				<h3
-					id="s-{section.name.replaceAll(' ', '-')}"
+					id="{uid}-s-{section.name.replaceAll(' ', '-')}"
 					class="text-sm font-semibold text-muted-foreground"
 				>
 					{section.name}

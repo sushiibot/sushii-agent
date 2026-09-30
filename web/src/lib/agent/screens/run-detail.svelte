@@ -15,6 +15,7 @@
 	import type { Evidence, Run, ToolCall } from '../types';
 
 	let { run, open: initialOpen = [] }: { run: Run; open?: string[] } = $props();
+	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
 	let open = $state<string[]>(initialOpen);
@@ -62,8 +63,8 @@
 {/snippet}
 
 {#snippet evidenceList()}
-	<section aria-labelledby="ev-h" class="flex flex-col gap-2">
-		<h2 id="ev-h" class="text-sm font-semibold">Evidence</h2>
+	<section aria-labelledby="{uid}-ev-h" class="flex flex-col gap-2">
+		<h2 id="{uid}-ev-h" class="text-sm font-semibold">Evidence</h2>
 		{#if run.evidence.length}
 			<ul class="flex flex-col divide-y rounded-lg border bg-card text-sm">
 				{#each run.evidence as ev (ev.label)}
@@ -87,8 +88,11 @@
 
 {#snippet trust()}
 	{#if run.tainted}
-		<section aria-labelledby="trust-h" class="flex flex-col gap-2 rounded-lg border p-3 text-sm">
-			<h2 id="trust-h" class="flex items-center gap-2 font-semibold">
+		<section
+			aria-labelledby="{uid}-trust-h"
+			class="flex flex-col gap-2 rounded-lg border p-3 text-sm"
+		>
+			<h2 id="{uid}-trust-h" class="flex items-center gap-2 font-semibold">
 				Trust <StatePill of="tainted" />
 			</h2>
 			<p class="text-muted-foreground">
@@ -119,8 +123,8 @@
 					</div>
 				{/each}
 			</dl>
-			<section aria-labelledby="tl-h" class="flex flex-col gap-2">
-				<h2 id="tl-h" class="flex items-baseline justify-between text-sm font-semibold">
+			<section aria-labelledby="{uid}-tl-h" class="flex flex-col gap-2">
+				<h2 id="{uid}-tl-h" class="flex items-baseline justify-between text-sm font-semibold">
 					Timeline <span class="text-xs font-normal text-muted-foreground"
 						>{run.steps.length} tool calls · {run.model}</span
 					>

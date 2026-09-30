@@ -23,6 +23,7 @@
 		messageId?: string;
 		runHref?: string;
 	} = $props();
+	const uid = $props.id();
 
 	const mode = $derived(
 		stage === 'editing'
@@ -110,12 +111,12 @@
 				class="sticky bottom-0 border-t bg-background/95 px-3 py-2.5 backdrop-blur-sm"
 				onsubmit={(e) => e.preventDefault()}
 			>
-				<label for="composer" class="sr-only">Message</label>
+				<label for="{uid}-composer" class="sr-only">Message</label>
 				<div
 					class="flex items-end gap-2 rounded-xl border bg-card p-1.5 focus-within:ring-2 focus-within:ring-ring/40"
 				>
 					<Textarea
-						id="composer"
+						id="{uid}-composer"
 						rows={1}
 						placeholder="Message your agent"
 						class="min-h-9 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent"

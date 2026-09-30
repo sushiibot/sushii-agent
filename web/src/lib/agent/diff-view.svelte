@@ -33,12 +33,14 @@
 					line.kind === 'del' && 'bg-del'
 				)}
 			>
-				<span
-					class="text-center text-muted-foreground select-none"
-					aria-label={line.kind === 'ctx' ? undefined : line.kind === 'add' ? 'added' : 'removed'}
+				<span class="text-center text-muted-foreground select-none" aria-hidden="true"
 					>{mark[line.kind]}</span
 				>
-				<span class="pr-3 break-words whitespace-pre-wrap">{line.text || ' '}</span>
+				<span class="pr-3 break-words whitespace-pre-wrap"
+					>{#if line.kind !== 'ctx'}<span class="sr-only"
+							>{line.kind === 'add' ? 'Added: ' : 'Removed: '}</span
+						>{/if}{line.text || ' '}</span
+				>
 			</div>
 		{/each}
 	</div>

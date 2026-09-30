@@ -8,6 +8,7 @@
 	import type { DaySummary } from '../types';
 
 	let { days, query = '' }: { days: DaySummary[]; query?: string } = $props();
+	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
 	let q = $state(query);
@@ -28,13 +29,13 @@
 <AppShell active="history" title="History" waiting={2}>
 	<div class="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-4 @3xl:py-8">
 		<form role="search" onsubmit={(e) => e.preventDefault()} class="relative">
-			<label for="hist-q" class="sr-only">Search history</label>
+			<label for="{uid}-hist-q" class="sr-only">Search history</label>
 			<Search
 				class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
 				aria-hidden="true"
 			/>
 			<Input
-				id="hist-q"
+				id="{uid}-hist-q"
 				type="search"
 				bind:value={q}
 				placeholder="Search sessions, runs and files"
@@ -49,9 +50,14 @@
 		{/if}
 
 		{#each shown as day (day.date)}
-			<section aria-labelledby="d-{day.date.replace(/\W+/g, '-')}" class="flex flex-col gap-3">
+			<section
+				aria-labelledby="{uid}-d-{day.date.replace(/\W+/g, '-')}"
+				class="flex flex-col gap-3"
+			>
 				<header class="flex flex-col gap-1">
-					<h2 id="d-{day.date.replace(/\W+/g, '-')}" class="text-sm font-semibold">{day.date}</h2>
+					<h2 id="{uid}-d-{day.date.replace(/\W+/g, '-')}" class="text-sm font-semibold">
+						{day.date}
+					</h2>
 					<p class="text-sm text-muted-foreground">{day.summary}</p>
 				</header>
 				<div class="grid gap-3 @xl:grid-cols-2">

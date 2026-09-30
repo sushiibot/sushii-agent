@@ -16,6 +16,7 @@
 		url = '',
 		redirect = ''
 	}: { servers: McpServer[]; stage?: Stage; url?: string; redirect?: string } = $props();
+	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
 	let urlValue = $state(url);
@@ -73,9 +74,9 @@
 
 			{#if stage === 'url'}
 				<section class="flex flex-col gap-2">
-					<label for="mcp-url" class="text-sm font-medium">Server URL</label>
+					<label for="{uid}-mcp-url" class="text-sm font-medium">Server URL</label>
 					<Input
-						id="mcp-url"
+						id="{uid}-mcp-url"
 						bind:value={urlValue}
 						placeholder="https://example.com/mcp"
 						inputmode="url"
@@ -108,9 +109,11 @@
 				<Button size="lg" variant="outline" class="self-start">I've signed in</Button>
 			{:else}
 				<section class="flex flex-col gap-2">
-					<label for="mcp-redirect" class="text-sm font-medium">Address from the browser</label>
+					<label for="{uid}-mcp-redirect" class="text-sm font-medium"
+						>Address from the browser</label
+					>
 					<Input
-						id="mcp-redirect"
+						id="{uid}-mcp-redirect"
 						bind:value={redirectValue}
 						placeholder="http://localhost:7461/callback?code=…"
 						class="h-10 font-mono text-sm"

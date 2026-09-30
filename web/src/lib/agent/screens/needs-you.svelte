@@ -17,6 +17,7 @@
 		draft = '',
 		notice
 	}: { items: InboxItem[]; peek?: string; draft?: string; notice?: string } = $props();
+	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
 	let peek = $state(initialPeek);
@@ -44,9 +45,9 @@
 			<p class="rounded-md bg-muted px-3 py-2 text-sm font-medium">{item.question}</p>
 		{/if}
 		{#if item.state === 'waiting'}
-			<label class="sr-only" for="reply-{where}-{item.id}">Reply</label>
+			<label class="sr-only" for="{uid}-reply-{where}-{item.id}">Reply</label>
 			<Textarea
-				id="reply-{where}-{item.id}"
+				id="{uid}-reply-{where}-{item.id}"
 				bind:value={reply}
 				rows={2}
 				placeholder="Reply without opening the chat"
@@ -87,9 +88,9 @@
 			{/if}
 			{#each groups as group (group.state)}
 				{@const meta = status[group.state]}
-				<section aria-labelledby="g-{group.state}" class="flex flex-col gap-1">
+				<section aria-labelledby="{uid}-g-{group.state}" class="flex flex-col gap-1">
 					<h2
-						id="g-{group.state}"
+						id="{uid}-g-{group.state}"
 						class="flex items-center gap-2 px-1 pb-1 text-sm font-semibold text-muted-foreground"
 					>
 						<meta.icon class="size-4" aria-hidden="true" />
