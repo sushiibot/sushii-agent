@@ -13,6 +13,7 @@
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Ellipsis from '@lucide/svelte/icons/ellipsis';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
 	import { cn } from '$lib/utils';
@@ -20,6 +21,8 @@
 	import FilesBlock from './files-block.svelte';
 	import Markdown from './markdown.svelte';
 	import WorkingRow from './working-row.svelte';
+	import { longPress } from './long-press';
+	import { hasText } from './render/plain-text';
 	import type { ApprovalOutcome, ChatMessage, Delivery, FileRef, MessagePart, Turn } from './types';
 
 	let {
@@ -33,7 +36,9 @@
 		onretrysend,
 		ondeletesend,
 		onanswer,
-		onretryhistory
+		onretryhistory,
+		onmessagemenu,
+		selecting
 	}: {
 		messages: ChatMessage[];
 		pressed?: string;
@@ -47,7 +52,19 @@
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
 		onretryhistory?: () => void;
+		/** Opens the actions sheet for a message; without it messages have no menu. */
+		onmessagemenu?: (messageId: string) => void;
+		/** The message whose text is in select mode, where holding it selects text natively. */
+		selecting?: string;
 	} = $props();
+
+	// Holding a bubble opens its menu, so on touch screens the hold must not start a native selection.
+	const holdable = 'pointer-coarse:select-none [-webkit-touch-callout:none]';
+
+	function openHeld(el: HTMLElement) {
+		const id = el.closest<HTMLElement>('[data-message-id]')?.dataset.messageId;
+		if (id) onmessagemenu?.(id);
+	}
 	const uid = $props.id();
 
 	const isTool = (p: MessagePart) => p.type.startsWith('tool-');
@@ -94,10 +111,29 @@
 	};
 </script>
 
-<ol class="flex flex-col gap-4 px-4 py-4">
+{#snippet actionsButton(id: string, extra: string)}
+	<button
+		type="button"
+		aria-label="Message actions"
+		aria-haspopup="dialog"
+		data-message-actions
+		onclick={() => onmessagemenu?.(id)}
+		class={cn(
+			'grid size-12 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+			extra
+		)}
+	>
+		<Ellipsis class="size-4" aria-hidden="true" />
+	</button>
+{/snippet}
+
+<ol class="flex flex-col gap-4 px-4 py-4" {@attach longPress('[data-holdable]', openHeld)}>
 	{#each messages as message (message.id)}
 		{@const owner = message.role === 'user' && !message.unverified}
 		{@const firstTool = message.parts.findIndex(isTool)}
+		{@const menu = !!onmessagemenu && !message.streaming && hasText(message)}
+		{@const hold = menu && selecting !== message.id}
+		{@const failed = message.delivery === 'failed'}
 		<li
 			data-message-id={message.id}
 			class={cn(
@@ -114,7 +150,10 @@
 			{#each message.parts as part, i (i)}
 				{#if part.type === 'text' && message.role === 'assistant'}
 					<div
+						data-message-text
+						data-holdable={hold || undefined}
 						class={cn(
+							hold && holdable,
 							message.streaming &&
 								"min-h-[4.5lh] [&_p:last-child]:after:ml-0.5 [&_p:last-child]:after:inline-block [&_p:last-child]:after:h-[1.1em] [&_p:last-child]:after:w-0.5 [&_p:last-child]:after:translate-y-[3px] [&_p:last-child]:after:animate-pulse [&_p:last-child]:after:bg-foreground [&_p:last-child]:after:content-[''] motion-reduce:[&_p:last-child]:after:animate-none"
 						)}
@@ -123,8 +162,11 @@
 					</div>
 				{:else if part.type === 'text'}
 					<p
+						data-message-text
+						data-holdable={hold || undefined}
 						class={cn(
 							'whitespace-pre-wrap',
+							hold && holdable,
 							owner
 								? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[15px] leading-snug text-primary-foreground'
 								: message.role === 'user'
@@ -307,21 +349,27 @@
 					<WorkingRow turn={toolTurn(message.parts)} open={openTurn === message.id} {openStep} />
 				{/if}
 			{/each}
-			{#if message.delivery}
-				{@const d = delivery[message.delivery]}
-				<p class={cn('flex items-center gap-1 text-xs text-muted-foreground', d.tone)}>
-					<d.icon class="size-3.5 shrink-0" aria-hidden="true" />{d.text}
-				</p>
-				{#if message.delivery === 'failed'}
-					<div class="flex gap-2">
-						<Button variant="ghost" class="px-3" onclick={() => ondeletesend?.(message.id)}
-							><Trash2 />Delete</Button
-						>
-						<Button variant="outline" class="px-4" onclick={() => onretrysend?.(message.id)}
-							><RotateCcw />Retry send</Button
-						>
-					</div>
-				{/if}
+			{#if message.delivery || menu}
+				<div class={cn('flex items-center gap-1', owner && 'flex-row-reverse')}>
+					{#if message.delivery}
+						{@const d = delivery[message.delivery]}
+						<p class={cn('flex items-center gap-1 text-xs text-muted-foreground', d.tone)}>
+							<d.icon class="size-3.5 shrink-0" aria-hidden="true" />{d.text}
+						</p>
+					{/if}
+					{#if menu && !failed}{@render actionsButton(message.id, '-my-2')}{/if}
+				</div>
+			{/if}
+			{#if failed}
+				<div class="flex gap-2">
+					{#if menu}{@render actionsButton(message.id, '')}{/if}
+					<Button variant="ghost" class="px-3" onclick={() => ondeletesend?.(message.id)}
+						><Trash2 />Delete</Button
+					>
+					<Button variant="outline" class="px-4" onclick={() => onretrysend?.(message.id)}
+						><RotateCcw />Retry send</Button
+					>
+				</div>
 			{/if}
 		</li>
 	{/each}

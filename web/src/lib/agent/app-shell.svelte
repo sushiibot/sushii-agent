@@ -32,6 +32,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { cn } from '$lib/utils';
 
 	let {
@@ -45,6 +46,7 @@
 		footer,
 		sheet,
 		sheetLabel,
+		sheetOnDesktop = false,
 		toast,
 		stickToBottom = false,
 		tabBar = true,
@@ -63,6 +65,8 @@
 		footer?: Snippet;
 		sheet?: Snippet;
 		sheetLabel?: string;
+		/** Show the sheet at desktop widths too, for sheets with no desktop equivalent. */
+		sheetOnDesktop?: boolean;
 		toast?: Snippet;
 		stickToBottom?: boolean;
 		tabBar?: boolean;
@@ -75,6 +79,45 @@
 	} = $props();
 
 	// On a phone, More's destinations are pushed screens; the desktop sidebar makes them top level.
+	let dialog = $state<HTMLElement | null>(null);
+	const wide = new MediaQuery('min-width: 48rem');
+	const sheetOpen = $derived(!!sheet);
+	const sheetVisible = $derived(sheetOpen && (sheetOnDesktop || !wide.current));
+
+	// The rest of the shell is inert while a sheet is open, which traps focus in the sheet.
+	$effect(() => {
+		if (!sheetVisible || !dialog) return;
+		const opener = document.activeElement;
+		const first = dialog.querySelector<HTMLElement>('[data-autofocus]');
+		(first ?? dialog).focus({ preventScroll: true });
+		return () => {
+			if (opener instanceof HTMLElement && opener.isConnected && opener !== document.body) {
+				opener.focus({ preventScroll: true });
+			}
+		};
+	});
+
+	// inert keeps Tab out of the page; this wraps it instead of escaping to the browser chrome.
+	function wrapTab(e: KeyboardEvent) {
+		if (e.key !== 'Tab' || !dialog) return;
+		const items = [
+			...dialog.querySelectorAll<HTMLElement>(
+				'a[href], button:not(:disabled), input:not(:disabled), textarea, select, summary, [tabindex="0"]'
+			)
+		];
+		if (!items.length) return;
+		const first = items[0];
+		const last = items[items.length - 1];
+		const active = document.activeElement;
+		if (e.shiftKey && (active === first || active === dialog)) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && active === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	}
+
 	const phoneBack = $derived(
 		back ??
 			(active !== 'more' && !tabIds.includes(active) ? { href: '/more', label: 'More' } : undefined)
@@ -84,7 +127,7 @@
 <div
 	class="@container relative h-[calc(100%-var(--kb))] overflow-hidden bg-background pt-(--safe-top) text-foreground"
 >
-	<div class="flex h-full flex-col @3xl:flex-row">
+	<div class="flex h-full flex-col @3xl:flex-row" inert={sheetVisible}>
 		<nav
 			aria-label="Main"
 			class="hidden w-56 shrink-0 flex-col gap-0.5 border-r bg-sidebar p-3 @3xl:flex"
@@ -214,16 +257,32 @@
 	</div>
 
 	{#if sheet}
-		<div class="absolute inset-0 z-20 flex flex-col justify-end @3xl:hidden">
+		<div
+			class={cn(
+				'absolute inset-0 z-20 flex flex-col justify-end',
+				sheetOnDesktop ? '@3xl:items-center @3xl:justify-center @3xl:p-6' : '@3xl:hidden'
+			)}
+		>
 			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 			<div class="absolute inset-0 bg-black/40" aria-hidden="true" onclick={onclosesheet}></div>
 			<div
+				bind:this={dialog}
 				role="dialog"
 				aria-modal="true"
 				aria-label={sheetLabel}
-				class="relative flex max-h-[88%] flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-background pb-(--safe-bottom) shadow-[0_-12px_40px_-12px_rgb(0_0_0/0.4)] kb:pb-0"
+				tabindex="-1"
+				onkeydown={wrapTab}
+				class={cn(
+					'relative flex max-h-[88%] flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-background pb-(--safe-bottom) shadow-[0_-12px_40px_-12px_rgb(0_0_0/0.4)] outline-none kb:pb-0',
+					sheetOnDesktop && '@3xl:w-full @3xl:max-w-md @3xl:rounded-3xl @3xl:pb-0'
+				)}
 			>
-				<span class="mx-auto mt-2 mb-1 h-1 w-9 shrink-0 rounded-full bg-muted-foreground/35"></span>
+				<span
+					class={cn(
+						'mx-auto mt-2 mb-1 h-1 w-9 shrink-0 rounded-full bg-muted-foreground/35',
+						sheetOnDesktop && '@3xl:invisible'
+					)}
+				></span>
 				{@render sheet()}
 			</div>
 		</div>

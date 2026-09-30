@@ -6,7 +6,8 @@ declare global {
 		// interface Locals {}
 		// interface PageData {}
 		interface PageState {
-			sheet?: 'commands' | 'new' | 'viewer';
+			sheet?: 'commands' | 'new' | 'viewer' | 'message';
+			messageId?: string;
 		}
 		// interface Platform {}
 	}
