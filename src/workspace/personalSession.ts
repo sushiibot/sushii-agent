@@ -512,7 +512,7 @@ export class PersonalSession {
           }
           // After the abort: a flush sent into a live run would join it as a steer.
           await this.flushBeforeNew(old, deadline, budgetMs, reason);
-          if (reason === "rotate") recap = await this.makeRecap(old, deadline - reserve);
+          if (reason === "rotate") recap = await this.makeRecap(old, Math.max(deadline - reserve, Date.now() + 1000));
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
         const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui });
@@ -584,7 +584,7 @@ export class PersonalSession {
     const recap = this.opts.context?.recap;
     if (!recap) return null;
     try {
-      const out = await bounded(recap(session, abort.signal), Math.max(deadline - Date.now(), 1000));
+      const out = await bounded(recap(session, abort.signal), deadline - Date.now());
       if (out === TIMEOUT) {
         abort.abort();
         log.warn("the recap didn't finish in time; going on without one");

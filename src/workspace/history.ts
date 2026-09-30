@@ -99,9 +99,8 @@ export function dailyFileRel(at: Date, tz: string): string {
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max - 1)}…`);
 
-// Some secret patterns backtrack quadratically on long unbroken runs, and this runs on the host, so only
-// the head that can show is redacted. A match shrinks to [REDACTED] and pulls later text forward, so the
-// slice grows until the redacted head still reaches past what shows by more than any unmatched fragment.
+// Some secret patterns are quadratic on long runs, so only the head that can show is redacted. A match
+// shrinks and pulls later text forward, so the slice grows until the cut lands well past what shows.
 function redactHead(s: string, max: number): string {
   for (let len = max + REDACT_MARGIN; ; len *= 4) {
     if (s.length <= len) return redact(s);
@@ -327,9 +326,8 @@ function assertPlainDir(dir: string): void {
   if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`${dir} is not a plain directory`);
 }
 
-// ~/history is agent-writable, so the host never follows a link planted there: reads refuse symlinks,
-// hardlinks and anything but a regular file, and writes go to a fresh file renamed over the entry.
-// Null means "replace it"; any other failure throws, so a transient error can't wipe the file.
+// ~/history is agent-writable: reads refuse links and non-regular files (null = replace it), writes rename
+// a fresh file over the entry, and any other read error throws so a transient one can't wipe the file.
 function readOwnFile(file: string): string | null {
   let fd: number;
   try {
