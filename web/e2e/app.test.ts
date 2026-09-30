@@ -533,6 +533,16 @@ test('the settings back chevron returns without stacking history', async ({ page
 	await expect(page).not.toHaveURL(/\/settings$/);
 });
 
+test('opening settings directly throws nothing', async ({ page, context }) => {
+	await mockApi(context);
+	await stubPush(page);
+	const errors: string[] = [];
+	page.on('pageerror', (e) => errors.push(e.message));
+	await page.goto('/settings');
+	await expect(page.getByRole('link', { name: 'Back to Main' })).toBeVisible();
+	expect(errors).toEqual([]);
+});
+
 test('the app runs under enforced Trusted Types with only its own policies', async ({
 	page,
 	context
