@@ -9,6 +9,7 @@ export const SHIPPED_TEMPLATE_HASHES: Record<string, readonly string[]> = {
     "670493afb42c0b3c67659fdce567d9ccc84018f50d31e5ee045b1ead2e5b8f2a",
     "6b8047babb11f4e20bd1c71e98045d23d7c968d2530b6ecb1278053fd8fd004b",
     "8825a571737d90148c5685c4e2bb040cea84ab8c573457b47263b607c0c3d293",
+    "976c312ee5970268f2620d07b3ecacc6f9ceb0e42a70f7398905f26b449ee361",
     "9b57cfc8fdd0e6e9633343309944e4c22fb62559ab2d62044233bbd34a183ce1",
     "a0d9c5dc1cdddb57e675b9e6ed949a1275d8ce86b48dc9a569219212b7c3c7b6",
     "b4456357e6b4264403c4be767841669672d3776df11dd5cfb4c2392ea49215ed",
@@ -25,6 +26,7 @@ export const SHIPPED_TEMPLATE_HASHES: Record<string, readonly string[]> = {
   ],
   "agents-skills-README.md": [],
   "agents-skills-session-history-SKILL.md": [
+    "82acfdd5715d77766e9a130da9ba1c41d7c42624487e0e3e6f92f4711403fbf2",
     "b7000898cf1bed4d187adbd10193a9765a26b7be47b042c67a10e259f059546d",
   ],
   "agents-agents-explore.md": [],
