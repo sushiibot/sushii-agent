@@ -226,7 +226,7 @@
 							<ul
 								class="flex list-disc flex-col gap-1 pl-5 text-muted-foreground marker:text-border"
 							>
-								{#each part.data.known as line (line)}<li>{line}</li>{/each}
+								{#each part.data.known as line, j (j)}<li>{line}</li>{/each}
 							</ul>
 						</div>
 						<div class="flex flex-col gap-1">
@@ -234,7 +234,7 @@
 							<ul
 								class="flex list-disc flex-col gap-1 pl-5 text-muted-foreground marker:text-border"
 							>
-								{#each part.data.open as line (line)}<li>{line}</li>{/each}
+								{#each part.data.open as line, j (j)}<li>{line}</li>{/each}
 							</ul>
 						</div>
 						<label class="flex items-center justify-between gap-3 border-t pt-3">

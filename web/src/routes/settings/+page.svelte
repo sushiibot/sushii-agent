@@ -39,7 +39,7 @@
 	// Arriving from Main, the chevron pops history so Android back from Main still exits the app.
 	let cameFromMain = false;
 	afterNavigate(({ from }) => {
-		cameFromMain = from?.url.pathname === '/';
+		cameFromMain = from?.url?.pathname === '/';
 	});
 	function goBack(e: MouseEvent) {
 		if (!cameFromMain) return;
