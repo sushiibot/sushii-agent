@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { IMAGE_FETCH_TIMEOUT_MS, acceptsImages, isAllowedImageUrl, loadImageAttachments, prepareSteerImages, sniffImageType } from "./inboundImages.ts";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  IMAGE_FETCH_TIMEOUT_MS,
+  acceptsImages,
+  isAllowedImageUrl,
+  loadImageAttachments,
+  loadUploadAttachments,
+  prepareSteerImages,
+  sniffImageType,
+  uploadFileName,
+} from "./inboundImages.ts";
 import { MESSAGE_TIMEOUT_MS } from "../orchestration/workspace/link.ts";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]);
@@ -92,5 +104,140 @@ describe("helpers", () => {
     expect(acceptsImages({ model: { input: ["text", "image"] } })).toBe(true);
     expect(acceptsImages({ model: { input: ["text"] } })).toBe(false);
     expect(acceptsImages({})).toBe(true);
+  });
+});
+
+describe("owner uploads", () => {
+  const ID = "AAAAAAAAAAAAAAAAAAAAAA";
+  const up = (contentType = "image/png") => ({ name: "p.png", contentType, url: `upload:${ID}` });
+
+  test("the file extension comes from the declared type; anything unknown is .bin", () => {
+    expect(uploadFileName(ID, "image/png")).toBe(`${ID}.png`);
+    expect(uploadFileName(ID, "image/JPEG; q=1")).toBe(`${ID}.jpg`);
+    expect(uploadFileName(ID, "image/svg+xml")).toBe(`${ID}.bin`);
+  });
+
+  test("a symlink left at the target name is replaced, not written through", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ws-uploads-"));
+    try {
+      const victim = join(dir, "victim.txt");
+      writeFileSync(victim, "keep");
+      symlinkSync(victim, join(dir, `${ID}.png`));
+      const { images, saved } = await loadUploadAttachments(
+        [up(), { name: "cdn.png", contentType: "image/png", url: "https://cdn.discordapp.com/a/b/cdn.png" }],
+        { principalId: "drk", dir, request: async () => ({ ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") }) },
+        true,
+      );
+      expect(images.map((i) => i.mimeType)).toEqual(["image/png"]);
+      expect([...saved]).toEqual([ID]);
+      expect(readFileSync(victim, "utf8")).toBe("keep");
+      expect(lstatSync(join(dir, `${ID}.png`)).isSymbolicLink()).toBe(false);
+      expect(readdirSync(dir).sort()).toEqual([`${ID}.png`, "victim.txt"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an uploads dir that is a symlink, live or dangling, is refused: nothing is written and nothing counts as saved", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ws-uploads-home-"));
+    const elsewhere = mkdtempSync(join(tmpdir(), "ws-uploads-elsewhere-"));
+    try {
+      const dir = join(home, "uploads");
+      const request = async () => ({ ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") });
+      for (const target of [elsewhere, join(elsewhere, "missing")]) {
+        rmSync(dir, { force: true });
+        symlinkSync(target, dir);
+        const { images, saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request }, true);
+        expect(images).toEqual([]);
+        expect(saved.size).toBe(0);
+        expect(readdirSync(elsewhere)).toEqual([]);
+      }
+      rmSync(dir, { force: true });
+      const { saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request }, true);
+      expect([...saved]).toEqual([ID]);
+      expect(lstatSync(dir).isDirectory()).toBe(true);
+      expect(readdirSync(dir)).toEqual([`${ID}.png`]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  describe("when the bot is busy", () => {
+    const png = { ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") };
+    const ids = ["AAAAAAAAAAAAAAAAAAAAA1", "AAAAAAAAAAAAAAAAAAAAA2", "AAAAAAAAAAAAAAAAAAAAA3"];
+
+    async function withDir(fn: (dir: string) => Promise<void>) {
+      const dir = mkdtempSync(join(tmpdir(), "ws-uploads-"));
+      try {
+        await fn(dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    test("uploads are read one at a time, and a busy answer is retried until the bytes come", async () => {
+      await withDir(async (dir) => {
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const tries = new Map<string, number>();
+        const waits: number[] = [];
+        const request = async (_m: string, p: unknown) => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 1));
+          inFlight--;
+          const id = (p as { uploadId: string }).uploadId;
+          tries.set(id, (tries.get(id) ?? 0) + 1);
+          return tries.get(id) === 1 ? { ok: false, error: "busy" } : png;
+        };
+        const atts = ids.map((id) => ({ name: "p.png", contentType: "image/png", url: `upload:${id}` }));
+        const { images, saved } = await loadUploadAttachments(atts, { principalId: "drk", dir, request, sleep: async (ms) => void waits.push(ms) }, true);
+        expect([...saved]).toEqual(ids);
+        expect(images).toHaveLength(3);
+        expect(maxInFlight).toBe(1);
+        expect(waits).toEqual([250, 250, 250]);
+        expect(readdirSync(dir).sort()).toEqual(ids.map((id) => `${id}.png`));
+      });
+    });
+
+    test("a bot that stays busy is given up on within the backoff bound", async () => {
+      await withDir(async (dir) => {
+        let calls = 0;
+        const waits: number[] = [];
+        const request = async () => {
+          calls++;
+          return { ok: false, error: "busy" };
+        };
+        const { images, saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request, sleep: async (ms) => void waits.push(ms) }, true);
+        expect(saved.size).toBe(0);
+        expect(images).toEqual([]);
+        expect(waits).toEqual([250, 500, 1000, 2000]);
+        expect(calls).toBe(5);
+      });
+    });
+
+    test("no retry is waited for that would end past the message's time budget", async () => {
+      await withDir(async (dir) => {
+        const waits: number[] = [];
+        const request = async () => ({ ok: false, error: "busy" });
+        const { saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request, timeoutMs: 600, sleep: async (ms) => void waits.push(ms) }, true);
+        expect(saved.size).toBe(0);
+        expect(waits).toEqual([250, 500]);
+      });
+    });
+
+    test("any other refusal is final", async () => {
+      await withDir(async (dir) => {
+        let calls = 0;
+        const request = async () => {
+          calls++;
+          return { ok: false, error: "not referenced" };
+        };
+        const { saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request, sleep: async () => {} }, true);
+        expect(saved.size).toBe(0);
+        expect(calls).toBe(1);
+      });
+    });
   });
 });

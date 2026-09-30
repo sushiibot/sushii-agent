@@ -17,16 +17,27 @@ import {
   type ChatMessageResult,
   type ChatNewResult,
   type ChatOrigin,
+  parseUploadUrl,
 } from "../orchestration/contracts.ts";
 import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
 import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborted, runUsage, type RunAccumulator } from "./events.ts";
 import { Outbox, type OutboxEntry, type StagedFile } from "./outbox.ts";
-import { acceptsImages, loadImageAttachments, prepareSteerImages, type ImageFetchOptions } from "./inboundImages.ts";
+import {
+  IMAGES_PER_MESSAGE_MAX,
+  UPLOADS_DIR,
+  acceptsImages,
+  loadImageAttachments,
+  loadUploadAttachments,
+  prepareSteerImages,
+  uploadFileName,
+  type ImageFetchOptions,
+} from "./inboundImages.ts";
+import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker } from "./chatHistory.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { dailyFileRel } from "./history.ts";
 import { RecentIds } from "./recentIds.ts";
-import { readFileSurfaces, readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import { readFileSurfaces, readPendingMarkers, readWorkspaceState, writeWorkspaceState, type PendingMarkers } from "./state.ts";
 import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
 import {
   COMPACTION_FLUSH_TIMEOUT_MS,
@@ -189,6 +200,8 @@ export interface PersonalSessionOptions {
   clock?: () => number;
   /** Downloading image attachments for the model; tests inject fetch. */
   images?: ImageFetchOptions;
+  /** Where owner uploads (`upload:<id>` attachments) are saved; without it they reach the agent as a note only. */
+  uploads?: { dir: string; timeoutMs?: number };
   /** Time zone the history files are bucketed in. Default UTC. */
   tz?: string;
 }
@@ -267,6 +280,8 @@ export class PersonalSession {
   private lastOrigin: ChatOrigin | undefined;
   // The message whose prompt() starts the next run; a later steer can't become the run's origin.
   private nextRunPrompt: PendingInbound | undefined;
+  /** Markers on the live session that aren't on disk yet, as stashed in state.json. */
+  private pendingMarkers: PendingMarkers | null = null;
   /** Surfaces the bot said can take file uploads, as of their latest message. */
   private readonly fileSurfaces = new Map<string, boolean>();
   private unconsumed: PendingInbound[] = [];
@@ -390,9 +405,14 @@ export class PersonalSession {
     const reopen = recorded && exists(recorded.chatSessionFile) ? recorded.chatSessionFile : null;
     const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen, ui: this.ui });
     this.attach(session, sessionFile);
-    // A rotation's recap lives only in memory until the new session's first message; a restart before then re-seeds it.
+    // Markers and a rotation's recap live only in memory until the new session's first message; a restart before then re-appends them.
+    const pending = readPendingMarkers(this.opts.stateDir);
+    const replay = reopen === null && pending && pending.sessionFile === recorded?.chatSessionFile ? pending.entries : [];
+    for (const m of replay) this.appendMarker(session, m.customType, m.data);
+    if (reopen !== null && pending) writeWorkspaceState(this.opts.stateDir, { markers: undefined });
     const stash = recorded?.recap;
     if (stash && reopen === null && stash.sessionFile === recorded?.chatSessionFile) {
+      if (!replay.some((m) => m.customType === SESSION_ENTRY)) this.markSession(session, "rotated");
       await this.seedRecap(session, stash.text).catch((err) => log.warn({ err }, "re-seeding the rotation recap failed"));
       writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: { sessionFile, text: stash.text } });
       log.info({ sessionFile }, "re-seeded the recap of the rotated session");
@@ -450,23 +470,40 @@ export class PersonalSession {
   private async accept(params: ChatMessageParams): Promise<ChatMessageResult> {
     const id = params.messageId;
     // Stamped once here: steers re-prompted from Pi's queue and buffered context already carry it.
-    const text = formatUserText(params, this.opts.now?.() ?? new Date());
+    const receivedAt = this.opts.now?.() ?? new Date();
     if (params.kind === "context") {
+      const text = formatUserText(params, receivedAt);
       await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
     this.recordFileUploads(params.origin.surface, params.fileUploads === true);
     // Downloaded in parallel with the queue, awaited in it, so a slow download can't let a later message overtake.
-    const images = this.imagesFor(params);
-    const mode = await this.enqueue(async () => this.promptOrSteer(id, text, params.origin, undefined, await images));
+    const attachments = this.attachmentsFor(params);
+    const mode = await this.enqueue(async () => {
+      const { images, saved } = await attachments;
+      return this.promptOrSteer(id, formatUserText(params, receivedAt, saved), params.origin, undefined, images);
+    });
     this.recentIds.add(id);
     return { accepted: true, mode };
   }
 
-  private async imagesFor(params: ChatMessageParams): Promise<ImageContent[] | undefined> {
-    if (!params.attachments?.length || (this.session && !acceptsImages(this.session))) return undefined;
-    const images = await loadImageAttachments(params.attachments, this.opts.images);
-    return images.length ? images : undefined;
+  // Uploads are saved to disk even when the model takes no images: the attachment line points the agent at the file.
+  private async attachmentsFor(params: ChatMessageParams): Promise<{ images: ImageContent[] | undefined; saved: ReadonlySet<string> }> {
+    if (!params.attachments?.length) return { images: undefined, saved: new Set() };
+    const wantImages = !this.session || acceptsImages(this.session);
+    const uploads = this.opts.uploads;
+    const [fromUploads, fetched] = await Promise.all([
+      uploads
+        ? loadUploadAttachments(
+            params.attachments,
+            { principalId: this.opts.principalId, dir: uploads.dir, timeoutMs: uploads.timeoutMs, request: (m, p, t) => this.opts.transport.request(m, p, t) },
+            wantImages,
+          )
+        : Promise.resolve({ images: [], saved: new Set<string>() }),
+      wantImages ? loadImageAttachments(params.attachments, this.opts.images) : Promise.resolve([]),
+    ]);
+    const images = [...fromUploads.images, ...fetched].slice(0, IMAGES_PER_MESSAGE_MAX);
+    return { images: images.length ? images : undefined, saved: fromUploads.saved };
   }
 
   private isSeen(id: string): boolean {
@@ -547,6 +584,7 @@ export class PersonalSession {
         if (old && reason === "new") this.recapInBackground(old, previousSessionFile);
         else old?.dispose();
         this.attach(session, sessionFile);
+        this.markSession(session, reason === "new" ? "new" : "rotated");
         const recappedAt = new Date();
         if (old && recap !== null) this.emitSummary({ reason, sessionFile: previousSessionFile, text: recap, at: recappedAt });
         const text = recap === null ? null : recapMessage(recap, dailyFileRel(recappedAt, this.opts.tz ?? "UTC"));
@@ -1218,7 +1256,7 @@ export class PersonalSession {
     }
     const text = replyText(run.acc);
     if (text === null && !run.files.length) return "silent";
-    this.deliver(text ?? "", replyTo, run.turnId, run.origin, usage, run.files);
+    this.deliver(text ?? "", replyTo, run.turnId, run.origin, usage, run.files, true);
     return "reply";
   }
 
@@ -1229,6 +1267,7 @@ export class PersonalSession {
     origin: ChatOrigin | undefined,
     usage?: ChatDeliverParams["usage"],
     files: StagedFile[] = [],
+    inTranscript = false,
   ): void {
     const entry: OutboxEntry = {
       ...(origin ? { origin } : {}),
@@ -1242,6 +1281,7 @@ export class PersonalSession {
       ...(files.length ? { stagedFiles: files } : {}),
     };
     this.outbox.append(entry);
+    this.markDelivery(entry, inTranscript);
     this.send(entry);
   }
 
@@ -1297,6 +1337,7 @@ export class PersonalSession {
       ...(d.loginId ? { loginId: d.loginId } : {}),
     };
     this.outbox.append(entry);
+    this.markDelivery(entry, false);
     this.send(entry);
   }
 
@@ -1315,6 +1356,7 @@ export class PersonalSession {
       ask: ask.choices.length ? ask : { askId: ask.askId, question: ask.question },
     };
     this.outbox.append(entry);
+    this.markDelivery(entry, false);
     this.send(entry);
   }
 
@@ -1331,6 +1373,7 @@ export class PersonalSession {
       ...(run ? { turnId: run.turnId } : {}),
     };
     this.outbox.append(entry);
+    this.markDelivery(entry, false);
     this.send(entry);
   }
 
@@ -1341,6 +1384,58 @@ export class PersonalSession {
   private assertPrincipal(principalId: string): void {
     if (principalId !== this.opts.principalId) {
       throw new Error(`principal mismatch: this workspace serves ${this.opts.principalId}, got ${principalId}`);
+    }
+  }
+
+  /**
+   * Records the delivery in the live session file, so the history reader can join the transcript to the
+   * bot's record by outboxId. Once per outbox entry: resends don't mark again. `inTranscript` is a turn
+   * reply whose text is already the run's assistant text; any other text goes into the marker.
+   */
+  private markDelivery(entry: ChatDeliverParams, inTranscript: boolean): void {
+    const marker: DeliveryMarker = {
+      outboxId: entry.outboxId,
+      kind: entry.kind,
+      ...(entry.turnId ? { turnId: entry.turnId } : {}),
+      ...(entry.kind !== "auth" && !inTranscript ? { text: entry.text } : {}),
+      ...(entry.usage ? { usage: entry.usage } : {}),
+      ...(entry.kind === "ask" && entry.ask ? { ask: { askId: entry.ask.askId, question: entry.ask.question, choices: entry.ask.choices ?? [] } } : {}),
+    };
+    this.appendMarker(this.session, DELIVERY_ENTRY, marker);
+  }
+
+  private markSession(session: ChatSession, reason: SessionMarker["reason"]): void {
+    this.appendMarker(session, SESSION_ENTRY, { reason } satisfies SessionMarker);
+  }
+
+  // Pi's custom entries stay out of model context and extend the branch from the leaf, even mid-run.
+  private appendMarker(session: ChatSession | null, type: string, data: unknown): void {
+    const target = sessionLog(session);
+    if (!target) return;
+    try {
+      target.appendCustomEntry(type, data);
+    } catch (err) {
+      log.warn({ err, type }, "appending a history marker to the session failed");
+      return;
+    }
+    if (session === this.session) this.stashMarker(type, data);
+  }
+
+  /** Pi writes a session file only at its first message; until then the markers are kept in state.json too. */
+  private stashMarker(customType: string, data: unknown): void {
+    try {
+      if ((this.opts.fileExists ?? existsSync)(this.sessionFile)) {
+        if (this.pendingMarkers?.sessionFile === this.sessionFile) {
+          this.pendingMarkers = null;
+          writeWorkspaceState(this.opts.stateDir, { markers: undefined });
+        }
+        return;
+      }
+      if (this.pendingMarkers?.sessionFile !== this.sessionFile) this.pendingMarkers = { sessionFile: this.sessionFile, entries: [] };
+      this.pendingMarkers.entries.push({ customType, data });
+      writeWorkspaceState(this.opts.stateDir, { markers: this.pendingMarkers });
+    } catch (err) {
+      log.warn({ err, customType }, "persisting a history marker failed");
     }
   }
 
@@ -1457,13 +1552,19 @@ export function messageHeader(messageId: string, receivedAt: Date, opts: { surfa
 export function formatUserText(
   params: Pick<ChatMessageParams, "messageId" | "text" | "voice" | "attachments"> & { origin?: ChatOrigin },
   receivedAt: Date,
+  /** Upload ids written to `~/uploads`; only those get a path. */
+  saved: ReadonlySet<string> = new Set(),
 ): string {
   const header = messageHeader(params.messageId, receivedAt, { surface: params.origin?.surface, voice: params.voice === true });
   let text = header ? `${header}\n${params.text}` : params.text;
   // Only the host's own flush prompts may start with the marker; flushRanThisCycle trusts it.
   if (text.startsWith(FLUSH_MARKER)) text = `[message]\n${text}`;
   // Image attachments also reach the model as images when it accepts them; every attachment stays a link it can fetch.
-  for (const a of params.attachments ?? []) text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}]`;
+  for (const a of params.attachments ?? []) {
+    const uploadId = parseUploadUrl(a.url);
+    const path = uploadId && saved.has(uploadId) ? ` → ~/${UPLOADS_DIR}/${uploadFileName(uploadId, a.contentType)}` : "";
+    text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}${path}]`;
+  }
   return text;
 }
 
@@ -1488,6 +1589,12 @@ function userText(message: { content?: unknown }): string {
     .filter((c): c is { type: "text"; text: string } => c?.type === "text" && typeof c.text === "string")
     .map((c) => c.text)
     .join("");
+}
+
+/** Pi's session log, when the session exposes it (a real AgentSession does; test fakes may not). */
+function sessionLog(session: ChatSession | null): { appendCustomEntry(customType: string, data?: unknown): string } | null {
+  const sm = (session as { sessionManager?: { appendCustomEntry?: unknown } } | null)?.sessionManager;
+  return sm && typeof sm.appendCustomEntry === "function" ? (sm as { appendCustomEntry(customType: string, data?: unknown): string }) : null;
 }
 
 const TIMEOUT = Symbol("timeout");

@@ -26,6 +26,14 @@ class FakeSession {
   steers: string[] = [];
   queue: string[] = [];
   customs: Array<{ content: unknown; options: unknown }> = [];
+  /** Entries appended through Pi's session log (the host's history markers). */
+  entries: Array<{ customType: string; data: unknown }> = [];
+  readonly sessionManager = {
+    appendCustomEntry: (customType: string, data?: unknown): string => {
+      this.entries.push({ customType, data });
+      return `e${this.entries.length}`;
+    },
+  };
   messages: Array<{ role: string }> = [];
   aborts = 0;
   disposed = false;
@@ -216,6 +224,7 @@ function setup(
     context?: ContextHooks;
     clock?: () => number;
     images?: ImageFetchOptions;
+    uploads?: { dir: string; timeoutMs?: number };
   } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
@@ -251,6 +260,7 @@ function setup(
     context: opts.context,
     clock: opts.clock,
     images: opts.images,
+    uploads: opts.uploads,
   });
   return { host, sessions, factoryCalls, boundUis, transport, stateDir };
 }
@@ -1996,8 +2006,43 @@ describe("PersonalSession context economy", () => {
     const again = setup({ stateDir, fileExists: () => false });
     await again.host.start();
     expect(String(again.sessions[0].customs[0].content)).toBe(recap.text);
+    expect(sessionMarkers(again.sessions[0])).toEqual([{ reason: "rotated" }]);
     expect(readWorkspaceState(stateDir)).toMatchObject({ chatSessionFile: again.sessions[0].file, recap: { sessionFile: again.sessions[0].file, text: recap.text } });
     expect(sessions).toHaveLength(2);
+    await again.host.dispose();
+  });
+
+  const sessionMarkers = (s: FakeSession) => s.entries.filter((e) => e.customType === "sushii.session").map((e) => e.data);
+
+  test("a rotation marks the new session rotated, so the history divider says so", async () => {
+    const { host, sessions, advance } = await idleBigHost();
+    advance(26 * MIN);
+    expect(await host.checkIdle()).not.toBeNull();
+    expect(sessionMarkers(sessions[1])).toEqual([{ reason: "rotated" }]);
+    expect(sessionMarkers(sessions[0])).toEqual([]);
+  });
+
+  test("a rotation without a recap keeps its label across a restart before the new session reached disk", async () => {
+    const { host, stateDir, advance } = await idleBigHost({ recap: async () => null });
+    advance(26 * MIN);
+    expect(await host.checkIdle()).toMatchObject({ recapped: false });
+    await host.dispose();
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(sessionMarkers(again.sessions[0])).toEqual([{ reason: "rotated" }]);
+    expect(again.sessions[0].customs).toHaveLength(0);
+    await again.host.dispose();
+  });
+
+  test("a stashed recap from before markers were persisted still marks the re-seeded session rotated", async () => {
+    const { host, stateDir, advance } = await idleBigHost();
+    advance(26 * MIN);
+    await host.checkIdle();
+    await host.dispose();
+    writeWorkspaceState(stateDir, { markers: undefined });
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(sessionMarkers(again.sessions[0])).toEqual([{ reason: "rotated" }]);
     await again.host.dispose();
   });
 
@@ -2533,5 +2578,134 @@ describe("send_file", () => {
     sessions[0]!.finish("today's chart");
     await until(() => transport.delivered().length === 1);
     expect(transport.delivered()[0]!.files?.map((f) => f.name)).toEqual(["chart.png"]);
+  });
+});
+
+const UPLOAD_ID = "AAAAAAAAAAAAAAAAAAAAAA";
+const UPLOAD_ATTACHMENT = { name: "photo.jpg", contentType: "image/jpeg", url: `upload:${UPLOAD_ID}` };
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+
+describe("owner uploads", () => {
+  function uploadHost(result: unknown) {
+    const home = tempDir();
+    const dir = join(home, "uploads");
+    const ctx = setup({ uploads: { dir } });
+    ctx.transport.respond = async (method) => (method === "upload/read" ? result : {});
+    return { ...ctx, dir };
+  }
+  const served = { ok: true, name: "photo.jpg", contentType: "image/jpeg", dataBase64: Buffer.from(JPEG_BYTES).toString("base64") };
+
+  test("an upload's bytes come over upload/read, land in ~/uploads, and reach the model as an image", async () => {
+    const { host, sessions, transport, dir } = uploadHost(served);
+    await host.start();
+    await host.handleMessage(msg("01J00000000000000000000001", "what is this", { origin: { surface: "web", conversationId: "main" }, attachments: [UPLOAD_ATTACHMENT] }));
+    expect(transport.requests.find((r) => r.method === "upload/read")?.params).toEqual({ principalId: "drk", uploadId: UPLOAD_ID });
+    expect(new Uint8Array(readFileSync(join(dir, `${UPLOAD_ID}.jpg`)))).toEqual(JPEG_BYTES);
+    const [p] = sessions[0]!.prompts;
+    expect(p!.options?.images).toEqual([{ type: "image", mimeType: "image/jpeg", data: served.dataBase64 }]);
+    expect(p!.text).toBe(
+      `[web:01J00000000000000000000001 2026-09-29 12:00 UTC]\nwhat is this\n[attachment: photo.jpg (image/jpeg) upload:${UPLOAD_ID} → ~/uploads/${UPLOAD_ID}.jpg]`,
+    );
+  });
+
+  test("a model without image input still gets the file on disk, but no image", async () => {
+    const { host, sessions, dir } = uploadHost(served);
+    await host.start();
+    (sessions[0] as unknown as { model: unknown }).model = { input: ["text"] };
+    await host.handleMessage(msg("m1", "save this", { attachments: [UPLOAD_ATTACHMENT] }));
+    expect(existsSync(join(dir, `${UPLOAD_ID}.jpg`))).toBe(true);
+    expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
+    expect(sessions[0]!.prompts[0]!.text).toContain(`→ ~/uploads/${UPLOAD_ID}.jpg]`);
+  });
+
+  test("a refused or malformed upload/read answer leaves the image out and the message goes through", async () => {
+    for (const result of [{ ok: false, error: "not referenced" }, { ok: true, name: "x", contentType: "image/png", dataBase64: "not base64!" }]) {
+      const { host, sessions, dir } = uploadHost(result);
+      await host.start();
+      await host.handleMessage(msg("m1", "look", { attachments: [UPLOAD_ATTACHMENT] }));
+      expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
+      expect(existsSync(join(dir, `${UPLOAD_ID}.jpg`))).toBe(false);
+      expect(sessions[0]!.prompts[0]!.text).not.toContain("→");
+    }
+  });
+
+  test("without an uploads dir the attachment is only a note, with no path, and nothing is requested", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "look", { attachments: [UPLOAD_ATTACHMENT] }));
+    expect(transport.requests.some((r) => r.method === "upload/read")).toBe(false);
+    expect(sessions[0]!.prompts[0]!.text).toEndWith(`[attachment: photo.jpg (image/jpeg) upload:${UPLOAD_ID}]`);
+  });
+});
+
+describe("history markers", () => {
+  const markers = (s: FakeSession, type = "sushii.delivery") => s.entries.filter((e) => e.customType === type).map((e) => e.data);
+
+  test("a turn reply is marked once with its outboxId, turn and usage, not its text; a resend adds no marker", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    sessions[0]!.finish("hello");
+    await sleep(10);
+    const [reply] = transport.delivered();
+    expect(markers(sessions[0]!)).toEqual([{ outboxId: reply!.outboxId, kind: "reply", turnId: reply!.turnId, usage: reply!.usage }]);
+    host.resendUnacked();
+    await sleep(10);
+    expect(transport.delivered().length).toBe(2);
+    expect(markers(sessions[0]!).length).toBe(1);
+  });
+
+  test("text that isn't the turn's own assistant text goes into the marker; an auth link doesn't", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    host.deliverOutOfBand({ kind: "proactive", text: "morning brief" });
+    host.deliverOutOfBand({ kind: "auth", text: "Sign in", auth: { url: "https://auth.example/x", instructions: "open it" }, loginId: "L1" });
+    await host.handleMessage(msg("m1", "hi"));
+    sessions[0]!.finish("", "error", "provider exploded");
+    await sleep(10);
+    const [proactive, auth, failure] = markers(sessions[0]!) as Array<Record<string, unknown>>;
+    expect(proactive).toMatchObject({ kind: "proactive", text: "morning brief" });
+    expect(auth).toEqual({ outboxId: expect.any(String), kind: "auth" });
+    expect(failure).toMatchObject({ kind: "reply", text: expect.stringContaining("Turn failed") });
+  });
+
+  test("an ask is marked with its id, question and choices", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    void host.askOwner("Keep 1?", ["Keep 1", "Drop 1"], () => ({ value: true }));
+    const [ask] = markers(sessions[0]!) as Array<Record<string, unknown>>;
+    expect(ask).toMatchObject({ kind: "ask", text: "Keep 1?", ask: { askId: expect.any(String), question: "Keep 1?", choices: ["Keep 1", "Drop 1"] } });
+  });
+
+  test("markers on a session not yet on disk survive a restart; once it is on disk they aren't replayed", async () => {
+    const stateDir = tempDir();
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleNew();
+    first.host.deliverOutOfBand({ kind: "proactive", text: "morning brief" });
+    await first.host.dispose();
+
+    const lost = setup({ stateDir, fileExists: () => false });
+    await lost.host.start();
+    expect(markers(lost.sessions[0]!, "sushii.session")).toEqual([{ reason: "new" }]);
+    expect(markers(lost.sessions[0]!)).toMatchObject([{ kind: "proactive", text: "morning brief" }]);
+    await lost.host.dispose();
+
+    const kept = setup({ stateDir, fileExists: () => true });
+    await kept.host.start();
+    expect(kept.sessions[0]!.entries).toEqual([]);
+    await kept.host.dispose();
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(again.sessions[0]!.entries).toEqual([]);
+    await again.host.dispose();
+  });
+
+  test("chat/new marks the new session so the history divider says why it began", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleNew();
+    expect(markers(sessions[1]!, "sushii.session")).toEqual([{ reason: "new" }]);
+    expect(markers(sessions[0]!, "sushii.session")).toEqual([]);
   });
 });

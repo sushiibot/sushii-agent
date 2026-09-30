@@ -7,6 +7,12 @@ export interface StashedRecap {
   text: string;
 }
 
+/** History markers appended to `sessionFile` while Pi held it only in memory, re-appended if a restart loses them. */
+export interface PendingMarkers {
+  sessionFile: string;
+  entries: Array<{ customType: string; data: unknown }>;
+}
+
 export interface WorkspaceState {
   chatSessionFile: string;
   /** The owner's `!model` choice; absent means the configured default. */
@@ -14,6 +20,7 @@ export interface WorkspaceState {
   recap?: StashedRecap;
   /** Per surface, whether the bot last said it can upload the files a reply carries. */
   fileSurfaces?: Record<string, boolean>;
+  markers?: PendingMarkers;
 }
 
 export function statePath(stateDir: string): string {
@@ -35,6 +42,15 @@ export function readFileSurfaces(stateDir: string): Record<string, boolean> {
   const raw = readJson<{ fileSurfaces?: unknown }>(statePath(stateDir))?.fileSurfaces;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   return Object.fromEntries(Object.entries(raw).filter((e): e is [string, boolean] => typeof e[1] === "boolean"));
+}
+
+export function readPendingMarkers(stateDir: string): PendingMarkers | null {
+  const raw = readJson<{ markers?: { sessionFile?: unknown; entries?: unknown } }>(statePath(stateDir))?.markers;
+  if (!raw || typeof raw.sessionFile !== "string" || !Array.isArray(raw.entries)) return null;
+  const entries = (raw.entries as Array<{ customType?: unknown; data?: unknown }>)
+    .filter((e) => e && typeof e.customType === "string")
+    .map((e) => ({ customType: e.customType as string, data: e.data }));
+  return { sessionFile: raw.sessionFile, entries };
 }
 
 /** Merges `patch` into the stored state; a field set to `undefined` is removed. */
