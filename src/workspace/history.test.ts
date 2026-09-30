@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
@@ -173,6 +173,64 @@ describe("run history files", () => {
     const writer = new HistoryWriter({ home, agentDir, tz: "Asia/Tokyo" });
     writer.writeSession({ reason: "compaction", sessionFile: "/x/chat/a.jsonl", text: "## Goals\n- late", at: new Date("2026-09-29T20:00:00Z") });
     expect(readFileSync(join(home, "history", "2026-09-30.md"), "utf8")).toContain("### 05:00 · compaction · late");
+  });
+});
+
+describe("links planted in ~/history", () => {
+  const MARKER = "SECRET_MARKER_rt_live";
+  let target: string;
+  beforeEach(() => {
+    target = join(root, "target.json");
+    writeFileSync(target, MARKER);
+  });
+
+  function runOnce(runs: ReturnType<typeof setup>["runs"]): string {
+    const runId = runs.startRun({ agentName: "main", task: "hi", sessionFile: chatFile() });
+    clock = new Date("2026-09-29T10:00:06Z");
+    runs.endRun(runId, { status: "done" });
+    return runId;
+  }
+
+  test("a symlinked or hardlinked daily file is replaced, never read or written through", () => {
+    mainSession();
+    mkdirSync(join(home, "history"));
+    const daily = join(home, "history", "2026-09-29.md");
+    symlinkSync(target, daily);
+    runOnce(setup().runs);
+    expect(readFileSync(target, "utf8")).toBe(MARKER);
+    expect(lstatSync(daily).isSymbolicLink()).toBe(false);
+    expect(readFileSync(daily, "utf8")).not.toContain(MARKER);
+
+    rmSync(daily);
+    linkSync(target, daily);
+    runOnce(setup().runs);
+    expect(readFileSync(target, "utf8")).toBe(MARKER);
+    expect(readFileSync(daily, "utf8")).not.toContain(MARKER);
+    expect(readdirSync(join(home, "history")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("a run file symlinked ahead of time is replaced, not written through", () => {
+    mainSession();
+    mkdirSync(join(home, "history", "2026-09"), { recursive: true });
+    const runId = "01KNOWNRUNID0000000000000A";
+    symlinkSync(target, join(home, "history", "2026-09", `29-${runId}.md`));
+    const writer = new HistoryWriter({ home, agentDir, tz: "UTC" });
+    const runs = recordHistory(new RunLog(stateDir, { newId: () => runId }), writer, log, () => clock);
+    runOnce(runs);
+    expect(readFileSync(target, "utf8")).toBe(MARKER);
+    expect(readFileSync(join(home, "history", "2026-09", `29-${runId}.md`), "utf8")).toContain("deploy the thing please");
+  });
+
+  test("a symlinked history dir is refused and logged", () => {
+    mainSession();
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(home, "history"));
+    runOnce(setup().runs);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(warnings.map((w) => w.msg)).toEqual(["failed to write the run's history file"]);
+    const { writer } = setup();
+    expect(() => writer.writeSession({ reason: "new", sessionFile: "/x/a.jsonl", text: "## Goals\n- x", at: clock })).toThrow("not a plain directory");
   });
 });
 

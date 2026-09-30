@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative } from "node:path";
 import { tailLines, type EndRunInput, type ListRunsQuery, type RunRecord, type RunRecorder, type RunStatus, type StartRunInput } from "./runLog.ts";
 import { redact } from "./secretPatterns.ts";
@@ -240,8 +241,9 @@ export class HistoryWriter {
     else if (!transcript.lines.length) out.push("_(no transcript entries in this run's time range)_");
     else out.push(...transcript.lines);
 
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${out.join("\n").trimEnd()}\n`);
+    this.ensureDir(this.dir);
+    this.ensureDir(dirname(file));
+    replaceFile(file, `${out.join("\n").trimEnd()}\n`);
 
     const topicSource = stripHeader(transcript?.firstUserText ?? run.task);
     const topic = safeLine(topicSource, TOPIC_MAX) || "(no message)";
@@ -260,11 +262,11 @@ export class HistoryWriter {
     this.appendDaily(at, SESSIONS_HEADING, `${heading}\n\n${demoteHeadings(text)}`);
   }
 
-  // The file is small and only the host writes it, so a read-modify-rename keeps both sections in order.
+  // A read-modify-rename keeps both sections in order; the file is small.
   private appendDaily(at: Date, section: typeof RUNS_HEADING | typeof SESSIONS_HEADING, block: string): void {
     const file = join(this.dir, dailyFileRel(at, this.opts.tz));
-    mkdirSync(this.dir, { recursive: true });
-    const current = existsSync(file) ? readFileSync(file, "utf8") : `# ${localTime(at, this.opts.tz).date}\n\n${RUNS_HEADING}\n\n${SESSIONS_HEADING}\n`;
+    this.ensureDir(this.dir);
+    const current = readOwnFile(file) ?? `# ${localTime(at, this.opts.tz).date}\n\n${RUNS_HEADING}\n\n${SESSIONS_HEADING}\n`;
     const marker = `\n${SESSIONS_HEADING}\n`;
     const split = current.indexOf(marker);
     let next: string;
@@ -276,9 +278,46 @@ export class HistoryWriter {
     } else {
       next = `${current.trimEnd()}\n\n${block}\n`;
     }
-    const tmp = `${file}.tmp`;
-    writeFileSync(tmp, next);
+    replaceFile(file, next);
+  }
+
+  private ensureDir(dir: string): void {
+    try {
+      const st = lstatSync(dir);
+      if (st.isDirectory() && !st.isSymbolicLink()) return;
+      throw new Error(`${dir} is not a plain directory`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    mkdirSync(dir);
+  }
+}
+
+// ~/history is agent-writable, so the host never follows a link planted there: reads refuse symlinks and
+// hardlinks, and writes go to a fresh file renamed over the entry instead of through it.
+function readOwnFile(file: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return null;
+  }
+  try {
+    const st = fstatSync(fd);
+    return st.isFile() && st.nlink === 1 ? readFileSync(fd, "utf8") : null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function replaceFile(file: string, content: string): void {
+  const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+  writeFileSync(tmp, content, { flag: "wx" });
+  try {
     renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
   }
 }
 
