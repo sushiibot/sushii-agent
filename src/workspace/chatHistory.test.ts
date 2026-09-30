@@ -150,6 +150,22 @@ describe("convertSession", () => {
     expect(items[3]).toEqual({ type: "ask", id: "s1:s10005", at: expect.any(String), outboxId: "a1", askId: "k1", question: "Keep?", choices: ["Keep", "Drop"] });
   });
 
+  test("an ask mid-run sits between the output before it and the reply after it", () => {
+    const d = agentDir();
+    const file = session(d, "s1", [
+      user(WEB("01J00000000000000000000005", "send me the report")),
+      assistant([call("c1", "send_file", { path: "r.pdf" })], "toolUse"),
+      delivery({ outboxId: "a1", kind: "ask", turnId: "t1", text: "Send r.pdf?", ask: { askId: "k1", question: "Send r.pdf?", choices: ["Yes", "No"] } }),
+      result("c1"),
+      assistant([text("sent")]),
+      delivery({ outboxId: "r1", kind: "reply", turnId: "t1" }),
+    ]);
+    const { items } = convertSession(readFileSync(file, "utf8"), "s1");
+    expect(labels(items)).toEqual(["user:send me the report", "assistant:", "ask:Send r.pdf?", "assistant:sent"]);
+    expect(items[1]).toMatchObject({ tools: [{ name: "send_file", ok: true }] });
+    expect(items[3]).toMatchObject({ outboxId: "r1", turnId: "t1" });
+  });
+
   test("a compaction is a collapsed divider; only the leaf's branch is shown; a torn last line is skipped", () => {
     const d = agentDir();
     const file = session(d, "s1", [

@@ -133,16 +133,21 @@ describe("delivery markers on a real Pi session", () => {
 
     const page = chatHistoryResult.parse(reader.page({ limit: 40 }));
     expect(page.before).toBeNull();
-    expect(page.items.map((i) => i.type)).toEqual(["user", "assistant", "assistant"]);
-    const [user, reply, ping] = page.items as [
-      Extract<(typeof page.items)[number], { type: "user" }>,
-      Extract<(typeof page.items)[number], { type: "assistant" }>,
-      Extract<(typeof page.items)[number], { type: "assistant" }>,
-    ];
-    expect(user).toMatchObject({ clientId: "01J00000000000000000000001", text: "list my home" });
-    // The reply item opens at the turn's first assistant message, so it sorts before the mid-run marker.
-    expect(reply).toMatchObject({ text: "here are the files", outboxId: delivered[1]!.outboxId, tools: [{ name: "ls", summary: ".", ok: true }] });
-    expect(ping).toMatchObject({ text: "mid-run ping", outboxId: delivered[0]!.outboxId, tools: [] });
+    expect(page.items).toEqual([
+      { type: "user", id: expect.any(String), clientId: "01J00000000000000000000001", at: expect.any(String), text: "list my home", attachments: [] },
+      { type: "assistant", id: expect.any(String), at: expect.any(String), text: "", tools: [{ name: "ls", summary: ".", ok: true }] },
+      { type: "assistant", id: expect.any(String), at: expect.any(String), text: "mid-run ping", outboxId: delivered[0]!.outboxId, tools: [] },
+      {
+        type: "assistant",
+        id: expect.any(String),
+        at: expect.any(String),
+        text: "here are the files",
+        outboxId: delivered[1]!.outboxId,
+        turnId: delivered[1]!.turnId,
+        usage: delivered[1]!.usage,
+        tools: [],
+      },
+    ]);
     await personal.dispose();
   }, 20_000);
 

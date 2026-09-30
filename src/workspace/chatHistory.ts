@@ -269,9 +269,12 @@ export function convertSession(raw: string, base: string): Pick<ParsedFile, "ite
     } else if (e.type === "custom" && e.customType === DELIVERY_ENTRY) {
       const marker = deliveryMarker(e.data);
       if (!marker || marker.kind === "auth") continue;
+      // A standalone item mid-run closes the open assistant item, so the turn's later output sorts after it.
       if (marker.kind === "ask") {
         if (marker.ask) items.push({ type: "ask", id: itemId(e), at: at(e), outboxId: marker.outboxId, ...marker.ask });
+        open = null;
       } else if (marker.text !== undefined) {
+        open = null;
         items.push({
           type: "assistant",
           id: itemId(e),
