@@ -162,6 +162,23 @@ async function controlled(page: Page) {
 	await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
 }
 
+// vite preview serves the bot's Trusted Types directives, so every test also proves the app
+// never hands a string to a DOM sink outside its allowlisted policies.
+const ttErrors = new WeakMap<Page, string[]>();
+test.beforeEach(async ({ page }) => {
+	const errors: string[] = [];
+	ttErrors.set(page, errors);
+	page.on('pageerror', (err) => {
+		if (/trusted ?type|TrustedHTML|TrustedScriptURL/i.test(err.message)) errors.push(err.message);
+	});
+	page.on('console', (msg) => {
+		if (/trusted ?type|TrustedHTML|TrustedScript/i.test(msg.text())) errors.push(msg.text());
+	});
+});
+test.afterEach(async ({ page }) => {
+	expect(ttErrors.get(page) ?? []).toEqual([]);
+});
+
 const toggleOf = (page: Page) => page.getByRole('switch', { name: /notify this device/i });
 
 test('settings shows the signed-in login', async ({ page, context }) => {
@@ -514,4 +531,38 @@ test('the settings back chevron returns without stacking history', async ({ page
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.goBack();
 	await expect(page).not.toHaveURL(/\/settings$/);
+});
+
+test('the app runs under enforced Trusted Types with only its own policies', async ({
+	page,
+	context
+}) => {
+	await mockApi(context);
+	await stubPush(page);
+	const res = await page.goto('/');
+	expect(res?.headers()['content-security-policy']).toContain("require-trusted-types-for 'script'");
+	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
+	await page.evaluate(() => navigator.serviceWorker.ready);
+	const probe = await page.evaluate(() => {
+		const tt = (
+			window as unknown as { trustedTypes: { createPolicy(n: string, r: object): unknown } }
+		).trustedTypes;
+		const tryIt = (f: () => unknown) => {
+			try {
+				f();
+				return 'allowed';
+			} catch {
+				return 'blocked';
+			}
+		};
+		return {
+			innerHTML: tryIt(() => (document.createElement('div').innerHTML = '<b>x</b>')),
+			policy: tryIt(() => tt.createPolicy('evil', { createHTML: (s: string) => s }))
+		};
+	});
+	expect(probe).toEqual({ innerHTML: 'blocked', policy: 'blocked' });
+	// The probe's own violations are expected; anything after it is not.
+	ttErrors.get(page)?.splice(0);
+	await page.getByRole('link', { name: 'Settings' }).click();
+	await expect(page.getByTestId('login')).toHaveText('drk@example.com');
 });
