@@ -1,4 +1,4 @@
-import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
+import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../agentRuntime/piShared.ts";
 import type { AgentSession, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";

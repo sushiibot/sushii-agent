@@ -1,6 +1,6 @@
-// Owner-only DM conductor: the SurfaceSession + gate for letting the owner drive runner tasks
-// from a Discord DM. `DM_SPACE_ID` MUST match authz.ts's PERSONAL_SPACE_CAPABILITIES key exactly
-// (spaceKey("discord", DM_SPACE_ID) === "discord:dm") — that map is the pinned contract, not this file.
+// Owner-only DM conductor: the SurfaceSession + gate for the owner's in-process DM turns (the
+// fallback when the workspace is offline). `DM_SPACE_ID` MUST match authz.ts's PERSONAL_SPACES key
+// exactly (spaceKey("discord", DM_SPACE_ID) === "discord:dm").
 import { PERSONAL_BEHAVIOR } from "./personas.ts";
 import type { ContainerBuilder, MessageCreateOptions } from "discord.js";
 import type { AgentReply, SurfaceCapabilities, SurfaceSession, ToolHosts, TurnPromptContext } from "../../core/contracts.ts";
@@ -25,8 +25,8 @@ const DM_CAPABILITIES: SurfaceCapabilities = {
   threads: false,
   reactions: false,
   progress: false,
-  // No presentInteraction here — a paused turn (ask_question/approval) would deadlock. None of the
-  // owner-DM tools (runner tools) pause, so this stays off rather than half-implementing resume UX.
+  // No presentInteraction here — a paused turn (ask_question/approval) would deadlock, so this stays
+  // off rather than half-implementing resume UX.
   interactiveChoices: false,
   typing: false,
   replyTo: false,

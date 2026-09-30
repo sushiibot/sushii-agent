@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runnerGit } from "../orchestration/runner/runnerGit.ts";
+import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import {
   MARKERS,
   SYSTEM_PROMPT,

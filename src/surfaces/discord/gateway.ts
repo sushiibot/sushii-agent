@@ -1,7 +1,4 @@
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ChannelType,
   Events,
   MessageFlags,
@@ -43,13 +40,8 @@ import { SCAN_QUERY, applyAutomodDecision } from "./approvals.ts";
 import { buildTriggerText } from "./inbound.ts";
 import { createTranscriber } from "../../agent/transcribe.ts";
 import { STOP_BTN_PREFIX, ASK_BTN_PREFIX, FEEDBACK_BTN_PREFIX, FEEDBACK_MODAL_PREFIX, AUTOMOD_BTN_PREFIX, AUTOMOD_DEL_BTN_PREFIX } from "./buttonIds.ts";
-import { DispatcherUnavailableError, getDispatcher } from "../../orchestration/dispatcher.ts";
-import type { TaskRow } from "../../orchestration/contracts.ts";
-import { getActivityHub, taskViewUrl } from "../../orchestration/activityHub.ts";
-import { buildTaskMeta } from "../../orchestration/taskMeta.ts";
-import { askPings, hasLiveTaskView, LiveTaskView, TASK_ANS_PREFIX, TASK_CTL_PREFIX } from "./liveTask.ts";
 import { DM_SPACE_ID, DmConductorSession, isOwnerDm } from "./dmConductor.ts";
-import { resolveOwnerPrincipalId } from "../../orchestration/transport/server.ts";
+import { OrchestrationServer, resolveOwnerPrincipalId } from "../../orchestration/transport/server.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { kvCursor, routeDirectMessage } from "../../orchestration/workspace/router.ts";
@@ -407,10 +399,9 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     return buf ? await transcriber({ data: buf, mediaType: att!.contentType ?? "audio/ogg", filename: att!.name ?? "voice-message.ogg" }) : null;
   }
 
-  /** Owner-only DM conductor turn: builds a personal `spaceId` ("dm") that authz.isPersonalSpace
-   *  accepts, then runs the normal core loop — runner tools (dispatch_to_runner/resume_session/...)
-   *  become available via the tool registry's `authorized` gate (owner OR a trusted team member).
-   *  Never touches the guild path. Resolves to the reply text delivered, if any. */
+  /** Owner-only in-process DM turn, used when the workspace is offline or disabled: builds a personal
+   *  `spaceId` ("dm") that authz.isPersonalSpace accepts, then runs the normal core loop. Never touches
+   *  the guild path. Resolves to the reply text delivered, if any. */
   async function runOwnerDmInProcess(message: Message, userText: string, notice: string | undefined): Promise<string | null> {
     if (!message.channel.isSendable()) return null;
     const channel = message.channel;
@@ -484,100 +475,18 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     if (count > 0) logger.info({ count }, "caught up owner DMs sent while offline");
   }
 
-  /** Live and caught-up DMs alike: task replies and needs_input answers first, then the owner-DM router. */
+  /** Live and caught-up DMs alike go through the owner-DM router. */
   async function handleDirectMessage(message: Message): Promise<void> {
     if (message.author.bot) return;
     await routeDirectMessage(message, {
       isOwner: isOwnerDm(message, config.ownerDiscordId),
-      // Replies to non-blocking runner messages are durable ordinary follow-ups, never steer/ask answers.
-      // A reply to a needs_input ping is the ANSWER to that task's ask, not a fresh agent message.
-      preChecks: [maybeReplyToTaskMessage, maybeAnswerAsk],
       handleOwner: handleOwnerDm,
       cursor: snowflakeCursor(dmCursor),
       onOwnerDm: (id) => handledBeforeCatchUp?.add(id),
-      textOf: (m) => m.content,
     });
   }
 
-  /** Posts a deterministic (LLM-free) status line to the task's originating DM when a turn
-   *  SETTLES — {idle, done, failed} (a successful turn rests at idle, not done; see
-   *  ARCHITECTURE.md's status model). The dispatcher only invokes a callback — this is the one
-   *  place in the whole feature that imports discord.js for it. Discord DMs are 1:1 per user, so
-   *  `task.createdBy` (the owner's Discord user id, already stored — no schema change) is enough
-   *  to resolve the target: no separate notify-target field needs threading through ToolContext. */
-  async function notifyTaskSettled(task: TaskRow): Promise<void> {
-    if (task.spawnedFromSurface !== SURFACE) return;
-    const user = await client.users
-      .fetch(task.createdBy)
-      .catch((err) => {
-        logger.warn({ err, taskId: task.id, userId: task.createdBy }, "failed to fetch task-settled DM recipient");
-        return null;
-      });
-    if (!user) return;
-    const line = task.status === "failed"
-      ? `❌ #${task.id} failed — ${task.statusReason ?? "(no reason given)"}`
-      : `✅ #${task.id} — ${task.summary ?? "(no summary)"}`;
-    await user.send(line).catch((err) => logger.warn({ err, taskId: task.id }, "failed to send task-settled DM"));
-  }
-
-  const deliveringTaskMessages = new Set<string>();
-  async function deliverTaskMessage(message: import("../../orchestration/taskMessages.ts").TaskMessage): Promise<void> {
-    if (deliveringTaskMessages.has(message.id)) return;
-    deliveringTaskMessages.add(message.id);
-    try {
-      let dispatcher;
-      try { dispatcher = getDispatcher(); } catch { return; }
-      const task = dispatcher.readTask(message.taskId);
-      if (!task || task.spawnedFromSurface !== SURFACE) {
-        dispatcher.markTaskMessageFailed(message.id, "task has no Discord owner delivery surface");
-        return;
-      }
-      const user = await client.users.fetch(task.createdBy).catch(() => null);
-      if (!user) {
-        dispatcher.markTaskMessageFailed(message.id, "could not resolve Discord owner");
-        return;
-      }
-      const sent = await user.send({
-        content: `✉️ **Task #${task.id}** · agent message\n${message.content.slice(0, 1700)}\n-# Reply to this message to send a normal follow-up to this task (does not steer or cancel it).`,
-        allowedMentions: { parse: [] },
-      });
-      dispatcher.markTaskMessageDelivered(message.id, sent.id);
-    } catch (err) {
-      logger.warn({ err, messageId: message.id }, "failed to deliver agent task message");
-    } finally {
-      deliveringTaskMessages.delete(message.id);
-    }
-  }
-
-  async function maybeReplyToTaskMessage(message: Message): Promise<boolean> {
-    const replyId = message.reference?.messageId;
-    if (!replyId || !isOwnerDm(message, config.ownerDiscordId)) return false;
-    let dispatcher;
-    try { dispatcher = getDispatcher(); } catch { return false; }
-    const original = dispatcher.taskMessageForDiscordId(replyId);
-    if (!original || original.direction !== "agent_to_owner") return false;
-    const text = message.content.trim();
-    if (!text) {
-      if (message.channel.isSendable()) await message.channel.send("Please include text in your task reply.").catch(() => {});
-      return true;
-    }
-    try {
-      const reply = await dispatcher.replyToTaskMessage({
-        principal: message.author.id,
-        messageId: original.id,
-        text,
-        space: "discord:dm",
-        isPrivate: true,
-      });
-      if (message.channel.isSendable()) await message.react("✅").catch(() => {});
-      logger.info({ taskId: original.taskId, messageId: reply.id }, "delivered owner task follow-up");
-    } catch (err) {
-      if (message.channel.isSendable()) await message.channel.send(`Could not deliver reply to task #${original.taskId}: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
-    }
-    return true;
-  }
-
-  /** Owner-only ops notice (startup, runner connect/disconnect). Best-effort — a failed DM never
+  /** Owner-only ops notice (startup). Best-effort — a failed DM never
    *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. Sent silently
    *  (SuppressNotifications) — these are routine status pings, not something to buzz the owner for. */
   async function notifyOwner(text: string): Promise<void> {
@@ -589,48 +498,16 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       .catch((err) => logger.warn({ err }, "failed to send owner ops DM"));
   }
 
+  // Bound at boot so the workspace reconnects right after a restart. The link is attached even with the
+  // flag off, so a workspace's leftover outbox drains instead of resending forever; the flag still gates
+  // DM routing and the tools. A bind failure only disables the workspace link, never the guild paths.
+  const orchServer = new OrchestrationServer({ port: config.orchPort });
+  workspaceLink.attach(orchServer);
   try {
-    const dispatcher = getDispatcher();
-    // Before ensureListening() below, so a workspace registering at boot gets the register hook.
-    // Attached even with the flag off, so a workspace's leftover outbox drains instead of resending forever;
-    // the flag still gates DM routing and the tools.
-    workspaceLink.attach(dispatcher.server);
-    dispatcher.onTaskMessage((message) => { void deliverTaskMessage(message); });
-    // Retry durable undelivered agent messages after restart. Delivery is idempotence-limited by
-    // persisted state; a crash after Discord send but before status update can create one duplicate.
-    for (const message of dispatcher.pendingTaskMessages()) void deliverTaskMessage(message);
-    dispatcher.onTaskSettled((task) => {
-      void notifyTaskSettled(task).catch((err) => logger.error({ err, taskId: task.id }, "failed to notify task settled"));
-    });
-    // A live-updating DM progress view per task (header + activity tail, in-place edits ≤5s), with a
-    // link to the full web stream. Settlement is handled by the view's own status subscription.
-    dispatcher.onTaskStarted((task) => {
-      if (task.spawnedFromSurface !== SURFACE) return;
-      const hub = getActivityHub();
-      const token = hub.tokenFor(task.id);
-      const webUrl = token ? taskViewUrl(config.taskStreamBaseUrl, task.id, token) : null;
-      const meta = buildTaskMeta(task, dispatcher.runnerInfo(task.runnerId));
-      hub.setMeta(task.id, meta); // so the web viewer's meta panel + resume box populate
-      // A resume of a still-live task reuses its existing DM view (kept alive through an idle settle) —
-      // don't spawn a second message; the running activity streams into the same one.
-      if (hasLiveTaskView(task.id)) return;
-      void LiveTaskView.start(client, task, hub, webUrl, meta).catch((err) => logger.warn({ err, taskId: task.id }, "live task view failed"));
-    });
-    // Bind the ORCH port at boot so a runner reconnects immediately after any restart, rather than
-    // waiting for the first dispatch to lazily bind it (which strands the runner until then).
-    dispatcher.ensureListening();
-    logger.info("orchestration transport listening");
-    dispatcher.onRunnerStatus(({ runnerId, status }) => {
-      const line = status === "connected" ? `🔌 runner \`${runnerId}\` connected` : `⚠️ runner \`${runnerId}\` disconnected`;
-      void notifyOwner(line);
-    });
-    // Archive settled tasks idle past the TTL so the roster stays legible (still resumable).
-    const archiveTtlDays = Number(process.env["TASK_ARCHIVE_TTL_DAYS"] ?? "14");
-    dispatcher.archiveStaleTasks(archiveTtlDays);
-    setInterval(() => dispatcher.archiveStaleTasks(archiveTtlDays), 24 * 60 * 60 * 1000);
+    orchServer.listen();
+    logger.info({ port: config.orchPort }, "workspace transport listening");
   } catch (err) {
-    if (!(err instanceof DispatcherUnavailableError)) throw err;
-    logger.warn({ err }, "orchestration dispatcher unavailable; runner transport + task-settled notifications disabled");
+    logger.error({ err, port: config.orchPort }, "workspace transport failed to listen; the personal-agent link is disabled");
   }
 
   // ── MessageCreate ────────────────────────────────────────────────────────────
@@ -927,14 +804,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       await handleAskButton(btn);
       return;
     }
-    if (btn.customId.startsWith(TASK_CTL_PREFIX)) {
-      await handleTaskControlButton(btn);
-      return;
-    }
-    if (btn.customId.startsWith(TASK_ANS_PREFIX)) {
-      await handleAnswerButton(btn);
-      return;
-    }
     if (btn.customId.startsWith(WS_STOP_PREFIX)) {
       await handleWorkspaceStopButton(btn, { link: workspaceLink });
       return;
@@ -948,87 +817,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
       return;
     }
   });
-
-  // Route a needs_input answer (button choice or a reply) back to the parked ask_owner via the token path.
-  async function answerAsk(taskId: string, text: string): Promise<boolean> {
-    const token = getActivityHub().tokenFor(taskId);
-    if (!token || !text) return false;
-    try {
-      await getDispatcher().controlByToken(taskId, token, "steer", text);
-      return true;
-    } catch (err) {
-      logger.warn({ err, taskId }, "failed to route ask answer");
-      return false;
-    }
-  }
-
-  async function maybeAnswerAsk(message: Message): Promise<boolean> {
-    const refId = message.reference?.messageId;
-    if (!refId || !askPings.has(refId)) return false;
-    const info = askPings.get(refId)!;
-    const ok = await answerAsk(info.taskId, message.content.trim());
-    await message.react(ok ? "✅" : "⚠️").catch(() => {});
-    return true; // it was a reply to an ask ping — consumed regardless
-  }
-
-  async function handleAnswerButton(btn: ButtonInteraction): Promise<void> {
-    const info = askPings.get(btn.message.id);
-    if (!info) {
-      await btn.reply({ content: "This question is no longer active.", flags: MessageFlags.Ephemeral }).catch(() => {});
-      return;
-    }
-    const idx = Number.parseInt(btn.customId.slice(TASK_ANS_PREFIX.length), 10);
-    const choice = info.choices[idx];
-    if (choice == null) return;
-    const ok = await answerAsk(info.taskId, choice);
-    await btn.reply({ content: ok ? `Answered: ${choice}` : "Couldn't deliver — the task may have ended.", flags: MessageFlags.Ephemeral }).catch(() => {});
-  }
-
-  // Stop / Discard / Resume for a runner task, from the buttons on its live-task DM message. The DM is
-  // the owner's, so the presser must be the task's creator; control goes through the token path.
-  async function handleTaskControlButton(interaction: ButtonInteraction): Promise<void> {
-    const rest = interaction.customId.slice(TASK_CTL_PREFIX.length);
-    const sep = rest.indexOf(":");
-    const action = rest.slice(0, sep);
-    const taskId = rest.slice(sep + 1);
-    let dispatcher;
-    try {
-      dispatcher = getDispatcher();
-    } catch (err) {
-      if (err instanceof DispatcherUnavailableError) { await interaction.reply({ content: "Runner orchestration is unavailable.", flags: MessageFlags.Ephemeral }); return; }
-      throw err;
-    }
-    const token = getActivityHub().tokenFor(taskId);
-    if (!token) { await interaction.reply({ content: "This task's live session has expired — control it via the bot instead.", flags: MessageFlags.Ephemeral }).catch(() => {}); return; }
-
-    // Destructive discard → a confirm step (a misclick in the button row is the real risk).
-    if (action === "discard") {
-      const confirm = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}discardyes:${taskId}`).setLabel("Confirm discard").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId(`${TASK_CTL_PREFIX}cancel:${taskId}`).setLabel("Cancel").setStyle(ButtonStyle.Secondary),
-      );
-      await interaction.reply({ content: "Discard this task and remove its worktree? This can't be undone.", components: [confirm], flags: MessageFlags.Ephemeral }).catch(() => {});
-      return;
-    }
-    if (action === "cancel") {
-      await interaction.update({ content: "Cancelled — task left as is.", components: [] }).catch(() => {});
-      return;
-    }
-
-    const op = action === "discardyes" ? "discard" : action; // stop | resume | discard
-    if (op !== "stop" && op !== "resume" && op !== "discard") return;
-    try {
-      const task = await dispatcher.controlByToken(taskId, token, op);
-      const label = op === "discard" ? "Discarded — worktree removed." : op === "stop" ? "Stopped — resumable." : `Resumed (status: ${task.status}).`;
-      // The confirm dialog (discardyes/cancel) is an ephemeral we own → update it; a first-level button reply is ephemeral too.
-      if (action === "discardyes") await interaction.update({ content: label, components: [] }).catch(() => {});
-      else await interaction.reply({ content: label, flags: MessageFlags.Ephemeral }).catch(() => {});
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "control failed";
-      if (action === "discardyes") await interaction.update({ content: `Failed: ${msg}`, components: [] }).catch(() => {});
-      else await interaction.reply({ content: `Failed: ${msg}`, flags: MessageFlags.Ephemeral }).catch(() => {});
-    }
-  }
 
   async function handleStopButton(interaction: ButtonInteraction): Promise<void> {
     const threadId = interaction.customId.slice(STOP_BTN_PREFIX.length);

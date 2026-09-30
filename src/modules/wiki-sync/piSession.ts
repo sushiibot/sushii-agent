@@ -3,7 +3,7 @@ import { type Span, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { tracer } from "../../telemetry.ts";
-import { assertExactTools } from "../../orchestration/runner/piShared.ts";
+import { assertExactTools } from "../../agentRuntime/piShared.ts";
 import { createEmbedAttachmentTool } from "./embedTool.ts";
 import type { WikiRepo } from "./git.ts";
 import { commitAndPush } from "./git.ts";

@@ -314,7 +314,7 @@ function fakeLinear(filed: string[]): ToolEntry<keyof ToolHosts> {
 }
 
 function startServer(port: number): OrchestrationServer {
-  const server = new OrchestrationServer({ port, onEvent: () => {}, secretGrants: { [SECRET]: { principalId: P, roles: ["workspace"] } } });
+  const server = new OrchestrationServer({ port, secretGrants: { [SECRET]: { principalId: P } } });
   return server;
 }
 
@@ -430,9 +430,6 @@ async function startWorkspace(): Promise<Workspace> {
         url,
         runnerId: `workspace-${P}`,
         kind: "pi-workspace",
-        location: "workspace",
-        ownerOnly: true,
-        role: "workspace",
         secret,
         principalId: P,
         state: () => ws.personal.state,
@@ -772,7 +769,7 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
 
   test("7. a wrong secret is rejected with 4401, and the DM falls back", async () => {
     const h = await linked();
-    const bad = new OrchestrationClient({ url: h.url(), runnerId: `workspace-${P}`, kind: "pi-workspace", role: "workspace", secret: "wrong", principalId: P, heartbeatMs: 0 });
+    const bad = new OrchestrationClient({ url: h.url(), runnerId: `workspace-${P}`, kind: "pi-workspace", secret: "wrong", principalId: P, heartbeatMs: 0 });
     cleanups.push(() => bad.close());
     const closed = new Promise<number>((resolve) => {
       const probe = new WebSocket(h.url());
@@ -793,7 +790,7 @@ describe("workspace e2e (bot ↔ transport ↔ workspace)", () => {
   test("7b. a wrong-secret register does not evict the live workspace", async () => {
     const h = await linked();
     await connected(h);
-    const bad = new OrchestrationClient({ url: h.url(), runnerId: `workspace-${P}`, kind: "pi-workspace", role: "workspace", secret: "wrong", principalId: P, heartbeatMs: 0 });
+    const bad = new OrchestrationClient({ url: h.url(), runnerId: `workspace-${P}`, kind: "pi-workspace", secret: "wrong", principalId: P, heartbeatMs: 0 });
     cleanups.push(() => bad.close());
     await expect(bad.connect()).rejects.toThrow("unauthorized");
     expect(h.r.bot.link.isConnected()).toBe(true);

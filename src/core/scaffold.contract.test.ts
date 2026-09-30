@@ -178,12 +178,12 @@ describe("scaffold contract — compaction + memory hook sites", () => {
       ...baseDeps(store),
       capabilitySections: (turn) => {
         seen = turn;
-        return "## Runners\nTEST-RUNNER-SECTION";
+        return "## Team\nTEST-CAPABILITY-SECTION";
       },
     });
-    const res = await core.handleInbound(inbound("browse chewy for me"), fakeSession());
+    const res = await core.handleInbound(inbound("what can you do here?"), fakeSession());
     expect(res.status).toBe("completed");
-    expect(lastSystemPrompt).toContain("TEST-RUNNER-SECTION");
+    expect(lastSystemPrompt).toContain("TEST-CAPABILITY-SECTION");
     expect(seen).toMatchObject({ spaceId: "guild1", userId: "u1", isPrivate: false });
   });
 

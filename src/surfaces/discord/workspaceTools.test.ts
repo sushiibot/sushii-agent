@@ -263,7 +263,7 @@ describe("tool/call — rejected without executing", () => {
     const memory = fakeEntry("memory", { type: "object" }, async () => "leak");
     const trace = fakeEntry("get_trace", schema, async () => "t");
     const { tools } = setup({ registry: fixedRegistry([memory.entry, trace.entry]) });
-    for (const name of ["memory", "update_profile", "dispatch_to_runner", "nope"]) {
+    for (const name of ["memory", "update_profile", "nope"]) {
       expect(await tools.handleCall(conn(), call(name, {}))).toEqual({ ok: false, error: `unknown tool: ${name}` });
     }
     expect(memory.calls).toHaveLength(0);

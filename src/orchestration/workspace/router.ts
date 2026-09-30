@@ -259,31 +259,22 @@ async function routeLogin<M extends InboundMessage>(
   return true;
 }
 
-/** One message, live or caught up. An owner's sign-in callback goes to the owner router before any pre-check.
- *  Otherwise pre-checks (task replies, pending answers) run first, then the owner router. Every owner
- *  message advances the cursor. */
+/** One message, live or caught up. Only the owner's messages are handled, and each advances the cursor. */
 export async function routeDirectMessage<T extends { id: string }>(
   message: T,
   deps: {
     isOwner: boolean;
-    preChecks: Array<(message: T) => Promise<boolean>>;
     handleOwner: (message: T) => Promise<void>;
     cursor: MessageCursor;
     onOwnerDm?: (id: string) => void;
-    /** The message's text, checked for a sign-in callback before any pre-check can hand it elsewhere. */
-    textOf: (message: T) => string;
   },
 ): Promise<void> {
-  if (deps.isOwner) deps.onOwnerDm?.(message.id);
+  if (!deps.isOwner) return;
+  deps.onOwnerDm?.(message.id);
   try {
-    if (deps.isOwner && looksLikeLoginCallback(deps.textOf(message))) {
-      await deps.handleOwner(message);
-      return;
-    }
-    for (const check of deps.preChecks) if (await check(message)) return;
-    if (deps.isOwner) await deps.handleOwner(message);
+    await deps.handleOwner(message);
   } finally {
-    if (deps.isOwner) deps.cursor.advance(message.id);
+    deps.cursor.advance(message.id);
   }
 }
 

@@ -11,7 +11,6 @@ import { OPS_TRIAGE_TOOL_ENTRIES } from "./opsTriage/tools.ts";
 import { DISCORD_TOOL_ENTRIES } from "./discord/tools.ts";
 import { deleteUserMessagesEntry } from "./discord/deleteUserMessages.ts";
 import { FS_TOOL_ENTRIES } from "./fs/tools.ts";
-import { RUNNER_TOOL_ENTRIES } from "./runners/index.ts";
 import { TEAM_TOOL_ENTRIES } from "./team/tools.ts";
 
 export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
@@ -21,7 +20,6 @@ export const ALL_TOOL_ENTRIES: ToolEntry<keyof ToolHosts>[] = [
   ...OPS_TRIAGE_TOOL_ENTRIES,
   ...DISCORD_TOOL_ENTRIES,
   ...FS_TOOL_ENTRIES,
-  ...RUNNER_TOOL_ENTRIES,
   ...TEAM_TOOL_ENTRIES,
   deleteUserMessagesEntry,
 ];
@@ -35,7 +33,6 @@ const MODERATION_MODULE_TOOLS = new Set(["list_automod_rules", "add_automod_keyw
 const EXA_TOOLS = new Set(["web_search", "fetch_url_content"]);
 const GRAFANA_TOOLS = new Set(["search_logs", "get_trace"]);
 const LINEAR_TOOLS = new Set(["file_linear_issue", "get_issue_status", "list_triaged_issues"]);
-const RUNNER_TOOLS = new Set(["dispatch_to_runner", "list_runners", "list_running_sessions", "read_session", "resume_session", "stop_task", "discard_task", "steer_task"]);
 
 /** Config-key gates, resolved once per `resolve()` call rather than baked into the class — lets
  *  a caller (tests, U4's wiring) supply availability directly instead of the registry reaching
@@ -76,12 +73,10 @@ export class CoreToolRegistry implements ToolRegistry {
     const moderationOn = space.moderationOn ?? false;
     const a = this.availability();
 
-    // Gating for runner/ops-triage + update_profile tools. Runner/session + ops-triage tools gate on
-    // `authorized` (owner OR a team-trusted member) but NOT on DM — authorized callers drive
-    // them from guild channels too; execution stays gated in can(). update_profile stays
-    // owner-DM-first (editing the personal profile shouldn't surface in a shared channel, and a
-    // trusted member must not reach it).
-    const runnerAllowed = space.authorized === true;
+    // Ops-triage tools gate on `authorized` (owner OR a team-trusted member) but NOT on DM —
+    // authorized callers use them from guild channels too. update_profile stays owner-DM-first
+    // (editing the personal profile shouldn't surface in a shared channel, and a trusted member
+    // must not reach it).
     const profileAllowed = space.isOwner === true && space.isPrivate === true;
     const opsOwnerAllowed = space.authorized === true;
 
@@ -93,7 +88,6 @@ export class CoreToolRegistry implements ToolRegistry {
       .filter((entry) => opsOwnerAllowed || !(GRAFANA_TOOLS.has(entry.name) || LINEAR_TOOLS.has(entry.name)))
       .filter((entry) => a.grafanaBaseUrl || !GRAFANA_TOOLS.has(entry.name))
       .filter((entry) => a.linear || !LINEAR_TOOLS.has(entry.name))
-      .filter((entry) => !RUNNER_TOOLS.has(entry.name) || runnerAllowed)
       .filter((entry) => entry.name !== "team_config" || (!autoMod && opsOwnerAllowed))
       // Core-profile editing is DM-first: available only in a personal/DM space (owner-only once the
       // registry is configured); per-environment / per-user guild profiles are a deferred follow-up.

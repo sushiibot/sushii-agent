@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { config } from "../config.ts";
 import type { PrincipalConfig } from "./principals.ts";
 import type { TeamConfig } from "./teams.ts";
-import { can, isAuthorized, isPersonalSpace, spaceKey } from "./authz.ts";
+import { isAuthorized, isPersonalSpace, spaceKey } from "./authz.ts";
 
 const OWNER = "owner-123";
 const DM_SPACE = spaceKey("discord", "dm");
@@ -16,7 +16,7 @@ const DRK_REGISTRY: Record<string, PrincipalConfig> = {
   drk: { owner: true, identities: { discord: DRK_DISCORD, slack: DRK_SLACK, buzz: DRK_BUZZ } },
 };
 
-describe("authz.can — no owner configured (empty registry, default-deny)", () => {
+describe("authz.isAuthorized — no owner configured (empty registry, default-deny)", () => {
   const prevPrincipals = config.principals;
 
   beforeEach(() => {
@@ -27,30 +27,14 @@ describe("authz.can — no owner configured (empty registry, default-deny)", () 
     config.principals = prevPrincipals;
   });
 
-  test("nobody is granted anything, in a personal/DM or a guild/shared space", () => {
-    expect(can({ principal: OWNER, capability: "runner.dispatch", space: DM_SPACE })).toBe(false);
-    expect(can({ principal: OWNER, capability: "session.read", space: DM_SPACE })).toBe(false);
-    expect(can({ principal: OWNER, capability: "runner.dispatch", space: GUILD_SPACE })).toBe(false);
-  });
-
-  test("unrecognized space never offers a capability, even for a would-be owner id", () => {
-    expect(can({ principal: OWNER, capability: "runner.dispatch", space: "discord:some-other-space" })).toBe(false);
-  });
-
-  test("resource is accepted but does not itself grant access", () => {
-    expect(
-      can({ principal: OWNER, capability: "session.read", resource: "task-1", space: GUILD_SPACE }),
-    ).toBe(false);
-  });
-
-  test("a DM-shaped space + isPrivate present does not leak either", () => {
-    expect(
-      can({ principal: DRK_BUZZ, capability: "runner.dispatch", space: spaceKey("buzz", "dm"), isPrivate: true }),
-    ).toBe(false);
+  test("nobody is authorized, in a personal/DM or a guild/shared space", () => {
+    expect(isAuthorized("discord", OWNER, DM_SPACE)).toBe(false);
+    expect(isAuthorized("discord", OWNER, GUILD_SPACE)).toBe(false);
+    expect(isAuthorized("buzz", DRK_BUZZ, spaceKey("buzz", "dm"))).toBe(false);
   });
 });
 
-describe("authz.can — principal registry (principal-aware, owner-only, NOT DM-restricted)", () => {
+describe("authz.isAuthorized — principal registry (owner, NOT DM-restricted)", () => {
   const prevPrincipals = config.principals;
 
   beforeEach(() => {
@@ -61,32 +45,20 @@ describe("authz.can — principal registry (principal-aware, owner-only, NOT DM-
     config.principals = prevPrincipals;
   });
 
-  test("the owner principal in a private DM on ANY surface is allowed (Slack teamId space)", () => {
-    const slackDm = spaceKey("slack", "T0AAA"); // Slack DM spaceId is the teamId, not "dm"
-    expect(can({ principal: DRK_SLACK, capability: "runner.dispatch", space: slackDm, isPrivate: true })).toBe(true);
-    expect(can({ principal: DRK_SLACK, capability: "session.stop", space: slackDm, isPrivate: true })).toBe(true);
+  test("the owner principal is authorized on any surface, private or public", () => {
+    expect(isAuthorized("slack", DRK_SLACK, spaceKey("slack", "T0AAA"))).toBe(true);
+    expect(isAuthorized("discord", DRK_DISCORD, DM_SPACE)).toBe(true);
+    expect(isAuthorized("slack", DRK_SLACK, spaceKey("slack", "C-public"))).toBe(true);
+    expect(isAuthorized("discord", DRK_DISCORD, GUILD_SPACE)).toBe(true);
   });
 
-  test("the owner principal in a Discord DM is allowed", () => {
-    expect(can({ principal: DRK_DISCORD, capability: "runner.dispatch", space: DM_SPACE, isPrivate: true })).toBe(true);
-  });
-
-  test("a non-owner (unlinked) id in a private DM is denied", () => {
-    expect(can({ principal: "not-linked", capability: "runner.dispatch", space: spaceKey("slack", "T0AAA"), isPrivate: true })).toBe(false);
-  });
-
-  test("the owner principal in a PUBLIC space is allowed (owner tools are not DM-restricted)", () => {
-    expect(can({ principal: DRK_SLACK, capability: "runner.dispatch", space: spaceKey("slack", "C-public"), isPrivate: false })).toBe(true);
-    expect(can({ principal: DRK_DISCORD, capability: "runner.dispatch", space: GUILD_SPACE })).toBe(true);
-  });
-
-  test("a NON-owner in a PUBLIC space is still denied (the owner gate is what protects it)", () => {
-    expect(can({ principal: "not-linked", capability: "runner.dispatch", space: spaceKey("slack", "C-public"), isPrivate: false })).toBe(false);
+  test("a non-owner (unlinked) id is denied", () => {
+    expect(isAuthorized("slack", "not-linked", spaceKey("slack", "T0AAA"))).toBe(false);
+    expect(isAuthorized("slack", "not-linked", spaceKey("slack", "C-public"))).toBe(false);
   });
 
   test("a right-id/wrong-surface caller is denied (identities are surface-scoped)", () => {
-    // drk's slack id presented on the discord surface resolves to no principal.
-    expect(can({ principal: DRK_SLACK, capability: "runner.dispatch", space: DM_SPACE, isPrivate: true })).toBe(false);
+    expect(isAuthorized("discord", DRK_SLACK, DM_SPACE)).toBe(false);
   });
 });
 
@@ -119,7 +91,7 @@ const AUTHZ_TEAMS: Record<string, TeamConfig> = {
   other: { spaces: [{ surface: "discord", spaceId: OTHER_DISCORD }] },
 };
 
-describe("authz.isAuthorized + can() — per-team trusted members", () => {
+describe("authz.isAuthorized — per-team trusted members", () => {
   const prevPrincipals = config.principals;
   const prevTeams = config.teams;
 
@@ -155,14 +127,6 @@ describe("authz.isAuthorized + can() — per-team trusted members", () => {
     expect(isAuthorized("discord", "not-a-principal", spaceKey("discord", DC_DISCORD))).toBe(false);
     // right id, wrong surface → resolves to no principal.
     expect(isAuthorized("discord", MEMBER_A_SLACK, spaceKey("discord", DC_DISCORD))).toBe(false);
-  });
-
-  test("can() grants an owner-capability to a trusted member in-team, denies it out-of-team", () => {
-    expect(can({ principal: MEMBER_A_DISCORD, capability: "runner.dispatch", space: spaceKey("discord", DC_DISCORD) })).toBe(true);
-    expect(can({ principal: MEMBER_A_SLACK, capability: "session.stop", space: spaceKey("slack", DC_SLACK) })).toBe(true);
-    expect(can({ principal: MEMBER_A_DISCORD, capability: "runner.dispatch", space: spaceKey("discord", OTHER_DISCORD) })).toBe(false);
-    // a resolved-but-untrusted principal gets nothing even in a team space.
-    expect(can({ principal: GUEST_DISCORD, capability: "runner.dispatch", space: spaceKey("discord", DC_DISCORD) })).toBe(false);
   });
 });
 

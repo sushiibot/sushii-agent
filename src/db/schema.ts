@@ -1,5 +1,4 @@
 import { index, integer, primaryKey, real, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
-import { TASK_STATUSES } from "../orchestration/contracts.ts";
 
 export const messages = sqliteTable(
   "messages",
@@ -137,7 +136,10 @@ export const slackSyncState = sqliteTable("slack_sync_state", {
   updatedAt: integer("updated_at").notNull(),
 });
 
-/** Orchestration task registry (Phase 0). Pointers only — the runner holds the real transcript. */
+// Legacy: `tasks`, `task_messages` and `runner_routing` belong to the removed task-runner system. No
+// code reads or writes them; the tables stay so existing databases and migrations keep matching.
+const TASK_STATUSES = ["running", "idle", "needs_input", "done", "failed"] as const;
+
 export const tasks = sqliteTable(
   "tasks",
   {
@@ -160,9 +162,6 @@ export const tasks = sqliteTable(
   (table) => [index("idx_tasks_created_by").on(table.createdBy)],
 );
 
-/** Remembered runner choice per (principal, project) — so dispatch only asks which runner once,
- *  then routes automatically. A lightweight routing memory; a future general memory system can
- *  subsume it. projectKey = "owner/repo" for clone-on-demand, else the project name / cwd. */
 export const taskMessages = sqliteTable(
   "task_messages",
   {

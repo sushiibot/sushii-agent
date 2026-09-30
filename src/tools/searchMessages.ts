@@ -2,7 +2,7 @@ import { getDb } from "../db/index.ts";
 
 interface SearchMessagesArgs {
   query?: string;
-  guildId: string; // injected by runner, never from LLM
+  guildId: string; // injected by the tool host, never from LLM
   user_ids?: string[];
   channel_id?: string;
   since?: number;

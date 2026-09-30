@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { assertExactTools, createOpenRouterModel } from "../orchestration/runner/piShared.ts";
+import { assertExactTools, createOpenRouterModel } from "../agentRuntime/piShared.ts";
 import { getLogger } from "../logger.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import {

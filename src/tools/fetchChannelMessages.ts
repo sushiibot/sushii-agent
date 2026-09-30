@@ -3,8 +3,8 @@ import { buildMessageContent } from "../utils/flattenMessage.ts";
 
 interface FetchChannelMessagesArgs {
   channel_id: string;
-  client: Client<true>; // injected by runner
-  guildId: string; // injected by runner
+  client: Client<true>; // injected by the tool host
+  guildId: string; // injected by the tool host
   // Single message fetch
   message_id?: string;
   // Range fetch (mutually exclusive)

@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { getLogger } from "../../logger.ts";
+import { getLogger } from "../logger.ts";
 import { buildAgentEnv, type AgentEnvOptions } from "./agentEnv.ts";
 
-const log = getLogger("orchestration.runner.pi");
+const log = getLogger("agentRuntime.pi");
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const MODEL_METADATA_TIMEOUT_MS = 5000;

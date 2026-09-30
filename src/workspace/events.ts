@@ -1,6 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { ChatEventPayload, ChatUsage } from "../orchestration/contracts.ts";
-import { summarizeToolArgs } from "../orchestration/runner/piShared.ts";
+import { summarizeToolArgs } from "../agentRuntime/piShared.ts";
 import { CHATGPT_PROVIDER, modelLabel, publicAuthError } from "./chatgptFallback.ts";
 
 export const NO_REPLY = "NO_REPLY";

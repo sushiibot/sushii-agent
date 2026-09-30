@@ -19,6 +19,6 @@ describe("Discord personas", () => {
       expect(p).not.toContain("moderation intelligence assistant");
       expect(p).not.toContain("Recommended action");
     }
-    expect(PERSONAL_BEHAVIOR).toContain("Runners section");
+    expect(PERSONAL_BEHAVIOR).not.toContain("runner");
   });
 });

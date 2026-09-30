@@ -171,7 +171,7 @@ export function createAgentCore(deps: AgentCoreDeps): AgentCore {
 
     // Author-aware gating: the autonomous auto-mod driver has no requesting user, so it's neither the
     // owner nor authorized regardless of who tripped the keyword. isOwner still gates update_profile;
-    // authorized (owner OR a trusted member of this space's team) gates runner + ops-triage tools.
+    // authorized (owner OR a trusted member of this space's team) gates team_config + ops-triage tools.
     const isOwner = autoMod ? false : (initiatorPrincipal?.isOwner ?? false);
     const authorized = autoMod
       ? false

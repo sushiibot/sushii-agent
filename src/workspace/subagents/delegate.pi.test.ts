@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { RPC_METHODS, type ChatDeliverParams, type ChatEventParams, type ToolCallParams, type ToolManifestEntry } from "../../orchestration/contracts.ts";
-import { runnerGit } from "../../orchestration/runner/runnerGit.ts";
+import { runnerGit } from "../../agentRuntime/runnerGit.ts";
 import type { WorkspaceConfig } from "../config.ts";
 import { BackendSelector } from "../chatgptFallback.ts";
 import { scaffoldHome } from "../home.ts";

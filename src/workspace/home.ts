@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { runnerGit, runnerGitEnv } from "../orchestration/runner/runnerGit.ts";
+import { runnerGit, runnerGitEnv } from "../agentRuntime/runnerGit.ts";
 import { getLogger } from "../logger.ts";
 
 const log = getLogger("workspace.home");

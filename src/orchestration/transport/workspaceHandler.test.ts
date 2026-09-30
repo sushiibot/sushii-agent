@@ -15,7 +15,7 @@ import { RPC_METHODS } from "../contracts.ts";
 
 const SECRET = "ws-secret";
 const PRINCIPAL = "drk";
-const GRANTS: Record<string, SecretGrant> = { [SECRET]: { principalId: PRINCIPAL, roles: ["workspace"] } };
+const GRANTS: Record<string, SecretGrant> = { [SECRET]: { principalId: PRINCIPAL } };
 
 async function until(cond: () => boolean, ms = 2000): Promise<void> {
   const deadline = Date.now() + ms;
@@ -23,12 +23,12 @@ async function until(cond: () => boolean, ms = 2000): Promise<void> {
 }
 
 function workspaceClient(url: string, handlers: Record<string, (p: unknown) => Promise<unknown>> = {}, runnerId = "workspace-drk") {
-  return new OrchestrationClient({ url, runnerId, kind: "pi-workspace", role: "workspace", secret: SECRET, principalId: PRINCIPAL, state: "idle", handlers, heartbeatMs: 0 });
+  return new OrchestrationClient({ url, runnerId, kind: "pi-workspace", secret: SECRET, principalId: PRINCIPAL, state: "idle", handlers, heartbeatMs: 0 });
 }
 
 describe("workspace handler routing", () => {
   test("register hook fires after the ok, and requests/notifications reach the handler", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     const registered: ConnectionInfo[] = [];
     const notes: Array<{ method: string; params: unknown }> = [];
     server.setWorkspaceHandler({
@@ -60,7 +60,7 @@ describe("workspace handler routing", () => {
   });
 
   test("a request with no handler installed gets an error reply rather than hanging", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     server.listen();
     const client = workspaceClient(server.url);
     try {
@@ -74,7 +74,7 @@ describe("workspace handler routing", () => {
   });
 
   test("requestWorkspace reaches the workspace's handlers and times out without leaking", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     server.listen();
     const client = workspaceClient(server.url, {
       [RPC_METHODS.chatAbort]: async () => ({ aborted: true }),
@@ -93,7 +93,7 @@ describe("workspace handler routing", () => {
   });
 
   test("request failures are typed by whether the workspace may still have accepted the request", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     server.listen();
     const client = workspaceClient(server.url, {
       [RPC_METHODS.chatMessage]: async () => {
@@ -129,7 +129,7 @@ describe("workspace handler routing", () => {
   });
 
   test("disconnect fires for the live workspace, not for one that was replaced", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     const disconnected: string[] = [];
     const registered: string[] = [];
     server.setWorkspaceHandler({
@@ -158,7 +158,7 @@ describe("workspace handler routing", () => {
     }
   });
   test("socket-closed fires for every workspace socket, a replaced one included", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     const closed: string[] = [];
     server.setWorkspaceHandler({ onSocketClosed: (conn) => closed.push(conn.runnerId) });
     server.listen();
@@ -183,7 +183,7 @@ describe("workspace handler routing", () => {
 describe("workspace register result", () => {
   const TOOLS = [{ name: "web_search", description: "search", inputSchema: { type: "object" }, approval: "none" as const }];
 
-  async function registerRaw(url: string, role: "workspace" | "task-runner", secret: string | undefined): Promise<unknown> {
+  async function registerRaw(url: string, role: string, secret: string | undefined): Promise<unknown> {
     const ws = new WebSocket(url);
     try {
       await new Promise((resolve, reject) => {
@@ -198,20 +198,20 @@ describe("workspace register result", () => {
     }
   }
 
-  test("a workspace gets the tool manifest; a task runner gets the plain ok", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+  test("a workspace gets the tool manifest; a task runner is refused", async () => {
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     server.setWorkspaceHandler({ toolManifest: () => TOOLS });
     server.listen();
     try {
       expect(await registerRaw(server.url, "workspace", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true, tools: TOOLS } });
-      expect(await registerRaw(server.url, "task-runner", undefined)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true } });
+      expect(await registerRaw(server.url, "task-runner", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "invalid register params" } });
     } finally {
       server.stop();
     }
   });
 
   test("a failing manifest still registers, with no tools", async () => {
-    const server = new OrchestrationServer({ onEvent: () => {}, secretGrants: GRANTS });
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
     server.setWorkspaceHandler({
       toolManifest: () => {
         throw new Error("boom");

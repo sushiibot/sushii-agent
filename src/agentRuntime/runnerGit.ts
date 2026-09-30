@@ -3,7 +3,7 @@ import { withoutOrchEnv } from "./agentEnv.ts";
 
 type UnsafeFlag = keyof NonNullable<SimpleGitOptions["unsafe"]>;
 
-// simple-git rejects an explicit env carrying these vars unless allowed. They come from the runner's
+// simple-git rejects an explicit env carrying these vars unless allowed. They come from the process's
 // own env, which git would inherit anyway, so allow exactly the ones present.
 const UNSAFE_ENV_FLAGS: Record<string, UnsafeFlag> = {
   EDITOR: "allowUnsafeEditor",
@@ -26,8 +26,8 @@ const UNSAFE_ENV_FLAGS: Record<string, UnsafeFlag> = {
   GIT_SSH_COMMAND: "allowUnsafeSshCommand",
 };
 
-/** The env every runner-side git invocation gets. Agents can plant repo config (core.fsmonitor,
- *  hooks) that the runner's own git then executes, so orchestrator secrets must not be in it. */
+/** The env every host-side git invocation gets. Agents can plant repo config (core.fsmonitor,
+ *  hooks) that the host's own git then executes, so orchestrator secrets must not be in it. */
 export function runnerGitEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   return withoutOrchEnv(base) as Record<string, string>;
 }

@@ -1,118 +1,11 @@
-// Pinned shared contracts for agent-orchestration Phase 0.
-// Owned by no unit — units implement AGAINST this. Design: claude-notes/sushii-agent/tasks/agent-orchestration.
+// Wire contracts between the bot and the personal-agent workspace.
 import { z } from "zod";
-
-// ── Task status (see ARCHITECTURE.md "Two loops"). needs_input is reserved for Phase 4. ──
-export const TASK_STATUSES = ["running", "idle", "needs_input", "done", "failed"] as const;
-export type TaskStatus = (typeof TASK_STATUSES)[number];
-
-// ── Registry row (U0.2 implements the Drizzle table to match this shape). ──
-// id is a registry ULID, distinct from the runner's native session id.
-export interface TaskRow {
-  id: string;
-  createdBy: string; // principal id (P0: the owner)
-  runnerId: string;
-  project: string | null;
-  cwd: string | null; // task working directory — persisted so resume() runs in the right place
-  nativeSessionId: string | null; // runner's own session id (e.g. Claude Code UUID)
-  resumeCursor: string | null;
-  status: TaskStatus;
-  statusReason: string | null;
-  summary: string | null; // last authored handback recap
-  spawnedFromSurface: string; // provenance only
-  threadRefs: string[]; // JSON-encoded in SQLite
-  createdAt: number; // unix seconds
-  updatedAt: number;
-  archivedAt: number | null; // unix seconds; set when the task ages out of the live roster (still resumable)
-}
-
-// ── Runner → orchestrator events (pushed over the WS). ──
-export type RunnerEvent =
-  | { kind: "status"; taskId: string; status: TaskStatus; reason?: string }
-  | { kind: "progress"; taskId: string; note: string } // debounced; never per-token
-  // One granular activity line, typed so surfaces can filter: "tool" (a call + its args), "result"
-  // (a tool's output — hidden by default, revealed on demand), "text" (assistant text). Feeds the
-  // live views; not debounced at the source.
-  | { kind: "activity"; taskId: string; line: string; at: number; atype: "tool" | "result" | "text" }
-  // The agent is blocked and asking the owner (ask_owner tool). The task pauses at needs_input until an
-  // answer is routed back (via the steer channel). choices, when present, are offered as buttons.
-  | { kind: "ask"; taskId: string; askId: string; question: string; choices?: string[] }
-  // Agent-initiated, non-blocking owner message. The orchestrator persists and delivers it separately
-  // from task control; it never steers or pauses the task.
-  | { kind: "owner_message"; taskId: string; messageId: string; text: string }
-  | { kind: "handback"; taskId: string; summary: string; meta?: HandbackMeta }
-  // Live browser view, only sent while a viewer watches (see RPC_METHODS.browserWatch). Every field
-  // but taskId is optional: a message carries a new frame, a navigation, or a state change.
-  | { kind: "browser"; taskId: string } & BrowserUpdate;
-
-export interface BrowserUpdate {
-  supported?: boolean; // false = this runner has no browser
-  connected?: boolean; // a browser is open for the task
-  frame?: string; // base64 JPEG of the viewport
-  width?: number;
-  height?: number;
-  url?: string;
-  title?: string;
-}
-
-// Deterministic, LLM-free metadata the runner computes (git + result object).
-export interface HandbackMeta {
-  filesChanged?: number;
-  commits?: number;
-  testsPassed?: boolean;
-  toolsRun?: number;
-  tokens?: number;
-  costUsd?: number;
-  durationMs?: number;
-  denials?: number; // tool calls the permission mode auto-denied — a "success" with denials > 0 is incomplete
-  branch?: string; // runner-pushed task branch (clone-on-demand)
-  prUrl?: string; // PR the runner opened at handback
-}
-
-// A repo the orchestrator asks a runner to clone on-demand into its workspace before running.
-export interface RepoSpec {
-  owner: string;
-  repo: string;
-}
-
-// ── Runner adapter interface (uniform across kinds; P0 = Claude Code only). ──
-export interface RunnerAdapter {
-  // repo (optional) = clone-on-demand: the runner clones owner/repo into `cwd` if absent before the
-  // agent runs, and pushes a branch + opens a PR at handback. Adapters without a token provider
-  // ignore it and assume `cwd` is already a checkout.
-  start(input: { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null }): Promise<{ nativeSessionId: string }>;
-  resume(input: { taskId: string; nativeSessionId: string; cwd: string; prompt: string }): Promise<void>;
-  interrupt(taskId: string): Promise<void>;
-  // Halt the active run but leave the task resumable (session file kept). `discard` also removes a
-  // clone-on-demand worktree — never a caller-supplied project dir. Unlike interrupt, stop must NOT
-  // surface a "failed" status for the halted run (the dispatcher records idle/terminal itself).
-  stop(input: { taskId: string; discard?: boolean }): Promise<void>;
-  // Live-steer a RUNNING session (mid-turn injection, no abort). Returns delivered:false when there is
-  // no live session to inject into (task not running, or the runner kind is one-shot) — the caller then
-  // falls back to resume. Adapters that can't inject always return delivered:false.
-  steer(input: { taskId: string; text: string }): Promise<{ delivered: boolean }>;
-  // Append an ordinary user follow-up without superseding/cancelling the active turn. False means
-  // the runner cannot safely accept it live; an idle task may instead be resumed by the dispatcher.
-  followUp(input: { taskId: string; text: string }): Promise<{ delivered: boolean }>;
-  // Start/stop relaying the task's live browser view as "browser" events. Optional: kinds without a
-  // browser omit it and the client answers supported:false.
-  watchBrowser?(input: { taskId: string; watch: boolean }): Promise<{ supported: boolean }>;
-  // Emits RunnerEvents for the task; implementation streams via the callback.
-  stream(taskId: string, onEvent: (e: RunnerEvent) => void): Promise<void>;
-}
 
 // ── Wire protocol: JSON-RPC 2.0 over WebSocket. Verbs borrow ACP vocabulary. ──
 export const RPC_METHODS = {
-  register: "runner/register", // runner → orchestrator on connect
-  start: "session/new",
-  resume: "session/resume",
-  interrupt: "session/cancel",
-  stop: "session/stop", // halt but keep resumable (params: { taskId, discard? })
-  message: "session/message", // live steer into a running session (params: { taskId, text }) → { delivered }
-  followUp: "session/follow-up", // append an ordinary inbound message; never supersedes the current turn
-  event: "session/update", // runner → orchestrator notification (carries RunnerEvent)
-  browserWatch: "session/browser", // start/stop the live browser relay (params: { taskId, watch }) → { supported }
-  heartbeat: "runner/heartbeat", // runner → orchestrator keep-alive notification (resets the WS idle timer)
+  // The "runner/" prefix is historical; renaming it would break a workspace and bot on different versions.
+  register: "runner/register", // workspace → bot on connect
+  heartbeat: "runner/heartbeat", // workspace → bot keep-alive notification (resets the WS idle timer)
   // Personal-agent chat verbs (role "workspace"). Bot → workspace requests:
   chatMessage: "chat/message",
   chatAbort: "chat/abort",
@@ -307,7 +200,7 @@ export type JsonRpcRequest = z.infer<typeof jsonRpcRequest>;
 export type JsonRpcNotification = z.infer<typeof jsonRpcNotification>;
 export type JsonRpcResponse = z.infer<typeof jsonRpcResponse>;
 
-export const CONNECTION_ROLES = ["workspace", "task-runner"] as const;
+export const CONNECTION_ROLES = ["workspace"] as const;
 export type ConnectionRole = (typeof CONNECTION_ROLES)[number];
 export const PROTOCOL_VERSION = 1;
 export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [1];
@@ -318,22 +211,12 @@ export const ORCH_CLOSE = {
   unsupportedVersion: 4426,
 } as const;
 
+// Unknown keys (projects, workspaceRoot, ... from older clients) are stripped, not rejected.
 export const registerParams = z.object({
   runnerId: z.string(),
-  kind: z.string(), // "claude-code" | "mock" | ...
-  projects: z.array(z.string()).default([]),
-  // Absolute dir this runner clones on-demand repos into (clone-on-demand). Declaring it engages
-  // the dispatch scope fence even when `projects` is empty, and lets the orchestrator derive a
-  // clone cwd under it. null = runner does no clone-on-demand.
-  workspaceRoot: z.string().nullable().default(null),
-  // Human-friendly location for display (e.g. "apps · container", "drk-wsl2 · desktop"). Optional.
-  location: z.string().nullable().default(null),
-  // What the runner's agent can do beyond coding, e.g. "browser" (headless Chromium via agent-browser).
-  capabilities: z.array(z.string()).default([]),
-  // A personal runner: the orchestrator only lets the owner dispatch to it.
-  ownerOnly: z.boolean().default(false),
-  // Absent on legacy runners, which are all task runners speaking v1.
-  role: z.enum(CONNECTION_ROLES).default("task-runner"),
+  kind: z.string(), // e.g. "pi-workspace"
+  // Required, with no default: a legacy task runner omits it and must fail the parse.
+  role: z.enum(CONNECTION_ROLES),
   protocolVersion: z.number().int().default(1),
   secret: z.string().optional(),
   // Assertion only: must match the principal the secret maps to.
@@ -341,17 +224,3 @@ export const registerParams = z.object({
   state: z.enum(["idle", "streaming"]).optional(),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
-
-// ── Authz seam (P0 stub = owner-only AND a hardcoded personal/DM-space allowlist). ──
-// Real tables land in Phase 2 (U2.1). Keep this signature stable so the swap is drop-in.
-export type Capability = "runner.dispatch" | "session.read" | "session.resume" | "session.interrupt" | "session.stop";
-export interface AuthzInput {
-  principal: string;
-  capability: Capability;
-  resource?: string; // e.g. runnerId or taskId
-  space: string; // surface+scope key the request arrived in
-  /** Whether the request arrived in a private/DM context. Required true for the configured-registry
-   *  personal-space conjunction; ignored in the legacy regime. Callers populate it via ToolContext. */
-  isPrivate?: boolean;
-}
-export type CanFn = (input: AuthzInput) => boolean;

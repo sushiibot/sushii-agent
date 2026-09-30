@@ -8,7 +8,7 @@ import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { FLUSH_MARKER, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
 import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
-import { runnerGit } from "../orchestration/runner/runnerGit.ts";
+import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import type { ChatDeliverParams } from "../orchestration/contracts.ts";
 
 // Real Pi 0.99.1 sessions from the workspace factory, a real git home; the only fake is fetch.

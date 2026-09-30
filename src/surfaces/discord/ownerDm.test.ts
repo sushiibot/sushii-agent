@@ -398,66 +398,21 @@ describe("DM catch-up on ready", () => {
     expect(ch.calls.length).toBe(1);
   });
 
-  test("a task reply in the backlog goes to its pre-check, not the agent, and still advances the cursor", async () => {
-    const { deps, calls } = fakeDeps({ connected: false });
-    deps.cursor = memCursor("1000");
-    const taskReplies: string[] = [];
-    const route = (id: string) =>
-      routeDirectMessage(fakeMessage({ id, content: `dm ${id}` }).msg, {
-        isOwner: true,
-        preChecks: [async (m) => (m.id === "1002" ? (taskReplies.push(m.id), true) : false)],
-        handleOwner: (m) => handleOwnerDm(m, deps),
-        cursor: snowflakeCursor(deps.cursor),
-        textOf: (m) => m.content,
-      });
-    await catchUpOwnerDms({
-      cursor: "1000",
-      ownerId: "owner-1",
-      now: NOW,
-      fetchAfter: async () => [owner("1003"), owner("1002"), owner("1001")],
-      handle: (m) => route(m.id),
-    });
-    expect(taskReplies).toEqual(["1002"]);
-    expect(calls.inProcess.map((c) => c.text)).toEqual(["dm 1001", "dm 1003"]);
-    expect(deps.cursor.get()).toBe("1003");
-  });
-
-  test("a live DM a pre-check consumes advances the cursor and is marked handled", async () => {
+  test("routeDirectMessage hands owner DMs to the owner router and advances the cursor; others are ignored", async () => {
     const cursor = memCursor("1000");
     const seen: string[] = [];
-    let handledOwner = false;
+    const owned: string[] = [];
     await routeDirectMessage(
       { id: "1004" },
-      { isOwner: true, preChecks: [async () => true], handleOwner: async () => void (handledOwner = true), cursor: snowflakeCursor(cursor), onOwnerDm: (id) => seen.push(id), textOf: () => "" },
+      { isOwner: true, handleOwner: async (m) => void owned.push(m.id), cursor: snowflakeCursor(cursor), onOwnerDm: (id) => seen.push(id) },
     );
-    expect(handledOwner).toBe(false);
+    expect(owned).toEqual(["1004"]);
     expect(cursor.get()).toBe("1004");
     expect(seen).toEqual(["1004"]);
-    await routeDirectMessage({ id: "1009" }, { isOwner: false, preChecks: [async () => false], handleOwner: async () => void (handledOwner = true), cursor: snowflakeCursor(cursor), textOf: () => "" });
-    expect(handledOwner).toBe(false);
+    await routeDirectMessage({ id: "1009" }, { isOwner: false, handleOwner: async (m) => void owned.push(m.id), cursor: snowflakeCursor(cursor), onOwnerDm: (id) => seen.push(id) });
+    expect(owned).toEqual(["1004"]);
     expect(cursor.get()).toBe("1004");
-  });
-
-  test("an owner message holding a sign-in callback skips every pre-check and goes to the owner router", async () => {
-    const cursor = memCursor("1000");
-    const preChecked: string[] = [];
-    const owned: string[] = [];
-    const deps = {
-      isOwner: true,
-      preChecks: [async (m: { id: string }) => (preChecked.push(m.id), true)],
-      handleOwner: async (m: { id: string }) => void owned.push(m.id),
-      cursor: snowflakeCursor(cursor),
-      textOf: (m: { id: string; text: string }) => m.text,
-    };
-    await routeDirectMessage({ id: "1005", text: "reply to task: <http://127.0.0.1:1455/auth/callback?code=c&state=s>" }, deps);
-    await routeDirectMessage({ id: "1006", text: "localhost:1455/auth/callback?code=c&state=s" }, deps);
-    expect(preChecked).toEqual([]);
-    expect(owned).toEqual(["1005", "1006"]);
-    expect(cursor.get()).toBe("1006");
-    // Anything else still goes through the pre-checks first.
-    await routeDirectMessage({ id: "1007", text: "done, thanks" }, deps);
-    expect(preChecked).toEqual(["1007"]);
-    expect(owned).toEqual(["1005", "1006"]);
+    expect(seen).toEqual(["1004"]);
   });
 
   test("no cursor yet: nothing is fetched", async () => {

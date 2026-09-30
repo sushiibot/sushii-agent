@@ -10,8 +10,8 @@ import { SubagentManager, type SpawnTypeResolver } from "../../../vendor/pi-suba
 import { SubagentSession } from "../../../vendor/pi-subagents/src/lifecycle/subagent-session.ts";
 import type { AgentConfig } from "../../../vendor/pi-subagents/src/types.ts";
 import { RPC_METHODS, type ChatEventParams, type ChatEventPayload, type ChatOrigin } from "../../orchestration/contracts.ts";
-import { assertExactTools, createOpenRouterModel } from "../../orchestration/runner/piShared.ts";
-import { runnerGit } from "../../orchestration/runner/runnerGit.ts";
+import { assertExactTools, createOpenRouterModel } from "../../agentRuntime/piShared.ts";
+import { runnerGit } from "../../agentRuntime/runnerGit.ts";
 import { getLogger } from "../../logger.ts";
 import {
   type BackendSelector,

@@ -180,7 +180,7 @@ describe("CoreToolRegistry", () => {
   });
 });
 
-describe("runner/ops gating (author-aware authorized; update_profile stays owner-DM)", () => {
+describe("owner/ops gating (author-aware authorized; update_profile stays owner-DM)", () => {
   const prev = config.principals;
   const DRK: Record<string, PrincipalConfig> = { drk: { owner: true, identities: { slack: "U0OWNERTEST0" } } };
   beforeEach(() => {
@@ -190,37 +190,37 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
     config.principals = prev;
   });
 
-  test("owner (authorized) in a private space (ANY surface) sees runner + update_profile tools", () => {
+  test("owner (authorized) in a private space (ANY surface) sees team_config + update_profile", () => {
     const names = registry()
       .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: true, isPrivate: true, authorized: true })
       .map((e) => e.name);
-    expect(names).toContain("dispatch_to_runner");
+    expect(names).toContain("team_config");
     expect(names).toContain("update_profile");
   });
 
-  test("owner in a NON-private space gets runner tools but not update_profile; a non-authorized caller gets neither", () => {
+  test("owner in a NON-private space gets team_config but not update_profile; a non-authorized caller gets neither", () => {
     const publicOwner = registry()
       .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: true, isPrivate: false, authorized: true })
       .map((e) => e.name);
-    // Runner tools gate on `authorized`, not DM — an authorized caller drives runners from a channel too.
-    expect(publicOwner).toContain("dispatch_to_runner");
+    // team_config gates on `authorized`, not DM, so an authorized caller has it in a channel too.
+    expect(publicOwner).toContain("team_config");
     // update_profile stays owner-DM-first (editing the personal profile shouldn't happen in a shared space).
     expect(publicOwner).not.toContain("update_profile");
 
     const privateNonAuth = registry()
       .resolve(fakeSession({}), { surface: "slack", spaceId: "T1", isOwner: false, isPrivate: true, authorized: false })
       .map((e) => e.name);
-    expect(privateNonAuth).not.toContain("dispatch_to_runner");
+    expect(privateNonAuth).not.toContain("team_config");
     expect(privateNonAuth).not.toContain("update_profile");
   });
 
-  // A team-trusted member is authorized for runner + ops tools but must NOT reach update_profile
+  // A team-trusted member is authorized for team + ops tools but must NOT reach update_profile
   // (that stays behind the owner-DM gate — a trusted member is not the owner).
-  test("a trusted member (authorized, not owner) gets runner + ops tools but never update_profile", () => {
+  test("a trusted member (authorized, not owner) gets team + ops tools but never update_profile", () => {
     const names = registry()
       .resolve(fakeSession({}), { surface: "slack", spaceId: "C1", isOwner: false, isPrivate: true, authorized: true })
       .map((e) => e.name);
-    expect(names).toContain("dispatch_to_runner");
+    expect(names).toContain("team_config");
     expect(names).toContain("search_logs");
     expect(names).toContain("file_linear_issue");
     expect(names).not.toContain("update_profile");
@@ -228,7 +228,7 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
 
   test("the discord:dm space string alone no longer suffices — the authorized/isOwner/isPrivate flags decide", () => {
     const noFlags = registry().resolve(fakeSession({}), { surface: "discord", spaceId: "dm" }).map((e) => e.name);
-    expect(noFlags).not.toContain("dispatch_to_runner");
+    expect(noFlags).not.toContain("team_config");
     expect(noFlags).not.toContain("update_profile");
   });
 
@@ -247,8 +247,6 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
       .map((e) => e.name);
     expect(names).toContain("search_logs");
     expect(names).toContain("file_linear_issue");
-    // runner tools gate the same way, so they're here too; update_profile stays owner-DM-gated.
-    expect(names).toContain("dispatch_to_runner");
     expect(names).not.toContain("update_profile");
   });
 
@@ -272,7 +270,7 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
       config.teams = prevTeams;
     });
 
-    test("resolves as authorized and the registry surfaces team_config + runner tools", () => {
+    test("resolves as authorized and the registry surfaces team_config", () => {
       const authorized = isAuthorized("slack", "U-WHOEVER", spaceKey("slack", "T-TRUST"));
       expect(authorized).toBe(true);
 
@@ -280,7 +278,6 @@ describe("runner/ops gating (author-aware authorized; update_profile stays owner
         .resolve(fakeSession({}), { surface: "slack", spaceId: "T-TRUST", authorized })
         .map((e) => e.name);
       expect(names).toContain("team_config");
-      expect(names).toContain("dispatch_to_runner");
     });
   });
 });

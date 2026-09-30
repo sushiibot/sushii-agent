@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolCallParams, ToolManifestEntry } from "../orchestration/contracts.ts";
-import { assertExactTools } from "../orchestration/runner/piShared.ts";
+import { assertExactTools } from "../agentRuntime/piShared.ts";
 import { ConnectionClosedError, NotConnectedError, RequestTimeoutError } from "../orchestration/transport/client.ts";
 import { PROXIED_TOOLS } from "../orchestration/workspace/tools.ts";
 import type { WorkspaceConfig } from "./config.ts";

@@ -2,13 +2,8 @@ import {
   ORCH_CLOSE,
   PROTOCOL_VERSION,
   RPC_METHODS,
-  jsonRpcNotification,
   jsonRpcRequest,
   jsonRpcResponse,
-  type ConnectionRole,
-  type RepoSpec,
-  type RunnerAdapter,
-  type RunnerEvent,
   type ToolManifestEntry,
   type WorkspaceRegisterResult,
   toolManifestEntry,
@@ -48,45 +43,29 @@ export interface OrchestrationClientOptions {
   url: string;
   runnerId: string;
   kind: string;
-  projects?: string[];
-  workspaceRoot?: string | null;
-  location?: string | null;
-  capabilities?: string[];
-  ownerOnly?: boolean;
-  /** Default "task-runner". */
-  role?: ConnectionRole;
-  /** The role's secret (ORCH_SECRET for a workspace, ORCH_RUNNER_SECRET for a task runner); omitted when unset. */
+  /** ORCH_SECRET; omitted when unset. */
   secret?: string;
   principalId?: string;
   /** A getter reports the live state at each (re)register. */
   state?: "idle" | "streaming" | (() => "idle" | "streaming");
-  /** Absent for connections that serve no session/* verbs (e.g. the workspace). */
-  adapter?: RunnerAdapter;
-  /** Extra inbound request methods, answered with the handler's result. */
+  /** Inbound request methods, answered with the handler's result. */
   handlers?: Record<string, (params: unknown) => Promise<unknown>>;
-  /** Fires after each successful (re)register, once responses are routed. A workspace gets its parsed
-   *  register result (a malformed one reads as no tools); a task runner gets null. */
-  onRegistered?: (result: WorkspaceRegisterResult | null) => void;
+  /** Fires after each successful (re)register, once responses are routed, with the parsed register
+   *  result (a malformed one reads as no tools). */
+  onRegistered?: (result: WorkspaceRegisterResult) => void;
   // Keep-alive interval (default 30s, under Bun.serve's 120s idle default). 0 disables.
   heartbeatMs?: number;
   // Cap for reconnect backoff (default 30s). Only used by run().
   backoffCapMs?: number;
 }
 
-// Runner-side WS client. Dials out, registers, then answers inbound
-// session/* calls by delegating to the supplied RunnerAdapter and pushing
-// its events back as session/update notifications.
+// Workspace-side WS client. Dials the bot, registers as role "workspace", then answers inbound
+// requests with the supplied handlers.
 export class OrchestrationClient {
   private readonly options: OrchestrationClientOptions;
   private ws: WebSocket | null = null;
   private nextId = 1;
   private readonly pending = new Map<string | number, PendingCall>();
-  // Guards against a second start() re-subscribing a task whose stream() is already running.
-  // Keyed by generation rather than a plain Set: resume() always forces a fresh subscription (its
-  // adapter may have killed and respawned the process), and the OLD subscription's own cleanup
-  // must not be able to clobber the guard entry a newer subscription already installed.
-  private readonly streamingGenerations = new Map<string, number>();
-  private nextStreamGeneration = 1;
   private shouldRun = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private resolveClosed: (() => void) | null = null;
@@ -99,7 +78,7 @@ export class OrchestrationClient {
 
   // Daemon entry point: connect → register → listen → heartbeat, reconnecting with capped
   // exponential backoff whenever the socket drops. Resolves only when close() is called, so a
-  // runner started before the orchestrator is listening simply retries until the port is up.
+  // workspace started before the bot is listening simply retries until the port is up.
   async run(): Promise<void> {
     this.shouldRun = true;
     let backoff = 500;
@@ -110,12 +89,12 @@ export class OrchestrationClient {
         const result = await this.connect();
         this.listen();
         this.startHeartbeat();
-        logger.info({ runnerId: this.options.runnerId }, "runner connected");
+        logger.info({ runnerId: this.options.runnerId }, "connected to the bot");
         this.options.onRegistered?.(this.registerResult(result));
         backoff = 500;
         await new Promise<void>((res) => (this.resolveClosed = res));
       } catch (err) {
-        logger.warn({ err }, "runner connection attempt failed");
+        logger.warn({ err }, "connection attempt to the bot failed");
         // The server sends its rejection before its close frame; wait for the close code so the delay below sees it.
         await this.awaitSocketClosed(2_000);
       } finally {
@@ -129,8 +108,7 @@ export class OrchestrationClient {
     }
   }
 
-  private registerResult(raw: unknown): WorkspaceRegisterResult | null {
-    if ((this.options.role ?? "task-runner") !== "workspace") return null;
+  private registerResult(raw: unknown): WorkspaceRegisterResult {
     const parsed = workspaceRegisterResult.safeParse(raw);
     if (parsed.success) return parsed.data;
     const listed = (raw as { tools?: unknown } | null)?.tools;
@@ -216,12 +194,8 @@ export class OrchestrationClient {
             params: {
               runnerId: this.options.runnerId,
               kind: this.options.kind,
-              projects: this.options.projects ?? [],
-              workspaceRoot: this.options.workspaceRoot ?? null,
-              location: this.options.location ?? null,
-              capabilities: this.options.capabilities ?? [],
-              ownerOnly: this.options.ownerOnly ?? false,
-              role: this.options.role ?? "task-runner",
+              // Explicit: a bot older than this protocol defaults a missing role to "task-runner".
+              role: "workspace",
               protocolVersion: PROTOCOL_VERSION,
               ...(this.options.secret ? { secret: this.options.secret } : {}),
               ...(this.options.principalId ? { principalId: this.options.principalId } : {}),
@@ -247,7 +221,7 @@ export class OrchestrationClient {
     });
   }
 
-  // Call once, after connect() resolves, to start answering session/* calls.
+  // Call once, after connect() resolves, to start answering inbound requests.
   listen(): void {
     const ws = this.ws;
     if (!ws) throw new Error("not connected");
@@ -309,35 +283,6 @@ export class OrchestrationClient {
     this.pending.clear();
   }
 
-  // Starts adapter.stream() for a task. `resubscribe: true` (used by resume(), whose adapter may
-  // have killed and respawned the process) always starts a fresh subscription even if a previous
-  // one is still draining; otherwise a subscription already in flight is left alone.
-  private beginStream(ws: WebSocket, taskId: string, opts: { resubscribe?: boolean } = {}): void {
-    const adapter = this.options.adapter;
-    if (!adapter) return;
-    if (!opts.resubscribe && this.streamingGenerations.has(taskId)) return;
-    const generation = this.nextStreamGeneration++;
-    this.streamingGenerations.set(taskId, generation);
-    adapter
-      .stream(taskId, (e) => this.emit(ws, e))
-      .catch((err) => {
-        logger.error({ err, taskId }, "runner adapter stream failed");
-        this.emit(ws, {
-          kind: "status",
-          taskId,
-          status: "failed",
-          reason: err instanceof Error ? err.message : String(err),
-        });
-      })
-      .finally(() => {
-        // Only clear the guard if it still points at THIS subscription — a newer one (started by a
-        // resume() that raced this cleanup) must not have its guard entry deleted out from under it.
-        if (this.streamingGenerations.get(taskId) === generation) {
-          this.streamingGenerations.delete(taskId);
-        }
-      });
-  }
-
   private async handleMessage(ws: WebSocket, raw: string): Promise<void> {
     let parsed: unknown;
     try {
@@ -353,41 +298,11 @@ export class OrchestrationClient {
     }
 
     const { id, method, params } = req.data;
-    const adapter = this.options.adapter;
     const handler = this.options.handlers?.[method];
 
     try {
       if (handler) {
         this.respond(ws, id, await handler(params));
-      } else if (!adapter) {
-        this.respondError(ws, id, `method not found: ${method}`, -32601);
-      } else if (method === RPC_METHODS.start) {
-        const input = params as { taskId: string; cwd: string; prompt: string; repo?: RepoSpec | null };
-        const result = await adapter.start(input);
-        this.respond(ws, id, result);
-        this.beginStream(ws, input.taskId);
-      } else if (method === RPC_METHODS.resume) {
-        const input = params as { taskId: string; nativeSessionId: string; cwd: string; prompt: string };
-        await adapter.resume(input);
-        this.respond(ws, id, { ok: true });
-        this.beginStream(ws, input.taskId, { resubscribe: true });
-      } else if (method === RPC_METHODS.interrupt) {
-        const input = params as { taskId: string };
-        await adapter.interrupt(input.taskId);
-        this.respond(ws, id, { ok: true });
-      } else if (method === RPC_METHODS.stop) {
-        const input = params as { taskId: string; discard?: boolean };
-        await adapter.stop(input);
-        this.respond(ws, id, { ok: true });
-      } else if (method === RPC_METHODS.message) {
-        const input = params as { taskId: string; text: string };
-        this.respond(ws, id, await adapter.steer(input));
-      } else if (method === RPC_METHODS.followUp) {
-        const input = params as { taskId: string; text: string };
-        this.respond(ws, id, await adapter.followUp(input));
-      } else if (method === RPC_METHODS.browserWatch) {
-        const input = params as { taskId: string; watch: boolean };
-        this.respond(ws, id, adapter.watchBrowser ? await adapter.watchBrowser(input) : { supported: false });
       } else {
         this.respondError(ws, id, `method not found: ${method}`, -32601);
       }
@@ -412,16 +327,5 @@ export class OrchestrationClient {
     this.pending.delete(res.data.id);
     if (res.data.error) call.reject(new Error(res.data.error.message));
     else call.resolve(res.data.result);
-  }
-
-  private emit(ws: WebSocket, event: RunnerEvent): void {
-    if (ws.readyState !== ws.OPEN) return;
-    const notification = { jsonrpc: "2.0" as const, method: RPC_METHODS.event, params: event };
-    const parsed = jsonRpcNotification.safeParse(notification);
-    if (!parsed.success) {
-      logger.error({ error: parsed.error }, "built an invalid session/update notification");
-      return;
-    }
-    ws.send(JSON.stringify(parsed.data));
   }
 }

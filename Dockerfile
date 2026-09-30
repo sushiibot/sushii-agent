@@ -22,15 +22,14 @@ RUN set -eu; \
     curl -fsSL "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LYCHEE_ARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin --strip-components=1 "lychee-${LYCHEE_ARCH}/lychee"
 
-# gh: the GitHub CLI, so a cloud-runner coding agent can open PRs itself (git push + gh pr create),
-# authenticated by the per-task GH_TOKEN the runner injects into its shell. Static binary, same
-# TARGETARCH fetch pattern as lychee.
+# gh: the GitHub CLI, so a coding agent can open PRs itself (git push + gh pr create), authenticated
+# by a GH_TOKEN in its shell. Static binary, same TARGETARCH fetch pattern as lychee.
 ARG GH_VERSION=2.63.2
 RUN set -eu; \
     curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh"
 
-# Headless browser for runner agents: Debian's chromium (built for both amd64 and arm64, unlike
+# Headless browser for agents: Debian's chromium (built for both amd64 and arm64, unlike
 # Chrome for Testing) driven by the agent-browser CLI. Static binary + its version-matched skill
 # docs taken from the npm tarball, same TARGETARCH pattern as above.
 ARG AGENT_BROWSER_VERSION=0.38.1
@@ -46,9 +45,7 @@ RUN set -eu; \
     curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
       | tar -xz -C /opt/agent-browser --strip-components=1 "package/bin/agent-browser-${AB_ARCH}" package/skill-data; \
     chmod 755 "/opt/agent-browser/bin/agent-browser-${AB_ARCH}"; \
-    ln -s "/opt/agent-browser/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser; \
-    printf '%s\n' '#!/bin/sh' 'exec bun /app/scripts/agent-browser-web.ts "$@"' > /usr/local/bin/agent-browser-web; \
-    chmod 755 /usr/local/bin/agent-browser-web
+    ln -s "/opt/agent-browser/bin/agent-browser-${AB_ARCH}" /usr/local/bin/agent-browser
 # Containers need --no-sandbox (no user namespaces, root or not); Docker's 64MB /dev/shm crashes Chromium without the shm flag.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
     AGENT_BROWSER_SKILLS_DIR=/opt/agent-browser/skill-data \
@@ -97,5 +94,5 @@ USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]
 
-# Default target: the bot (and the runner, which overrides CMD).
+# Default target: the bot.
 FROM base AS bot

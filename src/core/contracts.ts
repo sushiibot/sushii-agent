@@ -416,12 +416,12 @@ export interface ToolRegistry {
       surface: SurfaceId;
       spaceId: string;
       autoMod?: boolean;
-      /** Author-aware owner-DM gating (runner + update_profile tools). When the principal registry is
+      /** Author-aware owner-DM gating (update_profile). When the principal registry is
        *  configured these decide visibility; unconfigured falls back to the space-string heuristic. */
       isOwner?: boolean;
       isPrivate?: boolean;
       /** Whether the caller is authorized for this space (owner OR a team-trusted member). Gates
-       *  runner + ops-triage tool visibility in the configured regime; update_profile stays isOwner. */
+       *  team_config + ops-triage tool visibility in the configured regime; update_profile stays isOwner. */
       authorized?: boolean;
       /** Whether the moderation module is resolved for this space. Gates conversational moderation
        *  tools (list/add/delete automod keyword, search_audit_log) — independent of the chat entry
@@ -552,7 +552,7 @@ export interface AgentCoreDeps {
   compactor?: Compactor;
   /** Durable cross-session memory, proactively injected each turn. When absent, none injected. */
   memoryProvider?: MemoryProvider;
-  /** What the turn's initiator can have the agent do beyond its tools (runners, ops), as system prompt
+  /** What the turn's initiator can have the agent do beyond its tools (team, ops), as system prompt
    *  text. Gated per initiator + space, so it matches the tools that check the same thing. */
   capabilitySections?: (turn: {
     surface: string;
@@ -560,7 +560,7 @@ export interface AgentCoreDeps {
     userId: string;
     isPrivate: boolean;
     isOwner: boolean;
-    /** Owner OR a trusted member of this space's team — same signal that gates runner/ops tools. */
+    /** Owner OR a trusted member of this space's team — same signal that gates team/ops tools. */
     authorized: boolean;
     /** Names of the tools resolved for this turn. */
     tools: string[];

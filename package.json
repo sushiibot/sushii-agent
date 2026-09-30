@@ -5,7 +5,6 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts | pino-pretty",
-    "runner": "bun src/orchestration/runner/index.ts",
     "workspace": "bun src/workspace/index.ts",
     "test": "bun test"
   },
@@ -28,11 +27,9 @@
     "@slack/bolt": "^5.1.0",
     "ai": "^6.0.146",
     "discord.js": "^14.16.3",
-    "dompurify": "^3.4.15",
     "drizzle-orm": "^0.45.2",
     "exa-js": "2.14.0",
     "hono": "^4.13.2",
-    "marked": "^18.0.13",
     "nostr-tools": "^2.25.2",
     "openai": "^4.77.0",
     "pino": "^10.3.1",

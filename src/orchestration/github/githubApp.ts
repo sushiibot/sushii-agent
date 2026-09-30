@@ -1,17 +1,21 @@
 import { createSign } from "node:crypto";
 import { getLogger } from "../../logger.ts";
-import type { RepoSpec } from "../contracts.ts";
 
-const log = getLogger("orchestration.runner.githubApp");
+const log = getLogger("orchestration.github.app");
+
+export interface RepoSpec {
+  owner: string;
+  repo: string;
+}
 
 export interface RepoToken {
   token: string;
   expiresAt: number; // epoch ms
 }
 
-// A re-callable source of a short-lived git credential scoped to one repo. The runner calls it
-// again at push time rather than holding a token minted at dispatch — installation tokens expire
-// in ~1h and a long task would otherwise push with a dead credential.
+// A re-callable source of a short-lived git credential scoped to one repo. Callers ask again at
+// push time rather than holding a token minted up front — installation tokens expire in ~1h and a
+// long task would otherwise push with a dead credential.
 export interface GitTokenProvider {
   tokenFor(spec: RepoSpec): Promise<RepoToken>;
 }
@@ -107,14 +111,14 @@ export class GitHubAppTokenProvider implements GitTokenProvider {
   }
 }
 
-// Build a provider from the runner's env, or null when the App is not configured (clone-on-demand
-// then simply stays unavailable — dispatch with a repo is rejected rather than half-working).
+// Build a provider from the env, or null when the App is not configured (repo access then stays
+// unavailable rather than half-working).
 export function tokenProviderFromEnv(env: NodeJS.ProcessEnv = process.env): GitTokenProvider | null {
   const appId = env.GITHUB_APP_ID?.trim();
   // Accept the PEM inline or as \n-escaped (how ansible vault / env vars usually carry it).
   const privateKey = env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n").trim();
   if (!appId || !privateKey) {
-    log.info("GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY unset — clone-on-demand disabled on this runner");
+    log.info("GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY unset — GitHub App tokens disabled");
     return null;
   }
   return new GitHubAppTokenProvider({ appId, privateKey });

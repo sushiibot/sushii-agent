@@ -45,7 +45,6 @@ describe("OrchestrationClient extra handlers", () => {
       url: orch.url,
       runnerId: "workspace-drk",
       kind: "pi-workspace",
-      role: "workspace",
       state: () => state,
       heartbeatMs: 0,
       handlers: { "chat/abort": async () => ({ aborted: true }) },
@@ -78,10 +77,10 @@ describe("OrchestrationClient extra handlers", () => {
 
 const WEB_SEARCH = { name: "web_search", description: "search", inputSchema: { type: "object", properties: {}, additionalProperties: false }, approval: "none" };
 
-async function registeredWith(registerResult: unknown, role: "workspace" | "task-runner") {
+async function registeredWith(registerResult: unknown) {
   const orch = fakeOrchestrator(registerResult);
-  const results: Array<WorkspaceRegisterResult | null> = [];
-  const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", role, heartbeatMs: 0, onRegistered: (r) => results.push(r) });
+  const results: WorkspaceRegisterResult[] = [];
+  const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", heartbeatMs: 0, onRegistered: (r) => results.push(r) });
   const running = client.run();
   await waitFor(() => results.length === 1);
   client.close();
@@ -92,29 +91,34 @@ async function registeredWith(registerResult: unknown, role: "workspace" | "task
 
 describe("OrchestrationClient register result", () => {
   test("a workspace gets the parsed tool manifest", async () => {
-    expect(await registeredWith({ ok: true, tools: [WEB_SEARCH] }, "workspace")).toEqual([{ ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"] }]);
+    expect(await registeredWith({ ok: true, tools: [WEB_SEARCH] })).toEqual([{ ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"] }]);
   });
 
   test("a malformed manifest entry drops only that entry", async () => {
     const newerApproval = { ...WEB_SEARCH, name: "file_linear_issue", approval: "twice" };
-    expect(await registeredWith({ ok: true, tools: [{ name: 1 }, newerApproval, WEB_SEARCH] }, "workspace")).toEqual([
+    expect(await registeredWith({ ok: true, tools: [{ name: 1 }, newerApproval, WEB_SEARCH] })).toEqual([
       { ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"] },
     ]);
   });
 
   test("a result with no tools list reads as no tools", async () => {
-    expect(await registeredWith({ ok: true, tools: "web_search" }, "workspace")).toEqual([{ ok: true, tools: [] }]);
+    expect(await registeredWith({ ok: true, tools: "web_search" })).toEqual([{ ok: true, tools: [] }]);
   });
 
-  test("a task runner gets null", async () => {
-    expect(await registeredWith({ ok: true }, "task-runner")).toEqual([null]);
+  test("registers as a workspace explicitly", async () => {
+    const orch = fakeOrchestrator();
+    const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", heartbeatMs: 0 });
+    await client.connect();
+    client.close();
+    orch.stop();
+    expect((orch.received.find((m) => m.method === "runner/register")?.params as { role?: string }).role).toBe("workspace");
   });
 });
 
 describe("OrchestrationClient.request failures", () => {
   async function connected() {
     const orch = fakeOrchestrator();
-    const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", role: "workspace", heartbeatMs: 0 });
+    const client = new OrchestrationClient({ url: orch.url, runnerId: "r", kind: "k", heartbeatMs: 0 });
     await client.connect();
     client.listen();
     return { orch, client };

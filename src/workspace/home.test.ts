@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runnerGit } from "../orchestration/runner/runnerGit.ts";
+import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import { loadAgentDefs } from "./subagents/agentDefs.ts";
 import { MEMORY_MD_CAP, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
 
