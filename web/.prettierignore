@@ -10,3 +10,4 @@ bun.lockb
 /build-proto/
 /test-results/
 /playwright-report/
+/e2e/harness/dist/

@@ -1,5 +1,6 @@
 import { dev } from '$app/environment';
 import { resyncPush } from './push';
+import { serviceWorkerUrl } from './trusted-types';
 
 interface BeforeInstallPromptEvent extends Event {
 	prompt(): Promise<void>;
@@ -107,7 +108,7 @@ class Pwa {
 		if (!('serviceWorker' in navigator)) return;
 		let reg: ServiceWorkerRegistration;
 		try {
-			reg = await navigator.serviceWorker.register('/service-worker.js', {
+			reg = await navigator.serviceWorker.register(serviceWorkerUrl(), {
 				type: dev ? 'module' : 'classic'
 			});
 		} catch (err) {

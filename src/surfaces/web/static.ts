@@ -80,12 +80,17 @@ export function inlineScriptHashes(html: string): string[] {
   return [...hashes];
 }
 
+/** Trusted Types policies the SPA creates: Svelte's template policy, and the app's service-worker URL
+ *  policy in web/src/lib/app/trusted-types.ts. Any other createPolicy call throws. */
+export const TRUSTED_TYPE_POLICIES = ["svelte-trusted-html", "sushii-sw-url"] as const;
+
 export function buildCsp(scriptHashes: string[]): string {
   return [
     "default-src 'self'",
     ["script-src 'self'", ...scriptHashes].join(" "),
     // Svelte transitions and component libraries set inline styles at runtime.
     "style-src 'self' 'unsafe-inline'",
+    // data: is the build-inlined favicon; blob: is local photo previews.
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
@@ -95,6 +100,8 @@ export function buildCsp(scriptHashes: string[]): string {
     "base-uri 'none'",
     "form-action 'self'",
     "frame-ancestors 'none'",
+    "require-trusted-types-for 'script'",
+    ["trusted-types", ...TRUSTED_TYPE_POLICIES].join(" "),
   ].join("; ");
 }
 

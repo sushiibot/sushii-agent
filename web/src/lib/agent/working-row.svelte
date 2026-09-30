@@ -87,7 +87,7 @@
 	</summary>
 	{#if count}
 		<ol class="flex flex-col border-t py-1">
-			{#each turn.steps as step (step.id)}
+			{#each turn.steps as step, i (`${i}:${step.id}`)}
 				<li>
 					<details open={openStep === step.id} class="group/step">
 						<summary

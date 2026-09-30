@@ -29,3 +29,6 @@ vite.config.ts.timestamp-*
 /build-proto
 /test-results
 /playwright-report
+
+# Render harness build
+/e2e/harness/dist
