@@ -250,6 +250,11 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     this.deps.log.append("approval_resolved", { nonce, decision: wire, ...(result ? { result } : {}) }, result ? `${nonce}:result` : nonce);
   }
 
+  /** Not a chat event, so it takes the next seq: only a receipt for something newer suppresses it. */
+  async notifyPhotoQuota(usedBytes: number, capBytes: number): Promise<void> {
+    await this.notify(this.deps.log.head() + 1, { kind: "quota", usedBytes, capBytes });
+  }
+
   close(): void {
     for (const t of this.turns.values()) this.timers.clear(t.snapshotTimer);
   }

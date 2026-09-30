@@ -12,7 +12,8 @@ export type PushEvent =
   | { kind: "ask"; askId: string; question: string }
   | { kind: "auth" }
   | { kind: "reply" | "proactive"; text: string }
-  | { kind: "interrupted" };
+  | { kind: "interrupted" }
+  | { kind: "quota"; usedBytes: number; capBytes: number };
 
 /** Approvals and asks ring even in quiet hours; everything else goes out silent then, never dropped. */
 export function pushFor(event: PushEvent, opts: { quiet: boolean }): PushPayload {
@@ -32,6 +33,8 @@ export function pushFor(event: PushEvent, opts: { quiet: boolean }): PushPayload
       return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/", tag: "chat", ...silent };
     case "interrupted":
       return { title: TITLE, body: "Turn interrupted", url: "/", tag: "chat", ...silent };
+    case "quota":
+      return { title: "Photo storage almost full", body: `${Math.round((event.usedBytes / event.capBytes) * 100)}% of the photo quota is used.`, url: "/", tag: "quota", ...silent };
   }
 }
 

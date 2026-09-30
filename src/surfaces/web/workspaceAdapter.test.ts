@@ -360,6 +360,35 @@ describe("web adapter push rules", () => {
     expect(h.breakGlass).toEqual(["d".repeat(16)]);
   });
 
+  test("the photo quota warning pushes as quota, silent in quiet hours, and a newer seen receipt suppresses it", async () => {
+    let quiet = false;
+    const clock = clockTimers();
+    const h = setup({ quiet: () => quiet, presenceTimers: clock.timers });
+    await h.adapter.sendReply(null, { kind: "reply", text: "earlier", toolCount: null }, attempt("o1"));
+    await tick();
+    // A receipt for what was already on screen does not cover a warning raised after it.
+    h.presence.seen(h.log.head());
+    await h.adapter.notifyPhotoQuota(80, 100);
+    expect(h.pushes.map((p) => [p.tag, p.body, p.silent])).toEqual([
+      ["chat", "earlier", undefined],
+      ["quota", "80% of the photo quota is used.", undefined],
+    ]);
+
+    quiet = true;
+    await h.adapter.notifyPhotoQuota(85, 100);
+    expect(h.pushes.at(-1)).toMatchObject({ tag: "quota", silent: true });
+
+    const close = h.presence.open("s1");
+    const pending = h.adapter.notifyPhotoQuota(90, 100);
+    await h.adapter.sendReply(null, { kind: "reply", text: "later", toolCount: null }, attempt("o2"));
+    h.presence.seen(h.log.head());
+    clock.advance(SEEN_WAIT_MS);
+    await pending;
+    await tick();
+    expect(h.pushes.filter((p) => p.tag === "quota")).toHaveLength(2);
+    close();
+  });
+
   test("quiet hours send replies silent and never drop them", async () => {
     let quiet = true;
     const h = setup({ quiet: () => quiet });

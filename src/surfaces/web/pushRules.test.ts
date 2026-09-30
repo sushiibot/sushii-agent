@@ -18,6 +18,7 @@ describe("pushFor", () => {
     expect(pushFor({ kind: "reply", text: "done" }, { quiet })).toEqual({ title: "sushii-agent", body: "done", url: "/", tag: "chat", renotify: false });
     expect(pushFor({ kind: "proactive", text: "" }, { quiet })).toMatchObject({ tag: "chat", body: "Sent a file" });
     expect(pushFor({ kind: "interrupted" }, { quiet })).toMatchObject({ tag: "chat", body: "Turn interrupted" });
+    expect(pushFor({ kind: "quota", usedBytes: 4, capBytes: 5 }, { quiet })).toEqual({ title: "Photo storage almost full", body: "80% of the photo quota is used.", url: "/", tag: "quota" });
   });
 
   test("an ask without an id falls back to the chat tag and still rings", () => {
@@ -30,7 +31,7 @@ describe("pushFor", () => {
     const quiet = true;
     expect(pushFor({ kind: "approval", nonce: "n", tool: "t" }, { quiet }).silent).toBeUndefined();
     expect(pushFor({ kind: "ask", askId: "a", question: "q" }, { quiet }).silent).toBeUndefined();
-    for (const e of [{ kind: "reply", text: "x" }, { kind: "proactive", text: "x" }, { kind: "auth" }, { kind: "interrupted" }] as const) {
+    for (const e of [{ kind: "reply", text: "x" }, { kind: "proactive", text: "x" }, { kind: "auth" }, { kind: "interrupted" }, { kind: "quota", usedBytes: 1, capBytes: 1 }] as const) {
       expect(pushFor(e, { quiet }).silent).toBe(true);
     }
   });

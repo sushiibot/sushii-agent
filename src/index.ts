@@ -47,7 +47,6 @@ import { startWebGateway } from "./surfaces/web/server.ts";
 import { createWebChat } from "./surfaces/web/chat.ts";
 import { createUploadReadHandler } from "./surfaces/web/uploadRoutes.ts";
 import { DiskUploadStore } from "./surfaces/web/uploads.ts";
-import { sendPush } from "./surfaces/web/push.ts";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -113,8 +112,8 @@ async function main() {
   const uploads = new DiskUploadStore({
     root: config.webUploadsDir,
     db,
-    onPhotoQuotaWarning: (used, cap) =>
-      void sendPush({ title: "Photo storage almost full", body: `${Math.round((used / cap) * 100)}% of the photo quota is used.`, url: "/", tag: "quota" }),
+    // Fires only on an upload, which needs the web chat created below.
+    onPhotoQuotaWarning: (used, cap) => void webChat.adapter.notifyPhotoQuota(used, cap),
   });
   const workspace = bootWorkspace(
     {
