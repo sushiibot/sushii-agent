@@ -8,7 +8,7 @@ description: Read PDF, Word (docx), PowerPoint (pptx), Excel (xlsx), OpenDocumen
 | Format | Command |
 |---|---|
 | PDF | `pdftotext -layout file.pdf -` (stdout) |
-| docx, odt, pptx, epub, rtf, html | `pandoc -t gfm file.docx` |
+| docx, odt, pptx, epub, rtf, html | `pandoc -t gfm-raw_html file.docx` |
 | xlsx | `xlsx2csv -a file.xlsx` (all sheets as CSV) |
 
 ## PDF
@@ -28,14 +28,14 @@ description: Read PDF, Word (docx), PowerPoint (pptx), Excel (xlsx), OpenDocumen
 ## xlsx2csv
 
 - `-a` prints every sheet, each under a `-------- N - SheetName` line; without it you get the first sheet only.
-- `-n SheetName` picks one sheet. Use `xlsx2csv`, not `pandoc`, for xlsx: pandoc's reader misses cells.
+- `-n SheetName` or `-s N` (1-based) picks one sheet. Use `xlsx2csv`, not `pandoc`, for xlsx: pandoc's reader misses cells.
 
 ## Large files
 
 Don't print a big document into the conversation. Write it to scratch, then search it:
 
 ```sh
-pandoc -t gfm report.docx -o ~/scratch/report.md
+pandoc -t gfm-raw_html report.docx -o ~/scratch/report.md
 wc -l ~/scratch/report.md
 rg -n "keyword" ~/scratch/report.md
 ```
