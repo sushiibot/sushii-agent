@@ -33,7 +33,8 @@
 
 	let scroller = $state<HTMLElement | null>(null);
 	let newMessages = $state(false);
-	let armed = $state(false);
+	let armedFor = $state<string | null>(null);
+	let armGen = $state(0);
 	let viewer = $state<FileRef | undefined>();
 	let now = $state(Date.now());
 	let slowLoad = $state(false);
@@ -43,14 +44,6 @@
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 	const commandsOffline = $derived(store.workspace === 'offline');
 	const empty = $derived(store.history !== 'loading' && store.messages.length === 0);
-
-	const tray = $derived(
-		store.approvals.length
-			? { items: store.approvals, armed, state: store.trayPhase }
-			: store.timedOut
-				? { items: [store.timedOut], armed: false, state: 'timeout' as const }
-				: undefined
-	);
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
 		if (!pwa.online) return { kind: 'offline' };
@@ -64,14 +57,43 @@
 		return undefined;
 	});
 
-	// Approve stays locked for a moment whenever a new request reaches the top of the tray.
+	// Approve stays locked for a moment whenever a new request reaches the top of the tray or the
+	// tray moves. Derived, so a new top request is locked in the same frame it first paints.
 	const topNonce = $derived(store.approvals[0]?.nonce);
+	const armKey = $derived(topNonce ? `${topNonce}:${armGen}` : null);
+	const armed = $derived(armKey !== null && armedFor === armKey);
 	$effect(() => {
-		if (!topNonce) return;
-		armed = false;
-		const t = setTimeout(() => (armed = true), ARM_MS);
+		const key = armKey;
+		if (!key) return;
+		const t = setTimeout(() => (armedFor = key), ARM_MS);
 		return () => clearTimeout(t);
 	});
+	$effect(() => {
+		if (!topNonce) return;
+		// The tray's own size changes when it arms, so re-arm on viewport changes (keyboard, rotation)
+		// and on returning to the app, not on tray resizes.
+		const rearm = () => armGen++;
+		const onVisibility = () => {
+			if (document.visibilityState === 'visible') rearm();
+		};
+		const vv = window.visualViewport;
+		vv?.addEventListener('resize', rearm);
+		window.addEventListener('resize', rearm);
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			vv?.removeEventListener('resize', rearm);
+			window.removeEventListener('resize', rearm);
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
+	});
+
+	const tray = $derived(
+		store.approvals.length
+			? { items: store.approvals, armed, state: store.trayPhase }
+			: store.timedOut
+				? { items: [store.timedOut], armed: false, state: 'timeout' as const }
+				: undefined
+	);
 
 	$effect(() => {
 		if (store.connection !== 'reconnecting') return;
@@ -117,14 +139,41 @@
 		return () => el.removeEventListener('scroll', onScroll);
 	});
 
+	const OLDER_MARGIN_PX = 200;
+	let filling = false;
+
+	function olderInView() {
+		if (!older || !scroller) return false;
+		const root = scroller.getBoundingClientRect();
+		const r = older.getBoundingClientRect();
+		return r.bottom >= root.top - OLDER_MARGIN_PX && r.top <= root.bottom;
+	}
+
+	// The observer fires only when visibility changes, so keep loading while a short page leaves the
+	// sentinel on screen.
+	async function fillOlder() {
+		if (filling) return;
+		filling = true;
+		try {
+			// Bounded, in case a server hands back a cursor that never moves.
+			for (let n = 0; n < 20; n++) {
+				if (!store.hasOlder || store.olderError || store.olderLoading || !olderInView()) break;
+				await store.loadOlder();
+				await tick();
+			}
+		} finally {
+			filling = false;
+		}
+	}
+
 	$effect(() => {
 		const el = older;
 		if (!el || !scroller) return;
 		const io = new IntersectionObserver(
 			(entries) => {
-				if (entries.some((e) => e.isIntersecting)) void store.loadOlder();
+				if (entries.some((e) => e.isIntersecting)) void fillOlder();
 			},
-			{ root: scroller, rootMargin: '200px 0px 0px 0px' }
+			{ root: scroller, rootMargin: `${OLDER_MARGIN_PX}px 0px 0px 0px` }
 		);
 		io.observe(el);
 		return () => io.disconnect();
@@ -391,7 +440,7 @@
 	{:else}
 		<div class="mx-auto max-w-2xl">
 			<div class="px-4 pt-4"><InstallHint /></div>
-			{#if store.hasOlder}
+			{#if store.hasOlder && !store.olderError}
 				<div bind:this={older} class="flex justify-center px-4 pt-2">
 					<Button variant="ghost" disabled={store.olderLoading} onclick={() => store.loadOlder()}>
 						{#if store.olderLoading}<LoaderCircle

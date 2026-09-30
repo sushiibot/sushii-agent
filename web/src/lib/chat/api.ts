@@ -13,7 +13,9 @@ import type {
 export class ChatHttpError extends Error {
 	constructor(
 		readonly status: number,
-		message: string
+		message: string,
+		/** The parsed JSON error body, when there was one. */
+		readonly body?: unknown
 	) {
 		super(message);
 		this.name = 'ChatHttpError';
@@ -24,9 +26,10 @@ export class ChatHttpError extends Error {
 	}
 }
 
+export type HistoryFailure = 'offline' | 'unsupported' | 'reset' | 'error';
+
 export type HistoryResult =
-	| { ok: true; page: HistoryResponse }
-	| { ok: false; reason: 'offline' | 'unsupported' | 'reset' | 'error' };
+	{ ok: true; page: HistoryResponse } | { ok: false; reason: HistoryFailure };
 
 export interface ChatApi {
 	history(q: { before?: string; limit: number }): Promise<HistoryResult>;
@@ -58,8 +61,29 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
 	} catch {
 		throw new ChatHttpError(0, "Can't reach the agent.");
 	}
-	if (!res.ok) throw new ChatHttpError(res.status, `The agent answered ${res.status}.`);
+	if (!res.ok) {
+		const body: unknown = await res.json().catch(() => undefined);
+		throw new ChatHttpError(res.status, `The agent answered ${res.status}.`, body);
+	}
 	return res;
+}
+
+const flag = (body: unknown, key: string) =>
+	typeof body === 'object' && body !== null && (body as Record<string, unknown>)[key] === true;
+
+/** Known statuses decide; a body flag only names the reason when the status doesn't. */
+export function historyFailure(status: number, body: unknown): HistoryFailure {
+	const byStatus = ({ 503: 'offline', 501: 'unsupported', 409: 'reset' } as const)[status];
+	if (byStatus) return byStatus;
+	if (flag(body, 'reset')) return 'reset';
+	if (flag(body, 'unsupported')) return 'unsupported';
+	if (flag(body, 'offline')) return 'offline';
+	return 'error';
+}
+
+/** True when the 202 says the router already took the message. Older bots send no `routed`. */
+export function wasRouted(res: unknown): boolean {
+	return flag(res, 'routed');
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -78,11 +102,8 @@ export const httpChatApi: ChatApi = {
 			const res = await send('GET', `/chat/history?${q}`);
 			return { ok: true, page: await json<HistoryResponse>(res) };
 		} catch (err) {
-			const status = err instanceof ChatHttpError ? err.status : 0;
-			return {
-				ok: false,
-				reason: ({ 503: 'offline', 501: 'unsupported', 409: 'reset' } as const)[status] ?? 'error'
-			};
+			const e = err instanceof ChatHttpError ? err : new ChatHttpError(0, String(err));
+			return { ok: false, reason: historyFailure(e.status, e.body) };
 		}
 	},
 	async postMessage(body) {

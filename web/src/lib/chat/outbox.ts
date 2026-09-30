@@ -9,6 +9,24 @@ export interface OutboxEntry {
 	posted: boolean;
 }
 
+/** A composer photo kept with the draft, so an attached photo survives the app being killed. */
+export interface DraftPhoto {
+	id: string;
+	name: string;
+	blob: Blob;
+	/** The X-Client-Id its upload uses, so a retried upload dedupes on the server. */
+	key: string;
+	uploadId?: string;
+	uploadedAt?: number;
+	bytes?: number;
+}
+
+export interface Draft {
+	id: string;
+	text: string;
+	photos?: DraftPhoto[];
+}
+
 export interface KeyValue<T> {
 	all(): Promise<T[]>;
 	put(v: T): Promise<void>;
@@ -49,12 +67,38 @@ function memory<T>(key: (v: T) => string): KeyValue<T> {
 	};
 }
 
+let warned = false;
+function warnFallback(err: unknown) {
+	if (warned) return;
+	warned = true;
+	console.warn(
+		'IndexedDB is unavailable; queued messages and drafts last only until the app closes.',
+		err
+	);
+}
+
+let db: Promise<IDBDatabase | null> | null = null;
+const database = () =>
+	(db ??= (
+		typeof indexedDB === 'undefined' ? Promise.reject(new Error('no indexedDB')) : open()
+	).catch((err) => {
+		warnFallback(err);
+		return null;
+	}));
+
+/** Asks the browser once not to evict the outbox under storage pressure. */
+export function requestPersistence() {
+	if (typeof navigator === 'undefined' || !navigator.storage?.persist) return;
+	void navigator.storage
+		.persisted()
+		.then((yes) => (yes ? true : navigator.storage.persist()))
+		.catch(() => {});
+}
+
 /** An IndexedDB object store, or a Map when IndexedDB is missing or refuses to open (private mode). */
 function store<T>(name: 'outbox' | 'drafts', key: (v: T) => string): KeyValue<T> {
-	let db: Promise<IDBDatabase | null> | null = null;
 	const fallback = memory(key);
-	const get = () =>
-		(db ??= typeof indexedDB === 'undefined' ? Promise.resolve(null) : open().catch(() => null));
+	const get = database;
 	const tx = async (mode: IDBTransactionMode) =>
 		(await get())?.transaction(name, mode).objectStore(name);
 	return {
@@ -76,4 +120,4 @@ function store<T>(name: 'outbox' | 'drafts', key: (v: T) => string): KeyValue<T>
 }
 
 export const outbox = store<OutboxEntry>('outbox', (e) => e.clientId);
-export const drafts = store<{ id: string; text: string }>('drafts', (d) => d.id);
+export const drafts = store<Draft>('drafts', (d) => d.id);

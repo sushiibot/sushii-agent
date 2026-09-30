@@ -1,19 +1,28 @@
 import type { ChatMessage, PendingApproval, PhotoDraft } from '$lib/agent/types';
-import { ChatHttpError, httpChatApi, type ChatApi } from './api';
+import { ChatHttpError, httpChatApi, wasRouted, type ChatApi } from './api';
 import {
 	MESSAGE_TEXT_MAX,
 	MESSAGE_UPLOADS_MAX,
 	type ChatEnvelope,
 	type WorkspaceState
 } from './events';
-import { drafts, outbox, type KeyValue, type OutboxEntry } from './outbox';
-import { jpegName, PhotoError, preparePhoto } from './photo';
+import {
+	drafts,
+	outbox,
+	requestPersistence,
+	type Draft,
+	type DraftPhoto,
+	type KeyValue,
+	type OutboxEntry
+} from './outbox';
+import { photoName, PhotoError, preparePhoto } from './photo';
 import { toMessages } from './project';
 import {
 	addLocalSend,
 	addPlaceholder,
 	applyEvent,
 	createState,
+	dropApproval,
 	markAsk,
 	mergeHistory,
 	openTurns,
@@ -35,6 +44,10 @@ const UNACKED_MS = 60_000;
 const RETRY_MS = 30_000;
 /** The server GCs unreferenced uploads after 24h; re-upload well before that. */
 const REUPLOAD_AFTER_MS = 20 * 60 * 60 * 1000;
+/** How long start() waits for the stream's first frame before loading history anyway. */
+const HELLO_WAIT_MS = 3000;
+const DRAFT_DEBOUNCE_MS = 300;
+const NOT_OWNER = "This device isn't signed in as the owner.";
 
 function uploadError(status: number): NonNullable<PhotoDraft['error']> {
 	if (status === 413) return 'size';
@@ -46,17 +59,19 @@ function uploadError(status: number): NonNullable<PhotoDraft['error']> {
 interface Photo extends PhotoDraft {
 	uploadId?: string;
 	uploadedAt?: number;
-	/** The resized JPEG, kept for re-uploads. */
+	/** The resized image, kept for re-uploads and saved with the draft. */
 	blob?: Blob;
 	bytes?: number;
 	file: Blob;
+	/** X-Client-Id for this photo's upload; the same across retries so the server dedupes them. */
+	key: string;
 }
 
 export interface ChatStoreDeps {
 	transport?: ChatTransport;
 	api?: ChatApi;
 	outbox?: KeyValue<OutboxEntry>;
-	drafts?: KeyValue<{ id: string; text: string }>;
+	drafts?: KeyValue<Draft>;
 }
 
 export class ChatStore {
@@ -64,7 +79,7 @@ export class ChatStore {
 	#transport: ChatTransport;
 	#api: ChatApi;
 	#outbox: KeyValue<OutboxEntry>;
-	#drafts: KeyValue<{ id: string; text: string }>;
+	#drafts: KeyValue<Draft>;
 
 	items = $state.raw<readonly ChatItem[]>([]);
 	messages = $state.raw<ChatMessage[]>([]);
@@ -79,6 +94,8 @@ export class ChatStore {
 	history = $state<'loading' | 'ready' | 'error'>('loading');
 	olderLoading = $state(false);
 	hasOlder = $state(false);
+	/** The last older page failed; the top of the list offers Retry instead of loading on scroll. */
+	olderError = $state(false);
 	stopping = $state(false);
 	toast = $state<string | null>(null);
 	/** Screen-reader text, set once per completed reply. */
@@ -100,6 +117,11 @@ export class ChatStore {
 	#pending = new Map<string, OutboxEntry>();
 	#inflight = new Set<string>();
 	#failed = new Set<string>();
+	/** Posted entries whose resend failed with a retryable error, so the retry timer covers them. */
+	#retrying = new Set<string>();
+	#greeted: Promise<void>;
+	#draftRestored = false;
+	#greet: () => void = () => {};
 	#unacked = new Map<string, ReturnType<typeof setTimeout>>();
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
 	#toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -115,6 +137,7 @@ export class ChatStore {
 		this.#api = deps.api ?? httpChatApi;
 		this.#outbox = deps.outbox ?? outbox;
 		this.#drafts = deps.drafts ?? drafts;
+		this.#greeted = new Promise((r) => (this.#greet = r));
 	}
 
 	#openTurnList() {
@@ -125,28 +148,35 @@ export class ChatStore {
 
 	async start() {
 		if (this.#disconnect) return;
+		requestPersistence();
 		this.#disconnect = this.#transport.connect(
 			null,
 			(ev) => this.apply(ev),
 			(state) => this.#onTransport(state)
 		);
-		const onOnline = () => this.#flushOutbox();
-		const onVisible = () => {
+		const onOnline = () => this.#flushOutbox(false);
+		const onVisibility = () => {
 			if (document.visibilityState === 'visible') this.#scheduleSeen();
+			else this.#saveDraft();
 		};
+		const onPageHide = () => this.#saveDraft();
 		addEventListener('online', onOnline);
-		document.addEventListener('visibilitychange', onVisible);
+		addEventListener('pagehide', onPageHide);
+		document.addEventListener('visibilitychange', onVisibility);
 		this.#cleanup.push(
 			() => removeEventListener('online', onOnline),
-			() => document.removeEventListener('visibilitychange', onVisible)
+			() => removeEventListener('pagehide', onPageHide),
+			() => document.removeEventListener('visibilitychange', onVisibility)
 		);
 
 		const [entries, saved] = await Promise.all([
 			this.#outbox.all().catch(() => []),
 			this.#drafts.all().catch(() => [])
 		]);
-		const draft = saved.find((d) => d.id === 'main')?.text;
-		if (draft && !this.draft) this.draft = draft;
+		const draft = saved.find((d) => d.id === 'main');
+		if (draft?.text && !this.draft) this.draft = draft.text;
+		if (draft?.photos?.length && !this.photos.length) this.#restorePhotos(draft.photos);
+		this.#draftRestored = true;
 		for (const e of entries.sort((a, b) => a.at.localeCompare(b.at))) {
 			this.#pending.set(e.clientId, e);
 			addLocalSend(this.#s, {
@@ -165,6 +195,15 @@ export class ChatStore {
 			});
 		}
 		this.#commit();
+		// History waits for the stream's first frame, so every event after the page is either in it
+		// or replayed above hello's head.
+		let waited: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			this.#greeted,
+			new Promise<void>((r) => (waited = setTimeout(r, HELLO_WAIT_MS)))
+		]);
+		clearTimeout(waited);
+		if (!this.#disconnect) return;
 		await this.#loadHistory();
 	}
 
@@ -182,6 +221,7 @@ export class ChatStore {
 		]) {
 			if (t) clearTimeout(t);
 		}
+		this.#draftTimer = null;
 		if (this.#frame !== null) cancelAnimationFrame(this.#frame);
 	}
 
@@ -215,7 +255,7 @@ export class ChatStore {
 		this.items = [...s.items];
 		this.messages = toMessages(s.items, {
 			stopping: s.stopping,
-			historyGap: this.history === 'error'
+			historyGap: this.history === 'error' || this.olderError
 		});
 		this.approvals = s.approvals.map((a) => ({ nonce: a.nonce, view: a.view }));
 		this.timedOut = s.timedOut;
@@ -229,13 +269,17 @@ export class ChatStore {
 			case 'delivered': {
 				this.#pending.delete(e.clientId);
 				this.#failed.delete(e.clientId);
+				this.#retrying.delete(e.clientId);
 				clearTimeout(this.#unacked.get(e.clientId));
 				this.#unacked.delete(e.clientId);
 				void this.#outbox.delete(e.clientId).catch(() => {});
 				break;
 			}
 			case 'workspace':
-				if (e.state === 'online') this.#flushOutbox();
+				if (e.state === 'online') {
+					this.#flushOutbox(true);
+					if (this.history === 'error') this.retryHistory();
+				}
 				break;
 			case 'toast':
 				this.showToast(e.text);
@@ -262,10 +306,12 @@ export class ChatStore {
 	}
 
 	#onTransport(state: TransportState) {
+		// Any first outcome (hello, a failed open, forbidden, hidden) ends start()'s wait.
+		this.#greet();
 		if (state === 'reconnecting') this.reconnectingSince ??= Date.now();
 		else this.reconnectingSince = null;
 		this.connection = state;
-		if (state === 'open') this.#flushOutbox();
+		if (state === 'open') this.#flushOutbox(false);
 	}
 
 	showToast(text: string) {
@@ -278,26 +324,32 @@ export class ChatStore {
 
 	async #loadHistory() {
 		this.history = 'loading';
+		this.olderError = false;
 		this.#commit();
 		const r = await this.#api.history({ limit: HISTORY_PAGE });
+		// hello (and anything else let through the buffer) applies first, so its head filters the rest.
+		if (this.#queue.length) this.#flush();
+		const fx: Effect[] = [];
 		if (r.ok) {
-			mergeHistory(this.#s, r.page.items);
+			fx.push(...mergeHistory(this.#s, r.page.items));
 			this.#before = r.page.before;
 			this.hasOlder = r.page.before !== null;
 			this.history = 'ready';
 		} else {
 			this.history = 'error';
 		}
+		for (const e of fx) this.#effect(e);
 		const buffered = this.#buffer ?? [];
 		this.#buffer = null;
-		this.#queue.unshift(...buffered);
+		this.#queue.push(...buffered);
 		this.#flush();
-		this.#flushOutbox();
+		this.#flushOutbox(this.workspace === 'online');
 	}
 
 	async loadOlder() {
 		if (this.olderLoading || !this.#before) return;
 		this.olderLoading = true;
+		this.olderError = false;
 		const r = await this.#api.history({ before: this.#before, limit: HISTORY_PAGE });
 		this.olderLoading = false;
 		if (!r.ok && r.reason === 'reset') {
@@ -306,19 +358,25 @@ export class ChatStore {
 			return;
 		}
 		if (!r.ok) {
-			this.showToast("Couldn't load earlier messages. Try again in a moment.");
+			this.olderError = true;
+			this.#commit();
 			return;
 		}
-		mergeHistory(this.#s, r.page.items);
+		const fx = mergeHistory(this.#s, r.page.items);
 		this.#before = r.page.before;
 		this.hasOlder = r.page.before !== null;
 		this.#commit();
+		for (const e of fx) this.#effect(e);
 	}
 
+	/** Retries whichever history load failed: the newest page, or the last older one. */
 	retryHistory() {
-		if (this.history !== 'error') return;
-		this.#buffer = [];
-		void this.#loadHistory();
+		if (this.history === 'error') {
+			this.#buffer ??= [];
+			void this.#loadHistory();
+		} else if (this.olderError) {
+			void this.loadOlder();
+		}
 	}
 
 	// ── Sending ──
@@ -326,9 +384,55 @@ export class ChatStore {
 	setDraft(text: string) {
 		this.draft = text;
 		if (this.#draftTimer) clearTimeout(this.#draftTimer);
-		this.#draftTimer = setTimeout(() => {
-			void this.#drafts.put({ id: 'main', text }).catch(() => {});
-		}, 300);
+		this.#draftTimer = setTimeout(() => this.#saveDraft(), DRAFT_DEBOUNCE_MS);
+	}
+
+	/** Writes the draft text and its prepared photos now. */
+	#saveDraft() {
+		if (this.#draftTimer) clearTimeout(this.#draftTimer);
+		this.#draftTimer = null;
+		// Saving before the stored draft is read back would overwrite it with an empty one.
+		if (!this.#draftRestored) return;
+		const photos: DraftPhoto[] = this.photos.flatMap((p) =>
+			p.blob
+				? [
+						{
+							id: p.id,
+							name: p.name,
+							blob: p.blob,
+							key: p.key,
+							uploadId: p.uploadId,
+							uploadedAt: p.uploadedAt,
+							bytes: p.bytes
+						}
+					]
+				: []
+		);
+		void this.#drafts
+			.put({ id: 'main', text: this.draft, photos })
+			.catch((err) => console.warn("Couldn't save the draft.", err));
+	}
+
+	#restorePhotos(saved: DraftPhoto[]) {
+		const now = Date.now();
+		const photos: Photo[] = saved.map((d) => {
+			const fresh = !!d.uploadId && !!d.uploadedAt && now - d.uploadedAt < REUPLOAD_AFTER_MS;
+			return {
+				id: d.id,
+				name: d.name,
+				src: URL.createObjectURL(d.blob),
+				blob: d.blob,
+				file: d.blob,
+				bytes: d.bytes,
+				// A stale upload may already be collected, so it goes up again as a new row.
+				key: fresh ? d.key : ulid(),
+				...(fresh
+					? { state: 'uploaded' as const, uploadId: d.uploadId, uploadedAt: d.uploadedAt }
+					: { state: 'uploading' as const })
+			};
+		});
+		this.photos = photos.slice(0, MESSAGE_UPLOADS_MAX);
+		for (const p of this.photos) if (p.state !== 'uploaded') void this.#upload(p.id);
 	}
 
 	get sendBlocked(): boolean {
@@ -368,7 +472,7 @@ export class ChatStore {
 				preview: p.src,
 				ref: {
 					id: p.uploadId!,
-					contentType: 'image/jpeg',
+					contentType: p.blob?.type || 'image/jpeg',
 					bytes: p.bytes ?? 0,
 					name: p.name,
 					inline: true
@@ -379,10 +483,13 @@ export class ChatStore {
 		});
 		this.photos = [];
 		this.quotaFull = false;
-		this.setDraft('');
+		this.draft = '';
+		this.#saveDraft();
 		this.#commit();
 		this.#pending.set(entry.clientId, entry);
-		await this.#outbox.put(entry).catch(() => {});
+		await this.#outbox
+			.put(entry)
+			.catch((err) => console.warn("Couldn't save the message to the outbox.", err));
 		await this.#deliver(entry);
 		return true;
 	}
@@ -396,12 +503,18 @@ export class ChatStore {
 		this.#commit();
 		try {
 			await this.#refreshUploads(entry);
-			await this.#api.postMessage({
+			const res = await this.#api.postMessage({
 				clientId: id,
 				text: entry.text,
 				...(entry.uploadIds.length ? { uploadIds: entry.uploadIds } : {})
 			});
+			this.#retrying.delete(id);
 			if (!this.#pending.has(id)) return;
+			if (wasRouted(res)) {
+				this.#effect({ type: 'delivered', clientId: id });
+				setDelivery(this.#s, id, 'sent');
+				return;
+			}
 			entry.posted = true;
 			void this.#outbox.put(entry).catch(() => {});
 			if (this.workspace === 'offline') setDelivery(this.#s, id, 'queued-agent');
@@ -419,9 +532,11 @@ export class ChatStore {
 			if (!this.#pending.has(id)) return;
 			const e = err instanceof ChatHttpError ? err : new ChatHttpError(0, String(err));
 			if (e.retryable) {
+				this.#retrying.add(id);
 				setDelivery(this.#s, id, e.status === 0 && !navigator.onLine ? 'queued' : 'queued-agent');
 				this.#scheduleRetry();
 			} else {
+				this.#retrying.delete(id);
 				this.#failed.add(id);
 				setDelivery(this.#s, id, 'failed');
 			}
@@ -450,14 +565,20 @@ export class ChatStore {
 		if (this.#retryTimer) return;
 		this.#retryTimer = setTimeout(() => {
 			this.#retryTimer = null;
-			this.#flushOutbox();
+			this.#flushOutbox(false);
 		}, RETRY_MS);
 	}
 
-	#flushOutbox() {
+	/**
+	 * Sends what the bot doesn't hold yet. A 202'd entry waits in the bot for the workspace, so it goes
+	 * again only when `resendPosted` (the workspace came back) or when its own resend failed.
+	 */
+	#flushOutbox(resendPosted: boolean) {
 		if (this.#buffer) return;
 		for (const entry of this.#pending.values()) {
-			if (this.#failed.has(entry.clientId)) continue;
+			const id = entry.clientId;
+			if (this.#failed.has(id) || this.#inflight.has(id)) continue;
+			if (entry.posted && !resendPosted && !this.#retrying.has(id)) continue;
 			void this.#deliver(entry);
 		}
 	}
@@ -475,6 +596,7 @@ export class ChatStore {
 		if (!clientId || !this.#pending.has(clientId)) return;
 		this.#pending.delete(clientId);
 		this.#failed.delete(clientId);
+		this.#retrying.delete(clientId);
 		void this.#outbox.delete(clientId).catch(() => {});
 		removeLocal(this.#s, clientId);
 		this.#commit();
@@ -496,10 +618,11 @@ export class ChatStore {
 		return files.slice(0, Math.max(0, room)).map((file) => {
 			const photo: Photo = {
 				id: ulid(),
-				name: jpegName(file.name),
+				name: photoName(file.name),
 				src: URL.createObjectURL(file),
 				state: 'preparing',
-				file
+				file,
+				key: ulid()
 			};
 			this.photos = [...this.photos, photo];
 			return this.#upload(photo.id);
@@ -518,7 +641,8 @@ export class ChatStore {
 			try {
 				this.#patchPhoto(id, { state: 'preparing', error: undefined, progress: undefined });
 				blob = await preparePhoto(photo.file);
-				this.#patchPhoto(id, { blob });
+				this.#patchPhoto(id, { blob, name: photoName(photo.name, blob.type) });
+				this.#saveDraft();
 			} catch (err) {
 				this.#patchPhoto(id, {
 					state: 'failed',
@@ -527,13 +651,14 @@ export class ChatStore {
 				return;
 			}
 		}
-		if (!this.photos.some((p) => p.id === id)) return;
+		const current = this.photos.find((p) => p.id === id);
+		if (!current) return;
 		this.#patchPhoto(id, { state: 'uploading', progress: 0, error: undefined });
 		try {
 			const res = await this.#api.upload(
 				blob,
-				// The server answers a reused client id with 409, so every attempt gets its own.
-				{ name: photo.name, clientId: ulid() },
+				// The server returns the same upload for the same key and bytes, so a retry can't orphan one.
+				{ name: current.name, clientId: current.key },
 				(pct) => this.#patchPhoto(id, { progress: pct })
 			);
 			this.#patchPhoto(id, {
@@ -543,6 +668,7 @@ export class ChatStore {
 				bytes: res.bytes,
 				progress: 100
 			});
+			this.#saveDraft();
 		} catch (err) {
 			const status = err instanceof ChatHttpError ? err.status : 0;
 			if (status === 507) this.quotaFull = true;
@@ -555,6 +681,7 @@ export class ChatStore {
 		if (photo) URL.revokeObjectURL(photo.src);
 		this.photos = this.photos.filter((p) => p.id !== id);
 		if (!this.photos.some((p) => p.state === 'failed')) this.quotaFull = false;
+		this.#saveDraft();
 	}
 
 	retryPhoto(id: string) {
@@ -607,9 +734,21 @@ export class ChatStore {
 				markAsk(this.#s, askId, null);
 				this.showToast("Your answer didn't reach the agent. Try again.");
 			}
-		} catch {
-			markAsk(this.#s, askId, null);
-			this.showToast("Couldn't send your answer. Check your connection and try again.");
+		} catch (err) {
+			const status = err instanceof ChatHttpError ? err.status : 0;
+			if (status === 404) {
+				ask.state = 'history';
+				this.showToast('That question is no longer waiting for an answer.');
+			} else {
+				markAsk(this.#s, askId, null);
+				this.showToast(
+					status === 403
+						? NOT_OWNER
+						: status === 0
+							? "Couldn't send your answer. Check your connection and try again."
+							: "Your answer didn't reach the agent. Try again."
+				);
+			}
 		}
 		this.#commit();
 	}
@@ -619,11 +758,26 @@ export class ChatStore {
 		this.trayPhase = 'submitting';
 		try {
 			const r = await this.#api.decide(nonce, { decision });
-			if (r.status === 'expired') this.showToast('That approval had already expired.');
-		} catch {
-			this.showToast("Couldn't send your decision. Check your connection and try again.");
+			if (r.status === 'expired') {
+				dropApproval(this.#s, nonce, 'timeout');
+				this.showToast('That approval had already expired.');
+			}
+		} catch (err) {
+			this.#s.mine.delete(`p:${nonce}`);
+			const status = err instanceof ChatHttpError ? err.status : 0;
+			if (status === 404) {
+				dropApproval(this.#s, nonce, 'cancelled');
+				this.showToast('That approval is no longer waiting for a decision.');
+			} else if (status === 403) {
+				this.showToast(NOT_OWNER);
+			} else if (status === 0) {
+				this.showToast("Couldn't send your decision. Check your connection and try again.");
+			} else {
+				this.showToast("The agent couldn't take your decision. Try again.");
+			}
 		} finally {
 			this.trayPhase = 'ready';
+			this.#commit();
 		}
 	}
 
