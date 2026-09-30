@@ -1,4 +1,4 @@
-import type { ChatOrigin, ChatUsage, ToolCallResult } from "../contracts.ts";
+import type { ChatOrigin, ChatUsage, DeliverFile, ToolCallResult } from "../contracts.ts";
 
 /** What a chat surface can render. The core consults these instead of assuming Discord's feature set. */
 export interface SurfaceCapabilities {
@@ -48,6 +48,8 @@ export interface ReplyView {
   toolCount: number | null;
   turnId?: string;
   replyTo?: string;
+  /** Files to attach; a surface that can't upload them may leave them out. */
+  files?: DeliverFile[];
 }
 
 export interface AskView {

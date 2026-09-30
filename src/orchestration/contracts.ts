@@ -85,6 +85,28 @@ export type ChatUsage = z.infer<typeof chatUsage>;
 // Bound on workspace-chosen ids and names, so one can't bloat a log line or a Discord component.
 export const ID_MAX = 256;
 
+// Outbound files. Deliveries travel as one WebSocket frame (Bun's default cap is 16 MiB), and base64 costs
+// 4/3 of the raw bytes, so the per-delivery total stays well under that.
+export const DELIVER_FILES_MAX = 10;
+export const DELIVER_FILE_MAX_BYTES = 8 * 1024 * 1024;
+export const DELIVER_FILES_TOTAL_MAX_BYTES = 11 * 1024 * 1024;
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+const base64Len = (bytes: number) => Math.ceil(bytes / 3) * 4;
+/** Raw byte count of a padded base64 string. */
+export function base64Bytes(b64: string): number {
+  return (b64.length / 4) * 3 - (b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0);
+}
+
+export const deliverFile = z.object({
+  name: z.string().min(1).max(ID_MAX),
+  contentType: z.string().min(1).max(ID_MAX),
+  dataBase64: z
+    .string()
+    .max(base64Len(DELIVER_FILE_MAX_BYTES))
+    .refine((s) => s.length % 4 === 0 && BASE64_RE.test(s), "dataBase64 must be padded base64"),
+});
+export type DeliverFile = z.infer<typeof deliverFile>;
+
 export const chatDeliverParams = z.object({
   origin: chatOrigin.optional(),
   outboxId: z.string(),
@@ -101,6 +123,12 @@ export const chatDeliverParams = z.object({
   authResult: z.enum(["ok", "failed", "cancelled", "timeout"]).optional(),
   // kind "auth" and authResult: the login they belong to, so a resent result can't end a newer login.
   loginId: z.string().max(ID_MAX).optional(),
+  // kind "reply": files the turn sent with send_file, attached to the reply.
+  files: z
+    .array(deliverFile)
+    .max(DELIVER_FILES_MAX)
+    .refine((fs) => fs.reduce((n, f) => n + base64Bytes(f.dataBase64), 0) <= DELIVER_FILES_TOTAL_MAX_BYTES, "files exceed the per-delivery size cap")
+    .optional(),
 });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
 

@@ -254,7 +254,7 @@ describe("assertExactTools with stubs", () => {
 describe("real Pi session", () => {
   let root: string;
   const realFetch = globalThis.fetch;
-  const BUILTINS = ["bash", "edit", "find", "grep", "ls", "read", "write"];
+  const BUILTINS = ["bash", "edit", "find", "grep", "ls", "read", "send_file", "write"];
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "ws-stubs-"));

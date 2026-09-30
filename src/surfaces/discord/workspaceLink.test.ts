@@ -769,3 +769,54 @@ describe("ChatGPT sign-in prompt", () => {
     expect(LOGIN_OFFLINE).toBe("-# ⚠️ workspace offline — can't log in right now");
   });
 });
+
+describe("reply files", () => {
+  const PNG_B64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64");
+  const FILES = [
+    { name: "chart.png", contentType: "image/png", dataBase64: PNG_B64 },
+    { name: "report 1.pdf", contentType: "application/pdf", dataBase64: Buffer.from("%PDF-1.4").toString("base64") },
+  ];
+  const attachmentNames = (m: MessageCreateOptions) => (m.files ?? []).map((f) => (f as { name?: string }).name);
+
+  test("a delivery carrying files validates and renders them as attachments shown by gallery and file components", async () => {
+    const { rpc, channel } = setup();
+    await deliverViaServer(rpc, deliverParams({ files: FILES }));
+    await tick();
+    expect(channel.sent).toHaveLength(2);
+    const [text, files] = channel.sent;
+    expect(textOf(text!)).toContain("hello there");
+    expect(text!.files).toBeUndefined();
+    expect(attachmentNames(files!)).toEqual(["chart.png", "report_1.pdf"]);
+    expect(files!.flags).toBe(MessageFlags.IsComponentsV2);
+    const body = textOf(files!);
+    expect(body).toContain("attachment://chart.png");
+    expect(body).toContain("attachment://report_1.pdf");
+    const [container] = (files!.components ?? []).map((c) => ("toJSON" in c ? c.toJSON() : c)) as Array<{ components: Array<{ type: number }> }>;
+    expect(container!.components.map((c) => c.type)).toEqual([ComponentType.MediaGallery, ComponentType.File]);
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+
+  test("files alone render only the files message", () => {
+    const pages = renderDelivery(deliverParams({ text: "", files: FILES.slice(0, 1) }));
+    expect(pages).toHaveLength(1);
+    expect(attachmentNames(pages[0]!)).toEqual(["chart.png"]);
+  });
+
+  test("the wire schema rejects bad base64, too many files and oversized totals", async () => {
+    const { rpc } = setup();
+    await expect(deliverViaServer(rpc, deliverParams({ files: [{ ...FILES[0]!, dataBase64: "not base64!" }] }))).rejects.toThrow();
+    await expect(deliverViaServer(rpc, deliverParams({ files: Array.from({ length: 11 }, () => FILES[0]!) }))).rejects.toThrow();
+    const big = Buffer.alloc(6 * 1024 * 1024).toString("base64");
+    await expect(deliverViaServer(rpc, deliverParams({ files: [{ ...FILES[0]!, dataBase64: big }, { ...FILES[1]!, dataBase64: big }] }))).rejects.toThrow(/size cap/);
+  });
+
+  test("files Discord keeps rejecting fall back to a note after the plain text, and the delivery is acked", async () => {
+    const { link, rpc, channel } = setup();
+    channel.failWhen = (o) => (o.files?.length ?? 0) > 0;
+    for (let i = 0; i < DELIVERY_MAX_FAILURES; i++) await link.deliver(deliverParams({ files: FILES }));
+    const plain = channel.sent.filter((m) => m.content !== undefined).map((m) => m.content);
+    expect(plain.at(-1)).toContain("couldn't attach: chart.png, report 1.pdf");
+    expect(plain.join("")).not.toContain("hello there");
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+});

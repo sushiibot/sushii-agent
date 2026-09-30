@@ -191,6 +191,7 @@ export function deliveryView(p: ChatDeliverParams, toolCount: number | null = nu
       ...(p.usage ? { usage: p.usage } : {}),
       ...(p.turnId ? { turnId: p.turnId } : {}),
       ...(p.replyTo ? { replyTo: p.replyTo } : {}),
+      ...(p.files?.length ? { files: p.files } : {}),
     },
   };
 }

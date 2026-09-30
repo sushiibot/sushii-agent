@@ -7,6 +7,9 @@ import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../o
 import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, STOP_NOTE } from "./personalSession.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import type { ImageFetchOptions } from "./inboundImages.ts";
+import { createSendFileTool } from "./sendFile.ts";
+import { DELIVER_FILE_MAX_BYTES } from "../orchestration/contracts.ts";
 
 // Mirrors the Pi 0.84 behaviour the host relies on (core/agent-session.js, pi-agent-core agent-loop.js):
 // - an idle prompt() awaits preflight, flips isStreaming, emits the user message, and resolves when its run settles;
@@ -209,6 +212,7 @@ function setup(
     askTimeoutMs?: number;
     context?: ContextHooks;
     clock?: () => number;
+    images?: ImageFetchOptions;
   } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
@@ -243,6 +247,7 @@ function setup(
     askTimeoutMs: opts.askTimeoutMs,
     context: opts.context,
     clock: opts.clock,
+    images: opts.images,
   });
   return { host, sessions, factoryCalls, boundUis, transport, stateDir };
 }
@@ -2081,5 +2086,124 @@ describe("PersonalSession owner asks", () => {
     await host.handleMessage(msg(`wsask:${dialog.ask!.askId}`, "Yes"));
     expect(await confirm).toBe(true);
     sessions[0].finish("done");
+  });
+});
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const IMAGE_ATTACHMENT = { name: "cat.png", contentType: "image/png", url: "https://cdn.discordapp.com/attachments/1/2/cat.png" };
+
+describe("image attachments", () => {
+  test("an image attachment reaches prompt() as image content, and its link stays in the text", async () => {
+    const fetched: string[] = [];
+    const { host, sessions } = setup({
+      images: {
+        fetch: async (url) => {
+          fetched.push(url);
+          return new Response(PNG, { headers: { "content-type": "image/png" } });
+        },
+      },
+    });
+    await host.start();
+    const accepted = host.handleMessage(msg("m1", "what is this", { attachments: [IMAGE_ATTACHMENT, { name: "a.txt", contentType: "text/plain", url: "https://x/a.txt" }] }));
+    await accepted;
+    const [p] = sessions[0]!.prompts;
+    expect(fetched).toEqual([IMAGE_ATTACHMENT.url]);
+    expect(p!.options?.images).toEqual([{ type: "image", mimeType: "image/png", data: Buffer.from(PNG).toString("base64") }]);
+    expect(p!.text).toContain(`[attachment: cat.png (image/png) ${IMAGE_ATTACHMENT.url}]`);
+    expect(p!.text).toContain("[attachment: a.txt (text/plain) https://x/a.txt]");
+  });
+
+  test("a failed download falls back to the text-only prompt", async () => {
+    const { host, sessions } = setup({ images: { fetch: async () => Promise.reject(new Error("cdn down")) } });
+    await host.start();
+    await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    const [p] = sessions[0]!.prompts;
+    expect(p!.options?.images).toBeUndefined();
+    expect(p!.text).toContain(`[attachment: cat.png (image/png) ${IMAGE_ATTACHMENT.url}]`);
+  });
+
+  test("a model without image input gets no download", async () => {
+    let fetched = 0;
+    const { host, sessions } = setup({ images: { fetch: async () => (fetched++, new Response(PNG)) } });
+    await host.start();
+    (sessions[0] as unknown as { model: unknown }).model = { input: ["text"] };
+    await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    expect(fetched).toBe(0);
+    expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
+  });
+
+  test("a steer carries its images too", async () => {
+    const { host, sessions } = setup({ images: { fetch: async () => new Response(PNG) } });
+    await host.start();
+    const first = host.handleMessage(msg("m1", "hi"));
+    await first;
+    await host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
+    const steer = sessions[0]!.prompts[1]!;
+    expect(steer.options?.streamingBehavior).toBe("steer");
+    expect(steer.options?.images?.length).toBe(1);
+    sessions[0]!.finish("ok");
+  });
+});
+
+describe("send_file", () => {
+  function tool(stateDir: string, cwd: string, session: () => object | null) {
+    return createSendFileTool({ cwd, home: cwd, agentDir: join(cwd, ".pi-agent"), stateDir }, session);
+  }
+  const run = (t: ReturnType<typeof tool>, params: unknown) =>
+    (t.execute as unknown as (id: string, p: unknown) => Promise<{ content: Array<{ text: string }> }>)("call-1", params);
+
+  test("a file sent during a turn goes out with the reply and is deleted once acked", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "chart.png"), PNG);
+    await host.start();
+    await host.handleMessage(msg("m1", "chart please"));
+    const out = await run(tool(stateDir, home, () => sessions[0]!), { path: "chart.png" });
+    expect(out.content[0]!.text).toContain("Attached chart.png");
+    sessions[0]!.finish("here you go");
+    await sleep(10);
+    const [reply] = transport.delivered();
+    expect(reply!.text).toBe("here you go");
+    expect(reply!.files).toEqual([{ name: "chart.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") }]);
+    const outbox = readFileSync(join(stateDir, "outbox.jsonl"), "utf8");
+    expect(outbox).not.toContain("dataBase64");
+    expect(outbox).toContain("stagedFiles");
+    const staged = JSON.parse(outbox.trim().split("\n").at(-1)!).entry.stagedFiles[0].path as string;
+    expect(existsSync(staged)).toBe(true);
+    host.handleAck(reply!.outboxId);
+    expect(existsSync(staged)).toBe(false);
+  });
+
+  test("files with no reply text still deliver; a stopped turn drops them", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "a.pdf"), "%PDF-1.4");
+    await host.start();
+    await host.handleMessage(msg("m1", "send it"));
+    await run(tool(stateDir, home, () => sessions[0]!), { path: join(home, "a.pdf") });
+    sessions[0]!.finish("");
+    await sleep(10);
+    expect(transport.delivered()[0]!.files?.map((f) => f.name)).toEqual(["a.pdf"]);
+
+    await host.handleMessage(msg("m2", "again"));
+    await run(tool(stateDir, home, () => sessions[0]!), { path: "a.pdf" });
+    await host.handleAbort();
+    await sleep(10);
+    expect(transport.delivered().length).toBe(1);
+  });
+
+  test("protected paths, oversize files and calls outside a turn are refused", async () => {
+    const { host, sessions, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "big.bin"), new Uint8Array(DELIVER_FILE_MAX_BYTES + 1));
+    writeFileSync(join(home, "ok.txt"), "hi");
+    await host.start();
+    const t = tool(stateDir, home, () => sessions[0]!);
+    await expect(run(t, { path: "ok.txt" })).rejects.toThrow(/only works during a reply/);
+    await host.handleMessage(msg("m1", "go"));
+    await expect(run(t, { path: "big.bin" })).rejects.toThrow(/over the .*limit/);
+    await expect(run(t, { path: join(stateDir, "outbox.jsonl") })).rejects.toThrow(/blocked/);
+    await expect(run(t, { path: "missing.txt" })).rejects.toThrow(/no such file/);
+    sessions[0]!.finish("done");
   });
 });

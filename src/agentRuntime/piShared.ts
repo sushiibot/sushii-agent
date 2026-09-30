@@ -13,19 +13,20 @@ const MODEL_METADATA_TIMEOUT_MS = 5000;
  * Resolve the model's real context window from OpenRouter's catalog so max_tokens is capped under
  * the true ceiling. Ported verbatim from wiki-sync's piSession — setting max_tokens to the full
  * context window (what OpenRouter reports as max_completion_tokens) makes every prompt overflow and
- * get silently rejected. Falls back to a safe buffer on any fetch/parse failure.
+ * get silently rejected. Falls back to a safe buffer on any fetch/parse failure. Image input is declared
+ * only when the catalog lists it, so an unknown model stays text-only.
  */
-export async function resolveContextWindow(modelId: string, fallback: number): Promise<number> {
+export async function resolveModelInfo(modelId: string, fallback: number): Promise<{ contextWindow: number; image: boolean }> {
   try {
     const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
-    const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number }> };
+    const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number; architecture?: { input_modalities?: string[] } }> };
     const entry = payload.data?.find((m) => m.id === modelId);
     if (!entry?.context_length || entry.context_length <= 0) throw new Error(`model ${modelId} missing context_length`);
-    return entry.context_length;
+    return { contextWindow: entry.context_length, image: entry.architecture?.input_modalities?.includes("image") === true };
   } catch (err) {
     log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using fallback");
-    return fallback;
+    return { contextWindow: fallback, image: false };
   }
 }
 
@@ -72,18 +73,23 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   if (!existsSync(modelsPath)) writeFileSync(modelsPath, "{}");
   const modelRuntime: ModelRuntime = await ModelRuntime.create({ authPath, modelsPath });
   const ids = [options.model, ...(options.extraModels ?? []).filter((id) => id !== options.model)];
-  const windows = await Promise.all(ids.map((id) => resolveContextWindow(id, options.fallbackContextWindow ?? 800_000)));
-  const limits = ids.map((id, i) => ({ id, contextWindow: windows[i]!, maxTokens: Math.min(options.maxOutputTokens ?? 65_536, windows[i]!) }));
+  const infos = await Promise.all(ids.map((id) => resolveModelInfo(id, options.fallbackContextWindow ?? 800_000)));
+  const limits = ids.map((id, i) => ({
+    id,
+    contextWindow: infos[i]!.contextWindow,
+    maxTokens: Math.min(options.maxOutputTokens ?? 65_536, infos[i]!.contextWindow),
+    input: infos[i]!.image ? (["text", "image"] as ("text" | "image")[]) : (["text"] as ("text" | "image")[]),
+  }));
   modelRuntime.registerProvider(options.providerId, {
     name: options.providerName,
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     api: "openai-completions",
-    models: limits.map(({ id, contextWindow, maxTokens }) => ({
+    models: limits.map(({ id, contextWindow, maxTokens, input }) => ({
       id,
       name: id,
       reasoning: false,
-      input: ["text"],
+      input,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow,
       maxTokens,

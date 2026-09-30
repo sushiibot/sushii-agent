@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 import type { AgentSession, AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import {
+  DELIVER_FILES_MAX,
+  DELIVER_FILES_TOTAL_MAX_BYTES,
+  DELIVER_FILE_MAX_BYTES,
   RPC_METHODS,
   chatAbortParams,
   chatAckParams,
@@ -17,7 +21,9 @@ import {
 import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
 import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborted, runUsage, type RunAccumulator } from "./events.ts";
-import { Outbox } from "./outbox.ts";
+import { Outbox, type OutboxEntry, type StagedFile } from "./outbox.ts";
+import { acceptsImages, loadImageAttachments, type ImageFetchOptions } from "./inboundImages.ts";
+import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
@@ -168,6 +174,8 @@ export interface PersonalSessionOptions {
   context?: ContextHooks;
   /** Idle-time clock (ms). Default Date.now. */
   clock?: () => number;
+  /** Downloading image attachments for the model; tests inject fetch. */
+  images?: ImageFetchOptions;
 }
 
 interface OpenRun {
@@ -183,6 +191,8 @@ interface OpenRun {
   suppressReply: boolean;
   /** A memory flush: no chat events, no reply. */
   hidden: boolean;
+  /** Files send_file staged for the reply. */
+  files: StagedFile[];
 }
 
 /** A user message handed to Pi that it hasn't yet turned into a user message_start. */
@@ -192,6 +202,7 @@ interface PendingInbound {
   origin: ChatOrigin | undefined;
   /** Set for a wake: consuming it marks the wake received. */
   wakeId?: string;
+  images?: ImageContent[];
 }
 
 /** A host-initiated prompt (a background subagent's result) that must reach the session exactly when it is idle. */
@@ -424,9 +435,17 @@ export class PersonalSession {
       await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
-    const mode = await this.enqueue(() => this.promptOrSteer(id, text, params.origin));
+    // Downloaded in parallel with the queue, awaited in it, so a slow download can't let a later message overtake.
+    const images = this.imagesFor(params);
+    const mode = await this.enqueue(async () => this.promptOrSteer(id, text, params.origin, undefined, await images));
     this.recentIds.add(id);
     return { accepted: true, mode };
+  }
+
+  private async imagesFor(params: ChatMessageParams): Promise<ImageContent[] | undefined> {
+    if (!params.attachments?.length || (this.session && !acceptsImages(this.session))) return undefined;
+    const images = await loadImageAttachments(params.attachments, this.opts.images);
+    return images.length ? images : undefined;
   }
 
   private isSeen(id: string): boolean {
@@ -864,7 +883,7 @@ export class PersonalSession {
   }
 
   // Pi marks the run active only after async preflight, so gate the queue on preflightResult or a racing idle prompt starts a second run.
-  private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined, wakeId?: string): Promise<"prompt" | "steer"> {
+  private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined, wakeId?: string, images?: ImageContent[]): Promise<"prompt" | "steer"> {
     for (let attempt = 0; ; attempt++) {
       if (this.orphanFlush) await this.orphanFlush;
       await this.waitForCompaction();
@@ -874,7 +893,7 @@ export class PersonalSession {
       // Context that arrived during the last run belongs before this prompt, not after its reply.
       if (mode === "prompt" && this.pendingContext.length) await this.flushPendingContext();
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
-      const pending: PendingInbound = { messageId, text, origin, ...(wakeId ? { wakeId } : {}) };
+      const pending: PendingInbound = { messageId, text, origin, ...(wakeId ? { wakeId } : {}), ...(images ? { images } : {}) };
       this.unconsumed.push(pending);
       if (mode === "prompt") this.nextRunPrompt = pending;
       let accepted = false;
@@ -886,6 +905,7 @@ export class PersonalSession {
               streamingBehavior: "steer",
               // Chat text is literal: a Discord message starting with "/" must not run a skill or extension command.
               expandPromptTemplates: false,
+              ...(images ? { images } : {}),
               // Called only for an accepted input ("started" | "queued" | "handled"); a rejection rejects prompt().
               preflightResult: () => {
                 accepted = true;
@@ -930,7 +950,7 @@ export class PersonalSession {
       log.info({ messageId }, "re-prompting a steer stranded at settle");
       // A chat/new queued ahead of it drops it, like any other steer queued on the old conversation.
       void this.enqueue(async () => {
-        if (gen === this.generation) await this.promptOrSteer(messageId ?? "", text, stranded?.origin);
+        if (gen === this.generation) await this.promptOrSteer(messageId ?? "", text, stranded?.origin, undefined, stranded?.images);
       }).catch((err) => this.deliverFailure(err, messageId, undefined, stranded?.origin));
     }
   }
@@ -1021,6 +1041,7 @@ export class PersonalSession {
     this.lastFlushDoneAt = -1;
     this.session = session;
     this.sessionFile = sessionFile;
+    bindSendFileSink(session, this.fileSink);
     this.unsubscribe = session.subscribe((event) => {
       if (gen === this.generation) this.onEvent(session, event);
     });
@@ -1064,6 +1085,7 @@ export class PersonalSession {
         abortRequested: hidden?.abandoned ?? false,
         suppressReply: false,
         hidden: hidden !== null,
+        files: [],
       };
       if (hidden?.abandoned) void session.abort().catch((err) => log.warn({ err }, "aborting an abandoned memory flush failed"));
       this.emit({ type: "turn_start" });
@@ -1111,23 +1133,32 @@ export class PersonalSession {
     this.flushDelta(run);
     const aborted = runAborted(run.acc, run.abortRequested);
     this.emitFor(run, { type: "turn_end", aborted: aborted || run.suppressReply });
-    if (aborted) return "aborted";
-    if (run.suppressReply) return "suppressed";
+    if (aborted || run.suppressReply) {
+      this.outbox.discard(run.files);
+      return aborted ? "aborted" : "suppressed";
+    }
     const usage = runUsage(run.acc, this.opts.model, session.getContextUsage()?.percent);
     // replyTo must name a message in the conversation the reply goes to.
     const replyTo = sameConversation(this.lastOrigin, run.origin) ? this.lastInboundId : run.promptMessageId;
     if (run.acc.errorMessage !== undefined) {
-      this.deliver(failureNotice(run.acc.errorMessage), replyTo, run.turnId, run.origin, usage);
+      this.deliver(failureNotice(run.acc.errorMessage), replyTo, run.turnId, run.origin, usage, run.files);
       return "notice";
     }
     const text = replyText(run.acc);
-    if (text === null) return "silent";
-    this.deliver(text, replyTo, run.turnId, run.origin, usage);
+    if (text === null && !run.files.length) return "silent";
+    this.deliver(text ?? "", replyTo, run.turnId, run.origin, usage, run.files);
     return "reply";
   }
 
-  private deliver(text: string, replyTo: string | undefined, turnId: string | undefined, origin: ChatOrigin | undefined, usage?: ChatDeliverParams["usage"]): void {
-    const entry: ChatDeliverParams = {
+  private deliver(
+    text: string,
+    replyTo: string | undefined,
+    turnId: string | undefined,
+    origin: ChatOrigin | undefined,
+    usage?: ChatDeliverParams["usage"],
+    files: StagedFile[] = [],
+  ): void {
+    const entry: OutboxEntry = {
       ...(origin ? { origin } : {}),
       outboxId: this.newId(),
       principalId: this.opts.principalId,
@@ -1136,10 +1167,29 @@ export class PersonalSession {
       ...(replyTo ? { replyTo } : {}),
       ...(turnId ? { turnId } : {}),
       ...(usage ? { usage } : {}),
+      ...(files.length ? { stagedFiles: files } : {}),
     };
     this.outbox.append(entry);
     this.send(entry);
   }
+
+  private readonly fileSink: SendFileSink = {
+    attach: ({ source, name, contentType }) => {
+      const run = this.run;
+      if (!run || run.hidden) throw new Error("send_file only works during a reply to drk");
+      if (run.files.length >= DELIVER_FILES_MAX) throw new Error(`already ${DELIVER_FILES_MAX} files this turn; that's the limit`);
+      const left = DELIVER_FILES_TOTAL_MAX_BYTES - run.files.reduce((n, f) => n + f.bytes, 0);
+      let staged: StagedFile;
+      try {
+        staged = this.outbox.stage(source, uniqueName(name, run.files), contentType, Math.min(DELIVER_FILE_MAX_BYTES, left));
+      } catch (err) {
+        const why = err instanceof Error ? err.message : String(err);
+        throw new Error(`can't send ${name}: ${why} (${mb(DELIVER_FILE_MAX_BYTES)} per file; ${mb(left)} left this turn)`);
+      }
+      run.files.push(staged);
+      return `Attached ${staged.name} (${kb(staged.bytes)}) to your reply. ${DELIVER_FILES_MAX - run.files.length} more files, ${mb(left - staged.bytes)} left this turn.`;
+    },
+  };
 
   /** A message outside any turn (a login prompt or result, a notice): outboxed like a reply, never added to the session. */
   deliverOutOfBand(d: Pick<ChatDeliverParams, "kind" | "text" | "origin" | "auth" | "authResult" | "loginId">): void {
@@ -1201,10 +1251,18 @@ export class PersonalSession {
     }
   }
 
-  private send(entry: ChatDeliverParams): void {
+  private send(entry: OutboxEntry): void {
     this.sending.add(entry.outboxId);
+    let params: ChatDeliverParams;
+    try {
+      params = this.outbox.wire(entry);
+    } catch (err) {
+      this.sending.delete(entry.outboxId);
+      log.warn({ err, outboxId: entry.outboxId }, "building chat/deliver failed; will resend");
+      return;
+    }
     this.opts.transport
-      .request(RPC_METHODS.chatDeliver, entry, this.opts.deliverTimeoutMs ?? DELIVER_TIMEOUT_MS)
+      .request(RPC_METHODS.chatDeliver, params, this.opts.deliverTimeoutMs ?? DELIVER_TIMEOUT_MS)
       .catch((err) => log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend"))
       .finally(() => this.sending.delete(entry.outboxId));
   }
@@ -1245,6 +1303,7 @@ export class PersonalSession {
     const run = this.run;
     this.run = null;
     if (!run) return;
+    this.outbox.discard(run.files);
     this.asks.cancelAll("run closed");
     if (run.deltaTimer) clearTimeout(run.deltaTimer);
     this.emitFor(run, { type: "turn_end", aborted: true });
@@ -1310,10 +1369,23 @@ export function formatUserText(
   let text = header ? `${header}\n${params.text}` : params.text;
   // Only the host's own flush prompts may start with the marker; flushRanThisCycle trusts it.
   if (text.startsWith(FLUSH_MARKER)) text = `[message]\n${text}`;
-  // The workspace model is text-only; attachments reach it as links it can fetch with its tools.
+  // Image attachments also reach the model as images when it accepts them; every attachment stays a link it can fetch.
   for (const a of params.attachments ?? []) text += `\n[attachment: ${a.name} (${a.contentType}) ${a.url}]`;
   return text;
 }
+
+function uniqueName(name: string, taken: readonly StagedFile[]): string {
+  if (!taken.some((f) => f.name === name)) return name;
+  const dot = name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let i = 2; ; i++) {
+    const candidate = `${stem}-${i}${ext}`;
+    if (!taken.some((f) => f.name === candidate)) return candidate;
+  }
+}
+
+const kb = (bytes: number) => `${Math.max(1, Math.round(bytes / 1024))} KB`;
+const mb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 function userText(message: { content?: unknown }): string {
   const content = message.content;
