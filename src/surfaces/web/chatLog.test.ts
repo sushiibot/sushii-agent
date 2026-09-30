@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
-import { INBOUND_RETENTION_MS, PERMANENT_EVENTS, SqliteChatLog } from "./chatLog.ts";
+import { INBOUND_RETENTION_MS, PERMANENT_EVENTS, SqliteChatLog, pageQuery } from "./chatLog.ts";
 import { WebInboundStore } from "./inbound.ts";
 import type { ChatEnvelope } from "./events.ts";
 
@@ -282,5 +282,18 @@ describe("web_inbound retention", () => {
     const left = (db.query("SELECT client_id FROM web_inbound ORDER BY client_id").all() as { client_id: string }[]).map((r) => r.client_id);
     expect(left).toEqual(["routed-late", "unrouted-young"]);
     expect(inbound.unrouted(now - INBOUND_RETENTION_MS).map((r) => r.clientId)).toEqual(["unrouted-young"]);
+  });
+});
+
+describe("history page query plan", () => {
+  test("walks the order index with no sort, and a cursor seeks into it", () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    for (const before of [undefined, { order: 50, seq: 60 }]) {
+      const { sql, params } = pageQuery(["user", "reply"], { limit: 41, ...(before ? { before } : {}) });
+      const plan = (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((r) => r.detail).join("\n");
+      expect(plan).toContain(before ? "SEARCH web_events USING INDEX idx_web_events_order" : "SCAN web_events USING INDEX idx_web_events_order");
+      expect(plan).not.toContain("TEMP B-TREE");
+    }
   });
 });

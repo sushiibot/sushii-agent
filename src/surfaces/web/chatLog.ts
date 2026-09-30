@@ -60,6 +60,20 @@ function toEnvelope(ev: StoredEvent): ChatEnvelope {
   return { seq: ev.seq, type: ev.type, data: ev.data } as ChatEnvelope;
 }
 
+export function pageQuery(types: readonly string[], opts: { before?: HistoryPosition; limit: number }): { sql: string; params: (string | number)[] } {
+  const params: (string | number)[] = [...types];
+  // Without statistics the planner picks the (type, key) index and sorts every chat row; this walks the order.
+  let sql = `SELECT seq, type, key, data, created_at, coalesce(sort_seq, seq) AS ord FROM web_events INDEXED BY idx_web_events_order WHERE type IN (${types.map(() => "?").join(",")})`;
+  if (opts.before !== undefined) {
+    // The plain bound is what lets the index seek; the planner can't range-scan the row value alone.
+    sql += " AND coalesce(sort_seq, seq) <= ? AND (coalesce(sort_seq, seq), seq) < (?, ?)";
+    params.push(opts.before.order, opts.before.order, opts.before.seq);
+  }
+  sql += " ORDER BY coalesce(sort_seq, seq) DESC, seq DESC LIMIT ?";
+  params.push(opts.limit);
+  return { sql, params };
+}
+
 export class SqliteChatLog implements ChatLog {
   private readonly sinks = new Set<ChatSink>();
   private batch: ChatEnvelope[] | null = null;
@@ -73,6 +87,8 @@ export class SqliteChatLog implements ChatLog {
     min: Statement<{ m: number | null }, []>;
     head: Statement<{ seq: number }, []>;
     prunedThrough: Statement<{ value: string }, [string]>;
+    anchor: Statement<unknown, [string, number, number]>;
+    anchorOf: Statement<{ a: number }, [string]>;
   };
 
   constructor(
@@ -90,6 +106,8 @@ export class SqliteChatLog implements ChatLog {
       min: db.query("SELECT min(seq) AS m FROM web_events WHERE seq > 0"),
       head: db.query("SELECT seq FROM sqlite_sequence WHERE name = 'web_events'"),
       prunedThrough: db.query("SELECT value FROM kv WHERE key = ?"),
+      anchor: db.query("INSERT OR IGNORE INTO web_turn_anchors (turn_id, anchor_seq, created_at) VALUES (?, ?, ?)"),
+      anchorOf: db.query("SELECT anchor_seq AS a FROM web_turn_anchors WHERE turn_id = ?"),
     };
   }
 
@@ -208,23 +226,16 @@ export class SqliteChatLog implements ChatLog {
 
   /** Records the chat head as `turnId`'s start, once; a reply for the turn sorts there. */
   anchorTurn(turnId: string): void {
-    this.db.run("INSERT OR IGNORE INTO web_turn_anchors (turn_id, anchor_seq, created_at) VALUES (?, ?, ?)", [turnId, this.head(), this.now()]);
+    this.q.anchor.run(turnId, this.head(), this.now());
   }
 
   turnAnchor(turnId: string): number | null {
-    return (this.db.query("SELECT anchor_seq AS a FROM web_turn_anchors WHERE turn_id = ?").get(turnId) as { a: number } | null)?.a ?? null;
+    return this.q.anchorOf.get(turnId)?.a ?? null;
   }
 
   /** The newest `limit` events of `types` in history order below the `before` position, newest first. */
   page<T extends DurableEventType>(types: readonly T[], opts: { before?: HistoryPosition; limit: number }): (StoredEvent<T> & { order: number })[] {
-    const params: (string | number)[] = [...types];
-    let sql = `SELECT seq, type, key, data, created_at, coalesce(sort_seq, seq) AS ord FROM web_events WHERE type IN (${types.map(() => "?").join(",")})`;
-    if (opts.before !== undefined) {
-      sql += " AND (coalesce(sort_seq, seq) < ? OR (coalesce(sort_seq, seq) = ? AND seq < ?))";
-      params.push(opts.before.order, opts.before.order, opts.before.seq);
-    }
-    sql += " ORDER BY coalesce(sort_seq, seq) DESC, seq DESC LIMIT ?";
-    params.push(opts.limit);
+    const { sql, params } = pageQuery(types, opts);
     return (this.db.query(sql).all(...params) as (Row & { ord: number })[]).map((r) => ({ ...(toStored(r) as StoredEvent<T>), order: r.ord }));
   }
 
