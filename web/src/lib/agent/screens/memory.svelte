@@ -18,6 +18,11 @@
 	const change = $derived(changes.find((c) => c.id === selected));
 </script>
 
+{#snippet revertToast()}
+	<span class="flex-1">Change reverted</span>
+	<button type="button" class="font-semibold underline underline-offset-2">Restore</button>
+{/snippet}
+
 {#snippet detail(c: MemoryChange)}
 	<article class="flex flex-col gap-4">
 		<header class="flex flex-col gap-2">
@@ -29,15 +34,9 @@
 					<GitCommitHorizontal class="size-3.5" aria-hidden="true" />{c.commit}
 				</span>
 				{#if c.taint}<StatePill of="tainted" label={c.taint} />{/if}
+				{#if c.session}<span class="text-xs">From thread · {c.session.title}</span>{/if}
 			</p>
 		</header>
-
-		{#if reverted}
-			<p role="status" class="rounded-md bg-muted px-3 py-2 text-sm">
-				Reverted in <span class="font-mono text-xs">9d1e3aa</span>. The agent won't see these lines
-				from the next turn on.
-			</p>
-		{/if}
 
 		<DiffView lines={c.diff} file={c.file} />
 
@@ -54,13 +53,14 @@
 			{/if}
 		</section>
 
-		<div class="flex flex-wrap gap-2">
-			{#if reverted}
-				<Button size="lg" variant="outline"><Undo2 class="-scale-x-100" />Restore</Button>
-			{:else}
-				<Button size="lg" variant="outline"><Undo2 />Revert this change</Button>
-			{/if}
-		</div>
+		{#if reverted}
+			<p class="text-sm text-muted-foreground">
+				Reverted in <span class="font-mono text-xs">9d1e3aa</span>. The agent won't see these lines
+				from its next turn.
+			</p>
+		{:else}
+			<Button size="lg" variant="outline" class="self-start"><Undo2 />Revert this change</Button>
+		{/if}
 	</article>
 {/snippet}
 
@@ -69,6 +69,7 @@
 	title={change ? 'Memory change' : 'Memory'}
 	back={change ? { href: '/memory', label: 'Memory' } : undefined}
 	waiting={2}
+	toast={reverted ? revertToast : undefined}
 >
 	<div class="@3xl:grid @3xl:h-full @3xl:grid-cols-[minmax(0,22rem)_1fr]">
 		<div
@@ -94,6 +95,9 @@
 								<span class="shrink-0">{c.when}</span>
 							</span>
 							<span class="text-sm font-medium">{c.summary}</span>
+							{#if c.session}
+								<span class="text-xs text-muted-foreground">From thread · {c.session.title}</span>
+							{/if}
 							{#if c.taint}<StatePill of="tainted" label={c.taint} class="mt-0.5 self-start" />{/if}
 						</a>
 					</li>

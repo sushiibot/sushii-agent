@@ -1,4 +1,7 @@
 import type {
+	MemoryWrite,
+	Session,
+	ThreadClose,
 	BriefItem,
 	ChatMessage,
 	DaySummary,
@@ -28,8 +31,8 @@ export const inbox: InboxItem[] = [
 	{
 		id: 'in-flight',
 		state: 'waiting',
-		title: 'Pick a seat for NH 107 to Haneda',
-		source: 'Schedule · Trip prep',
+		title: 'Pick a seat for FA 107 to Haneda',
+		source: 'Thread · October trip',
 		when: '38 min ago',
 		summary: 'Check-in opens at 10:40. Two aisle seats left in the forward cabin.',
 		question: 'Aisle 24C or window 31K? Reply with a seat or "skip".',
@@ -293,6 +296,20 @@ export const runs: Record<string, Run> = {
 
 export const memoryChanges: MemoryChange[] = [
 	{
+		id: 'mc5',
+		file: 'travel/2026-10-tokyo.md',
+		summary: 'Hotel shortlist near Kuramae, with cancellation dates',
+		when: '12 min ago',
+		commit: 'a51c0e2',
+		run: { id: 'run-trip-hotels', title: 'Compare Kuramae hotels' },
+		session: { id: 'oct-trip', title: 'October trip' },
+		diff: [
+			{ kind: 'add', text: '## Hotels (Oct 9–16, under ¥25k)' },
+			{ kind: 'add', text: '- Ryokan Asagi ¥24.5k, breakfast, free cancel until Oct 6' },
+			{ kind: 'add', text: '- Kawabune Inn ¥19k, free cancel until Oct 7' }
+		]
+	},
+	{
 		id: 'mc1',
 		file: 'MEMORY.md',
 		summary: 'Added: Maple Row prefers email over phone for scheduling',
@@ -345,7 +362,7 @@ export const memoryChanges: MemoryChange[] = [
 		run: { id: 'run-trip', title: 'Book October trip' },
 		taint: 'Read external email',
 		diff: [
-			{ kind: 'add', text: '- Booked NH 107 SFO→HND, Oct 9, conf. QX7R2L.' },
+			{ kind: 'add', text: '- Booked FA 107 SFO→HND, Oct 9, conf. QX7R2L.' },
 			{ kind: 'add', text: '- Seat not chosen yet; check-in opens 24h before.' }
 		]
 	}
@@ -398,7 +415,7 @@ export const skills: Skill[] = [
 			{ when: 'Sep 1', event: 'Marked stale', reason: 'No use in 90 days.' },
 			{ when: 'Apr 2', event: 'Promoted to active', reason: '3 verified runs.' }
 		],
-		runs: [{ id: 'r-jun', title: 'Check in UA 837', ok: true, when: 'Jun 3' }]
+		runs: [{ id: 'r-jun', title: 'Check in FA 837', ok: true, when: 'Jun 3' }]
 	},
 	{
 		name: 'discord-mod-digest',
@@ -524,7 +541,12 @@ export const github: McpServer = {
 		{ when: 'Aug 14', event: 'Connected with OAuth. Snapshot of 5 tools saved.' }
 	],
 	usedBy: [
-		{ runId: 'run-pr', title: 'Reviewing notify-service #212', tool: 'get_pull_request', when: 'Now' },
+		{
+			runId: 'run-pr',
+			title: 'Reviewing notify-service #212',
+			tool: 'get_pull_request',
+			when: 'Now'
+		},
 		{ runId: 'r-208', title: 'Dependency sweep', tool: 'create_pull_request', when: 'Sep 22' }
 	]
 };
@@ -542,7 +564,7 @@ export const brief: BriefItem[] = [
 		id: 'b2',
 		section: 'Top of mind',
 		title: 'notify-service #212 is waiting on your review',
-		detail: 'Rate-limit fix for the Instagram poller. CI green, 14 files, +212 −88.',
+		detail: 'Rate-limit fix for the feed poller. CI green, 14 files, +212 −88.',
 		source: { label: 'GitHub · acme/notify-service', href: '/runs/run-pr' }
 	},
 	{
@@ -555,9 +577,9 @@ export const brief: BriefItem[] = [
 	{
 		id: 'b4',
 		section: 'Looking ahead',
-		title: 'NH 107 to Haneda, Oct 9 at 11:05',
+		title: 'FA 107 to Haneda, Oct 9 at 11:05',
 		detail: 'Check-in opens Oct 8 at 11:05. Seat not chosen.',
-		source: { label: 'Email · ANA itinerary', href: '/history' }
+		source: { label: 'Email · Ferro Air itinerary', href: '/history' }
 	},
 	{
 		id: 'b5',
@@ -603,7 +625,7 @@ export const days: DaySummary[] = [
 	},
 	{
 		date: 'Mon, Sep 28',
-		summary: 'Booked NH 107 to Haneda. Deployed relay-bot 4.18.2 to green.',
+		summary: 'Booked FA 107 to Haneda. Deployed relay-bot 4.18.2 to green.',
 		sessions: [
 			{ id: 'se3', title: 'October trip planning', time: '17:40', messages: 22 },
 			{ id: 'se4', title: 'Deploy relay-bot', time: '21:05', messages: 9 }
@@ -650,3 +672,256 @@ Reply to Dana about the HVAC visit. Thursday is fine but not before 10.
 - MEMORY.md +2 (Maple Row prefers email)
 - USER.md ~1 (Thursdays after 10:00)
 `;
+
+export const sessions: Session[] = [
+	{
+		id: 'main',
+		kind: 'main',
+		title: 'Main',
+		state: 'idle',
+		lastActivity: '2 min ago',
+		preview: 'October trip closed: flight booked, hotel still open.',
+		unread: 1
+	},
+	{
+		id: 'oct-trip',
+		kind: 'thread',
+		title: 'October trip',
+		state: 'needs-you',
+		lastActivity: '38 min ago',
+		preview: 'Aisle 24C or window 31K?'
+	},
+	{
+		id: 'pr-212',
+		kind: 'thread',
+		title: 'notify-service #212 review',
+		state: 'running',
+		lastActivity: 'now',
+		preview: 'Reading 14 changed files'
+	},
+	{
+		id: 'lease',
+		kind: 'thread',
+		title: 'Lease renewal',
+		state: 'idle',
+		lastActivity: 'Yesterday',
+		preview: 'Drafted the 90-day notice. Not sent.',
+		unread: 2
+	},
+	{
+		id: 'taxes',
+		kind: 'thread',
+		title: '2026 taxes',
+		state: 'idle',
+		lastActivity: 'Mon',
+		preview: 'Collected 9 of 12 documents.'
+	},
+	{
+		id: 'bike',
+		kind: 'thread',
+		title: 'Bike fitting',
+		state: 'idle',
+		lastActivity: 'Sep 24',
+		preview: 'Booked Saturday 10:00 at Spoke & Gear.'
+	},
+	{
+		id: 'couch',
+		kind: 'thread',
+		title: 'Couch delivery',
+		state: 'archived',
+		lastActivity: 'Sep 19',
+		preview: 'Delivered Sep 12. Reported to Main.'
+	},
+	{
+		id: 'passport',
+		kind: 'thread',
+		title: 'Passport renewal',
+		state: 'archived',
+		lastActivity: 'Sep 3',
+		preview: 'New passport arrived. Reported to Main.'
+	}
+];
+
+export const mainSession = sessions[0];
+export const tripSession = sessions[1];
+
+const tripOffer = {
+	title: 'October trip',
+	reason:
+		'The trip came up in 9 of your last 14 messages. A thread keeps hotels, trains and bookings together and keeps Main short.'
+};
+
+export const tripMain: ChatMessage[] = [
+	{
+		id: 't0',
+		role: 'assistant',
+		parts: [
+			{
+				type: 'data-notice',
+				data: {
+					source: 'While you were out · 2 updates',
+					items: ['Rent receipt filed', 'Dependency sweep failed'],
+					href: '/'
+				}
+			}
+		]
+	},
+	{
+		id: 't1',
+		role: 'user',
+		parts: [{ type: 'text', text: 'Find hotels near Kuramae for Oct 9–16, under ¥25k a night.' }]
+	},
+	{
+		id: 't2',
+		role: 'assistant',
+		parts: [
+			{
+				type: 'tool-search_web',
+				toolCallId: 'tt1',
+				state: 'output-available',
+				input: { query: 'Kuramae hotels Oct 9-16 under 25000 yen' },
+				output: { found: '12 results · 3 under budget' }
+			},
+			{
+				type: 'text',
+				text: 'Three fit: Kawabune Inn (¥19k), Hotel Sumida Loft (¥23k) and Ryokan Asagi (¥24.5k with breakfast). Want me to check cancellation terms?'
+			}
+		]
+	},
+	{
+		id: 't3',
+		role: 'user',
+		parts: [{ type: 'text', text: 'Yes. And is the rail pass still worth it if we skip Osaka?' }]
+	},
+	{
+		id: 't4',
+		role: 'assistant',
+		parts: [
+			{
+				type: 'text',
+				text: 'Without Osaka, single tickets come to about ¥14k less than the pass, so skip it.'
+			},
+			{ type: 'data-thread-offer', data: tripOffer }
+		]
+	}
+];
+
+export const tripMainAccepted: ChatMessage[] = tripMain.map((m) =>
+	m.id === 't4'
+		? {
+				...m,
+				parts: [
+					m.parts[0],
+					{ type: 'data-thread-offer', data: { ...tripOffer, openedAs: 'oct-trip' } }
+				]
+			}
+		: m
+);
+
+export const tripWrites: MemoryWrite[] = [
+	{
+		id: 'mc5',
+		file: 'travel/2026-10-tokyo.md',
+		summary: 'Hotel shortlist near Kuramae, with cancellation dates',
+		when: '12 min ago',
+		session: { id: 'oct-trip', title: 'October trip' }
+	},
+	{
+		id: 'mc6',
+		file: 'USER.md',
+		summary: 'Prefers an aisle seat on flights over 6 hours',
+		when: '4 min ago',
+		session: { id: 'oct-trip', title: 'October trip' }
+	}
+];
+
+const tripBrief: ChatMessage = {
+	id: 'b0',
+	role: 'assistant',
+	parts: [
+		{
+			type: 'data-thread-brief',
+			data: {
+				known: [
+					'Flight FA 107 SFO→HND on Oct 9 is booked. Seat not picked.',
+					'Tokyo Oct 9–16, hotel under ¥25k a night.',
+					'Skipping Osaka, so no rail pass.'
+				],
+				open: [
+					'Which of the three Kuramae hotels',
+					'Cancellation terms for each',
+					'Seat: aisle 24C or window 31K'
+				],
+				recentFromMain: 6
+			}
+		},
+		{
+			type: 'text',
+			text: 'Picking up the trip here. Main stays for everything else. Where do you want to start?'
+		}
+	]
+};
+
+export const tripThreadNew: ChatMessage[] = [tripBrief];
+
+export const tripThread: ChatMessage[] = [
+	tripBrief,
+	{
+		id: 'b1',
+		role: 'user',
+		parts: [
+			{ type: 'text', text: 'Check cancellation for Asagi and Kawabune. Aisle seat, always.' }
+		]
+	},
+	{
+		id: 'b2',
+		role: 'assistant',
+		parts: [
+			{
+				type: 'tool-read_page',
+				toolCallId: 'tb1',
+				state: 'output-available',
+				input: { url: 'https://asagi-ryokan.example/policies' },
+				output: { found: 'Free cancellation until Oct 6' }
+			},
+			{
+				type: 'text',
+				text: 'Asagi is free to cancel until Oct 6, Kawabune until Oct 7. I saved both, and noted aisle seats for long flights.'
+			},
+			{ type: 'data-memory-write', data: tripWrites[0] },
+			{ type: 'data-memory-write', data: tripWrites[1] }
+		]
+	}
+];
+
+export const tripClose: ThreadClose = {
+	writes: [
+		...tripWrites,
+		{
+			id: 'mc7',
+			file: 'travel/2026-10-tokyo.md',
+			summary: 'Trip summary: what is booked and what is still open',
+			when: 'on close',
+			session: { id: 'oct-trip', title: 'October trip' }
+		}
+	],
+	report: {
+		sessionId: 'oct-trip-archived',
+		title: 'October trip',
+		line: 'Flight FA 107 booked, seat 24C. Hotel still open: Asagi or Kawabune, free to cancel until Oct 6.'
+	}
+};
+
+export const tripMainReported: ChatMessage[] = [
+	...tripMainAccepted,
+	{
+		id: 't5',
+		role: 'assistant',
+		parts: [{ type: 'data-thread-report', data: tripClose.report }]
+	}
+];
+
+export const tripAside = {
+	question: 'What time is it in Tokyo right now?',
+	answer: "It's 1:41 on Wednesday morning there, 16 hours ahead of you."
+};

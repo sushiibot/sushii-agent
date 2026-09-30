@@ -8,6 +8,7 @@
 	import { cn } from '$lib/utils';
 	import AppShell from '../app-shell.svelte';
 	import StatePill from '../state-pill.svelte';
+	import SetupHint from '../setup-hint.svelte';
 	import { status } from '../status';
 	import type { InboxItem, RunState } from '../types';
 
@@ -15,8 +16,17 @@
 		items,
 		peek: initialPeek,
 		draft = '',
-		notice
-	}: { items: InboxItem[]; peek?: string; draft?: string; notice?: string } = $props();
+		notice,
+		hint,
+		toast
+	}: {
+		items: InboxItem[];
+		peek?: string;
+		draft?: string;
+		notice?: string;
+		hint?: 'install' | 'push';
+		toast?: string;
+	} = $props();
 	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
@@ -39,6 +49,7 @@
 		<div class="flex flex-wrap items-center gap-1.5">
 			<StatePill of={item.state} />
 			{#if item.tainted}<StatePill of="tainted" />{/if}
+			<span class="text-xs text-muted-foreground">{item.source}</span>
 		</div>
 		<p class="text-sm text-muted-foreground">{item.summary}</p>
 		{#if item.question}
@@ -51,6 +62,7 @@
 				bind:value={reply}
 				rows={2}
 				placeholder="Reply without opening the chat"
+				class={cn('text-base', reply && where === 'sheet' && 'ring-2 ring-ring/40')}
 			/>
 			<div class="flex flex-wrap gap-2">
 				<Button size="lg" disabled={!reply.trim()}><SendHorizontal />Send reply</Button>
@@ -78,9 +90,31 @@
 	</div>
 {/snippet}
 
-<AppShell active="home" title="Needs you" {waiting}>
+{#snippet sheet()}
+	{#if selected}
+		<div class="flex flex-col gap-3 px-5 pt-2 pb-5">
+			<h2 class="text-lg leading-snug font-semibold">{selected.title}</h2>
+			{@render peekPanel(selected, 'sheet')}
+		</div>
+	{/if}
+{/snippet}
+
+{#snippet toastBody()}
+	<span>{toast}</span>
+{/snippet}
+
+<AppShell
+	active="home"
+	title="Needs you"
+	{waiting}
+	unread
+	sheet={selected ? sheet : undefined}
+	sheetLabel={selected?.title}
+	toast={toast ? toastBody : undefined}
+>
 	<div class="@3xl:grid @3xl:h-full @3xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="flex flex-col gap-6 px-4 py-4 @3xl:overflow-y-auto @3xl:px-6">
+			{#if hint}<SetupHint kind={hint} />{/if}
 			{#if notice}
 				<p role="status" class="rounded-md bg-running-soft px-3 py-2 text-sm text-running">
 					{notice}
@@ -115,13 +149,8 @@
 										<span class="shrink-0 text-xs text-muted-foreground">{item.when}</span>
 									</span>
 									<span class="text-xs text-muted-foreground">{item.source}</span>
-									{#if !open}
-										<span class="line-clamp-1 text-sm text-muted-foreground">{item.summary}</span>
-									{/if}
+									<span class="line-clamp-1 text-sm text-muted-foreground">{item.summary}</span>
 								</button>
-								{#if open}
-									<div class="px-3 pt-1 pb-3 @3xl:hidden">{@render peekPanel(item, 'inline')}</div>
-								{/if}
 							</li>
 						{/each}
 					</ul>

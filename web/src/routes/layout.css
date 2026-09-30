@@ -4,8 +4,13 @@
 @import '@fontsource-variable/inter';
 
 @custom-variant dark (&:is(.dark *));
+/* Toggled from visualViewport: iOS overlays the keyboard instead of resizing the layout. */
+@custom-variant kb (&:is(.keyboard-open *));
 
 :root {
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+	--kb: 0px;
 	--background: oklch(1 0 0);
 	--foreground: oklch(0.145 0 0);
 	--card: oklch(1 0 0);

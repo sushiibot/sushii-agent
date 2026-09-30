@@ -4,6 +4,7 @@
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
 	import { Button } from '$lib/components/ui/button';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import { Switch } from '$lib/components/ui/switch';
 	import { cn } from '$lib/utils';
 	import ApprovalActions from './approval-actions.svelte';
 	import DiffView from './diff-view.svelte';
@@ -33,6 +34,7 @@
 	let tab = $state<Tab>(draft.changes ? 'changes' : 'preview');
 	// svelte-ignore state_referenced_locally
 	let body = $state(draft.body);
+	let alwaysAllow = $state(false);
 	const tabs = $derived([
 		['preview', 'Preview'],
 		...(draft.changes ? [['changes', 'Your edits']] : []),
@@ -132,6 +134,20 @@
 					)}</pre>
 			{/if}
 		</div>
+
+		{#if mode === 'pending'}
+			<label class="flex items-center justify-between gap-3 border-t px-3 py-2.5 text-sm">
+				<span class="flex flex-col gap-0.5">
+					<span>Always allow for this recipient</span>
+					<span class="text-xs text-muted-foreground">
+						Later emails to {draft.to.split(' <')[0]} send without asking{tainted
+							? ', unless the run read outside content like this one'
+							: ''}.
+					</span>
+				</span>
+				<Switch bind:checked={alwaysAllow} />
+			</label>
+		{/if}
 
 		{#if tainted}
 			<p class="flex items-start gap-2 border-t bg-taint-soft/60 px-3 py-2 text-xs text-taint">

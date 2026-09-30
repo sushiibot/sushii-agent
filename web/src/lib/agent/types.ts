@@ -59,6 +59,7 @@ export interface MemoryChange {
 	when: string;
 	commit: string;
 	run: { id: string; title: string };
+	session?: { id: string; title: string };
 	taint?: string;
 	diff: DiffLine[];
 }
@@ -131,6 +132,11 @@ export type ToolPartState =
 
 export type MessagePart =
 	| { type: 'text'; text: string }
+	| { type: 'data-thread-offer'; data: { title: string; reason: string; openedAs?: string } }
+	| { type: 'data-thread-brief'; data: ThreadBrief }
+	| { type: 'data-thread-report'; data: ThreadReport }
+	| { type: 'data-notice'; data: { source: string; items: string[]; href: string } }
+	| { type: 'data-memory-write'; data: MemoryWrite }
 	| {
 			type: `tool-${string}`;
 			toolCallId: string;
@@ -153,4 +159,43 @@ export interface EmailDraft {
 	inReplyTo: { from: string; excerpt: string };
 	body: string;
 	changes?: DiffLine[];
+}
+
+// `project` sessions (repo-scoped coding work) are reserved; nothing renders them yet.
+export type SessionKind = 'main' | 'thread' | 'project';
+export type SessionState = 'needs-you' | 'running' | 'idle' | 'archived';
+
+export interface Session {
+	id: string;
+	kind: SessionKind;
+	title: string;
+	state: SessionState;
+	lastActivity: string;
+	preview: string;
+	unread?: number;
+}
+
+export interface MemoryWrite {
+	id: string;
+	file: string;
+	summary: string;
+	when: string;
+	session: { id: string; title: string };
+}
+
+export interface ThreadBrief {
+	known: string[];
+	open: string[];
+	recentFromMain: number;
+}
+
+export interface ThreadReport {
+	sessionId: string;
+	title: string;
+	line: string;
+}
+
+export interface ThreadClose {
+	writes: MemoryWrite[];
+	report: ThreadReport;
 }

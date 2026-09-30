@@ -1,4 +1,5 @@
 import type { Component } from 'svelte';
+import type { Session } from '$lib/agent/types';
 import NeedsYou from '$lib/agent/screens/needs-you.svelte';
 import Chat from '$lib/agent/screens/chat.svelte';
 import RunDetail from '$lib/agent/screens/run-detail.svelte';
@@ -10,6 +11,10 @@ import McpServer from '$lib/agent/screens/mcp-server.svelte';
 import Briefing from '$lib/agent/screens/briefing.svelte';
 import History from '$lib/agent/screens/history.svelte';
 import RunFile from '$lib/agent/screens/run-file.svelte';
+import Chats from '$lib/agent/screens/chats.svelte';
+import More from '$lib/agent/screens/more.svelte';
+import Workbench from '$lib/agent/screens/workbench.svelte';
+import HomeScreen from './components/home-screen.svelte';
 import * as f from './fixtures';
 
 export interface Frame {
@@ -25,6 +30,11 @@ export interface Frame {
 	/** Rendered in a branch row under the main row instead of inline. */
 	branch?: string;
 	desktop?: boolean;
+	/** Phone chrome: the installed app (default), a Safari tab, or the bare OS. */
+	chrome?: 'standalone' | 'safari' | 'bare';
+	/** Show the on-screen keyboard, with these predictions above it. */
+	keyboard?: string[];
+	alert?: 'push';
 }
 
 export interface Flow {
@@ -36,14 +46,66 @@ export interface Flow {
 }
 
 const hvacRun = '/runs/run-hvac';
+const archivedTrip: Session = { ...f.tripSession, state: 'archived' };
 
 export const flows: Flow[] = [
 	{
+		id: 'install',
+		code: 'IN',
+		title: 'Install and first launch',
+		intro:
+			'iOS has no install prompt, so a Safari tab shows a quiet hint. The installed app opens full screen. Notifications are asked for only when you tap, never on launch.',
+		frames: [
+			{
+				id: 'in-1',
+				label: 'In a Safari tab',
+				screen: NeedsYou,
+				props: { items: f.inbox, hint: 'install' },
+				chrome: 'safari',
+				next: 'Share → Add to Home Screen'
+			},
+			{
+				id: 'in-2',
+				label: 'Home screen',
+				screen: HomeScreen,
+				props: {},
+				chrome: 'bare',
+				next: 'Open',
+				hits: { agent: 'in-3' }
+			},
+			{
+				id: 'in-3',
+				label: 'First launch, installed',
+				screen: NeedsYou,
+				props: { items: f.inbox, hint: 'push' },
+				next: 'Tap Turn on',
+				hits: { 'turn on notifications': 'in-4' }
+			},
+			{
+				id: 'in-4',
+				label: 'System ask, after the tap',
+				screen: NeedsYou,
+				props: { items: f.inbox, hint: 'push' },
+				alert: 'push',
+				next: 'Allow'
+			},
+			{
+				id: 'in-5',
+				label: 'Notifications on',
+				screen: NeedsYou,
+				props: {
+					items: f.inbox,
+					toast: 'Notifications on. Only approvals, questions and failures.'
+				}
+			}
+		]
+	},
+	{
 		id: 'needs-you',
 		code: 'NY',
-		title: 'Needs-you home',
+		title: 'Home: needs you',
 		intro:
-			'Grouped by what blocks progress, not by time. Failed runs sit with the things that need you. Tap an item to peek and reply without opening the chat.',
+			'Grouped by what blocks progress, not by time. Failed runs come second. Tap an item to peek and reply in a sheet without opening the chat.',
 		frames: [
 			{
 				id: 'ny-1',
@@ -55,14 +117,22 @@ export const flows: Flow[] = [
 			},
 			{
 				id: 'ny-2',
-				label: 'Peek and reply',
+				label: 'Peek in a sheet',
 				screen: NeedsYou,
-				props: { items: f.inbox, peek: 'in-flight', draft: '24C please' },
-				next: 'Send reply',
-				hits: { 'send reply': 'ny-3' }
+				props: { items: f.inbox, peek: 'in-flight' },
+				next: 'Type a reply'
 			},
 			{
 				id: 'ny-3',
+				label: 'Replying: the sheet rides the keyboard',
+				screen: NeedsYou,
+				props: { items: f.inbox, peek: 'in-flight', draft: '24C please' },
+				keyboard: ['24C', 'please', 'thanks'],
+				next: 'Send reply',
+				hits: { 'send reply': 'ny-4' }
+			},
+			{
+				id: 'ny-4',
 				label: 'Run resumes',
 				screen: NeedsYou,
 				props: {
@@ -80,24 +150,188 @@ export const flows: Flow[] = [
 		]
 	},
 	{
+		id: 'chats',
+		code: 'CS',
+		title: 'Chats: Main and threads',
+		intro:
+			'One agent, one memory, separate conversations. Main is pinned and is where threads report back. Threads are grouped by what they need from you, and idle ones archive themselves.',
+		frames: [
+			{
+				id: 'cs-1',
+				label: 'Chats',
+				screen: Chats,
+				props: { sessions: f.sessions, archivedOpen: true },
+				next: 'Search'
+			},
+			{
+				id: 'cs-2',
+				label: 'Typing: the tab bar hides',
+				screen: Chats,
+				props: { sessions: f.sessions, query: 'trip' },
+				keyboard: ['trip', 'trips', 'trip’s']
+			},
+			{
+				id: 'cs-d',
+				label: 'Desktop: Main and a thread side by side',
+				screen: Workbench,
+				props: {
+					panes: [
+						{ session: f.mainSession, messages: f.tripMainAccepted },
+						{ session: f.tripSession, messages: f.tripThread }
+					]
+				},
+				desktop: true
+			}
+		]
+	},
+	{
+		id: 'more',
+		code: 'NV',
+		title: 'Tabs and More',
+		intro:
+			'Four tabs: Home, Chats, Briefing, More. The tab bar shows only on those four screens. Everything opened from them gets a back button and no tab bar, and the tab bar hides while the keyboard is up.',
+		frames: [{ id: 'nv-1', label: 'More', screen: More, props: {} }]
+	},
+	{
+		id: 'thread',
+		code: 'TH',
+		title: 'Main suggests a thread',
+		intro:
+			'When a topic keeps coming back, Main offers to move it. The thread starts from a brief, not the whole history, and shares memory with Main.',
+		frames: [
+			{
+				id: 'th-1',
+				label: 'Main offers a thread',
+				screen: Chat,
+				props: { session: f.mainSession, messages: f.tripMain },
+				next: 'Start thread',
+				hits: { 'start thread': 'th-2' }
+			},
+			{
+				id: 'th-2',
+				label: 'Thread opens with a brief',
+				screen: Chat,
+				props: { session: f.tripSession, messages: f.tripThreadNew },
+				next: 'Chat in the thread'
+			},
+			{
+				id: 'th-3',
+				label: 'Working in the thread',
+				screen: Chat,
+				props: { session: f.tripSession, messages: f.tripThread, writes: f.tripWrites },
+				next: 'Tap “shares memory”',
+				hits: { 'shares memory': 'th-4', close: 'cl-1' }
+			},
+			{
+				id: 'th-4',
+				label: 'Writes from this thread',
+				screen: Chat,
+				props: {
+					session: f.tripSession,
+					messages: f.tripThread,
+					writes: f.tripWrites,
+					sheet: 'memory'
+				}
+			},
+			{
+				id: 'th-5',
+				label: 'Typing in a thread',
+				screen: Chat,
+				props: {
+					session: f.tripSession,
+					messages: f.tripThread,
+					writes: f.tripWrites,
+					typing: 'Is breakfast included at Kawabune?'
+				},
+				keyboard: ['Kawabune', 'Kawabune?', 'Kawa'],
+				branch: 'Keyboard up'
+			},
+			{
+				id: 'th-6',
+				label: 'Long-press any message',
+				screen: Chat,
+				props: { session: f.mainSession, messages: f.tripMain, sheet: 'actions', pressed: 't2' },
+				branch: 'Or branch from a message',
+				hits: { 'branch into a thread': 'th-2', 'ask on the side': 'th-7' }
+			},
+			{
+				id: 'th-7',
+				label: 'Ask on the side',
+				screen: Chat,
+				props: { session: f.mainSession, messages: f.tripMain, sheet: 'aside', aside: f.tripAside },
+				branch: 'A quick question that stays out of the chat',
+				hits: { done: 'th-1' }
+			}
+		]
+	},
+	{
+		id: 'close',
+		code: 'CL',
+		title: 'Close a thread',
+		intro:
+			'Closing shows what gets kept in memory and the one line Main will get. The thread is archived, not deleted.',
+		frames: [
+			{
+				id: 'cl-1',
+				label: 'Summary before closing',
+				screen: Chat,
+				props: {
+					session: f.tripSession,
+					messages: f.tripThread,
+					writes: f.tripWrites,
+					sheet: 'close',
+					closing: f.tripClose
+				},
+				next: 'Close thread',
+				hits: { 'close thread': 'cl-2', 'keep open': 'th-3' }
+			},
+			{
+				id: 'cl-2',
+				label: 'Main gets a one-line report',
+				screen: Chat,
+				props: { session: f.mainSession, messages: f.tripMainReported },
+				next: 'Open the report'
+			},
+			{
+				id: 'cl-3',
+				label: 'Archived thread',
+				screen: Chat,
+				props: {
+					session: archivedTrip,
+					messages: f.tripThread,
+					writes: f.tripWrites,
+					archived: 'Oct 1'
+				}
+			}
+		]
+	},
+	{
 		id: 'chat',
 		code: 'CH',
 		title: 'Chat turn with approval',
 		intro:
-			'The agent drafts an email. The approval card shows exactly what will go out, your edits as a diff, and proof it was sent.',
+			'The agent drafts an email. The card shows exactly what goes out, your edits as a diff, and proof it was sent. While it waits you can still type below the approve bar.',
 		frames: [
 			{
 				id: 'ch-1',
 				label: 'Drafting',
 				screen: Chat,
-				props: { messages: f.chatMessages, draft: f.hvacDraft, stage: 'drafting' },
+				props: {
+					session: f.mainSession,
+					messages: f.chatMessages,
+					approval: { draft: f.hvacDraft, stage: 'drafting' }
+				},
 				next: 'Draft ready'
 			},
 			{
 				id: 'ch-2',
 				label: 'Approval card',
 				screen: Chat,
-				props: { messages: f.chatMessages, draft: f.hvacDraft, stage: 'approval' },
+				props: {
+					session: f.mainSession,
+					messages: f.chatMessages,
+					approval: { draft: f.hvacDraft, stage: 'approval' }
+				},
 				next: 'Edit',
 				hits: { 'approve and send': 'ch-5', edit: 'ch-3', deny: 'ch-6' }
 			},
@@ -105,7 +339,11 @@ export const flows: Flow[] = [
 				id: 'ch-3',
 				label: 'Editing the body',
 				screen: Chat,
-				props: { messages: f.chatMessages, draft: f.hvacEdited, stage: 'editing' },
+				props: {
+					session: f.mainSession,
+					messages: f.chatMessages,
+					approval: { draft: f.hvacEdited, stage: 'editing' }
+				},
 				next: 'Save',
 				hits: { 'save and review': 'ch-4', 'cancel edit': 'ch-2' }
 			},
@@ -113,7 +351,11 @@ export const flows: Flow[] = [
 				id: 'ch-4',
 				label: 'Review your edits',
 				screen: Chat,
-				props: { messages: f.chatMessages, draft: f.hvacEdited, stage: 'edited' },
+				props: {
+					session: f.mainSession,
+					messages: f.chatMessages,
+					approval: { draft: f.hvacEdited, stage: 'edited' }
+				},
 				next: 'Approve',
 				hits: { 'approve and send': 'ch-5', edit: 'ch-3', deny: 'ch-6' }
 			},
@@ -122,27 +364,28 @@ export const flows: Flow[] = [
 				label: 'Sent, with evidence',
 				screen: Chat,
 				props: {
+					session: f.mainSession,
 					messages: f.chatMessages,
-					draft: f.hvacEdited,
-					stage: 'sent',
-					messageId: '<c81f02.4b@home.example>',
-					runHref: hvacRun
+					waiting: 1,
+					approval: {
+						draft: f.hvacEdited,
+						stage: 'sent',
+						messageId: '<c81f02.4b@home.example>',
+						runHref: hvacRun
+					}
 				}
 			},
 			{
 				id: 'ch-6',
 				label: 'Denied',
 				screen: Chat,
-				props: { messages: f.chatMessages, draft: f.hvacDraft, stage: 'denied' },
+				props: {
+					session: f.mainSession,
+					messages: f.chatMessages,
+					waiting: 1,
+					approval: { draft: f.hvacDraft, stage: 'denied' }
+				},
 				branch: 'Deny from CH-2 or CH-4'
-			},
-			{
-				id: 'ch-d',
-				label: 'Desktop: approval card',
-				screen: Chat,
-				props: { messages: f.chatMessages, draft: f.hvacEdited, stage: 'edited' },
-				desktop: true,
-				hits: { 'approve and send': 'ch-5', edit: 'ch-3', deny: 'ch-6' }
 			}
 		]
 	},
@@ -180,7 +423,7 @@ export const flows: Flow[] = [
 		code: 'MS',
 		title: 'Memory and skill timeline',
 		intro:
-			'Every memory write is a commit with its diff, the run that made it, and whether that run had read outside content. Skills show their stage and why.',
+			'Every memory write is a commit with its diff, the run and thread that made it, and whether that run had read outside content. Revert is one tap, with Restore in the toast.',
 		frames: [
 			{
 				id: 'ms-1',
@@ -199,7 +442,7 @@ export const flows: Flow[] = [
 			},
 			{
 				id: 'ms-3',
-				label: 'Reverted',
+				label: 'Reverted, with Restore',
 				screen: Memory,
 				props: { changes: f.memoryChanges, selected: 'mc1', reverted: true },
 				next: 'Skills tab',
@@ -219,19 +462,19 @@ export const flows: Flow[] = [
 				props: { skills: f.skills, selected: 'deploy-relay-bot' }
 			},
 			{
+				id: 'ms-6',
+				label: 'Draft skill',
+				screen: Skills,
+				props: { skills: f.skills, selected: 'rent-receipts' },
+				branch: 'A skill still in draft'
+			},
+			{
 				id: 'ms-d',
 				label: 'Desktop: timeline and diff',
 				screen: Memory,
 				props: { changes: f.memoryChanges, selected: 'mc1' },
 				desktop: true,
 				hits: { 'revert this change': 'ms-3' }
-			},
-			{
-				id: 'ms-d2',
-				label: 'Desktop: draft skill',
-				screen: Skills,
-				props: { skills: f.skills, selected: 'rent-receipts' },
-				desktop: true
 			}
 		]
 	},
@@ -272,11 +515,11 @@ export const flows: Flow[] = [
 				hits: { 'test again': 'sc-3' }
 			},
 			{
-				id: 'sc-d',
-				label: 'Desktop: a quiet job',
+				id: 'sc-5',
+				label: 'A quiet job',
 				screen: Schedules,
 				props: { jobs: f.jobs, selected: 'inbox' },
-				desktop: true,
+				branch: 'Why a job said nothing',
 				hits: { 'test run': 'sc-3' }
 			}
 		]
@@ -331,11 +574,11 @@ export const flows: Flow[] = [
 				props: { server: f.linear, justConnected: true }
 			},
 			{
-				id: 'mc-d',
-				label: 'Desktop: tool list changed since last snapshot',
+				id: 'mc-6',
+				label: 'Tool list changed',
 				screen: McpServer,
 				props: { server: f.github },
-				desktop: true
+				branch: 'A server changed its tools since the last snapshot'
 			}
 		]
 	},
@@ -358,13 +601,6 @@ export const flows: Flow[] = [
 				label: 'After feedback',
 				screen: Briefing,
 				props: { items: f.brief, dismissed: ['b5'], votes: { b2: 'up', b3: 'up', b4: 'down' } }
-			},
-			{
-				id: 'br-d',
-				label: 'Desktop',
-				screen: Briefing,
-				props: { items: f.brief, votes: { b2: 'up' } },
-				desktop: true
 			}
 		]
 	},
@@ -394,8 +630,7 @@ export const flows: Flow[] = [
 				label: 'Run file',
 				screen: RunFile,
 				props: { path: f.runs['run-hvac'].file, content: f.runFile, runId: 'run-hvac' }
-			},
-			{ id: 'hs-d', label: 'Desktop', screen: History, props: { days: f.days }, desktop: true }
+			}
 		]
 	}
 ];
@@ -403,19 +638,24 @@ export const flows: Flow[] = [
 // First match wins; a trailing * matches by prefix.
 export const routes: [string, string][] = [
 	['/', 'ny-1'],
-	['/chat*', 'ch-1'],
+	['/chats/main', 'cl-2'],
+	['/chats/oct-trip-archived', 'cl-3'],
+	['/chats/oct-trip', 'th-3'],
+	['/chats', 'cs-1'],
+	['/more', 'nv-1'],
 	['/runs/run-deps', 'rd-2'],
 	['/runs*', 'rd-1'],
 	['/memory/skills', 'ms-4'],
 	['/memory/skills/deploy-relay-bot', 'ms-5'],
-	['/memory/skills/*', 'ms-d2'],
-	['/memory/*', 'ms-2'],
+	['/memory/skills/*', 'ms-6'],
+	['/memory/mc1', 'ms-2'],
+	['/memory/*', 'ms-1'],
 	['/memory', 'ms-1'],
 	['/schedules/deps', 'sc-2'],
-	['/schedules/*', 'sc-d'],
+	['/schedules/*', 'sc-5'],
 	['/schedules', 'sc-1'],
 	['/connectors/linear', 'mc-5'],
-	['/connectors/*', 'mc-d'],
+	['/connectors/*', 'mc-6'],
 	['/connectors', 'mc-1'],
 	['/brief', 'br-1'],
 	['/history/*', 'hs-3'],
