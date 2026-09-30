@@ -22,6 +22,10 @@ export const RPC_METHODS = {
   toolCancel: "tool/cancel",
   // Workspace → bot request: a short-lived GitHub App installation token for one repo.
   githubToken: "github/token",
+  // Bot → workspace request: one page of the Main transcript, newest first.
+  chatHistory: "chat/history",
+  // Workspace → bot request: the bytes of an owner photo a chat/message referenced.
+  uploadRead: "upload/read",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -104,6 +108,112 @@ export function base64Bytes(b64: string): number {
   return (b64.length / 4) * 3 - (b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0);
 }
 
+/** True only for an absolute URL whose parsed scheme is https: (the WHATWG parser strips tabs and newlines first). */
+export function isHttpsUrl(s: string): boolean {
+  try {
+    return new URL(s).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// ── Web chat (M1). ──
+// The only conversation the web surface has; any other conversationId from the workspace is rejected.
+export const WEB_CONVERSATION_ID = "main";
+export const webConversationId = z.enum([WEB_CONVERSATION_ID]);
+export const webChatOrigin = z.object({ surface: z.literal("web"), conversationId: webConversationId });
+export type WebChatOrigin = z.infer<typeof webChatOrigin>;
+
+/** Upload ids are 128-bit random base64url, issued by the bot. Lookups match this before touching the DB or disk. */
+export const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+export const uploadId = z.string().regex(UPLOAD_ID_RE, "invalid upload id");
+/** An owner photo in chat/message `attachments` is `upload:<id>`; the workspace fetches its bytes with upload/read. */
+export const UPLOAD_URL_PREFIX = "upload:";
+export function uploadUrl(id: string): string {
+  return `${UPLOAD_URL_PREFIX}${id}`;
+}
+/** The upload id an `upload:<id>` attachment URL names, or null for anything else. */
+export function parseUploadUrl(url: string): string | null {
+  if (!url.startsWith(UPLOAD_URL_PREFIX)) return null;
+  const id = url.slice(UPLOAD_URL_PREFIX.length);
+  return UPLOAD_ID_RE.test(id) ? id : null;
+}
+export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+
+export const CHAT_HISTORY_TIMEOUT_MS = 15_000;
+export const CHAT_HISTORY_LIMIT_MAX = 100;
+
+export const chatHistoryParams = z.object({
+  principalId: z.string(),
+  // Opaque "<sessionFileBase>:<entryId>" cursor from a previous page; absent = newest.
+  before: z.string().max(ID_MAX).optional(),
+  limit: z.number().int().min(1).max(CHAT_HISTORY_LIMIT_MAX).default(40),
+});
+export type ChatHistoryParams = z.infer<typeof chatHistoryParams>;
+
+const historyId = z.string().min(1).max(ID_MAX);
+const historyAt = z.string().max(ID_MAX);
+export const historyItem = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("user"),
+    id: historyId,
+    clientId: historyId.optional(),
+    at: historyAt,
+    text: z.string(),
+    attachments: z.array(z.object({ uploadId: uploadId.optional(), name: z.string().max(ID_MAX), contentType: z.string().max(ID_MAX) })),
+  }),
+  z.object({
+    type: z.literal("assistant"),
+    id: historyId,
+    at: historyAt,
+    text: z.string(),
+    outboxId: historyId.optional(),
+    turnId: historyId.optional(),
+    tools: z.array(z.object({ name: z.string().max(ID_MAX), summary: z.string(), ok: z.boolean() })),
+    usage: chatUsage.optional(),
+  }),
+  z.object({
+    type: z.literal("ask"),
+    id: historyId,
+    at: historyAt,
+    outboxId: historyId,
+    askId: historyId,
+    question: z.string(),
+    choices: z.array(z.string()),
+  }),
+  z.object({
+    type: z.literal("divider"),
+    id: historyId,
+    at: historyAt,
+    kind: z.enum(["new", "rotated", "compacted"]),
+    summary: z.string().optional(),
+  }),
+]);
+export type HistoryItem = z.infer<typeof historyItem>;
+
+export const chatHistoryResult = z.object({
+  items: z.array(historyItem).max(CHAT_HISTORY_LIMIT_MAX),
+  // null = the start of the transcript.
+  before: z.string().max(ID_MAX).nullable(),
+});
+export type ChatHistoryResult = z.infer<typeof chatHistoryResult>;
+
+export const uploadReadParams = z.object({ principalId: z.string().max(ID_MAX), uploadId });
+export type UploadReadParams = z.infer<typeof uploadReadParams>;
+export const uploadReadResult = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    name: z.string().max(ID_MAX),
+    contentType: z.string().min(1).max(ID_MAX),
+    dataBase64: z
+      .string()
+      .max(base64Len(UPLOAD_MAX_BYTES))
+      .refine((s) => s.length % 4 === 0 && BASE64_RE.test(s), "dataBase64 must be padded base64"),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+export type UploadReadResult = z.infer<typeof uploadReadResult>;
+
 export const deliverFile = z.object({
   name: z.string().min(1).max(ID_MAX),
   contentType: z.string().min(1).max(ID_MAX),
@@ -124,8 +234,8 @@ export const chatDeliverParams = z.object({
   turnId: z.string().optional(),
   usage: chatUsage.optional(),
   ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
-  // kind "auth": a sign-in link to open.
-  auth: z.object({ url: z.string().url().max(4096), instructions: z.string() }).optional(),
+  // kind "auth": a sign-in link to open. https only: zod's url() alone accepts javascript: and data:.
+  auth: z.object({ url: z.string().max(4096).refine(isHttpsUrl, "must be an https: URL"), instructions: z.string() }).optional(),
   // Set on the reply that ends a surface login, so the bot stops treating pastes as its callback.
   authResult: z.enum(["ok", "failed", "cancelled", "timeout"]).optional(),
   // kind "auth" and authResult: the login they belong to, so a resent result can't end a newer login.
