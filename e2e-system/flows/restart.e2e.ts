@@ -47,14 +47,21 @@ test("a bot restart mid-turn leaves exactly one copy of each message", async ({ 
     echo: await echoReply.count(),
   });
   const once = { slowUser: 1, slowReply: 1, queued: 1, echo: 1 };
+  const order = async () =>
+    (await page.locator("[data-message-id]").allInnerTexts()).flatMap((t) =>
+      t.includes(slow) ? ["slowUser"] : t.includes(`re-${tag}`) ? ["slowReply"] : t.includes(queued) ? ["queued"] : t.includes(`re-${qtag}`) ? ["echo"] : [],
+    );
+  const conversation = ["slowUser", "slowReply", "queued", "echo"];
   // Give any late duplicate (a replayed delivery or a second outbox send) time to show up.
   await page.waitForTimeout(3000);
   expect(await counts()).toEqual(once);
+  expect(await order()).toEqual(conversation);
 
   await page.reload();
   await expect(textbox(page)).toBeVisible();
   await expect(slowReply).toContainText("slow29");
   await expect.poll(counts).toEqual(once);
+  expect(await order()).toEqual(conversation);
 
   const dupes = await stack.query("select type, key, count(*) n from web_events where key is not null group by type, key having n > 1");
   expect(dupes).toEqual([]);
