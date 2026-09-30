@@ -363,7 +363,7 @@ export const flows: Flow[] = [
 		code: 'CH',
 		title: 'Chat turn with approval',
 		intro:
-			'The agent drafts an email and asks to send it. The request pins above the composer in a shielded tray that the chat can’t imitate; the chat keeps a one-line marker that turns into the decision.',
+			'The agent drafts an email and asks to send it. The request pins above the composer in a shielded tray that the chat can’t imitate; the chat keeps a one-line marker that turns into the decision. While the tray is up, Stop moves to the ⋮ menu so the chat keeps half the screen; Send still steers the run.',
 		deviations: [1, 2, 3, 4],
 		frames: [
 			{

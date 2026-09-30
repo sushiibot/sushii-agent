@@ -62,12 +62,17 @@
 			</span>
 			<h2 id="{uid}-h" class="flex min-w-0 flex-1 flex-col">
 				<span class="text-xs leading-tight font-medium text-muted-foreground">
-					{timedOut ? 'Approval timed out' : 'sushii-agent wants to run'}
-					{#if items.length > 1 && !timedOut}<span class="whitespace-nowrap tabular-nums"
-							>· 1 of {items.length}</span
+					{timedOut ? 'Approval timed out' : 'sushii-agent needs your approval to run'}
+				</span>
+				<span class="flex flex-wrap items-baseline gap-x-2">
+					<code class="min-w-0 font-mono text-sm leading-snug font-semibold break-words"
+						>{view.tool}</code
+					>
+					{#if items.length > 1 && !timedOut}<span
+							class="text-xs font-medium whitespace-nowrap text-muted-foreground tabular-nums"
+							>1 of {items.length}</span
 						>{/if}
 				</span>
-				<code class="font-mono text-sm leading-snug font-semibold break-words">{view.tool}</code>
 			</h2>
 			{#if !timedOut}
 				<Button
