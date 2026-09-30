@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, stat
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Type } from "typebox";
-import type { AgentToolResult, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { DELIVER_FILE_MAX_BYTES } from "../orchestration/contracts.ts";
 import { checkToolCall, guardedPaths } from "./secretGuard.ts";
 import { secretKind } from "./secretPatterns.ts";
@@ -22,6 +22,8 @@ export interface SendFilePaths {
 export interface SendFileSink {
   /** Throws when this turn can't take a file at all, so the owner isn't asked about a send that would fail. */
   check(): void;
+  /** Asks the owner through the extension UI; absent where no one can answer (jobs, subagents). */
+  confirm?(title: string, message: string, signal?: AbortSignal): Promise<boolean>;
   attach(file: { data: Buffer; name: string; contentType: string }): string;
 }
 
@@ -191,7 +193,7 @@ export function createSendFileTool(paths: SendFilePaths, session: () => object |
       path: Type.String({ description: "Path of the file, absolute or relative to the working directory." }),
       name: Type.Optional(Type.String({ description: "File name drk sees; defaults to the file's own name." })),
     }) as ToolDefinition["parameters"],
-    execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal, _onUpdate?: unknown, ctx?: ExtensionToolContext) => {
+    execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => {
       const { path, name } = params as { path: string; name?: string };
       const current = session();
       const sink = current ? sinks.get(current) : undefined;
@@ -207,9 +209,9 @@ export function createSendFileTool(paths: SendFilePaths, session: () => object |
       }
       const fileName = safeFileName(name?.trim() || basename(checked.path));
       if (file.flag) {
-        if (!ctx?.hasUI) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and there's no one here to approve it`);
+        if (!sink.confirm) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and there's no one here to approve it`);
         sink.check();
-        const ok = await ctx.ui.confirm(askText(fileName, file.flag), `Path: ${checked.path}`, { signal });
+        const ok = await sink.confirm(askText(fileName, file.flag), `Path: ${checked.path}`, signal);
         if (!ok) throw new Error(`can't send ${path}: ${refusal(file.flag)}, and drk didn't approve sending it`);
       }
       const text = sink.attach({ data: file.data, name: fileName, contentType: contentTypeOf(checked.path) });

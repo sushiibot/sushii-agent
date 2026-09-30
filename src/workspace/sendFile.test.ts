@@ -3,7 +3,7 @@ import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, wr
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSendablePath, contentTypeOf, readSendableFile, safeFileName } from "./sendFile.ts";
+import { bindSendFileSink, checkSendablePath, contentTypeOf, createSendFileTool, readSendableFile, safeFileName, type SendFileSink } from "./sendFile.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -100,6 +100,61 @@ describe("readSendableFile", () => {
     expect(() => readSendableFile(paths.home, paths, 100)).toThrow(/not a regular file/);
     const fifo = join(paths.home, "pipe");
     if (spawnSync("mkfifo", [fifo]).status === 0) expect(() => readSendableFile(fifo, paths, 100)).toThrow(/not a regular file/);
+  });
+});
+
+describe("send_file tool", () => {
+  function harness(confirm?: (title: string) => Promise<boolean>) {
+    const { paths } = layout();
+    const session = {};
+    const asked: string[] = [];
+    const attached: string[] = [];
+    const sink: SendFileSink = {
+      check: () => {},
+      ...(confirm
+        ? {
+            confirm: (title: string) => {
+              asked.push(title);
+              return confirm(title);
+            },
+          }
+        : {}),
+      attach: ({ name }) => {
+        attached.push(name);
+        return `Attached ${name}`;
+      },
+    };
+    bindSendFileSink(session, sink);
+    const tool = createSendFileTool(paths, () => session);
+    const run = (path: string) => (tool.execute as unknown as (id: string, p: unknown) => Promise<unknown>)("call-1", { path });
+    return { paths, asked, attached, run };
+  }
+
+  test("a flagged file with no one to ask is refused without attaching", async () => {
+    const { paths, attached, run } = harness();
+    writeFileSync(join(paths.home, "token.txt"), JWT);
+    await expect(run("token.txt")).rejects.toThrow(/\(JWT\).*no one here to approve/);
+    expect(attached).toEqual([]);
+  });
+
+  test("an approved flagged file attaches; a declined one doesn't", async () => {
+    let answer = true;
+    const { paths, asked, attached, run } = harness(async () => answer);
+    writeFileSync(join(paths.home, "token.txt"), JWT);
+    await run("token.txt");
+    answer = false;
+    await expect(run("token.txt")).rejects.toThrow(/didn't approve/);
+    expect(asked).toEqual(Array(2).fill("`token.txt` looks like it contains a secret (JWT). Send it anyway?"));
+    expect(attached).toEqual(["token.txt"]);
+  });
+
+  test("a hardlink to auth.json never asks, whatever it holds", async () => {
+    const { paths, asked, attached, run } = harness(async () => true);
+    writeFileSync(join(paths.agentDir, "auth.json"), JSON.stringify({ access: JWT }));
+    linkSync(join(paths.agentDir, "auth.json"), join(paths.home, "notes.txt"));
+    await expect(run("notes.txt")).rejects.toThrow(/auth-file/);
+    expect(asked).toEqual([]);
+    expect(attached).toEqual([]);
   });
 });
 

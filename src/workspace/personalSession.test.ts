@@ -2273,15 +2273,8 @@ describe("send_file", () => {
   function tool(stateDir: string, cwd: string, session: () => object | null) {
     return createSendFileTool({ cwd, home: cwd, agentDir: join(cwd, ".pi-agent"), stateDir }, session);
   }
-  type ToolCtx = { hasUI: boolean; ui: ExtensionUIContext };
-  const run = (t: ReturnType<typeof tool>, params: unknown, ctx?: ToolCtx) =>
-    (t.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: ToolCtx) => Promise<{ content: Array<{ text: string }> }>)(
-      "call-1",
-      params,
-      undefined,
-      undefined,
-      ctx,
-    );
+  const run = (t: ReturnType<typeof tool>, params: unknown) =>
+    (t.execute as unknown as (id: string, p: unknown) => Promise<{ content: Array<{ text: string }> }>)("call-1", params);
   const until = async (cond: () => boolean, ms = 1000) => {
     const end = Date.now() + ms;
     while (!cond()) {
@@ -2370,7 +2363,7 @@ describe("send_file", () => {
     writeFileSync(join(home, "token.txt"), `token=${JWT}\n`);
     await host.start();
     await host.handleMessage(fileMsg("m1", "send the token file"));
-    const sending = run(tool(stateDir, home, () => sessions[0]!), { path: "token.txt" }, { hasUI: true, ui: host.ui });
+    const sending = run(tool(stateDir, home, () => sessions[0]!), { path: "token.txt" });
     await until(() => asks(transport).length === 1);
     const [ask] = asks(transport);
     expect(ask!.ask).toEqual({
@@ -2385,7 +2378,7 @@ describe("send_file", () => {
     expect(transport.delivered().find((d) => d.kind === "reply")!.files?.map((f) => f.name)).toEqual(["token.txt"]);
   });
 
-  test("a denied or unanswerable ask refuses the file; a file too long to scan asks too", async () => {
+  test("a denied ask refuses the file; a file too long to scan asks too", async () => {
     const { host, sessions, transport, stateDir } = setup();
     const home = tempDir();
     writeFileSync(join(home, "token.txt"), JWT);
@@ -2394,26 +2387,24 @@ describe("send_file", () => {
     await host.handleMessage(fileMsg("m1", "go"));
     const t = tool(stateDir, home, () => sessions[0]!);
 
-    const denied = run(t, { path: "token.txt" }, { hasUI: true, ui: host.ui });
+    const denied = run(t, { path: "token.txt" });
     await until(() => asks(transport).length === 1);
     await host.handleMessage(fileMsg(`wsask:${asks(transport)[0]!.ask!.askId}`, "No"));
     await expect(denied).rejects.toThrow(/secret detector found .*\(JWT\).*didn't approve/);
 
-    const unscannable = run(t, { path: "run.txt" }, { hasUI: true, ui: host.ui });
+    const unscannable = run(t, { path: "run.txt" });
     await until(() => asks(transport).length === 2);
     expect(asks(transport)[1]!.ask!.question).toStartWith("`run.txt` is too large to scan for secrets. Send it anyway?");
     await host.handleMessage(fileMsg(`wsask:${asks(transport)[1]!.ask!.askId}`, "No"));
     await expect(unscannable).rejects.toThrow(/too long for the secret detector.*didn't approve/);
 
-    await expect(run(t, { path: "token.txt" })).rejects.toThrow(/no one here to approve/);
-    await expect(run(t, { path: "token.txt" }, { hasUI: false, ui: host.ui })).rejects.toThrow(/no one here to approve/);
     expect(asks(transport)).toHaveLength(2);
     sessions[0]!.finish("nothing sent");
     await until(() => transport.delivered().some((d) => d.kind === "reply"));
     expect(transport.delivered().find((d) => d.kind === "reply")!.files).toBeUndefined();
   });
 
-  test("a hardlink to auth.json is refused without asking, even with a UI", async () => {
+  test("a hardlink to auth.json is refused without asking", async () => {
     const { host, sessions, transport, stateDir } = setup();
     const home = tempDir();
     const agentDir = join(home, ".pi-agent");
@@ -2422,7 +2413,7 @@ describe("send_file", () => {
     linkSync(join(agentDir, "auth.json"), join(home, "notes.txt"));
     await host.start();
     await host.handleMessage(fileMsg("m1", "go"));
-    await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "notes.txt" }, { hasUI: true, ui: host.ui })).rejects.toThrow(/auth-file/);
+    await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "notes.txt" })).rejects.toThrow(/auth-file/);
     expect(asks(transport)).toEqual([]);
     sessions[0]!.finish("done");
   });

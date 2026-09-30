@@ -1216,6 +1216,7 @@ export class PersonalSession {
 
   private readonly fileSink: SendFileSink = {
     check: () => void this.fileRun(),
+    confirm: (title, message, signal) => this.ui.confirm(title, message, signal ? { signal } : undefined),
     attach: ({ data, name, contentType }) => {
       const run = this.fileRun();
       const left = DELIVER_FILES_TOTAL_MAX_BYTES - run.files.reduce((n, f) => n + f.bytes, 0);
