@@ -1,5 +1,8 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
 import { CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE, type ChatHistoryResult, type ChatMessageParams, type ChatMessageResult } from "../../orchestration/contracts.ts";
@@ -10,6 +13,8 @@ import { SqliteChatLog } from "./chatLog.ts";
 import { createChatRoutes, type ChatRouteLink } from "./chatRoutes.ts";
 import type { HistoryResponse } from "./events.ts";
 import { WebInboundStore } from "./inbound.ts";
+import { png } from "./__fixtures__/images.ts";
+import { DiskUploadStore } from "./uploads.ts";
 import { createPeerMatcher } from "./peers.ts";
 import { createPresence } from "./presence.ts";
 import { createWebHandler, startWebServer, type WebHandler } from "./server.ts";
@@ -251,6 +256,33 @@ describe("POST /api/chat/messages", () => {
     await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "", uploadIds: [PHOTO] });
     await h.routes.idle();
     expect(h.link.sent[0]!.attachments).toEqual([{ url: `upload:${PHOTO}`, name: "p.jpg", contentType: "image/jpeg" }]);
+  });
+
+  test("with the disk store on the same database, a missing upload rolls back the message and the other photo's reference", async () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const root = mkdtempSync(join(tmpdir(), "chat-uploads-"));
+    try {
+      const store = new DiskUploadStore({ root, db, freeBytes: async () => 1024 ** 4 });
+      const photo = await store.put({ bytes: png(4, 4), name: "p.png", direction: "in", clientKey: "k1" });
+      const referencedAt = () => db.query<{ referenced_at: number | null }, [string]>("SELECT referenced_at FROM web_uploads WHERE id = ?").get(photo.id)!.referenced_at;
+      const h = setup({ db, uploads: store });
+      h.link.connected = false;
+
+      const gone = await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "look", uploadIds: [photo.id, "Q".repeat(22)] });
+      expect(gone.status).toBe(409);
+      expect(await gone.json()).toEqual({ error: "upload_missing", ids: ["Q".repeat(22)] });
+      expect(h.inbound.get(CLIENT)).toBeNull();
+      expect(h.log.list(["user"])).toHaveLength(0);
+      expect(referencedAt()).toBeNull();
+
+      expect((await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "look", uploadIds: [photo.id] })).status).toBe(202);
+      await h.routes.idle();
+      expect(referencedAt()).not.toBeNull();
+      expect(h.log.list(["user"])).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
