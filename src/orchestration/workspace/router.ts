@@ -9,6 +9,8 @@ const log = getLogger("orchestration/workspace/router");
 
 const NEW_COMMANDS = new Set(["!new", "!reset", "!clear"]);
 const STOP_COMMAND = "!stop";
+/** The workspace's refusal text is shown to the owner and stored, so it is kept short. */
+export const REJECTED_ERROR_MAX = 500;
 const LOGIN_COMMAND_RE = /^!login(?:\s+(\S+))?$/i;
 // Answered by the workspace without the model; `!tasks <project>` and `!model <alias>` take one argument.
 const WORKSPACE_COMMAND_RE = /^!(compact|model|tasks)(?:\s+(.{1,200}))?$/is;
@@ -228,7 +230,7 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
   // No receipt here. A receipt tells the surface the message was taken, so it would never be resent.
   if (reject) {
     // Only a link that is actually down is "offline"; a connected workspace that refused gets the error.
-    if (refused && link.isConnected()) await notice({ type: "messageRejected", error: errorText(refused.error) });
+    if (refused && link.isConnected()) await notice({ type: "messageRejected", error: capError(errorText(refused.error)) });
     else await notice({ type: "workspaceOffline" });
     return;
   }
@@ -320,6 +322,10 @@ export async function routeDirectMessage<T extends { id: string }>(
   } finally {
     deps.cursor.advance(message.id);
   }
+}
+
+function capError(text: string): string {
+  return text.length > REJECTED_ERROR_MAX ? `${text.slice(0, REJECTED_ERROR_MAX - 1)}…` : text;
 }
 
 function errorText(err: unknown): string {

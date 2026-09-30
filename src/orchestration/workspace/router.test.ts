@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatMessageParams } from "../contracts.ts";
 import { RpcErrorReply, RpcTimeoutError } from "../transport/server.ts";
-import { handleOwnerMessage, type OwnerRouterDeps } from "./router.ts";
+import { handleOwnerMessage, REJECTED_ERROR_MAX, type OwnerRouterDeps } from "./router.ts";
 import type { AckKind, InboundMessage, InboundSurface, RouterNotice, SurfaceActor } from "./surface.ts";
 
 const ORIGIN = { surface: "web", conversationId: "main" };
@@ -86,6 +86,15 @@ describe("router offline: reject", () => {
     expect(calls.acks).toEqual([]);
     expect(calls.fallback).toBe(0);
     expect(calls.offline).toBe(0);
+  });
+
+  test("a refusal's error text is capped", async () => {
+    const { deps, calls } = harness({ sendError: new RpcErrorReply("x".repeat(5_000), -32000) });
+    await handleOwnerMessage(message("hi"), deps);
+    const n = calls.notices[0] as { type: string; error: string };
+    expect(n.type).toBe("messageRejected");
+    expect(n.error).toHaveLength(REJECTED_ERROR_MAX);
+    expect(n.error.endsWith("…")).toBe(true);
   });
 
   test("a send that fails because the link dropped is workspaceOffline", async () => {
