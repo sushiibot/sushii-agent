@@ -23,6 +23,9 @@ type Opts = {
 	askStatus: number;
 	uploadStatus: number;
 	discardStatus: number;
+	/** When set, message POSTs and uploads are held until it settles. */
+	messageGate?: Promise<void>;
+	uploadGate?: Promise<void>;
 	/** Older pages by the `before` cursor they answer. */
 	older: Record<string, OlderPage>;
 };
@@ -87,6 +90,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 			return json(body, opts.discardStatus);
 		}
 		if (path === '/api/chat/messages') {
+			await opts.messageGate;
 			if (opts.messageStatus === 'abort') return route.abort('internetdisconnected');
 			if (opts.messageStatus === 409)
 				return json({ error: 'upload_missing', ids: [UPLOAD_ID] }, 409);
@@ -104,6 +108,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 		}
 		if (path === '/api/chat/seen') return route.fulfill({ status: 204 });
 		if (path === '/api/uploads') {
+			await opts.uploadGate;
 			if (opts.uploadStatus !== 200) return json({ error: 'no' }, opts.uploadStatus);
 			return json({ id: UPLOAD_ID, contentType: 'image/jpeg', bytes: 1234 });
 		}
@@ -1381,4 +1386,103 @@ test('a message whose 202 was lost is withdrawn from the bot on Delete and never
 	await page.evaluate(() => dispatchEvent(new Event('online')));
 	await page.waitForTimeout(500);
 	expect(posts('/api/chat/messages')).toHaveLength(1);
+});
+
+const outboxEntries = (page: Page) =>
+	page.evaluate(
+		() =>
+			new Promise<{ clientId: string; failed?: boolean }[]>((resolve, reject) => {
+				const req = indexedDB.open('agent-chat', 1);
+				req.onsuccess = () => {
+					const all = req.result.transaction('outbox').objectStore('outbox').getAll();
+					all.onsuccess = () => resolve(all.result);
+					all.onerror = () => reject(all.error);
+				};
+				req.onerror = () => reject(req.error);
+			})
+	);
+
+test('a refused message stays failed across a reload and goes again only on Retry', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Refused once');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
+	await push(page, 'notice', { type: 'messageRejected', error: 'model down', clientId }, 1);
+	await expect(bubble(page, 'Refused once')).toContainText('Failed');
+	await expect.poll(async () => (await outboxEntries(page))[0]?.failed).toBe(true);
+
+	await page.reload();
+	await expect(bubble(page, 'Refused once')).toContainText('Failed');
+	await page.waitForTimeout(500);
+	expect(posts('/api/chat/messages')).toHaveLength(1);
+	await expect(page.getByText("Your message didn't reach the agent", { exact: false })).toHaveCount(
+		0
+	);
+
+	await page.getByRole('button', { name: 'Retry send' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+	await expect.poll(async () => (await outboxEntries(page))[0]?.failed).toBe(false);
+});
+
+/** Opens the actions sheet on a queued bubble, then starts its resend and taps Delete in one task: the
+ *  one window the UI leaves, since the sheet drops Delete once the bubble shows Sending. */
+async function deleteAsResendStarts(page: Page, text: string) {
+	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
+	const dialog = page.getByRole('dialog', { name: 'Message actions' });
+	await expect(dialog.getByRole('button', { name: 'Delete message' })).toBeVisible();
+	await page.evaluate(() => {
+		const button = [...document.querySelectorAll('[role=dialog] button')].find((b) =>
+			b.textContent?.includes('Delete message')
+		) as HTMLButtonElement;
+		dispatchEvent(new Event('online'));
+		button.click();
+	});
+}
+
+test('Delete in the same frame a resend starts stops it before it posts', async ({
+	page,
+	context
+}) => {
+	const { posts, calls, opts } = await chatServer(context, { messageStatus: 'abort' });
+	await open(page);
+	await type(page, 'Same frame');
+	await expect(bubble(page, 'Same frame')).toContainText('Queued');
+	opts.messageStatus = 202;
+	await deleteAsResendStarts(page, 'Same frame');
+	await expect(bubble(page, 'Same frame')).toHaveCount(0);
+	// Its first POST went out, so the bot is still asked to discard it.
+	expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+	await expect.poll(() => outboxSize(page)).toBe(0);
+	await page.waitForTimeout(300);
+	expect(posts('/api/chat/messages')).toHaveLength(1);
+});
+
+test('Delete while a resend re-uploads its photo stops the send before it posts', async ({
+	page,
+	context
+}) => {
+	await page.clock.install();
+	const { posts, calls, opts } = await chatServer(context, { messageStatus: 'abort' });
+	await open(page);
+	await attachPng(page);
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	await type(page, 'Photo note');
+	await expect(bubble(page, 'Photo note')).toContainText('Queued');
+	let release!: () => void;
+	opts.uploadGate = new Promise((r) => (release = r));
+	opts.messageStatus = 202;
+	await page.clock.setSystemTime(Date.now() + 21 * 60 * 60 * 1000);
+	await deleteAsResendStarts(page, 'Photo note');
+	await expect.poll(() => posts('/api/uploads').length).toBe(2);
+	opts.uploadGate = undefined;
+	release();
+	await expect.poll(() => calls.filter((c) => c.method === 'DELETE').length).toBe(1);
+	await expect(bubble(page, 'Photo note')).toHaveCount(0);
+	await page.waitForTimeout(300);
+	expect(posts('/api/chat/messages')).toHaveLength(1);
+	expect(await outboxSize(page)).toBe(0);
 });

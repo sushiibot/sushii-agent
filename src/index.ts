@@ -127,7 +127,7 @@ async function main() {
       store,
       memory,
       linkStore: new WorkspaceLinkStore(db),
-      breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
+      breakGlass: (nonce) => discordWorkspace.breakGlass(nonce, "held"),
       uploadRead: createUploadReadHandler(uploads, ownerPrincipalId),
     },
     [discordWorkspace.adapter],

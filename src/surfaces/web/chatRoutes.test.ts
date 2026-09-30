@@ -9,7 +9,7 @@ import { CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE, chatHist
 import { RpcErrorReply } from "../../orchestration/transport/server.ts";
 import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { isVerifiedWebActor, mintWebActor } from "./actor.ts";
-import { SqliteChatLog } from "./chatLog.ts";
+import { INBOUND_RETENTION_MS, SqliteChatLog } from "./chatLog.ts";
 import { createChatRoutes, type ChatRouteLink } from "./chatRoutes.ts";
 import type { HistoryResponse } from "./events.ts";
 import { WebInboundStore } from "./inbound.ts";
@@ -840,9 +840,10 @@ describe("row states and discard", () => {
     expect(h.inbound.get(CLIENT)!.state).toBe("routed");
     expect((await del(h.handler, CLIENT2)).status).toBe(404);
     expect((await del(h.handler, "not-a-ulid")).status).toBe(404);
-    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "x" });
+    const third = "01J9Z3W8K2M4N6P8Q0R2S4T6VB";
+    await post(h.handler, "/api/chat/messages", { clientId: third, text: "x" });
     await h.routes.idle();
-    expect((await del(h.handler, CLIENT2, "cross-site")).status).toBe(403);
+    expect((await del(h.handler, third, "cross-site")).status).toBe(403);
   });
 
   test("rejected then reconnect: not re-routed, and no second refusal line", async () => {
@@ -906,6 +907,42 @@ describe("row states and discard", () => {
     expect(h.link.sent.map((m) => m.messageId)).toEqual([CLIENT]);
     expect(h.inbound.get(CLIENT)!.state).toBe("routed");
     expect(h.inbound.get(CLIENT2)!.state).toBe("discarded");
+  });
+
+  test("a delete that beats its own POST leaves a tombstone: the late POST gets 410 and is never delivered", async () => {
+    const h = setup();
+    expect((await del(h.handler, CLIENT)).status).toBe(404);
+    const late = await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "deleted before it landed" });
+    expect(late.status).toBe(410);
+    expect(await late.json()).toEqual({ discarded: true });
+    await h.routes.idle();
+    h.routes.workspaceConnected();
+    await h.routes.idle();
+    expect(h.link.sent).toEqual([]);
+    expect(userEvents(h.log)).toEqual([]);
+    // The tombstone goes with the same retention as any unrouted row.
+    h.inbound.prune(Date.now() + INBOUND_RETENTION_MS + 1);
+    expect(h.inbound.get(CLIENT)).toBeNull();
+  });
+
+  test("a reconnect during a running re-drive schedules another pass when it ends", async () => {
+    const h = setup();
+    h.link.connected = false;
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "one" });
+    await h.routes.idle();
+    h.link.connected = true;
+    let release!: () => void;
+    h.link.hold = new Promise((r) => (release = r));
+    h.routes.workspaceConnected();
+    await until(() => h.link.sent.length === 1);
+    // A row that went pending while the first pass was already past it.
+    h.inbound.insert({ clientId: CLIENT2, text: "two", uploadIds: [], seq: 99, createdAt: Date.now() });
+    h.routes.workspaceConnected();
+    h.link.hold = null;
+    release();
+    await until(() => h.link.sent.length === 2);
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.text)).toEqual(["one", "two"]);
   });
 
   test("a route that never settles is reported delivered, never discarded under it", async () => {

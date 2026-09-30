@@ -206,7 +206,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       }
     })()
       .catch((err) => log.error({ err }, "re-routing stored web messages failed"))
-      .finally(() => (redriving = false));
+      .finally(() => {
+        redriving = false;
+        // A reconnect while this pass ran may have left new pending rows behind it.
+        if (redriveWanted) redriveUnrouted();
+      });
   }
 
   async function postMessage(req: Request, actor: SurfaceActor): Promise<Response> {
@@ -242,6 +246,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (err instanceof UploadMissing) return json({ error: "upload_missing", ids: err.ids } satisfies PostMessageUploadMissingResponse, 409);
       throw err;
     }
+    if (row.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse, 410);
     if (row.state !== "routed") drive(row, actor);
     return json({ seq: row.seq, routed: row.state === "routed" } satisfies PostMessageResponse, 202);
   }
@@ -258,7 +263,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (routing.has(clientId)) return json({ routed: true } satisfies DiscardMessageRoutedResponse, 409);
     }
     const row = inbound.get(clientId);
-    if (!row) return json({ error: "not found" }, 404);
+    if (!row) {
+      // Its POST may still be on the way; the tombstone makes that POST a 410 instead of a delivery.
+      inbound.tombstone(clientId, now());
+      return json({ error: "not found" }, 404);
+    }
     if (inbound.discard(clientId)) return json({ discarded: true } satisfies DiscardMessageResponse);
     if (row.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse);
     return json({ routed: true } satisfies DiscardMessageRoutedResponse, 409);

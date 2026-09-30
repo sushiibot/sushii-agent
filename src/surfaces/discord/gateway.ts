@@ -54,6 +54,7 @@ import {
   dispatchOwnerDm,
   createBreakGlass,
   snowflakeCursor,
+  type BreakGlassReason,
   type DmCursor,
   type OwnerDmMessage,
 } from "./ownerDm.ts";
@@ -236,7 +237,7 @@ export interface DiscordWorkspace {
   adapter: DiscordWorkspaceAdapter<GatewayDm>;
   /** A fixed-text, non-silent, buttonless owner DM; the web adapter calls it with the approval's nonce when
    *  its push reached no device. Deduped per nonce and rate-limited. */
-  breakGlass(nonce: string): Promise<boolean>;
+  breakGlass(nonce: string, reason?: BreakGlassReason): Promise<boolean>;
 }
 
 /** The workspace's Discord adapter (the owner's DM) and the in-process DM agent it falls back to. Built

@@ -116,7 +116,10 @@ export class ChatStore {
 	#queue: ChatEnvelope[] = [];
 	#frame: number | null = null;
 	#pending = new Map<string, OutboxEntry>();
-	#inflight = new Set<string>();
+	/** Each send in flight, so a delete can wait for it to finish before deciding what to withdraw. */
+	#sending = new Map<string, Promise<void>>();
+	/** Entries being deleted; no send may start or continue for them. */
+	#discarding = new Set<string>();
 	#failed = new Set<string>();
 	/** Posted entries whose resend failed with a retryable error, so the retry timer covers them. */
 	#retrying = new Set<string>();
@@ -192,8 +195,9 @@ export class ChatStore {
 					};
 				}),
 				at: e.at,
-				delivery: 'sending'
+				delivery: e.failed ? 'failed' : 'sending'
 			});
+			if (e.failed) this.#failed.add(e.clientId);
 		}
 		this.#commit();
 		// History waits for the stream's first frame, so every event after the page is either in it
@@ -277,7 +281,7 @@ export class ChatStore {
 				break;
 			}
 			case 'failed': {
-				this.#failed.add(e.clientId);
+				this.#markFailed(e.clientId);
 				this.#retrying.delete(e.clientId);
 				clearTimeout(this.#unacked.get(e.clientId));
 				this.#unacked.delete(e.clientId);
@@ -507,18 +511,46 @@ export class ChatStore {
 		return true;
 	}
 
-	async #deliver(entry: OutboxEntry) {
+	/** Still ours to send: not settled, and not being deleted. */
+	#live(id: string) {
+		return this.#pending.has(id) && !this.#discarding.has(id);
+	}
+
+	#markFailed(id: string) {
+		this.#failed.add(id);
+		const entry = this.#pending.get(id);
+		if (entry && !entry.failed) {
+			entry.failed = true;
+			void this.#outbox.put(entry).catch(() => {});
+		}
+	}
+
+	#deliver(entry: OutboxEntry): Promise<void> {
 		const id = entry.clientId;
-		if (this.#inflight.has(id) || !this.#pending.has(id)) return;
-		this.#inflight.add(id);
+		const running = this.#sending.get(id);
+		if (running || !this.#live(id)) return running ?? Promise.resolve();
+		const send = this.#send(entry).finally(() => this.#sending.delete(id));
+		this.#sending.set(id, send);
+		return send;
+	}
+
+	async #send(entry: OutboxEntry) {
+		const id = entry.clientId;
 		this.#failed.delete(id);
+		if (entry.failed) {
+			entry.failed = false;
+			void this.#outbox.put(entry).catch(() => {});
+		}
 		setDelivery(this.#s, id, 'sending');
 		this.#commit();
 		try {
 			await this.#refreshUploads(entry);
+			// A delete may have landed during any await: a gone entry is never written back or posted.
+			if (!this.#live(id)) return;
 			if (!entry.attempted) {
 				entry.attempted = true;
 				await this.#outbox.put(entry).catch(() => {});
+				if (!this.#live(id)) return;
 			}
 			const res = await this.#api.postMessage({
 				clientId: id,
@@ -560,11 +592,10 @@ export class ChatStore {
 				this.#scheduleRetry();
 			} else {
 				this.#retrying.delete(id);
-				this.#failed.add(id);
+				this.#markFailed(id);
 				setDelivery(this.#s, id, 'failed');
 			}
 		} finally {
-			this.#inflight.delete(id);
 			this.#commit();
 		}
 	}
@@ -610,6 +641,7 @@ export class ChatStore {
 			const res = await this.#api.upload(p.blob, { name: p.name, clientId: ulid() }, () => {});
 			p.uploadId = res.id;
 			p.uploadedAt = Date.now();
+			if (!this.#live(entry.clientId)) return;
 		}
 		entry.uploadIds = entry.photos!.map((p) => p.uploadId);
 		await this.#outbox.put(entry).catch(() => {});
@@ -628,7 +660,7 @@ export class ChatStore {
 		if (this.#buffer) return;
 		for (const entry of this.#pending.values()) {
 			const id = entry.clientId;
-			if (this.#failed.has(id) || this.#inflight.has(id)) continue;
+			if (this.#failed.has(id) || this.#sending.has(id)) continue;
 			if (entry.posted && !resendPosted && !this.#retrying.has(id)) continue;
 			void this.#deliver(entry);
 		}
@@ -645,24 +677,42 @@ export class ChatStore {
 	async discard(messageId: string) {
 		const clientId = this.#clientIdOf(messageId);
 		const entry = clientId && this.#pending.get(clientId);
-		if (!clientId || !entry) return;
-		if (entry.posted || entry.attempted) {
-			let outcome: 'discarded' | 'routed' | 'unknown';
-			try {
-				outcome = await this.#api.discardMessage(clientId);
-			} catch {
-				this.showToast("Couldn't delete the message. Try again.");
+		if (!clientId || !entry || this.#discarding.has(clientId)) return;
+		this.#discarding.add(clientId);
+		try {
+			// A send in flight decides whether the bot may hold the message, so wait for it to finish.
+			await this.#sending.get(clientId);
+			if (!this.#pending.has(clientId)) {
+				const sent = this.#s.items.some(
+					(i) => i.kind === 'user' && i.clientId === clientId && i.delivery === 'sent'
+				);
+				if (sent) this.showToast('Already delivered');
 				return;
 			}
-			if (!this.#pending.has(clientId)) return;
-			if (outcome === 'routed') {
-				setDelivery(this.#s, clientId, 'sent');
-				this.#effect({ type: 'delivered', clientId });
-				this.#commit();
-				this.showToast('Already delivered');
-				return;
+			if (entry.posted || entry.attempted) {
+				let outcome: 'discarded' | 'routed' | 'unknown';
+				try {
+					outcome = await this.#api.discardMessage(clientId);
+				} catch {
+					this.showToast("Couldn't delete the message. Try again.");
+					return;
+				}
+				if (!this.#pending.has(clientId)) return;
+				if (outcome === 'routed') {
+					setDelivery(this.#s, clientId, 'sent');
+					this.#effect({ type: 'delivered', clientId });
+					this.#commit();
+					this.showToast('Already delivered');
+					return;
+				}
 			}
+			this.#drop(clientId);
+		} finally {
+			this.#discarding.delete(clientId);
 		}
+	}
+
+	#drop(clientId: string) {
 		this.#pending.delete(clientId);
 		this.#failed.delete(clientId);
 		this.#retrying.delete(clientId);
