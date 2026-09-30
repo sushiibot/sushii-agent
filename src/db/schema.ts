@@ -266,3 +266,29 @@ export const webPushSubscriptions = sqliteTable("web_push_subscriptions", {
   createdAt: integer("created_at").notNull(),
   lastOkAt: integer("last_ok_at"),
 });
+
+/** Web chat files: owner photos (`in`) and agent send_file deliveries (`out`). Bytes live on disk at `path`,
+ *  relative to the uploads root and built only from bot values. */
+export const webUploads = sqliteTable(
+  "web_uploads",
+  {
+    id: text("id").primaryKey(),
+    direction: text("direction", { enum: ["in", "out"] }).notNull(),
+    contentType: text("content_type").notNull(),
+    inline: integer("inline").notNull(),
+    bytes: integer("bytes").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    name: text("name").notNull(),
+    path: text("path").notNull(),
+    sha256: text("sha256").notNull(),
+    // `in:<X-Client-Id>` or `out:<outboxId>#<index>`: the idempotency key of a put.
+    clientKey: text("client_key").unique(),
+    outboxId: text("outbox_id"),
+    messageClientId: text("message_client_id"),
+    createdAt: integer("created_at").notNull(),
+    referencedAt: integer("referenced_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (table) => [index("idx_web_uploads_direction_created").on(table.direction, table.createdAt), index("idx_web_uploads_outbox").on(table.outboxId)],
+);
