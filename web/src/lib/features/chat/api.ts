@@ -1,3 +1,4 @@
+import { HttpError, json, send } from '$lib/core/http';
 import type {
 	HistoryOfflineResponse,
 	HistoryResetResponse,
@@ -12,23 +13,6 @@ import type {
 	PostMessageUploadMissingResponse,
 	UploadResponse
 } from '$lib/core/realtime/events';
-
-/** status 0 means the request never got an answer (offline, timeout, aborted). */
-export class ChatHttpError extends Error {
-	constructor(
-		readonly status: number,
-		message: string,
-		/** The parsed JSON error body, when there was one. */
-		readonly body?: unknown
-	) {
-		super(message);
-		this.name = 'ChatHttpError';
-	}
-	/** Worth sending again as is: no answer, or the server was briefly down. */
-	get retryable() {
-		return this.status === 0 || this.status === 408 || this.status === 429 || this.status >= 500;
-	}
-}
 
 export type HistoryFailure = 'offline' | 'unsupported' | 'reset' | 'error';
 
@@ -52,28 +36,6 @@ export interface ChatApi {
 	): Promise<UploadResponse>;
 }
 
-const TIMEOUT_MS = 15_000;
-
-async function send(method: string, path: string, body?: unknown): Promise<Response> {
-	let res: Response;
-	try {
-		res = await fetch(`/api${path}`, {
-			method,
-			credentials: 'same-origin',
-			headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-			body: body === undefined ? undefined : JSON.stringify(body),
-			signal: AbortSignal.timeout(TIMEOUT_MS)
-		});
-	} catch {
-		throw new ChatHttpError(0, "Can't reach the agent.");
-	}
-	if (!res.ok) {
-		const body: unknown = await res.json().catch(() => undefined);
-		throw new ChatHttpError(res.status, `The agent answered ${res.status}.`, body);
-	}
-	return res;
-}
-
 type HistoryErrorBody = Partial<
 	HistoryOfflineResponse & HistoryUnsupportedResponse & HistoryResetResponse
 >;
@@ -91,18 +53,10 @@ export function historyFailure(status: number, body: unknown): HistoryFailure {
 
 /** The upload ids a message POST was refused for (409 upload_missing), or null for any other failure. */
 export function uploadMissingIds(err: unknown): string[] | null {
-	if (!(err instanceof ChatHttpError) || err.status !== 409) return null;
+	if (!(err instanceof HttpError) || err.status !== 409) return null;
 	const b = err.body as Partial<PostMessageUploadMissingResponse> | undefined;
 	if (b?.error !== 'upload_missing' || !Array.isArray(b.ids)) return null;
 	return b.ids.filter((id): id is string => typeof id === 'string');
-}
-
-async function json<T>(res: Response): Promise<T> {
-	try {
-		return (await res.json()) as T;
-	} catch {
-		throw new ChatHttpError(res.status, 'The agent sent a response the app could not read.');
-	}
 }
 
 export const httpChatApi: ChatApi = {
@@ -113,7 +67,7 @@ export const httpChatApi: ChatApi = {
 			const res = await send('GET', `/chat/history?${q}`);
 			return { ok: true, page: await json<HistoryResponse>(res) };
 		} catch (err) {
-			const e = err instanceof ChatHttpError ? err : new ChatHttpError(0, String(err));
+			const e = err instanceof HttpError ? err : new HttpError(0, String(err));
 			return { ok: false, reason: historyFailure(e.status, e.body) };
 		}
 	},
@@ -125,8 +79,8 @@ export const httpChatApi: ChatApi = {
 			await send('DELETE', `/chat/messages/${encodeURIComponent(clientId)}`);
 			return 'discarded';
 		} catch (err) {
-			if (err instanceof ChatHttpError && err.status === 409) return 'routed';
-			if (err instanceof ChatHttpError && err.status === 404) return 'unknown';
+			if (err instanceof HttpError && err.status === 409) return 'routed';
+			if (err instanceof HttpError && err.status === 404) return 'unknown';
 			throw err;
 		}
 	},
@@ -159,19 +113,16 @@ export const httpChatApi: ChatApi = {
 			};
 			xhr.onload = () => {
 				if (xhr.status < 200 || xhr.status >= 300) {
-					reject(new ChatHttpError(xhr.status, `Upload failed (${xhr.status}).`));
+					reject(new HttpError(xhr.status, `Upload failed (${xhr.status}).`));
 					return;
 				}
 				try {
 					resolve(JSON.parse(xhr.responseText) as UploadResponse);
 				} catch {
-					reject(new ChatHttpError(xhr.status, 'The upload answer could not be read.'));
+					reject(new HttpError(xhr.status, 'The upload answer could not be read.'));
 				}
 			};
-			xhr.onerror =
-				xhr.ontimeout =
-				xhr.onabort =
-					() => reject(new ChatHttpError(0, 'Upload failed.'));
+			xhr.onerror = xhr.ontimeout = xhr.onabort = () => reject(new HttpError(0, 'Upload failed.'));
 			xhr.send(blob);
 		});
 	}

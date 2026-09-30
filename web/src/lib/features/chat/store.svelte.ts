@@ -1,5 +1,6 @@
 import type { ChatMessage, PendingApproval, PhotoDraft } from './types';
-import { ChatHttpError, httpChatApi, uploadMissingIds, type ChatApi } from './api';
+import { HttpError } from '$lib/core/http';
+import { httpChatApi, uploadMissingIds, type ChatApi } from './api';
 import {
 	MESSAGE_TEXT_MAX,
 	MESSAGE_UPLOADS_MAX,
@@ -585,7 +586,7 @@ export class ChatStore {
 				this.#returnToComposer(entry, missing);
 				return;
 			}
-			const e = err instanceof ChatHttpError ? err : new ChatHttpError(0, String(err));
+			const e = err instanceof HttpError ? err : new HttpError(0, String(err));
 			if (e.retryable) {
 				this.#retrying.add(id);
 				setDelivery(this.#s, id, e.status === 0 && !navigator.onLine ? 'queued' : 'queued-agent');
@@ -791,7 +792,7 @@ export class ChatStore {
 			});
 			this.#saveDraft();
 		} catch (err) {
-			const status = err instanceof ChatHttpError ? err.status : 0;
+			const status = err instanceof HttpError ? err.status : 0;
 			if (status === 507) this.quotaFull = true;
 			this.#patchPhoto(id, { state: 'failed', error: uploadError(status) });
 		}
@@ -856,7 +857,7 @@ export class ChatStore {
 				this.showToast("Your answer didn't reach the agent. Try again.");
 			}
 		} catch (err) {
-			const status = err instanceof ChatHttpError ? err.status : 0;
+			const status = err instanceof HttpError ? err.status : 0;
 			if (status === 404) {
 				ask.state = 'history';
 				this.showToast('That question is no longer waiting for an answer.');
@@ -885,7 +886,7 @@ export class ChatStore {
 			}
 		} catch (err) {
 			this.#s.mine.delete(`p:${nonce}`);
-			const status = err instanceof ChatHttpError ? err.status : 0;
+			const status = err instanceof HttpError ? err.status : 0;
 			if (status === 404) {
 				dropApproval(this.#s, nonce, 'cancelled');
 				this.showToast('That approval is no longer waiting for a decision.');

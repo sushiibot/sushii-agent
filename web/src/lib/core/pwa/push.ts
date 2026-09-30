@@ -1,4 +1,5 @@
-import { api, ApiError } from '$lib/core/api';
+import { api } from '$lib/core/api';
+import { HttpError } from '$lib/core/http';
 import { base64UrlToBytes, sameKey } from '$lib/core/sw/handlers';
 
 export type PushStatus = 'unsupported' | 'blocked' | 'unavailable' | 'off' | 'on';
@@ -71,7 +72,7 @@ async function serverKey(): Promise<Uint8Array<ArrayBuffer>> {
 	try {
 		return base64UrlToBytes((await api.pushKey()).publicKey);
 	} catch (err) {
-		if (err instanceof ApiError && (err.status === 404 || err.status === 503)) {
+		if (err instanceof HttpError && (err.status === 404 || err.status === 503)) {
 			throw new PushSetupError('unavailable', "Notifications aren't set up on the server yet.");
 		}
 		throw err;

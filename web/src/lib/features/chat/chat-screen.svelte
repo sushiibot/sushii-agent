@@ -9,7 +9,6 @@
 	import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
 	import ServerOff from '@lucide/svelte/icons/server-off';
 	import Settings from '@lucide/svelte/icons/settings';
-	import ShieldOff from '@lucide/svelte/icons/shield-off';
 	import Square from '@lucide/svelte/icons/square';
 	import AppShell from '$lib/ui/shell/app-shell.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
@@ -414,7 +413,7 @@
 						>
 							<c.icon class="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
 							<span class="flex flex-col gap-0.5">
-								<span class="text-[15px] font-medium">{c.label}</span>
+								<span class="text-body font-medium">{c.label}</span>
 								<span class="text-sm text-muted-foreground">{c.note}</span>
 							</span>
 						</button>
@@ -490,17 +489,7 @@
 {/snippet}
 
 {#snippet banner()}
-	{#if connection === 'forbidden'}
-		<p
-			role="status"
-			class="flex items-start gap-2.5 border-b bg-failed-soft px-4 py-2.5 text-sm text-failed"
-		>
-			<ShieldOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-			<span>This device isn't signed in as the owner. Check Tailscale, then reopen the app.</span>
-		</p>
-	{:else if connection}
-		<ConnectionBanner state={connection} />
-	{/if}
+	{#if connection}<ConnectionBanner state={connection} />{/if}
 {/snippet}
 
 {#snippet toastBody()}

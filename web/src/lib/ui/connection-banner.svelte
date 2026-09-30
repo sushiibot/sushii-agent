@@ -11,19 +11,27 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import ServerOff from '@lucide/svelte/icons/server-off';
 	import History from '@lucide/svelte/icons/history';
+	import ShieldOff from '@lucide/svelte/icons/shield-off';
 	import { cn } from '$lib/utils';
 
-	let { state }: { state: ConnectionState } = $props();
+	let { state }: { state: ConnectionState | 'forbidden' } = $props();
 </script>
 
 <p
 	role="status"
 	class={cn(
 		'flex items-start gap-2.5 border-b px-4 py-2.5 text-sm',
-		state.kind === 'reset' ? 'bg-running-soft text-running' : 'bg-waiting-soft text-waiting'
+		state === 'forbidden'
+			? 'bg-failed-soft text-failed'
+			: state.kind === 'reset'
+				? 'bg-running-soft text-running'
+				: 'bg-waiting-soft text-waiting'
 	)}
 >
-	{#if state.kind === 'offline'}
+	{#if state === 'forbidden'}
+		<ShieldOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+		<span>This device isn't signed in as the owner. Check Tailscale, then reopen the app.</span>
+	{:else if state.kind === 'offline'}
 		<WifiOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
 		<span>Offline. Messages send when you reconnect.</span>
 	{:else if state.kind === 'reconnecting'}
