@@ -10,7 +10,7 @@ const le32 = (n: number) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 
 
 export const SECRET = "GPS-SECRET-51.5N";
 
-function pngChunk(type: string, data: Uint8Array | number[]): Uint8Array {
+export function pngChunk(type: string, data: Uint8Array | number[]): Uint8Array {
   const d = data instanceof Uint8Array ? data : new Uint8Array(data);
   return cat(be32(d.length), enc(type), d, [0, 0, 0, 0]);
 }
@@ -26,7 +26,7 @@ export function png(w: number, h: number, opts: { meta?: boolean; tail?: string 
   );
 }
 
-function jpegSeg(marker: number, data: Uint8Array | number[]): Uint8Array {
+export function jpegSeg(marker: number, data: Uint8Array | number[]): Uint8Array {
   const d = data instanceof Uint8Array ? data : new Uint8Array(data);
   return cat([0xff, marker], be16(d.length + 2), d);
 }
@@ -61,9 +61,38 @@ export function gif(w: number, h: number, opts: { meta?: boolean } = {}): Uint8A
   );
 }
 
-function riffChunk(fourcc: string, data: Uint8Array | number[]): Uint8Array {
+export function riffChunk(fourcc: string, data: Uint8Array | number[]): Uint8Array {
   const d = data instanceof Uint8Array ? data : new Uint8Array(data);
   return cat(enc(fourcc), le32(d.length), d, d.length & 1 ? [0] : []);
+}
+
+export const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+export const ihdr = (w: number, h: number) => pngChunk("IHDR", [...be32(w), ...be32(h), 8, 6, 0, 0, 0]);
+export const actl = (frames: number) => pngChunk("acTL", [...be32(frames), 0, 0, 0, 0]);
+export const fctl = (seq: number, w: number, h: number, x = 0, y = 0) =>
+  pngChunk("fcTL", [...be32(seq), ...be32(w), ...be32(h), ...be32(x), ...be32(y), 0, 1, 0, 10, 0, 0]);
+export const pngFile = (...chunks: Uint8Array[]) => cat(PNG_SIG, ...chunks);
+
+export const jpegFile = (...segs: Uint8Array[]) => cat([0xff, 0xd8], ...segs, jpegSeg(0xda, [1, 1, 0, 0, 63, 0]), [0x12, 0x34, 0xff, 0xd9]);
+export const sof0 = (w: number, h: number) => jpegSeg(0xc0, [8, ...be16(h), ...be16(w), 1, 1, 0x11, 0]);
+
+export const vp8 = (w: number, h: number) => riffChunk("VP8 ", [0, 0, 0, 0x9d, 0x01, 0x2a, ...le16(w), ...le16(h), 0, 0]);
+export const vp8l = (w: number, h: number) => riffChunk("VP8L", [0x2f, ...le32(((w - 1) & 0x3fff) | (((h - 1) & 0x3fff) << 14)), 0, 0]);
+export const vp8x = (w: number, h: number, flags = 0) => riffChunk("VP8X", [flags, 0, 0, 0, ...le24(w - 1), ...le24(h - 1)]);
+export const anmf = (w: number, h: number, bitstream: Uint8Array, x = 0, y = 0) =>
+  riffChunk("ANMF", cat(le24(x / 2), le24(y / 2), le24(w - 1), le24(h - 1), le24(100), [0], bitstream));
+export function webpFile(...chunks: Uint8Array[]): Uint8Array {
+  const body = cat(enc("WEBP"), ...chunks);
+  return cat(enc("RIFF"), le32(body.length), body);
+}
+
+export function gifFrames(screenW: number, screenH: number, frames: { w: number; h: number; x?: number; y?: number }[]): Uint8Array {
+  return cat(
+    enc("GIF89a"),
+    [...le16(screenW), ...le16(screenH), 0, 0, 0],
+    ...frames.map((f) => cat([0x2c, ...le16(f.x ?? 0), ...le16(f.y ?? 0), ...le16(f.w), ...le16(f.h), 0], [2, 1, 0x44, 0])),
+    [0x3b],
+  );
 }
 
 export function webp(w: number, h: number, opts: { meta?: boolean; lossy?: boolean } = {}): Uint8Array {

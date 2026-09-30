@@ -12,6 +12,8 @@ export const IMAGE_MIME: Record<ImageType, string> = {
 
 /** Decoded-size ceiling, read from the header before anything is stored. */
 export const MAX_PIXELS = 50_000_000;
+/** Animation frame ceiling across GIF, APNG and animated WebP. */
+export const MAX_FRAMES = 1000;
 
 export interface ProcessedImage {
   type: ImageType;
@@ -77,7 +79,12 @@ const u32le = (b: Uint8Array, i: number) => (b[i]! | (b[i + 1]! << 8) | (b[i + 2
 
 // ── PNG ──
 
-const PNG_DROP = new Set(["eXIf", "tEXt", "zTXt", "iTXt", "tIME"]);
+// Critical chunks plus the ancillaries that change how pixels render; everything else (text, Exif, C2PA, private) goes.
+const PNG_KEEP = new Set([
+  "IHDR", "PLTE", "IDAT", "IEND",
+  "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT", "cICP", "mDCv", "cLLI", "pHYs",
+  "acTL", "fcTL", "fdAT",
+]);
 
 function stripPng(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
   const out = new Out();
@@ -86,19 +93,29 @@ function stripPng(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
   let width = 0;
   let height = 0;
   let first = true;
+  let frames = 0;
   for (;;) {
     if (i + 12 > b.length) return null;
     const len = u32be(b, i);
     const type = ascii(b, i + 4, 4);
     const end = i + 12 + len;
     if (end > b.length) return null;
+    const at = i + 8;
     if (first) {
       if (type !== "IHDR" || len !== 13) return null;
-      width = u32be(b, i + 8);
-      height = u32be(b, i + 12);
+      width = u32be(b, at);
+      height = u32be(b, at + 4);
       first = false;
+    } else if (type === "IHDR") return null;
+    if (type === "acTL") {
+      if (len !== 8 || u32be(b, at) > MAX_FRAMES) return null;
+    } else if (type === "fcTL") {
+      if (len !== 26 || ++frames > MAX_FRAMES) return null;
+      const fw = u32be(b, at + 4);
+      const fh = u32be(b, at + 8);
+      if (fw === 0 || fh === 0 || u32be(b, at + 12) + fw > width || u32be(b, at + 16) + fh > height) return null;
     }
-    if (!PNG_DROP.has(type)) out.push(b.subarray(i, end));
+    if (PNG_KEEP.has(type)) out.push(b.subarray(i, end));
     i = end;
     if (type === "IEND") break;
   }
@@ -107,12 +124,27 @@ function stripPng(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
 
 // ── JPEG ──
 
-function keepJpegSegment(marker: number, b: Uint8Array, dataAt: number, dataLen: number): boolean {
-  if (marker === 0xe0) return true; // JFIF
-  if (marker === 0xee) return true; // Adobe color transform, needed to decode some files
-  if (marker === 0xe2) return dataLen >= 12 && ascii(b, dataAt, 12) === "ICC_PROFILE\0";
-  if (marker >= 0xe1 && marker <= 0xef) return false; // Exif, XMP, MPF, IPTC and other APPn
-  return marker !== 0xfe; // COM
+const JFIF_LEN = 14; // "JFIF\0", version, units, x and y density, thumbnail width and height
+const ADOBE_LEN = 12; // "Adobe", version, flags0, flags1, transform
+
+/** The segment to write back for a non-SOS marker, or null to drop it. APP0 and APP14 are cut to their fixed
+ *  headers, so a JFIF thumbnail or trailing payload never survives. */
+function keptJpegSegment(marker: number, b: Uint8Array, dataAt: number, dataLen: number): Uint8Array | null {
+  const seg = () => b.subarray(dataAt - 4, dataAt + dataLen);
+  if (isSof(marker) || marker === 0xc4 || marker === 0xcc || marker === 0xdb || marker === 0xdd) return seg();
+  if (marker === 0xe2) return dataLen >= 12 && ascii(b, dataAt, 12) === "ICC_PROFILE\0" ? seg() : null;
+  if (marker === 0xe0) {
+    if (dataLen < JFIF_LEN || ascii(b, dataAt, 5) !== "JFIF\0") return null;
+    const s = new Uint8Array([0xff, 0xe0, 0, JFIF_LEN + 2, ...b.subarray(dataAt, dataAt + JFIF_LEN)]);
+    s[s.length - 2] = 0;
+    s[s.length - 1] = 0;
+    return s;
+  }
+  if (marker === 0xee) {
+    if (dataLen < ADOBE_LEN || ascii(b, dataAt, 5) !== "Adobe") return null;
+    return new Uint8Array([0xff, 0xee, 0, ADOBE_LEN + 2, ...b.subarray(dataAt, dataAt + ADOBE_LEN)]);
+  }
+  return null;
 }
 
 const isSof = (m: number) => m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc;
@@ -144,7 +176,7 @@ function stripJpeg(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
     const segStart = i - 2;
     const segEnd = i + len;
     if (isSof(marker)) {
-      if (len < 7) return null;
+      if (sof || len < 7) return null;
       height = u16be(b, i + 3);
       width = u16be(b, i + 5);
       sof = true;
@@ -165,7 +197,8 @@ function stripJpeg(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
       i = j;
       continue;
     }
-    if (keepJpegSegment(marker, b, i + 2, len - 2)) out.push(b.subarray(segStart, segEnd));
+    const kept = keptJpegSegment(marker, b, i + 2, len - 2);
+    if (kept) out.push(kept);
     i = segEnd;
   }
   if (!sof) return null;
@@ -185,8 +218,13 @@ function gifSubBlocksEnd(b: Uint8Array, i: number): number {
 
 function stripGif(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
   if (b.length < 13) return null;
-  const width = u16le(b, 6);
-  const height = u16le(b, 8);
+  const screenW = u16le(b, 6);
+  const screenH = u16le(b, 8);
+  // Decoders grow the canvas to fit a first frame that overhangs the logical screen, so that is the size reported.
+  let width = screenW;
+  let height = screenH;
+  let extentW = screenW;
+  let extentH = screenH;
   const packed = b[10]!;
   let i = 13 + (packed & 0x80 ? 3 * (1 << ((packed & 7) + 1)) : 0);
   if (i > b.length) return null;
@@ -201,16 +239,21 @@ function stripGif(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
       break;
     }
     if (block === 0x2c) {
-      if (i + 10 > b.length) return null;
-      const fw = u16le(b, i + 5);
-      const fh = u16le(b, i + 7);
-      if (fw * fh > MAX_PIXELS) return null;
+      if (i + 10 > b.length || ++frames > MAX_FRAMES) return null;
+      const right = u16le(b, i + 1) + u16le(b, i + 5);
+      const bottom = u16le(b, i + 3) + u16le(b, i + 7);
+      extentW = Math.max(extentW, right);
+      extentH = Math.max(extentH, bottom);
+      if (extentW * extentH > MAX_PIXELS) return null;
+      if (frames === 1) {
+        width = Math.max(width, right);
+        height = Math.max(height, bottom);
+      }
       const p = b[i + 9]!;
       const dataAt = i + 10 + (p & 0x80 ? 3 * (1 << ((p & 7) + 1)) : 0) + 1;
       const end = gifSubBlocksEnd(b, dataAt);
       out.push(b.subarray(i, end));
       i = end;
-      frames++;
       continue;
     }
     if (block === 0x21) {
@@ -234,49 +277,98 @@ function stripGif(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
 const WEBP_KEEP = new Set(["VP8 ", "VP8L", "VP8X", "ICCP", "ANIM", "ANMF", "ALPH"]);
 const VP8X_EXIF = 0x08;
 const VP8X_XMP = 0x04;
+const VP8X_ANIM = 0x02;
+
+interface RiffChunk {
+  fourcc: string;
+  dataAt: number;
+  len: number;
+  /** Past the chunk's padding, clamped to the parent's end. */
+  end: number;
+}
+
+function riffChunks(b: Uint8Array, from: number, to: number): RiffChunk[] | null {
+  const chunks: RiffChunk[] = [];
+  let i = from;
+  while (i < to) {
+    if (i + 8 > to) return null;
+    const len = u32le(b, i + 4);
+    const dataAt = i + 8;
+    if (dataAt + len > to) return null;
+    chunks.push({ fourcc: ascii(b, i, 4), dataAt, len, end: Math.min(dataAt + len + (len & 1), to) });
+    i = dataAt + len + (len & 1);
+  }
+  return chunks;
+}
+
+/** Dimensions a VP8 or VP8L bitstream decodes to, or null if it is not one or its header is malformed. */
+function bitstreamSize(b: Uint8Array, c: RiffChunk): { w: number; h: number } | null {
+  if (c.fourcc === "VP8 ") {
+    if (c.len < 10 || !startsWith(b, [0x9d, 0x01, 0x2a], c.dataAt + 3)) return null;
+    return { w: u16le(b, c.dataAt + 6) & 0x3fff, h: u16le(b, c.dataAt + 8) & 0x3fff };
+  }
+  if (c.fourcc === "VP8L") {
+    if (c.len < 5 || b[c.dataAt] !== 0x2f) return null;
+    const bits = u32le(b, c.dataAt + 1);
+    return { w: (bits & 0x3fff) + 1, h: ((bits >>> 14) & 0x3fff) + 1 };
+  }
+  return null;
+}
+
+const isBitstream = (c: RiffChunk) => c.fourcc === "VP8 " || c.fourcc === "VP8L";
+
+/** Checks one ANMF frame fits the canvas and that its bitstream decodes to the frame size it declares. */
+function validAnmf(b: Uint8Array, c: RiffChunk, canvasW: number, canvasH: number): boolean {
+  if (c.len < 16) return false;
+  const x = 2 * u24le(b, c.dataAt);
+  const y = 2 * u24le(b, c.dataAt + 3);
+  const w = u24le(b, c.dataAt + 6) + 1;
+  const h = u24le(b, c.dataAt + 9) + 1;
+  if (x + w > canvasW || y + h > canvasH) return false;
+  const inner = riffChunks(b, c.dataAt + 16, c.dataAt + c.len);
+  const bits = inner?.filter(isBitstream);
+  if (!bits || bits.length !== 1) return false;
+  const size = bitstreamSize(b, bits[0]!);
+  return size !== null && size.w === w && size.h === h;
+}
 
 function stripWebp(b: Uint8Array): Omit<ProcessedImage, "type"> | null {
   const riffEnd = 8 + u32le(b, 4);
   if (riffEnd > b.length || riffEnd < 12) return null;
-  const chunks: Uint8Array[] = [];
-  let i = 12;
-  let width = 0;
-  let height = 0;
-  let sized = false;
-  while (i < riffEnd) {
-    if (i + 8 > riffEnd) return null;
-    const fourcc = ascii(b, i, 4);
-    const len = u32le(b, i + 4);
-    const dataAt = i + 8;
-    const end = dataAt + len + (len & 1);
-    if (dataAt + len > riffEnd) return null;
-    if (fourcc === "VP8X") {
-      if (len < 10) return null;
-      const chunk = new Uint8Array(b.subarray(i, dataAt + len + (len & 1)));
-      chunk[8] = chunk[8]! & ~(VP8X_EXIF | VP8X_XMP);
-      chunks.push(chunk);
-      width = u24le(b, dataAt + 4) + 1;
-      height = u24le(b, dataAt + 7) + 1;
-      sized = true;
+  const chunks = riffChunks(b, 12, riffEnd);
+  if (!chunks?.length) return null;
+  const first = chunks[0]!;
+  // RFC 9649 2.7: VP8X leads an extended file; browsers ignore one anywhere else and size from the bitstream.
+  if (chunks.some((c, n) => n > 0 && c.fourcc === "VP8X")) return null;
+  const bitstreams = chunks.filter(isBitstream);
+  let width: number;
+  let height: number;
+  const kept: Uint8Array[] = [];
+  if (first.fourcc !== "VP8X") {
+    const size = bitstreamSize(b, first);
+    if (!size || bitstreams.length !== 1 || chunks.some((c) => c.fourcc === "ANMF")) return null;
+    width = size.w;
+    height = size.h;
+  } else {
+    if (first.len < 10) return null;
+    const flags = b[first.dataAt]!;
+    width = u24le(b, first.dataAt + 4) + 1;
+    height = u24le(b, first.dataAt + 7) + 1;
+    if (flags & VP8X_ANIM) {
+      const frames = chunks.filter((c) => c.fourcc === "ANMF");
+      if (bitstreams.length || !frames.length || frames.length > MAX_FRAMES) return null;
+      if (!frames.every((f) => validAnmf(b, f, width, height))) return null;
     } else {
-      if (!sized && fourcc === "VP8 ") {
-        if (len < 10 || !startsWith(b, [0x9d, 0x01, 0x2a], dataAt + 3)) return null;
-        width = u16le(b, dataAt + 6) & 0x3fff;
-        height = u16le(b, dataAt + 8) & 0x3fff;
-        sized = true;
-      } else if (!sized && fourcc === "VP8L") {
-        if (len < 5 || b[dataAt] !== 0x2f) return null;
-        const bits = u32le(b, dataAt + 1);
-        width = (bits & 0x3fff) + 1;
-        height = ((bits >>> 14) & 0x3fff) + 1;
-        sized = true;
-      }
-      if (WEBP_KEEP.has(fourcc)) chunks.push(b.subarray(i, Math.min(end, riffEnd)));
+      if (bitstreams.length !== 1 || chunks.some((c) => c.fourcc === "ANMF")) return null;
+      const size = bitstreamSize(b, bitstreams[0]!);
+      if (!size || size.w !== width || size.h !== height) return null;
     }
-    i = end;
+    const vp8x = new Uint8Array(b.subarray(12, first.end));
+    vp8x[8] = vp8x[8]! & ~(VP8X_EXIF | VP8X_XMP);
+    kept.push(vp8x);
   }
-  if (!sized) return null;
-  const body = Buffer.concat(chunks);
+  for (const c of chunks.slice(first.fourcc === "VP8X" ? 1 : 0)) if (WEBP_KEEP.has(c.fourcc)) kept.push(b.subarray(c.dataAt - 8, c.end));
+  const body = Buffer.concat(kept);
   const header = new Uint8Array(12);
   header.set(b.subarray(0, 12));
   new DataView(header.buffer).setUint32(4, 4 + body.length, true);
