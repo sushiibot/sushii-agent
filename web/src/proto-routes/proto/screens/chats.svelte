@@ -7,7 +7,7 @@
 	import { Input } from '$lib/ui/input';
 	import { Button } from '$lib/ui/button';
 	import { cn } from '$lib/utils';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import SessionIcon from './session-icon.svelte';
 	import type { Session, SessionState } from './types';
 

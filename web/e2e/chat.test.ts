@@ -630,6 +630,36 @@ test('streaming while scrolled up moves nothing and shows the New messages pill'
 	await expect(pill).toBeHidden();
 });
 
+test('the new-chat and image sheets each close on one back', async ({ page, context }) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'img1',
+				at: 'x',
+				text: 'Here is the chart.',
+				tools: [],
+				files: [
+					{ id: UPLOAD_ID, contentType: 'image/png', bytes: 10, name: 'chart.png', inline: true }
+				]
+			}
+		]
+	});
+	await open(page);
+	await page.getByRole('button', { name: 'Chat commands' }).click();
+	await page.getByRole('button', { name: /New chat/ }).click();
+	await expect(page.getByRole('dialog', { name: 'Start a new chat' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page).toHaveURL(/\/$/);
+
+	await page.getByRole('button', { name: 'Open image chart.png' }).click();
+	await expect(page.getByRole('dialog', { name: 'Image' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+});
+
 test('the commands sheet closes on back and leaves Main in place', async ({ page, context }) => {
 	const { posts } = await chatServer(context);
 	await open(page);

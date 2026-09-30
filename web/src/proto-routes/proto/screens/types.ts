@@ -1,4 +1,4 @@
-import type { MemoryWrite, ThreadReport } from '$lib/features/chat/types';
+import type { MemoryWrite, ThreadReport } from '$lib/features/chat';
 
 export type RunState = 'waiting' | 'running' | 'review' | 'failed' | 'done';
 export type Outcome = 'verified' | 'unverified';

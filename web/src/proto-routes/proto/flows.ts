@@ -44,6 +44,8 @@ export interface Frame {
 	width?: number;
 	/** Start the chat scrolled this many px up from the newest message. */
 	scrollUp?: number;
+	/** Render inside the app's Shell, as routes do; the legacy prototype screens bring their own. */
+	shell?: boolean;
 }
 
 export interface Flow {
@@ -1279,3 +1281,6 @@ export function frameFor(path: string): string | undefined {
 		p.endsWith('*') ? path.startsWith(p.slice(0, -1)) : path === p
 	)?.[1];
 }
+
+for (const flow of flows)
+	for (const frame of flow.frames) frame.shell ??= frame.screen === ChatScreen;

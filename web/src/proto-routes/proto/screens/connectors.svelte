@@ -6,7 +6,7 @@
 	import { Button } from '$lib/ui/button';
 	import { Input } from '$lib/ui/input';
 	import { cn } from '$lib/utils';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import type { McpServer } from './types';
 
 	type Stage = 'list' | 'url' | 'oauth' | 'paste';

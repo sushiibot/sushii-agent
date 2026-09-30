@@ -14,7 +14,7 @@
 	import FoldVertical from '@lucide/svelte/icons/fold-vertical';
 	import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
 	import { Button } from '$lib/ui/button';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import ApprovalTray from '$lib/features/chat/components/approval-tray.svelte';
 	import Composer from '$lib/features/chat/components/composer.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
@@ -28,7 +28,7 @@
 		MemoryWrite,
 		PendingApproval,
 		PhotoDraft
-	} from '$lib/features/chat/types';
+	} from '$lib/features/chat';
 	import type { Session, ThreadClose } from './types';
 
 	type Sheet = 'memory' | 'close' | 'actions' | 'message' | 'aside' | 'commands' | 'new' | 'viewer';

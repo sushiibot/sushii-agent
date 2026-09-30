@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
-	import { pushState, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import { routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import {
 		ChatScreen,
@@ -22,7 +22,13 @@
 	void chatStore().then((s) => (store = s));
 
 	const sheet = $derived(page.state.sheet);
-	const heldId = $derived(sheet === 'message' ? page.state.messageId : undefined);
+	const sheets: Record<ChatSheet, ReturnType<typeof routedSheet>> = {
+		commands: routedSheet('commands'),
+		new: routedSheet('new'),
+		viewer: routedSheet('viewer'),
+		message: routedSheet('message')
+	};
+	const heldId = $derived(sheets.message.arg);
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
@@ -79,13 +85,11 @@
 	});
 
 	function openSheet(next: ChatSheet, messageId?: string) {
-		const state = messageId ? { sheet: next, messageId } : { sheet: next };
-		if (sheet) replaceState('', state);
-		else pushState('', state);
+		sheets[next].openWith(messageId);
 	}
 
 	function closeSheet() {
-		if (sheet) history.back();
+		if (sheet) sheets[sheet].close();
 	}
 </script>
 

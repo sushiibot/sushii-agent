@@ -1,4 +1,4 @@
-import type { ChatMessage, MemoryWrite } from '$lib/features/chat/types';
+import type { ChatMessage, MemoryWrite } from '$lib/features/chat';
 import type {
 	Session,
 	ThreadClose,

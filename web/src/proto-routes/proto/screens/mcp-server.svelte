@@ -4,7 +4,7 @@
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
 	import { Button } from '$lib/ui/button';
 	import { cn } from '$lib/utils';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import type { McpServer } from './types';
 

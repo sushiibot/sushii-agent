@@ -2,7 +2,7 @@
 	import Copy from '@lucide/svelte/icons/copy';
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
 	import { Button } from '$lib/ui/button';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 
 	let { path, content, runId }: { path: string; content: string; runId: string } = $props();
 	const lines = $derived(content.trimEnd().split('\n'));

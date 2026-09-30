@@ -6,7 +6,7 @@
 	import { Button } from '$lib/ui/button';
 	import { Switch } from '$lib/ui/switch';
 	import { cn } from '$lib/utils';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import type { Job } from './types';
 

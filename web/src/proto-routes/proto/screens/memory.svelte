@@ -4,7 +4,7 @@
 	import GitCommitHorizontal from '@lucide/svelte/icons/git-commit-horizontal';
 	import { Button } from '$lib/ui/button';
 	import { cn } from '$lib/utils';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import DiffView from './diff-view.svelte';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import MemoryTabs from './memory-tabs.svelte';

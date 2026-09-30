@@ -3,7 +3,7 @@
 	import MessagesSquare from '@lucide/svelte/icons/messages-square';
 	import Activity from '@lucide/svelte/icons/activity';
 	import { Input } from '$lib/ui/input';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import type { DaySummary } from './types';
 

@@ -4,10 +4,10 @@
 	import X from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/ui/button';
 	import { Textarea } from '$lib/ui/textarea';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import Conversation from '$lib/features/chat/components/conversation.svelte';
 	import SessionIcon from './session-icon.svelte';
-	import type { ChatMessage } from '$lib/features/chat/types';
+	import type { ChatMessage } from '$lib/features/chat';
 	import type { Session } from './types';
 
 	let { panes }: { panes: { session: Session; messages: ChatMessage[] }[] } = $props();

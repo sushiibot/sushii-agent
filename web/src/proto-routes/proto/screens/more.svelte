@@ -3,7 +3,7 @@
 	import BellRing from '@lucide/svelte/icons/bell-ring';
 	import Send from '@lucide/svelte/icons/send';
 	import { Button } from '$lib/ui/button';
-	import AppShell, { moreItems } from '$lib/ui/shell/app-shell.svelte';
+	import AppShell, { moreItems } from './app-shell.svelte';
 	import type { PushState } from './types';
 
 	let { push = 'default', testSent = false }: { push?: PushState; testSent?: boolean } = $props();

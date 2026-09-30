@@ -10,7 +10,8 @@
 	import ServerOff from '@lucide/svelte/icons/server-off';
 	import Settings from '@lucide/svelte/icons/settings';
 	import Square from '@lucide/svelte/icons/square';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import Screen from '$lib/ui/screen/screen.svelte';
+	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 	import InstallHint from '$lib/ui/pwa/install-hint.svelte';
@@ -133,6 +134,14 @@
 		sheet === 'message' && heldId ? messages.find((m) => m.id === heldId) : undefined
 	);
 	const pressed = $derived(sheet === 'message' ? heldId : undefined);
+	// A closing sheet keeps its content until it has slid away.
+	// svelte-ignore state_referenced_locally
+	let shownSheet = $state<ChatSheet | undefined>(sheet);
+	let shownHeld = $state<ChatMessage | undefined>();
+	$effect.pre(() => {
+		if (sheet) shownSheet = sheet;
+		if (held) shownHeld = held;
+	});
 	const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
 	let selecting = $state<string | undefined>();
 	let pendingSelect: string | undefined;
@@ -383,14 +392,8 @@
 	};
 </script>
 
-<svelte:window
-	onkeydown={(e) => {
-		if (e.key === 'Escape' && sheet) closeSheet();
-	}}
-/>
-
 {#snippet sheetBody()}
-	{#if sheet === 'commands'}
+	{#if shownSheet === 'commands'}
 		<div class="flex flex-col gap-2 px-3 pt-1 pb-3">
 			<h2 class="px-2 pt-1 text-lg font-semibold">Chat commands</h2>
 			{#if commandsOffline}
@@ -421,7 +424,7 @@
 				{/each}
 			</ul>
 		</div>
-	{:else if sheet === 'new'}
+	{:else if shownSheet === 'new'}
 		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
 			<div class="flex flex-col gap-1">
 				<h2 class="text-lg font-semibold">Start a new chat?</h2>
@@ -437,10 +440,10 @@
 				<Button size="lg" variant="ghost" onclick={closeSheet}>Cancel</Button>
 			</div>
 		</div>
-	{:else if sheet === 'message' && held}
+	{:else if shownSheet === 'message' && shownHeld}
 		<MessageSheet
-			message={held}
-			preview={messagePlainText(held).slice(0, 200)}
+			message={shownHeld}
+			preview={messagePlainText(shownHeld).slice(0, 200)}
 			{canShare}
 			oncopy={copyHeld}
 			onshare={shareHeld}
@@ -448,7 +451,7 @@
 			onretry={() => resendHeld('retry')}
 			ondelete={() => resendHeld('discard')}
 		/>
-	{:else if sheet === 'viewer' && viewer?.src}
+	{:else if shownSheet === 'viewer' && viewer?.src}
 		<div class="flex flex-col gap-3 px-4 pt-1 pb-4">
 			<img src={viewer.src} alt={viewer.name} class="w-full rounded-xl border object-contain" />
 			<p class="text-sm [overflow-wrap:anywhere]">
@@ -530,19 +533,13 @@
 	</div>
 {/snippet}
 
-<AppShell
-	active="home"
+<Screen
 	title="Main"
 	{subtitle}
 	{actions}
 	{banner}
 	{footer}
 	toast={toast || updateReady ? toastBody : undefined}
-	sheet={sheet ? sheetBody : undefined}
-	sheetLabel={sheet ? sheetLabels[sheet] : undefined}
-	sheetOnDesktop={sheet === 'message'}
-	tabBar={false}
-	onclosesheet={closeSheet}
 	stickToBottom={!empty}
 	bind:scroller
 >
@@ -619,4 +616,11 @@
 	{/if}
 	<p role="status" class="sr-only">{announce}</p>
 	<p role="status" class="sr-only">{copyNote}</p>
-</AppShell>
+</Screen>
+
+<RoutedSheet
+	open={!!sheet}
+	label={shownSheet ? sheetLabels[shownSheet] : ''}
+	desktop={shownSheet === 'message'}
+	onclose={closeSheet}>{@render sheetBody()}</RoutedSheet
+>

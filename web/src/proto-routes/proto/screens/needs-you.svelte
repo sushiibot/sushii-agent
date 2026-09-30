@@ -9,7 +9,7 @@
 	import { Button } from '$lib/ui/button';
 	import { Textarea } from '$lib/ui/textarea';
 	import { cn } from '$lib/utils';
-	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import AppShell from './app-shell.svelte';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import SetupHint from './setup-hint.svelte';
 	import { status } from '$lib/ui/status/status';
