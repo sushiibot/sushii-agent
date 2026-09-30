@@ -26,7 +26,8 @@
 		commands: routedSheet('commands'),
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
-		message: routedSheet('message')
+		message: routedSheet('message'),
+		usage: routedSheet('usage')
 	};
 	const heldId = $derived(sheets.message.arg);
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
@@ -109,6 +110,7 @@
 		draft={s.draft}
 		photos={s.photos}
 		quotaFull={s.quotaFull}
+		usage={s.usage}
 		{connection}
 		commandsOffline={s.workspace === 'offline'}
 		toast={s.toast}

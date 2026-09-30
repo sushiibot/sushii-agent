@@ -630,6 +630,74 @@ test('streaming while scrolled up moves nothing and shows the New messages pill'
 	await expect(pill).toBeHidden();
 });
 
+test("the last reply's usage sits under the composer, holds still while streaming, and opens its details", async ({
+	page,
+	context
+}) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'u1',
+				at: 'x',
+				text: 'Earlier answer',
+				tools: [],
+				files: [],
+				usage: {
+					model: 'openrouter/deepseek/deepseek-v4.1-flash',
+					inputTokens: 1200,
+					outputTokens: 80,
+					contextPct: 12.4,
+					costUsd: 0.002
+				}
+			}
+		]
+	});
+	await open(page);
+	const line = page.getByRole('button', { name: 'deepseek-v4.1-flash · ctx 12% · $0.0020' });
+	await expect(line).toBeVisible();
+	const top = await line.evaluate((e) => e.getBoundingClientRect().top);
+
+	await push(page, 'delta', { turnId: 't2', offset: 0, text: 'Streaming a new answer' });
+	await expect(page.getByText('Streaming a new answer')).toBeVisible();
+	await expect(line).toBeVisible();
+	expect(await line.evaluate((e) => e.getBoundingClientRect().top)).toBe(top);
+
+	const usage = {
+		model: 'anthropic/claude-sonnet-5',
+		inputTokens: 5000,
+		outputTokens: 321,
+		cacheRead: 4096,
+		contextPct: 40,
+		costUsd: 0.0312
+	};
+	await push(
+		page,
+		'reply',
+		{ key: 'r2', turnId: 't2', text: 'Streaming a new answer', usage, files: [] },
+		1
+	);
+	const next = page.getByRole('button', { name: 'claude-sonnet-5 · ctx 40% · $0.031' });
+	await expect(next).toBeVisible();
+
+	await next.click();
+	const sheet = page.getByRole('dialog', { name: 'Last reply usage' });
+	await expect(sheet).toContainText('not a running total');
+	await expect(sheet).toContainText('anthropic/claude-sonnet-5');
+	await expect(sheet).toContainText('5,000');
+	await expect(sheet).toContainText('4,096');
+	await expect(sheet).not.toContainText('Cache write');
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('no usage line before any reply has usage', async ({ page, context }) => {
+	await chatServer(context);
+	await open(page);
+	await expect(page.getByRole('button', { name: /ctx \d+%/ })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
+});
+
 test('the new-chat and image sheets each close on one back', async ({ page, context }) => {
 	await chatServer(context, {
 		history: [

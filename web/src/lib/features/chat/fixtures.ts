@@ -1,3 +1,4 @@
+import type { ChatUsage } from '$lib/core/realtime/events';
 import type { AskView, ChatMessage, FileRef, PendingApproval, PhotoDraft, Turn } from './types';
 
 // Every person, company, address and id below is invented. Photos are inline SVG so the board and
@@ -651,3 +652,13 @@ export const pushFailed = invoice({
 });
 
 export const turnStreamingLong: ChatMessage[] = [...historyItems.slice(1, 5), ...turnStreaming];
+
+export const lastUsage: ChatUsage = {
+	model: 'openrouter/deepseek/deepseek-v4.1-flash',
+	inputTokens: 18_204,
+	outputTokens: 412,
+	cacheRead: 16_000,
+	cacheWrite: 1_024,
+	costUsd: 0.0123,
+	contextPct: 34
+};

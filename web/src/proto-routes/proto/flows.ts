@@ -593,7 +593,16 @@ export const flows: Flow[] = [
 				id: 'tu-6',
 				label: 'Final reply; screen reader hears “Agent replied” once',
 				screen: ChatScreen,
-				props: { messages: c.turnDone, announce: 'Agent replied' }
+				props: { messages: c.turnDone, announce: 'Agent replied', usage: c.lastUsage },
+				hits: { deepseek: 'tu-12' }
+			},
+			{
+				id: 'tu-12',
+				label: 'Last reply usage',
+				screen: ChatScreen,
+				props: { messages: c.turnDone, usage: c.lastUsage, sheet: 'usage' },
+				hits: { close: 'tu-6' },
+				branch: 'Tap the line under the composer'
 			},
 			{
 				id: 'tu-7',

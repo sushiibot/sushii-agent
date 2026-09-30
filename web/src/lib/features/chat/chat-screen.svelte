@@ -22,6 +22,8 @@
 	import Conversation from './components/conversation.svelte';
 	import MessageSheet from './components/message-sheet.svelte';
 	import { messagePlainText } from './render/plain-text';
+	import { formatCost, formatTokens, usageLine } from './render/usage';
+	import type { ChatUsage } from '$lib/core/realtime/events';
 	import type { ChatMessage, ChatSheet, ChatTray, FileRef, PhotoDraft } from './types';
 
 	let {
@@ -36,6 +38,7 @@
 		draft = '',
 		photos = [],
 		quotaFull = false,
+		usage = null,
 		connection,
 		commandsOffline = false,
 		toast,
@@ -81,6 +84,8 @@
 		draft?: string;
 		photos?: PhotoDraft[];
 		quotaFull?: boolean;
+		/** The newest reply's usage, shown under the composer. */
+		usage?: ChatUsage | null;
 		connection?: ConnectionState | 'forbidden';
 		commandsOffline?: boolean;
 		toast?: string | null;
@@ -382,13 +387,27 @@
 			disabled: commandsOffline
 		}
 	]);
+	function usageRows(u: ChatUsage): [string, string][] {
+		const rows: [string, string][] = [['Model', u.model]];
+		if (u.contextPct !== undefined) rows.push(['Context used', `${Math.round(u.contextPct)}%`]);
+		rows.push(
+			['Tokens in', formatTokens(u.inputTokens)],
+			['Tokens out', formatTokens(u.outputTokens)]
+		);
+		if (u.cacheRead !== undefined) rows.push(['Cache read', formatTokens(u.cacheRead)]);
+		if (u.cacheWrite !== undefined) rows.push(['Cache write', formatTokens(u.cacheWrite)]);
+		if (u.costUsd !== undefined) rows.push(['Cost', formatCost(u.costUsd)]);
+		return rows;
+	}
+
 	const install = () => oninstall?.() ?? Promise.resolve('failed' as const);
 
 	const sheetLabels: Record<ChatSheet, string> = {
 		commands: 'Chat commands',
 		new: 'Start a new chat',
 		viewer: 'Image',
-		message: 'Message actions'
+		message: 'Message actions',
+		usage: 'Last reply usage'
 	};
 </script>
 
@@ -466,6 +485,22 @@
 				<Button variant="ghost" class="flex-1" onclick={closeSheet}>Close</Button>
 			</div>
 		</div>
+	{:else if shownSheet === 'usage' && usage}
+		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
+			<div class="flex flex-col gap-1">
+				<h2 class="text-lg font-semibold">Last reply</h2>
+				<p class="text-sm text-muted-foreground">What the last reply used, not a running total.</p>
+			</div>
+			<dl class="flex flex-col divide-y rounded-xl border bg-card text-sm">
+				{#each usageRows(usage) as [label, value] (label)}
+					<div class="flex min-h-12 items-center justify-between gap-4 px-4 py-2.5">
+						<dt class="text-muted-foreground">{label}</dt>
+						<dd class="text-right [overflow-wrap:anywhere] tabular-nums">{value}</dd>
+					</div>
+				{/each}
+			</dl>
+			<Button size="lg" variant="ghost" onclick={closeSheet}>Close</Button>
+		</div>
 	{/if}
 {/snippet}
 
@@ -499,6 +534,20 @@
 	{#if toast}{toast}{:else}<UpdateToast onreload={() => onreload?.()} />{/if}
 {/snippet}
 
+{#snippet usageStatus()}
+	{#if usage}
+		<!-- Muted and plain: it opens a details sheet and nothing else. -->
+		<button
+			type="button"
+			aria-haspopup="dialog"
+			onclick={() => onopensheet?.('usage')}
+			class="-mt-2 -mb-2.5 flex h-12 w-full min-w-0 items-center justify-center text-meta text-muted-foreground hover:text-foreground"
+		>
+			<span class="truncate">{usageLine(usage)}</span>
+		</button>
+	{/if}
+{/snippet}
+
 {#snippet footer()}
 	{#if newMessages}
 		<div class="pointer-events-none absolute inset-x-0 bottom-full flex justify-center pb-3">
@@ -529,6 +578,7 @@
 			onattach={(files) => onattach?.(files)}
 			onremovephoto={(id) => onremovephoto?.(id)}
 			onretryphoto={(id) => onretryphoto?.(id)}
+			status={usage ? usageStatus : undefined}
 		/>
 	</div>
 {/snippet}

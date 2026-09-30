@@ -5,6 +5,7 @@ import {
 	MESSAGE_TEXT_MAX,
 	MESSAGE_UPLOADS_MAX,
 	type ChatEnvelope,
+	type ChatUsage,
 	type WorkspaceState
 } from '$lib/core/realtime/events';
 import {
@@ -94,6 +95,8 @@ export class ChatStore {
 	timedOut = $state.raw<PendingApproval | null>(null);
 	cursor = $state<number | null>(null);
 	workspace = $state<WorkspaceState | null>(null);
+	/** The newest reply's usage; it changes only when a reply lands, never mid-stream. */
+	usage = $state.raw<ChatUsage | null>(null);
 	connection = $state<TransportState | 'connecting'>('connecting');
 	reconnectingSince = $state<number | null>(null);
 	/** Set after a `reset` reload, until the reader has seen the banner for a while. */
@@ -268,6 +271,9 @@ export class ChatStore {
 		this.cursor = s.cursor;
 		this.workspace = s.workspace;
 		this.stopping = s.stopping;
+		const usage = s.items.findLast((i) => i.kind === 'assistant' && i.usage);
+		const next = usage?.kind === 'assistant' ? (usage.usage ?? null) : null;
+		if (next !== this.usage) this.usage = next;
 	}
 
 	#effect(e: Effect) {
