@@ -87,6 +87,13 @@ describe("path tools", () => {
     expect(call("ls", { path: "/proc" })).toBeUndefined();
   });
 
+  test("allows the history files, which sit in HOME outside the agent dir", () => {
+    for (const path of ["history", "~/history", join(home, "history", "2026-09-29.md"), "history/2026-09/29-01ABC.md"]) {
+      for (const tool of ["read", "grep", "find", "ls"]) expect(call(tool, { path, pattern: "deploy" })).toBeUndefined();
+    }
+    expect(blocked("read", { path: "history/../../pi-agent/auth.json" })).toBe(true);
+  });
+
   test("logs the tool name and rule, never the input", () => {
     warnings.length = 0;
     call("read", { path: join(agentDir, "auth.json") });
@@ -144,6 +151,10 @@ describe("bash", () => {
       "git status && bun test",
       "grep -ri auth memory/",
       "ls a*",
+      "rg -n deploy ~/history",
+      "cat ~/history/2026-09-29.md",
+      "find ~/history -name '*.md' | xargs rg -l zebra",
+      "ls history/2026-09",
     ]) {
       expect(call("bash", { command })).toBeUndefined();
     }

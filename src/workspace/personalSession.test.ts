@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
-import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, STOP_NOTE } from "./personalSession.ts";
+import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, type SessionSummaryRecord, STOP_NOTE } from "./personalSession.ts";
+import { HistoryWriter } from "./history.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
@@ -1990,6 +1991,99 @@ describe("PersonalSession context economy", () => {
     expect(readWorkspaceState(stateDir)).toMatchObject({ chatSessionFile: again.sessions[0].file, recap: { sessionFile: again.sessions[0].file, text: recap.text } });
     expect(sessions).toHaveLength(2);
     await again.host.dispose();
+  });
+
+  test("rotation and chat/new append their recap to the day's history file; only rotation seeds it", async () => {
+    const home = tempDir();
+    const writer = new HistoryWriter({ home, agentDir: join(home, "agent"), tz: "UTC", now: () => new Date("2026-09-29T12:30:00Z") });
+    const summaries: SessionSummaryRecord[] = [];
+    const { host, sessions, stateDir, calls, advance } = await idleBigHost({
+      onSessionSummary: (s) => {
+        summaries.push(s);
+        writer.writeSession({ ...s, at: new Date("2026-09-29T12:30:00Z") });
+      },
+    });
+    advance(26 * MIN);
+    await host.checkIdle();
+    await host.handleMessage(msg("m2", "next topic"));
+    sessions[1].finish("sure");
+    await until(() => host.isIdle());
+    await host.handleNew();
+    await until(() => summaries.length === 2);
+
+    expect(calls.filter((c) => c === "recap")).toHaveLength(2);
+    expect(summaries.map((s) => [s.reason, s.sessionFile, s.text])).toEqual([
+      ["rotate", sessions[0].file, "## Goals\n- ship u22"],
+      ["new", sessions[1].file, "## Goals\n- ship u22"],
+    ]);
+    expect(sessions[2].customs).toHaveLength(0);
+    expect(readWorkspaceState(stateDir)?.recap).toBeUndefined();
+    const daily = readFileSync(join(home, "history", "2026-09-29.md"), "utf8");
+    expect(daily).toContain("## Sessions\n\n### 12:30 · rotate · ship u22 · `chat-1.jsonl`\n\n#### Goals\n- ship u22\n");
+    expect(daily).toContain("### 12:30 · new · ship u22 · `chat-2.jsonl`");
+    expect(existsSync(join(home, "history", "sessions.md"))).toBe(false);
+  });
+
+  test("chat/new on a session with no conversation makes no recap; a failing summary hook changes nothing", async () => {
+    const { host, sessions, calls, advance } = await idleBigHost({
+      onSessionSummary: () => {
+        throw new Error("disk full");
+      },
+    });
+    advance(26 * MIN);
+    expect(await host.checkIdle()).toMatchObject({ recapped: true });
+    expect(sessions[1].customs).toHaveLength(1);
+    await host.handleNew();
+    expect(calls.filter((c) => c === "recap")).toHaveLength(1);
+    expect(sessions).toHaveLength(3);
+  });
+
+  test("chat/new swaps sessions without waiting for its recap; the recap lands later and then the old session is disposed", async () => {
+    const summaries: SessionSummaryRecord[] = [];
+    const recapDone = gate();
+    const { host, sessions } = await idleBigHost({
+      recap: async () => {
+        await recapDone.promise;
+        return "## Goals\n- late recap";
+      },
+      onSessionSummary: (s) => summaries.push(s),
+    });
+    const result = await within(host.handleNew());
+    expect(result).not.toBe(TIMED_OUT);
+    expect(host.currentSessionFile).toBe(sessions[1].file);
+    expect(sessions[0].disposed).toBe(false);
+    expect(summaries).toHaveLength(0);
+
+    recapDone.open();
+    await until(() => sessions[0].disposed);
+    expect(summaries.map((s) => [s.reason, s.sessionFile, s.text])).toEqual([["new", sessions[0].file, "## Goals\n- late recap"]]);
+    expect(sessions[1].customs).toHaveLength(0);
+  });
+
+  test("a chat/new recap past its timeout is aborted, records nothing, and still disposes the old session", async () => {
+    const summaries: SessionSummaryRecord[] = [];
+    let signal: AbortSignal | undefined;
+    const { host, sessions } = await idleBigHost({
+      recap: (_session, s) => {
+        signal = s;
+        return new Promise<string | null>(() => {});
+      },
+      newRecapTimeoutMs: 20,
+      onSessionSummary: (s) => summaries.push(s),
+    });
+    await host.handleNew();
+    await until(() => sessions[0].disposed);
+    expect(signal?.aborted).toBe(true);
+    expect(summaries).toHaveLength(0);
+  });
+
+  test("a finished compaction reports Pi's summary; an aborted one doesn't", async () => {
+    const summaries: SessionSummaryRecord[] = [];
+    const { sessions } = await idleBigHost({ onSessionSummary: (s) => summaries.push(s) });
+    const result = { summary: "## Goals\n- compacted", firstKeptEntryId: "e1", tokensBefore: 1 };
+    sessions[0].emit({ type: "compaction_end", reason: "threshold", result, aborted: true, willRetry: false });
+    sessions[0].emit({ type: "compaction_end", reason: "threshold", result, aborted: false, willRetry: false });
+    expect(summaries.map((s) => [s.reason, s.sessionFile, s.text])).toEqual([["compaction", sessions[0].file, "## Goals\n- compacted"]]);
   });
 
   test("chat/new clears a stashed recap", async () => {

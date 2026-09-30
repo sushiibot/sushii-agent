@@ -29,10 +29,11 @@ message id to cite. The header is metadata, not something drk typed: never echo 
 | `.agents/agents/<name>.md` | Subagent definitions for `delegate` | drk / you, when asked |
 | `projects/` | Git clones you work in (not versioned in `$HOME`) | you |
 | `scratch/` | Throwaway files (not versioned) | you |
+| `history/` | Your past runs and session recaps as markdown (not versioned) | the workspace |
 
 `AGENTS.md`, `SOUL.md`, `USER.md`, `MEMORY.md` and `TASKS.md` are loaded into every session.
 `memory/`, `tasks/` and `DREAMS.md` are not loaded; read them on demand.
-A recap at the top of a session summarizes the previous one; use `ws-runs` for detail.
+A recap at the top of a session summarizes the previous one. Past runs and recaps are markdown in `history/` (see the session-history skill).
 
 ## Memory rules
 

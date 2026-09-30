@@ -41,6 +41,7 @@ const SNOWFLAKE = /^\d{17,20}$/;
 const CONTEXT_CUSTOM_TYPE = "workspace_context";
 const RECAP_CUSTOM_TYPE = "workspace_recap";
 const IDLE_CHECK_MS = 60_000;
+export const NEW_RECAP_TIMEOUT_MS = 120_000;
 /** How long a workspace-initiated ask (the stale-task review) stays answerable. */
 const OWNER_ASK_TIMEOUT_MS = 24 * 60 * 60_000;
 /** How long `!compact` waits for a running turn to end before compacting anyway. */
@@ -118,8 +119,8 @@ export type FlushOutcome = "done" | "timeout" | "cut" | "failed" | "skipped";
 export interface ContextHooks {
   /** Compacts `session` now; tokens before and (estimated) after. */
   compact(session: ChatSession): Promise<{ tokensBefore: number; tokensAfter: number | null }>;
-  /** A recap of `session` for the next one to start from; null when none could be made. */
-  recap(session: ChatSession): Promise<string | null>;
+  /** A recap of `session` for the next one to start from; null when none could be made. Aborted on timeout. */
+  recap(session: ChatSession, signal?: AbortSignal): Promise<string | null>;
   /** How long `session` must be idle before it rotates. */
   idleRotateMs(session: ChatSession): number;
   /** Rotation only happens above this many context tokens. */
@@ -128,8 +129,19 @@ export interface ContextHooks {
   busy?(): boolean;
   /** After a rotation, for the run log. */
   onRotated?(r: RotationRecord): void;
+  /** A recap of a chat session that ended (rotation, chat/new) or Pi's summary at a compaction, for the history files. */
+  onSessionSummary?(s: SessionSummaryRecord): void;
+  /** Cap on the background recap chat/new makes for the history files. Default NEW_RECAP_TIMEOUT_MS. */
+  newRecapTimeoutMs?: number;
   /** How often idleness is checked. Default 60s; null leaves it to checkIdle() calls. */
   checkEveryMs?: number | null;
+}
+
+export interface SessionSummaryRecord {
+  reason: "rotate" | "new" | "compaction";
+  sessionFile: string;
+  text: string;
+  at: Date;
 }
 
 export interface RotationRecord {
@@ -234,6 +246,8 @@ export class PersonalSession {
   // Serial inbound queue; doubles as the hold queue while chat/new swaps sessions.
   private chain: Promise<unknown> = Promise.resolve();
   private resetting = false;
+  /** chat/new recaps still running on retired sessions; aborted at shutdown. */
+  private readonly backgroundRecaps = new Set<AbortController>();
   private run: OpenRun | null = null;
   private lastInboundId: string | undefined;
   private lastOrigin: ChatOrigin | undefined;
@@ -498,13 +512,16 @@ export class PersonalSession {
           }
           // After the abort: a flush sent into a live run would join it as a steer.
           await this.flushBeforeNew(old, deadline, budgetMs, reason);
-          if (reason === "rotate") recap = await this.makeRecap(old, deadline - reserve);
+          if (reason === "rotate") recap = await this.makeRecap(old, Math.max(deadline - reserve, Date.now() + 1000));
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
         const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui });
         this.detach();
-        old?.dispose();
+        // chat/new's recap only feeds the history files, so it runs after the swap instead of delaying it.
+        if (old && reason === "new") this.recapInBackground(old, previousSessionFile);
+        else old?.dispose();
         this.attach(session, sessionFile);
+        if (old && recap !== null) this.emitSummary({ reason, sessionFile: previousSessionFile, text: recap, at: new Date() });
         const text = recap === null ? null : recapMessage(recap, previousSessionFile);
         if (text !== null) await this.seedRecap(session, text).catch((err) => log.warn({ err }, "seeding the recap failed"));
         writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: text === null ? undefined : { sessionFile, text } });
@@ -537,18 +554,45 @@ export class PersonalSession {
     });
   }
 
-  private async makeRecap(session: ChatSession, deadline: number): Promise<string | null> {
+  private emitSummary(s: SessionSummaryRecord): void {
+    try {
+      this.opts.context?.onSessionSummary?.(s);
+    } catch (err) {
+      log.warn({ err, reason: s.reason }, "recording the session summary failed");
+    }
+  }
+
+  /** Recaps a retired session for the history files, then disposes it. */
+  private recapInBackground(old: ChatSession, sessionFile: string): void {
+    if (!this.opts.context?.recap || !hasConversation(old)) {
+      old.dispose();
+      return;
+    }
+    const abort = new AbortController();
+    this.backgroundRecaps.add(abort);
+    void this.makeRecap(old, Date.now() + (this.opts.context.newRecapTimeoutMs ?? NEW_RECAP_TIMEOUT_MS), abort)
+      .then((text) => {
+        if (text !== null && !abort.signal.aborted) this.emitSummary({ reason: "new", sessionFile, text, at: new Date() });
+      })
+      .finally(() => {
+        this.backgroundRecaps.delete(abort);
+        old.dispose();
+      });
+  }
+
+  private async makeRecap(session: ChatSession, deadline: number, abort = new AbortController()): Promise<string | null> {
     const recap = this.opts.context?.recap;
     if (!recap) return null;
     try {
-      const out = await bounded(recap(session), Math.max(deadline - Date.now(), 1000));
+      const out = await bounded(recap(session, abort.signal), deadline - Date.now());
       if (out === TIMEOUT) {
-        log.warn("the recap didn't finish in time; rotating without one");
+        abort.abort();
+        log.warn("the recap didn't finish in time; going on without one");
         return null;
       }
       return out;
     } catch (err) {
-      log.warn({ err }, "the recap failed; rotating without one");
+      log.warn({ err }, "the recap failed; going on without one");
       return null;
     }
   }
@@ -853,6 +897,7 @@ export class PersonalSession {
     this.detach();
     if (session?.isStreaming) await session.abort().catch(() => {});
     session?.dispose();
+    for (const abort of this.backgroundRecaps) abort.abort();
     await this.turnCommit;
   }
 
@@ -1041,7 +1086,10 @@ export class PersonalSession {
 
   private onEvent(session: ChatSession, event: AgentSessionEvent): void {
     if (event.type === "compaction_end") {
-      if (event.result && !event.aborted) this.flushedThisCycle = false;
+      if (event.result && !event.aborted) {
+        this.flushedThisCycle = false;
+        this.emitSummary({ reason: "compaction", sessionFile: this.sessionFile, text: event.result.summary, at: new Date() });
+      }
       this.releaseCompactionWaiters();
       if (this.reloadDue) this.scheduleReload();
       return;
