@@ -218,14 +218,24 @@ describe("parseWebConfig", () => {
 });
 
 describe("parseOwnerDmMode", () => {
-  test("defaults to workspace; accepts both modes in any case", () => {
-    expect(parseOwnerDmMode(undefined)).toBe("workspace");
-    expect(parseOwnerDmMode("")).toBe("workspace");
-    expect(parseOwnerDmMode(" Redirect ")).toBe("redirect");
-    expect(parseOwnerDmMode("workspace")).toBe("workspace");
+  test("unset defaults to workspace with a discord preferred surface; accepts both modes in any case", () => {
+    expect(parseOwnerDmMode(undefined, "discord")).toBe("workspace");
+    expect(parseOwnerDmMode("", "discord")).toBe("workspace");
+    expect(parseOwnerDmMode(" Redirect ", "discord")).toBe("redirect");
+    expect(parseOwnerDmMode("workspace", "discord")).toBe("workspace");
+  });
+
+  test("unset defaults to redirect when the preferred surface is web", () => {
+    expect(parseOwnerDmMode(undefined, "web")).toBe("redirect");
+    expect(parseOwnerDmMode("  ", " Web ")).toBe("redirect");
+  });
+
+  test("an explicit mode wins over the web default", () => {
+    expect(parseOwnerDmMode("workspace", "web")).toBe("workspace");
   });
 
   test("an unknown value is a startup error, never a silent fallback to workspace", () => {
-    expect(() => parseOwnerDmMode("redirct")).toThrow("Invalid OWNER_DM_MODE");
+    expect(() => parseOwnerDmMode("redirct", "discord")).toThrow("Invalid OWNER_DM_MODE");
+    expect(() => parseOwnerDmMode("redirct", "web")).toThrow("Invalid OWNER_DM_MODE");
   });
 });

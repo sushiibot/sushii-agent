@@ -8,7 +8,7 @@ import { mintWebActor } from "../../surfaces/web/actor.ts";
 import { RPC_METHODS, type ChatOrigin } from "../contracts.ts";
 import type { PrincipalConfig } from "../principals.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../transport/server.ts";
-import { bootWorkspace, listenWorkspace, workspaceOwnerCheck, type WorkspaceConfig } from "./boot.ts";
+import { bootWorkspace, checkOwnerDmMode, listenWorkspace, workspaceOwnerCheck, type WorkspaceConfig } from "./boot.ts";
 import type { WorkspaceRpc } from "./link.ts";
 import type { Timers } from "./progress.ts";
 import type {
@@ -24,7 +24,7 @@ import type {
   SurfaceCapabilities,
   SurfaceMessageHandle,
 } from "./surface.ts";
-import { APPROVAL_TIMEOUT_MS } from "./tools.ts";
+import { APPROVAL_TIMEOUT_MS, MAX_HELD_APPROVALS } from "./tools.ts";
 
 const P = "drk";
 const OWNER_DISCORD = "150";
@@ -323,6 +323,112 @@ describe("preferred surface web", () => {
     await tick();
     b.rpc.handler!.onSocketClosed!(CONN);
     expect(await closed).toMatchObject({ ok: false, denied: true });
+  });
+});
+
+describe("approval surface binding", () => {
+  test("the owner on Discord can't decide an approval posted to web, even with its nonce", async () => {
+    const discord = new RecordingAdapter("discord");
+    const web = new RecordingAdapter("web");
+    const b = boot("web", [discord, web]);
+    let settled = false;
+    const pending = Promise.resolve(b.call("c1")).then((r) => {
+      settled = true;
+      return r;
+    });
+    await until(() => web.of("approvalPrompt").length > 0);
+    const { nonce } = web.of("approvalPrompt")[0]!.arg as { nonce: string };
+    expect(b.tools.decide(nonce, "approve", { surface: "discord", userId: OWNER_DISCORD, name: "drk" })).toBe("forbidden");
+    await tick();
+    expect(settled).toBe(false);
+    expect(b.tools.decide(nonce, "deny", mintWebActor(OWNER_LOGIN))).toBe("decided");
+    expect(await pending).toMatchObject({ ok: false, denied: true });
+    expect(discord.calls).toEqual([]);
+  });
+
+  test("the minted web owner can't decide an approval posted to Discord", async () => {
+    const discord = new RecordingAdapter("discord");
+    const b = boot("discord", [discord]);
+    const pending = b.call("c1");
+    await until(() => discord.of("approvalPrompt").length > 0);
+    const { nonce } = discord.of("approvalPrompt")[0]!.arg as { nonce: string };
+    expect(b.tools.decide(nonce, "approve", mintWebActor(OWNER_LOGIN))).toBe("forbidden");
+    expect(b.tools.decide(nonce, "approve", { surface: "discord", userId: OWNER_DISCORD, name: "drk" })).toBe("decided");
+    expect(await pending).toEqual({ ok: true, result: "filed" });
+  });
+});
+
+describe("held approvals", () => {
+  test(`at most ${MAX_HELD_APPROVALS} are held; the rest are denied at once`, async () => {
+    const timers = new ManualTimers();
+    const b = boot("web", [new RecordingAdapter("discord")], timers);
+    const held = Array.from({ length: MAX_HELD_APPROVALS }, (_, i) => b.call(`c${i}`));
+    await tick();
+    const over = await b.call("over");
+    expect(over).toMatchObject({ ok: false, denied: true });
+    expect((over as { error: string }).error).toContain(`${MAX_HELD_APPROVALS} approvals are already waiting`);
+
+    const web = new RecordingAdapter("web");
+    b.registry.register(web);
+    await until(() => web.of("approvalPrompt").length >= MAX_HELD_APPROVALS);
+    await tick();
+    expect(web.of("approvalPrompt")).toHaveLength(MAX_HELD_APPROVALS);
+    timers.fire(APPROVAL_TIMEOUT_MS);
+    const results = await Promise.all(held);
+    expect(results.some((r) => (r as { ok: boolean }).ok)).toBe(false);
+  });
+
+  test("a flushed approval gets a fresh timeout window, not what was left of the original", async () => {
+    const timers = new ManualTimers();
+    const b = boot("web", [new RecordingAdapter("discord")], timers);
+    const pending = b.call("c1");
+    await tick();
+    const original = [...timers.handles].filter(([, h]) => h.ms === APPROVAL_TIMEOUT_MS).map(([id]) => id);
+    expect(original).toHaveLength(1);
+
+    const web = new RecordingAdapter("web");
+    b.registry.register(web);
+    await until(() => web.of("approvalPrompt").length > 0);
+    const fresh = [...timers.handles].filter(([, h]) => h.ms === APPROVAL_TIMEOUT_MS).map(([id]) => id);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).not.toBe(original[0]);
+    expect(timers.handles.has(original[0]!)).toBe(false);
+
+    timers.fire(APPROVAL_TIMEOUT_MS);
+    expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining("approval timed out") });
+  });
+
+  test("web registering in the same tick the hold times out posts no prompt and never approves", async () => {
+    const timers = new ManualTimers();
+    const b = boot("web", [new RecordingAdapter("discord")], timers);
+    const pending = b.call("c1");
+    await tick();
+    const web = new RecordingAdapter("web");
+    b.registry.register(web);
+    timers.fire(APPROVAL_TIMEOUT_MS);
+    expect(await pending).toMatchObject({ ok: false, denied: true });
+    expect(web.of("approvalPrompt")).toEqual([]);
+  });
+});
+
+describe("OWNER_DM_MODE with web preferred", () => {
+  function recorder() {
+    const warnings: unknown[] = [];
+    return { warnings, logger: { warn: (...args: unknown[]) => void warnings.push(args) } as never };
+  }
+
+  test("an explicit workspace mode alongside web logs a warning", () => {
+    const r = recorder();
+    expect(checkOwnerDmMode(" Web ", "workspace", r.logger)).toBe(false);
+    expect(r.warnings).toHaveLength(1);
+  });
+
+  test("redirect with web, or any mode with discord, is quiet", () => {
+    const r = recorder();
+    expect(checkOwnerDmMode("web", "redirect", r.logger)).toBe(true);
+    expect(checkOwnerDmMode("discord", "workspace", r.logger)).toBe(true);
+    expect(checkOwnerDmMode("discord", "redirect", r.logger)).toBe(true);
+    expect(r.warnings).toEqual([]);
   });
 });
 

@@ -112,6 +112,7 @@ async function main() {
       enabled: config.dmWorkspaceEnabled,
       orchPort: config.orchPort,
       ownerDiscordId: config.ownerDiscordId,
+      ownerDmMode: config.ownerDmMode,
       webOwnerLogin: process.env["WEB_OWNER_LOGIN"],
       store,
       memory,
