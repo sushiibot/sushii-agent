@@ -37,7 +37,23 @@ async function open(page: Page) {
 
 const fill = (unit: string) => unit.repeat(Math.floor(16_000 / unit.length));
 
+// Each line re-opens 32 lists at the previous line's innermost content column: past the per-line
+// scan, nesting keeps growing through indentation.
+function stacked(marker: string): string {
+	const lines: string[] = [];
+	let indent = 0;
+	for (;;) {
+		const line = ' '.repeat(indent) + `${marker} `.repeat(32) + 'x';
+		if (lines.join('\n').length + line.length + 1 > 15_999) break;
+		lines.push(line);
+		indent += (marker.length + 1) * 32;
+	}
+	return lines.join('\n');
+}
+
 const DEEP: [string, string][] = [
+	['stacked -', stacked('-')],
+	['stacked 1.', stacked('1.')],
 	['> x16000', '>'.repeat(16_000)],
 	['"> " x8000', '> '.repeat(8_000)],
 	['"1. " x5333', fill('1. ')],
@@ -218,6 +234,20 @@ test.describe('approval tray hold', () => {
 		await expect(approve(page)).toBeEnabled();
 		const size = page.viewportSize()!;
 		await page.setViewportSize({ width: size.width, height: size.height - 300 });
+		await expect(approve(page)).toBeDisabled();
+		await expect(approve(page)).toBeEnabled();
+	});
+
+	test('coming back to the app re-holds Approve', async ({ page }) => {
+		await open(page);
+		await setTray(page, ['AAAAAAAAAAAAAAAA']);
+		await expect(approve(page)).toBeEnabled();
+		await page.evaluate(() => {
+			for (const state of ['hidden', 'visible']) {
+				Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+				document.dispatchEvent(new Event('visibilitychange'));
+			}
+		});
 		await expect(approve(page)).toBeDisabled();
 		await expect(approve(page)).toBeEnabled();
 	});
