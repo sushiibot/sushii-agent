@@ -207,11 +207,11 @@ describe("push api", () => {
     const cases = [
       jsonWrite("/api/push/subscribe", "POST", SUB, { "Sec-Fetch-Site": "cross-site" }),
       jsonWrite("/api/push/subscribe", "POST", SUB, { "Sec-Fetch-Site": "same-site" }),
-      jsonWrite("/api/push/subscribe", "POST", SUB, { "Content-Type": "text/plain" }),
       req("/api/push/subscribe", { method: "POST", body: JSON.stringify(SUB), headers: { "Content-Type": "application/json", Origin: "https://evil.example" } }),
       jsonWrite("/api/push/test", "POST", {}, { "Sec-Fetch-Site": "cross-site" }),
     ];
     for (const r of cases) expect((await handler(r, GW)).status).toBe(403);
+    expect((await handler(jsonWrite("/api/push/subscribe", "POST", SUB, { "Content-Type": "text/plain" }), GW)).status).toBe(415);
     expect(pushStore.list()).toHaveLength(0);
   });
 
@@ -220,7 +220,8 @@ describe("push api", () => {
     const { handler, pushStore } = setup({}, transport);
     await handler(jsonWrite("/api/push/subscribe", "POST", SUB), GW);
     await handler(jsonWrite("/api/push/subscribe", "POST", { ...SUB, endpoint: "https://push.example/gone" }), GW);
-    const res = await handler(jsonWrite("/api/push/test", "POST", {}), GW);
+    const res = await handler(req("/api/push/test", { method: "POST", headers: { "Sec-Fetch-Site": "same-origin" } }), GW);
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ sent: 1, pruned: 1 });
     expect(pushStore.list().map((s) => s.endpoint)).toEqual([SUB.endpoint]);
   });

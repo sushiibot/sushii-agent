@@ -69,10 +69,13 @@ export function decodeEncodedWords(value: string): string {
 
 const normalizeLogin = (s: string) => s.trim().toLowerCase();
 
-/** Ambient Serve identity makes cross-site writes a CSRF risk, so writes must be same-origin JSON. */
-function isSameOriginJsonWrite(req: Request): boolean {
+/** Ambient Serve identity makes cross-site writes a CSRF risk, so writes must be same-origin. */
+function isSameOrigin(req: Request): boolean {
   const site = req.headers.get("Sec-Fetch-Site");
-  if (site !== null ? site !== "same-origin" : req.headers.get("Origin") !== null) return false;
+  return site !== null ? site === "same-origin" : req.headers.get("Origin") === null;
+}
+
+function isJson(req: Request): boolean {
   const type = req.headers.get("Content-Type") ?? "";
   return type.split(";")[0]!.trim().toLowerCase() === "application/json";
 }
@@ -98,7 +101,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
 
   async function api(req: Request, path: string, login: string): Promise<Response> {
     const method = req.method;
-    if (method !== "GET" && method !== "HEAD" && !isSameOriginJsonWrite(req)) return forbidden();
+    if (method !== "GET" && method !== "HEAD" && !isSameOrigin(req)) return forbidden();
 
     if (path === "/api/me") {
       if (method !== "GET") return json({ error: "method not allowed" }, 405);
@@ -114,6 +117,8 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
       }
       if (path === "/api/push/subscribe") {
         if (method !== "POST" && method !== "DELETE") return json({ error: "method not allowed" }, 405);
+        // A JSON content type also rules out CORS-simple cross-site bodies from older browsers.
+        if (!isJson(req)) return json({ error: "content-type must be application/json" }, 415);
         const body = await readJson(req);
         if (body instanceof Response) return body;
         if (method === "POST") {
