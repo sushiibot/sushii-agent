@@ -20,7 +20,7 @@ import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { SubagentHost } from "./subagents/host.ts";
 import { MainTurnTracker } from "./subagents/turnTracker.ts";
-import { Scheduler } from "./scheduler.ts";
+import { Scheduler, jobAlertText } from "./scheduler.ts";
 import { wireProactiveJobs } from "./proactive.ts";
 import { ulid } from "./ulid.ts";
 
@@ -152,10 +152,17 @@ async function main(): Promise<void> {
   await personal.start();
   personalRef = personal;
   subagents.redeliverPending();
-  const scheduler = new Scheduler({ stateDir: config.stateDir, at: config.consolidateAt, tz: config.tz, log: getLogger("workspace.scheduler") });
+  const scheduler = new Scheduler({
+    stateDir: config.stateDir,
+    at: config.consolidateAt,
+    tz: config.tz,
+    log: getLogger("workspace.scheduler"),
+    onJobAlert: (alert) => personal.deliverOutOfBand({ kind: "proactive", text: jobAlertText(alert) }),
+  });
   const consolidation = createConsolidationJob(config, { runs, selector, live: personal });
   // Its memory and task writes are main-side: the subagents' protected watch must not undo them.
-  scheduler.register({ ...consolidation, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks"]) });
+  // Two idle waits and a model call can each take 10 min, so the default max runtime would flag a normal slow run.
+  scheduler.register({ ...consolidation, maxRunMs: 60 * 60_000, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks"]) });
   wireProactiveJobs(scheduler, {
     config,
     runs,
