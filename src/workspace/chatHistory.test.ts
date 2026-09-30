@@ -302,7 +302,7 @@ describe("ChatHistoryReader", async () => {
 
     bytes.n = 0;
     const line = assistantLine("late0001", "s10001", "two");
-    // A write in progress: the partial line waits, then the rest of it is read on the next page.
+    // A partial line (a write in progress) waits until the rest of it is on disk.
     appendFileSync(file, line.slice(0, 20));
     expect(labels((await reader.page({ limit: 5 })).items).at(-1)).toBe(`assistant:${"x".repeat(50_000)}`);
     appendFileSync(file, line.slice(20));

@@ -182,7 +182,7 @@ class SessionIndex {
 interface FileState {
   dev: number;
   ino: number;
-  /** Bytes consumed: everything up to and including the last complete line. */
+  /** Bytes consumed, up to and including the last complete line. */
   offset: number;
   /** The bytes just before `offset`, compared before each incremental read so an in-place rewrite forces a full re-parse. */
   tail: Buffer;
@@ -204,7 +204,7 @@ export class ChatHistoryReader {
 
   constructor(private readonly opts: { agentDir: string; maxBytes?: number; open?: OpenFile }) {}
 
-  /** Serialized: two pages at once would feed the same file's index twice. */
+  /** Serialized, since two pages at once would feed the same file's index twice. */
   page(q: { before?: string; limit: number }): Promise<ChatHistoryResult> {
     const run = this.queue.then(() => this.pageNow(q));
     this.queue = run.catch(() => {});
@@ -396,7 +396,7 @@ function convertEntries(header: { timestamp?: string } | null, entries: SlimEntr
           turnReply = open;
         }
         open.at = at(e);
-        // What the host delivers: the last assistant message's text, and nothing after an error or an abort.
+        // The host delivers the last assistant message's text, and nothing after an error or an abort.
         open.text = m.stopReason === "error" || m.stopReason === "aborted" ? "" : m.text;
         for (const c of m.tools) {
           const tool: Tool = { name: c.name, summary: c.summary, ok: false };
