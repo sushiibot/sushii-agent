@@ -191,6 +191,7 @@ export function deliveryView(p: ChatDeliverParams, toolCount: number | null = nu
       ...(p.usage ? { usage: p.usage } : {}),
       ...(p.turnId ? { turnId: p.turnId } : {}),
       ...(p.replyTo ? { replyTo: p.replyTo } : {}),
+      ...(p.files?.length ? { files: p.files } : {}),
     },
   };
 }
@@ -280,7 +281,8 @@ export class WorkspaceLink {
   }
 
   async sendMessage(input: Omit<ChatMessageParams, "principalId">): Promise<ChatMessageResult> {
-    const params: ChatMessageParams = { principalId: this.opts.principalId, ...input };
+    const fileUploads = this.tryTarget(undefined, input.origin)?.adapter.capabilities.fileUploads === true;
+    const params: ChatMessageParams = { principalId: this.opts.principalId, ...input, ...(fileUploads ? { fileUploads } : {}) };
     return (await this.request(RPC_METHODS.chatMessage, params, MESSAGE_TIMEOUT_MS)) as ChatMessageResult;
   }
 

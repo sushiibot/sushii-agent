@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import type { ToolEntry, ToolHosts } from "../../core/contracts.ts";
-import { AUTH_METHODS, LOGIN_ALREADY_PENDING, RPC_METHODS, chatDeliverParams, chatEventParams, chatMessageParams, type ChatDeliverParams, type ChatEventPayload, type ChatOrigin } from "../contracts.ts";
+import { AUTH_METHODS, LOGIN_ALREADY_PENDING, RPC_METHODS, chatDeliverParams, chatEventParams, chatMessageParams, type ChatDeliverParams, type ChatEventPayload, type ChatMessageParams, type ChatOrigin } from "../contracts.ts";
 import { RpcTimeoutError, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
 import { LOGIN_PENDING_MS, WorkspaceLink, type WorkspaceRpc } from "./link.ts";
 import type { Timers } from "./progress.ts";
@@ -239,6 +239,16 @@ describe("surface routing", () => {
 });
 
 describe("capabilities", () => {
+  test("chat/message says the origin surface can take file uploads only when its adapter can", async () => {
+    const { link, rpc, discord } = setup();
+    discord.capabilities.fileUploads = true;
+    const author = { id: "1", name: "drk" };
+    await link.sendMessage({ origin: DISCORD, messageId: "m1", text: "hi", kind: "user", author });
+    await link.sendMessage({ origin: TEST, messageId: "m2", text: "hi", kind: "user", author });
+    const sent = rpc.calls.filter((c) => c.method === RPC_METHODS.chatMessage).map((c) => (c.params as ChatMessageParams).fileUploads);
+    expect(sent).toEqual([true, undefined]);
+  });
+
   test("a streaming surface gets the turn's text as it arrives", async () => {
     const { test, event } = setup({ streaming: true });
     event("t1", { type: "turn_start" }, TEST);

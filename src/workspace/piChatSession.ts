@@ -23,6 +23,7 @@ import { createCompactionHandoffExtension } from "./memoryFlush.ts";
 import { RunLog, type RunRecorder } from "./runLog.ts";
 import { observeRuns, type RunObserver } from "./runObserver.ts";
 import { chatSessionDir } from "./sessionPaths.ts";
+import { SEND_FILE_TOOL, createSendFileTool } from "./sendFile.ts";
 import { KNOWN_PROXIED_TOOLS, type ToolStubs } from "./toolStubs.ts";
 import type { SubagentHost } from "./subagents/host.ts";
 import type { GitHubCredentials } from "./githubCredentials.ts";
@@ -44,7 +45,7 @@ const memoryLog = getLogger("workspace.memory");
 const autoModeLog = getLogger("workspace.automode");
 
 const PROVIDER_ID = "sushii-workspace-openrouter";
-const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash"];
+const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash", SEND_FILE_TOOL];
 
 /** Pi's bash under the agent env allowlist, minus PI_* (PI_CODING_AGENT_DIR and PI_SESSION_FILE point at the agent dir).
  *  `WS_RUN_ID` is the run in progress at spawn time, so `ws-runs` can default to it. */
@@ -215,7 +216,7 @@ export function createPiChatSessionFactory(
       extensionFactories: [
         // First: tool_call stops at the first block, so a guard ahead of it would hide repeats from it.
         { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log, state: loopState }) },
-        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
+        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, stateDir: config.stateDir, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
@@ -278,6 +279,7 @@ export function createPiChatSessionFactory(
     settingsManager.getCacheWarmingMode = () => "off";
 
     const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null, opts.github);
+    const sendFileTool = createSendFileTool({ cwd, home: config.home, agentDir: config.agentDir, stateDir: config.stateDir }, () => sessionRef.current);
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
     try {
       ({ session } = await createAgentSession({
@@ -290,7 +292,7 @@ export function createPiChatSessionFactory(
         // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
         // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
         tools: [...WORKSPACE_TOOLS, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
-        customTools: [bashTool],
+        customTools: [bashTool, sendFileTool],
         excludeTools: ["ask_question"],
         sessionManager,
       }));

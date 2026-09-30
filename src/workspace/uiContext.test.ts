@@ -37,6 +37,19 @@ describe("ChatAsks", () => {
     expect(asks.answer("m3", "anything")).toBeNull();
   });
 
+  test("a typed yes/no answers a confirm only while it is the only one open", async () => {
+    const { asks, asked, ui } = broker();
+    const first = ui.confirm("Send the file?", "");
+    const second = ui.confirm("Run the command?", "");
+    expect(asks.answer("m1", "yes")).toBeNull();
+    expect(asks.answer("m2", "no")).toBeNull();
+    expect(asks.size).toBe(2);
+    expect(asks.answer(`wsask:${asked[1]!.askId}`, "Yes")).toBe("answered");
+    expect(await second).toBe(true);
+    expect(asks.answer("m3", "no")).toBe("answered");
+    expect(await first).toBe(false);
+  });
+
   test("a button answer for no open ask is stale", () => {
     const { asks } = broker();
     expect(asks.answer("wsask:gone", "Yes")).toBe("stale");

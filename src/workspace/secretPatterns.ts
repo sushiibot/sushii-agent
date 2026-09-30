@@ -9,23 +9,25 @@ function looksRandom(token: string): boolean {
   return token.split(/[-_]/).some((part) => part.length >= 16 && /[0-9]/.test(part) && /[A-Za-z]/.test(part));
 }
 
-/** Shape-matched secrets, replaced whole. Order matters: multi-part shapes before their parts. */
-export const SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-  /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
+const LABELED_PATTERNS: readonly (readonly [string, RegExp])[] = [
+  ["private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
+  ["bearer token", /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi],
   // JWTs, including a lone header/payload segment.
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g,
-  /\beyJ[A-Za-z0-9_-]{30,}/g,
+  ["JWT", /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g],
+  ["JWT", /\beyJ[A-Za-z0-9_-]{30,}/g],
   // Three dot-separated segments: Discord bot tokens and similar signed tokens.
-  /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,}/g,
-  /\b(?:sk|rk)-[A-Za-z0-9_-]{16,}/g,
-  /\b[srp]k_(?:live|test)_[A-Za-z0-9]{16,}/g,
-  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g,
-  /\bAIza[0-9A-Za-z_-]{35}/g,
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
-  /\bxox[abeoprs]-[A-Za-z0-9-]{10,}/g,
-  /(?<![0-9A-Fa-f])[0-9A-Fa-f]{40,}(?![0-9A-Fa-f])/g,
+  ["signed token", /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,}/g],
+  ["API key", /\b(?:sk|rk)-[A-Za-z0-9_-]{16,}/g],
+  ["Stripe key", /\b[srp]k_(?:live|test)_[A-Za-z0-9]{16,}/g],
+  ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g],
+  ["Google API key", /\bAIza[0-9A-Za-z_-]{35}/g],
+  ["AWS access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g],
+  ["Slack token", /\bxox[abeoprs]-[A-Za-z0-9-]{10,}/g],
+  ["long hex hash", /(?<![0-9A-Fa-f])[0-9A-Fa-f]{40,}(?![0-9A-Fa-f])/g],
 ];
+
+/** Shape-matched secrets, replaced whole. Order matters: multi-part shapes before their parts. */
+export const SECRET_PATTERNS: readonly RegExp[] = LABELED_PATTERNS.map(([, re]) => re);
 
 export const REDACTED = "[REDACTED]";
 
@@ -39,4 +41,10 @@ export function redact(text: string): string {
 
 export function containsSecret(text: string): boolean {
   return redact(text) !== text;
+}
+
+/** What kind of secret `text` holds, by the first rule that would redact it, or null when none would. */
+export function secretKind(text: string): string | null {
+  for (const [label, re] of LABELED_PATTERNS) if (text.search(re) !== -1) return label;
+  return text.match(BLOB)?.some(looksRandom) ? "random-looking token" : null;
 }

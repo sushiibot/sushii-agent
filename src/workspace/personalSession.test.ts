@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
@@ -8,6 +8,9 @@ import { PersonalSession, formatUserText, messageHeader, type ChatSession, type 
 import { HistoryWriter } from "./history.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import type { ImageFetchOptions } from "./inboundImages.ts";
+import { createSendFileTool } from "./sendFile.ts";
+import { DELIVER_FILE_MAX_BYTES } from "../orchestration/contracts.ts";
 
 // Mirrors the Pi 0.84 behaviour the host relies on (core/agent-session.js, pi-agent-core agent-loop.js):
 // - an idle prompt() awaits preflight, flips isStreaming, emits the user message, and resolves when its run settles;
@@ -34,6 +37,8 @@ class FakeSession {
   startGate: Promise<void> | null = null;
   /** Holds an idle prompt in preflight, before preflightResult and before the run starts. */
   preflightGate: Promise<void> | null = null;
+  /** Mimics Pi appending a resize note to a prompt that carries images. */
+  imageHint: string | null = null;
   private listeners = new Set<(e: AgentSessionEvent) => void>();
   private idleWaiters: Array<() => void> = [];
   private runDone: (() => void) | null = null;
@@ -70,7 +75,7 @@ class FakeSession {
     const done = new Promise<void>((r) => (this.runDone = r));
     if (this.startGate) await this.startGate;
     this.emit({ type: "agent_start" });
-    this.emitUser(text);
+    this.emitUser(this.imageHint && options?.images?.length ? `${text}\n\n${this.imageHint}` : text);
     await done;
     if (this.rejectAfterRun) throw this.rejectAfterRun;
   }
@@ -210,6 +215,7 @@ function setup(
     askTimeoutMs?: number;
     context?: ContextHooks;
     clock?: () => number;
+    images?: ImageFetchOptions;
   } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
@@ -244,6 +250,7 @@ function setup(
     askTimeoutMs: opts.askTimeoutMs,
     context: opts.context,
     clock: opts.clock,
+    images: opts.images,
   });
   return { host, sessions, factoryCalls, boundUis, transport, stateDir };
 }
@@ -2175,5 +2182,355 @@ describe("PersonalSession owner asks", () => {
     await host.handleMessage(msg(`wsask:${dialog.ask!.askId}`, "Yes"));
     expect(await confirm).toBe(true);
     sessions[0].finish("done");
+  });
+});
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const IMAGE_ATTACHMENT = { name: "cat.png", contentType: "image/png", url: "https://cdn.discordapp.com/attachments/1/2/cat.png" };
+
+describe("image attachments", () => {
+  test("an image attachment reaches prompt() as image content, and its link stays in the text", async () => {
+    const fetched: string[] = [];
+    const { host, sessions } = setup({
+      images: {
+        fetch: async (url) => {
+          fetched.push(url);
+          return new Response(PNG, { headers: { "content-type": "image/png" } });
+        },
+      },
+    });
+    await host.start();
+    const accepted = host.handleMessage(msg("m1", "what is this", { attachments: [IMAGE_ATTACHMENT, { name: "a.txt", contentType: "text/plain", url: "https://x/a.txt" }] }));
+    await accepted;
+    const [p] = sessions[0]!.prompts;
+    expect(fetched).toEqual([IMAGE_ATTACHMENT.url]);
+    expect(p!.options?.images).toEqual([{ type: "image", mimeType: "image/png", data: Buffer.from(PNG).toString("base64") }]);
+    expect(p!.text).toContain(`[attachment: cat.png (image/png) ${IMAGE_ATTACHMENT.url}]`);
+    expect(p!.text).toContain("[attachment: a.txt (text/plain) https://x/a.txt]");
+  });
+
+  test("a failed download falls back to the text-only prompt", async () => {
+    const { host, sessions } = setup({ images: { fetch: async () => Promise.reject(new Error("cdn down")) } });
+    await host.start();
+    await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    const [p] = sessions[0]!.prompts;
+    expect(p!.options?.images).toBeUndefined();
+    expect(p!.text).toContain(`[attachment: cat.png (image/png) ${IMAGE_ATTACHMENT.url}]`);
+  });
+
+  test("a model without image input gets no download", async () => {
+    let fetched = 0;
+    const { host, sessions } = setup({ images: { fetch: async () => (fetched++, new Response(PNG)) } });
+    await host.start();
+    (sessions[0] as unknown as { model: unknown }).model = { input: ["text"] };
+    await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    expect(fetched).toBe(0);
+    expect(sessions[0]!.prompts[0]!.options?.images).toBeUndefined();
+  });
+
+  test("a prompt whose text Pi extends with an image note still threads the reply to its message", async () => {
+    const { host, sessions, transport } = setup({ images: { fetch: async () => new Response(PNG) } });
+    await host.start();
+    sessions[0]!.imageHint = "[Image: original 4000x3000, displayed at 2000x1500.]";
+    await host.handleMessage(msg("m0", "hi"));
+    sessions[0]!.finish("hello");
+    await sleep(10);
+    await host.handleMessage(msg("m1", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    sessions[0]!.finish("a cat");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m0", "m1"]);
+  });
+
+  const resized = (data: string, wasResized = true) => ({
+    data,
+    mimeType: "image/jpeg",
+    originalWidth: 4000,
+    originalHeight: 3000,
+    width: wasResized ? 2000 : 4000,
+    height: wasResized ? 1500 : 3000,
+    wasResized,
+  });
+
+  test("a steer's images are resized like a prompt's, with Pi's note, and the reply threads to it", async () => {
+    const { host, sessions, transport } = setup({ images: { fetch: async () => new Response(PNG), resize: async () => resized("UkVTSVpFRA==") } });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
+    const steer = sessions[0]!.prompts[1]!;
+    expect(steer.options?.streamingBehavior).toBe("steer");
+    expect(steer.options?.images).toEqual([{ type: "image", data: "UkVTSVpFRA==", mimeType: "image/jpeg" }]);
+    expect(steer.text).toContain("and this");
+    expect(steer.text).toMatch(/\n\n\[Image: original 4000x3000, displayed at 2000x1500\./);
+    sessions[0]!.finish("ok");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m2"]);
+  });
+
+  test("a steered image that can't be resized is left out with a note; if resizing throws, only a small one is kept", async () => {
+    const big = new Uint8Array(4 * 1024 * 1024);
+    big.set(PNG);
+    const att = (name: string) => ({ ...IMAGE_ATTACHMENT, name, url: `https://cdn.discordapp.com/attachments/1/2/${name}` });
+    const { host, sessions } = setup({
+      images: {
+        fetch: async (url) => new Response(url.endsWith("big.png") ? big : PNG),
+        resize: async (bytes) => {
+          if (bytes.length === PNG.length && resizeCalls++ === 0) return null;
+          throw new Error("photon unavailable");
+        },
+      },
+    });
+    let resizeCalls = 0;
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleMessage(msg("m2", "these", { attachments: [att("a.png"), att("b.png"), att("big.png")] }));
+    const steer = sessions[0]!.prompts[1]!;
+    expect(steer.options?.images).toEqual([{ type: "image", mimeType: "image/png", data: Buffer.from(PNG).toString("base64") }]);
+    expect(steer.text.match(/\[Image omitted/g)?.length).toBe(2);
+    sessions[0]!.finish("ok");
+  });
+
+  test("a steer stranded at settle is re-prompted with the same text and its resized images", async () => {
+    const { host, sessions } = setup({ images: { fetch: async () => new Response(PNG), resize: async () => resized("UkVTSVpFRA==") } });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
+    const steer = sessions[0]!.prompts[1]!;
+    sessions[0]!.settleStranded("done");
+    await sleep(20);
+    const reprompt = sessions[0]!.prompts[2]!;
+    expect(reprompt.text).toBe(steer.text);
+    expect(reprompt.options?.images).toEqual(steer.options?.images);
+    sessions[0]!.finish("ok");
+  });
+
+  test("a run that settles during the resize sends the message as a prompt with its original images", async () => {
+    let releaseResize!: () => void;
+    const resizeGate = new Promise<void>((r) => (releaseResize = r));
+    const { host, sessions, transport } = setup({
+      images: {
+        fetch: async () => new Response(PNG),
+        resize: async () => {
+          await resizeGate;
+          return resized("UkVTSVpFRA==");
+        },
+      },
+    });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    const second = host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
+    await sleep(5);
+    sessions[0]!.finish("first");
+    await sleep(10);
+    releaseResize();
+    expect((await second).mode).toBe("prompt");
+    const p = sessions[0]!.prompts[1]!;
+    expect(sessions[0]!.steers).toEqual([]);
+    expect(p.text).not.toContain("[Image:");
+    expect(p.options?.images).toEqual([{ type: "image", mimeType: "image/png", data: Buffer.from(PNG).toString("base64") }]);
+    sessions[0]!.finish("second");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m1", "m2"]);
+  });
+
+  test("a slow image download can't let a later message, or a stop, overtake it", async () => {
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((r) => (releaseFetch = r));
+    const { host, sessions } = setup({
+      images: {
+        fetch: async () => {
+          await fetchGate;
+          return new Response(PNG);
+        },
+      },
+    });
+    await host.start();
+    const a = host.handleMessage(msg("mA", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    await sleep(5);
+    const b = host.handleMessage(msg("mB", "text only"));
+    const stop = host.handleAbort();
+    await sleep(10);
+    expect(sessions[0]!.prompts).toEqual([]);
+    expect(sessions[0]!.aborts).toBe(0);
+    releaseFetch();
+    await Promise.all([a, b]);
+    expect(sessions[0]!.prompts).toHaveLength(2);
+    expect(sessions[0]!.prompts[0]!.text).toContain("look");
+    expect(sessions[0]!.prompts[0]!.options?.images?.length).toBe(1);
+    expect(sessions[0]!.prompts[1]!.text).toContain("text only");
+    expect(sessions[0]!.prompts[1]!.options?.streamingBehavior).toBe("steer");
+    expect(await stop).toEqual({ aborted: true });
+    expect(sessions[0]!.aborts).toBe(1);
+  });
+});
+
+describe("send_file", () => {
+  function tool(stateDir: string, cwd: string, session: () => object | null) {
+    return createSendFileTool({ cwd, home: cwd, agentDir: join(cwd, ".pi-agent"), stateDir }, session);
+  }
+  const run = (t: ReturnType<typeof tool>, params: unknown) =>
+    (t.execute as unknown as (id: string, p: unknown) => Promise<{ content: Array<{ text: string }> }>)("call-1", params);
+  const until = async (cond: () => boolean, ms = 1000) => {
+    const end = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > end) throw new Error("condition not met in time");
+      await sleep(2);
+    }
+  };
+  const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTcwMDAwMDAwMH0.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
+  const asks = (t: FakeTransport) => t.delivered().filter((d) => d.kind === "ask");
+  const fileMsg = (messageId: string, text: string) => msg(messageId, text, { fileUploads: true });
+  const stagedDir = (stateDir: string) => join(stateDir, "outbox-files");
+
+  test("a file sent during a turn goes out with the reply and is deleted once acked", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "chart.png"), PNG);
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "chart please"));
+    const out = await run(tool(stateDir, home, () => sessions[0]!), { path: "chart.png" });
+    expect(out.content[0]!.text).toContain("Attached chart.png");
+    sessions[0]!.finish("here you go");
+    await sleep(10);
+    const [reply] = transport.delivered();
+    expect(reply!.text).toBe("here you go");
+    expect(reply!.files).toEqual([{ name: "chart.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") }]);
+    const outbox = readFileSync(join(stateDir, "outbox.jsonl"), "utf8");
+    expect(outbox).not.toContain("dataBase64");
+    expect(outbox).toContain("stagedFiles");
+    const staged = join(stagedDir(stateDir), JSON.parse(outbox.trim().split("\n").at(-1)!).entry.stagedFiles[0].file as string);
+    expect(existsSync(staged)).toBe(true);
+    host.handleAck(reply!.outboxId);
+    expect(existsSync(staged)).toBe(false);
+  });
+
+  test("files with no reply text still deliver; a stopped turn drops them and deletes the staged copy", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "a.pdf"), "%PDF-1.4");
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "send it"));
+    await run(tool(stateDir, home, () => sessions[0]!), { path: join(home, "a.pdf") });
+    sessions[0]!.finish("");
+    await sleep(10);
+    expect(transport.delivered()[0]!.files?.map((f) => f.name)).toEqual(["a.pdf"]);
+
+    host.handleAck(transport.delivered()[0]!.outboxId);
+    expect(readdirSync(stagedDir(stateDir))).toEqual([]);
+
+    await host.handleMessage(fileMsg("m2", "again"));
+    await run(tool(stateDir, home, () => sessions[0]!), { path: "a.pdf" });
+    expect(readdirSync(stagedDir(stateDir)).length).toBe(1);
+    await host.handleAbort();
+    await sleep(10);
+    expect(transport.delivered().length).toBe(1);
+    expect(readdirSync(stagedDir(stateDir))).toEqual([]);
+  });
+
+  test("protected paths, oversize files and calls outside a turn are refused", async () => {
+    const { host, sessions, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "big.bin"), new Uint8Array(DELIVER_FILE_MAX_BYTES + 1));
+    writeFileSync(join(home, "ok.txt"), "hi");
+    await host.start();
+    const t = tool(stateDir, home, () => sessions[0]!);
+    await expect(run(t, { path: "ok.txt" })).rejects.toThrow(/only works during a reply/);
+    await host.handleMessage(fileMsg("m1", "go"));
+    await expect(run(t, { path: "big.bin" })).rejects.toThrow(/over the .*limit/);
+    await expect(run(t, { path: join(stateDir, "outbox.jsonl") })).rejects.toThrow(/blocked/);
+    await expect(run(t, { path: "missing.txt" })).rejects.toThrow(/no such file/);
+    sessions[0]!.finish("done");
+  });
+
+  test("a turn from a surface that can't upload files refuses send_file", async () => {
+    const { host, sessions, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "ok.txt"), "hi");
+    await host.start();
+    await host.handleMessage(msg("m1", "go"));
+    await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "ok.txt" })).rejects.toThrow(/can't carry file attachments/);
+    sessions[0]!.finish("done");
+  });
+
+  test("a file the secret detector flags is sent once drk approves the ask", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "token.txt"), `token=${JWT}\n`);
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "send the token file"));
+    const sending = run(tool(stateDir, home, () => sessions[0]!), { path: "token.txt" });
+    await until(() => asks(transport).length === 1);
+    const [ask] = asks(transport);
+    expect(ask!.ask).toEqual({
+      askId: expect.any(String),
+      question: `\`token.txt\` looks like it contains a secret (JWT). Send it anyway?\nPath: \`${join(home, "token.txt")}\``,
+      choices: ["Yes", "No"],
+    });
+    await host.handleMessage(fileMsg(`wsask:${ask!.ask!.askId}`, "Yes"));
+    expect((await sending).content[0]!.text).toContain("Attached token.txt");
+    sessions[0]!.finish("sent");
+    await until(() => transport.delivered().some((d) => d.kind === "reply"));
+    expect(transport.delivered().find((d) => d.kind === "reply")!.files?.map((f) => f.name)).toEqual(["token.txt"]);
+  });
+
+  test("a denied ask refuses the file; a file too long to scan asks too", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "token.txt"), JWT);
+    writeFileSync(join(home, "run.txt"), "a".repeat(200_000));
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "go"));
+    const t = tool(stateDir, home, () => sessions[0]!);
+
+    const denied = run(t, { path: "token.txt" });
+    await until(() => asks(transport).length === 1);
+    await host.handleMessage(fileMsg(`wsask:${asks(transport)[0]!.ask!.askId}`, "No"));
+    await expect(denied).rejects.toThrow(/secret detector found .*\(JWT\).*didn't approve/);
+
+    const unscannable = run(t, { path: "run.txt" });
+    await until(() => asks(transport).length === 2);
+    expect(asks(transport)[1]!.ask!.question).toStartWith(
+      "`run.txt` (195.3 KB) was not checked for secrets: it has runs of token-like characters too long for the detector to scan. Send it unchecked?",
+    );
+    await host.handleMessage(fileMsg(`wsask:${asks(transport)[1]!.ask!.askId}`, "No"));
+    await expect(unscannable).rejects.toThrow(/too long for the secret detector.*didn't approve/);
+
+    expect(asks(transport)).toHaveLength(2);
+    sessions[0]!.finish("nothing sent");
+    await until(() => transport.delivered().some((d) => d.kind === "reply"));
+    expect(transport.delivered().find((d) => d.kind === "reply")!.files).toBeUndefined();
+  });
+
+  test("a hardlink to auth.json is refused without asking", async () => {
+    const { host, sessions, transport, stateDir } = setup();
+    const home = tempDir();
+    const agentDir = join(home, ".pi-agent");
+    mkdirSync(agentDir);
+    writeFileSync(join(agentDir, "auth.json"), JSON.stringify({ access: JWT }));
+    linkSync(join(agentDir, "auth.json"), join(home, "notes.txt"));
+    await host.start();
+    await host.handleMessage(fileMsg("m1", "go"));
+    await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "notes.txt" })).rejects.toThrow(/auth-file/);
+    expect(asks(transport)).toEqual([]);
+    sessions[0]!.finish("done");
+  });
+
+  test("a surface's upload capability survives a restart, so a wake can send files before drk writes again", async () => {
+    const stateDir = tempDir();
+    const home = tempDir();
+    writeFileSync(join(home, "chart.png"), PNG);
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleMessage(fileMsg("m1", "hi"));
+    first.sessions[0]!.finish("hello");
+    await until(() => first.transport.delivered().length === 1);
+
+    const { host, sessions, transport } = setup({ stateDir });
+    await host.start();
+    host.wake({ id: "W1", text: "scheduled chart", origin: DM_ORIGIN, onConsumed: () => {} });
+    await until(() => sessions[0]?.isStreaming === true);
+    expect((await run(tool(stateDir, home, () => sessions[0]!), { path: "chart.png" })).content[0]!.text).toContain("Attached chart.png");
+    sessions[0]!.finish("today's chart");
+    await until(() => transport.delivered().length === 1);
+    expect(transport.delivered()[0]!.files?.map((f) => f.name)).toEqual(["chart.png"]);
   });
 });

@@ -1,4 +1,4 @@
-import type { ChatOrigin, ChatUsage, ToolCallResult } from "../contracts.ts";
+import type { ChatOrigin, ChatUsage, DeliverFile, ToolCallResult } from "../contracts.ts";
 
 /** What a chat surface can render. The core consults these instead of assuming Discord's feature set. */
 export interface SurfaceCapabilities {
@@ -12,6 +12,8 @@ export interface SurfaceCapabilities {
   reactions: boolean;
   /** Longest single message; longer replies are paged by the adapter. */
   maxMessageChars: number;
+  /** Uploads the files a reply carries. Without it the workspace's send_file refuses. */
+  fileUploads?: boolean;
 }
 
 /** One tool in a turn's progress view. `agentId` is set for a subagent's tool, shown nested under the turn. */
@@ -48,6 +50,8 @@ export interface ReplyView {
   toolCount: number | null;
   turnId?: string;
   replyTo?: string;
+  /** Files to attach; only sent to a surface with `fileUploads`. */
+  files?: DeliverFile[];
 }
 
 export interface AskView {

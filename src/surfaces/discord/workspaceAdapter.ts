@@ -2,17 +2,21 @@
 // Components V2 messages in the owner's DM, and answers the owner's DMs with reactions and notices.
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
   ContainerBuilder,
+  FileBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
   MessageFlags,
   TextDisplayBuilder,
   escapeMarkdown,
   type MessageCreateOptions,
   type MessageEditOptions,
 } from "discord.js";
-import type { ChatDeliverParams, ChatOrigin, ToolCallResult } from "../../orchestration/contracts.ts";
+import type { ChatDeliverParams, ChatOrigin, DeliverFile, ToolCallResult } from "../../orchestration/contracts.ts";
 import { deliveryView } from "../../orchestration/workspace/link.ts";
 import { formatDuration, toolsLabel } from "../../orchestration/workspace/progress.ts";
 import { NONCE_RE } from "../../orchestration/workspace/tools.ts";
@@ -61,7 +65,7 @@ const ASK_CHOICES_MAX = 25;
 const RESULT_SUMMARY_MAX = 200;
 const AGENT_NAME_MAX = 64;
 
-export const DISCORD_CAPABILITIES: SurfaceCapabilities = { streaming: false, tables: false, richButtons: true, reactions: true, maxMessageChars: 4000 };
+export const DISCORD_CAPABILITIES: SurfaceCapabilities = { streaming: false, tables: false, richButtons: true, reactions: true, maxMessageChars: 4000, fileUploads: true };
 
 /** Longest approval body shown before it is clipped: the rest of the worst-case prompt (header, requester,
  *  single fields, footer) fits in the remaining 1200 chars of the message limit. */
@@ -241,8 +245,20 @@ export class DiscordWorkspaceAdapter<P extends OwnerDmMessage = OwnerDmMessage> 
     } catch {
       pages = null;
     }
+    const files = reply.files ?? [];
+    const textPages = pages && files.length ? pages.slice(0, -1) : pages;
     // Pages that already went out as components aren't repeated.
-    await sendPlain(channel, pages && pages.length > 1 ? unsentPagesText(pages, attempt.ledger) : reply.text);
+    const text = pages && pages.length > 1 ? unsentPagesText(textPages!, attempt.ledger) : textPages?.length === 0 ? "" : reply.text;
+    if (text.trim() || !files.length) await sendPlain(channel, text);
+    const filesSent = pages !== null && pages.length > 1 && files.length > 0 && attempt.ledger.isSent(pages.length - 1);
+    if (files.length && !filesSent) {
+      // Last resort: a plain upload, and a note instead of blocking the reply on files Discord won't take.
+      try {
+        await channel.send({ files: attachmentsFor(files), allowedMentions: { parse: [] } });
+      } catch {
+        await sendPlain(channel, `-# (couldn't attach: ${files.map((f) => f.name).join(", ")})`);
+      }
+    }
   }
 
   async askPrompt(_origin: ChatOrigin | null, ask: AskView, attempt: SendAttempt): Promise<void> {
@@ -334,7 +350,42 @@ export function renderReplyPages(reply: ReplyView): MessageCreateOptions[] {
   const tools = reply.toolCount ? toolsLabel(reply.toolCount) : null;
   const footerLine = reply.usage ? `${renderChatUsageFooter(reply.usage)}${tools ? ` · ${tools}` : ""}` : tools ? `-# ${tools}` : null;
   const footer = footerLine ? `\n${footerLine}` : "";
-  return buildComponentMessages(`${prefix}${reply.text}${footer}`).map((m) => ({ ...m, allowedMentions: { parse: [] } }));
+  const pages = buildComponentMessages(`${prefix}${reply.text}${footer}`).map((m) => ({ ...m, allowedMentions: { parse: [] } }));
+  return reply.files?.length ? [...pages, renderFilesPage(reply.files)] : pages;
+}
+
+const GALLERY_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** Names Discord keeps verbatim, unique within the message, so `attachment://` references resolve. */
+function attachmentNames(files: readonly DeliverFile[]): string[] {
+  const used = new Set<string>();
+  return files.map((f) => {
+    const base = f.name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "").slice(-100) || "file";
+    let name = base;
+    for (let i = 2; used.has(name); i++) {
+      const dot = base.lastIndexOf(".");
+      name = dot > 0 ? `${base.slice(0, dot)}-${i}${base.slice(dot)}` : `${base}-${i}`;
+    }
+    used.add(name);
+    return name;
+  });
+}
+
+function attachmentsFor(files: readonly DeliverFile[]): AttachmentBuilder[] {
+  const names = attachmentNames(files);
+  return files.map((f, i) => new AttachmentBuilder(Buffer.from(f.dataBase64, "base64"), { name: names[i]! }));
+}
+
+/** The reply's files as their own message: Components V2 shows an attachment only through a gallery or file component. */
+export function renderFilesPage(files: readonly DeliverFile[]): MessageCreateOptions {
+  const names = attachmentNames(files);
+  const container = new ContainerBuilder();
+  const images = files.flatMap((f, i) => (GALLERY_TYPES.has(f.contentType.toLowerCase()) ? [names[i]!] : []));
+  if (images.length) container.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(images.map((n) => new MediaGalleryItemBuilder().setURL(`attachment://${n}`))));
+  files.forEach((f, i) => {
+    if (!GALLERY_TYPES.has(f.contentType.toLowerCase())) container.addFileComponents(new FileBuilder().setURL(`attachment://${names[i]}`));
+  });
+  return { components: [container], files: attachmentsFor(files), flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] } };
 }
 
 export function renderAsk(ask: AskView): MessageCreateOptions {
