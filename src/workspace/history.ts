@@ -2,6 +2,8 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFi
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative } from "node:path";
 import { tailLines, type EndRunInput, type ListRunsQuery, type RunRecord, type RunRecorder, type RunStatus, type StartRunInput } from "./runLog.ts";
+import { publicAuthError } from "./chatgptFallback.ts";
+import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { redact } from "./secretPatterns.ts";
 import { confineSessionFile, parseEntry, realRoots, textOf, type Entry } from "./wsRuns.ts";
 
@@ -18,6 +20,12 @@ const SKIPPED_AGENTS = new Set(["main:rotate"]);
 const RUNS_HEADING = "## Runs";
 const SESSIONS_HEADING = "## Sessions";
 const KNOWN_MAX = 2000;
+const TEXT_MAX = 16_000;
+const ERROR_SOURCE_MAX = 4_000;
+const REDACT_MARGIN = 200;
+const REDACT_GROW_LIMIT = 8_000;
+/** Longer than any secret prefix that slips past every pattern, so a cut through a secret never shows. */
+const FRAGMENT_MAX = 64;
 
 type Log = { warn: (obj: object, msg: string) => void };
 
@@ -47,6 +55,8 @@ export interface FinishedRun {
   task: string;
   sessionFile: string;
   startedAt: Date;
+  /** Lower bound of the transcript window; defaults to startedAt. Catches entries appended while idle. */
+  windowFrom?: Date;
   endedAt: Date;
   status: RunStatus;
   usage?: RunRecord["usage"];
@@ -88,11 +98,30 @@ export function dailyFileRel(at: Date, tz: string): string {
 
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max - 1)}…`);
-// Redacted before clipping, so a cut can't leave a secret fragment too short to match.
-const safeLine = (s: string, max: number) => clip(oneLine(redact(s)), max);
 
-function kindOf(run: Pick<FinishedRun, "agentName" | "parentRunId">): string {
-  if (run.agentName === "main") return "chat";
+// Some secret patterns backtrack quadratically on long unbroken runs, and this runs on the host, so only
+// the head that can show is redacted. A match shrinks to [REDACTED] and pulls later text forward, so the
+// slice grows until the redacted head still reaches past what shows by more than any unmatched fragment.
+function redactHead(s: string, max: number): string {
+  for (let len = max + REDACT_MARGIN; ; len *= 4) {
+    if (s.length <= len) return redact(s);
+    const out = redact(s.slice(0, len));
+    if (out.length >= max + FRAGMENT_MAX) return out;
+    if (len * 4 > REDACT_GROW_LIMIT) return out.slice(0, Math.max(0, out.length - FRAGMENT_MAX));
+  }
+}
+
+const safeLine = (s: string, max: number) => clip(redactHead(oneLine(s), max), max);
+
+function safeText(s: string): string {
+  if (s.length <= TEXT_MAX) return redact(s);
+  return `${redactHead(s, TEXT_MAX).slice(0, TEXT_MAX)}… _[truncated; ${s.length} chars in all]_`;
+}
+
+const isFlush = (text: string | null | undefined) => !!text?.startsWith(FLUSH_MARKER);
+
+function kindOf(run: Pick<FinishedRun, "agentName" | "parentRunId">, flush = false): string {
+  if (run.agentName === "main") return flush ? "flush" : "chat";
   if (run.agentName.startsWith("job:")) return "job";
   return run.parentRunId ? "subagent" : "agent";
 }
@@ -160,14 +189,14 @@ export function renderTranscript(entries: Entry[], tz: string): Transcript {
     if (e.type === "message" && m?.role === "user") {
       const text = textOf(m.content);
       firstUserText ??= text;
-      lines.push(`### user${at(e)}`, "", redact(text).trim(), "");
+      lines.push(`### user${at(e)}`, "", safeText(text).trim(), "");
     } else if (e.type === "message" && m?.role === "assistant") {
       const text = textOf(m.content).trim();
       const calls = Array.isArray(m.content) ? (m.content as ToolCallItem[]).filter((c) => c?.type === "toolCall" && typeof c.name === "string") : [];
-      const error = m.stopReason === "error" || m.stopReason === "aborted" ? `_[${m.stopReason}${m.errorMessage ? `: ${safeLine(m.errorMessage, 200)}` : ""}]_` : null;
+      const error = m.stopReason === "error" || m.stopReason === "aborted" ? `_[${m.stopReason}${m.errorMessage ? `: ${safeLine(publicAuthError(m.errorMessage.slice(0, ERROR_SOURCE_MAX)), 200)}` : ""}]_` : null;
       if (!text && !calls.length && !error) continue;
       lines.push(`### assistant${at(e)}`, "");
-      if (text) lines.push(redact(text), "");
+      if (text) lines.push(safeText(text), "");
       for (const c of calls) {
         toolCount++;
         lines.push(`- \`${c.name}\` ${safeLine(JSON.stringify(c.arguments ?? {}), TOOL_ARGS_MAX)} → ${resultHint(c.id ? results.get(c.id) : undefined)}`);
@@ -219,16 +248,18 @@ export class HistoryWriter {
     const rel = runFileRel(run.runId, run.startedAt, tz);
     const file = join(this.dir, rel);
     const sessionFile = confineSessionFile(run.sessionFile, realRoots([this.opts.agentDir]));
-    const transcript = sessionFile ? renderTranscript(entriesInWindow(sessionFile, run.startedAt.getTime(), run.endedAt.getTime()), tz) : null;
+    const transcript = sessionFile ? renderTranscript(entriesInWindow(sessionFile, (run.windowFrom ?? run.startedAt).getTime(), run.endedAt.getTime()), tz) : null;
     const start = localTime(run.startedAt, tz);
     const end = localTime(run.endedAt, tz);
     const origin = transcript?.firstUserText ? headerOrigin(transcript.firstUserText) : null;
+    const flush = run.agentName === "main" && isFlush(transcript?.firstUserText ?? run.task);
+    const kind = kindOf(run, flush);
     const link = (runId: string, startedAt: Date) => relative(dirname(file), join(this.dir, runFileRel(runId, startedAt, tz)));
 
-    const out = [`# ${kindOf(run)} run ${run.runId}`, ""];
+    const out = [`# ${kind} run ${run.runId}`, ""];
     out.push(`- **When:** ${start.date} ${start.time} → ${end.date === start.date ? "" : `${end.date} `}${end.time} (${tz})`);
-    out.push(`- **Agent:** ${kindOf(run)} / ${run.agentName}`);
-    if (origin) out.push(`- **Origin:** ${redact(origin)}`);
+    out.push(`- **Agent:** ${kind} / ${run.agentName}`);
+    if (origin) out.push(`- **Origin:** ${safeLine(origin, TOPIC_MAX)}`);
     out.push(`- **Model:** ${fmtUsage(run)}`);
     out.push(`- **Status:** ${run.status}`);
     if (run.parentRunId) {
@@ -245,10 +276,9 @@ export class HistoryWriter {
     this.ensureDir(dirname(file));
     replaceFile(file, `${out.join("\n").trimEnd()}\n`);
 
-    const topicSource = stripHeader(transcript?.firstUserText ?? run.task);
-    const topic = safeLine(topicSource, TOPIC_MAX) || "(no message)";
+    const topic = flush ? "memory flush" : safeLine(stripHeader(transcript?.firstUserText ?? run.task), TOPIC_MAX) || "(no message)";
     const tools = transcript?.toolCount ?? 0;
-    const agent = run.agentName === "main" ? "chat" : `${kindOf(run)}/${run.agentName}`;
+    const agent = run.agentName === "main" ? kind : `${kind}/${run.agentName}`;
     this.appendDaily(run.startedAt, RUNS_HEADING, `- ${start.time} ${agent} — ${topic} (${tools} tool${tools === 1 ? "" : "s"}, ${run.status}) [${run.runId}](${rel})`);
     return file;
   }
@@ -256,7 +286,7 @@ export class HistoryWriter {
   /** Appends a session summary to the daily index of the day it happened. */
   writeSession(s: SessionSummary): void {
     const at = s.at ?? this.now();
-    const text = redact(s.text).trim();
+    const text = safeText(s.text).trim();
     if (!text) return;
     const heading = `### ${localTime(at, this.opts.tz).time} · ${s.reason} · ${safeLine(summaryTopic(text), TOPIC_MAX)} · \`${basename(s.sessionFile)}\``;
     this.appendDaily(at, SESSIONS_HEADING, `${heading}\n\n${demoteHeadings(text)}`);
@@ -283,9 +313,8 @@ export class HistoryWriter {
 
   private ensureDir(dir: string): void {
     try {
-      const st = lstatSync(dir);
-      if (st.isDirectory() && !st.isSymbolicLink()) return;
-      throw new Error(`${dir} is not a plain directory`);
+      assertPlainDir(dir);
+      return;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
@@ -293,14 +322,24 @@ export class HistoryWriter {
   }
 }
 
-// ~/history is agent-writable, so the host never follows a link planted there: reads refuse symlinks and
-// hardlinks, and writes go to a fresh file renamed over the entry instead of through it.
+function assertPlainDir(dir: string): void {
+  const st = lstatSync(dir);
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`${dir} is not a plain directory`);
+}
+
+// ~/history is agent-writable, so the host never follows a link planted there: reads refuse symlinks,
+// hardlinks and anything but a regular file, and writes go to a fresh file renamed over the entry.
+// Null means "replace it"; any other failure throws, so a transient error can't wipe the file.
 function readOwnFile(file: string): string | null {
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch {
-    return null;
+    // O_NONBLOCK: opening a planted FIFO would otherwise block the whole host until a writer shows up.
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // ELOOP is a symlink under O_NOFOLLOW; ENXIO a socket.
+    if (code === "ENOENT" || code === "ELOOP" || code === "ENXIO") return null;
+    throw err;
   }
   try {
     const st = fstatSync(fd);
@@ -314,6 +353,7 @@ function replaceFile(file: string, content: string): void {
   const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(tmp, content, { flag: "wx" });
   try {
+    assertPlainDir(dirname(file));
     renameSync(tmp, file);
   } catch (err) {
     rmSync(tmp, { force: true });
@@ -328,6 +368,10 @@ function replaceFile(file: string, content: string): void {
  */
 export function recordHistory(inner: RunRecorder, writer: HistoryWriter, log: Log, now: () => Date = () => new Date()): RunRecorder {
   const open = new Map<string, StartRunInput & { at: Date }>();
+  const bootedAt = now();
+  // Runs on one session file are sequential, so everything since the previous run's end belongs to this
+  // one: channel context and a seeded recap are appended while the session sits idle.
+  const lastEnd = new Map<string, Date>();
   // Kept past a run's end: a background child can outlive its parent and still links back to it.
   const known = new Map<string, { agentName: string; at: Date; parentRunId?: string; status: RunStatus }>();
   const remember = (runId: string, info: { agentName: string; at: Date; parentRunId?: string; status: RunStatus }) => {
@@ -350,6 +394,11 @@ export function recordHistory(inner: RunRecorder, writer: HistoryWriter, log: Lo
       if (!start) return;
       remember(runId, { agentName: start.agentName, at: start.at, ...(start.parentRunId ? { parentRunId: start.parentRunId } : {}), status: end.status });
       if (SKIPPED_AGENTS.has(start.agentName)) return;
+      const endedAt = now();
+      const previous = lastEnd.get(start.sessionFile) ?? bootedAt;
+      lastEnd.delete(start.sessionFile);
+      lastEnd.set(start.sessionFile, endedAt);
+      if (lastEnd.size > KNOWN_MAX) lastEnd.delete(lastEnd.keys().next().value!);
       try {
         const parentStartedAt = start.parentRunId ? known.get(start.parentRunId)?.at : undefined;
         const children = [...known].filter(([, k]) => k.parentRunId === runId).map(([id, k]) => ({ runId: id, agentName: k.agentName, startedAt: k.at, status: k.status }));
@@ -361,7 +410,8 @@ export function recordHistory(inner: RunRecorder, writer: HistoryWriter, log: Lo
           task: start.task,
           sessionFile: start.sessionFile,
           startedAt: start.at,
-          endedAt: now(),
+          windowFrom: previous < start.at ? previous : start.at,
+          endedAt,
           status: end.status,
           ...(end.usage ? { usage: end.usage } : {}),
           ...(end.resultSummary ? { resultSummary: end.resultSummary } : {}),

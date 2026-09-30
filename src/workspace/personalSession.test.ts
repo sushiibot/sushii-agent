@@ -2009,6 +2009,7 @@ describe("PersonalSession context economy", () => {
     sessions[1].finish("sure");
     await until(() => host.isIdle());
     await host.handleNew();
+    await until(() => summaries.length === 2);
 
     expect(calls.filter((c) => c === "recap")).toHaveLength(2);
     expect(summaries.map((s) => [s.reason, s.sessionFile, s.text])).toEqual([
@@ -2035,6 +2036,45 @@ describe("PersonalSession context economy", () => {
     await host.handleNew();
     expect(calls.filter((c) => c === "recap")).toHaveLength(1);
     expect(sessions).toHaveLength(3);
+  });
+
+  test("chat/new swaps sessions without waiting for its recap; the recap lands later and then the old session is disposed", async () => {
+    const summaries: SessionSummaryRecord[] = [];
+    const recapDone = gate();
+    const { host, sessions } = await idleBigHost({
+      recap: async () => {
+        await recapDone.promise;
+        return "## Goals\n- late recap";
+      },
+      onSessionSummary: (s) => summaries.push(s),
+    });
+    const result = await within(host.handleNew());
+    expect(result).not.toBe(TIMED_OUT);
+    expect(host.currentSessionFile).toBe(sessions[1].file);
+    expect(sessions[0].disposed).toBe(false);
+    expect(summaries).toHaveLength(0);
+
+    recapDone.open();
+    await until(() => sessions[0].disposed);
+    expect(summaries.map((s) => [s.reason, s.sessionFile, s.text])).toEqual([["new", sessions[0].file, "## Goals\n- late recap"]]);
+    expect(sessions[1].customs).toHaveLength(0);
+  });
+
+  test("a chat/new recap past its timeout is aborted, records nothing, and still disposes the old session", async () => {
+    const summaries: SessionSummaryRecord[] = [];
+    let signal: AbortSignal | undefined;
+    const { host, sessions } = await idleBigHost({
+      recap: (_session, s) => {
+        signal = s;
+        return new Promise<string | null>(() => {});
+      },
+      newRecapTimeoutMs: 20,
+      onSessionSummary: (s) => summaries.push(s),
+    });
+    await host.handleNew();
+    await until(() => sessions[0].disposed);
+    expect(signal?.aborted).toBe(true);
+    expect(summaries).toHaveLength(0);
   });
 
   test("a finished compaction reports Pi's summary; an aborted one doesn't", async () => {

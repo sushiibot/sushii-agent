@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     },
     context: {
       compact: compactSession,
-      recap: async (session) => (await recapSession(session))?.text ?? null,
+      recap: async (session, signal) => (await recapSession(session, signal))?.text ?? null,
       idleRotateMs: (session) => idleRotateMs(session, config),
       rotateTokens: economyOf(config).idleRotateTokens,
       busy: () => subagents.isBusy(),

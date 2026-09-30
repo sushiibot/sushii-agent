@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import { HistoryWriter, recordHistory, summaryTopic } from "./history.ts";
 import { scaffoldHome } from "./home.ts";
+import { flushPrompt } from "./memoryFlush.ts";
 import { RunLog } from "./runLog.ts";
 import { subagentSessionDir } from "./sessionPaths.ts";
 
@@ -243,5 +245,134 @@ describe("home git", () => {
     const ignored = (await git.raw(["check-ignore", "history/2026-09/29-X.md", "history/2026-09-29.md", "history"])).trim().split("\n");
     expect(ignored).toEqual(["history/2026-09/29-X.md", "history/2026-09-29.md", "history"]);
     expect((await git.raw(["status", "--porcelain", "--untracked-files=all"])).trim()).toBe("");
+  });
+});
+
+describe("hostile or unusual input", () => {
+  const runMain = (runs: ReturnType<typeof setup>["runs"], task = "hi") => {
+    const runId = runs.startRun({ agentName: "main", task, sessionFile: chatFile() });
+    clock = new Date("2026-09-29T10:00:06Z");
+    runs.endRun(runId, { status: "done" });
+    return runId;
+  };
+
+  test("a FIFO planted at the daily path doesn't block the host; it's replaced", () => {
+    mainSession();
+    mkdirSync(join(home, "history"));
+    const daily = join(home, "history", "2026-09-29.md");
+    expect(spawnSync("mkfifo", [daily]).status).toBe(0);
+    const started = Date.now();
+    runMain(setup().runs);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(lstatSync(daily).isFile()).toBe(true);
+    expect(readFileSync(daily, "utf8")).toContain("deploy the thing please");
+  });
+
+  test("a read error other than a missing file leaves the daily index alone and is logged", () => {
+    if (process.getuid?.() === 0) return;
+    mainSession();
+    mkdirSync(join(home, "history"));
+    const daily = join(home, "history", "2026-09-29.md");
+    writeFileSync(daily, "# 2026-09-29\n\n## Runs\n\n- 09:00 chat — earlier (0 tools, done)\n\n## Sessions\n");
+    chmodSync(daily, 0o000);
+    try {
+      runMain(setup().runs);
+    } finally {
+      chmodSync(daily, 0o644);
+    }
+    expect(readFileSync(daily, "utf8")).toContain("- 09:00 chat — earlier");
+    expect(warnings.map((w) => w.msg)).toEqual(["failed to write the run's history file"]);
+  });
+
+  test("huge tool args and messages are redacted in bounded time and truncated", () => {
+    const jwt = `eyJ${"a".repeat(300)}.${"b".repeat(300)}.${"c".repeat(300)}`;
+    writeSession(chatFile(), [
+      msg("e1", "2026-09-29T10:00:01.000Z", { role: "user", content: `[discord:1 x]\n${"u".repeat(200_000)}` }),
+      msg("e2", "2026-09-29T10:00:02.000Z", {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "c1", name: "write", arguments: { path: "big.txt", content: "z".repeat(200_000) } },
+          { type: "toolCall", id: "c2", name: "bash", arguments: { command: `${jwt} ${jwt} ${jwt} ${GH_TOKEN}` } },
+        ],
+        stopReason: "toolUse",
+      }),
+      msg("e3", "2026-09-29T10:00:03.000Z", { role: "toolResult", toolCallId: "c1", toolName: "write", content: [{ type: "text", text: "q".repeat(200_000) }], isError: false }),
+    ]);
+    const started = Date.now();
+    const runId = runMain(setup().runs);
+    expect(Date.now() - started).toBeLessThan(1000);
+    const md = readFileSync(join(home, "history", "2026-09", `29-${runId}.md`), "utf8");
+    expect(md.length).toBeLessThan(20_000);
+    expect(md).toContain("_[truncated; 200014 chars in all]_");
+    const [write, bash] = md.split("\n").filter((l) => l.startsWith("- `"));
+    expect(write!.length).toBeLessThan(250);
+    expect(bash).toStartWith("- `bash` {\"command\":\"[REDACTED] [REDACTED] [REDACTED]");
+    expect(md).not.toContain("ghp_");
+    expect(md).not.toContain("A1b2C3d4");
+  });
+
+  test("an auth error keeps the status but drops the token endpoint's body", () => {
+    writeSession(chatFile(), [
+      msg("e1", "2026-09-29T10:00:01.000Z", { role: "user", content: "hi" }),
+      msg("e2", "2026-09-29T10:00:02.000Z", {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: 'OpenAI OAuth token request failed (400) {"error":"invalid_grant","refresh_token":"rt_AbCdEfGhIjKlMnOp.QrStUvWx"}',
+      }),
+    ]);
+    const runId = runMain(setup().runs);
+    const md = readFileSync(join(home, "history", "2026-09", `29-${runId}.md`), "utf8");
+    expect(md).toContain("_[error: OpenAI OAuth token request failed (400)]_");
+    expect(md).not.toContain("invalid_grant");
+    expect(md).not.toContain("rt_AbCd");
+  });
+
+  test("a memory flush turn is labelled as a flush, not a chat request", () => {
+    const flush = flushPrompt("rotate");
+    writeSession(chatFile(), [
+      msg("e1", "2026-09-29T10:00:01.000Z", { role: "user", content: flush }),
+      msg("e2", "2026-09-29T10:00:02.000Z", { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }], stopReason: "stop" }),
+    ]);
+    const runId = runMain(setup().runs, flush);
+    expect(readFileSync(join(home, "history", "2026-09", `29-${runId}.md`), "utf8")).toStartWith(`# flush run ${runId}`);
+    expect(readFileSync(join(home, "history", "2026-09-29.md"), "utf8")).toContain(`- 10:00 flush — memory flush (0 tools, done) [${runId}]`);
+  });
+
+  test("entries appended while the session sat idle belong to the next run; each run keeps to its own window", () => {
+    const { runs } = setup();
+    writeSession(chatFile(), [
+      msg("e0", "2026-09-29T09:59:00.000Z", { role: "user", content: "from before the host started" }),
+      { type: "custom_message", id: "x0", parentId: null, timestamp: "2026-09-29T10:00:00.500Z", customType: "workspace_recap", content: "seeded recap", display: true },
+      msg("e1", "2026-09-29T10:00:01.000Z", { role: "user", content: "first request" }),
+      msg("e2", "2026-09-29T10:00:02.000Z", { role: "assistant", content: [{ type: "text", text: "first answer" }], stopReason: "stop" }),
+    ]);
+    clock = new Date("2026-09-29T10:00:01Z");
+    const first = runs.startRun({ agentName: "main", task: "first request", sessionFile: chatFile() });
+    clock = new Date("2026-09-29T10:00:03Z");
+    runs.endRun(first, { status: "done" });
+
+    writeSession(chatFile(), [
+      msg("e0", "2026-09-29T09:59:00.000Z", { role: "user", content: "from before the host started" }),
+      msg("e1", "2026-09-29T10:00:01.000Z", { role: "user", content: "first request" }),
+      msg("e2", "2026-09-29T10:00:02.000Z", { role: "assistant", content: [{ type: "text", text: "first answer" }], stopReason: "stop" }),
+      { type: "custom_message", id: "x1", parentId: null, timestamp: "2026-09-29T10:05:00.000Z", customType: "workspace_context", content: "channel chatter", display: true },
+      msg("e3", "2026-09-29T10:06:01.000Z", { role: "user", content: "second request" }),
+      msg("e4", "2026-09-29T10:06:02.000Z", { role: "assistant", content: [{ type: "text", text: "second answer" }], stopReason: "stop" }),
+    ]);
+    clock = new Date("2026-09-29T10:06:01Z");
+    const second = runs.startRun({ agentName: "main", task: "second request", sessionFile: chatFile() });
+    clock = new Date("2026-09-29T10:06:03Z");
+    runs.endRun(second, { status: "done" });
+
+    const firstMd = readFileSync(join(home, "history", "2026-09", `29-${first}.md`), "utf8");
+    expect(firstMd).toContain("seeded recap");
+    expect(firstMd).toContain("first answer");
+    expect(firstMd).not.toContain("from before the host started");
+    expect(firstMd).not.toContain("second request");
+    const secondMd = readFileSync(join(home, "history", "2026-09", `29-${second}.md`), "utf8");
+    expect(secondMd).toContain("channel chatter");
+    expect(secondMd).toContain("second answer");
+    expect(secondMd).not.toContain("first request");
   });
 });

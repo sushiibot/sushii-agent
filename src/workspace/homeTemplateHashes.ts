@@ -26,6 +26,7 @@ export const SHIPPED_TEMPLATE_HASHES: Record<string, readonly string[]> = {
   ],
   "agents-skills-README.md": [],
   "agents-skills-session-history-SKILL.md": [
+    "22b564392c2806df78ee94354d5eb275389ecda442eafbc16316db64383b773c",
     "82acfdd5715d77766e9a130da9ba1c41d7c42624487e0e3e6f92f4711403fbf2",
     "b7000898cf1bed4d187adbd10193a9765a26b7be47b042c67a10e259f059546d",
   ],

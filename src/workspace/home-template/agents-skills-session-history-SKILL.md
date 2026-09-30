@@ -19,7 +19,7 @@ versioned and only the workspace writes it, so don't edit it.
 
 - The daily file (`YYYY-MM-DD.md`, in the workspace time zone) is the high-level view. It has two
   sections:
-  - `## Runs`: one line per run with its time, kind (`chat`, `subagent/<name>`, `job/<name>`), a
+  - `## Runs`: one line per run with its time, kind (`chat`, `flush` for a memory flush, `subagent/<name>`, `job/<name>`), a
     topic from the first message, the tool count, the status and a link to the run file.
   - `## Sessions`: the recap of each chat session that ended that day (idle rotation or `!new`) and
     each compaction summary. The heading has the time, the reason, a one-line topic and the session
