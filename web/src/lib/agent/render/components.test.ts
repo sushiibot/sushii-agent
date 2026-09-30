@@ -64,7 +64,11 @@ function assertInert(els: El[], opts: { allowButtons?: boolean } = {}) {
 		expect(['script', 'iframe', 'object', 'embed', 'form', 'base', 'meta', 'style']).not.toContain(
 			el.tag
 		);
-		if (!opts.allowButtons) expect(['button', 'input', 'textarea', 'select']).not.toContain(el.tag);
+		// Copy is the one control markdown may render; it only copies its own block's text.
+		const copy = el.tag === 'button' && el.attrs['aria-label'] === 'Copy code';
+		if (!opts.allowButtons && !copy) {
+			expect(['button', 'input', 'textarea', 'select']).not.toContain(el.tag);
+		}
 		for (const [name, value] of Object.entries(el.attrs)) {
 			expect(name.startsWith('on')).toBe(false);
 			expect(name).not.toBe('srcdoc');
@@ -120,6 +124,23 @@ describe('markdown', () => {
 		}
 		expect(html).not.toContain('<svg');
 		expect(text).toContain('Approve');
+	});
+
+	test('a code block gets exactly one Copy button and nothing else interactive', async () => {
+		const { els } = await dom(Markdown, { text: '```sh\nrm -rf ~\n```' });
+		const buttons = els.filter((e) => e.tag === 'button');
+		expect(buttons.map((b) => b.attrs['aria-label'])).toEqual(['Copy code']);
+		expect(buttons[0].attrs.type).toBe('button');
+		expect(els.some((e) => e.attrs['aria-live'] === 'polite')).toBe(true);
+	});
+
+	test('while streaming, text shows unparsed', async () => {
+		const { els, text } = await dom(Markdown, {
+			text: '**bold** [x](https://ok.example)\n\n```\ncode\n```',
+			streaming: true
+		});
+		expect(els.some((e) => ['a', 'strong', 'pre', 'button'].includes(e.tag))).toBe(false);
+		expect(text).toContain('**bold** [x](https://ok.example)');
 	});
 
 	test('legacy blocks drop unsafe links too', async () => {

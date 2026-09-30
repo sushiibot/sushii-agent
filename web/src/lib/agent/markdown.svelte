@@ -1,18 +1,21 @@
 <script lang="ts">
 	import type { MdBlock } from './types';
+	import CodeCopyButton from './code-copy-button.svelte';
 	import {
 		fromLegacyBlocks,
+		legacyPlainText,
 		parseMarkdown,
 		type MdBlockNode,
 		type MdInlineNode
 	} from './render/markdown';
 
-	// Agent text is untrusted: no controls and no security-surface styling here, so nothing in a
-	// reply can pass for a decision card. scripts/check-no-raw-html.ts enforces it.
+	// Agent text is untrusted: no controls besides Copy and no security-surface styling here, so
+	// nothing in a reply can pass for a decision card. scripts/check-no-raw-html.ts enforces it.
 	let {
 		text,
 		blocks,
-		files = []
+		files = [],
+		streaming = false
 	}: {
 		/** Raw markdown from the agent. Takes precedence over `blocks`. */
 		text?: string;
@@ -20,18 +23,28 @@
 		blocks?: MdBlock[];
 		/** Files the bot attached to this same message; inline ones may appear as `![](/f/<id>)`. */
 		files?: readonly { id: string; inline: boolean }[];
+		/** While true `text` shows unparsed, so a stream of deltas never re-runs the parser. */
+		streaming?: boolean;
 	} = $props();
 
+	// A string, so a new but equal `files` array does not trigger a re-parse.
+	const imageKey = $derived(
+		files
+			.filter((f) => f.inline)
+			.map((f) => f.id)
+			.join(' ')
+	);
+
 	const tree = $derived.by((): MdBlockNode[] => {
+		if (streaming && text !== undefined) return [{ kind: 'plain', text }];
 		const ctx = {
 			origin: typeof location === 'undefined' ? undefined : location.origin,
-			imageIds: files.filter((f) => f.inline).map((f) => f.id)
+			imageIds: imageKey ? imageKey.split(' ') : []
 		};
 		if (text !== undefined) return parseMarkdown(text, ctx);
 		return fromLegacyBlocks(blocks ?? [], ctx);
 	});
 
-	const headingTag = { 1: 'h3', 2: 'h3', 3: 'h4', 4: 'h5', 5: 'h6', 6: 'h6' } as const;
 	const alignClass = { left: 'text-left', right: 'text-right', center: 'text-center' } as const;
 </script>
 
@@ -58,6 +71,17 @@
 	{/each}
 {/snippet}
 
+{#snippet listItems(items: Extract<MdBlockNode, { kind: 'list' }>['items'])}
+	{#each items as item, j (j)}
+		<li>
+			{#if item.checked !== null}<span class="font-mono" aria-hidden="true"
+					>{item.checked ? '[x] ' : '[ ] '}</span
+				><span class="sr-only">{item.checked ? 'Done: ' : 'Not done: '}</span>{/if}
+			<div class="flex flex-col gap-1">{@render blockList(item.children)}</div>
+		</li>
+	{/each}
+{/snippet}
+
 {#snippet blockList(nodes: MdBlockNode[])}
 	{#each nodes as node, i (i)}
 		{#if node.kind === 'paragraph'}
@@ -65,32 +89,34 @@
 		{:else if node.kind === 'plain'}
 			<p class="whitespace-pre-wrap">{node.text}</p>
 		{:else if node.kind === 'heading'}
-			<svelte:element this={headingTag[node.level]} class="text-base font-semibold"
-				>{@render inlines(node.children)}</svelte:element
-			>
+			{#if node.level <= 2}
+				<h3 class="text-base font-semibold">{@render inlines(node.children)}</h3>
+			{:else if node.level === 3}
+				<h4 class="text-base font-semibold">{@render inlines(node.children)}</h4>
+			{:else if node.level === 4}
+				<h5 class="text-base font-semibold">{@render inlines(node.children)}</h5>
+			{:else}
+				<h6 class="text-base font-semibold">{@render inlines(node.children)}</h6>
+			{/if}
 		{:else if node.kind === 'code'}
-			<pre
-				class="overflow-x-auto rounded-lg bg-muted px-3 py-2 font-mono text-[0.8125rem] leading-relaxed"
-				data-lang={node.lang}><code>{node.text}</code></pre>
+			<div class="relative">
+				<pre
+					class="min-h-12 overflow-x-auto rounded-lg bg-muted py-2 pr-12 pl-3 font-mono text-[0.8125rem] leading-relaxed"
+					data-lang={node.lang}><code>{node.text}</code></pre>
+				<CodeCopyButton text={node.text} />
+			</div>
 		{:else if node.kind === 'quote'}
 			<blockquote class="flex flex-col gap-2 border-l-2 pl-3 text-muted-foreground">
 				{@render blockList(node.children)}
 			</blockquote>
 		{:else if node.kind === 'list'}
-			<svelte:element
-				this={node.ordered ? 'ol' : 'ul'}
-				start={node.start ?? undefined}
-				class="flex flex-col gap-1 pl-5 {node.ordered ? 'list-decimal' : 'list-disc'}"
-			>
-				{#each node.items as item, j (j)}
-					<li>
-						{#if item.checked !== null}<span class="font-mono" aria-hidden="true"
-								>{item.checked ? '[x] ' : '[ ] '}</span
-							><span class="sr-only">{item.checked ? 'Done: ' : 'Not done: '}</span>{/if}
-						<div class="flex flex-col gap-1">{@render blockList(item.children)}</div>
-					</li>
-				{/each}
-			</svelte:element>
+			{#if node.ordered}
+				<ol start={node.start ?? undefined} class="flex list-decimal flex-col gap-1 pl-5">
+					{@render listItems(node.items)}
+				</ol>
+			{:else}
+				<ul class="flex list-disc flex-col gap-1 pl-5">{@render listItems(node.items)}</ul>
+			{/if}
 		{:else if node.kind === 'table'}
 			<div class="max-w-full overflow-x-auto rounded-lg border">
 				<table class="w-max min-w-full border-collapse text-sm">
@@ -131,5 +157,11 @@
 {/snippet}
 
 <div class="flex min-w-0 flex-col gap-2 text-[0.9375rem] leading-relaxed [overflow-wrap:anywhere]">
-	{@render blockList(tree)}
+	<!-- One reply that fails to render falls back to its text instead of taking the list down. -->
+	<svelte:boundary>
+		{@render blockList(tree)}
+		{#snippet failed()}
+			<p class="whitespace-pre-wrap">{text ?? legacyPlainText(blocks ?? [])}</p>
+		{/snippet}
+	</svelte:boundary>
 </div>

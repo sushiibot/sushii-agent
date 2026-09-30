@@ -56,6 +56,12 @@ export const MAX_DEPTH = 12;
 /** micromark's emphasis resolution is quadratic on delimiter-heavy input (a 20k-char run of `*`
  *  takes seconds), so longer text renders unparsed rather than freezing the chat. */
 export const MARKDOWN_PARSE_MAX = 16_000;
+/** Container markers (`>`, list bullets, `1.`) stacked on one line. mdast-util-from-markdown walks
+ *  the tree recursively, so a few thousand of them overflow the stack before MAX_DEPTH applies. */
+export const CONTAINER_DEPTH_MAX = 32;
+/** Emphasis delimiters past this render unparsed: resolving them is quadratic, and a run of 8k `*`
+ *  alone takes seconds on a phone. */
+export const EMPHASIS_DELIMITER_MAX = 3_000;
 
 const LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 const FILE_PATH_RE = /^\/f\/([A-Za-z0-9_-]{22})$/;
@@ -264,11 +270,80 @@ function plainText(node: Nodes): string {
 	return parts.join('');
 }
 
-/** Parses agent markdown (CommonMark + GFM) to a render tree. Raw HTML is kept as literal text. */
+const isDigit = (c: number) => c >= 48 && c <= 57;
+const isBlank = (c: number) => c === 32 || c === 9 || Number.isNaN(c);
+
+/** True when some line opens more than `max` containers. A linear scan with no regex, so a
+ *  16k-char line cannot backtrack; over-counting only costs formatting. */
+export function containerDepthExceeds(text: string, max = CONTAINER_DEPTH_MAX): boolean {
+	let depth = 0;
+	let atLineStart = true;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		if (c === 10 || c === 13) {
+			depth = 0;
+			atLineStart = true;
+			continue;
+		}
+		if (!atLineStart || c === 32 || c === 9) continue;
+		if (c === 62 /* > */) {
+			depth++;
+		} else if ((c === 45 || c === 42 || c === 43) /* - * + */ && isBlank(text.charCodeAt(i + 1))) {
+			depth++;
+		} else if (isDigit(c)) {
+			let j = i;
+			while (j - i < 10 && isDigit(text.charCodeAt(j))) j++;
+			const d = text.charCodeAt(j);
+			if ((d === 46 || d === 41) /* . ) */ && isBlank(text.charCodeAt(j + 1))) {
+				depth++;
+				i = j;
+			} else atLineStart = false;
+		} else {
+			atLineStart = false;
+		}
+		if (depth > max) return true;
+	}
+	return false;
+}
+
+/** Counts `*` and every `_` that is not intraword, the only underscores that can open or close. */
+export function emphasisDelimiters(text: string): number {
+	let n = 0;
+	// `_` itself is not a word character here, so a long run of underscores still counts.
+	const word = (c: number) =>
+		isDigit(c) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c > 127;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		if (c === 42) n++;
+		else if (c === 95 && !(word(text.charCodeAt(i - 1)) && word(text.charCodeAt(i + 1)))) n++;
+	}
+	return n;
+}
+
+/** Parses agent markdown (CommonMark + GFM) to a render tree. Raw HTML is kept as literal text.
+ *  Never throws: input the parser can't handle safely comes back as one plain-text block. */
 export function parseMarkdown(text: string, ctx: RenderContext = {}): MdBlockNode[] {
-	if (text.length > MARKDOWN_PARSE_MAX) return [{ kind: 'plain', text }];
-	const root = fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
-	return new Renderer(root, ctx).blocks(root.children, 0);
+	const plain: MdBlockNode[] = [{ kind: 'plain', text }];
+	if (
+		text.length > MARKDOWN_PARSE_MAX ||
+		containerDepthExceeds(text) ||
+		emphasisDelimiters(text) > EMPHASIS_DELIMITER_MAX
+	) {
+		return plain;
+	}
+	try {
+		const root = fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+		return new Renderer(root, ctx).blocks(root.children, 0);
+	} catch {
+		return plain;
+	}
+}
+
+/** The prototype blocks' text, for when rendering them fails. */
+export function legacyPlainText(blocks: readonly MdBlock[]): string {
+	return blocks
+		.map((b) => (b.kind === 'heading' ? b.text : b.inlines.map((i) => i.text).join('')))
+		.join('\n\n');
 }
 
 /** Converts the prototype's pre-parsed blocks, applying the same link rule. */

@@ -1,8 +1,12 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
 import {
+	CONTAINER_DEPTH_MAX,
+	EMPHASIS_DELIMITER_MAX,
 	MARKDOWN_PARSE_MAX,
 	MAX_DEPTH,
+	containerDepthExceeds,
+	emphasisDelimiters,
 	fromLegacyBlocks,
 	parseMarkdown,
 	safeHref,
@@ -194,9 +198,51 @@ describe('structure', () => {
 	test('deep nesting flattens to text past MAX_DEPTH', () => {
 		const depth = (nodes: readonly MdBlockNode[]): number =>
 			Math.max(0, ...nodes.map((n) => (n.kind === 'quote' ? 1 + depth(n.children) : 0)));
-		const tree = parseMarkdown('>'.repeat(500) + ' deep');
+		const deep = '>'.repeat(CONTAINER_DEPTH_MAX) + ' deep';
+		const tree = parseMarkdown(deep);
+		expect(depth(tree)).toBeGreaterThan(1);
 		expect(depth(tree)).toBeLessThanOrEqual(MAX_DEPTH + 1);
-		expect(textOf('>'.repeat(500) + ' deep')).toContain('deep');
+		expect(textOf(deep)).toContain('deep');
+	});
+
+	// These overflow V8's stack inside fromMarkdown; e2e/render-harness.test.ts runs them in Chromium.
+	test.each([
+		['>'.repeat(16_000)],
+		['> '.repeat(8_000)],
+		['1. '.repeat(5_333)],
+		['> - '.repeat(4_000)],
+		['- > 1. '.repeat(2_285)],
+		['- '.repeat(8_000)]
+	])('container nesting past the limit renders unparsed (%#)', (text) => {
+		expect(parseMarkdown(text)).toEqual([{ kind: 'plain', text }]);
+	});
+
+	test('the depth scan counts markers per line, not across lines', () => {
+		expect(containerDepthExceeds('> '.repeat(CONTAINER_DEPTH_MAX))).toBe(false);
+		expect(containerDepthExceeds('> '.repeat(CONTAINER_DEPTH_MAX + 1))).toBe(true);
+		expect(containerDepthExceeds('- a\n'.repeat(5_000))).toBe(false);
+		expect(containerDepthExceeds('12345678901. '.repeat(40))).toBe(false);
+		expect(containerDepthExceeds('---\n***\n+++\n' + 'x > y > z '.repeat(100))).toBe(false);
+		expect(containerDepthExceeds('text\n' + '1) '.repeat(40))).toBe(true);
+	});
+
+	test('delimiter-heavy text renders unparsed; code identifiers do not count', () => {
+		const run = '*'.repeat(7_999) + 'a' + '*'.repeat(7_999);
+		expect(parseMarkdown(run)).toEqual([{ kind: 'plain', text: run }]);
+		expect(parseMarkdown('_'.repeat(8_000))).toEqual([{ kind: 'plain', text: '_'.repeat(8_000) }]);
+		expect(emphasisDelimiters('snake_case_name __init__ *a*')).toBe(6);
+		const code = 'x_y = a_b.c_d\n'.repeat(1_000);
+		expect(emphasisDelimiters(code)).toBe(0);
+		expect(parseMarkdown('**ok**' + ' a'.repeat(EMPHASIS_DELIMITER_MAX))[0].kind).toBe('paragraph');
+	});
+
+	test('a failure inside the parser or renderer falls back to plain text', () => {
+		const imageIds = {
+			[Symbol.iterator]() {
+				throw new RangeError('Maximum call stack size exceeded');
+			}
+		};
+		expect(parseMarkdown('**x**', { imageIds })).toEqual([{ kind: 'plain', text: '**x**' }]);
 	});
 
 	test('text over the parse cap renders unparsed', () => {
