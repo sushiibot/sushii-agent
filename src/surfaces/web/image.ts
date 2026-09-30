@@ -317,7 +317,7 @@ function bitstreamSize(b: Uint8Array, c: RiffChunk): { w: number; h: number } | 
 
 const isBitstream = (c: RiffChunk) => c.fourcc === "VP8 " || c.fourcc === "VP8L";
 
-/** Checks one ANMF frame fits the canvas and that its bitstream decodes to the frame size it declares. */
+/** Checks one ANMF frame fits the canvas, holds only alpha and one bitstream, and decodes to the size it declares. */
 function validAnmf(b: Uint8Array, c: RiffChunk, canvasW: number, canvasH: number): boolean {
   if (c.len < 16) return false;
   const x = 2 * u24le(b, c.dataAt);
@@ -326,8 +326,10 @@ function validAnmf(b: Uint8Array, c: RiffChunk, canvasW: number, canvasH: number
   const h = u24le(b, c.dataAt + 9) + 1;
   if (x + w > canvasW || y + h > canvasH) return false;
   const inner = riffChunks(b, c.dataAt + 16, c.dataAt + c.len);
-  const bits = inner?.filter(isBitstream);
-  if (!bits || bits.length !== 1) return false;
+  // Frames are kept byte for byte, so anything besides alpha and the bitstream would slip past the strip.
+  if (!inner || inner.some((f) => f.fourcc !== "ALPH" && !isBitstream(f))) return false;
+  const bits = inner.filter(isBitstream);
+  if (bits.length !== 1) return false;
   const size = bitstreamSize(b, bits[0]!);
   return size !== null && size.w === w && size.h === h;
 }

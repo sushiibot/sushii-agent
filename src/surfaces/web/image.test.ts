@@ -115,6 +115,8 @@ describe("the measured size is the size a browser decodes", () => {
     expect(processImage(webpFile(vp8x(20, 20, 0x02), anmf(10, 10, vp8(8000, 8000))))).toBeNull();
     expect(processImage(webpFile(vp8x(20, 20, 0x02), vp8(20, 20)))).toBeNull();
     expect(processImage(webpFile(vp8x(20, 20), anmf(10, 10, vp8(10, 10))))).toBeNull();
+    const withMeta = Buffer.concat([riffChunk("EXIF", enc(SECRET)), vp8(10, 10)]);
+    expect(processImage(webpFile(vp8x(20, 20, 0x02), anmf(10, 10, new Uint8Array(withMeta))))).toBeNull();
   });
 
   test("png: a second IHDR or an APNG frame outside the canvas is rejected", () => {
