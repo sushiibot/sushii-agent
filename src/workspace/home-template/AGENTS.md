@@ -131,6 +131,8 @@ The workspace runs jobs on its own and messages drk only when a job has somethin
 - File tools: `read`, `edit`, `write`, `grep`, `find`, `ls`.
 - Browser: the `agent-browser` CLI (`agent-browser --help`) for pages that need JavaScript,
   logins or screenshots.
+- Documents: `pdftotext`, `pandoc` and `xlsx2csv` turn PDF, Word, PowerPoint, Excel and similar
+  files into text (see the documents skill).
 - Bot tools (`web_search`, `fetch_url_content`, `search_logs`, `get_trace`, the Linear tools,
   `team_config`) run through the bot. Some need drk's approval in chat; if a call is denied, don't retry it.
 - GitHub: `git` and `gh` work as `sushii-runner[bot]` on repos the sushii GitHub App is installed
