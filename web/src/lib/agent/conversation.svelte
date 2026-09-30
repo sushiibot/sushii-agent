@@ -29,7 +29,11 @@
 		openTurn,
 		openStep,
 		focusAsk,
-		onopenfile
+		onopenfile,
+		onretrysend,
+		ondeletesend,
+		onanswer,
+		onretryhistory
 	}: {
 		messages: ChatMessage[];
 		pressed?: string;
@@ -39,6 +43,10 @@
 		openStep?: string;
 		focusAsk?: string;
 		onopenfile?: (file: FileRef) => void;
+		onretrysend?: (messageId: string) => void;
+		ondeletesend?: (messageId: string) => void;
+		onanswer?: (askId: string, answer: string) => void;
+		onretryhistory?: () => void;
 	} = $props();
 	const uid = $props.id();
 
@@ -80,6 +88,7 @@
 		approved: 'Approved',
 		denied: 'Denied',
 		timeout: 'Timed out, denied',
+		cancelled: 'No longer needed',
 		'approved-elsewhere': 'Approved on another device',
 		'denied-elsewhere': 'Denied on another device'
 	};
@@ -106,6 +115,7 @@
 				{#if part.type === 'text'}
 					<p
 						class={cn(
+							'whitespace-pre-wrap',
 							owner
 								? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[15px] leading-snug text-primary-foreground'
 								: message.role === 'user'
@@ -130,7 +140,11 @@
 						>
 					</p>
 				{:else if part.type === 'data-ask'}
-					<AskCard ask={part.data} focused={focusAsk === part.data.askId} />
+					<AskCard
+						ask={part.data}
+						focused={focusAsk === part.data.askId}
+						onanswer={(answer) => onanswer?.(part.data.askId, answer)}
+					/>
 				{:else if part.type === 'data-files'}
 					<FilesBlock files={part.data.files} dropped={part.data.dropped} onopen={onopenfile} />
 				{:else if part.type === 'data-divider'}
@@ -170,7 +184,8 @@
 						class="flex w-full items-center justify-between gap-3 rounded-lg border border-dashed py-1 pr-1 pl-3 text-sm text-muted-foreground"
 					>
 						Earlier messages unavailable right now
-						<Button variant="ghost" class="px-3"><RotateCcw />Retry</Button>
+						<Button variant="ghost" class="px-3" onclick={onretryhistory}><RotateCcw />Retry</Button
+						>
 					</p>
 				{:else if part.type === 'data-line'}
 					<p class="text-sm text-muted-foreground">{part.data.text}</p>
@@ -282,8 +297,12 @@
 				</p>
 				{#if message.delivery === 'failed'}
 					<div class="flex gap-2">
-						<Button variant="ghost" class="px-3"><Trash2 />Delete</Button>
-						<Button variant="outline" class="px-4"><RotateCcw />Retry send</Button>
+						<Button variant="ghost" class="px-3" onclick={() => ondeletesend?.(message.id)}
+							><Trash2 />Delete</Button
+						>
+						<Button variant="outline" class="px-4" onclick={() => onretrysend?.(message.id)}
+							><RotateCcw />Retry send</Button
+						>
 					</div>
 				{/if}
 			{/if}

@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import AxeBuilder from '@axe-core/playwright';
+import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
 
 const ENDPOINT = 'https://push.example.test/sub/abc';
 const PUBLIC_KEY =
@@ -13,6 +13,7 @@ type ApiOptions = { meStatus?: number; keyStatus?: number; subscribeStatus?: num
 async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 	const opts = { meStatus: 200, keyStatus: 200, subscribeStatus: 200, ...initial };
 	const calls: Call[] = [];
+	await stubStream(context);
 	await context.route('**/api/**', async (route) => {
 		const req = route.request();
 		const path = new URL(req.url()).pathname;
@@ -39,6 +40,8 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 			return json({ ok: true });
 		}
 		if (path === '/api/push/test') return json({ sent: 1, pruned: 0 });
+		if (path === '/api/chat/history') return json({ items: [], before: null });
+		if (path === '/api/chat/seen') return route.fulfill({ status: 204 });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
 	const subscribes = () =>
@@ -99,62 +102,6 @@ async function seedSubscription(page: Page, key: number[]) {
 
 const subscribeCalls = (page: Page) =>
 	page.evaluate(() => (window as unknown as { __subscribeCalls: unknown[] }).__subscribeCalls);
-
-async function smallTargets(page: Page) {
-	return page.$$eval(
-		'a, button, [role=button], [role=switch], [role=radio], input, textarea, summary',
-		(els) =>
-			els
-				.filter((e) => !(e.tagName === 'A' && e.closest('p')))
-				.map((e) => ({ e, r: e.getBoundingClientRect() }))
-				.filter(({ r }) => r.width > 0 && (r.width < 48 || r.height < 48))
-				.map(({ e }) => e.outerHTML.slice(0, 100))
-	);
-}
-
-// The app shell scrolls inside <main>, so the document itself never grows: look at every element
-// that sticks out of the viewport and every horizontal scroll container with something to scroll.
-async function horizontalOverflow(page: Page) {
-	return page.evaluate(() => {
-		const width = document.documentElement.clientWidth;
-		const describe = (el: Element) =>
-			`${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}.${[...el.classList].slice(0, 4).join('.')}`;
-		const offenders: string[] = [];
-		const scroller = document.scrollingElement;
-		if (scroller && scroller.scrollWidth > scroller.clientWidth) offenders.push('document scrolls');
-		for (const el of document.body.querySelectorAll('*')) {
-			const style = getComputedStyle(el);
-			const r = el.getBoundingClientRect();
-			// Visually hidden text is clipped to 1px on purpose.
-			if (r.width <= 1 && style.overflowX !== 'visible') continue;
-			if (r.width > 0 && (r.right > width + 0.5 || r.left < -0.5)) {
-				offenders.push(`${describe(el)} spans ${Math.round(r.left)}..${Math.round(r.right)}`);
-			}
-			const scrollsX = style.overflowX === 'auto' || style.overflowX === 'scroll';
-			if (scrollsX && el.scrollWidth > el.clientWidth) {
-				offenders.push(`${describe(el)} scrolls ${el.scrollWidth}/${el.clientWidth}`);
-			}
-		}
-		return offenders;
-	});
-}
-
-async function axe(page: Page) {
-	const results = await new AxeBuilder({ page })
-		.options({ rules: { 'target-size': { enabled: true } } })
-		.withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-		.analyze();
-	const ran = [
-		...results.passes,
-		...results.violations,
-		...results.incomplete,
-		...results.inapplicable
-	];
-	expect(ran.some((r) => r.id === 'target-size')).toBe(true);
-	return results.violations.map(
-		(v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`
-	);
-}
 
 async function controlled(page: Page) {
 	await page.evaluate(() => navigator.serviceWorker.ready);
@@ -360,9 +307,9 @@ test('going offline shows the banner', async ({ page, context }) => {
 	await page.goto('/');
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await context.setOffline(true);
-	await expect(page.getByText(/You're offline/)).toBeVisible();
+	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
 	await context.setOffline(false);
-	await expect(page.getByText(/You're offline/)).toBeHidden();
+	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeHidden();
 });
 
 test('the reflow check catches content wider than the screen', async ({ page, context }) => {

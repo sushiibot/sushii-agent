@@ -1,0 +1,981 @@
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import {
+	axe,
+	endStreams,
+	horizontalOverflow,
+	push,
+	smallTargets,
+	streamRequests,
+	stubStream
+} from './helpers';
+
+const CLIENT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const UPLOAD_ID = 'AbCdEfGhIjKlMnOpQrStUv';
+
+type Call = { method: string; path: string; body: unknown; headers: Record<string, string> };
+type Opts = {
+	historyStatus: number;
+	history: unknown[];
+	before: string | null;
+	messageStatus: number | 'abort';
+	messageBody: Record<string, unknown>;
+	approvalStatus: number;
+	askStatus: number;
+	uploadStatus: number;
+	/** Older pages by the `before` cursor they answer. */
+	older: Record<string, OlderPage>;
+};
+type OlderPage = {
+	status: number;
+	items?: unknown[];
+	before?: string | null;
+	/** Held until this settles, so a test can look at the list between pages. */
+	gate?: Promise<void>;
+	onServe?: () => void;
+};
+
+const errorBody = (status: number) =>
+	({ 409: { reset: true }, 501: { unsupported: true }, 503: { offline: true } })[status] ?? {
+		error: 'x'
+	};
+
+async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) {
+	const opts: Opts = {
+		historyStatus: 200,
+		history: [],
+		before: null,
+		messageStatus: 202,
+		messageBody: { seq: 1 },
+		approvalStatus: 200,
+		askStatus: 200,
+		uploadStatus: 200,
+		older: {},
+		...initial
+	};
+	const calls: Call[] = [];
+	await stubStream(context);
+	await context.route('**/api/**', async (route) => {
+		const req = route.request();
+		const url = new URL(req.url());
+		const path = url.pathname;
+		let body: unknown = null;
+		const raw = req.postData();
+		if (raw && req.headers()['content-type']?.includes('json')) body = JSON.parse(raw);
+		calls.push({ method: req.method(), path: path + url.search, body, headers: req.headers() });
+		const json = (data: unknown, status = 200) =>
+			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
+		if (path === '/api/me') return json({ login: 'drk@example.com' });
+		if (path === '/api/push/key') return route.fulfill({ status: 404, body: 'no' });
+		if (path === '/api/chat/history' && url.searchParams.has('before')) {
+			const o = opts.older[url.searchParams.get('before')!] ?? { status: 200 };
+			await o.gate;
+			o.onServe?.();
+			if (o.status !== 200) return json(errorBody(o.status), o.status);
+			return json({ items: o.items ?? [], before: o.before ?? null });
+		}
+		if (path === '/api/chat/history') {
+			if (opts.historyStatus !== 200)
+				return json(errorBody(opts.historyStatus), opts.historyStatus);
+			return json({ items: opts.history, before: opts.before });
+		}
+		if (path === '/api/chat/messages') {
+			if (opts.messageStatus === 'abort') return route.abort('internetdisconnected');
+			if (opts.messageStatus !== 202) return json({ error: 'bad' }, opts.messageStatus);
+			return json(opts.messageBody, 202);
+		}
+		if (path === '/api/chat/stop' || path === '/api/chat/command') return json({}, 202);
+		if (path.startsWith('/api/chat/asks/')) {
+			if (opts.askStatus !== 200) return json({ error: 'no' }, opts.askStatus);
+			return json({ status: 'answered' });
+		}
+		if (path.startsWith('/api/chat/approvals/')) {
+			if (opts.approvalStatus !== 200) return json({ error: 'no' }, opts.approvalStatus);
+			return json({ status: 'decided' });
+		}
+		if (path === '/api/chat/seen') return route.fulfill({ status: 204 });
+		if (path === '/api/uploads') {
+			if (opts.uploadStatus !== 200) return json({ error: 'no' }, opts.uploadStatus);
+			return json({ id: UPLOAD_ID, contentType: 'image/jpeg', bytes: 1234 });
+		}
+		return route.fulfill({ status: 404, body: 'Not found' });
+	});
+	const posts = (p: string) => calls.filter((c) => c.method === 'POST' && c.path.startsWith(p));
+	return { calls, opts, posts };
+}
+
+async function open(page: Page) {
+	await page.goto('/');
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+}
+
+async function type(page: Page, text: string) {
+	await page.getByRole('textbox', { name: 'Message' }).fill(text);
+	await page.getByRole('button', { name: 'Send message' }).click();
+}
+
+const bubble = (page: Page, text: string) =>
+	page.locator('[data-message-id]').filter({ hasText: text });
+
+test('a send shows at once, carries a ULID, and settles on the status event', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
+	await type(page, 'Book the car service');
+	await expect(bubble(page, 'Book the car service')).toBeVisible();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	const body = posts('/api/chat/messages')[0].body as { clientId: string; text: string };
+	expect(body.text).toBe('Book the car service');
+	expect(body.clientId).toMatch(CLIENT_ID);
+	await expect(bubble(page, 'Book the car service')).toContainText('Sending');
+
+	await push(page, 'user', { key: body.clientId, text: body.text, uploadIds: [], at: 'x' }, 1);
+	await push(page, 'status', { clientId: body.clientId, state: 'accepted' }, 2);
+	await expect(bubble(page, 'Book the car service')).toContainText('Sent');
+	await expect(page.locator('[data-message-id]').filter({ hasText: 'Book' })).toHaveCount(1);
+	await expect(page.getByText('Working…')).toBeVisible();
+
+	await push(page, 'tool', { turnId: 't1', name: 'search_mail', summary: 'Searching mail' });
+	await expect(page.getByText('Searching mail').first()).toBeVisible();
+	await push(page, 'delta', { turnId: 't1', offset: 0, text: 'Booked for ' });
+	await push(page, 'delta', { turnId: 't1', offset: 11, text: 'Saturday.' });
+	// An out-of-order delta waits for a snapshot instead of corrupting the text.
+	await push(page, 'delta', { turnId: 't1', offset: 3, text: 'XX' });
+	await expect(page.getByText('Booked for Saturday.')).toBeVisible();
+	await push(
+		page,
+		'reply',
+		{ key: 'o1', turnId: 't1', text: 'Booked for Saturday 09:00.', files: [] },
+		3
+	);
+	await push(
+		page,
+		'turn_final',
+		{ turnId: 't1', outcome: 'done', summary: { durationMs: 12000, toolCount: 1 } },
+		4
+	);
+	await expect(page.getByText('Booked for Saturday 09:00.')).toBeVisible();
+	await expect(page.getByText('Booked for Saturday.', { exact: true })).toHaveCount(0);
+	await expect(page.getByText('Used 1 tool')).toBeVisible();
+	await expect(page.getByRole('status').filter({ hasText: 'Agent replied' })).toBeAttached();
+	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 4 });
+});
+
+test('a rejected send stays with Retry and Delete, and Retry reuses the client id', async ({
+	page,
+	context
+}) => {
+	const { posts, opts } = await chatServer(context, { messageStatus: 400 });
+	await open(page);
+	await type(page, 'This one fails');
+	await expect(bubble(page, 'This one fails')).toContainText('Failed');
+	opts.messageStatus = 202;
+	await page.getByRole('button', { name: 'Retry send' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+	const [a, b] = posts('/api/chat/messages').map((c) => (c.body as { clientId: string }).clientId);
+	expect(a).toBe(b);
+
+	opts.messageStatus = 400;
+	await type(page, 'Delete me');
+	await expect(bubble(page, 'Delete me')).toContainText('Failed');
+	await bubble(page, 'Delete me').getByRole('button', { name: 'Delete' }).click();
+	await expect(bubble(page, 'Delete me')).toHaveCount(0);
+});
+
+test('offline sends queue, survive a reload, and go out with the same id', async ({
+	page,
+	context
+}) => {
+	const { posts, opts } = await chatServer(context, { messageStatus: 'abort' });
+	await open(page);
+	await context.setOffline(true);
+	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
+	await type(page, 'Queued while offline');
+	await expect(bubble(page, 'Queued while offline')).toContainText(
+		"Queued, sends when you're back online"
+	);
+	await context.setOffline(false);
+	await page.reload();
+	await expect(bubble(page, 'Queued while offline')).toBeVisible();
+	opts.messageStatus = 202;
+	await page.evaluate(() => dispatchEvent(new Event('online')));
+	await expect
+		.poll(
+			() =>
+				new Set(posts('/api/chat/messages').map((c) => (c.body as { clientId: string }).clientId))
+					.size
+		)
+		.toBe(1);
+	await expect
+		.poll(() => posts('/api/chat/messages').at(-1)?.body)
+		.toMatchObject({
+			text: 'Queued while offline'
+		});
+});
+
+test('an offline workspace queues the message and re-sends it when the agent is back', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Are you there?');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
+	await expect(
+		page.getByText("The agent is offline. Your message is queued and sends when it's back.")
+	).toBeVisible();
+	await expect(bubble(page, 'Are you there?')).toContainText(
+		'Queued, sends when the agent is back'
+	);
+	await push(page, 'workspace', { state: 'online' });
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+	const ids = posts('/api/chat/messages').map((c) => (c.body as { clientId: string }).clientId);
+	expect(ids[0]).toBe(ids[1]);
+	await expect(page.getByText('The agent is offline.', { exact: false })).toBeHidden();
+});
+
+test('a dropped stream resumes from the last seq without duplicating anything', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await open(page);
+	await push(page, 'proactive', { key: 'p1', text: 'Rent receipt filed', files: [] }, 5);
+	await expect(page.getByText('Rent receipt filed')).toBeVisible();
+	await endStreams(page);
+	await expect.poll(() => streamRequests(page)).toContain('/api/chat/stream?after=5');
+	await push(page, 'proactive', { key: 'p1', text: 'Rent receipt filed', files: [] }, 5);
+	await push(page, 'proactive', { key: 'p2', text: 'Sweep failed', files: [] }, 6);
+	await expect(page.getByText('Sweep failed')).toBeVisible();
+	await expect(page.getByText('Rent receipt filed')).toHaveCount(1);
+});
+
+test('a reset reloads history and says so', async ({ page, context }) => {
+	const { calls, opts } = await chatServer(context);
+	await open(page);
+	opts.history = [
+		{
+			type: 'assistant',
+			id: 'a1',
+			at: 'x',
+			text: 'From the reloaded history',
+			tools: [],
+			files: [],
+			verified: true
+		}
+	];
+	await push(page, 'reset', { headSeq: 40 });
+	await expect(page.getByText('Reloaded the conversation.', { exact: false })).toBeVisible();
+	await expect(page.getByText('From the reloaded history')).toBeVisible();
+	expect(calls.filter((c) => c.path.startsWith('/api/chat/history')).length).toBe(2);
+});
+
+test('history that is unavailable offers a retry', async ({ page, context }) => {
+	const { opts } = await chatServer(context, { historyStatus: 503 });
+	await open(page);
+	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
+	opts.historyStatus = 200;
+	opts.history = [
+		{ type: 'user', id: 'u1', at: 'x', text: 'Old owner message', attachments: [], verified: true },
+		{
+			type: 'user',
+			id: 'u2',
+			at: 'x',
+			text: 'Only in the transcript',
+			attachments: [],
+			verified: false
+		}
+	];
+	await page.getByRole('button', { name: 'Retry' }).click();
+	await expect(page.getByText('Old owner message')).toBeVisible();
+	await expect(page.getByText('from workspace history (unverified)')).toBeVisible();
+	await expect(page.getByText('Earlier messages unavailable right now')).toBeHidden();
+});
+
+test('older pages load above with the server cursor, and a stale cursor reloads from the head', async ({
+	page,
+	context
+}) => {
+	let release!: () => void;
+	const { calls, opts } = await chatServer(context, {
+		history: [
+			{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [], verified: true }
+		],
+		before: 'sess:u5',
+		older: {
+			// A stale cursor, after which the reloaded transcript has nothing older.
+			'sess:u1': {
+				status: 409,
+				gate: new Promise<void>((r) => (release = r)),
+				onServe: () => (opts.before = null)
+			},
+			'sess:u5': {
+				status: 200,
+				items: [
+					{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [], verified: true }
+				],
+				before: 'sess:u1'
+			}
+		}
+	});
+	await open(page);
+	await expect(page.getByText('Older page')).toBeVisible();
+	expect(calls.some((c) => c.path.includes('before=sess%3Au5'))).toBe(true);
+	const order = await page.locator('[data-message-id]').allTextContents();
+	expect(order.findIndex((t) => t.includes('Older page'))).toBeLessThan(
+		order.findIndex((t) => t.includes('Newest page'))
+	);
+	release();
+	await expect(page.getByText('Reloaded the conversation.', { exact: false })).toBeVisible();
+	await expect(page.getByText('Older page')).toBeHidden();
+	await expect(page.getByText('Newest page')).toBeVisible();
+});
+
+const approval = (nonce: string, tool = 'send_email') => ({
+	nonce,
+	view: {
+		tool,
+		agentId: 'main',
+		agentName: 'Main',
+		fields: [{ key: 'to', value: 'dana@example.com', kind: 'single', max: 200 }]
+	}
+});
+
+test('an approval holds Approve for a moment, hides Stop, and posts the decision', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await push(page, 'snapshot', {
+		turnId: 't1',
+		view: { turnId: 't1', startedAt: Date.now(), lines: [], toolCount: 0, text: '' }
+	});
+	await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible();
+	await push(page, 'approval', approval('n1'), 1);
+	const approve = page.getByRole('button', { name: 'Approve send_email' });
+	await expect(approve).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Stop' })).toBeHidden();
+	await expect(approve).toBeEnabled();
+	await page.getByRole('button', { name: 'Deny send_email' }).click();
+	await expect
+		.poll(() => posts('/api/chat/approvals/n1').at(0)?.body)
+		.toEqual({ decision: 'deny' });
+	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'deny' }, 2);
+	await expect(approve).toBeHidden();
+	await expect(page.getByText('Denied ·')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible();
+});
+
+test('an approval decided on another device and a timeout both say so', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await open(page);
+	await push(page, 'approval', approval('n1'), 1);
+	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'approve' }, 2);
+	await expect(page.getByText('Approved on another device')).toBeVisible();
+	await push(page, 'approval', approval('n2', 'run_shell'), 3);
+	await push(page, 'approval_resolved', { nonce: 'n2', decision: 'timeout' }, 4);
+	await expect(page.getByText('Timed out, denied.')).toBeVisible();
+	await expect(page.getByText('Timed out, denied.')).toBeHidden({ timeout: 8000 });
+});
+
+test('an ask answers with the chip index and label, and never looks like an approval', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await push(
+		page,
+		'ask',
+		{ key: 'o1', askId: 'k1', question: 'Which day?', choices: ['Friday', 'Saturday'] },
+		1
+	);
+	await expect(page.getByText('The agent asks:')).toBeVisible();
+	await expect(page.getByRole('button', { name: /approve/i })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Saturday' }).click();
+	await expect
+		.poll(() => posts('/api/chat/asks/k1').at(0)?.body)
+		.toEqual({ index: 1, label: 'Saturday' });
+	await push(page, 'ask_resolved', { askId: 'k1', answer: 'Saturday' }, 2);
+	await expect(page.getByText('You answered:')).toBeVisible();
+});
+
+test('Stop posts the turn id and "Nothing to stop" shows as a toast', async ({ page, context }) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await push(page, 'tool', { turnId: 't9', name: 'fetch', summary: 'Opening the page' });
+	await page.getByRole('button', { name: 'Stop' }).click();
+	await expect.poll(() => posts('/api/chat/stop').at(0)?.body).toEqual({ turnId: 't9' });
+	await expect(page.getByText('Stopping…').first()).toBeVisible();
+	await push(page, 'notice', { type: 'nothingToStop' }, 1);
+	await expect(page.getByText('Nothing to stop.')).toBeVisible();
+});
+
+test('a photo is re-encoded to JPEG, uploaded with a client id, and sent by id', async ({
+	page,
+	context
+}) => {
+	const { posts, calls } = await chatServer(context);
+	await open(page);
+	const png = await page.evaluate(async () => {
+		const c = new OffscreenCanvas(40, 30);
+		const ctx = c.getContext('2d')!;
+		ctx.fillStyle = 'red';
+		ctx.fillRect(0, 0, 40, 30);
+		const blob = await c.convertToBlob({ type: 'image/png' });
+		return [...new Uint8Array(await blob.arrayBuffer())];
+	});
+	await page.locator('input[type=file]').setInputFiles({
+		name: 'IMG_0001.png',
+		mimeType: 'image/png',
+		buffer: Buffer.from(png)
+	});
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	const upload = calls.find((c) => c.path === '/api/uploads')!;
+	expect(upload.headers['content-type']).toBe('image/jpeg');
+	expect(upload.headers['x-upload-name']).toBe('IMG_0001.jpg');
+	expect(upload.headers['x-client-id']).toMatch(CLIENT_ID);
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled();
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect
+		.poll(() => posts('/api/chat/messages').at(0)?.body)
+		.toMatchObject({
+			text: '',
+			uploadIds: [UPLOAD_ID]
+		});
+});
+
+test('a full photo store blocks attaching and says why', async ({ page, context }) => {
+	await chatServer(context, { uploadStatus: 507 });
+	await open(page);
+	const png = await page.evaluate(async () => {
+		const c = new OffscreenCanvas(8, 8);
+		c.getContext('2d')!.fillRect(0, 0, 8, 8);
+		const blob = await c.convertToBlob({ type: 'image/png' });
+		return [...new Uint8Array(await blob.arrayBuffer())];
+	});
+	await page
+		.locator('input[type=file]')
+		.setInputFiles({ name: 'a.png', mimeType: 'image/png', buffer: Buffer.from(png) });
+	await expect(page.getByText('Photo storage is full.', { exact: false })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Attach photos' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled();
+});
+
+async function attachPng(page: Page) {
+	const png = await page.evaluate(async () => {
+		const c = new OffscreenCanvas(8, 8);
+		c.getContext('2d')!.fillRect(0, 0, 8, 8);
+		const blob = await c.convertToBlob({ type: 'image/png' });
+		return [...new Uint8Array(await blob.arrayBuffer())];
+	});
+	await page
+		.locator('input[type=file]')
+		.setInputFiles({ name: 'café.png', mimeType: 'image/png', buffer: Buffer.from(png) });
+}
+
+test('the daily photo limit names itself', async ({ page, context }) => {
+	await chatServer(context, { uploadStatus: 429 });
+	await open(page);
+	await attachPng(page);
+	await expect(page.getByText('Daily photo limit reached.', { exact: false })).toBeVisible();
+});
+
+test('a message queued past the orphan window re-uploads its photos first', async ({
+	page,
+	context
+}) => {
+	await page.clock.install();
+	const { posts, calls, opts } = await chatServer(context, { messageStatus: 'abort' });
+	await open(page);
+	await attachPng(page);
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	expect(calls.find((c) => c.path === '/api/uploads')!.headers['x-upload-name']).toBe(
+		'caf%C3%A9.jpg'
+	);
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	opts.messageStatus = 202;
+	await page.clock.setSystemTime(Date.now() + 21 * 60 * 60 * 1000);
+	await page.evaluate(() => dispatchEvent(new Event('online')));
+	await expect.poll(() => posts('/api/uploads').length).toBe(2);
+	const ids = posts('/api/uploads').map((c) => c.headers['x-client-id']);
+	expect(ids[0]).not.toBe(ids[1]);
+	await expect.poll(() => posts('/api/chat/messages').length).toBeGreaterThanOrEqual(2);
+});
+
+test('a posted message never re-uploads its photos on a later resend', async ({
+	page,
+	context
+}) => {
+	await page.clock.install();
+	const { posts } = await chatServer(context);
+	await open(page);
+	await attachPng(page);
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
+	await page.clock.setSystemTime(Date.now() + 21 * 60 * 60 * 1000);
+	await push(page, 'workspace', { state: 'online' });
+	await expect.poll(() => posts('/api/chat/messages').length).toBeGreaterThanOrEqual(2);
+	expect(posts('/api/uploads').length).toBe(1);
+	const [first, ...rest] = posts('/api/chat/messages').map((c) => c.body);
+	for (const body of rest) expect(body).toEqual(first);
+});
+
+test('seen goes out only while Main is on screen', async ({ page, context }) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await push(page, 'proactive', { key: 'p1', text: 'On screen', files: [] }, 1);
+	await expect.poll(() => posts('/api/chat/seen').length).toBe(1);
+	await page.getByRole('link', { name: 'Settings' }).click();
+	await expect(page).toHaveURL(/\/settings$/);
+	await push(page, 'approval', approval('n1'), 2);
+	await page.waitForTimeout(1500);
+	expect(posts('/api/chat/seen').length).toBe(1);
+	await page.getByRole('link', { name: 'Back to Main' }).click();
+	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 2 });
+});
+
+function longHistory(n: number) {
+	return Array.from({ length: n }, (_, i) => ({
+		type: i % 2 ? 'assistant' : 'user',
+		id: `h${i}`,
+		at: 'x',
+		text: `History message ${i} with enough words to wrap onto a second line on a phone screen.`,
+		attachments: [],
+		tools: [],
+		files: [],
+		verified: true
+	}));
+}
+
+test('streaming while scrolled up moves nothing and shows the New messages pill', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { history: longHistory(40) });
+	await open(page);
+	const list = page.locator('main');
+	await expect(page.getByText('History message 39')).toBeVisible();
+	expect(await list.evaluate((el) => Math.abs(el.scrollTop))).toBeLessThanOrEqual(1);
+	await list.hover();
+	await page.mouse.wheel(0, -600);
+	await expect.poll(() => list.evaluate((el) => Math.abs(el.scrollTop))).toBeGreaterThan(48);
+	const before = await list.evaluate((el) => {
+		const box = el.getBoundingClientRect();
+		const msg = [...el.querySelectorAll('[data-message-id]')].find(
+			(m) => m.getBoundingClientRect().bottom > box.top
+		)!;
+		return { id: msg.getAttribute('data-message-id')!, top: msg.getBoundingClientRect().top };
+	});
+	let offset = 0;
+	for (let i = 0; i < 20; i++) {
+		const text = `token${i} `;
+		await push(page, 'delta', { turnId: 't1', offset, text });
+		offset += text.length;
+	}
+	await expect(page.getByText('token19')).toBeAttached();
+	const after = await list
+		.locator(`[data-message-id="${before.id}"]`)
+		.evaluate((e) => e.getBoundingClientRect().top);
+	expect(Math.abs(after - before.top)).toBeLessThanOrEqual(1);
+	const pill = page.getByRole('button', { name: /new messages/i });
+	await expect(pill).toBeVisible();
+	await pill.click();
+	await expect.poll(() => list.evaluate((el) => Math.abs(el.scrollTop))).toBeLessThanOrEqual(1);
+	await expect(pill).toBeHidden();
+});
+
+test('the commands sheet closes on back and leaves Main in place', async ({ page, context }) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await page.getByRole('button', { name: 'Chat commands' }).click();
+	await expect(page.getByRole('dialog', { name: 'Chat commands' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page).toHaveURL(/\/$/);
+	await page.getByRole('button', { name: 'Chat commands' }).click();
+	await page.getByRole('button', { name: /New chat/ }).click();
+	await page.getByRole('button', { name: 'Start new chat' }).click();
+	await expect.poll(() => posts('/api/chat/command').at(0)?.body).toEqual({ command: 'new' });
+	await expect(page.getByText('Starting a new chat…')).toBeVisible();
+	await push(page, 'session', { kind: 'new' }, 1);
+	await expect(page.getByText('New chat', { exact: true })).toBeVisible();
+	await expect(page.getByText('Starting a new chat…')).toBeHidden();
+});
+
+test('a forbidden stream says the device is not the owner', async ({ page, context }) => {
+	await chatServer(context);
+	await context.addInitScript(() => {
+		(window as unknown as { __sse: { status: number } }).__sse.status = 403;
+	});
+	await page.goto('/');
+	await expect(
+		page.getByText("This device isn't signed in as the owner.", { exact: false })
+	).toBeVisible();
+});
+
+for (const colorScheme of ['light', 'dark'] as const) {
+	test(`a busy chat passes axe, 48px targets and reflow in ${colorScheme}`, async ({
+		page,
+		context
+	}) => {
+		await page.emulateMedia({ colorScheme });
+		await chatServer(context, {
+			history: [
+				...longHistory(4),
+				{
+					type: 'assistant',
+					id: 'f1',
+					at: 'x',
+					text: 'https://example.com/a/very/long/unbroken/path/that/should/wrap/instead/of/overflowing',
+					tools: [{ name: 'search_mail', summary: 'Searched mail', ok: false }],
+					files: [
+						{
+							id: UPLOAD_ID,
+							contentType: 'application/pdf',
+							bytes: 48213,
+							name: 'a-very-long-invoice-file-name-from-eastside-auto-2026.pdf',
+							inline: false
+						}
+					],
+					verified: true
+				}
+			]
+		});
+		await open(page);
+		await push(
+			page,
+			'ask',
+			{ key: 'o1', askId: 'k1', question: 'Which day?', choices: ['Friday', 'Saturday'] },
+			1
+		);
+		await push(page, 'approval', approval('n1'), 2);
+		await push(page, 'delta', { turnId: 't1', offset: 0, text: 'Streaming now' });
+		await expect(page.getByText('Streaming now')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeEnabled();
+		expect(await axe(page)).toEqual([]);
+		expect(await smallTargets(page)).toEqual([]);
+		for (const width of [412, 320]) {
+			await page.setViewportSize({ width, height: 800 });
+			expect(await horizontalOverflow(page), `overflow at ${width}px`).toEqual([]);
+		}
+	});
+}
+
+test('the first stream opens with no cursor and resumes from the hello head', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await context.addInitScript(() => {
+		(window as unknown as { __sse: { hello: { headSeq: number } } }).__sse.hello.headSeq = 77;
+	});
+	await open(page);
+	await expect.poll(() => streamRequests(page)).toEqual(['/api/chat/stream']);
+	await endStreams(page);
+	await expect.poll(() => streamRequests(page)).toContain('/api/chat/stream?after=77');
+});
+
+const outboxSize = (page: Page) =>
+	page.evaluate(
+		() =>
+			new Promise<number>((resolve, reject) => {
+				const req = indexedDB.open('agent-chat', 1);
+				req.onsuccess = () => {
+					const count = req.result.transaction('outbox').objectStore('outbox').count();
+					count.onsuccess = () => resolve(count.result);
+					count.onerror = () => reject(count.error);
+				};
+				req.onerror = () => reject(req.error);
+			})
+	);
+
+test('a held send that history already has settles in place and leaves the outbox', async ({
+	page,
+	context
+}) => {
+	const { posts, opts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Did this arrive?');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
+	await expect.poll(() => outboxSize(page)).toBe(1);
+	// The app dies before the status event; the workspace already wrote the message and replied.
+	opts.history = [
+		{
+			type: 'user',
+			id: 'u1',
+			clientId,
+			at: 'x',
+			text: 'Did this arrive?',
+			attachments: [],
+			verified: true
+		},
+		{ type: 'assistant', id: 'a1', at: 'x', text: 'It did.', tools: [], files: [], verified: true }
+	];
+	await page.reload();
+	await expect(page.getByText('It did.')).toBeVisible();
+	const order = await page.locator('[data-message-id]').allTextContents();
+	expect(order.findIndex((t) => t.includes('Did this arrive?'))).toBeLessThan(
+		order.findIndex((t) => t.includes('It did.'))
+	);
+	await expect(bubble(page, 'Did this arrive?')).not.toContainText('Sending');
+	await expect.poll(() => outboxSize(page)).toBe(0);
+	expect(posts('/api/chat/messages').length).toBe(1);
+});
+
+test('a reopened stream does not re-post a message the bot already holds', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Hold this');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
+	await page.evaluate(() => {
+		(window as unknown as { __sse: { hello: { workspace: string } } }).__sse.hello.workspace =
+			'offline';
+	});
+	await endStreams(page);
+	await expect.poll(() => streamRequests(page)).toContain('/api/chat/stream?after=1');
+	await page.waitForTimeout(300);
+	expect(posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'workspace', { state: 'online' });
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+});
+
+test('a 202 that says routed settles the send without waiting for its status', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { messageBody: { seq: 1, routed: true } });
+	await open(page);
+	await type(page, 'Routed right away');
+	await expect(bubble(page, 'Routed right away')).toContainText('Sent');
+	await expect.poll(() => outboxSize(page)).toBe(0);
+});
+
+test('draft text written just before the app hides survives a reload', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await open(page);
+	await page.getByRole('textbox', { name: 'Message' }).fill('Half a thought');
+	await page.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide')));
+	await page.waitForTimeout(100);
+	await page.reload();
+	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('Half a thought');
+});
+
+test('an attached photo survives a reload and still sends without a new upload', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await attachPng(page);
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled();
+	await page.waitForTimeout(100);
+	await page.reload();
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled();
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect
+		.poll(() => posts('/api/chat/messages').at(0)?.body)
+		.toMatchObject({ uploadIds: [UPLOAD_ID] });
+	expect(posts('/api/uploads').length).toBe(1);
+	await page.reload();
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled();
+});
+
+test('a retried upload keeps its client id', async ({ page, context }) => {
+	const { posts, opts } = await chatServer(context, { uploadStatus: 500 });
+	await open(page);
+	await attachPng(page);
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	opts.uploadStatus = 200;
+	await page.getByRole('button', { name: /retry/i }).first().click();
+	await expect.poll(() => posts('/api/uploads').length).toBe(2);
+	const [a, b] = posts('/api/uploads').map((c) => c.headers['x-client-id']);
+	expect(a).toMatch(CLIENT_ID);
+	expect(a).toBe(b);
+});
+
+test('a transparent image stays transparent instead of turning black', async ({
+	page,
+	context
+}) => {
+	const { calls, posts } = await chatServer(context);
+	await open(page);
+	const png = await page.evaluate(async () => {
+		const c = new OffscreenCanvas(20, 20);
+		c.getContext('2d')!.fillRect(0, 0, 10, 10);
+		const blob = await c.convertToBlob({ type: 'image/png' });
+		return [...new Uint8Array(await blob.arrayBuffer())];
+	});
+	await page
+		.locator('input[type=file]')
+		.setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: Buffer.from(png) });
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	const upload = calls.find((c) => c.path === '/api/uploads')!;
+	expect(upload.headers['content-type']).toBe('image/webp');
+	expect(upload.headers['x-upload-name']).toBe('logo.webp');
+});
+
+test('an approval the bot no longer has leaves the tray with an accurate message', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { approvalStatus: 404 });
+	await open(page);
+	await push(page, 'approval', approval('n1'), 1);
+	await page.getByRole('button', { name: 'Deny send_email' }).click();
+	await expect(page.getByText('That approval is no longer waiting for a decision.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeHidden();
+	await expect(page.getByText('Check your connection')).toHaveCount(0);
+});
+
+test('a 403 on an approval says the device is not the owner', async ({ page, context }) => {
+	await chatServer(context, { approvalStatus: 403 });
+	await open(page);
+	await push(page, 'approval', approval('n1'), 1);
+	await page.getByRole('button', { name: 'Deny send_email' }).click();
+	await expect(page.getByText("This device isn't signed in as the owner.")).toBeVisible();
+});
+
+test('a second approval after the first resolved is held from its first frame', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await open(page);
+	await push(page, 'approval', approval('n1'), 1);
+	await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeEnabled();
+	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'deny' }, 2);
+	await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeHidden();
+	// Records the button's state on the frame it first appears.
+	const firstFrame = page.evaluate(
+		() =>
+			new Promise<boolean>((resolve) => {
+				const check = () => {
+					const b = document.querySelector<HTMLButtonElement>(
+						'button[aria-label="Approve run_shell"]'
+					);
+					if (b) resolve(b.disabled);
+					else requestAnimationFrame(check);
+				};
+				check();
+			})
+	);
+	await push(page, 'approval', approval('n2', 'run_shell'), 3);
+	expect(await firstFrame).toBe(true);
+	await expect(page.getByRole('button', { name: 'Approve run_shell' })).toBeEnabled();
+	await page.setViewportSize({ width: 412, height: 600 });
+	await expect(page.getByRole('button', { name: 'Approve run_shell' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Approve run_shell' })).toBeEnabled();
+});
+
+test('an older page that fails offers Retry inline instead of a toast', async ({
+	page,
+	context
+}) => {
+	const { opts } = await chatServer(context, {
+		history: [
+			{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [], verified: true }
+		],
+		before: 'sess:u5',
+		older: { 'sess:u5': { status: 503 } }
+	});
+	await open(page);
+	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
+	await expect(page.getByText('Newest page')).toBeVisible();
+	await expect(page.getByText("Couldn't load earlier messages")).toHaveCount(0);
+	opts.older['sess:u5'] = {
+		status: 200,
+		items: [
+			{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [], verified: true }
+		],
+		before: null
+	};
+	await page.getByRole('button', { name: 'Retry' }).click();
+	await expect(page.getByText('Older page')).toBeVisible();
+	await expect(page.getByText('Earlier messages unavailable right now')).toBeHidden();
+});
+
+test('history that failed while the agent was offline reloads when it comes back', async ({
+	page,
+	context
+}) => {
+	const { opts } = await chatServer(context, { historyStatus: 503 });
+	await context.addInitScript(() => {
+		(window as unknown as { __sse: { hello: { workspace: string } } }).__sse.hello.workspace =
+			'offline';
+	});
+	await open(page);
+	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
+	opts.historyStatus = 200;
+	opts.history = [
+		{ type: 'user', id: 'u1', at: 'x', text: 'Back again', attachments: [], verified: true }
+	];
+	await push(page, 'workspace', { state: 'online' });
+	await expect(page.getByText('Back again')).toBeVisible();
+});
+
+const short = (id: string, text: string) => ({
+	type: 'user',
+	id,
+	at: 'x',
+	text,
+	attachments: [],
+	verified: true
+});
+
+test('older pages keep loading while the top of the list stays on screen', async ({
+	page,
+	context
+}) => {
+	const { calls } = await chatServer(context, {
+		history: [
+			{ type: 'user', id: 'u9', at: 'x', text: 'Newest page', attachments: [], verified: true }
+		],
+		before: 'p1',
+		older: {
+			p1: { status: 200, items: [short('u1', 'Page one')], before: 'p2' },
+			p2: { status: 200, items: [short('u2', 'Page two')], before: 'p3' },
+			p3: { status: 200, items: [short('u3', 'Page three')], before: null }
+		}
+	});
+	await open(page);
+	await expect(page.getByText('Page three')).toBeVisible();
+	expect(calls.filter((c) => c.path.includes('before=')).length).toBe(3);
+});
+
+test('an ask the bot no longer has goes to history with an accurate message', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { askStatus: 404 });
+	await open(page);
+	await push(
+		page,
+		'ask',
+		{ key: 'o1', askId: 'k1', question: 'Which day?', choices: ['Friday', 'Saturday'] },
+		1
+	);
+	await page.getByRole('button', { name: 'Saturday' }).click();
+	await expect(page.getByText('That question is no longer waiting for an answer.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Saturday' })).toHaveCount(0);
+	await expect(page.getByText('Check your connection')).toHaveCount(0);
+});

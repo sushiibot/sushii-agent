@@ -195,7 +195,13 @@ export interface PendingApproval {
 }
 
 export type ApprovalOutcome =
-	'pending' | 'approved' | 'denied' | 'timeout' | 'approved-elsewhere' | 'denied-elsewhere';
+	| 'pending'
+	| 'approved'
+	| 'denied'
+	| 'timeout'
+	| 'cancelled'
+	| 'approved-elsewhere'
+	| 'denied-elsewhere';
 
 export type AskState = 'pending' | 'answering' | 'answered' | 'elsewhere' | 'history';
 
@@ -241,7 +247,7 @@ export interface PhotoDraft {
 	src: string;
 	state: 'preparing' | 'uploading' | 'uploaded' | 'failed';
 	progress?: number;
-	error?: 'upload' | 'type' | 'size';
+	error?: 'upload' | 'type' | 'size' | 'daily';
 }
 
 export type ConnectionState =
