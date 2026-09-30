@@ -7,6 +7,7 @@ import {
   CATCH_UP_MAX_AGE_MS,
   CATCH_UP_PAGE_SIZE,
   BREAK_GLASS_APPROVAL,
+  BREAK_GLASS_HELD,
   BREAK_GLASS_MIN_GAP_MS,
   createBreakGlass,
   DM_REDIRECT_NOTICE,
@@ -632,6 +633,13 @@ describe("break-glass DM", () => {
       { content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } },
       { content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } },
     ]);
+  });
+
+  test("a held approval gets its own fixed text, which never points at the app that is down", async () => {
+    const h = breakGlassHarness();
+    expect(await h.breakGlass("nonce-held", "held")).toBe(true);
+    expect(h.sent.map((m) => m.content)).toEqual([BREAK_GLASS_HELD]);
+    expect(BREAK_GLASS_HELD).not.toMatch(/open the app/i);
   });
 
   test("takes no text: only the nonce, which never reaches the message", async () => {

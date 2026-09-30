@@ -57,6 +57,11 @@ export const WEB_APP_URL = "https://agent.sushii.bot";
 export const DM_REDIRECT_NOTICE = `Personal chat moved to ${WEB_APP_URL}`;
 export const DM_REDIRECT_WEB_DOWN = `Personal chat moved to ${WEB_APP_URL}, but the web app is down right now.`;
 export const BREAK_GLASS_APPROVAL = "An approval is pending. Open the app to decide.";
+/** For an approval held because the web app is down, where "open the app" would lead nowhere. */
+export const BREAK_GLASS_HELD = "An approval is waiting but the web app is unavailable. It will be denied automatically.";
+
+/** Why the owner is being woken: a push that reached no device, or an approval held with no web surface. */
+export type BreakGlassReason = "unreached" | "held";
 
 /** OWNER_DM_MODE=redirect. The DM gets one line pointing at the web app. It never reaches the workspace,
  *  the in-process agent, the login flow or a reply code. */
@@ -72,14 +77,18 @@ const BREAK_GLASS_NONCE_TTL_MS = 2 * APPROVAL_TIMEOUT_MS;
 
 /** Wakes the owner when an approval can't reach them in the app: non-silent, buttonless and fixed-text, so
  *  Discord never decides it and nothing the workspace controls reaches it. False when not sent. */
-export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort | null>, logger: Pick<typeof log, "warn"> = log): Promise<boolean> {
+export async function sendBreakGlassDm(
+  ownerChannel: () => Promise<DmChannelPort | null>,
+  logger: Pick<typeof log, "warn"> = log,
+  content: string = BREAK_GLASS_APPROVAL,
+): Promise<boolean> {
   try {
     const channel = await ownerChannel();
     if (!channel) {
       logger.warn("break-glass owner DM not sent: the owner's Discord DM channel could not be resolved");
       return false;
     }
-    await channel.send({ content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } });
+    await channel.send({ content, allowedMentions: { parse: [] } });
     return true;
   } catch (err) {
     logger.warn({ err }, "failed to send the break-glass owner DM");
@@ -89,18 +98,21 @@ export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort
 
 /** Break-glass per approval push that reached no device. The workspace decides how many approvals exist,
  *  so each nonce is tried once and at most one attempt goes out per BREAK_GLASS_MIN_GAP_MS. */
-export function createBreakGlass(ownerChannel: () => Promise<DmChannelPort | null>, opts: { now?: () => number } = {}): (nonce: string) => Promise<boolean> {
+export function createBreakGlass(
+  ownerChannel: () => Promise<DmChannelPort | null>,
+  opts: { now?: () => number } = {},
+): (nonce: string, reason?: BreakGlassReason) => Promise<boolean> {
   const now = opts.now ?? Date.now;
   const seen = new Map<string, number>();
   let lastAttempt = -Infinity;
-  return async (nonce) => {
+  return async (nonce, reason = "unreached") => {
     const t = now();
     for (const [n, at] of seen) if (t - at > BREAK_GLASS_NONCE_TTL_MS) seen.delete(n);
     if (seen.has(nonce)) return false;
     seen.set(nonce, t);
     if (t - lastAttempt < BREAK_GLASS_MIN_GAP_MS) return false;
     lastAttempt = t;
-    return sendBreakGlassDm(ownerChannel);
+    return sendBreakGlassDm(ownerChannel, log, reason === "held" ? BREAK_GLASS_HELD : BREAK_GLASS_APPROVAL);
   };
 }
 
