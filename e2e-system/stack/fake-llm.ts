@@ -34,10 +34,11 @@ function textOf(content: unknown): string {
 
 const imagesIn = (content: unknown) => (Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "image_url").length : 0);
 
-function stream(pieces: string[], gapMs: number, tag: string | undefined): Response {
+function stream(pieces: string[], gapMs: number, tag: string | undefined, delayMs = 0): Response {
   if (tag) pieces = [`re-${tag} ${pieces[0] ?? ""}`, ...pieces.slice(1)];
   const body = new ReadableStream({
     async start(c) {
+      await Bun.sleep(delayMs);
       for (const p of pieces) {
         c.enqueue(enc.encode(chunk({ role: "assistant", content: p }, null)));
         await Bun.sleep(gapMs);
@@ -70,7 +71,7 @@ function reply(msgs: Msg[], userText: string, lastUser: Msg | undefined): Respon
   }
   if (userText.includes("E2E-SLOW")) return stream(Array.from({ length: 30 }, (_, i) => `slow${i} `), 500, tag);
   const echo = /E2E-ECHO (\S+)/.exec(userText);
-  if (echo) return stream([`Echo ${echo[1]}.`], 10, tag);
+  if (echo) return stream([`Echo ${echo[1]}.`], 10, tag, userText.includes("E2E-LATE") ? 4000 : 0);
   const fill = /E2E-FILL-(\d+)/.exec(userText);
   if (fill) return stream([`Filler reply ${fill[1]}.`], 10, tag);
   return stream(["**Bold reply** with a list:\n\n", "- one\n- two\n\n", "```ts\nconst answer = 42;\nconsole.log(answer);\n```\n\n", "Done."], 400, tag);

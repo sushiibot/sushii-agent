@@ -88,7 +88,7 @@ New stack capabilities go in `run.ts`'s control server, not in the flows:
 
 | Keyword | Reply |
 |---|---|
-| `E2E-ECHO <word>` | `Echo <word>.` |
+| `E2E-ECHO <word>` | `Echo <word>.` (with `E2E-LATE` in the message, after a 4 s wait) |
 | `E2E-APPROVE` | a `file_linear_issue` tool call (needs an approval), titled `E2E approval <tag>` |
 | `E2E-PHOTO` | `I received N image part(s) in this turn …` |
 | `E2E-SLOW` | 30 pieces `slow0 … slow29`, 500 ms apart |
