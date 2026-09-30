@@ -18,12 +18,14 @@ import {
   type PushSender,
 } from "./push.ts";
 import { BASE_CSP, HtmlCspCache, cacheControlFor, resolveStatic } from "./static.ts";
+import { handleFileGet, handleUploadPost } from "./uploadRoutes.ts";
+import { scheduleUploadGc, type DiskUploadStore } from "./uploads.ts";
 
 const logger = getLogger("web");
 
 const MAX_BODY_BYTES = 8 * 1024;
-/** Transport-level ceiling; readJson enforces the real per-route limit while streaming. */
-const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+/** Transport-level ceiling, sized for uploads; each route enforces its own cap while streaming. */
+const MAX_REQUEST_BODY_BYTES = 12 * 1024 * 1024;
 const NO_STORE = "no-store";
 
 export interface WebHandlerDeps {
@@ -32,6 +34,8 @@ export interface WebHandlerDeps {
   /** Both undefined when push is not configured. */
   pushStore?: PushSubscriptionStore;
   pushSender?: PushSender;
+  /** Absent: /api/uploads and /f/ answer 404. */
+  uploads?: DiskUploadStore;
 }
 
 export type WebHandler = (req: Request, peerIp: string | null | undefined) => Promise<Response>;
@@ -127,7 +131,7 @@ async function readJson(req: Request): Promise<unknown | Response> {
 const unsubscribeSchema = z.object({ endpoint: z.string().min(1).max(2048) });
 
 export function createWebHandler(deps: WebHandlerDeps): WebHandler {
-  const { config, peers, pushStore, pushSender } = deps;
+  const { config, peers, pushStore, pushSender, uploads } = deps;
   const owner = normalizeLogin(config.ownerLogin);
   // Also enforced at parse time; repeated here because a WebConfig can be built without the parser.
   const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
@@ -143,6 +147,8 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
       const name = req.headers.get("Tailscale-User-Name");
       return json({ login, ...(name ? { displayName: decodeEncodedWords(name) } : {}) });
     }
+
+    if (path === "/api/uploads") return uploads ? handleUploadPost(req, uploads) : json({ error: "not found" }, 404);
 
     if (path.startsWith("/api/push/")) {
       if (!pushStore || !pushSender || !config.push) return json({ error: "push is not configured" }, 404);
@@ -206,6 +212,8 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     if (path === "/api" || path.startsWith("/api/")) {
       const name = req.headers.get("Tailscale-User-Name");
       res = await api(req, path, login, mintWebActor(login, name ? decodeEncodedWords(name) : undefined));
+    } else if (path === "/f" || path.startsWith("/f/")) {
+      res = uploads ? await handleFileGet(req, path, uploads) : json({ error: "not found" }, 404);
     } else res = await staticFile(req, path);
     if (!res.headers.has("Content-Security-Policy")) withSecurityHeaders(res);
     return res;
@@ -218,7 +226,11 @@ export function internalErrorResponse(err: unknown): Response {
   return withSecurityHeaders(json({ error: "internal" }, 500));
 }
 
-export async function startWebServer(config: WebConfig, db: Database): Promise<Server<undefined>> {
+export interface WebServerOptions {
+  uploads?: DiskUploadStore;
+}
+
+export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined>> {
   let pushStore: PushSubscriptionStore | undefined;
   let pushSender: PushSender | undefined;
   let push = config.push;
@@ -235,7 +247,7 @@ export async function startWebServer(config: WebConfig, db: Database): Promise<S
     pushSender = createPushSender(pushStore, createWebPushTransport(push));
   }
   const effective: WebConfig = { ...config, push };
-  const handler = createWebHandler({ config: effective, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender });
+  const handler = createWebHandler({ config: effective, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender, uploads: opts.uploads });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
   }
@@ -249,12 +261,13 @@ export async function startWebServer(config: WebConfig, db: Database): Promise<S
     error: internalErrorResponse,
   });
   setActivePushSender(pushSender);
+  if (opts.uploads) scheduleUploadGc(opts.uploads);
   logger.info({ bindAddr: config.bindAddr, port: server.port, trustedPeers: config.trustedPeers, push: Boolean(push), distDir: config.distDir }, "web gateway listening");
   return server;
 }
 
 /** Never throws, so a bad web config disables only the web surface. */
-export async function startWebGateway(env: Record<string, string | undefined>, db: Database): Promise<Server<undefined> | undefined> {
+export async function startWebGateway(env: Record<string, string | undefined>, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined> | undefined> {
   let config: WebConfig | undefined;
   try {
     config = parseWebConfig(env);
@@ -267,7 +280,7 @@ export async function startWebGateway(env: Record<string, string | undefined>, d
     return undefined;
   }
   try {
-    return await startWebServer(config, db);
+    return await startWebServer(config, db, opts);
   } catch (err) {
     logger.error({ err, bindAddr: config.bindAddr }, "web gateway failed to start");
     return undefined;

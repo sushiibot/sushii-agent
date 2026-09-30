@@ -6,6 +6,7 @@ import { parseTeams, buildTeamIndex } from "./orchestration/teams.ts";
 import { parseRelayUrls } from "./surfaces/buzz/relayUrl.ts";
 import { getLogger } from "./logger.ts";
 import { z } from "zod";
+import { dirname, join } from "node:path";
 import { isLoopback, parseIp } from "./surfaces/web/peers.ts";
 
 const logger = getLogger("config");
@@ -26,6 +27,8 @@ export interface Config {
   openaiContextLimit: number;
   databasePath: string;
   feedbackPath: string;
+  /** WEB_UPLOADS_DIR: web chat photos and agent files. Default: web-uploads next to the database. */
+  webUploadsDir: string;
   /** Derived solely from each team's discord blocks (+ each discord space's own statusChannelId) —
    *  see teamGuildConfigs/applyStatusChannelOverrides. A guild not in any team has no entry. */
   guildConfig: Record<string, GuildConfig>;
@@ -361,6 +364,7 @@ export const config: Config = {
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),
+  webUploadsDir: optional("WEB_UPLOADS_DIR", join(dirname(optional("DATABASE_PATH", "./data/sushii-agent.db")), "web-uploads")),
   guildConfig: derivedGuildConfig,
   principals: loadPrincipals(),
   teams: loadedTeams,
