@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
-import { checkSource } from './check-no-raw-html';
+import { checkSource, COPY_BUTTON, MARKDOWN, RENDER_DIRS } from './check-no-raw-html';
 
 const rules = (file: string, source: string) => checkSource(file, source).map((v) => v.rule);
 
@@ -25,13 +25,15 @@ describe('check-no-raw-html', () => {
 	});
 
 	test('the markdown renderer may not emit controls or approval tokens', () => {
-		const md = 'src/lib/agent/markdown.svelte';
+		const md = MARKDOWN;
 		expect(rules(md, '<Button>Approve</Button>')).toContain('markdown: button');
 		expect(rules(md, '<a onclick={go}>x</a>')).toContain('markdown: event handler');
 		expect(rules(md, '<div class="bg-approval-surface"></div>')).toContain(
 			'markdown: approval surface token'
 		);
-		expect(rules('src/lib/agent/other.svelte', '<Button>Approve</Button>')).toEqual([]);
+		expect(
+			rules('src/lib/features/chat/components/other.svelte', '<Button>Approve</Button>')
+		).toEqual([]);
 	});
 
 	test('flags raw snippets, computed sink keys and string code', () => {
@@ -49,7 +51,7 @@ describe('check-no-raw-html', () => {
 	});
 
 	test('render components may not pick their element tag at runtime', () => {
-		const tray = 'src/lib/agent/approval-tray.svelte';
+		const tray = 'src/lib/features/chat/components/approval-tray.svelte';
 		expect(rules(tray, '<svelte:element this={tag}>x</svelte:element>')).toEqual([
 			'render: dynamic svelte:element'
 		]);
@@ -58,7 +60,7 @@ describe('check-no-raw-html', () => {
 	});
 
 	test('markdown: no svelte:element, spreads or handlers in any spelling', () => {
-		const md = 'src/lib/agent/markdown.svelte';
+		const md = MARKDOWN;
 		expect(rules(md, '<svelte:element this={"button"}>x</svelte:element>')).toContain(
 			'markdown: svelte:element'
 		);
@@ -69,16 +71,16 @@ describe('check-no-raw-html', () => {
 	});
 
 	test('markdown imports only its renderer, types and the Copy button', () => {
-		const md = 'src/lib/agent/markdown.svelte';
+		const md = MARKDOWN;
 		const script = (body: string) => `<script lang="ts">\n${body}\n</script>`;
 		expect(
 			rules(
 				md,
 				script(
 					[
-						"import type { MdBlock } from './types';",
+						"import type { MdBlock } from '../types';",
 						"import CodeCopyButton from './code-copy-button.svelte';",
-						"import { parseMarkdown } from './render/markdown';"
+						"import { parseMarkdown } from './markdown';"
 					].join('\n')
 				)
 			)
@@ -94,14 +96,14 @@ describe('check-no-raw-html', () => {
 		expect(rules(md, script("import Check from '@lucide/svelte/icons/check';"))).toEqual([
 			'markdown: import @lucide/svelte/icons/check'
 		]);
-		expect(rules(md, script("import { Button } from '$lib/components/ui/button';"))).toContain(
-			'markdown: import $lib/components/ui/button'
+		expect(rules(md, script("import { Button } from '$lib/ui/button';"))).toContain(
+			'markdown: import $lib/ui/button'
 		);
 		expect(rules(md, script("const m = import('./x');"))).toContain('markdown: dynamic import');
 	});
 
 	test('the Copy button may be a button but never looks like an approval', () => {
-		const copy = 'src/lib/agent/code-copy-button.svelte';
+		const copy = COPY_BUTTON;
 		expect(rules(copy, '<button type="button" onclick={copy}>x</button>')).toEqual([]);
 		expect(rules(copy, '<button class="bg-approval">x</button>')).toContain(
 			'markdown: approval surface token'
@@ -113,13 +115,42 @@ describe('check-no-raw-html', () => {
 	test('the real source tree is clean', async () => {
 		const { readFileSync } = await import('node:fs');
 		for (const file of [
-			'src/lib/agent/markdown.svelte',
-			'src/lib/agent/code-copy-button.svelte',
-			'src/lib/agent/approval-tray.svelte'
+			MARKDOWN,
+			COPY_BUTTON,
+			'src/lib/features/chat/components/approval-tray.svelte'
 		]) {
 			expect(
 				checkSource(file, readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))
 			).toEqual([]);
+		}
+	});
+
+	test('violations planted in the real render files fail at their paths', async () => {
+		const { readdirSync, readFileSync } = await import('node:fs');
+		const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+		expect(rules(MARKDOWN, read(MARKDOWN) + '\n<button onclick={go}>Approve</button>')).toEqual(
+			expect.arrayContaining(['markdown: button', 'markdown: event handler'])
+		);
+		expect(rules(COPY_BUTTON, read(COPY_BUTTON) + '\n<span class="bg-approval"></span>')).toContain(
+			'markdown: approval surface token'
+		);
+		for (const dir of RENDER_DIRS) {
+			for (const sub of ['components', 'render']) {
+				const files = readdirSync(new URL(`../${dir}${sub}`, import.meta.url)).filter((f) =>
+					f.endsWith('.svelte')
+				);
+				expect(files.length).toBeGreaterThan(0);
+				for (const name of files) {
+					const file = `${dir}${sub}/${name}`;
+					const planted = read(file) + '\n<svelte:element this={tag}>x</svelte:element>{@html x}';
+					expect(rules(file, planted)).toEqual(
+						expect.arrayContaining([
+							file === MARKDOWN ? 'markdown: svelte:element' : 'render: dynamic svelte:element',
+							'{@html}'
+						])
+					);
+				}
+			}
 		}
 	});
 });

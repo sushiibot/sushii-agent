@@ -81,7 +81,7 @@ export function inlineScriptHashes(html: string): string[] {
 }
 
 /** Trusted Types policies the SPA creates: Svelte's template policy, and the app's service-worker URL
- *  policy in web/src/lib/app/trusted-types.ts. Any other createPolicy call throws. */
+ *  policy in web/src/lib/core/pwa/trusted-types.ts. Any other createPolicy call throws. */
 export const TRUSTED_TYPE_POLICIES = ["svelte-trusted-html", "sushii-sw-url"] as const;
 
 export function buildCsp(scriptHashes: string[]): string {

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { CLIENT_ID_RE, type ChatEnvelope } from '../src/lib/chat/events';
-import { fileRef, toMessages } from '../src/lib/chat/project';
+import { CLIENT_ID_RE, type ChatEnvelope } from '../src/lib/core/realtime/events';
+import { fileRef, toMessages } from '../src/lib/features/chat/project';
 import {
 	addLocalSend,
 	applyEvent,
@@ -11,10 +11,10 @@ import {
 	PENDING_TURN_ID,
 	restartHistory,
 	type ChatState
-} from '../src/lib/chat/reduce';
-import { SseParser, toEnvelope } from '../src/lib/chat/sse';
-import { ulid } from '../src/lib/chat/ulid';
-import { fitWithin } from '../src/lib/chat/photo';
+} from '../src/lib/features/chat/reduce';
+import { SseParser, toEnvelope } from '../src/lib/core/realtime/sse';
+import { ulid } from '../src/lib/core/storage/ulid';
+import { fitWithin } from '../src/lib/features/chat/photo';
 
 const NONE = { approvals: [], asks: [] };
 const run = (s: ChatState, evs: ChatEnvelope[]) => evs.flatMap((e) => applyEvent(s, e, 1000));

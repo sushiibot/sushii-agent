@@ -9,7 +9,7 @@ import {
 	openTarget,
 	resubscribe,
 	safeTarget
-} from '$lib/sw/handlers';
+} from '$lib/core/sw/handlers';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 const CACHE = `shell-${version}`;

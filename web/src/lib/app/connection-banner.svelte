@@ -1,6 +1,6 @@
 <script lang="ts">
 	import WifiOff from '@lucide/svelte/icons/wifi-off';
-	import { pwa } from './pwa.svelte';
+	import { pwa } from '$lib/core/pwa/pwa.svelte';
 </script>
 
 {#if !pwa.online}

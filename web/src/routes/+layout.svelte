@@ -2,8 +2,8 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import favicon from '$lib/assets/favicon.svg';
-	import { pwa } from '$lib/app/pwa.svelte';
-	import { markBooted } from '$lib/app/boot-recovery';
+	import { pwa } from '$lib/core/pwa/pwa.svelte';
+	import { markBooted } from '$lib/core/pwa/boot-recovery';
 
 	let { children } = $props();
 

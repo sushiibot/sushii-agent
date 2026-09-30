@@ -1,7 +1,7 @@
 import './harness.css';
 import { flushSync, mount, unmount } from 'svelte';
-import { parseMarkdown } from '$lib/agent/render/markdown';
-import Markdown from '$lib/agent/markdown.svelte';
+import { parseMarkdown } from '$lib/features/chat/render/markdown';
+import Markdown from '$lib/features/chat/render/markdown.svelte';
 import Harness from './Harness.svelte';
 import { api } from './api.svelte';
 

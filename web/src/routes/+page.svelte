@@ -1,7 +1,7 @@
 <script lang="ts">
-	import ClearNotifications from '$lib/app/clear-notifications.svelte';
-	import MainChat from '$lib/chat/main-chat.svelte';
-	import { chatStore } from '$lib/chat/session';
+	import ClearNotifications from '$lib/features/chat/clear-notifications.svelte';
+	import MainChat from '$lib/features/chat/main-chat.svelte';
+	import { chatStore } from '$lib/features/chat/session';
 </script>
 
 <svelte:head><title>Agent</title></svelte:head>

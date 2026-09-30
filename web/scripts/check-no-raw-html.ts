@@ -32,14 +32,14 @@ const SINKS: [RegExp, string][] = [
 const COMPUTED_KEY = /(?:[\w)\]]|\?\.)\s*\[([^\]]*['"`][^\]]*)\]/g;
 const SINK_FRAGMENT = /html|inner|outer|adjacent|srcdoc|['"`]doc['"`]/i;
 
-// Components that render agent- or workspace-supplied data.
-const RENDER_DIR = 'src/lib/agent/';
+// Folders whose components render agent- or workspace-supplied data.
+export const RENDER_DIRS = ['src/lib/features/chat/'];
 
 // Agent text renders here, so it may never emit a control, handler or the approval surface.
-const MARKDOWN = 'src/lib/agent/markdown.svelte';
+export const MARKDOWN = 'src/lib/features/chat/render/markdown.svelte';
 // Markdown's one control: an icon button that copies its own code block.
-const COPY_BUTTON = 'src/lib/agent/code-copy-button.svelte';
-const MARKDOWN_IMPORTS = new Set(['./types', './render/markdown', './code-copy-button.svelte']);
+export const COPY_BUTTON = 'src/lib/features/chat/render/code-copy-button.svelte';
+const MARKDOWN_IMPORTS = new Set(['../types', './markdown', './code-copy-button.svelte']);
 
 const APPROVAL_LOOKALIKE: [RegExp, string][] = [
 	[/approval|data-surface/i, 'markdown: approval surface token'],
@@ -86,7 +86,7 @@ function templateRules(file: string, source: string): Violation[] {
 	const ast = parse(source, { filename: file, modern: true });
 	visit(ast.fragment, (n) => {
 		if (n.type === 'HtmlTag') at(n.start, '{@html}');
-		if (n.type === 'SvelteElement' && file.startsWith(RENDER_DIR)) {
+		if (n.type === 'SvelteElement' && RENDER_DIRS.some((d) => file.startsWith(d))) {
 			const tag = n.tag as { type?: string } | string | undefined;
 			if (markdown) at(n.start, 'markdown: svelte:element');
 			else if (typeof tag === 'object' && tag?.type !== 'Literal') {

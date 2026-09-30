@@ -4,12 +4,12 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
-	import AppShell from '$lib/agent/app-shell.svelte';
-	import { Button } from '$lib/components/ui/button';
+	import AppShell from '$lib/ui/shell/app-shell.svelte';
+	import { Button } from '$lib/ui/button';
 	import ConnectionBanner from '$lib/app/connection-banner.svelte';
-	import UpdateToast from '$lib/app/update-toast.svelte';
-	import { api, type Me } from '$lib/api';
-	import { pwa } from '$lib/app/pwa.svelte';
+	import UpdateToast from '$lib/ui/pwa/update-toast.svelte';
+	import { api, type Me } from '$lib/core/api';
+	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import {
 		currentPushStatus,
 		disablePush,
@@ -17,8 +17,8 @@
 		PushSetupError,
 		watchPermission,
 		type PushStatus
-	} from '$lib/app/push';
-	import { applyTheme, readTheme, type ThemeChoice } from '$lib/app/theme';
+	} from '$lib/core/pwa/push';
+	import { applyTheme, readTheme, type ThemeChoice } from '$lib/core/pwa/theme';
 	import { cn } from '$lib/utils';
 
 	const version = __APP_VERSION__;
@@ -179,7 +179,7 @@
 <svelte:head><title>Settings · Agent</title></svelte:head>
 
 {#snippet banner()}<ConnectionBanner />{/snippet}
-{#snippet toast()}<UpdateToast />{/snippet}
+{#snippet toast()}<UpdateToast onreload={() => pwa.applyUpdate()} />{/snippet}
 
 <AppShell
 	active="more"

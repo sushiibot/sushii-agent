@@ -5,10 +5,12 @@ import type {
 	PhotoDraft,
 	Turn,
 	MemoryWrite,
+	ChatMessage
+} from '$lib/features/chat/types';
+import type {
 	Session,
 	ThreadClose,
 	BriefItem,
-	ChatMessage,
 	DaySummary,
 	InboxItem,
 	Job,
@@ -16,7 +18,7 @@ import type {
 	MemoryChange,
 	Run,
 	Skill
-} from '$lib/agent/types';
+} from './screens/types';
 
 // Every person, company, address and id below is invented.
 

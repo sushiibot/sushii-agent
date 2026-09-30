@@ -20,3 +20,14 @@ bun run build:proto  # single-file board at build-proto/proto.html
 ```
 
 Icons are rendered from `icons-src/*.svg` with `bun scripts/render-icons.ts`.
+
+## Layout
+
+Imports point down this list only:
+
+- `src/routes/`: thin containers that bind stores, `page.state` and navigation to screens.
+- `src/lib/features/<name>/`: one folder per feature (screens, stores, reducers, fixtures). `features/chat/` holds every component that renders agent text, so the raw-HTML lint's strictest rules apply there.
+- `src/lib/core/`: app infrastructure with no screens: the SSE stream (`realtime/`), IndexedDB (`storage/`), PWA and push (`pwa/`), service-worker logic (`sw/`).
+- `src/lib/ui/`: the design system, with no domain imports. shadcn-svelte adds components here (`components.json`).
+
+Screens that no milestone has shipped yet wait in `src/proto-routes/proto/screens/`.
