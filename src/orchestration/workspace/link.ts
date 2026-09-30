@@ -16,6 +16,7 @@ import {
   type ChatMessageResult,
   type ChatOrigin,
   type GitHubTokenResult,
+  type UploadReadResult,
   type ToolCallResult,
   type ToolCancelResult,
   type ToolManifestEntry,
@@ -138,6 +139,8 @@ export interface WorkspaceLinkOptions {
   authLog?: AuthLog;
   /** Serves `github/token`; absent → every request is refused as unconfigured. */
   github?: Pick<GitHubTokenBroker, "handle">;
+  /** Serves `upload/read`; absent → every request is refused. */
+  uploadRead?: (conn: ConnectionInfo, params: unknown) => Promise<UploadReadResult>;
 }
 
 const MAIN_AGENT = "main";
@@ -682,6 +685,11 @@ export class WorkspaceLink {
     if (method === RPC_METHODS.githubToken) {
       if (this.opts.github && this.opts.enabled !== false) return this.opts.github.handle(conn, params);
       return { ok: false, error: "the GitHub App is not configured on the bot" } satisfies GitHubTokenResult;
+    }
+    // Not gated on DM_WORKSPACE_ENABLED: it is part of delivering a chat message, not a proxied tool.
+    if (method === RPC_METHODS.uploadRead) {
+      if (this.opts.uploadRead) return this.opts.uploadRead(conn, params);
+      return { ok: false, error: "web uploads are not configured on the bot" } satisfies UploadReadResult;
     }
     if (method !== RPC_METHODS.chatDeliver) throw new MethodNotFoundError(`method not found: ${method}`);
     const p = chatDeliverParams.parse(params);

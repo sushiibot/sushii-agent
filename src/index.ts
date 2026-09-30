@@ -44,6 +44,9 @@ import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
 import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
 import { startWebGateway } from "./surfaces/web/server.ts";
+import { createUploadReadHandler } from "./surfaces/web/uploadRoutes.ts";
+import { DiskUploadStore } from "./surfaces/web/uploads.ts";
+import { sendPush } from "./surfaces/web/push.ts";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -105,9 +108,16 @@ async function main() {
   });
 
   const discordWorkspace = createDiscordWorkspace({ client: client as Client<true>, core, store });
+  const ownerPrincipalId = resolveOwnerPrincipalId();
+  const uploads = new DiskUploadStore({
+    root: config.webUploadsDir,
+    db,
+    onPhotoQuotaWarning: (used, cap) =>
+      void sendPush({ title: "Photo storage almost full", body: `${Math.round((used / cap) * 100)}% of the photo quota is used.`, url: "/", tag: "quota" }),
+  });
   const workspace = bootWorkspace(
     {
-      principalId: resolveOwnerPrincipalId(),
+      principalId: ownerPrincipalId,
       preferredSurface: config.workspacePreferredSurface,
       enabled: config.dmWorkspaceEnabled,
       orchPort: config.orchPort,
@@ -117,6 +127,7 @@ async function main() {
       store,
       memory,
       linkStore: new WorkspaceLinkStore(db),
+      uploadRead: createUploadReadHandler(uploads, ownerPrincipalId),
     },
     [discordWorkspace.adapter],
   );
@@ -133,7 +144,7 @@ async function main() {
   });
   // Before the workspace transport listens, so a web adapter is registered by the time a workspace
   // connects and drains its outbox; register it into workspace.registry only when this started.
-  const webServer = await startWebGateway(process.env, db);
+  const webServer = await startWebGateway(process.env, db, { uploads });
   listenWorkspace(workspace, config.orchPort);
   await client.login(config.discordBotToken);
 

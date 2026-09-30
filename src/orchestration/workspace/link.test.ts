@@ -1058,3 +1058,32 @@ describe("ChatGPT login from the surface", () => {
     expect(t.link.isLoginPending()).toBe(false);
   });
 });
+
+describe("upload/read through the link", () => {
+  test("is refused when no upload store is wired", async () => {
+    const { rpc } = setup();
+    const res = await rpc.handler!.onRequest!(CONN, RPC_METHODS.uploadRead, { principalId: P, uploadId: "A".repeat(22) });
+    expect(res).toEqual({ ok: false, error: "web uploads are not configured on the bot" });
+  });
+
+  test("goes to the wired handler even with DM_WORKSPACE_ENABLED off", async () => {
+    const seen: unknown[] = [];
+    const rpc = new FakeRpc();
+    const link = new WorkspaceLink({
+      principalId: P,
+      store: newStore(),
+      surfaces: new SurfaceRegistry("test").register(new FakeAdapter("test")),
+      owner: () => ({ id: "owner-1", name: "drk" }),
+      timers: immediate,
+      enabled: false,
+      uploadRead: async (_conn, params) => {
+        seen.push(params);
+        return { ok: false, error: "not found" };
+      },
+    });
+    link.attach(rpc);
+    const params = { principalId: P, uploadId: "A".repeat(22) };
+    expect(await rpc.handler!.onRequest!(CONN, RPC_METHODS.uploadRead, params)).toEqual({ ok: false, error: "not found" });
+    expect(seen).toEqual([params]);
+  });
+});

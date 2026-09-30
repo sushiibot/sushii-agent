@@ -3,6 +3,8 @@
 import type { OwnerDmMode } from "../../config.ts";
 import type { ConversationStore, SpaceMemoryStore, ToolRegistry } from "../../core/contracts.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
+import type { UploadReadResult } from "../contracts.ts";
+import type { ConnectionInfo } from "../transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { isVerifiedWebActor, normalizeLogin, WEB_SURFACE } from "../../surfaces/web/actor.ts";
 import { tokenProviderFromEnv } from "../github/githubApp.ts";
@@ -39,6 +41,8 @@ export interface WorkspaceConfig {
   /** Default: built from GITHUB_APP_* and GITHUB_BOT_* in the environment. */
   github?: Pick<GitHubTokenBroker, "handle">;
   secretGrants?: Record<string, SecretGrant>;
+  /** Serves the workspace's `upload/read`. */
+  uploadRead?: (conn: ConnectionInfo, params: unknown) => Promise<UploadReadResult>;
   registry?: ToolRegistry;
   timers?: Timers;
   now?: () => number;
@@ -96,6 +100,7 @@ export function bootWorkspace(cfg: WorkspaceConfig, adapters: SurfaceAdapter<any
     tools,
     enabled: cfg.enabled,
     github: cfg.github ?? githubBrokerFromEnv(cfg.principalId),
+    ...(cfg.uploadRead ? { uploadRead: cfg.uploadRead } : {}),
     ...(cfg.timers ? { timers: cfg.timers } : {}),
     ...(cfg.now ? { now: cfg.now } : {}),
   });
