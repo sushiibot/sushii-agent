@@ -86,6 +86,27 @@ function protectedFiles(paths: SendFilePaths): Stats[] {
 // Text past this is not scanned, but nothing past the per-file send cap can be sent anyway.
 const TEXT_SNIFF_BYTES = 8192;
 
+// The detector's dotted-token pattern backtracks across a run of token characters, so its time grows with
+// the sum of squared run lengths; past this budget (roughly 0.2s) the file is refused rather than scanned.
+const SCAN_COST_MAX = 2e9;
+
+function isTokenByte(b: number): boolean {
+  return (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) || b === 0x5f || b === 0x2d;
+}
+
+function scanCost(data: Buffer): number {
+  let cost = 0;
+  let run = 0;
+  for (const b of data) {
+    if (isTokenByte(b)) run++;
+    else {
+      cost += run * run;
+      run = 0;
+    }
+  }
+  return cost + run * run;
+}
+
 /** Whether the bytes look like text worth scanning: no NUL in the first chunk. */
 function looksLikeText(data: Buffer): boolean {
   return !data.subarray(0, TEXT_SNIFF_BYTES).includes(0);
@@ -113,6 +134,9 @@ export function readSendableFile(path: string, paths: SendFilePaths, maxBytes: n
       if (n > maxBytes) throw new Error(`over the ${maxBytes}-byte limit`);
     }
     const data = buf.subarray(0, n);
+    if (looksLikeText(data) && scanCost(data) > SCAN_COST_MAX) {
+      throw new Error("blocked (secret): the file has runs of token characters too long for the secret detector to check, so it won't be sent");
+    }
     if (looksLikeText(data) && containsSecret(data.toString("utf8"))) {
       throw new Error("blocked (secret): the secret detector found what looks like a credential (a token, key or long hash) in this file, so it won't be sent");
     }

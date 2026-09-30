@@ -76,6 +76,16 @@ describe("readSendableFile", () => {
     expect(() => readSendableFile(join(paths.home, "copy.txt"), paths, 10_000)).toThrow(/secret detector/);
   });
 
+  test("text the detector would take too long on is refused quickly; long rules and ordinary text pass", () => {
+    const { paths } = layout();
+    writeFileSync(join(paths.home, "run.txt"), "a".repeat(200_000));
+    const started = performance.now();
+    expect(() => readSendableFile(join(paths.home, "run.txt"), paths, 1_000_000)).toThrow(/too long for the secret detector/);
+    expect(performance.now() - started).toBeLessThan(500);
+    writeFileSync(join(paths.home, "table.txt"), `${"-".repeat(300)}\n| a | b |\n`.repeat(200));
+    expect(readSendableFile(join(paths.home, "table.txt"), paths, 1_000_000).length).toBeGreaterThan(0);
+  });
+
   test("binary files are not scanned", () => {
     const { paths } = layout();
     writeFileSync(join(paths.home, "img.bin"), Buffer.concat([Buffer.from([0x89, 0x50, 0, 0]), Buffer.from(JWT)]));
