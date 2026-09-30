@@ -597,6 +597,13 @@ describe("break-glass DM", () => {
     expect(await sendBreakGlassDm(async () => Promise.reject(new Error("no client")))).toBe(false);
   });
 
+  test("a failed owner lookup is logged at warn, with nothing personal in it", async () => {
+    const warned: unknown[][] = [];
+    const logger = { warn: (...args: unknown[]) => void warned.push(args) } as never;
+    expect(await sendBreakGlassDm(async () => null, logger)).toBe(false);
+    expect(warned).toEqual([["break-glass owner DM not sent: the owner's Discord DM channel could not be resolved"]]);
+  });
+
   function breakGlassHarness() {
     const sent: MessageCreateOptions[] = [];
     let t = 1_000_000;
