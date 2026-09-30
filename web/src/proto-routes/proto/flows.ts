@@ -837,6 +837,52 @@ export const flows: Flow[] = [
 		]
 	},
 	{
+		id: 'message-menu',
+		code: 'MM',
+		title: 'Hold a message for its actions',
+		intro:
+			'Holding a message, or right-clicking it on desktop, opens its actions in a sheet that Back closes. The ⋯ button under each message opens the same sheet. Copy takes the text as rendered, without markdown. Retry and Delete appear only on your own unsent messages, and nothing here can approve anything.',
+		frames: [
+			{
+				id: 'mm-1',
+				label: 'Hold an agent reply',
+				screen: Chat,
+				props: {
+					session: f.mainSession,
+					messages: f.deliveryStates,
+					sheet: 'message',
+					pressed: 'd1r'
+				},
+				next: 'Your failed message'
+			},
+			{
+				id: 'mm-2',
+				label: 'Hold your failed message',
+				screen: Chat,
+				props: {
+					session: f.mainSession,
+					messages: f.deliveryStates,
+					sheet: 'message',
+					pressed: 'd2'
+				},
+				branch: 'Retry and Delete join the list'
+			},
+			{
+				id: 'mm-3',
+				label: 'At 320 wide',
+				screen: Chat,
+				props: {
+					session: f.mainSession,
+					messages: f.deliveryStates,
+					sheet: 'message',
+					pressed: 'd1r'
+				},
+				width: 320,
+				branch: 'Narrow phone'
+			}
+		]
+	},
+	{
 		id: 'files',
 		code: 'FO',
 		title: 'Files from the agent',

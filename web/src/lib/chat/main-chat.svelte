@@ -20,6 +20,8 @@
 	import ConnectionBanner from '$lib/agent/connection-banner.svelte';
 	import Conversation from '$lib/agent/conversation.svelte';
 	import type { ConnectionState, FileRef } from '$lib/agent/types';
+	import MessageSheet from '$lib/agent/message-sheet.svelte';
+	import { messagePlainText } from '$lib/agent/render/plain-text';
 	import InstallHint from '$lib/app/install-hint.svelte';
 	import UpdateToast from '$lib/app/update-toast.svelte';
 	import { pwa } from '$lib/app/pwa.svelte';
@@ -41,6 +43,12 @@
 	let older = $state<HTMLElement | null>(null);
 
 	const sheet = $derived(page.state.sheet);
+	const heldId = $derived(sheet === 'message' ? page.state.messageId : undefined);
+	const held = $derived(heldId ? store.messages.find((m) => m.id === heldId) : undefined);
+	const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
+	let selecting = $state<string | undefined>();
+	let pendingSelect: string | undefined;
+	let copyNote = $state('');
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 	const commandsOffline = $derived(store.workspace === 'offline');
 	const empty = $derived(store.history !== 'loading' && store.messages.length === 0);
@@ -202,10 +210,96 @@
 		return stop;
 	});
 
-	function openSheet(next: 'commands' | 'new' | 'viewer') {
-		if (sheet) replaceState('', { sheet: next });
-		else pushState('', { sheet: next });
+	function openSheet(next: NonNullable<App.PageState['sheet']>, messageId?: string) {
+		const state = messageId ? { sheet: next, messageId } : { sheet: next };
+		if (sheet) replaceState('', state);
+		else pushState('', state);
 	}
+
+	const messageEl = (id: string) =>
+		document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
+
+	function openMessageMenu(id: string) {
+		selecting = undefined;
+		if (heldId === id) return;
+		// Focus returns here when the sheet closes, whether a hold or the button opened it.
+		messageEl(id)?.querySelector<HTMLElement>('[data-message-focus]')?.focus({
+			preventScroll: true
+		});
+		openSheet('message', id);
+	}
+
+	async function copyHeld() {
+		if (!held) return;
+		const text = messagePlainText(held, location.origin);
+		closeSheet();
+		copyNote = '';
+		try {
+			if (!navigator.clipboard) throw new Error('no clipboard');
+			await navigator.clipboard.writeText(text);
+			copyNote = 'Copied';
+		} catch {
+			copyNote = "Couldn't copy";
+		}
+	}
+
+	function shareHeld() {
+		if (!held) return;
+		// Called before closing, while the tap's user activation still counts.
+		navigator.share({ text: messagePlainText(held, location.origin) }).catch(() => {});
+		closeSheet();
+	}
+
+	function selectHeld() {
+		if (!held) return;
+		selecting = pendingSelect = held.id;
+		closeSheet();
+	}
+
+	function resendHeld(action: 'retry' | 'discard') {
+		if (!held) return;
+		const id = held.id;
+		closeSheet();
+		if (action === 'retry') store.retry(id);
+		else store.discard(id);
+	}
+
+	// Select mode waits for the sheet to close, since focus returning to the opener comes first.
+	$effect(() => {
+		if (sheet || !pendingSelect) return;
+		const id = pendingSelect;
+		pendingSelect = undefined;
+		void tick().then(() => {
+			const parts = messageEl(id)?.querySelectorAll('[data-message-text]');
+			const sel = document.getSelection();
+			if (!parts?.length || !sel) return;
+			const range = document.createRange();
+			range.setStartBefore(parts[0]);
+			range.setEndAfter(parts[parts.length - 1]);
+			sel.removeAllRanges();
+			sel.addRange(range);
+		});
+	});
+
+	$effect(() => {
+		const id = selecting;
+		if (!id) return;
+		const leave = (e: PointerEvent) => {
+			if (
+				!(e.target instanceof Element) ||
+				!e.target.closest(`[data-message-id="${CSS.escape(id)}"]`)
+			)
+				selecting = undefined;
+		};
+		document.addEventListener('pointerdown', leave, { capture: true });
+		return () => document.removeEventListener('pointerdown', leave, { capture: true });
+	});
+
+	$effect(() => {
+		if (!copyNote) return;
+		const t = setTimeout(() => (copyNote = ''), 3000);
+		return () => clearTimeout(t);
+	});
 	function closeSheet() {
 		if (sheet) history.back();
 	}
@@ -246,7 +340,12 @@
 			disabled: commandsOffline
 		}
 	]);
-	const sheetLabels = { commands: 'Chat commands', new: 'Start a new chat', viewer: 'Image' };
+	const sheetLabels = {
+		commands: 'Chat commands',
+		new: 'Start a new chat',
+		viewer: 'Image',
+		message: 'Message actions'
+	};
 </script>
 
 <svelte:window
@@ -303,6 +402,17 @@
 				<Button size="lg" variant="ghost" onclick={closeSheet}>Cancel</Button>
 			</div>
 		</div>
+	{:else if sheet === 'message' && held}
+		<MessageSheet
+			message={held}
+			preview={messagePlainText(held).slice(0, 200)}
+			{canShare}
+			oncopy={copyHeld}
+			onshare={shareHeld}
+			onselect={selectHeld}
+			onretry={() => resendHeld('retry')}
+			ondelete={() => resendHeld('discard')}
+		/>
 	{:else if sheet === 'viewer' && viewer?.src}
 		<div class="flex flex-col gap-3 px-4 pt-1 pb-4">
 			<img src={viewer.src} alt={viewer.name} class="w-full rounded-xl border object-contain" />
@@ -405,6 +515,7 @@
 	toast={store.toast || pwa.waiting ? toast : undefined}
 	sheet={sheet ? sheetBody : undefined}
 	sheetLabel={sheet ? sheetLabels[sheet] : undefined}
+	sheetOnDesktop={sheet === 'message'}
 	tabBar={false}
 	onclosesheet={closeSheet}
 	stickToBottom={!empty}
@@ -474,8 +585,12 @@
 				ondeletesend={(id) => store.discard(id)}
 				onanswer={(askId, answer) => store.answer(askId, answer)}
 				onretryhistory={() => store.retryHistory()}
+				onmessagemenu={openMessageMenu}
+				pressed={heldId}
+				{selecting}
 			/>
 		</div>
 	{/if}
 	<p role="status" class="sr-only">{store.announce}</p>
+	<p role="status" class="sr-only">{copyNote}</p>
 </AppShell>
