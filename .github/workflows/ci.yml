@@ -42,6 +42,26 @@ jobs:
           DISCORD_BOT_TOKEN: test-token
           OPENAI_API_KEY: test-key
 
+  # The personal web app, installed and built the way the Dockerfile's web-build stage does it. Its unit
+  # tests (reducer, SSE parser, service worker handlers) run under Playwright with the e2e suite.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run lint
+      - run: bun run build
+      # Full Chromium without the headless shell: playwright.config.ts runs the `chromium` channel.
+      - run: bunx playwright install --with-deps --no-shell chromium
+      - run: bun run test:e2e
+
   # Builds the image natively per arch (the deploy host is arm64) and drives a real browser in it.
   browser-smoke:
     strategy:
@@ -63,7 +83,7 @@ jobs:
           sushii-agent:smoke-workspace sh scripts/browser-smoke.sh
 
   docker-build:
-    needs: [typecheck, test, browser-smoke]
+    needs: [typecheck, test, web, browser-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: sushiibot/sushii-workflows/.github/workflows/docker-build.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
     with:
