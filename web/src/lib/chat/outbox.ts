@@ -2,6 +2,8 @@ export interface OutboxEntry {
 	clientId: string;
 	text: string;
 	uploadIds: string[];
+	/** The resized photos, kept so a message queued past the server's 24h orphan GC can re-upload them. */
+	photos?: { name: string; blob: Blob; uploadId: string; uploadedAt: number }[];
 	at: string;
 	/** The bot answered 202 at least once, so it holds the message durably. */
 	posted: boolean;

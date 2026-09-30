@@ -25,7 +25,8 @@ export class ChatHttpError extends Error {
 }
 
 export type HistoryResult =
-	{ ok: true; page: HistoryResponse } | { ok: false; reason: 'offline' | 'unsupported' | 'error' };
+	| { ok: true; page: HistoryResponse }
+	| { ok: false; reason: 'offline' | 'unsupported' | 'reset' | 'error' };
 
 export interface ChatApi {
 	history(q: { before?: string; limit: number }): Promise<HistoryResult>;
@@ -80,7 +81,7 @@ export const httpChatApi: ChatApi = {
 			const status = err instanceof ChatHttpError ? err.status : 0;
 			return {
 				ok: false,
-				reason: status === 503 ? 'offline' : status === 501 ? 'unsupported' : 'error'
+				reason: ({ 503: 'offline', 501: 'unsupported', 409: 'reset' } as const)[status] ?? 'error'
 			};
 		}
 	},
@@ -109,7 +110,7 @@ export const httpChatApi: ChatApi = {
 			xhr.open('POST', '/api/uploads');
 			xhr.timeout = 120_000;
 			xhr.setRequestHeader('content-type', blob.type || 'application/octet-stream');
-			xhr.setRequestHeader('x-upload-name', meta.name.replace(/[^\x20-\x7e]/g, '_'));
+			xhr.setRequestHeader('x-upload-name', encodeURIComponent(meta.name));
 			xhr.setRequestHeader('x-client-id', meta.clientId);
 			xhr.upload.onprogress = (e) => {
 				if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));

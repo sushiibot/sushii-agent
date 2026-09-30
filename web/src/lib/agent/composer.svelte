@@ -48,7 +48,8 @@
 	const errors: Record<NonNullable<PhotoDraft['error']>, string> = {
 		upload: 'Upload failed',
 		type: 'Not a supported image (PNG, JPEG, GIF, WebP)',
-		size: 'Too large (10 MB max)'
+		size: 'Too large (10 MB max)',
+		daily: 'Daily photo limit reached. Try again tomorrow.'
 	};
 	const pending = $derived(
 		photos.filter((p) => p.state === 'preparing' || p.state === 'uploading')

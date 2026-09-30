@@ -33,10 +33,21 @@ const SEEN_DEBOUNCE_MS = 1000;
 /** A 202 with no status this long after means a duplicate the router had already handled. */
 const UNACKED_MS = 60_000;
 const RETRY_MS = 30_000;
+/** The server GCs unreferenced uploads after 24h; re-upload well before that. */
+const REUPLOAD_AFTER_MS = 20 * 60 * 60 * 1000;
+
+function uploadError(status: number): NonNullable<PhotoDraft['error']> {
+	if (status === 413) return 'size';
+	if (status === 415 || status === 422) return 'type';
+	if (status === 429) return 'daily';
+	return 'upload';
+}
 
 interface Photo extends PhotoDraft {
-	uploadClientId: string;
 	uploadId?: string;
+	uploadedAt?: number;
+	/** The resized JPEG, kept for re-uploads. */
+	blob?: Blob;
 	bytes?: number;
 	file: Blob;
 }
@@ -139,10 +150,14 @@ export class ChatStore {
 			addLocalSend(this.#s, {
 				clientId: e.clientId,
 				text: e.text,
-				attachments: e.uploadIds.map((id) => ({
-					name: 'Photo',
-					ref: { id, contentType: 'image/jpeg', bytes: 0, name: 'Photo', inline: true }
-				})),
+				attachments: e.uploadIds.map((id, i) => {
+					const photo = e.photos?.[i];
+					return {
+						name: photo?.name ?? 'Photo',
+						preview: photo ? URL.createObjectURL(photo.blob) : undefined,
+						ref: { id, contentType: 'image/jpeg', bytes: 0, name: 'Photo', inline: true }
+					};
+				}),
 				at: e.at,
 				delivery: 'sending'
 			});
@@ -283,6 +298,11 @@ export class ChatStore {
 		this.olderLoading = true;
 		const r = await this.#api.history({ before: this.#before, limit: HISTORY_PAGE });
 		this.olderLoading = false;
+		if (!r.ok && r.reason === 'reset') {
+			// The cursor went stale: start again from the newest page.
+			this.apply({ type: 'reset', data: { headSeq: this.#s.cursor ?? 0 } });
+			return;
+		}
 		if (!r.ok) {
 			this.showToast("Couldn't load earlier messages. Try again in a moment.");
 			return;
@@ -329,6 +349,12 @@ export class ChatStore {
 			clientId: ulid(),
 			text: body,
 			uploadIds: photos.map((p) => p.uploadId!),
+			photos: photos.map((p) => ({
+				name: p.name,
+				blob: p.blob!,
+				uploadId: p.uploadId!,
+				uploadedAt: p.uploadedAt!
+			})),
 			at: new Date().toISOString(),
 			posted: false
 		};
@@ -367,6 +393,7 @@ export class ChatStore {
 		setDelivery(this.#s, id, 'sending');
 		this.#commit();
 		try {
+			await this.#refreshUploads(entry);
 			await this.#api.postMessage({
 				clientId: id,
 				text: entry.text,
@@ -400,6 +427,19 @@ export class ChatStore {
 			this.#inflight.delete(id);
 			this.#commit();
 		}
+	}
+
+	/** Re-uploads photos old enough that the server may have collected them as orphans. */
+	async #refreshUploads(entry: OutboxEntry) {
+		const stale = (entry.photos ?? []).filter((p) => Date.now() - p.uploadedAt > REUPLOAD_AFTER_MS);
+		if (!stale.length) return;
+		for (const p of stale) {
+			const res = await this.#api.upload(p.blob, { name: p.name, clientId: ulid() }, () => {});
+			p.uploadId = res.id;
+			p.uploadedAt = Date.now();
+		}
+		entry.uploadIds = entry.photos!.map((p) => p.uploadId);
+		await this.#outbox.put(entry).catch(() => {});
 	}
 
 	#scheduleRetry() {
@@ -452,7 +492,6 @@ export class ChatStore {
 		return files.slice(0, Math.max(0, room)).map((file) => {
 			const photo: Photo = {
 				id: ulid(),
-				uploadClientId: ulid(),
 				name: jpegName(file.name),
 				src: URL.createObjectURL(file),
 				state: 'preparing',
@@ -470,38 +509,40 @@ export class ChatStore {
 	async #upload(id: string) {
 		const photo = this.photos.find((p) => p.id === id);
 		if (!photo) return;
-		let blob: Blob;
-		try {
-			this.#patchPhoto(id, { state: 'preparing', error: undefined, progress: undefined });
-			blob = await preparePhoto(photo.file);
-		} catch (err) {
-			this.#patchPhoto(id, {
-				state: 'failed',
-				error: err instanceof PhotoError ? err.reason : 'type'
-			});
-			return;
+		let blob = photo.blob;
+		if (!blob) {
+			try {
+				this.#patchPhoto(id, { state: 'preparing', error: undefined, progress: undefined });
+				blob = await preparePhoto(photo.file);
+				this.#patchPhoto(id, { blob });
+			} catch (err) {
+				this.#patchPhoto(id, {
+					state: 'failed',
+					error: err instanceof PhotoError ? err.reason : 'type'
+				});
+				return;
+			}
 		}
 		if (!this.photos.some((p) => p.id === id)) return;
-		this.#patchPhoto(id, { state: 'uploading', progress: 0 });
+		this.#patchPhoto(id, { state: 'uploading', progress: 0, error: undefined });
 		try {
 			const res = await this.#api.upload(
 				blob,
-				{ name: photo.name, clientId: photo.uploadClientId },
+				// The server answers a reused client id with 409, so every attempt gets its own.
+				{ name: photo.name, clientId: ulid() },
 				(pct) => this.#patchPhoto(id, { progress: pct })
 			);
 			this.#patchPhoto(id, {
 				state: 'uploaded',
 				uploadId: res.id,
+				uploadedAt: Date.now(),
 				bytes: res.bytes,
 				progress: 100
 			});
 		} catch (err) {
 			const status = err instanceof ChatHttpError ? err.status : 0;
 			if (status === 507) this.quotaFull = true;
-			this.#patchPhoto(id, {
-				state: 'failed',
-				error: status === 413 ? 'size' : status === 415 ? 'type' : 'upload'
-			});
+			this.#patchPhoto(id, { state: 'failed', error: uploadError(status) });
 		}
 	}
 

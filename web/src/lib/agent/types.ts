@@ -247,7 +247,7 @@ export interface PhotoDraft {
 	src: string;
 	state: 'preparing' | 'uploading' | 'uploaded' | 'failed';
 	progress?: number;
-	error?: 'upload' | 'type' | 'size';
+	error?: 'upload' | 'type' | 'size' | 'daily';
 }
 
 export type ConnectionState =
