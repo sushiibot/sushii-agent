@@ -11,5 +11,6 @@
     // The vendored pi-subagents imports its own files as #src/* (package.json "imports"; Bun resolves it at runtime).
     "paths": { "#src/*": ["./vendor/pi-subagents/src/*"] }
   },
-  "include": ["src/**/*.ts", "bin/**/*.ts"]
+  "include": ["src/**/*.ts", "bin/**/*.ts"],
+  "exclude": ["node_modules", "web"]
 }
