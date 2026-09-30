@@ -91,14 +91,15 @@
 		if (armed && released(nonce)) onapprove?.(nonce);
 	}
 
-	// A tray that shifts under the finger (keyboard, rotation, its own resize) is "appearing" again.
+	// Buttons that shift under the finger (keyboard, rotation, the tray resizing) are "appearing" again.
 	let section = $state<HTMLElement>();
+	let row = $state<HTMLElement>();
 	$effect(() => {
-		if (!section) return;
-		let last = section.getBoundingClientRect();
+		if (!section || !row) return;
+		const buttons = row;
+		let last = buttons.getBoundingClientRect();
 		const check = () => {
-			if (!section) return;
-			const now = section.getBoundingClientRect();
+			const now = buttons.getBoundingClientRect();
 			if (Math.abs(now.top - last.top) > 2 || Math.abs(now.left - last.left) > 2) {
 				rearm(untrack(() => top?.nonce));
 			}
@@ -238,7 +239,7 @@
 					Sending your approval…
 				</p>
 			{:else}
-				<div class="flex gap-3">
+				<div bind:this={row} class="flex gap-3">
 					<Button
 						variant="outline"
 						class="px-5"
@@ -265,11 +266,14 @@
 						<Check />Approve
 					</Button>
 				</div>
-				{#if !ready}
-					<p id="{uid}-hold" class="-mt-1 text-right text-xs text-muted-foreground">
-						Approve unlocks in a moment.
-					</p>
-				{/if}
+				<!-- Always laid out, so the buttons don't shift when the hold clears. -->
+				<p
+					id="{uid}-hold"
+					aria-hidden={ready}
+					class={cn('-mt-1 text-right text-xs text-muted-foreground', ready && 'invisible')}
+				>
+					Approve unlocks in a moment.
+				</p>
 			{/if}
 		{/if}
 	</section>
