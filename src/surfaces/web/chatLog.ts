@@ -1,12 +1,15 @@
 import type { Database, Statement } from "bun:sqlite";
 import { getLogger } from "../../logger.ts";
-import type { ChatEnvelope, ChatEventMap, DurableEventType, EphemeralEventType } from "./events.ts";
+import type { ChatEnvelope, ChatEventMap, DurableEventType, EphemeralEventType, PendingState } from "./events.ts";
 
 const log = getLogger("web/chatLog");
 
 export const EVENTS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const EVENTS_MAX_ROWS = 50_000;
 export const INBOUND_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const PRUNED_THROUGH_KEY = "web_events:pruned_through";
+// The row cap never evicts these: the owner's own messages and approvals still waiting for a decision.
+const CAP_EXEMPT = `e.type = 'user' OR (e.type = 'approval' AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key))`;
 
 export type EphemeralEnvelope = Extract<ChatEnvelope, { type: EphemeralEventType }>;
 export type ChatSink = (ev: ChatEnvelope) => void;
@@ -59,6 +62,7 @@ export class SqliteChatLog implements ChatLog {
     after: Statement<Row, [number]>;
     min: Statement<{ m: number | null }, []>;
     head: Statement<{ seq: number }, []>;
+    prunedThrough: Statement<{ value: string }, [string]>;
   };
 
   constructor(
@@ -74,6 +78,7 @@ export class SqliteChatLog implements ChatLog {
       after: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE seq > ? ORDER BY seq"),
       min: db.query("SELECT min(seq) AS m FROM web_events"),
       head: db.query("SELECT seq FROM sqlite_sequence WHERE name = 'web_events'"),
+      prunedThrough: db.query("SELECT value FROM kv WHERE key = ?"),
     };
   }
 
@@ -122,7 +127,7 @@ export class SqliteChatLog implements ChatLog {
     if (after !== null) {
       const min = this.q.min.get()?.m ?? null;
       // A pruned seq above `after`, or a cursor from another database, leaves a gap replay can't fill.
-      reset = after > head || (min === null ? after < head : after < min - 1);
+      reset = after > head || after < this.prunedThrough() || (min === null ? after < head : after < min - 1);
       if (!reset) for (const row of this.q.after.all(after)) sink(toEnvelope(toStored(row)));
     }
     this.sinks.add(sink);
@@ -136,6 +141,38 @@ export class SqliteChatLog implements ChatLog {
   find<T extends DurableEventType>(type: T, key: string): StoredEvent<T> | null {
     const row = this.q.byKey.get(type, key);
     return row ? (toStored(row) as StoredEvent<T>) : null;
+  }
+
+  /** The highest seq a prune has deleted; rows the cap exempts can sit below it, so `min(seq)` can't tell. */
+  prunedThrough(): number {
+    return Number(this.q.prunedThrough.get(PRUNED_THROUGH_KEY)?.value ?? 0);
+  }
+
+  /** Approvals created since `approvalsSince` with no decision, and the newest `asks` unanswered asks. */
+  pending(opts: { approvalsSince: number; asks: number }): PendingState {
+    const approvals = this.db
+      .query(
+        `SELECT seq, type, key, data, created_at FROM web_events e WHERE e.type = 'approval' AND e.created_at >= ?
+         AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key) ORDER BY seq`,
+      )
+      .all(opts.approvalsSince) as Row[];
+    const asks = this.db
+      .query(
+        `SELECT seq, type, key, data, created_at FROM web_events e WHERE e.type = 'ask' AND json_extract(e.data, '$.askId') != ''
+         AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'ask_resolved' AND r.key = json_extract(e.data, '$.askId')) ORDER BY seq DESC LIMIT ?`,
+      )
+      .all(opts.asks) as Row[];
+    const at = (r: Row) => new Date(r.created_at).toISOString();
+    return {
+      approvals: approvals.map((r) => {
+        const d = JSON.parse(r.data) as ChatEventMap["approval"];
+        return { seq: r.seq, at: at(r), nonce: d.nonce, view: d.view };
+      }),
+      asks: asks.reverse().map((r) => {
+        const d = JSON.parse(r.data) as ChatEventMap["ask"];
+        return { seq: r.seq, at: at(r), key: d.key, askId: d.askId, question: d.question, choices: d.choices };
+      }),
+    };
   }
 
   findAsk(askId: string): StoredEvent<"ask"> | null {
@@ -163,8 +200,14 @@ export class SqliteChatLog implements ChatLog {
 
   prune(now: number): void {
     this.db.transaction(() => {
-      this.db.run("DELETE FROM web_events WHERE created_at < ?", [now - this.retentionMs]);
-      this.db.run("DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events ORDER BY seq DESC LIMIT -1 OFFSET ?)", [this.maxRows]);
+      const aged = this.db.query("DELETE FROM web_events WHERE created_at < ? RETURNING seq").all(now - this.retentionMs) as { seq: number }[];
+      const evicted = this.db
+        .query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events e WHERE NOT (${CAP_EXEMPT}) ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
+        .all(this.maxRows) as { seq: number }[];
+      const through = Math.max(this.prunedThrough(), ...aged.map((r) => r.seq), ...evicted.map((r) => r.seq));
+      if (through > this.prunedThrough()) {
+        this.db.run("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [PRUNED_THROUGH_KEY, String(through)]);
+      }
     })();
   }
 

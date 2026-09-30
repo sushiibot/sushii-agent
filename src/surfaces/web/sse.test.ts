@@ -10,6 +10,8 @@ function log() {
   return new SqliteChatLog(db);
 }
 
+const NONE = { approvals: [], asks: [] };
+
 async function drain(res: Response): Promise<string> {
   return await new Response(res.body).text();
 }
@@ -35,7 +37,7 @@ describe("sse", () => {
       heartbeatMs: 1_000,
       maxLifetimeMs: 20,
       onOpen: () => (opened++, () => closed++),
-      hello: () => ({ workspace: "offline", openTurns: [] }),
+      hello: () => ({ workspace: "offline", openTurns: [], pending: NONE }),
     });
     const text = await drain(res);
     expect(text).toStartWith("event: hello\n");
@@ -45,7 +47,7 @@ describe("sse", () => {
   test("an aborted request closes the stream", async () => {
     const chat = log();
     const ctrl = new AbortController();
-    const res = sseResponse(chat, null, { heartbeatMs: 1_000, maxLifetimeMs: 60_000, onOpen: () => () => {}, hello: () => ({ workspace: "online", openTurns: [] }), signal: ctrl.signal });
+    const res = sseResponse(chat, null, { heartbeatMs: 1_000, maxLifetimeMs: 60_000, onOpen: () => () => {}, hello: () => ({ workspace: "online", openTurns: [], pending: NONE }), signal: ctrl.signal });
     setTimeout(() => ctrl.abort(), 10);
     await drain(res);
     expect(chat.subscribers).toBe(0);
@@ -53,9 +55,53 @@ describe("sse", () => {
 
   test("a client that stops reading is cut off instead of buffering without bound", async () => {
     const chat = log();
-    const res = sseResponse(chat, null, { heartbeatMs: 1_000, maxLifetimeMs: 60_000, onOpen: () => () => {}, hello: () => ({ workspace: "online", openTurns: [] }), maxBufferedBytes: 1024 });
+    const res = sseResponse(chat, null, { heartbeatMs: 1_000, maxLifetimeMs: 60_000, onOpen: () => () => {}, hello: () => ({ workspace: "online", openTurns: [], pending: NONE }), maxBufferedBytes: 1024 });
     for (let i = 0; i < 1000; i++) chat.publish({ type: "delta", data: { turnId: "t", offset: i * 100, text: "x".repeat(100) } });
     expect(chat.subscribers).toBe(0);
     await res.body!.cancel();
+  });
+
+  test("a replay past the buffer cap closes the stream before it opens, leaking no timer, presence or subscription", async () => {
+    const chat = log();
+    for (let i = 0; i < 200; i++) chat.append("proactive", { key: `k${i}`, text: "x".repeat(1000), files: [] }, `k${i}`);
+    let opened = 0;
+    let intervals = 0;
+    const realSetInterval = globalThis.setInterval;
+    globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => (intervals++, realSetInterval(...args))) as typeof setInterval;
+    try {
+      const ctrl = new AbortController();
+      const res = sseResponse(chat, 0, {
+        heartbeatMs: 1_000,
+        maxLifetimeMs: 60_000,
+        onOpen: () => (opened++, () => {}),
+        hello: () => ({ workspace: "online", openTurns: [], pending: NONE }),
+        signal: ctrl.signal,
+        maxBufferedBytes: 1024,
+      });
+      await drain(res);
+      expect([opened, intervals, chat.subscribers]).toEqual([0, 0, 0]);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+    }
+  });
+
+  test("an event that fails to encode closes the stream instead of leaving it silent", async () => {
+    const chat = log();
+    const res = sseResponse(chat, null, { heartbeatMs: 1_000, maxLifetimeMs: 60_000, onOpen: () => () => {}, hello: () => ({ workspace: "online", openTurns: [], pending: NONE }) });
+    chat.publish({ type: "delta", data: { turnId: "t", offset: 0, text: 1n as unknown as string } });
+    expect(chat.subscribers).toBe(0);
+    expect(await drain(res)).toStartWith("event: hello\n");
+  });
+
+  test("the first frame carries the pending approvals and asks, on a reset too", async () => {
+    const chat = log();
+    chat.append("session", { kind: "new" });
+    const pending = { approvals: [{ seq: 1, at: "2026-09-30T00:00:00.000Z", nonce: "n".repeat(16), view: { tool: "t", agentId: "main", agentName: "Main", fields: [] } }], asks: [] };
+    const open = (after: number | null) =>
+      sseResponse(chat, after, { heartbeatMs: 1_000, maxLifetimeMs: 10, onOpen: () => () => {}, hello: () => ({ workspace: "online", openTurns: [], pending }) });
+    const hello = await drain(open(null));
+    const reset = await drain(open(99));
+    expect(hello).toContain(`"pending":${JSON.stringify(pending)}`);
+    expect(reset).toStartWith(`event: reset\ndata: {"headSeq":1,"pending":${JSON.stringify(pending)}}`);
   });
 });

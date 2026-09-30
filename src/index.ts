@@ -281,6 +281,8 @@ async function main() {
       logger.error({ err }, "sushii-mcp client close failed");
     }
     await webStopped;
+    // A message still being routed marks itself routed in the DB; bounded, inside docker's 10s grace.
+    if (webServer) await webChat.routes.drain();
     closeDb();
     try {
       await otelSDK?.shutdown();

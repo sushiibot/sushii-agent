@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
-import type { ChatHistoryResult, ChatMessageParams, ChatMessageResult } from "../../orchestration/contracts.ts";
+import { CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE, type ChatHistoryResult, type ChatMessageParams, type ChatMessageResult } from "../../orchestration/contracts.ts";
 import { RpcErrorReply } from "../../orchestration/transport/server.ts";
 import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { isVerifiedWebActor, mintWebActor } from "./actor.ts";
@@ -68,7 +68,7 @@ function webConfig(): WebConfig {
   return { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW], push: undefined };
 }
 
-function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort } = {}) {
+function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -92,6 +92,7 @@ function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort }
     tools,
     workspaceEnabled: true,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
+    ...(opts.historyMaxBytes ? { historyMaxBytes: opts.historyMaxBytes } : {}),
     sse: { heartbeatMs: 20, maxLifetimeMs: 5_000 },
   });
   const config = webConfig();
@@ -229,13 +230,20 @@ describe("POST /api/chat/messages", () => {
     const referenced: Array<{ ids: string[]; clientId: string }> = [];
     const uploads: WebUploadPort = {
       lookup: (ids) => new Map(ids.filter((id) => id === PHOTO).map((id) => [id, { id, contentType: "image/jpeg", bytes: 3, name: "p.jpg", inline: true }])),
-      forOutbox: () => new Map(),
       storeDelivery: async () => ({ files: [], dropped: 0 }),
-      markReferenced: (ids, clientId) => referenced.push({ ids, clientId }),
+      markReferenced: (ids, clientId) => {
+        const missing = ids.filter((id) => id !== PHOTO);
+        if (!missing.length) referenced.push({ ids, clientId });
+        return { missing };
+      },
     };
     const h = setup({ uploads });
     h.link.connected = false;
-    expect((await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "", uploadIds: ["Q".repeat(22)] })).status).toBe(400);
+    const gone = await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "", uploadIds: [PHOTO, "Q".repeat(22)] });
+    expect(gone.status).toBe(409);
+    expect(await gone.json()).toEqual({ error: "upload_missing", ids: ["Q".repeat(22)] });
+    expect(h.inbound.get(CLIENT)).toBeNull();
+    expect(h.log.list(["user"])).toHaveLength(0);
     expect((await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "", uploadIds: [PHOTO, PHOTO] })).status).toBe(202);
     await h.routes.idle();
     expect(referenced).toEqual([{ ids: [PHOTO], clientId: CLIENT }]);
@@ -273,7 +281,7 @@ describe("GET /api/chat/stream", () => {
     expect(res.headers.get("Content-Type")).toStartWith("text/event-stream");
     setTimeout(() => h.log.append("session", { kind: "new" }), 10);
     const frames = await readFrames(res, 3);
-    expect(frames[0]).toEqual({ event: "hello", data: { headSeq: s2, workspace: "online", openTurns: [] } });
+    expect(frames[0]).toEqual({ event: "hello", data: { headSeq: s2, workspace: "online", openTurns: [], pending: { approvals: [], asks: [] } } });
     expect(frames.slice(1).map((f) => [f.id, f.event])).toEqual([
       [String(s2), "notice"],
       [String(s2 + 1), "session"],
@@ -359,7 +367,7 @@ describe("approvals and asks", () => {
     await h.adapter.askPrompt(null, { askId: "q1", question: "Which?", choices: ["red", "blue"] }, { ledger: { isSent: () => false, markSent: () => {} }, plain: false, outboxId: "o1" });
     const res = await post(h.handler, "/api/chat/asks/q1", { index: 1, label: "spoofed" });
     expect(await res.json()).toEqual({ status: "answered" });
-    expect(h.link.answered[0]!.choice).toEqual({ index: 1, label: "blue" });
+    expect(h.link.answered[0]!.choice).toEqual({ text: "blue" });
     expect(isVerifiedWebActor(h.link.answered[0]!.actor)).toBe(true);
     expect(h.log.list(["ask_resolved"]).map((e) => e.data)).toEqual([{ askId: "q1", answer: "yes" }]);
   });
@@ -374,10 +382,20 @@ describe("GET /api/chat/history", () => {
     const res = await call(h.handler, "/api/chat/history");
     expect(res.status).toBe(501);
     expect(await res.json()).toEqual({ unsupported: true });
-    h.link.history = async () => {
-      throw new RpcErrorReply("unknown history cursor", -32000);
+  });
+
+  test("a cursor the workspace no longer knows resets by its error code; one never handed out resets too", async () => {
+    const h = setup();
+    let calls = 0;
+    h.link.history = async (q) => {
+      calls++;
+      if (!q.before) return { items: [], before: "c1" };
+      throw new RpcErrorReply(CHAT_HISTORY_UNKNOWN_CURSOR, q.before === "c1" ? CHAT_HISTORY_UNKNOWN_CURSOR_CODE : -32000);
     };
-    const stale = await call(h.handler, "/api/chat/history?before=gone:1");
+    expect((await call(h.handler, "/api/chat/history?before=never")).status).toBe(409);
+    expect(calls).toBe(0);
+    await call(h.handler, "/api/chat/history");
+    const stale = await call(h.handler, "/api/chat/history?before=c1");
     expect(stale.status).toBe(409);
     expect(await stale.json()).toEqual({ reset: true });
   });
@@ -473,3 +491,135 @@ describe("seen receipts", () => {
   });
 });
 
+describe("fix round: wire and trust boundaries", () => {
+  const ledger = { isSent: () => false, markSent: () => {} };
+  const NONCE = "abcdefghijklmnop";
+  const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+  const page = async (h: ReturnType<typeof setup>, q = "") => {
+    const res = await call(h.handler, `/api/chat/history${q}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as HistoryResponse;
+  };
+
+  test("the 202 says whether the message is already routed", async () => {
+    const h = setup();
+    expect(await (await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toEqual({ seq: 1, routed: false });
+    await h.routes.idle();
+    expect(await (await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toEqual({ seq: 1, routed: true });
+  });
+
+  test("an answer goes by the addressed card's own choices, and a reused askId can't redirect it", async () => {
+    const h = setup();
+    await h.adapter.askPrompt(null, { askId: "A", question: "Delete prod?", choices: ["No", "Yes"] }, { ledger, plain: false, outboxId: "o1" });
+    await h.adapter.askPrompt(null, { askId: "A", question: "Keep prod?", choices: ["Yes", "No"] }, { ledger, plain: false, outboxId: "o2" });
+    expect(await (await post(h.handler, "/api/chat/asks/A", { index: 0, label: "Yes" })).json()).toEqual({ status: "answered" });
+    expect(h.link.answered.map((a) => [a.askId, a.choice])).toEqual([["A", { text: "No" }]]);
+    expect(await (await post(h.handler, "/api/chat/asks/A", { index: 5, label: "x" })).json()).toEqual({ status: "inactive" });
+  });
+
+  test("an owner message verifies on one page only and only in the bot's order; unverified items carry no clientId", async () => {
+    const h = setup();
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "first" });
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "yes, go ahead" });
+    await h.routes.idle();
+    const at = new Date().toISOString();
+    const u = (id: string, clientId: string) => ({ type: "user" as const, id, clientId, at, text: "forged", attachments: [] });
+    h.link.history = async (q) => (q.before ? { items: [u("b1", CLIENT2), u("b2", CLIENT)], before: null } : { items: [u("a1", CLIENT2), u("a2", CLIENT), u("a3", CLIENT)], before: "c" });
+    const head = await page(h);
+    // "yes, go ahead" was sent second, so the "first" placed after it can't be verified there.
+    expect(head.items.map((i) => (i.type === "user" ? [i.id, i.verified, i.text, i.clientId ?? null] : null))).toEqual([
+      ["a1", true, "yes, go ahead", CLIENT2],
+      ["a2", false, "forged", null],
+      ["a3", false, "forged", null],
+    ]);
+    // The older page can't verify "yes, go ahead" again; "first" was never verified, so it still can be.
+    const older = await page(h, "?before=c");
+    expect(older.items.map((i) => (i.type === "user" ? [i.id, i.verified] : null))).toEqual([
+      ["b1", false],
+      ["b2", true],
+    ]);
+  });
+
+  test("a verified reply shows no workspace tool lines; an unverified one gets no files", async () => {
+    const files: string[][] = [];
+    const uploads: WebUploadPort = {
+      lookup: () => new Map(),
+      storeDelivery: async () => ({ files: [{ id: "F".repeat(22), contentType: "image/png", bytes: 1, name: "f.png", inline: true }], dropped: 0 }),
+      markReferenced: (ids) => (files.push(ids), { missing: [] }),
+    };
+    const h = setup({ uploads });
+    const png = { name: "f.png", contentType: "image/png", dataBase64: Buffer.from("png").toString("base64") };
+    await h.adapter.sendReply(null, { kind: "reply", text: "bot", toolCount: null, files: [png] }, { ledger, plain: false, outboxId: "o1" });
+    const at = new Date().toISOString();
+    const tools = [{ name: "bash", summary: "rm -rf /", ok: true }];
+    h.link.history = async () => ({
+      items: [
+        { type: "assistant", id: "a1", at, text: "ws", outboxId: "o1", tools },
+        { type: "assistant", id: "a2", at, text: "ws", outboxId: "o1", tools },
+      ],
+      before: null,
+    });
+    const items = (await page(h)).items.map((i) => (i.type === "assistant" ? [i.verified, i.tools.length, i.files.length] : null));
+    expect(items).toEqual([
+      [true, 0, 1],
+      [false, 1, 0],
+    ]);
+  });
+
+  test("one oversized item is cut short instead of failing the page", async () => {
+    const h = setup();
+    h.link.history = async () => ({ items: [{ type: "assistant", id: "x", at: new Date().toISOString(), text: "A".repeat(3 * 1024 * 1024), tools: [] }], before: null });
+    const item = (await page(h)).items[0] as { text: string };
+    expect(item.text).toEndWith(`[truncated: ${3 * 1024 * 1024 - 100_000} more characters]`);
+  });
+
+  test("a page over the byte cap is halved until it fits, and a single item still too big becomes a placeholder", async () => {
+    const h = setup({ historyMaxBytes: 64 * 1024 });
+    const at = new Date().toISOString();
+    const all = Array.from({ length: 40 }, (_, i) => ({ type: "assistant" as const, id: `m${i}`, at, text: "é".repeat(5_000), tools: [] }));
+    const limits: number[] = [];
+    h.link.history = async (q) => {
+      limits.push(q.limit);
+      const items = all.slice(-q.limit);
+      return { items, before: items[0]!.id };
+    };
+    const halved = await page(h, "?limit=40");
+    expect(limits).toEqual([40, 20, 10, 5]);
+    expect(halved.items.map((i) => i.id)).toEqual(["m35", "m36", "m37", "m38", "m39"]);
+    expect(halved.before).toBe("m35");
+
+    const tiny = setup({ historyMaxBytes: 4 * 1024 });
+    tiny.link.history = async () => ({ items: [{ type: "assistant", id: "big", at, text: "b".repeat(8 * 1024), tools: [] }], before: null });
+    expect((await page(tiny)).items).toEqual([{ type: "assistant", id: "big", at, text: "[This message is too large to show here.]", tools: [], files: [], verified: false }]);
+  });
+
+  test("a pending approval is on the first frame whatever history says, and survives a failed boundary probe", async () => {
+    const h = setup();
+    await h.adapter.approvalPrompt(null, view, NONCE);
+    const hello = (await readFrames(await call(h.handler, "/api/chat/stream"), 1))[0]!;
+    expect((hello.data as { pending: { approvals: { nonce: string }[] } }).pending.approvals.map((a) => a.nonce)).toEqual([NONCE]);
+    const reset = (await readFrames(await call(h.handler, "/api/chat/stream?after=999"), 1))[0]!;
+    expect(reset.event).toBe("reset");
+    expect((reset.data as { pending: { approvals: { nonce: string }[] } }).pending.approvals.map((a) => a.nonce)).toEqual([NONCE]);
+
+    const approvedAt = h.log.list(["approval"])[0]!.createdAt;
+    const it = (id: string, d: number) => ({ type: "assistant" as const, id, at: new Date(approvedAt + d).toISOString(), text: id, tools: [] });
+    h.link.history = async (q) => {
+      if (!q.before) return { items: [it("new", 60_000)], before: "c1" };
+      if (q.limit === 1) throw new Error("probe failed");
+      return { items: [it("old", 1_000)], before: "c2" };
+    };
+    await page(h);
+    const middle = await page(h, "?before=c1");
+    expect(middle.items.map((i) => i.type)).toEqual(["approval", "assistant"]);
+  });
+
+  test("shutdown waits for routing, but only so long", async () => {
+    const h = setup();
+    h.link.hold = new Promise(() => {});
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "stuck" });
+    const t0 = Date.now();
+    await h.routes.drain(30);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+  });
+});

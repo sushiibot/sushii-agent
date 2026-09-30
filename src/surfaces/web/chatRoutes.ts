@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ID_MAX, WEB_CONVERSATION_ID, uploadUrl, type ChatMessageParams, type ChatOrigin } from "../../orchestration/contracts.ts";
+import { CHAT_HISTORY_UNKNOWN_CURSOR_CODE, ID_MAX, WEB_CONVERSATION_ID, uploadUrl, type ChatMessageParams, type ChatOrigin } from "../../orchestration/contracts.ts";
 import { RpcErrorReply, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { handleOwnerMessage, type OwnerRouterDeps } from "../../orchestration/workspace/router.ts";
 import type { InboundMessage, RouterNotice, SurfaceActor } from "../../orchestration/workspace/surface.ts";
-import { NONCE_RE, type WorkspaceTools } from "../../orchestration/workspace/tools.ts";
+import { APPROVAL_TIMEOUT_MS, NONCE_RE, type WorkspaceTools } from "../../orchestration/workspace/tools.ts";
 import { getLogger } from "../../logger.ts";
 import { WEB_SURFACE } from "./actor.ts";
 import type { SqliteChatLog } from "./chatLog.ts";
@@ -14,14 +14,18 @@ import {
   MESSAGE_TEXT_MAX,
   MESSAGE_UPLOADS_MAX,
   UPLOAD_ID_RE,
+  type HistoryResetResponse,
+  type HistoryUnsupportedResponse,
   type PostApprovalResponse,
   type PostAskResponse,
   type PostMessageResponse,
+  type PostMessageUploadMissingResponse,
   type UploadRef,
+  type WebHistoryItem,
 } from "./events.ts";
 import { buildHistoryPage, RpcHistorySource, type HistorySource } from "./history.ts";
 import { forbidden, isJson, json, readJson } from "./http.ts";
-import type { WebInboundStore } from "./inbound.ts";
+import type { InboundRow, WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
 import { parseCursor, sseResponse, SSE_HEARTBEAT_MS, SSE_MAX_LIFETIME_MS } from "./sse.ts";
 import type { WebUploadPort, WebWorkspaceAdapter } from "./workspaceAdapter.ts";
@@ -32,7 +36,9 @@ const log = getLogger("web/chatRoutes");
 export const MESSAGE_BODY_MAX = 64 * 1024;
 export const HISTORY_RESPONSE_MAX = 2 * 1024 * 1024;
 const HISTORY_DEFAULT_LIMIT = 40;
-const UNKNOWN_HISTORY_CURSOR = "unknown history cursor";
+const PENDING_ASKS_MAX = 10;
+const HISTORY_FLOORS_KEPT = 256;
+const SHUTDOWN_IDLE_MS = 2_000;
 
 export const WEB_ORIGIN: ChatOrigin = Object.freeze({ surface: WEB_SURFACE, conversationId: WEB_CONVERSATION_ID });
 
@@ -67,6 +73,7 @@ export interface ChatRouteDeps {
   history?: HistorySource;
   now?: () => number;
   sse?: { heartbeatMs: number; maxLifetimeMs: number };
+  historyMaxBytes?: number;
 }
 
 export interface ChatRoutes {
@@ -74,6 +81,8 @@ export interface ChatRoutes {
   closeStreams(): void;
   /** Resolves once every message being routed has finished; for tests and shutdown. */
   idle(): Promise<void>;
+  /** idle(), bounded for shutdown. */
+  drain(timeoutMs?: number): Promise<void>;
 }
 
 const messageBody = z
@@ -98,9 +107,18 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   const now = deps.now ?? Date.now;
   const history = deps.history ?? new RpcHistorySource(link);
   const sseTimes = deps.sse ?? { heartbeatMs: SSE_HEARTBEAT_MS, maxLifetimeMs: SSE_MAX_LIFETIME_MS };
+  const historyMax = deps.historyMaxBytes ?? HISTORY_RESPONSE_MAX;
   const shutdown = new AbortController();
   // clientIds being routed right now, so a duplicate POST can't route the same message twice at once.
   const routing = new Map<string, Promise<void>>();
+  // History cursor → the owner-message floor of the pages newer than it; see buildHistoryPage.
+  const userFloors = new Map<string, number>();
+  const rememberFloor = (cursor: string, floor: number) => {
+    const prev = userFloors.get(cursor);
+    userFloors.delete(cursor);
+    userFloors.set(cursor, Math.min(prev ?? Infinity, floor));
+    if (userFloors.size > HISTORY_FLOORS_KEPT) userFloors.delete(userFloors.keys().next().value!);
+  };
 
   const online = () => deps.workspaceEnabled && link.isConnected();
   const notice = (n: RouterNotice) => void chatLog.append("notice", n);
@@ -165,27 +183,30 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     if (existing) {
       if (existing.text !== body.text) log.warn({ clientId: body.clientId }, "a resent web message differs from the stored one; keeping the stored one");
       if (existing.routedAt === null) drive(existing, actor);
-      return json({ seq: existing.seq } satisfies PostMessageResponse, 202);
+      return json({ seq: existing.seq, routed: existing.routedAt !== null } satisfies PostMessageResponse, 202);
     }
-    if (uploadIds.length) {
-      if (!deps.uploads) return json({ error: "uploads are not available" }, 400);
-      const known = deps.uploads.lookup(uploadIds);
-      if (uploadIds.some((id) => !known.has(id))) return json({ error: "unknown upload" }, 400);
-    }
+    if (uploadIds.length && !deps.uploads) return json({ error: "uploads are not available" }, 400);
     const at = now();
-    const row = chatLog.transaction(() => {
-      // A concurrent duplicate may have been stored while this request's body was read.
-      const raced = inbound.get(body.clientId);
-      if (raced) return raced;
-      const seq = chatLog.append("user", { key: body.clientId, text: body.text, uploadIds, at: new Date(at).toISOString() }, body.clientId);
-      const stored = { clientId: body.clientId, text: body.text, uploadIds, seq, createdAt: at };
-      inbound.insert(stored);
-      // With the insert, so a message held for days never loses its photos to orphan GC.
-      if (uploadIds.length) deps.uploads?.markReferenced(uploadIds, body.clientId);
-      return { ...stored, routedAt: null };
-    });
+    let row: InboundRow;
+    try {
+      row = chatLog.transaction(() => {
+        // A concurrent duplicate may have been stored while this request's body was read.
+        const raced = inbound.get(body.clientId);
+        if (raced) return raced;
+        // In the same transaction as the insert, so a message held for days never loses its photos to orphan GC.
+        const missing = uploadIds.length ? deps.uploads!.markReferenced(uploadIds, body.clientId).missing : [];
+        if (missing.length) throw new UploadMissing(missing);
+        const seq = chatLog.append("user", { key: body.clientId, text: body.text, uploadIds, at: new Date(at).toISOString() }, body.clientId);
+        const stored = { clientId: body.clientId, text: body.text, uploadIds, seq, createdAt: at };
+        inbound.insert(stored);
+        return { ...stored, routedAt: null };
+      });
+    } catch (err) {
+      if (err instanceof UploadMissing) return json({ error: "upload_missing", ids: err.ids } satisfies PostMessageUploadMissingResponse, 409);
+      throw err;
+    }
     if (row.routedAt === null) drive(row, actor);
-    return json({ seq: row.seq } satisfies PostMessageResponse, 202);
+    return json({ seq: row.seq, routed: row.routedAt !== null } satisfies PostMessageResponse, 202);
   }
 
   async function postStop(req: Request, actor: SurfaceActor): Promise<Response> {
@@ -241,10 +262,13 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   async function postAsk(req: Request, askId: string, actor: SurfaceActor): Promise<Response> {
     const body = await parseBody(req, askBody);
     if (body instanceof Response) return body;
+    // The adapter keeps askIds unique, so this is the card the owner answered; its own stored choices
+    // decide the answer, never the link's in-memory list, which a later ask can overwrite.
     const ask = chatLog.findAsk(askId);
     if (!ask) return json({ error: "unknown ask" }, 404);
-    const choice = "text" in body ? { text: body.text } : { index: body.index, label: ask.data.choices[body.index] ?? body.label };
-    const res = await link.answerAsk(WEB_ORIGIN, askId, choice, actor);
+    const text = "text" in body ? body.text : ask.data.choices[body.index];
+    if (text === undefined) return json({ status: "inactive" } satisfies PostAskResponse);
+    const res = await link.answerAsk(WEB_ORIGIN, askId, { text }, actor);
     if (res.status === "forbidden") return forbidden();
     if (res.status === "answered" || res.status === "duplicate") chatLog.append("ask_resolved", { askId, answer: res.answer }, askId);
     return json({ status: res.status } satisfies PostAskResponse);
@@ -275,18 +299,27 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_LIMIT_MAX) return json({ error: "invalid limit" }, 400);
     if (before !== undefined && (before === "" || before.length > ID_MAX)) return json({ error: "invalid cursor" }, 400);
     if (!online()) return json({ offline: true }, 503);
+    // A cursor this process didn't hand out (a restart, or one evicted) has no floor to verify against.
+    const userFloor = before === undefined ? Infinity : userFloors.get(before);
+    if (userFloor === undefined) return json({ reset: true } satisfies HistoryResetResponse, 409);
+    const ok = (text: string) => new Response(text, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
     try {
       // Halve the page until it fits; the workspace's cursors stay valid for any limit.
       for (let n = limit; ; n = Math.floor(n / 2)) {
-        const page = await buildHistoryPage(history, { limit: n, ...(before ? { before } : {}) }, { log: chatLog, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
-        const text = JSON.stringify(page);
-        if (Buffer.byteLength(text) <= HISTORY_RESPONSE_MAX) return new Response(text, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
-        if (n === 1) return json({ error: "history item too large" }, 502);
+        const page = await buildHistoryPage(history, { limit: n, ...(before ? { before } : {}) }, { log: chatLog, userFloor, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
+        let text = JSON.stringify(page.response);
+        if (n === 1 && Buffer.byteLength(text) > historyMax) {
+          text = JSON.stringify({ ...page.response, items: page.response.items.map((i) => (Buffer.byteLength(JSON.stringify(i)) > historyMax / 2 ? tooLarge(i) : i)) });
+        }
+        if (Buffer.byteLength(text) <= historyMax || n === 1) {
+          if (page.response.before !== null) rememberFloor(page.response.before, page.userFloor);
+          return ok(text);
+        }
       }
     } catch (err) {
-      if (err instanceof RpcErrorReply && err.code === -32601) return json({ unsupported: true }, 501);
+      if (err instanceof RpcErrorReply && err.code === -32601) return json({ unsupported: true } satisfies HistoryUnsupportedResponse, 501);
       // A cursor from before a session rotation or restart: the client drops its pages and reloads from the head.
-      if (err instanceof RpcErrorReply && err.message.includes(UNKNOWN_HISTORY_CURSOR)) return json({ reset: true }, 409);
+      if (err instanceof RpcErrorReply && err.code === CHAT_HISTORY_UNKNOWN_CURSOR_CODE) return json({ reset: true } satisfies HistoryResetResponse, 409);
       if (err instanceof WorkspaceNotConnectedError) return json({ offline: true }, 503);
       log.warn({ err }, "chat/history failed");
       return json({ error: "history unavailable" }, 502);
@@ -304,7 +337,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     return sseResponse(chatLog, after, {
       ...sseTimes,
       onOpen: () => presence.open(streamId),
-      hello: () => ({ workspace: online() ? "online" : "offline", openTurns: adapter.openTurns() }),
+      hello: () => ({
+        workspace: online() ? "online" : "offline",
+        openTurns: adapter.openTurns(),
+        pending: chatLog.pending({ approvalsSince: now() - APPROVAL_TIMEOUT_MS, asks: PENDING_ASKS_MAX }),
+      }),
       signal: AbortSignal.any([req.signal, shutdown.signal]),
     });
   }
@@ -336,7 +373,22 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     async idle() {
       while (routing.size) await Promise.all([...routing.values()]);
     },
+    async drain(timeoutMs = SHUTDOWN_IDLE_MS) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([this.idle(), new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))]);
+      clearTimeout(timer);
+    },
   };
+}
+
+class UploadMissing extends Error {
+  constructor(readonly ids: string[]) {
+    super("upload missing");
+  }
+}
+
+function tooLarge(item: WebHistoryItem): WebHistoryItem {
+  return { type: "assistant", id: item.id, at: item.at, text: "[This message is too large to show here.]", tools: [], files: [], verified: false };
 }
 
 async function parseBody<T extends z.ZodTypeAny>(req: Request, schema: T, limit?: number): Promise<z.infer<T> | Response> {

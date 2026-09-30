@@ -4,14 +4,14 @@ import { applySchema } from "../../db/index.ts";
 import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { RPC_METHODS, type ChatDeliverParams, type ChatEventPayload } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/transport/server.ts";
-import { WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
+import { MAX_OPEN_TURNS, WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
 import type { Timers } from "../../orchestration/workspace/progress.ts";
-import { SurfaceRegistry, type ApprovalView } from "../../orchestration/workspace/surface.ts";
+import { SurfaceRegistry, type ApprovalView, type InboundMessage } from "../../orchestration/workspace/surface.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import type { ChatEnvelope, UploadRef } from "./events.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { createPresence } from "./presence.ts";
-import { WebWorkspaceAdapter, type WebUploadPort } from "./workspaceAdapter.ts";
+import { REPLY_TEXT_MAX, TOOL_SUMMARY_MAX, TURN_TEXT_MAX, WebWorkspaceAdapter, type WebUploadPort } from "./workspaceAdapter.ts";
 
 const P = "drk";
 const CONN: ConnectionInfo = { runnerId: `workspace-${P}`, role: "workspace", principalId: P, protocolVersion: 1, state: "streaming" };
@@ -56,7 +56,7 @@ class FakeRpc implements WorkspaceRpc {
   }
 }
 
-function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database } = {}) {
+function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number } } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -71,6 +71,7 @@ function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database } =
     push: { send: async (p) => (pushes.push(p), { sent: opts.sent ?? 1 }) },
     breakGlass: async (nonce) => (breakGlass.push(nonce), true),
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
+    ...(opts.appendBudget ? { appendBudget: opts.appendBudget } : {}),
     timers: t.timers,
   });
   const surfaces = new SurfaceRegistry("web", { pinned: true }).register(adapter);
@@ -108,11 +109,12 @@ describe("web adapter deliveries", () => {
     expect(h.events.filter((e) => e.type === "reply")).toHaveLength(1);
   });
 
-  test("a delivery for another web conversation is refused and left unacked", async () => {
+  test("a delivery for another web conversation is refused once and acked, never stored or retried", async () => {
     const h = setup();
     await h.link.deliver(deliver({ origin: { surface: "web", conversationId: "other" } }));
+    await h.link.deliver(deliver({ origin: { surface: "web", conversationId: "other" } }));
     expect(h.log.list(["reply"])).toHaveLength(0);
-    expect(h.rpc.calls.filter((c) => c.method === RPC_METHODS.chatAck)).toHaveLength(0);
+    expect(h.rpc.calls.filter((c) => c.method === RPC_METHODS.chatAck)).toHaveLength(2);
   });
 
   test("a Discord-origin delivery resolves to web", async () => {
@@ -130,8 +132,7 @@ describe("web adapter deliveries", () => {
         return { files: [ref], dropped: files.length - 1 };
       },
       lookup: () => new Map(),
-      forOutbox: () => new Map(),
-      markReferenced: () => {},
+      markReferenced: () => ({ missing: [] }),
     };
     const file = { name: "a.png", contentType: "image/png", dataBase64: Buffer.from("png").toString("base64") };
     const h = setup({ uploads });
@@ -260,5 +261,94 @@ describe("web adapter approvals and push", () => {
     expect(h.pushes).toHaveLength(1);
     expect(h.breakGlass).toHaveLength(1);
     close();
+  });
+});
+
+describe("web adapter bounds on what the workspace sends", () => {
+  const ledger = { isSent: () => false, markSent: () => {} };
+  const acks = (h: ReturnType<typeof setup>) => h.rpc.calls.filter((c) => c.method === RPC_METHODS.chatAck).length;
+
+  test("repeated turn_end for a turn never seen stores nothing; a real turn's final is keyed by its turnId", async () => {
+    const h = setup();
+    for (let i = 0; i < 200; i++) h.event("same", { type: "turn_end", aborted: true });
+    h.event("t1", { type: "turn_start" });
+    h.event("t1", { type: "turn_end", aborted: true });
+    h.event("t1", { type: "turn_end", aborted: true });
+    await h.link.settled();
+    await tick();
+    expect(h.log.list(["turn_final"]).map((e) => [e.key, e.data.turnId, e.data.outcome])).toEqual([["t1:stopped", "t1", "stopped"]]);
+  });
+
+  test("over the append budget a delivery stays unacked with no failure counted, and a final is dropped", async () => {
+    const h = setup({ appendBudget: { burst: 2, perSec: 0 } });
+    await h.link.deliver(deliver({ outboxId: "o1" }));
+    await h.link.deliver(deliver({ outboxId: "o2" }));
+    await h.link.deliver(deliver({ outboxId: "o3" }));
+    expect(h.log.list(["reply"]).map((e) => e.key)).toEqual(["o1", "o2"]);
+    expect(acks(h)).toBe(2);
+    expect(h.db.query("SELECT count(*) AS n FROM kv WHERE key LIKE 'workspace:deliver_failures:%'").get()).toEqual({ n: 0 });
+    // A resend of a stored delivery costs nothing and is still acked.
+    h.db.run("DELETE FROM workspace_outbox_seen");
+    await h.link.deliver(deliver({ outboxId: "o1" }));
+    expect(acks(h)).toBe(3);
+    await h.adapter.progressFinalize(null, { id: "t9" }, { outcome: "stopped", summary: null });
+    expect(h.log.list(["turn_final"])).toHaveLength(0);
+  });
+
+  test("an oversized outbox id is refused and acked; long text is cut with a note", async () => {
+    const h = setup();
+    await h.link.deliver(deliver({ outboxId: "x".repeat(257) }));
+    expect(h.log.list(["reply"])).toHaveLength(0);
+    expect(acks(h)).toBe(1);
+    await h.link.deliver(deliver({ outboxId: "o2", text: "a".repeat(REPLY_TEXT_MAX + 5), turnId: "t".repeat(257) }));
+    const data = h.log.find("reply", "o2")!.data;
+    expect(data.text).toBe(`${"a".repeat(REPLY_TEXT_MAX)}\n\n[truncated: 5 more characters]`);
+    expect(data.turnId).toBeUndefined();
+  });
+
+  test("an ask reusing an earlier askId, or with an oversized one, is stored without answer buttons", async () => {
+    const h = setup();
+    await h.adapter.askPrompt(null, { askId: "A", question: "Delete prod?", choices: ["No", "Yes"] }, { ledger, plain: false, outboxId: "o1" });
+    await h.adapter.askPrompt(null, { askId: "A", question: "Keep prod?", choices: ["Yes", "No"] }, { ledger, plain: false, outboxId: "o2" });
+    await h.adapter.askPrompt(null, { askId: "A", question: "Delete prod?", choices: ["No", "Yes"] }, { ledger, plain: false, outboxId: "o1" });
+    await h.adapter.askPrompt(null, { askId: "B".repeat(257), question: "Long?", choices: ["x"] }, { ledger, plain: false, outboxId: "o3" });
+    expect(h.log.list(["ask"]).map((e) => [e.key, e.data.askId, e.data.choices])).toEqual([
+      ["o1", "A", ["No", "Yes"]],
+      ["o2", "", []],
+      ["o3", "", []],
+    ]);
+    expect(h.log.findAsk("A")!.key).toBe("o1");
+  });
+
+  test("tool summaries and live text are capped", async () => {
+    const h = setup();
+    const handle = await h.adapter.progressCreate(null, { turnId: "t1", startedAt: 0, lines: [{ name: "bash", summary: "s".repeat(1000), state: "run" }], toolCount: 1, text: "" });
+    const tool = h.events.find((e) => e.type === "tool")!.data as { summary: string };
+    expect(tool.summary.startsWith("s".repeat(TOOL_SUMMARY_MAX))).toBe(true);
+    expect(tool.summary.length).toBeLessThan(TOOL_SUMMARY_MAX + 40);
+    const view = h.adapter.openTurns()[0]!;
+    await h.adapter.progressDelta(handle, "x".repeat(TURN_TEXT_MAX - 1), view);
+    await h.adapter.progressDelta(handle, "yz", view);
+    await h.adapter.progressDelta(handle, "more", view);
+    expect(h.adapter.openTurns()[0]!.text).toBe(`${"x".repeat(TURN_TEXT_MAX - 1)}y`);
+    expect(h.events.filter((e) => e.type === "delta").map((e) => (e.data as { text: string }).text.length)).toEqual([TURN_TEXT_MAX - 1, 1]);
+    h.adapter.close();
+  });
+
+  test("open turns are capped; the oldest is finalized as interrupted", async () => {
+    const h = setup();
+    for (let i = 0; i <= MAX_OPEN_TURNS; i++) await h.adapter.progressCreate(null, { turnId: `u${i}`, startedAt: 0, lines: [], toolCount: 0, text: "" });
+    expect(h.adapter.openTurns().map((t) => t.turnId)).toHaveLength(MAX_OPEN_TURNS);
+    expect(h.adapter.openTurns()[0]!.turnId).toBe("u1");
+    expect(h.log.list(["turn_final"]).map((e) => e.key)).toEqual(["u0:interrupted"]);
+    h.adapter.close();
+  });
+
+  test("a notice names the owner message it answers, except workspaceOffline, which asks for a resend", async () => {
+    const h = setup();
+    const message: InboundMessage = { origin: WEB, id: "01J9Z3W8K2M4N6P8Q0R2S4T6V8", text: "!login", author: { id: "o", name: "drk" }, isVoice: false, attachments: [] };
+    await h.adapter.notice(message, { type: "loginUsage" });
+    await h.adapter.notice(message, { type: "workspaceOffline" });
+    expect(h.log.list(["notice"]).map((e) => e.data)).toEqual([{ type: "loginUsage", clientId: message.id }, { type: "workspaceOffline" }]);
   });
 });

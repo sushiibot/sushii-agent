@@ -1,6 +1,6 @@
 import { getLogger } from "../../logger.ts";
 import type { ChatLog, Subscription } from "./chatLog.ts";
-import type { ChatEnvelope, TurnView, WorkspaceState } from "./events.ts";
+import type { ChatEnvelope, PendingState, TurnView, WorkspaceState } from "./events.ts";
 
 const log = getLogger("web/sse");
 
@@ -15,7 +15,7 @@ export interface SseOptions {
   /** Runs when the stream opens; its return value runs when it closes. */
   onOpen(): () => void;
   /** Read in the same synchronous step as the subscription, so the first frame and the replay agree. */
-  hello(): { workspace: WorkspaceState; openTurns: TurnView[] };
+  hello(): { workspace: WorkspaceState; openTurns: TurnView[]; pending: PendingState };
   signal?: AbortSignal;
   maxBufferedBytes?: number;
 }
@@ -77,21 +77,32 @@ export function sseResponse(chatLog: ChatLog, after: number | null, opts: SseOpt
           }
           controller.enqueue(bytes);
         };
+        // Never throws into the log's fan-out: a stream that can't take an event is closed, not left silent.
+        const send = (ev: ChatEnvelope) => {
+          try {
+            write(encodeEvent(ev));
+          } catch (err) {
+            log.warn({ err, type: ev.type }, "closing a web chat stream that failed to write");
+            close();
+          }
+        };
 
         const replay: ChatEnvelope[] = [];
         let live = false;
-        sub = chatLog.subscribe(after, (ev) => (live ? write(encodeEvent(ev)) : replay.push(ev)));
+        sub = chatLog.subscribe(after, (ev) => (live ? send(ev) : replay.push(ev)));
         const state = opts.hello();
         if (sub.reset) {
-          write(encodeEvent({ type: "reset", data: { headSeq: sub.head } }));
-          write(encodeEvent({ type: "workspace", data: { state: state.workspace } }));
-          for (const view of state.openTurns) write(encodeEvent({ type: "snapshot", data: { turnId: view.turnId, view } }));
+          send({ type: "reset", data: { headSeq: sub.head, pending: state.pending } });
+          send({ type: "workspace", data: { state: state.workspace } });
+          for (const view of state.openTurns) send({ type: "snapshot", data: { turnId: view.turnId, view } });
         } else {
-          write(encodeEvent({ type: "hello", data: { headSeq: sub.head, workspace: state.workspace, openTurns: state.openTurns } }));
-          for (const ev of replay) write(encodeEvent(ev));
+          send({ type: "hello", data: { headSeq: sub.head, workspace: state.workspace, openTurns: state.openTurns, pending: state.pending } });
+          for (const ev of replay) send(ev);
         }
         replay.length = 0;
         live = true;
+        // A replay past the buffer cap closes the stream before it opens; nothing below may outlive it.
+        if (closed) return;
 
         onClose = opts.onOpen();
         heartbeat = setInterval(() => write(HEARTBEAT), opts.heartbeatMs);

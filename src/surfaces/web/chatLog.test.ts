@@ -115,4 +115,51 @@ describe("SqliteChatLog", () => {
     expect(got).toHaveLength(2);
     expect(log.subscribers).toBe(1);
   });
+
+  test("the row cap never evicts the owner's messages or an undecided approval", () => {
+    const { log } = setup({ maxRows: 100 });
+    const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+    log.append("approval", { nonce: "decided", view }, "decided");
+    log.append("approval_resolved", { nonce: "decided", decision: "deny" }, "decided");
+    log.append("approval", { nonce: "waiting", view }, "waiting");
+    log.append("user", { key: "u1", text: "owner", uploadIds: [], at: "t" }, "u1");
+    for (let i = 0; i < 200; i++) log.append("turn_final", { turnId: `t${i}`, outcome: "stopped", summary: null }, `t${i}:stopped`);
+    log.prune(0);
+    expect(log.find("approval", "waiting")).not.toBeNull();
+    expect(log.find("user", "u1")).not.toBeNull();
+    expect(log.find("approval", "decided")).toBeNull();
+    expect(log.list(["turn_final"])).toHaveLength(100);
+  });
+
+  test("a cursor inside a gap the cap left above an exempt row still resets", () => {
+    const { log } = setup({ maxRows: 2 });
+    log.append("user", { key: "u1", text: "owner", uploadIds: [], at: "t" }, "u1");
+    const seqs = [2, 3, 4, 5, 6].map((i) => log.append("notice", notice(String(i))));
+    log.prune(0);
+    expect(log.prunedThrough()).toBe(seqs[2]!);
+    expect(log.subscribe(seqs[0]!, () => {}).reset).toBe(true);
+    const replayed: ChatEnvelope[] = [];
+    expect(log.subscribe(seqs[2]!, (ev) => replayed.push(ev)).reset).toBe(false);
+    expect(replayed.map((e) => e.seq)).toEqual(seqs.slice(3));
+  });
+
+  test("pending lists undecided approvals in the window and the newest unanswered asks, oldest first", () => {
+    const { log, advance, now } = setup();
+    const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+    log.append("approval", { nonce: "stale", view }, "stale");
+    advance(60_000);
+    const since = now();
+    log.append("approval", { nonce: "done", view }, "done");
+    log.append("approval_resolved", { nonce: "done", decision: "approve" }, "done");
+    const live = log.append("approval", { nonce: "live", view }, "live");
+    log.append("ask", { key: "o1", askId: "a1", question: "q1", choices: ["x"] }, "o1");
+    log.append("ask", { key: "o2", askId: "a2", question: "q2", choices: [] }, "o2");
+    log.append("ask", { key: "o3", askId: "", question: "no id", choices: [] }, "o3");
+    log.append("ask", { key: "o4", askId: "a4", question: "q4", choices: ["y"] }, "o4");
+    log.append("ask_resolved", { askId: "a4", answer: "y" }, "a4");
+    log.append("ask", { key: "o5", askId: "a5", question: "q5", choices: ["z"] }, "o5");
+    const pending = log.pending({ approvalsSince: since, asks: 2 });
+    expect(pending.approvals.map((a) => [a.seq, a.nonce])).toEqual([[live, "live"]]);
+    expect(pending.asks.map((a) => a.key)).toEqual(["o2", "o5"]);
+  });
 });

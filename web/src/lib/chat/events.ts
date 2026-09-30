@@ -109,13 +109,34 @@ export type RouterNotice =
 	| { type: 'commandOffline' }
 	| { type: 'commandFailed'; error: string };
 
+/** Unresolved items from the bot's own log, carried on the first frame so showing them never depends
+ *  on the workspace's history. */
+export interface PendingState {
+	/** Approvals still waiting for a decision, oldest first. */
+	approvals: { seq: number; at: string; nonce: string; view: ApprovalView }[];
+	/** The newest unanswered asks, oldest first. */
+	asks: {
+		seq: number;
+		at: string;
+		key: string;
+		askId: string;
+		question: string;
+		choices: string[];
+	}[];
+}
+
 // ── SSE events ──
 
 /** Payload of each SSE event, by event name. */
 export interface ChatEventMap {
-	hello: { headSeq: number; workspace: WorkspaceState; openTurns: TurnView[] };
+	hello: {
+		headSeq: number;
+		workspace: WorkspaceState;
+		openTurns: TurnView[];
+		pending: PendingState;
+	};
 	/** `after` is outside the retained range: drop the local tail and reload history. */
-	reset: { headSeq: number };
+	reset: { headSeq: number; pending: PendingState };
 	user: { key: string; text: string; uploadIds: string[]; at: string };
 	status: { clientId: string; state: 'accepted' | 'steer' | 'queued' | 'stopped' | 'newSession' };
 	reply: { key: string; turnId?: string; text: string; usage?: ChatUsage; files: UploadRef[] };
@@ -131,7 +152,9 @@ export interface ChatEventMap {
 		outcome: TurnOutcome;
 		summary: { durationMs: number; toolCount: number } | null;
 	};
-	notice: RouterNotice;
+	/** `clientId` is the owner message this notice answers. It is never set on `workspaceOffline`,
+	 *  which asks the client to resend. */
+	notice: RouterNotice & { clientId?: string };
 	session: { kind: 'new' | 'compacted' };
 	snapshot: { turnId: string; view: ProgressView };
 	/** Apply only when `offset` equals the local text length; otherwise wait for a snapshot. */
@@ -241,6 +264,14 @@ export interface HistoryResponse {
 export interface HistoryOfflineResponse {
 	offline: true;
 }
+/** 501 body when the workspace can't serve history. */
+export interface HistoryUnsupportedResponse {
+	unsupported: true;
+}
+/** 409 body when the workspace no longer knows `before`: drop the loaded pages and reload from the newest. */
+export interface HistoryResetResponse {
+	reset: true;
+}
 
 export interface PostMessageBody {
 	clientId: string;
@@ -249,6 +280,13 @@ export interface PostMessageBody {
 }
 export interface PostMessageResponse {
 	seq: number;
+	/** The workspace already took the message, so the client can drop its outbox entry. */
+	routed: boolean;
+}
+/** 409 body when an upload the message names is gone; nothing was stored. */
+export interface PostMessageUploadMissingResponse {
+	error: 'upload_missing';
+	ids: string[];
 }
 
 export interface PostStopBody {
