@@ -19,6 +19,8 @@ import { handleWorkspaceAskButton, handleWorkspaceStopButton, type WorkspaceButt
 import { ACCENT, DiscordOwnerDmSurface, DiscordWorkspaceAdapter, OFFLINE_NOTICE, WS_STOP_PREFIX } from "../surfaces/discord/workspaceAdapter.ts";
 import { PersonalSession, type ChatSession, type ChatSessionFactory } from "./personalSession.ts";
 import { readWorkspaceState } from "./state.ts";
+import { commandHandlers } from "./commands.ts";
+import { ModelChoice } from "./modelChoice.ts";
 import { ToolStubs } from "./toolStubs.ts";
 import { AuthLogin, type LoginFn } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
@@ -433,7 +435,16 @@ async function startWorkspace(): Promise<Workspace> {
         secret,
         principalId: P,
         state: () => ws.personal.state,
-        handlers: { ...ws.personal.handlers(), ...ws.auth.handlers() },
+        handlers: {
+          ...ws.personal.handlers(),
+          ...ws.auth.handlers(),
+          ...commandHandlers({
+            principalId: P,
+            compact: async () => ({ error: "Nothing to compact (session too small)" }),
+            choice: new ModelChoice({ provider: "chatgpt", chatgptModel: "gpt-6.1-sol", model: "openai/gpt-6-luna" } as WorkspaceConfig, stateDir),
+            tasks: (arg) => (arg ? `project ${arg}: no open sub-tasks` : "**Quick**\n- Book dentist"),
+          }),
+        },
         onRegistered: (result) => {
           ws.toolStubs.update(result?.tools ?? []);
           ws.personal.onRegistered();
@@ -966,6 +977,45 @@ describe("workspace e2e: delegate, scheduled jobs, auto-mode asks", () => {
     expect(h.ws.pi().prompts).toEqual([stamped("1300", "clean the build dir")]);
     h.ws.pi().reply("Cleaned.");
     await waitFor(() => h.dm.replies().some((s) => textOf(s.options).includes("Cleaned.")), "reply");
+  });
+});
+
+describe("workspace commands and asks outside a turn", () => {
+  test("14. !tasks, !model and !compact go over chat/command and answer in the DM without reaching the agent", async () => {
+    const h = await linked();
+    await connected(h);
+    await h.route.dm("1400", "!tasks");
+    await waitFor(() => h.dm.sent.some((s) => textOf(s.options).includes("Book dentist")), "tasks reply");
+    await h.route.dm("1401", "!tasks osaka");
+    await waitFor(() => h.dm.sent.some((s) => textOf(s.options).includes("project osaka")), "project reply");
+    await h.route.dm("1402", "!model luna");
+    await waitFor(() => h.dm.sent.some((s) => textOf(s.options).includes("Model set to **luna**")), "model reply");
+    await h.route.dm("1403", "!compact");
+    await waitFor(() => h.dm.sent.some((s) => textOf(s.options).includes("Didn't compact")), "compact reply");
+    expect(h.ws.pi().prompts).toEqual([]);
+  });
+
+  test("15. a workspace ask with no turn (the task review) gets buttons on the preferred surface; a click answers it", async () => {
+    const h = await linked();
+    await connected(h);
+    const answer = h.ws.personal.askOwner("Stale: 1. Dentist", ["Keep all", "Drop all"], (t) => (/^(keep|drop) all$/i.test(t) ? { value: t.toLowerCase() } : null));
+    const askOf = () => h.dm.sent.find((s) => textOf(s.options).includes("Stale: 1. Dentist"));
+    await waitFor(() => askOf() !== undefined, "review ask");
+    const askId = /wsask:([A-Za-z0-9]+):1/.exec(textOf(askOf()!.options))![1]!;
+    const interaction = {
+      customId: `wsask:${askId}:1`,
+      id: "int-review",
+      channelId: "dm",
+      user: { id: OWNER, username: "drk", globalName: "drk" },
+      component: { label: "Drop all" },
+      message: { components: [], edit: async () => {} },
+      reply: async () => {},
+      deferReply: async () => {},
+      editReply: async () => {},
+    } as unknown as WorkspaceButtonInteraction;
+    await handleWorkspaceAskButton(interaction, { link: h.r.bot.link });
+    expect(await answer).toBe("drop all");
+    expect(h.ws.pi().prompts).toEqual([]);
   });
 });
 

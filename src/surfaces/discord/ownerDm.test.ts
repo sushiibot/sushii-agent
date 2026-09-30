@@ -284,6 +284,61 @@ describe("owner DM routing", () => {
   });
 });
 
+describe("workspace commands", () => {
+  function withCommands(opts: { connected?: boolean; fail?: boolean } = {}) {
+    const t = fakeDeps({ connected: opts.connected ?? true });
+    const commands: Array<[string, string | undefined]> = [];
+    t.deps.link.command = async (command, args) => {
+      commands.push([command, args]);
+      if (opts.fail) throw new Error("workspace busy");
+      return { text: `${command} ok` };
+    };
+    return { ...t, commands };
+  }
+
+  test("!compact, !model [alias] and !tasks [project] go to chat/command and the answer is posted", async () => {
+    const { deps, calls, commands } = withCommands();
+    const sent: unknown[] = [];
+    for (const [i, content] of ["!compact", "!model", "!Model or-luna", "!tasks", "!tasks osaka trip"].entries()) {
+      const m = fakeMessage({ id: String(2000 + i), content });
+      await handleOwnerDm(m.msg, deps);
+      sent.push(...m.sent);
+      expect(m.reactions).toEqual(["👀"]);
+    }
+    expect(commands).toEqual([
+      ["compact", undefined],
+      ["model", undefined],
+      ["model", "or-luna"],
+      ["tasks", undefined],
+      ["tasks", "osaka trip"],
+    ]);
+    expect(sent.map((o) => (o as { content: string }).content)).toEqual(["compact ok", "model ok", "model ok", "tasks ok", "tasks ok"]);
+    expect(calls.messages).toHaveLength(0);
+  });
+
+  test("anything else starting with the word is ordinary text", async () => {
+    const { deps, calls, commands } = withCommands();
+    await handleOwnerDm(fakeMessage({ content: "!compact now please" }).msg, deps);
+    await handleOwnerDm(fakeMessage({ id: "1001", content: "!models" }).msg, deps);
+    expect(commands).toHaveLength(0);
+    expect(calls.messages.map((m) => m.text)).toEqual(["!compact now please", "!models"]);
+  });
+
+  test("offline or failing: a notice, never the fallback agent", async () => {
+    const offline = withCommands({ connected: false });
+    const a = fakeMessage({ content: "!tasks" });
+    await handleOwnerDm(a.msg, offline.deps);
+    expect(offline.commands).toHaveLength(0);
+    expect(offline.calls.inProcess).toHaveLength(0);
+    expect(String(a.sent[0])).toContain("workspace offline");
+
+    const failing = withCommands({ fail: true });
+    const b = fakeMessage({ content: "!compact" });
+    await handleOwnerDm(b.msg, failing.deps);
+    expect(b.sent).toEqual(["Command failed: workspace busy"]);
+  });
+});
+
 describe("DM catch-up on ready", () => {
   const NOW = 2_000_000_000_000;
   const owner = (id: string, ageMs = 1_000) => ({ id, createdTimestamp: NOW - ageMs, author: { id: "owner-1", bot: false } });

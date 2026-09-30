@@ -124,7 +124,11 @@ export type RouterNotice =
   // The pasted callback can't finish the sign-in (wrong path case, other login's state, truncated); it stays open.
   | { type: "loginCallbackRejected"; error: string }
   | { type: "loginFailed"; error: string }
-  | { type: "loginUsage" };
+  | { type: "loginUsage" }
+  // A workspace command's (!compact, !model, !tasks) answer, as plain markdown.
+  | { type: "commandResult"; text: string }
+  | { type: "commandOffline" }
+  | { type: "commandFailed"; error: string };
 
 /** A user's message as the core sees it; adapters extend it with whatever they need to answer it. */
 export interface InboundMessage {

@@ -1,4 +1,4 @@
-import type { ChatMessageMode } from "../contracts.ts";
+import type { ChatCommand, ChatMessageMode } from "../contracts.ts";
 import { RpcConnectionClosedError, mayHaveBeenAccepted } from "../transport/server.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import { getLogger } from "../../logger.ts";
@@ -10,6 +10,18 @@ const log = getLogger("orchestration/workspace/router");
 const NEW_COMMANDS = new Set(["!new", "!reset", "!clear"]);
 const STOP_COMMAND = "!stop";
 const LOGIN_COMMAND_RE = /^!login(?:\s+(\S+))?$/i;
+// Answered by the workspace without the model; `!tasks <project>` and `!model <alias>` take one argument.
+const WORKSPACE_COMMAND_RE = /^!(compact|model|tasks)(?:\s+(.{1,200}))?$/is;
+
+/** A `!compact` / `!model [alias]` / `!tasks [project]` message, else null. */
+export function parseWorkspaceCommand(text: string): { command: ChatCommand; args?: string } | null {
+  const m = WORKSPACE_COMMAND_RE.exec(text.trim());
+  if (!m) return null;
+  const command = m[1]!.toLowerCase() as ChatCommand;
+  const args = m[2]?.trim();
+  if (command === "compact" && args) return null;
+  return args ? { command, args } : { command };
+}
 
 // Pi's redirect URI carries the authorization code, so it is matched anywhere and however it is wrapped.
 const CALLBACK_HOST_PATH_RE = /(?:127\.0\.0\.1|localhost)(?::1455)?\/auth\/callback|:1455\/auth\/callback/i;
@@ -61,7 +73,7 @@ export interface OwnerRouterDeps<M extends InboundMessage> {
   workspaceEnabled: boolean;
   transcriptionEnabled: boolean;
   link: Pick<WorkspaceLink, "isConnected" | "sendMessage" | "abort" | "newSession" | "recordOffline"> &
-    Partial<Pick<WorkspaceLink, "interceptReply" | "isOwner" | "isLoginPending" | "startLogin" | "completeLogin" | "cancelLogin">>;
+    Partial<Pick<WorkspaceLink, "interceptReply" | "isOwner" | "isLoginPending" | "startLogin" | "completeLogin" | "cancelLogin" | "command">>;
   /** The surface the message arrived on. */
   surface: InboundSurface<M>;
   cursor: MessageCursor;
@@ -133,6 +145,23 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
     } catch (err) {
       log.warn({ err }, "chat/abort failed");
       await notice({ type: "stopFailed", error: errorText(err) });
+    }
+    return;
+  }
+
+  const wsCommand = deps.workspaceEnabled && link.command ? parseWorkspaceCommand(message.text) : null;
+  if (wsCommand && link.command) {
+    if (!workspace) {
+      await notice({ type: "commandOffline" });
+      return;
+    }
+    await ack("accepted");
+    try {
+      const res = await link.command(wsCommand.command, wsCommand.args);
+      await notice({ type: "commandResult", text: res.text });
+    } catch (err) {
+      log.warn({ err, command: wsCommand.command }, "chat/command failed");
+      await notice({ type: "commandFailed", error: errorText(err) });
     }
     return;
   }

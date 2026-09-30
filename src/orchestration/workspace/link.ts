@@ -7,6 +7,9 @@ import {
   type AuthCompleteResult,
   type AuthStartResult,
   chatEventParams,
+  type ChatCommand,
+  type ChatCommandParams,
+  type ChatCommandResult,
   type ChatDeliverParams,
   type ChatEventParams,
   type ChatMessageParams,
@@ -296,6 +299,12 @@ export class WorkspaceLink {
 
   async newSession(): Promise<{ sessionFile: string }> {
     return (await this.request(RPC_METHODS.chatNew, { principalId: this.opts.principalId }, NEW_SESSION_TIMEOUT_MS)) as { sessionFile: string };
+  }
+
+  /** An owner command the workspace answers itself; `!compact` includes a memory flush, hence the long timeout. */
+  async command(command: ChatCommand, args?: string): Promise<ChatCommandResult> {
+    const params: ChatCommandParams = { principalId: this.opts.principalId, command, ...(args ? { args } : {}) };
+    return (await this.request(RPC_METHODS.chatCommand, params, NEW_SESSION_TIMEOUT_MS)) as ChatCommandResult;
   }
 
   /** Records an exchange the in-process fallback answered, for replay into the workspace's history. */

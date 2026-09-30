@@ -11,6 +11,8 @@ export const RPC_METHODS = {
   chatAbort: "chat/abort",
   chatNew: "chat/new",
   chatAck: "chat/ack",
+  // Owner commands the workspace answers itself (!compact, !model, !tasks) → { text }.
+  chatCommand: "chat/command",
   // Workspace → bot: deliver is a request (bot replies {} then later sends chat/ack); event is a notification.
   chatDeliver: "chat/deliver",
   chatEvent: "chat/event",
@@ -54,6 +56,14 @@ export const chatNewParams = z.object({ principalId: z.string() });
 export type ChatNewParams = z.infer<typeof chatNewParams>;
 export interface ChatNewResult {
   sessionFile: string;
+}
+
+export const CHAT_COMMANDS = ["compact", "model", "tasks"] as const;
+export type ChatCommand = (typeof CHAT_COMMANDS)[number];
+export const chatCommandParams = z.object({ principalId: z.string(), command: z.enum(CHAT_COMMANDS), args: z.string().max(200).optional() });
+export type ChatCommandParams = z.infer<typeof chatCommandParams>;
+export interface ChatCommandResult {
+  text: string;
 }
 
 export const chatAckParams = z.object({ outboxId: z.string() });

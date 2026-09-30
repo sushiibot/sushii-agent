@@ -165,7 +165,19 @@ function noticeMessage(notice: RouterNotice): string | MessageCreateOptions {
       return `Couldn't reach the ChatGPT sign-in: ${notice.error}`;
     case "loginUsage":
       return "Usage: `!login chatgpt` to sign in, `!login cancel` to abort.";
+    case "commandResult":
+      return { content: clipCommand(notice.text), allowedMentions: { parse: [] } };
+    case "commandOffline":
+      return "-# ⚠️ workspace offline — try again once it's back";
+    case "commandFailed":
+      return `Command failed: ${notice.error}`;
   }
+}
+
+const COMMAND_REPLY_MAX = 1900;
+
+function clipCommand(text: string): string {
+  return text.length > COMMAND_REPLY_MAX ? `${text.slice(0, COMMAND_REPLY_MAX - 1)}…` : text;
 }
 
 /** Answers an owner DM in place: reactions on it, notices in its channel, the in-process fallback agent. */
