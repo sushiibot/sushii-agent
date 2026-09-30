@@ -65,7 +65,7 @@ const ASK_CHOICES_MAX = 25;
 const RESULT_SUMMARY_MAX = 200;
 const AGENT_NAME_MAX = 64;
 
-export const DISCORD_CAPABILITIES: SurfaceCapabilities = { streaming: false, tables: false, richButtons: true, reactions: true, maxMessageChars: 4000 };
+export const DISCORD_CAPABILITIES: SurfaceCapabilities = { streaming: false, tables: false, richButtons: true, reactions: true, maxMessageChars: 4000, fileUploads: true };
 
 /** Longest approval body shown before it is clipped: the rest of the worst-case prompt (header, requester,
  *  single fields, footer) fits in the remaining 1200 chars of the message limit. */

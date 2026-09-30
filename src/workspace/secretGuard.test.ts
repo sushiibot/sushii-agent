@@ -11,6 +11,7 @@ let root: string;
 let home: string;
 let agentDir: string;
 let linkedAgentDir: string;
+let stateDir: string;
 let handler: (event: { type: "tool_call"; toolCallId: string; toolName: string; input: Record<string, unknown> }) => ToolCallEventResult | undefined;
 const warnings: object[] = [];
 
@@ -20,6 +21,8 @@ beforeAll(() => {
   agentDir = join(root, "pi-agent");
   mkdirSync(join(home, "projects", "app"), { recursive: true });
   mkdirSync(agentDir);
+  stateDir = join(root, ".workspace");
+  mkdirSync(join(stateDir, "outbox-files"), { recursive: true });
   writeFileSync(join(agentDir, "auth.json"), '{"openai":{"refresh":"rt_secret"}}');
   writeFileSync(join(home, "MEMORY.md"), "- memory\n");
   writeFileSync(join(home, "projects", "app", "package.json"), "{}");
@@ -31,7 +34,7 @@ beforeAll(() => {
 
   let captured: typeof handler | undefined;
   const pi = { on: (event: string, fn: typeof handler) => event === "tool_call" && (captured = fn) } as unknown as ExtensionAPI;
-  createSecretGuardExtension({ agentDir: linkedAgentDir, cwd: home, home, log: { warn: (obj) => warnings.push(obj) } })(pi);
+  createSecretGuardExtension({ agentDir: linkedAgentDir, cwd: home, home, stateDir, log: { warn: (obj) => warnings.push(obj) } })(pi);
   handler = captured!;
 });
 
@@ -116,6 +119,20 @@ describe("bash", () => {
     expect(bash("cat /data/state/outbox.jsonl")).toBe(true);
     expect(bash("rg state= /data/state/'outbox'.jsonl")).toBe(true);
     expect(blocked("read", { path: "/data/state/outbox.jsonl" })).toBe(true);
+  });
+
+  test("blocks writes into the state dir, but not reads", () => {
+    const staged = join(stateDir, "outbox-files", "abc-note.txt");
+    expect(blocked("write", { path: staged, content: "x" })).toBe(true);
+    expect(blocked("edit", { path: join("..", ".workspace", "runs.json"), edits: [] })).toBe(true);
+    expect(blocked("read", { path: staged })).toBe(false);
+    expect(blocked("ls", { path: stateDir })).toBe(false);
+    expect(bash(`cat ~/secret > ${staged}`)).toBe(true);
+    expect(bash(`cp ~/secret '${stateDir}/outbox-files/abc-note.txt'`)).toBe(true);
+    expect(bash(`echo x | tee ${staged}`)).toBe(true);
+    expect(bash(`sed -i s/a/b/ ${staged}`)).toBe(true);
+    expect(bash(`ls ${stateDir}/outbox-files`)).toBe(false);
+    expect(bash(`cat ${stateDir}/runs.json 2>/dev/null | head`)).toBe(false);
   });
 
   test("blocks process environment reads", () => {

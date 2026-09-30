@@ -166,7 +166,7 @@ describe("workspace ask button", () => {
     const { link, calls } = await fakeLink({ choices: { ask9: ["Yes", "No"] } });
     const i = fakeInteraction("wsask:ask9:1");
     await handleWorkspaceAskButton(i.interaction, { link });
-    expect(calls.messages).toEqual([{ origin: { surface: "discord", conversationId: "dm-1" }, messageId: "wsask:ask9", text: "No", kind: "user", author: { id: OWNER, name: "drk" } }]);
+    expect(calls.messages).toEqual([{ origin: { surface: "discord", conversationId: "dm-1" }, messageId: "wsask:ask9", text: "No", kind: "user", author: { id: OWNER, name: "drk" }, fileUploads: true }]);
     expect(i.editReplies).toEqual(["Answered: No"]);
     expect(i.messageEdits).toHaveLength(1);
     expect(textOf(i.messageEdits[0]!)).toContain(`"accent_color":${ACCENT.success}`);

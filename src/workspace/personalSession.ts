@@ -253,6 +253,8 @@ export class PersonalSession {
   private lastOrigin: ChatOrigin | undefined;
   // The message whose prompt() starts the next run; a later steer can't become the run's origin.
   private nextRunPrompt: PendingInbound | undefined;
+  /** Surfaces the bot said can take file uploads, as of their latest message. */
+  private readonly fileSurfaces = new Map<string, boolean>();
   private unconsumed: PendingInbound[] = [];
   // A retry of a message still being handled shares its outcome: a failure must reach the retry too.
   private readonly inFlight = new Map<string, Promise<ChatMessageResult>>();
@@ -438,6 +440,7 @@ export class PersonalSession {
       await this.enqueue(() => this.appendContext(id, text));
       return { accepted: true, mode: "context" };
     }
+    this.fileSurfaces.set(params.origin.surface, params.fileUploads === true);
     // Downloaded in parallel with the queue, awaited in it, so a slow download can't let a later message overtake.
     const images = this.imagesFor(params);
     const mode = await this.enqueue(async () => this.promptOrSteer(id, text, params.origin, undefined, await images));
@@ -1180,14 +1183,17 @@ export class PersonalSession {
   }
 
   private readonly fileSink: SendFileSink = {
-    attach: ({ source, name, contentType }) => {
+    attach: ({ data, name, contentType }) => {
       const run = this.run;
       if (!run || run.hidden) throw new Error("send_file only works during a reply to drk");
+      if (!run.origin || !this.fileSurfaces.get(run.origin.surface)) {
+        throw new Error("the chat this turn replies to can't carry file attachments; share the file's contents or a link instead");
+      }
       if (run.files.length >= DELIVER_FILES_MAX) throw new Error(`already ${DELIVER_FILES_MAX} files this turn; that's the limit`);
       const left = DELIVER_FILES_TOTAL_MAX_BYTES - run.files.reduce((n, f) => n + f.bytes, 0);
       let staged: StagedFile;
       try {
-        staged = this.outbox.stage(source, uniqueName(name, run.files), contentType, Math.min(DELIVER_FILE_MAX_BYTES, left));
+        staged = this.outbox.stage(data, uniqueName(name, run.files), contentType, Math.min(DELIVER_FILE_MAX_BYTES, left));
       } catch (err) {
         const why = err instanceof Error ? err.message : String(err);
         throw new Error(`can't send ${name}: ${why} (${mb(DELIVER_FILE_MAX_BYTES)} per file; ${mb(left)} left this turn)`);

@@ -216,7 +216,7 @@ export function createPiChatSessionFactory(
       extensionFactories: [
         // First: tool_call stops at the first block, so a guard ahead of it would hide repeats from it.
         { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log, state: loopState }) },
-        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log: guardLog }) },
+        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, stateDir: config.stateDir, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },

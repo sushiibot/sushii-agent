@@ -19,6 +19,8 @@ export interface SecretGuardOptions {
   cwd: string;
   /** HOME. `<home>/.pi/` holds project extensions and settings Pi loads in-process, so writes there are blocked. */
   home: string;
+  /** The workspace's own state (outbox, staged outbound files, run logs): readable, never agent-written. */
+  stateDir?: string;
 }
 
 export interface GuardedPaths {
@@ -27,6 +29,7 @@ export interface GuardedPaths {
   /** Basenames of the agent dir, to catch relative references like `../pi-agent/`. */
   agentDirNames: string[];
   projectConfigDirs: string[];
+  stateDirs: string[];
 }
 
 const PATH_TOOLS = new Set(["read", "edit", "write", "grep", "find", "ls"]);
@@ -37,6 +40,8 @@ const PROC_SENSITIVE = /^\/proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/(?:en
 const NETWORK_TOOL = /\b(?:curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|rsync|telnet|ftp|openssl)\b|\/dev\/(?:tcp|udp)\//;
 const ENV_DUMP = /(?:^|[\s|;&(`]|\$\()(?:env|printenv)(?=$|[\s|;&)>`])/;
 const GLOB_CHARS = /[*?[]/;
+// Redirects and the usual file-mutating commands; a read that merely names the state dir passes.
+const BASH_WRITE = /(?:^|[^<0-9&])>|\b(?:tee|cp|mv|dd|ln|rm|rmdir|touch|install|rsync|truncate|mkdir|chmod|chown|mkfifo|unlink)\b|\bsed\b[^|;&]*\s-i|\bperl\b[^|;&]*\s-[a-zA-Z]*i/;
 // The chat outbox carries the in-flight ChatGPT sign-in link.
 const OUTBOX_FILE = "outbox.jsonl";
 
@@ -68,6 +73,7 @@ export function guardedPaths(opts: SecretGuardOptions): GuardedPaths {
     agentDirs,
     agentDirNames: [...new Set(agentDirs.map((d) => basename(d)))].filter((n) => n.length >= 4),
     projectConfigDirs: variants(join(opts.home, ".pi")),
+    stateDirs: opts.stateDir ? variants(opts.stateDir) : [],
   };
 }
 
@@ -89,6 +95,7 @@ function checkPath(toolName: string, input: Record<string, unknown>, paths: Guar
     if (PROC_SENSITIVE.test(p)) return "proc";
     if (basename(p) === OUTBOX_FILE) return "outbox";
     if (WRITE_TOOLS.has(toolName) && paths.projectConfigDirs.some((d) => inside(p, d))) return "project-config";
+    if (WRITE_TOOLS.has(toolName) && paths.stateDirs.some((d) => inside(p, d))) return "state-dir";
     if (RECURSIVE_TOOLS.has(toolName)) {
       if (paths.agentDirs.some((d) => inside(d, p))) return "agent-dir-ancestor";
       if (inside(p, "/proc") || inside("/proc", p)) return "proc";
@@ -133,6 +140,7 @@ export function checkBashCommand(command: string, paths: GuardedPaths): string |
   if (paths.agentDirNames.some((n) => new RegExp(`(?:^|[\\s/])${escapeRegex(n)}(?:$|[\\s/])`).test(norm))) return "agent-dir";
   if (/auth\.json/.test(norm)) return "auth-file";
   if (norm.includes(OUTBOX_FILE)) return "outbox";
+  if (paths.stateDirs.some((d) => norm.includes(d)) && BASH_WRITE.test(norm)) return "state-dir";
   if (norm.includes("/proc/") && /environ|cmdline|\bmem\b/.test(norm)) return "proc";
   if (ENV_DUMP.test(norm) && NETWORK_TOOL.test(norm)) return "env-exfil";
 

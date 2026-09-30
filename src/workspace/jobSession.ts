@@ -117,7 +117,7 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
   const stubs = input.readOnlyTools?.toolStubs?.binding({ agentId: input.agentName, agentName: input.agentName });
   const guards: { name: string; factory: ExtensionFactory }[] = withTools
     ? [
-        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, log }) },
+        { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, stateDir: config.stateDir, log }) },
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, readOnly: true, log }) },
       ]

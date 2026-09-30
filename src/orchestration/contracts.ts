@@ -39,6 +39,8 @@ export const chatMessageParams = z.object({
   author: z.object({ id: z.string(), name: z.string() }),
   attachments: z.array(z.object({ url: z.string(), name: z.string(), contentType: z.string() })).optional(),
   voice: z.boolean().optional(),
+  // The origin surface can upload files a reply carries; without it send_file refuses rather than lose them.
+  fileUploads: z.boolean().optional(),
 });
 export type ChatMessageParams = z.infer<typeof chatMessageParams>;
 export type ChatMessageMode = "prompt" | "steer" | "duplicate" | "context";

@@ -12,6 +12,8 @@ export interface SurfaceCapabilities {
   reactions: boolean;
   /** Longest single message; longer replies are paged by the adapter. */
   maxMessageChars: number;
+  /** Uploads the files a reply carries. Without it the workspace's send_file refuses. */
+  fileUploads?: boolean;
 }
 
 /** One tool in a turn's progress view. `agentId` is set for a subagent's tool, shown nested under the turn. */
@@ -48,7 +50,7 @@ export interface ReplyView {
   toolCount: number | null;
   turnId?: string;
   replyTo?: string;
-  /** Files to attach; a surface that can't upload them may leave them out. */
+  /** Files to attach; only sent to a surface with `fileUploads`. */
   files?: DeliverFile[];
 }
 

@@ -18,34 +18,39 @@ function temp(): string {
 const entry = (outboxId: string) => ({ outboxId, principalId: "drk", kind: "reply" as const, text: "hi" });
 
 describe("outbox files", () => {
-  test("a staged file is snapshotted, read back at send, survives a restart and is deleted on ack", () => {
+  test("a staged file is stored by name, read back at send, survives a restart and is deleted on ack", () => {
     const state = temp();
-    const src = join(temp(), "a.txt");
-    writeFileSync(src, "v1");
     const outbox = new Outbox(state);
-    const staged = outbox.stage(src, "a.txt", "text/plain", 100);
-    writeFileSync(src, "v2 changed");
+    const staged = outbox.stage(Buffer.from("v1"), "a.txt", "text/plain", 100);
+    expect(staged.file).not.toContain("/");
     outbox.append({ ...entry("o1"), stagedFiles: [staged] });
 
     const reloaded = new Outbox(state);
     const [pending] = reloaded.unacked();
     expect(reloaded.wire(pending!).files).toEqual([{ name: "a.txt", contentType: "text/plain", dataBase64: Buffer.from("v1").toString("base64") }]);
     expect(reloaded.ack("o1")).toBe(true);
-    expect(existsSync(staged.path)).toBe(false);
+    expect(existsSync(join(outbox.filesDir, staged.file))).toBe(false);
   });
 
-  test("staging refuses oversize files and non-regular files", () => {
+  test("staging refuses oversize data", () => {
     const outbox = new Outbox(temp());
-    const dir = temp();
-    writeFileSync(join(dir, "big"), new Uint8Array(101));
-    expect(() => outbox.stage(join(dir, "big"), "big", "application/octet-stream", 100)).toThrow(/over the 100-byte limit/);
-    expect(() => outbox.stage(dir, "d", "application/octet-stream", 100)).toThrow(/not a regular file/);
+    expect(() => outbox.stage(Buffer.alloc(101), "big", "application/octet-stream", 100)).toThrow(/over the 100-byte limit/);
+  });
+
+  test("a staged copy changed after staging is left out and noted, even at the same size", () => {
+    const outbox = new Outbox(temp());
+    const staged = outbox.stage(Buffer.from("innocent"), "a.txt", "text/plain", 100);
+    outbox.append({ ...entry("o1"), stagedFiles: [staged] });
+    writeFileSync(join(outbox.filesDir, staged.file), "SECRETXX");
+    const wire = outbox.wire(outbox.unacked()[0]!);
+    expect(wire.files).toBeUndefined();
+    expect(wire.text).toContain("couldn't attach: a.txt");
   });
 
   test("a staged file that is gone is noted in the text; unreferenced files are swept on load", () => {
     const state = temp();
     const outbox = new Outbox(state);
-    const missing = { name: "gone.png", contentType: "image/png", path: join(outbox.filesDir, "gone.png"), bytes: 3 };
+    const missing = { name: "gone.png", contentType: "image/png", file: "gone.png", bytes: 3, sha256: "0" };
     outbox.append({ ...entry("o1"), stagedFiles: [missing] });
     const wire = outbox.wire(outbox.unacked()[0]!);
     expect(wire.files).toBeUndefined();
@@ -59,11 +64,8 @@ describe("outbox files", () => {
 });
 
 test("files that would push the delivery past one WebSocket frame are left out and noted", () => {
-  const state = temp();
-  const src = join(temp(), "a.bin");
-  writeFileSync(src, new Uint8Array(1024));
-  const outbox = new Outbox(state);
-  const staged = outbox.stage(src, "a.bin", "application/octet-stream", 2048);
+  const outbox = new Outbox(temp());
+  const staged = outbox.stage(Buffer.alloc(1024), "a.bin", "application/octet-stream", 2048);
   outbox.append({ ...entry("o1"), text: "x".repeat(16 * 1024 * 1024), stagedFiles: [staged] });
   const wire = outbox.wire(outbox.unacked()[0]!);
   expect(wire.files).toBeUndefined();

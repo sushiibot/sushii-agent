@@ -31,6 +31,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "grep",
   "find",
   "ls",
+  // Exposure equals reading the file and quoting it; the only recipient is drk.
+  "send_file",
   "web_search",
   "fetch_url_content",
   "search_logs",

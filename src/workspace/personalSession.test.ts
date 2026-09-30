@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
@@ -2166,13 +2166,15 @@ describe("send_file", () => {
   }
   const run = (t: ReturnType<typeof tool>, params: unknown) =>
     (t.execute as unknown as (id: string, p: unknown) => Promise<{ content: Array<{ text: string }> }>)("call-1", params);
+  const fileMsg = (messageId: string, text: string) => msg(messageId, text, { fileUploads: true });
+  const stagedDir = (stateDir: string) => join(stateDir, "outbox-files");
 
   test("a file sent during a turn goes out with the reply and is deleted once acked", async () => {
     const { host, sessions, transport, stateDir } = setup();
     const home = tempDir();
     writeFileSync(join(home, "chart.png"), PNG);
     await host.start();
-    await host.handleMessage(msg("m1", "chart please"));
+    await host.handleMessage(fileMsg("m1", "chart please"));
     const out = await run(tool(stateDir, home, () => sessions[0]!), { path: "chart.png" });
     expect(out.content[0]!.text).toContain("Attached chart.png");
     sessions[0]!.finish("here you go");
@@ -2183,28 +2185,33 @@ describe("send_file", () => {
     const outbox = readFileSync(join(stateDir, "outbox.jsonl"), "utf8");
     expect(outbox).not.toContain("dataBase64");
     expect(outbox).toContain("stagedFiles");
-    const staged = JSON.parse(outbox.trim().split("\n").at(-1)!).entry.stagedFiles[0].path as string;
+    const staged = join(stagedDir(stateDir), JSON.parse(outbox.trim().split("\n").at(-1)!).entry.stagedFiles[0].file as string);
     expect(existsSync(staged)).toBe(true);
     host.handleAck(reply!.outboxId);
     expect(existsSync(staged)).toBe(false);
   });
 
-  test("files with no reply text still deliver; a stopped turn drops them", async () => {
+  test("files with no reply text still deliver; a stopped turn drops them and deletes the staged copy", async () => {
     const { host, sessions, transport, stateDir } = setup();
     const home = tempDir();
     writeFileSync(join(home, "a.pdf"), "%PDF-1.4");
     await host.start();
-    await host.handleMessage(msg("m1", "send it"));
+    await host.handleMessage(fileMsg("m1", "send it"));
     await run(tool(stateDir, home, () => sessions[0]!), { path: join(home, "a.pdf") });
     sessions[0]!.finish("");
     await sleep(10);
     expect(transport.delivered()[0]!.files?.map((f) => f.name)).toEqual(["a.pdf"]);
 
-    await host.handleMessage(msg("m2", "again"));
+    host.handleAck(transport.delivered()[0]!.outboxId);
+    expect(readdirSync(stagedDir(stateDir))).toEqual([]);
+
+    await host.handleMessage(fileMsg("m2", "again"));
     await run(tool(stateDir, home, () => sessions[0]!), { path: "a.pdf" });
+    expect(readdirSync(stagedDir(stateDir)).length).toBe(1);
     await host.handleAbort();
     await sleep(10);
     expect(transport.delivered().length).toBe(1);
+    expect(readdirSync(stagedDir(stateDir))).toEqual([]);
   });
 
   test("protected paths, oversize files and calls outside a turn are refused", async () => {
@@ -2215,10 +2222,20 @@ describe("send_file", () => {
     await host.start();
     const t = tool(stateDir, home, () => sessions[0]!);
     await expect(run(t, { path: "ok.txt" })).rejects.toThrow(/only works during a reply/);
-    await host.handleMessage(msg("m1", "go"));
+    await host.handleMessage(fileMsg("m1", "go"));
     await expect(run(t, { path: "big.bin" })).rejects.toThrow(/over the .*limit/);
     await expect(run(t, { path: join(stateDir, "outbox.jsonl") })).rejects.toThrow(/blocked/);
     await expect(run(t, { path: "missing.txt" })).rejects.toThrow(/no such file/);
+    sessions[0]!.finish("done");
+  });
+
+  test("a turn from a surface that can't upload files refuses send_file", async () => {
+    const { host, sessions, stateDir } = setup();
+    const home = tempDir();
+    writeFileSync(join(home, "ok.txt"), "hi");
+    await host.start();
+    await host.handleMessage(msg("m1", "go"));
+    await expect(run(tool(stateDir, home, () => sessions[0]!), { path: "ok.txt" })).rejects.toThrow(/can't carry file attachments/);
     sessions[0]!.finish("done");
   });
 });

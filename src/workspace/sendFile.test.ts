@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSendablePath, contentTypeOf, safeFileName } from "./sendFile.ts";
+import { checkSendablePath, contentTypeOf, readSendableFile, safeFileName } from "./sendFile.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -47,6 +48,47 @@ describe("checkSendablePath", () => {
   test("a missing file is an error, not a throw", () => {
     const { paths } = layout();
     expect(checkSendablePath("nope.pdf", paths)).toEqual({ ok: false, error: "no such file: nope.pdf" });
+  });
+});
+
+const JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImV4cCI6MTcwMDAwMDAwMH0.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
+
+describe("readSendableFile", () => {
+  test("an ordinary file is read whole", () => {
+    const { paths } = layout();
+    expect(readSendableFile(join(paths.home, "out", "chart.png"), paths, 100).toString()).toBe("png");
+  });
+
+  test("a hardlink to auth.json or the outbox is refused by identity, whatever it holds or is called", () => {
+    const { paths } = layout();
+    linkSync(join(paths.agentDir, "auth.json"), join(paths.home, "notes.txt"));
+    linkSync(join(paths.stateDir, "outbox.jsonl"), join(paths.home, "log.txt"));
+    const notes = join(paths.home, "notes.txt");
+    expect(checkSendablePath("notes.txt", paths)).toEqual({ ok: true, path: notes });
+    expect(() => readSendableFile(notes, paths, 100)).toThrow(/auth-file/);
+    expect(() => readSendableFile(join(paths.home, "log.txt"), paths, 100)).toThrow(/auth-file/);
+  });
+
+  test("a copy that holds a credential is refused by the secret detector", () => {
+    const { paths } = layout();
+    writeFileSync(join(paths.agentDir, "auth.json"), JSON.stringify({ "openai-codex": { access: JWT } }));
+    copyFileSync(join(paths.agentDir, "auth.json"), join(paths.home, "copy.txt"));
+    expect(() => readSendableFile(join(paths.home, "copy.txt"), paths, 10_000)).toThrow(/secret detector/);
+  });
+
+  test("binary files are not scanned", () => {
+    const { paths } = layout();
+    writeFileSync(join(paths.home, "img.bin"), Buffer.concat([Buffer.from([0x89, 0x50, 0, 0]), Buffer.from(JWT)]));
+    expect(readSendableFile(join(paths.home, "img.bin"), paths, 10_000).length).toBe(4 + JWT.length);
+  });
+
+  test("oversize files and non-regular files are refused without blocking", () => {
+    const { paths } = layout();
+    writeFileSync(join(paths.home, "big"), new Uint8Array(101));
+    expect(() => readSendableFile(join(paths.home, "big"), paths, 100)).toThrow(/over the 100-byte limit/);
+    expect(() => readSendableFile(paths.home, paths, 100)).toThrow(/not a regular file/);
+    const fifo = join(paths.home, "pipe");
+    if (spawnSync("mkfifo", [fifo]).status === 0) expect(() => readSendableFile(fifo, paths, 100)).toThrow(/not a regular file/);
   });
 });
 
