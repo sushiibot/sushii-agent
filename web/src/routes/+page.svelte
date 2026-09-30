@@ -38,7 +38,6 @@
 				id="composer"
 				rows={1}
 				disabled
-				aria-describedby="composer-note"
 				placeholder="Message your agent"
 				class="min-h-12 resize-none border-0 bg-transparent py-3 text-base shadow-none focus-visible:ring-0 disabled:bg-transparent disabled:opacity-100 dark:bg-transparent dark:disabled:bg-transparent"
 			/>
@@ -51,7 +50,6 @@
 				<ArrowUp class="size-5" aria-hidden="true" />
 			</button>
 		</div>
-		<p id="composer-note" class="sr-only">Sending messages arrives in the next update.</p>
 	</form>
 {/snippet}
 

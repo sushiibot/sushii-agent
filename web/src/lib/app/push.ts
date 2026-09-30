@@ -1,4 +1,5 @@
 import { api, ApiError } from '$lib/api';
+import { base64UrlToBytes, sameKey } from '$lib/sw/handlers';
 
 export type PushStatus = 'unsupported' | 'blocked' | 'unavailable' | 'off' | 'on';
 
@@ -14,16 +15,6 @@ export class PushSetupError extends Error {
 
 export function pushSupported(): boolean {
 	return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
-}
-
-function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {
-	const base64 = (value + '='.repeat((4 - (value.length % 4)) % 4))
-		.replace(/-/g, '+')
-		.replace(/_/g, '/');
-	const raw = atob(base64);
-	const bytes = new Uint8Array(new ArrayBuffer(raw.length));
-	for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-	return bytes;
 }
 
 async function registration(): Promise<ServiceWorkerRegistration> {
@@ -49,9 +40,36 @@ export async function currentPushStatus(): Promise<PushStatus> {
 	return sub && Notification.permission === 'granted' ? 'on' : 'off';
 }
 
-async function publicKey(): Promise<string> {
+/** Calls `onChange` whenever the notification permission may have changed; returns a cleanup. */
+export function watchPermission(onChange: () => void): () => void {
+	const onVisible = () => {
+		if (document.visibilityState === 'visible') onChange();
+	};
+	document.addEventListener('visibilitychange', onVisible);
+	addEventListener('focus', onChange);
+	let status: PermissionStatus | null = null;
+	let stopped = false;
+	navigator.permissions
+		?.query({ name: 'notifications' })
+		.then((s) => {
+			if (stopped) return;
+			status = s;
+			status.addEventListener('change', onChange);
+		})
+		.catch(() => {
+			// No change events here; visibility and focus still cover a trip to Android settings.
+		});
+	return () => {
+		stopped = true;
+		document.removeEventListener('visibilitychange', onVisible);
+		removeEventListener('focus', onChange);
+		status?.removeEventListener('change', onChange);
+	};
+}
+
+async function serverKey(): Promise<Uint8Array<ArrayBuffer>> {
 	try {
-		return (await api.pushKey()).publicKey;
+		return base64UrlToBytes((await api.pushKey()).publicKey);
 	} catch (err) {
 		if (err instanceof ApiError && (err.status === 404 || err.status === 503)) {
 			throw new PushSetupError('unavailable', "Notifications aren't set up on the server yet.");
@@ -60,10 +78,26 @@ async function publicKey(): Promise<string> {
 	}
 }
 
+// A subscription made with an older server key can't receive anything, so it is replaced.
+async function subscriptionFor(
+	reg: ServiceWorkerRegistration,
+	key: Uint8Array<ArrayBuffer>
+): Promise<PushSubscription> {
+	const existing = await reg.pushManager.getSubscription();
+	if (existing && sameKey(existing.options.applicationServerKey, key)) return existing;
+	if (existing) {
+		await api.unsubscribe(existing.endpoint).catch(() => {});
+		await existing.unsubscribe().catch(() => {});
+	}
+	return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+}
+
 export async function enablePush(): Promise<void> {
 	if (!pushSupported()) {
 		throw new PushSetupError('unsupported', "This browser can't receive notifications.");
 	}
+	// Asking for the key first means nobody grants OS permission for a server that can't push.
+	const key = await serverKey();
 	const permission = await Notification.requestPermission();
 	if (permission === 'denied') {
 		throw new PushSetupError('blocked', 'Notifications are blocked for this app.');
@@ -71,15 +105,8 @@ export async function enablePush(): Promise<void> {
 	if (permission !== 'granted') {
 		throw new PushSetupError('off', 'Notifications stay off until you allow them.');
 	}
-	const key = await publicKey();
 	const reg = await registration();
-	let sub = await reg.pushManager.getSubscription();
-	if (!sub) {
-		sub = await reg.pushManager.subscribe({
-			userVisibleOnly: true,
-			applicationServerKey: base64UrlToBytes(key)
-		});
-	}
+	const sub = await subscriptionFor(reg, key);
 	try {
 		await api.subscribe(sub.toJSON());
 	} catch (err) {
@@ -89,11 +116,17 @@ export async function enablePush(): Promise<void> {
 	}
 }
 
-// The server upserts by endpoint, so re-sending heals a row the server lost.
-export async function resyncPush(): Promise<void> {
+/**
+ * Re-sends this device's subscription; the server upserts by endpoint, so this heals a lost row.
+ * Resolves false when there is nothing to send.
+ */
+export async function resyncPush(): Promise<boolean> {
+	if (!pushSupported() || Notification.permission !== 'granted') return false;
 	const reg = await navigator.serviceWorker.getRegistration();
-	const sub = await reg?.pushManager.getSubscription();
-	if (sub && Notification.permission === 'granted') await api.subscribe(sub.toJSON());
+	if (!reg || !(await reg.pushManager.getSubscription())) return false;
+	const sub = await subscriptionFor(reg, await serverKey());
+	await api.subscribe(sub.toJSON());
+	return true;
 }
 
 export async function disablePush(): Promise<void> {

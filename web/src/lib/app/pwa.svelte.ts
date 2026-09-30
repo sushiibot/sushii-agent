@@ -1,4 +1,5 @@
 import { dev } from '$app/environment';
+import { resyncPush } from './push';
 
 interface BeforeInstallPromptEvent extends Event {
 	prompt(): Promise<void>;
@@ -17,8 +18,11 @@ class Pwa {
 	installPrompt = $state<BeforeInstallPromptEvent | null>(null);
 	waiting = $state<ServiceWorker | null>(null);
 	swError = $state<string | null>(null);
+	/** 'failed' when this device's push subscription couldn't be re-sent to the agent. */
+	pushSync = $state<'pending' | 'ok' | 'failed'>('pending');
 	#started = false;
 	#reloadRequested = false;
+	#syncing: Promise<void> | null = null;
 
 	get canInstall() {
 		return !this.standalone && this.installPrompt !== null;
@@ -29,7 +33,10 @@ class Pwa {
 		this.#started = true;
 
 		this.online = navigator.onLine;
-		addEventListener('online', () => (this.online = true));
+		addEventListener('online', () => {
+			this.online = true;
+			this.#retryPushSync();
+		});
 		addEventListener('offline', () => (this.online = false));
 
 		const standalone = matchMedia('(display-mode: standalone)');
@@ -62,8 +69,38 @@ class Pwa {
 
 	applyUpdate() {
 		if (!this.waiting) return;
+		// Another window may already have activated it, and then no controllerchange is coming.
+		if (this.waiting.state === 'activated') {
+			location.reload();
+			return;
+		}
 		this.#reloadRequested = true;
 		this.waiting.postMessage({ type: 'SKIP_WAITING' });
+	}
+
+	/** Re-sends the push subscription; concurrent callers share one attempt. */
+	syncPush(): Promise<void> {
+		this.#syncing ??= resyncPush()
+			.then(() => {
+				this.pushSync = 'ok';
+			})
+			.catch((err) => {
+				this.pushSync = 'failed';
+				console.warn('Could not re-send the push subscription', err);
+			})
+			.finally(() => {
+				this.#syncing = null;
+			});
+		return this.#syncing;
+	}
+
+	/** Marks the subscription as in step after the user turned notifications on or off. */
+	markPushSynced() {
+		this.pushSync = 'ok';
+	}
+
+	#retryPushSync() {
+		if (this.pushSync === 'failed') void this.syncPush();
 	}
 
 	async #registerServiceWorker() {
@@ -83,12 +120,16 @@ class Pwa {
 			const check = () => {
 				if (worker.state === 'installed' && navigator.serviceWorker.controller) {
 					this.waiting = worker;
+				} else if (this.waiting === worker && worker.state === 'redundant') {
+					this.waiting = null;
 				}
 			};
 			check();
 			worker.addEventListener('statechange', check);
 		};
 		track(reg.waiting);
+		// A navigation can start an update before register() resolves.
+		track(reg.installing);
 		reg.addEventListener('updatefound', () => track(reg.installing));
 
 		navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -99,8 +140,12 @@ class Pwa {
 
 		// An installed app can stay open for days; look for a new build whenever it comes back.
 		document.addEventListener('visibilitychange', () => {
-			if (document.visibilityState === 'visible') reg.update().catch(() => {});
+			if (document.visibilityState !== 'visible') return;
+			reg.update().catch(() => {});
+			this.#retryPushSync();
 		});
+
+		void this.syncPush();
 	}
 }
 

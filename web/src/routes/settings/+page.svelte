@@ -15,7 +15,7 @@
 		disablePush,
 		enablePush,
 		PushSetupError,
-		resyncPush,
+		watchPermission,
 		type PushStatus
 	} from '$lib/app/push';
 	import { applyTheme, readTheme, type ThemeChoice } from '$lib/app/theme';
@@ -34,6 +34,7 @@
 	let testResult = $state<{ ok: boolean; text: string } | null>(null);
 
 	let theme = $state<ThemeChoice>('system');
+	let installFailed = $state(false);
 
 	// Arriving from Main, the chevron pops history so Android back from Main still exits the app.
 	let cameFromMain = false;
@@ -65,10 +66,23 @@
 	async function loadPush() {
 		try {
 			push = await currentPushStatus();
-			if (push === 'on') await resyncPush();
 		} catch (err) {
 			push = 'unavailable';
 			pushError = errorText(err);
+		}
+	}
+
+	// Coming back from Android settings, or a permission change, updates the switch in place.
+	async function refreshPush() {
+		if (pushBusy) return;
+		const wasBlocked = push === 'blocked';
+		try {
+			const next = await currentPushStatus();
+			if (pushBusy) return;
+			push = next;
+			if (wasBlocked && next !== 'blocked') pushError = null;
+		} catch {
+			// Keep the last known state; the next visit checks again.
 		}
 	}
 
@@ -85,6 +99,7 @@
 				await enablePush();
 				push = 'on';
 			}
+			pwa.markPushSynced();
 		} catch (err) {
 			if (err instanceof PushSetupError) push = err.status;
 			pushError = errorText(err);
@@ -119,10 +134,26 @@
 		applyTheme(choice);
 	}
 
+	function themeKeydown(e: KeyboardEvent) {
+		const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+		if (!step) return;
+		e.preventDefault();
+		const i = themes.findIndex((t) => t.id === theme);
+		const next = themes[(i + step + themes.length) % themes.length];
+		chooseTheme(next.id);
+		const group = e.currentTarget as HTMLElement;
+		group.querySelector<HTMLElement>(`[data-theme-choice="${next.id}"]`)?.focus();
+	}
+
+	async function install() {
+		installFailed = (await pwa.install()) === 'failed';
+	}
+
 	onMount(() => {
 		theme = readTheme();
 		void loadMe();
 		void loadPush();
+		return watchPermission(() => void refreshPush());
 	});
 
 	const pushLabel = $derived(
@@ -256,6 +287,10 @@
 			</div>
 			{#if pushError}
 				<p role="alert" class="text-sm text-failed">{pushError}</p>
+			{:else if push === 'on' && pwa.pushSync === 'failed'}
+				<p role="status" class="text-sm text-muted-foreground">
+					Couldn't sync this device with the agent. The app will retry when you come back to it.
+				</p>
 			{/if}
 			{#if push === 'blocked'}
 				<div class="flex flex-col gap-2 rounded-xl bg-waiting-soft px-4 py-3 text-sm">
@@ -275,12 +310,20 @@
 
 		<section aria-labelledby="appearance" class="flex flex-col gap-2">
 			<h2 id="appearance" class="text-sm font-medium text-muted-foreground">Appearance</h2>
-			<div role="radiogroup" aria-labelledby="appearance" class="grid grid-cols-3 gap-2">
+			<div
+				role="radiogroup"
+				aria-labelledby="appearance"
+				tabindex="-1"
+				class="grid grid-cols-3 gap-2"
+				onkeydown={themeKeydown}
+			>
 				{#each themes as t (t.id)}
 					<button
 						type="button"
 						role="radio"
 						aria-checked={theme === t.id}
+						tabindex={theme === t.id ? 0 : -1}
+						data-theme-choice={t.id}
 						onclick={() => chooseTheme(t.id)}
 						class={cn(
 							'h-12 rounded-xl border bg-card text-sm font-medium text-muted-foreground',
@@ -306,7 +349,12 @@
 				</div>
 			</dl>
 			{#if pwa.canInstall}
-				<Button class="w-full" onclick={() => pwa.install()}>Install the app</Button>
+				<Button class="w-full" onclick={install}>Install the app</Button>
+			{/if}
+			{#if installFailed}
+				<p role="alert" class="text-sm text-failed">
+					Chrome didn't open the install prompt. Open Chrome's menu and choose Install app.
+				</p>
 			{/if}
 			{#if pwa.swError}
 				<p role="alert" class="text-sm text-failed">

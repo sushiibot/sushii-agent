@@ -19,6 +19,8 @@ function messageFor(status: number): string {
 	return `The request failed (${status}).`;
 }
 
+const TIMEOUT_MS = 15_000;
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
 	let res: Response;
 	try {
@@ -26,9 +28,13 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 			method,
 			credentials: 'same-origin',
 			headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-			body: body === undefined ? undefined : JSON.stringify(body)
+			body: body === undefined ? undefined : JSON.stringify(body),
+			signal: AbortSignal.timeout(TIMEOUT_MS)
 		});
-	} catch {
+	} catch (err) {
+		if (err instanceof DOMException && err.name === 'TimeoutError') {
+			throw new ApiError(0, "The agent didn't answer in time. Try again.");
+		}
 		throw new ApiError(0, "Can't reach the agent. Check your connection.");
 	}
 	// The gateway's 403 is a plain-text page, so errors never assume a JSON body.
