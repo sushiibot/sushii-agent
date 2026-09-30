@@ -9,6 +9,8 @@ export interface OutboxEntry {
 	posted: boolean;
 	/** A POST went out at least once. Its 202 may have been lost, so the bot may hold the message. */
 	attempted?: boolean;
+	/** Refused (by the workspace or the bot); only the owner's Retry sends it again, even after a reload. */
+	failed?: boolean;
 }
 
 /** A composer photo kept with the draft, so an attached photo survives the app being killed. */
