@@ -2,6 +2,8 @@ import { constants, readdirSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
+  CHAT_HISTORY_UNKNOWN_CURSOR,
+  CHAT_HISTORY_UNKNOWN_CURSOR_CODE,
   ID_MAX,
   RPC_METHODS,
   UPLOAD_ID_RE,
@@ -15,6 +17,7 @@ import {
   type HistoryItem,
 } from "../orchestration/contracts.ts";
 import { summarizeToolArgs } from "../agentRuntime/piShared.ts";
+import { RpcHandlerError } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { isNoReply } from "./events.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
@@ -68,9 +71,10 @@ const VOICE_ONLY = "[voice message, transcribed]";
 const ATTACHMENT_RE = /^\[attachment: (.*) \(([^()]*)\) (\S+)(?: → \S+)?\]$/;
 const IMAGE_NOTE_RE = /^\[Image(?: omitted)?: .*\]$/;
 
-export class HistoryCursorError extends Error {
+/** Carries the RPC code the bot maps to 409 {reset:true}. */
+export class HistoryCursorError extends RpcHandlerError {
   constructor() {
-    super("unknown history cursor");
+    super(CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE);
   }
 }
 
