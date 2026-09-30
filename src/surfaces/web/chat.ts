@@ -7,7 +7,6 @@ import { createChatRoutes, type ChatRoutes } from "./chatRoutes.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { createPresence } from "./presence.ts";
 import { sendPush } from "./push.ts";
-import { QuietHoursStore, resolveTimeZone } from "./pushRules.ts";
 import { WebWorkspaceAdapter, type WebUploadPort } from "./workspaceAdapter.ts";
 
 const log = getLogger("web/chat");
@@ -22,15 +21,12 @@ export interface WebChatDeps {
   /** Wakes the owner on Discord when an approval push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
   uploads?: WebUploadPort;
-  /** The owner's IANA zone for quiet hours; invalid or absent falls back to UTC. */
-  timeZone?: string;
 }
 
 export interface WebChat {
   adapter: WebWorkspaceAdapter;
   routes: ChatRoutes;
   log: SqliteChatLog;
-  quietHours: QuietHoursStore;
   /** Starts pruning and workspace-state fan-out; call once the gateway is serving. Returns a stop. */
   start(): () => void;
 }
@@ -40,13 +36,11 @@ export function createWebChat(deps: WebChatDeps): WebChat {
   const chatLog = new SqliteChatLog(deps.db);
   const inbound = new WebInboundStore(deps.db);
   const presence = createPresence({ head: () => chatLog.head() });
-  const quietHours = new QuietHoursStore(deps.db, resolveTimeZone(deps.timeZone));
   const adapter = new WebWorkspaceAdapter({
     log: chatLog,
     inbound,
     presence,
     push: { send: sendPush },
-    quietHours: () => quietHours.isQuiet(),
     ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}),
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
@@ -78,7 +72,6 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     adapter,
     routes,
     log: chatLog,
-    quietHours,
     start() {
       prune();
       const timer = setInterval(prune, PRUNE_EVERY_MS);

@@ -11,7 +11,6 @@ type ApiOptions = {
 	meStatus?: number;
 	keyStatus?: number;
 	subscribeStatus?: number;
-	quietStatus?: number;
 };
 
 // Context-level, so requests from the service worker are mocked as well as the page's.
@@ -20,10 +19,8 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 		meStatus: 200,
 		keyStatus: 200,
 		subscribeStatus: 200,
-		quietStatus: 200,
 		...initial
 	};
-	let quiet = { enabled: false, start: '22:00', end: '08:00' };
 	const calls: Call[] = [];
 	await stubStream(context);
 	await context.route('**/api/**', async (route) => {
@@ -52,12 +49,6 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 			return json({ ok: true });
 		}
 		if (path === '/api/push/test') return json({ sent: 1, pruned: 0 });
-		if (path === '/api/settings/quiet-hours') {
-			if (opts.quietStatus !== 200)
-				return route.fulfill({ status: opts.quietStatus, body: 'Broken' });
-			if (req.method() === 'PUT') quiet = JSON.parse(req.postData() ?? '{}');
-			return json({ ...quiet, timeZone: 'Europe/Berlin' });
-		}
 		if (path === '/api/chat/history') return json({ items: [], before: null });
 		if (path === '/api/chat/seen') return route.fulfill({ status: 204 });
 		return route.fulfill({ status: 404, body: 'Not found' });
@@ -151,49 +142,6 @@ test('settings shows the signed-in login', async ({ page, context }) => {
 	await stubPush(page);
 	await page.goto('/settings');
 	await expect(page.getByTestId('login')).toHaveText('drk@example.com');
-});
-
-test('quiet hours turn on, take a time range, and show the zone they run in', async ({
-	page,
-	context
-}) => {
-	const { calls } = await mockApi(context);
-	await stubPush(page);
-	await page.goto('/settings');
-	const quiet = page.getByRole('switch', { name: /silence replies at night/i });
-	await expect(quiet).toHaveAttribute('aria-checked', 'false');
-	await quiet.click();
-	await expect(quiet).toHaveAttribute('aria-checked', 'true');
-	await expect(page.getByTestId('quiet-zone')).toHaveText('Times are in Europe/Berlin.');
-	await page.getByLabel('From').fill('23:15');
-	await page.getByLabel('From').blur();
-	await expect
-		.poll(() =>
-			calls
-				.filter((c) => c.method === 'PUT' && c.path === '/api/settings/quiet-hours')
-				.map((c) => JSON.parse(c.body ?? '{}'))
-		)
-		.toEqual([
-			{ enabled: true, start: '22:00', end: '08:00' },
-			{ enabled: true, start: '23:15', end: '08:00' }
-		]);
-	expect(await axe(page)).toEqual([]);
-	expect(await smallTargets(page)).toEqual([]);
-});
-
-test('a quiet hours save that fails puts the switch back and says so', async ({
-	page,
-	context
-}) => {
-	const { opts } = await mockApi(context);
-	await stubPush(page);
-	await page.goto('/settings');
-	const quiet = page.getByRole('switch', { name: /silence replies at night/i });
-	await expect(quiet).toBeEnabled();
-	opts.quietStatus = 500;
-	await quiet.click();
-	await expect(page.getByRole('alert')).toContainText("Couldn't save quiet hours.");
-	await expect(quiet).toHaveAttribute('aria-checked', 'false');
 });
 
 test('turning notifications on subscribes with the server key, and the test button sends', async ({

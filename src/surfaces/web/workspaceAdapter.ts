@@ -69,8 +69,6 @@ export interface WebAdapterDeps {
   push?: { send(p: PushPayload): Promise<{ sent: number }> };
   /** Called with an approval's nonce when its push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
-  /** True during the owner's quiet hours; absent means never quiet. */
-  quietHours?: () => boolean;
   /** Without it the surface takes no files, so the workspace's send_file refuses. */
   uploads?: WebUploadPort;
   now?: () => number;
@@ -342,8 +340,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     try {
       if (!(await this.deps.presence.shouldPush(seq))) return null;
       if (!this.deps.push) return 0;
-      const quiet = this.deps.quietHours?.() ?? false;
-      return (await this.deps.push.send(pushFor(event, { quiet }))).sent;
+      return (await this.deps.push.send(pushFor(event))).sent;
     } catch (err) {
       log.warn({ err }, "web push failed");
       return 0;

@@ -1,20 +1,12 @@
 <script lang="ts">
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
-	import Moon from '@lucide/svelte/icons/moon';
 	import Send from '@lucide/svelte/icons/send';
 	import { Button } from '$lib/components/ui/button';
-	import { Switch } from '$lib/components/ui/switch';
 	import AppShell, { moreItems } from '../app-shell.svelte';
 	import type { PushState } from '../types';
 
-	let {
-		push = 'default',
-		quietHours = false,
-		testSent = false
-	}: { push?: PushState; quietHours?: boolean; testSent?: boolean } = $props();
-	// svelte-ignore state_referenced_locally
-	let quiet = $state(quietHours);
+	let { push = 'default', testSent = false }: { push?: PushState; testSent?: boolean } = $props();
 	const pushLine: Record<PushState, string> = {
 		granted: 'On. Approvals, questions, failures, and replies that finish while you are away.',
 		default: 'Off. Approvals can wait unseen.',
@@ -79,18 +71,6 @@
 						{/if}
 					</span>
 				</div>
-				<label class="flex items-center gap-3 px-3 py-3">
-					<span class="grid size-9 shrink-0 place-items-center rounded-lg bg-muted">
-						<Moon class="size-[18px]" aria-hidden="true" />
-					</span>
-					<span class="flex min-w-0 flex-1 flex-col">
-						<span class="text-[15px] font-medium">Quiet hours, 22:00–07:00</span>
-						<span class="text-sm text-muted-foreground"
-							>During quiet hours only approvals and questions ring.</span
-						>
-					</span>
-					<Switch bind:checked={quiet} disabled={push !== 'granted'} />
-				</label>
 			</div>
 		</section>
 	</div>

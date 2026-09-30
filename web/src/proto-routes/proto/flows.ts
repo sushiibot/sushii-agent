@@ -233,14 +233,14 @@ export const flows: Flow[] = [
 		code: 'NV',
 		title: 'Tabs and More',
 		intro:
-			'Four tabs: Home, Chats, Briefing, More. The tab bar shows only on those four screens. More holds this device’s notification settings: status, a test send, and quiet hours.',
+			'Four tabs: Home, Chats, Briefing, More. The tab bar shows only on those four screens. More holds this device’s notification settings: status and a test send.',
 		frames: [
 			{ id: 'nv-1', label: 'More, notifications off', screen: More, props: {} },
 			{
 				id: 'nv-2',
 				label: 'Notifications on, test sent',
 				screen: More,
-				props: { push: 'granted', quietHours: true, testSent: true },
+				props: { push: 'granted', testSent: true },
 				branch: 'After enabling'
 			}
 		]

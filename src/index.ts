@@ -152,9 +152,8 @@ async function main() {
     workspaceEnabled: config.dmWorkspaceEnabled,
     breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
     uploads,
-    timeZone: process.env["WORKSPACE_TZ"],
   });
-  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, uploads, quietHours: webChat.quietHours });
+  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, uploads });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) workspace.registry.register(webChat.adapter);
   listenWorkspace(workspace, config.orchPort);

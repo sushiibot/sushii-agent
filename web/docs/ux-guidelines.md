@@ -206,7 +206,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 - **`url` deep-links to the exact item (the approval card, the failed run), never to `/`.** Why: landing on Home and hunting is the most common push complaint. Check: `phone`: tap each notification type, landing on the item with it scrolled into view and focused.
 - **`tag` is the item id, so updates to one item replace its notification instead of stacking.** Why: five notifications for one run is noise. Check: `phone`.
 - **Opening the item in the app clears its notification (`getNotifications({ tag })` then `close()`).** Why: a handled item shouldn't wait in the shade. Check: `phone`.
-- **Quiet hours are a server policy: during them, needs-you pushes (approvals, questions) ring as usual, and every other push is sent with `silent: true`, never dropped.** Why: nothing is lost overnight, and only what waits on you makes a sound. Check: `review` of the push call site.
+- **Every push rings normally; none is sent with `silent: true`.** Why: the push rules above already keep routine success out of the shade, so what does arrive deserves a sound. Check: `review` of the push call site.
 - **The permission prompt appears only after tapping an "Enable notifications" button that explains what will be sent.** Why: a cold permission prompt gets denied, and iOS requires a user gesture. Check: `phone`.
 - **No badge counts for anything except items waiting on you.** Why: unread-message badges become noise. Check: `review`.
 

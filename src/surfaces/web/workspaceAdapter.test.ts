@@ -75,7 +75,7 @@ function clockTimers() {
   };
 }
 
-function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number }; quiet?: () => boolean; presenceTimers?: Timers } = {}) {
+function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number }; presenceTimers?: Timers } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -89,7 +89,6 @@ function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; ap
     presence,
     push: { send: async (p) => (pushes.push(p), { sent: opts.sent ?? 1 }) },
     breakGlass: async (nonce) => (breakGlass.push(nonce), true),
-    ...(opts.quiet ? { quietHours: opts.quiet } : {}),
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.appendBudget ? { appendBudget: opts.appendBudget } : {}),
     timers: t.timers,
@@ -352,18 +351,16 @@ describe("web adapter push rules", () => {
     expect(h.pushes).toHaveLength(1);
   });
 
-  test("an approval pushed to no device breaks glass even in quiet hours; a suppressed one never does", async () => {
-    const h = setup({ sent: 0, quiet: () => true });
+  test("an approval pushed to no device breaks glass; a suppressed one never does", async () => {
+    const h = setup({ sent: 0 });
     await h.adapter.approvalPrompt(null, view, "d".repeat(16));
     await tick();
-    expect(h.pushes[0]!.silent).toBeUndefined();
     expect(h.breakGlass).toEqual(["d".repeat(16)]);
   });
 
-  test("the photo quota warning pushes as quota, silent in quiet hours, and a newer seen receipt suppresses it", async () => {
-    let quiet = false;
+  test("the photo quota warning pushes as quota, and a newer seen receipt suppresses it", async () => {
     const clock = clockTimers();
-    const h = setup({ quiet: () => quiet, presenceTimers: clock.timers });
+    const h = setup({ presenceTimers: clock.timers });
     await h.adapter.sendReply(null, { kind: "reply", text: "earlier", toolCount: null }, attempt("o1"));
     await tick();
     // A receipt for what was already on screen does not cover a warning raised after it.
@@ -374,9 +371,8 @@ describe("web adapter push rules", () => {
       ["quota", "80% of the photo quota is used.", undefined],
     ]);
 
-    quiet = true;
     await h.adapter.notifyPhotoQuota(85, 100);
-    expect(h.pushes.at(-1)).toMatchObject({ tag: "quota", silent: true });
+    expect(h.pushes.at(-1)).toMatchObject({ tag: "quota", body: "85% of the photo quota is used." });
 
     const close = h.presence.open("s1");
     const pending = h.adapter.notifyPhotoQuota(90, 100);
@@ -387,21 +383,6 @@ describe("web adapter push rules", () => {
     await tick();
     expect(h.pushes.filter((p) => p.tag === "quota")).toHaveLength(2);
     close();
-  });
-
-  test("quiet hours send replies silent and never drop them", async () => {
-    let quiet = true;
-    const h = setup({ quiet: () => quiet });
-    await h.adapter.sendReply(null, { kind: "reply", text: "night", toolCount: null }, attempt("o1"));
-    await h.adapter.askPrompt(null, { askId: "Q", question: "ok?", choices: [] }, attempt("o2"));
-    quiet = false;
-    await h.adapter.sendReply(null, { kind: "reply", text: "day", toolCount: null }, attempt("o3"));
-    await tick();
-    expect(h.pushes.map((p) => [p.body, p.silent])).toEqual([
-      ["night", true],
-      ["ok?", undefined],
-      ["day", undefined],
-    ]);
   });
 });
 
