@@ -8,4 +8,8 @@ feedback-export/
 .kanban/
 .playwright-mcp/
 test-results/
-web/
+web/node_modules/
+web/build/
+web/build-proto/
+web/.svelte-kit/
+web/proto-screenshots/
