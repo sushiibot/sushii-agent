@@ -102,19 +102,47 @@ export async function handleFileGet(req: Request, path: string, store: UploadSto
   return new Response(req.method === "HEAD" ? null : body, { headers });
 }
 
-/** Serves `upload/read`: the workspace's only way to get an owner photo's bytes. */
-export function createUploadReadHandler(store: Pick<DiskUploadStore, "readReferenced">, principalId: string) {
+export interface UploadReadLimits {
+  maxInFlight: number;
+  /** Raw file bytes across reads in flight; each read also holds its base64 and JSON copies until sent. */
+  maxInFlightBytes: number;
+}
+
+export const DEFAULT_UPLOAD_READ_LIMITS: UploadReadLimits = { maxInFlight: 2, maxInFlightBytes: 16 * 1024 * 1024 };
+
+/** Serves `upload/read`: the workspace's only way to get an owner photo's bytes. Over the concurrency or byte
+ *  budget it answers "busy" rather than queueing, so a burst can't pile up whole files in memory. */
+export function createUploadReadHandler(
+  store: Pick<DiskUploadStore, "readReferenced" | "referencedSize">,
+  principalId: string,
+  limits: UploadReadLimits = DEFAULT_UPLOAD_READ_LIMITS,
+) {
+  let inFlight = 0;
+  let inFlightBytes = 0;
   return async (conn: ConnectionInfo, params: unknown): Promise<UploadReadResult> => {
     const p = uploadReadParams.safeParse(params);
     if (!p.success) return { ok: false, error: "invalid params" };
     if (p.data.principalId !== conn.principalId || p.data.principalId !== principalId) return { ok: false, error: "principal mismatch" };
-    const file = await store.readReferenced(p.data.uploadId);
-    if (!file) {
+    const size = store.referencedSize(p.data.uploadId);
+    if (size === null) {
       log.warn({ uploadId: p.data.uploadId }, "upload/read refused: unknown or unreferenced upload");
       return { ok: false, error: "not found" };
     }
-    const result = uploadReadResult.safeParse({ ok: true, name: file.name, contentType: file.contentType, dataBase64: Buffer.from(file.bytes).toString("base64") });
-    if (!result.success) return { ok: false, error: "upload is not readable" };
-    return result.data;
+    if (inFlight >= limits.maxInFlight || inFlightBytes + size > limits.maxInFlightBytes) {
+      log.warn({ uploadId: p.data.uploadId, inFlight, inFlightBytes }, "upload/read refused: busy");
+      return { ok: false, error: "busy" };
+    }
+    inFlight++;
+    inFlightBytes += size;
+    try {
+      const file = await store.readReferenced(p.data.uploadId);
+      if (!file) return { ok: false, error: "not found" };
+      const result = uploadReadResult.safeParse({ ok: true, name: file.name, contentType: file.contentType, dataBase64: Buffer.from(file.bytes).toString("base64") });
+      if (!result.success) return { ok: false, error: "upload is not readable" };
+      return result.data;
+    } finally {
+      inFlight--;
+      inFlightBytes -= size;
+    }
   };
 }

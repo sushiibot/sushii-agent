@@ -247,4 +247,58 @@ describe("upload/read handler", () => {
     expect(await read(CONN, { principalId: P, uploadId: "../../../../etc/passwd" })).toEqual({ ok: false, error: "invalid params" });
     expect(await read(CONN, { principalId: P, uploadId: `${photo.id.slice(0, 21)}.` })).toEqual({ ok: false, error: "invalid params" });
   });
+
+  describe("concurrency", () => {
+    const ID = "A".repeat(22);
+    const ID2 = "B".repeat(22);
+    function gated(sizes: Record<string, number> = {}) {
+      const waiting: { resolve: () => void; reject: (e: Error) => void }[] = [];
+      const fake = {
+        referencedSize: (id: string) => sizes[id] ?? 10,
+        readReferenced: (id: string) =>
+          new Promise<{ name: string; contentType: string; bytes: Uint8Array }>((resolve, reject) =>
+            waiting.push({ resolve: () => resolve({ name: id, contentType: "image/png", bytes: new Uint8Array(sizes[id] ?? 10) }), reject }),
+          ),
+      };
+      return { fake, waiting };
+    }
+    const req = (uploadId = ID) => ({ principalId: P, uploadId });
+
+    test("a third concurrent read is busy, and a slot frees once a read finishes or throws", async () => {
+      const { fake, waiting } = gated();
+      const read = createUploadReadHandler(fake, P);
+      const a = read(CONN, req());
+      const b = read(CONN, req());
+      expect(await read(CONN, req())).toEqual({ ok: false, error: "busy" });
+      waiting[0]!.resolve();
+      expect(await a).toMatchObject({ ok: true });
+      const c = read(CONN, req());
+      expect(await read(CONN, req())).toEqual({ ok: false, error: "busy" });
+      waiting[1]!.reject(new Error("disk"));
+      await expect(b).rejects.toThrow("disk");
+      const d = read(CONN, req());
+      waiting[2]!.resolve();
+      waiting[3]!.resolve();
+      expect(await c).toMatchObject({ ok: true });
+      expect(await d).toMatchObject({ ok: true });
+    });
+
+    test("the byte budget refuses a read on its own, before the file is loaded", async () => {
+      const { fake, waiting } = gated({ [ID]: 6, [ID2]: 5 });
+      const read = createUploadReadHandler(fake, P, { maxInFlight: 5, maxInFlightBytes: 10 });
+      const a = read(CONN, req(ID));
+      expect(await read(CONN, req(ID2))).toEqual({ ok: false, error: "busy" });
+      expect(waiting.length).toBe(1);
+      waiting[0]!.resolve();
+      await a;
+      const b = read(CONN, req(ID2));
+      waiting[1]!.resolve();
+      expect(await b).toMatchObject({ ok: true, name: ID2 });
+    });
+
+    test("an unknown id is not found without taking a slot", async () => {
+      const read = createUploadReadHandler({ referencedSize: () => null, readReferenced: async () => null }, P, { maxInFlight: 0, maxInFlightBytes: 0 });
+      expect(await read(CONN, req())).toEqual({ ok: false, error: "not found" });
+    });
+  });
 });
