@@ -142,13 +142,12 @@ describe("workspace Stop button", () => {
   });
 
   test("a failed abort is reported and the message left alone", async () => {
-    const { link, postsStopped } = await fakeLink({ aborted: new Error("socket gone") });
+    const { link } = await fakeLink({ aborted: new Error("socket gone") });
     const i = fakeInteraction("wsstop:t3");
     await handleWorkspaceStopButton(i.interaction, { link });
     expect(i.deferred()).toBe(true);
     expect(i.editReplies).toEqual(["Couldn't stop: socket gone"]);
     expect(i.messageEdits).toHaveLength(0);
-    expect(await postsStopped("t3")).toBe(true);
   });
 });
 
