@@ -1,0 +1,3 @@
+[test]
+pathIgnorePatterns = ["e2e/**", "node_modules/**", "build/**", ".svelte-kit/**"]
+preload = ["./tests/svelte-loader.ts"]
