@@ -467,12 +467,46 @@ test('a message queued past the orphan window re-uploads its photos first', asyn
 	await page.getByRole('button', { name: 'Send message' }).click();
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
 	opts.messageStatus = 202;
-	await page.clock.fastForward('21:00:00');
+	await page.clock.setSystemTime(Date.now() + 21 * 60 * 60 * 1000);
 	await page.evaluate(() => dispatchEvent(new Event('online')));
 	await expect.poll(() => posts('/api/uploads').length).toBe(2);
 	const ids = posts('/api/uploads').map((c) => c.headers['x-client-id']);
 	expect(ids[0]).not.toBe(ids[1]);
 	await expect.poll(() => posts('/api/chat/messages').length).toBeGreaterThanOrEqual(2);
+});
+
+test('a posted message never re-uploads its photos on a later resend', async ({
+	page,
+	context
+}) => {
+	await page.clock.install();
+	const { posts } = await chatServer(context);
+	await open(page);
+	await attachPng(page);
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
+	await page.clock.setSystemTime(Date.now() + 21 * 60 * 60 * 1000);
+	await push(page, 'workspace', { state: 'online' });
+	await expect.poll(() => posts('/api/chat/messages').length).toBeGreaterThanOrEqual(2);
+	expect(posts('/api/uploads').length).toBe(1);
+	const [first, ...rest] = posts('/api/chat/messages').map((c) => c.body);
+	for (const body of rest) expect(body).toEqual(first);
+});
+
+test('seen goes out only while Main is on screen', async ({ page, context }) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await push(page, 'proactive', { key: 'p1', text: 'On screen', files: [] }, 1);
+	await expect.poll(() => posts('/api/chat/seen').length).toBe(1);
+	await page.getByRole('link', { name: 'Settings' }).click();
+	await expect(page).toHaveURL(/\/settings$/);
+	await push(page, 'approval', approval('n1'), 2);
+	await page.waitForTimeout(1500);
+	expect(posts('/api/chat/seen').length).toBe(1);
+	await page.getByRole('link', { name: 'Back to Main' }).click();
+	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 2 });
 });
 
 function longHistory(n: number) {

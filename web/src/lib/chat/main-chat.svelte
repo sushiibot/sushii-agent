@@ -131,6 +131,11 @@
 	});
 
 	onMount(() => {
+		store.setViewing(true);
+		return () => store.setViewing(false);
+	});
+
+	onMount(() => {
 		if (!focusAsk) return;
 		let done = false;
 		const stop = $effect.root(() => {

@@ -87,6 +87,8 @@ export class ChatStore {
 	quotaFull = $state(false);
 	trayPhase = $state<'ready' | 'submitting'>('ready');
 	draft = $state('');
+	/** Main is on screen. `seen` suppresses pushes, so it must only go out while the reader can see the chat. */
+	viewing = $state(false);
 
 	openTurns = $derived(new Map(this.#openTurnList().map((t) => [t.turnId ?? t.id, t] as const)));
 	running = $derived(this.openTurns.size > 0);
@@ -431,6 +433,8 @@ export class ChatStore {
 
 	/** Re-uploads photos old enough that the server may have collected them as orphans. */
 	async #refreshUploads(entry: OutboxEntry) {
+		// A posted message already references its uploads, and its resend must carry the same body.
+		if (entry.posted) return;
 		const stale = (entry.photos ?? []).filter((p) => Date.now() - p.uploadedAt > REUPLOAD_AFTER_MS);
 		if (!stale.length) return;
 		for (const p of stale) {
@@ -625,15 +629,26 @@ export class ChatStore {
 
 	// ── Presence ──
 
+	setViewing(on: boolean) {
+		this.viewing = on;
+		if (on) this.#scheduleSeen();
+	}
+
 	#scheduleSeen() {
-		if (document.visibilityState !== 'visible') return;
+		if (!this.viewing || document.visibilityState !== 'visible') return;
 		const seq = this.#s.cursor;
 		if (seq === null || seq <= this.#seenSent) return;
 		if (this.#seenTimer) clearTimeout(this.#seenTimer);
 		this.#seenTimer = setTimeout(() => {
 			this.#seenTimer = null;
 			const now = this.#s.cursor;
-			if (now === null || now <= this.#seenSent || document.visibilityState !== 'visible') return;
+			if (
+				now === null ||
+				now <= this.#seenSent ||
+				!this.viewing ||
+				document.visibilityState !== 'visible'
+			)
+				return;
 			this.#seenSent = now;
 			void this.#api.seen(now).catch(() => {
 				this.#seenSent = 0;
