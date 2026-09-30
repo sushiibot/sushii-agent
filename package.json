@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.50",
+    "@block65/webcrypto-web-push": "2.0.0",
     "@earendil-works/pi-coding-agent": "0.99.1",
     "@linear/sdk": "^92.0.0",
     "@modelcontextprotocol/sdk": "^1.12.0",

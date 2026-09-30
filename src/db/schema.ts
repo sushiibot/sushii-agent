@@ -257,3 +257,12 @@ export const kv = sqliteTable("kv", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
+
+/** Web Push subscriptions for the personal web app; endpoint is the push service URL. */
+export const webPushSubscriptions = sqliteTable("web_push_subscriptions", {
+  endpoint: text("endpoint").primaryKey(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  createdAt: integer("created_at").notNull(),
+  lastOkAt: integer("last_ok_at"),
+});

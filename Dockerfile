@@ -1,3 +1,14 @@
+# The personal web app (SvelteKit static build); only the bot image serves it.
+FROM oven/bun:1 AS web-build
+WORKDIR /web
+COPY web/package.json web/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY web/ ./
+# Declared after the install so a new version only invalidates the build step. CI's reusable workflow passes GIT_HASH.
+ARG APP_VERSION
+ARG GIT_HASH
+RUN APP_VERSION="${APP_VERSION:-${GIT_HASH:-dev}}" bun run build
+
 FROM oven/bun:1 AS tools
 
 # openssh-client: ssh-agent/ssh-add/ssh for wiki-sync's git push auth (docker-entrypoint.sh) and
@@ -122,3 +133,6 @@ CMD ["bun", "run", "workspace"]
 
 # Default target: the bot.
 FROM base AS bot
+# WEB_DEV_LOGIN is honoured only outside production, so the image must never default to dev.
+ENV NODE_ENV=production
+COPY --from=web-build /web/build /app/web/build
