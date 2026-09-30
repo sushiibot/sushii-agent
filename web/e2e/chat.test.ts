@@ -80,6 +80,8 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 		}
 		if (path === '/api/chat/messages') {
 			if (opts.messageStatus === 'abort') return route.abort('internetdisconnected');
+			if (opts.messageStatus === 409)
+				return json({ error: 'upload_missing', ids: [UPLOAD_ID] }, 409);
 			if (opts.messageStatus !== 202) return json({ error: 'bad' }, opts.messageStatus);
 			return json(opts.messageBody, 202);
 		}
@@ -267,7 +269,7 @@ test('a reset reloads history and says so', async ({ page, context }) => {
 			verified: true
 		}
 	];
-	await push(page, 'reset', { headSeq: 40 });
+	await push(page, 'reset', { headSeq: 40, pending: { approvals: [], asks: [] } });
 	await expect(page.getByText('Reloaded the conversation.', { exact: false })).toBeVisible();
 	await expect(page.getByText('From the reloaded history')).toBeVisible();
 	expect(calls.filter((c) => c.path.startsWith('/api/chat/history')).length).toBe(2);
@@ -978,4 +980,74 @@ test('an ask the bot no longer has goes to history with an accurate message', as
 	await expect(page.getByText('That question is no longer waiting for an answer.')).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Saturday' })).toHaveCount(0);
 	await expect(page.getByText('Check your connection')).toHaveCount(0);
+});
+
+test('a photo the bot no longer has sends the message back to the composer, marked expired', async ({
+	page,
+	context
+}) => {
+	const { posts, opts } = await chatServer(context, { messageStatus: 409 });
+	await open(page);
+	const attachRed = async () => {
+		const png = await page.evaluate(async () => {
+			const c = new OffscreenCanvas(40, 30);
+			const ctx = c.getContext('2d')!;
+			ctx.fillStyle = 'red';
+			ctx.fillRect(0, 0, 40, 30);
+			const blob = await c.convertToBlob({ type: 'image/png' });
+			return [...new Uint8Array(await blob.arrayBuffer())];
+		});
+		await page.locator('input[type=file]').setInputFiles({
+			name: 'IMG_0001.png',
+			mimeType: 'image/png',
+			buffer: Buffer.from(png)
+		});
+	};
+	await attachRed();
+	await expect.poll(() => posts('/api/uploads').length).toBe(1);
+	await type(page, 'Look at this');
+
+	await expect(page.getByText('Photo expired — re-attach')).toBeVisible();
+	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('Look at this');
+	await expect(bubble(page, 'Look at this')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Retry photo 1' })).toHaveCount(0);
+	await page.waitForTimeout(500);
+	expect(posts('/api/chat/messages')).toHaveLength(1);
+
+	await page.getByRole('button', { name: 'Remove photo 1' }).click();
+	await attachRed();
+	await expect.poll(() => posts('/api/uploads').length).toBe(2);
+	opts.messageStatus = 202;
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+	const [first, second] = posts('/api/chat/messages').map(
+		(c) => c.body as { clientId: string; text: string }
+	);
+	expect(second.text).toBe('Look at this');
+	expect(second.clientId).not.toBe(first.clientId);
+	await expect(bubble(page, 'Look at this')).toBeVisible();
+});
+
+test('an approval and an ask waiting in the bot log show from the first frame', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await context.addInitScript(
+		(pending) => {
+			(window as unknown as { __sse: { hello: { pending: unknown } } }).__sse.hello.pending =
+				pending;
+		},
+		{
+			approvals: [{ seq: 3, at: 'x', ...approval('n9') }],
+			asks: [
+				{ seq: 4, at: 'x', key: 'o9', askId: 'k9', question: 'Which day?', choices: ['Mon', 'Tue'] }
+			]
+		}
+	);
+	await open(page);
+	await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeVisible();
+	await expect(page.getByText('Which day?')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Tue' })).toBeVisible();
 });

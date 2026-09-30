@@ -1,11 +1,15 @@
 import type {
+	HistoryOfflineResponse,
+	HistoryResetResponse,
 	HistoryResponse,
+	HistoryUnsupportedResponse,
 	PostAskBody,
 	PostAskResponse,
 	PostApprovalBody,
 	PostApprovalResponse,
 	PostMessageBody,
 	PostMessageResponse,
+	PostMessageUploadMissingResponse,
 	UploadResponse
 } from './events';
 
@@ -68,22 +72,27 @@ async function send(method: string, path: string, body?: unknown): Promise<Respo
 	return res;
 }
 
-const flag = (body: unknown, key: string) =>
-	typeof body === 'object' && body !== null && (body as Record<string, unknown>)[key] === true;
+type HistoryErrorBody = Partial<
+	HistoryOfflineResponse & HistoryUnsupportedResponse & HistoryResetResponse
+>;
 
 /** Known statuses decide; a body flag only names the reason when the status doesn't. */
 export function historyFailure(status: number, body: unknown): HistoryFailure {
 	const byStatus = ({ 503: 'offline', 501: 'unsupported', 409: 'reset' } as const)[status];
 	if (byStatus) return byStatus;
-	if (flag(body, 'reset')) return 'reset';
-	if (flag(body, 'unsupported')) return 'unsupported';
-	if (flag(body, 'offline')) return 'offline';
+	const b = (typeof body === 'object' && body !== null ? body : {}) as HistoryErrorBody;
+	if (b.reset === true) return 'reset';
+	if (b.unsupported === true) return 'unsupported';
+	if (b.offline === true) return 'offline';
 	return 'error';
 }
 
-/** True when the 202 says the router already took the message. Older bots send no `routed`. */
-export function wasRouted(res: unknown): boolean {
-	return flag(res, 'routed');
+/** The upload ids a message POST was refused for (409 upload_missing), or null for any other failure. */
+export function uploadMissingIds(err: unknown): string[] | null {
+	if (!(err instanceof ChatHttpError) || err.status !== 409) return null;
+	const b = err.body as Partial<PostMessageUploadMissingResponse> | undefined;
+	if (b?.error !== 'upload_missing' || !Array.isArray(b.ids)) return null;
+	return b.ids.filter((id): id is string => typeof id === 'string');
 }
 
 async function json<T>(res: Response): Promise<T> {

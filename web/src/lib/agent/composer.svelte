@@ -49,7 +49,8 @@
 		upload: 'Upload failed',
 		type: 'Not a supported image (PNG, JPEG, GIF, WebP)',
 		size: 'Too large (10 MB max)',
-		daily: 'Daily photo limit reached. Try again tomorrow.'
+		daily: 'Daily photo limit reached. Try again tomorrow.',
+		expired: 'Photo expired — re-attach'
 	};
 	const pending = $derived(
 		photos.filter((p) => p.state === 'preparing' || p.state === 'uploading')

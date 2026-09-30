@@ -158,7 +158,10 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			sinks.add(sink);
 			setTimeout(() => {
 				onState('open');
-				on({ type: 'hello', data: { headSeq: seq, workspace, openTurns: [] } });
+				on({
+					type: 'hello',
+					data: { headSeq: seq, workspace, openTurns: [], pending: { approvals: [], asks: [] } }
+				});
 			}, 200);
 			return () => sinks.delete(sink);
 		}
@@ -189,15 +192,15 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 					workspace = 'online';
 					emit('workspace', { state: 'online' }, false);
 				}, 6000);
-				return { seq };
+				return { seq, routed: false };
 			}
 			if (workspace === 'offline') {
 				emit('notice', { type: 'workspaceOffline' });
-				return { seq };
+				return { seq, routed: false };
 			}
 			emit('status', { clientId, state: turn ? 'steer' : 'accepted' });
 			if (!turn) void runTurn(text);
-			return { seq };
+			return { seq, routed: true };
 		},
 		async stop() {
 			await sleep(200);

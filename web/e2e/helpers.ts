@@ -59,7 +59,12 @@ export async function axe(page: Page) {
 
 type SseWindow = Window & {
 	__sse: {
-		hello: { headSeq: number; workspace: 'online' | 'offline'; openTurns: unknown[] };
+		hello: {
+			headSeq: number;
+			workspace: 'online' | 'offline';
+			openTurns: unknown[];
+			pending: { approvals: unknown[]; asks: unknown[] };
+		};
 		status: number;
 		requests: string[];
 		streams: ReadableStreamDefaultController<Uint8Array>[];
@@ -74,7 +79,12 @@ export async function stubStream(context: BrowserContext) {
 	await context.addInitScript(() => {
 		const w = window as unknown as SseWindow;
 		w.__sse = {
-			hello: { headSeq: 0, workspace: 'online', openTurns: [] },
+			hello: {
+				headSeq: 0,
+				workspace: 'online',
+				openTurns: [],
+				pending: { approvals: [], asks: [] }
+			},
 			status: 200,
 			requests: [],
 			streams: []

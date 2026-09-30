@@ -6,6 +6,7 @@ import type {
 	ChatEnvelope,
 	ChatEventMap,
 	ChatUsage,
+	PendingState,
 	RouterNotice,
 	ToolLine,
 	UploadRef,
@@ -238,12 +239,6 @@ export function noticeText(n: RouterNotice): { line?: string; toast?: string } {
 	}
 }
 
-/** A notice may name the message it answers; the field is newer than the shared type. */
-function noticeClientId(n: RouterNotice): string | undefined {
-	const id = (n as { clientId?: unknown }).clientId;
-	return typeof id === 'string' && id ? id : undefined;
-}
-
 function applyToolEvent(item: Extract<ChatItem, { kind: 'assistant' }>, e: ChatEventMap['tool']) {
 	const turn = (item.turn ??= { phase: 'working', lines: [], startedAt: Date.now() });
 	if (e.ok === undefined) {
@@ -265,8 +260,7 @@ function resolveApproval(s: ChatState, e: ChatEventMap['approval_resolved'], fx:
 	const entry = s.approvals.find((a) => a.nonce === e.nonce);
 	s.approvals = s.approvals.filter((a) => a.nonce !== e.nonce);
 	const mine = s.mine.has(`p:${e.nonce}`);
-	// `cancelled` is in the contract notes but not yet in the shared type.
-	const decision = e.decision as string;
+	const decision = e.decision;
 	const outcome =
 		decision === 'approve'
 			? mine
@@ -290,6 +284,45 @@ function addApproval(s: ChatState, nonce: string, view: ApprovalView) {
 	if (!s.approvals.some((a) => a.nonce === nonce)) s.approvals = [...s.approvals, { nonce, view }];
 }
 
+const PENDING_ASK_PREFIX = 'pending:';
+
+/**
+ * The bot's own log of what is still waiting, from the first frame. It is authoritative for the tray:
+ * an approval it doesn't list is no longer waiting. Approval markers come from history or replayed events.
+ */
+function applyPending(s: ChatState, p: PendingState) {
+	const waiting = new Set(p.approvals.map((a) => a.nonce));
+	for (const a of s.approvals) if (!waiting.has(a.nonce)) dropApproval(s, a.nonce, 'timeout');
+	for (const a of p.approvals) addApproval(s, a.nonce, a.view);
+	for (const a of p.asks) {
+		const key = `a:${a.askId}`;
+		if (s.keys.has(key)) continue;
+		s.keys.add(key);
+		s.items.push({
+			kind: 'ask',
+			id: `${PENDING_ASK_PREFIX}${a.askId}`,
+			askId: a.askId,
+			question: a.question,
+			choices: a.choices,
+			state: 'pending'
+		});
+	}
+}
+
+/** Drops everything but unsent messages ahead of a history reload. The tray and cursor stay. */
+export function restartHistory(s: ChatState): Effect[] {
+	const keep = s.items.filter((i) => i.kind === 'user' && i.delivery && i.delivery !== 'sent');
+	Object.assign(s, createState(), {
+		items: keep,
+		workspace: s.workspace,
+		mine: s.mine,
+		approvals: s.approvals,
+		cursor: s.cursor
+	});
+	for (const i of keep) if (i.kind === 'user' && i.clientId) s.keys.add(`u:${i.clientId}`);
+	return [{ type: 'reload' }];
+}
+
 /** Applies one live event. Durable events at or below the cursor are replays and are skipped. */
 export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Effect[] {
 	const fx: Effect[] = [];
@@ -307,14 +340,13 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			for (const view of ev.data.openTurns) {
 				fx.push(...applyEvent(s, { type: 'snapshot', data: { turnId: view.turnId, view } }, now));
 			}
+			applyPending(s, ev.data.pending);
 			break;
 		}
 		case 'reset': {
-			const keep = s.items.filter((i) => i.kind === 'user' && i.delivery && i.delivery !== 'sent');
-			Object.assign(s, createState(), { items: keep, workspace: s.workspace, mine: s.mine });
-			for (const i of keep) if (i.kind === 'user' && i.clientId) s.keys.add(`u:${i.clientId}`);
+			fx.push(...restartHistory(s));
 			s.cursor = ev.data.headSeq;
-			fx.push({ type: 'reload' });
+			applyPending(s, ev.data.pending);
 			break;
 		}
 		case 'user': {
@@ -478,7 +510,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			resolveApproval(s, ev.data, fx);
 			break;
 		case 'notice': {
-			const clientId = noticeClientId(ev.data);
+			const clientId = ev.data.clientId || undefined;
 			if (clientId && ev.data.type !== 'workspaceOffline') {
 				// The router handled the message, so the notice settles it.
 				setDelivery(s, clientId, 'sent');
@@ -596,7 +628,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 							? 'approved'
 							: h.decision === 'deny'
 								? 'denied'
-								: (h.decision as string) === 'cancelled'
+								: h.decision === 'cancelled'
 									? 'cancelled'
 									: 'timeout'
 			};
@@ -605,15 +637,25 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 
 /**
  * Merges one oldest-first history page ahead of the items held. A held send the page contains already
- * reached the workspace, so it moves into the page and settles.
+ * reached the workspace, so it moves into the page and settles; so does an ask seeded from the first frame.
  */
 export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const fx: Effect[] = [];
 	const local = new Map<string, Extract<ChatItem, { kind: 'user' }>>();
-	for (const i of s.items) if (i.kind === 'user' && i.clientId) local.set(i.clientId, i);
+	const seededAsks = new Map<string, ChatItem>();
+	for (const i of s.items) {
+		if (i.kind === 'user' && i.clientId) local.set(i.clientId, i);
+		if (i.kind === 'ask' && i.id.startsWith(PENDING_ASK_PREFIX)) seededAsks.set(i.askId, i);
+	}
 	const moved = new Set<ChatItem>();
 	const mapped: ChatItem[] = [];
 	for (const h of items) {
+		const seeded = h.type === 'ask' ? seededAsks.get(h.askId) : undefined;
+		if (seeded && !moved.has(seeded)) {
+			moved.add(seeded);
+			mapped.push(seeded);
+			continue;
+		}
 		const mine = h.type === 'user' && h.clientId ? local.get(h.clientId) : undefined;
 		if (mine && h.type === 'user' && h.clientId) {
 			if (h.verified) mine.verified = true;

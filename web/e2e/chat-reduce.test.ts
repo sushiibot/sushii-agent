@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { CLIENT_ID_RE, type ChatEnvelope, type RouterNotice } from '../src/lib/chat/events';
+import { CLIENT_ID_RE, type ChatEnvelope } from '../src/lib/chat/events';
 import { fileRef, toMessages } from '../src/lib/chat/project';
 import {
 	addLocalSend,
@@ -9,12 +9,14 @@ import {
 	mergeHistory,
 	openTurns,
 	PENDING_TURN_ID,
+	restartHistory,
 	type ChatState
 } from '../src/lib/chat/reduce';
 import { SseParser, toEnvelope } from '../src/lib/chat/sse';
 import { ulid } from '../src/lib/chat/ulid';
 import { fitWithin } from '../src/lib/chat/photo';
 
+const NONE = { approvals: [], asks: [] };
 const run = (s: ChatState, evs: ChatEnvelope[]) => evs.flatMap((e) => applyEvent(s, e, 1000));
 const texts = (s: ChatState) =>
 	toMessages(s.items).flatMap((m) => m.parts.flatMap((p) => ('text' in p ? [p.text] : [])));
@@ -44,7 +46,7 @@ test('the SSE parser handles split chunks, CRLF, comments and multi-line data', 
 test('durable replays at or below the cursor are ignored', () => {
 	const s = createState();
 	run(s, [
-		{ type: 'hello', data: { headSeq: 10, workspace: 'online', openTurns: [] } },
+		{ type: 'hello', data: { headSeq: 10, workspace: 'online', openTurns: [], pending: NONE } },
 		{ type: 'proactive', seq: 11, data: { key: 'p1', text: 'one', files: [] } },
 		{ type: 'proactive', seq: 11, data: { key: 'p1', text: 'one', files: [] } },
 		{ type: 'proactive', seq: 9, data: { key: 'p0', text: 'old', files: [] } }
@@ -146,7 +148,9 @@ test('a reply with no progress before it takes the Working slot, and the turn en
 
 test('after backgrounding, a replay of only durable events leaves no turn running', () => {
 	const s = createState();
-	run(s, [{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [] } }]);
+	run(s, [
+		{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [], pending: NONE } }
+	]);
 	addLocalSend(s, { clientId: 'A', text: 'hi', attachments: [], at: 'x', delivery: 'sending' });
 	run(s, [
 		{ type: 'user', seq: 1, data: { key: 'A', text: 'hi', uploadIds: [], at: 'x' } },
@@ -155,7 +159,7 @@ test('after backgrounding, a replay of only durable events leaves no turn runnin
 	expect(openTurns(s)).toHaveLength(1);
 	// The stream closed on hidden; the resume replays only what was stored meanwhile.
 	run(s, [
-		{ type: 'hello', data: { headSeq: 5, workspace: 'online', openTurns: [] } },
+		{ type: 'hello', data: { headSeq: 5, workspace: 'online', openTurns: [], pending: NONE } },
 		{ type: 'reply', seq: 3, data: { key: 'o', turnId: 't', text: 'Hello.', files: [] } },
 		{
 			type: 'turn_final',
@@ -178,8 +182,8 @@ test('after backgrounding, a replay of only durable events leaves no turn runnin
 test('a cursor resume applies replayed events at or below the new head', () => {
 	const s = createState();
 	run(s, [
-		{ type: 'hello', data: { headSeq: 10, workspace: 'online', openTurns: [] } },
-		{ type: 'hello', data: { headSeq: 20, workspace: 'online', openTurns: [] } },
+		{ type: 'hello', data: { headSeq: 10, workspace: 'online', openTurns: [], pending: NONE } },
+		{ type: 'hello', data: { headSeq: 20, workspace: 'online', openTurns: [], pending: NONE } },
 		...Array.from({ length: 10 }, (_, i) => ({
 			type: 'proactive' as const,
 			seq: 11 + i,
@@ -227,8 +231,8 @@ test('a notice naming a client id settles that send, or queues it when the agent
 	addLocalSend(s, { clientId: 'A', text: 'a', attachments: [], at: 'x', delivery: 'sending' });
 	addLocalSend(s, { clientId: 'B', text: 'b', attachments: [], at: 'x', delivery: 'queued' });
 	const fx = run(s, [
-		{ type: 'notice', seq: 1, data: { type: 'commandOffline', clientId: 'A' } as RouterNotice },
-		{ type: 'notice', seq: 2, data: { type: 'workspaceOffline', clientId: 'B' } as RouterNotice }
+		{ type: 'notice', seq: 1, data: { type: 'commandOffline', clientId: 'A' } },
+		{ type: 'notice', seq: 2, data: { type: 'workspaceOffline', clientId: 'B' } }
 	]);
 	expect(fx).toContainEqual({ type: 'delivered', clientId: 'A' });
 	expect(fx).not.toContainEqual({ type: 'delivered', clientId: 'B' });
@@ -245,7 +249,7 @@ test('a cancelled approval from history reads as cancelled, not timed out', () =
 			at: 'x',
 			nonce: 'n',
 			view: { tool: 't', agentId: 'a', agentName: 'A', fields: [] },
-			decision: 'cancelled' as 'deny'
+			decision: 'cancelled'
 		}
 	]);
 	expect(s.items[0]).toMatchObject({ outcome: 'cancelled' });
@@ -319,7 +323,7 @@ test('an unknown approval decision reads as no longer needed, never as approved'
 			seq: 1,
 			data: { nonce: 'n', view: { tool: 't', agentId: 'a', agentName: 'A', fields: [] } }
 		},
-		{ type: 'approval_resolved', seq: 2, data: { nonce: 'n', decision: 'cancelled' as 'deny' } }
+		{ type: 'approval_resolved', seq: 2, data: { nonce: 'n', decision: 'cancelled' } }
 	]);
 	expect(s.items[0]).toMatchObject({ outcome: 'cancelled' });
 });
@@ -333,7 +337,7 @@ test('workspaceOffline queues pending sends; a reset keeps unsent messages only'
 	]);
 	expect(s.items[0]).toMatchObject({ delivery: 'queued-agent' });
 	expect(s.workspace).toBe('offline');
-	const fx = run(s, [{ type: 'reset', data: { headSeq: 50 } }]);
+	const fx = run(s, [{ type: 'reset', data: { headSeq: 50, pending: NONE } }]);
 	expect(fx).toContainEqual({ type: 'reload' });
 	expect(s.items.map((i) => i.kind)).toEqual(['user']);
 	expect(s.cursor).toBe(50);
@@ -398,4 +402,119 @@ test('photos fit a 2560 px long edge and never upscale', () => {
 	expect(fitWithin(4032, 3024)).toEqual({ width: 2560, height: 1920 });
 	expect(fitWithin(3024, 4032)).toEqual({ width: 1920, height: 2560 });
 	expect(fitWithin(800, 600)).toEqual({ width: 800, height: 600 });
+});
+
+const view = (tool: string) => ({ tool, agentId: 'a', agentName: 'A', fields: [] });
+const pendingApproval = (nonce: string) => ({ seq: 1, at: 'x', nonce, view: view('send_email') });
+const pendingAsk = (askId: string) => ({
+	seq: 2,
+	at: 'x',
+	key: `o-${askId}`,
+	askId,
+	question: `Which ${askId}?`,
+	choices: ['A', 'B']
+});
+
+test('hello seeds the tray and ask cards from the bot log, and history does not duplicate them', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'hello',
+			data: {
+				headSeq: 5,
+				workspace: 'online',
+				openTurns: [],
+				pending: { approvals: [pendingApproval('n1')], asks: [pendingAsk('k1')] }
+			}
+		}
+	]);
+	expect(s.approvals.map((a) => a.nonce)).toEqual(['n1']);
+	expect(s.items).toMatchObject([{ kind: 'ask', askId: 'k1', state: 'pending' }]);
+
+	mergeHistory(s, [
+		{ type: 'user', id: 'u1', at: 'x', text: 'first', attachments: [], verified: true },
+		{
+			type: 'ask',
+			id: 'q1',
+			at: 'x',
+			outboxId: 'o-k1',
+			askId: 'k1',
+			question: 'Which k1?',
+			choices: ['A', 'B'],
+			verified: true
+		},
+		{
+			type: 'approval',
+			id: 'p1',
+			at: 'x',
+			nonce: 'n1',
+			view: view('send_email'),
+			decision: null
+		},
+		{ type: 'user', id: 'u2', at: 'x', text: 'later', attachments: [], verified: true }
+	]);
+	expect(s.items.map((i) => i.kind)).toEqual(['user', 'ask', 'approval', 'user']);
+	expect(s.approvals).toHaveLength(1);
+
+	run(s, [
+		{ type: 'ask', seq: 6, data: { key: 'o-k1', askId: 'k1', question: 'Which k1?', choices: [] } },
+		{ type: 'approval', seq: 7, data: { nonce: 'n1', view: view('send_email') } }
+	]);
+	expect(s.items.filter((i) => i.kind === 'ask')).toHaveLength(1);
+	expect(s.approvals).toHaveLength(1);
+});
+
+test('a reset leaves only the approvals the bot still has in the tray', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'hello',
+			data: {
+				headSeq: 5,
+				workspace: 'online',
+				openTurns: [],
+				pending: { approvals: [pendingApproval('n1'), pendingApproval('n2')], asks: [] }
+			}
+		}
+	]);
+	expect(s.approvals.map((a) => a.nonce)).toEqual(['n1', 'n2']);
+	run(s, [
+		{
+			type: 'reset',
+			data: {
+				headSeq: 90,
+				pending: { approvals: [pendingApproval('n2')], asks: [pendingAsk('k2')] }
+			}
+		}
+	]);
+	expect(s.approvals.map((a) => a.nonce)).toEqual(['n2']);
+	expect(s.items).toMatchObject([{ kind: 'ask', askId: 'k2', state: 'pending' }]);
+});
+
+test('a hello on resume drops a tray approval the bot no longer lists', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [], pending: NONE } },
+		{ type: 'approval', seq: 1, data: { nonce: 'n1', view: view('send_email') } }
+	]);
+	expect(s.approvals).toHaveLength(1);
+	run(s, [
+		{ type: 'hello', data: { headSeq: 3, workspace: 'online', openTurns: [], pending: NONE } }
+	]);
+	expect(s.approvals).toHaveLength(0);
+	expect(s.items).toMatchObject([{ kind: 'approval', nonce: 'n1', outcome: 'timeout' }]);
+	run(s, [{ type: 'approval_resolved', seq: 2, data: { nonce: 'n1', decision: 'approve' } }]);
+	expect(s.items).toMatchObject([{ kind: 'approval', outcome: 'approved-elsewhere' }]);
+});
+
+test('a stale history cursor restarts history but keeps the tray and the cursor', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [], pending: NONE } },
+		{ type: 'approval', seq: 4, data: { nonce: 'n1', view: view('send_email') } }
+	]);
+	expect(restartHistory(s)).toEqual([{ type: 'reload' }]);
+	expect(s.items).toEqual([]);
+	expect(s.approvals.map((a) => a.nonce)).toEqual(['n1']);
+	expect(s.cursor).toBe(4);
 });

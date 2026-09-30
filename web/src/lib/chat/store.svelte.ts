@@ -1,5 +1,5 @@
 import type { ChatMessage, PendingApproval, PhotoDraft } from '$lib/agent/types';
-import { ChatHttpError, httpChatApi, wasRouted, type ChatApi } from './api';
+import { ChatHttpError, httpChatApi, uploadMissingIds, type ChatApi } from './api';
 import {
 	MESSAGE_TEXT_MAX,
 	MESSAGE_UPLOADS_MAX,
@@ -27,6 +27,7 @@ import {
 	mergeHistory,
 	openTurns,
 	removeLocal,
+	restartHistory,
 	setDelivery,
 	type ChatItem,
 	type ChatState,
@@ -353,8 +354,10 @@ export class ChatStore {
 		const r = await this.#api.history({ before: this.#before, limit: HISTORY_PAGE });
 		this.olderLoading = false;
 		if (!r.ok && r.reason === 'reset') {
-			// The cursor went stale: start again from the newest page.
-			this.apply({ type: 'reset', data: { headSeq: this.#s.cursor ?? 0 } });
+			// The cursor went stale: start again from the newest page. The stream is fine, so the tray stays.
+			const fx = restartHistory(this.#s);
+			this.#commit();
+			for (const e of fx) this.#effect(e);
 			return;
 		}
 		if (!r.ok) {
@@ -510,7 +513,7 @@ export class ChatStore {
 			});
 			this.#retrying.delete(id);
 			if (!this.#pending.has(id)) return;
-			if (wasRouted(res)) {
+			if (res.routed) {
 				this.#effect({ type: 'delivered', clientId: id });
 				setDelivery(this.#s, id, 'sent');
 				return;
@@ -530,6 +533,11 @@ export class ChatStore {
 			);
 		} catch (err) {
 			if (!this.#pending.has(id)) return;
+			const missing = uploadMissingIds(err);
+			if (missing) {
+				this.#returnToComposer(entry, missing);
+				return;
+			}
 			const e = err instanceof ChatHttpError ? err : new ChatHttpError(0, String(err));
 			if (e.retryable) {
 				this.#retrying.add(id);
@@ -544,6 +552,37 @@ export class ChatStore {
 			this.#inflight.delete(id);
 			this.#commit();
 		}
+	}
+
+	/**
+	 * The bot refused the message because some of its photos are gone, and stored nothing. Resending would
+	 * fail the same way, so the text and photos go back to the composer with the gone ones marked.
+	 */
+	#returnToComposer(entry: OutboxEntry, missing: string[]) {
+		const id = entry.clientId;
+		this.#pending.delete(id);
+		this.#failed.delete(id);
+		this.#retrying.delete(id);
+		clearTimeout(this.#unacked.get(id));
+		this.#unacked.delete(id);
+		void this.#outbox.delete(id).catch(() => {});
+		removeLocal(this.#s, id);
+		const gone = new Set(missing);
+		const restored: Photo[] = (entry.photos ?? []).map((p) => ({
+			id: ulid(),
+			name: p.name,
+			src: URL.createObjectURL(p.blob),
+			blob: p.blob,
+			file: p.blob,
+			key: ulid(),
+			...(gone.has(p.uploadId)
+				? { state: 'failed' as const, error: 'expired' as const }
+				: { state: 'uploaded' as const, uploadId: p.uploadId, uploadedAt: p.uploadedAt })
+		}));
+		this.photos = [...restored, ...this.photos].slice(0, MESSAGE_UPLOADS_MAX);
+		this.draft = this.draft ? `${entry.text}\n\n${this.draft}` : entry.text;
+		this.#saveDraft();
+		this.showToast('A photo in your message expired. Re-attach it and send again.');
 	}
 
 	/** Re-uploads photos old enough that the server may have collected them as orphans. */
