@@ -79,8 +79,14 @@ sw.addEventListener('notificationclick', (event) => {
 			if (exact) return exact.focus();
 			const existing = windows[0];
 			if (existing) {
-				await existing.focus();
-				return existing.navigate(target);
+				try {
+					// navigate() rejects for a window this worker doesn't control yet (first session).
+					await existing.focus();
+					const navigated = await existing.navigate(target);
+					if (navigated) return navigated;
+				} catch {
+					// Fall through to a fresh window at the target.
+				}
 			}
 			return sw.clients.openWindow(target);
 		})()

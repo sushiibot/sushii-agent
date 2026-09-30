@@ -166,3 +166,16 @@ test('the precached shell opens while offline', async ({ page, context }) => {
 	await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 	await expect(page.getByText(/You're offline/)).toBeVisible();
 });
+
+test('the settings back chevron returns without stacking history', async ({ page }) => {
+	await mockApi(page);
+	await stubPush(page);
+	await page.goto('/');
+	await page.getByRole('link', { name: 'Settings' }).click();
+	await expect(page).toHaveURL(/\/settings$/);
+	await page.getByRole('link', { name: 'Back to Main' }).click();
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
+	await page.goBack();
+	await expect(page).not.toHaveURL(/\/settings$/);
+});

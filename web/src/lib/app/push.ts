@@ -80,7 +80,20 @@ export async function enablePush(): Promise<void> {
 			applicationServerKey: base64UrlToBytes(key)
 		});
 	}
-	await api.subscribe(sub.toJSON());
+	try {
+		await api.subscribe(sub.toJSON());
+	} catch (err) {
+		// Keep the browser and the server in agreement: no server row means no browser subscription.
+		await sub.unsubscribe().catch(() => {});
+		throw err;
+	}
+}
+
+// The server upserts by endpoint, so re-sending heals a row the server lost.
+export async function resyncPush(): Promise<void> {
+	const reg = await navigator.serviceWorker.getRegistration();
+	const sub = await reg?.pushManager.getSubscription();
+	if (sub && Notification.permission === 'granted') await api.subscribe(sub.toJSON());
 }
 
 export async function disablePush(): Promise<void> {

@@ -13,7 +13,9 @@ export default defineConfig({
 		browserName: 'chromium'
 	},
 	webServer: {
-		command: 'bun run preview --port 4173 --strictPort',
+		// vite preview serves .svelte-kit/output, which build:proto overwrites, so always rebuild first.
+		command: 'bun run build && bun run preview --port 4173 --strictPort',
+		timeout: 180_000,
 		url: 'http://localhost:4173',
 		reuseExistingServer: !process.env.CI
 	}

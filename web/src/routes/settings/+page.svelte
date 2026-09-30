@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { afterNavigate } from '$app/navigation';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
@@ -14,6 +15,7 @@
 		disablePush,
 		enablePush,
 		PushSetupError,
+		resyncPush,
 		type PushStatus
 	} from '$lib/app/push';
 	import { applyTheme, readTheme, type ThemeChoice } from '$lib/app/theme';
@@ -32,6 +34,17 @@
 	let testResult = $state<{ ok: boolean; text: string } | null>(null);
 
 	let theme = $state<ThemeChoice>('system');
+
+	// Arriving from Main, the chevron pops history so Android back from Main still exits the app.
+	let cameFromMain = false;
+	afterNavigate(({ from }) => {
+		cameFromMain = from?.url.pathname === '/';
+	});
+	function goBack(e: MouseEvent) {
+		if (!cameFromMain) return;
+		e.preventDefault();
+		history.back();
+	}
 
 	const errorText = (err: unknown) =>
 		err instanceof Error ? err.message : 'Something went wrong. Try again.';
@@ -52,6 +65,7 @@
 	async function loadPush() {
 		try {
 			push = await currentPushStatus();
+			if (push === 'on') await resyncPush();
 		} catch (err) {
 			push = 'unavailable';
 			pushError = errorText(err);
@@ -139,7 +153,7 @@
 <AppShell
 	active="more"
 	title="Settings"
-	back={{ href: '/', label: 'Back to Main' }}
+	back={{ href: '/', label: 'Back to Main', onclick: goBack }}
 	{banner}
 	toast={pwa.waiting ? toast : undefined}
 >

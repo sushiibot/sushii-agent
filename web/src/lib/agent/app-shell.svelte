@@ -54,7 +54,7 @@
 		active: NavId;
 		title: string;
 		subtitle?: Snippet;
-		back?: { href: string; label: string };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		waiting?: number;
 		unread?: boolean;
 		actions?: Snippet;
@@ -132,6 +132,7 @@
 				{#if phoneBack}
 					<a
 						href={phoneBack.href}
+						onclick={back?.onclick}
 						class={cn(
 							'-ml-0.5 flex h-12 min-w-12 shrink-0 items-center rounded-md pr-1.5 pl-0.5 text-sm text-muted-foreground hover:text-foreground',
 							!back && '@3xl:hidden'

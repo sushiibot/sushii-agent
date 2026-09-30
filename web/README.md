@@ -8,7 +8,7 @@ bun dev              # app at http://localhost:5173, /api proxied to http://loca
 bun run check        # svelte-check, warnings fail
 bun run lint         # prettier
 bun run build        # app build in build/ (no prototype)
-bun run test:e2e     # Playwright against `vite preview` of build/, /api mocked
+bun run test:e2e     # builds, then Playwright against `vite preview` with /api mocked
 ```
 
 The clickable prototype lives in its own routes tree, `src/proto-routes`, so it never reaches `build/`:
