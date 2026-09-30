@@ -92,7 +92,7 @@ export function sseResponse(chatLog: ChatLog, after: number | null, opts: SseOpt
         sub = chatLog.subscribe(after, (ev) => (live ? send(ev) : replay.push(ev)));
         const state = opts.hello();
         if (sub.reset) {
-          send({ type: "reset", data: { headSeq: sub.head, pending: state.pending } });
+          send({ type: "reset", data: { headSeq: sub.head, workspace: state.workspace, pending: state.pending } });
           send({ type: "workspace", data: { state: state.workspace } });
           for (const view of state.openTurns) send({ type: "snapshot", data: { turnId: view.turnId, view } });
         } else {

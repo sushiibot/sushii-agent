@@ -330,17 +330,87 @@ test('an unknown approval decision reads as no longer needed, never as approved'
 
 test('workspaceOffline queues pending sends; a reset keeps unsent messages only', () => {
 	const s = createState();
-	addLocalSend(s, { clientId: 'A', text: 'a', attachments: [], at: 'x', delivery: 'sending' });
 	run(s, [
+		{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [], pending: NONE } }
+	]);
+	addLocalSend(s, { clientId: 'A', text: 'a', attachments: [], at: 'x', delivery: 'sending' });
+	const noticed = run(s, [
 		{ type: 'proactive', seq: 1, data: { key: 'p', text: 'p', files: [] } },
 		{ type: 'notice', seq: 2, data: { type: 'workspaceOffline' } }
 	]);
-	expect(s.items[0]).toMatchObject({ delivery: 'queued-agent' });
-	expect(s.workspace).toBe('offline');
-	const fx = run(s, [{ type: 'reset', data: { headSeq: 50, pending: NONE } }]);
+	expect(s.items[0]).toMatchObject({ kind: 'user', delivery: 'queued-agent' });
+	// Only first frames and workspace events set the workspace state.
+	expect(s.workspace).toBe('online');
+	expect(noticed).not.toContainEqual(expect.objectContaining({ type: 'workspace' }));
+	const fx = run(s, [
+		{ type: 'reset', data: { headSeq: 50, workspace: 'offline', pending: NONE } }
+	]);
 	expect(fx).toContainEqual({ type: 'reload' });
+	expect(fx).toContainEqual({ type: 'workspace', state: 'offline' });
+	expect(s.workspace).toBe('offline');
 	expect(s.items.map((i) => i.kind)).toEqual(['user']);
 	expect(s.cursor).toBe(50);
+});
+
+test('every first frame that says online asks for a resend, even with no change', () => {
+	const s = createState();
+	const hello = (workspace: 'online' | 'offline') =>
+		run(s, [{ type: 'hello', data: { headSeq: 0, workspace, openTurns: [], pending: NONE } }]);
+	expect(hello('online')).toEqual([{ type: 'workspace', state: 'online' }, { type: 'resend' }]);
+	expect(hello('online')).toEqual([{ type: 'resend' }]);
+	expect(hello('offline')).toEqual([{ type: 'workspace', state: 'offline' }]);
+});
+
+test('a refused message fails visibly with the reason and is not settled', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'hello', data: { headSeq: 0, workspace: 'online', openTurns: [], pending: NONE } }
+	]);
+	addLocalSend(s, { clientId: 'A', text: 'a', attachments: [], at: 'x', delivery: 'sending' });
+	const fx = run(s, [
+		{
+			type: 'notice',
+			seq: 1,
+			data: { type: 'messageRejected', error: 'model auth failed', clientId: 'A' }
+		}
+	]);
+	expect(fx).toEqual([{ type: 'failed', clientId: 'A' }]);
+	expect(s.items[0]).toMatchObject({ kind: 'user', delivery: 'failed' });
+	expect(s.workspace).toBe('online');
+	expect(s.items).toContainEqual(
+		expect.objectContaining({
+			kind: 'line',
+			text: "Your message didn't reach the agent: model auth failed"
+		})
+	);
+});
+
+test('an ask resolved with no answer, live or from history, is no longer answerable', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'ask',
+			seq: 1,
+			data: { key: 'o1', askId: 'k1', question: 'When?', choices: ['Sat'] }
+		},
+		{ type: 'ask_resolved', seq: 2, data: { askId: 'k1', answer: null } }
+	]);
+	expect(s.items[0]).toMatchObject({ kind: 'ask', state: 'history', answer: undefined });
+	const h = createState();
+	mergeHistory(h, [
+		{
+			type: 'ask',
+			id: 'a',
+			at: 'x',
+			outboxId: 'o2',
+			askId: 'k2',
+			question: 'Where?',
+			choices: ['Home'],
+			answer: null,
+			verified: true
+		}
+	]);
+	expect(h.items[0]).toMatchObject({ kind: 'ask', state: 'history', answer: undefined });
 });
 
 test('file refs only become images for bot ids flagged inline', () => {
@@ -486,6 +556,7 @@ test('a reset leaves only the approvals the bot still has in the tray', () => {
 			type: 'reset',
 			data: {
 				headSeq: 90,
+				workspace: 'online',
 				pending: { approvals: [pendingApproval('n2')], asks: [pendingAsk('k2')] }
 			}
 		}

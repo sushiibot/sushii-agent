@@ -187,6 +187,7 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			});
 			if (text === 'offline') {
 				workspace = 'offline';
+				emit('workspace', { state: 'offline' }, false);
 				emit('notice', { type: 'workspaceOffline' });
 				setTimeout(() => {
 					workspace = 'online';

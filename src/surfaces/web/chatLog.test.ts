@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
-import { SqliteChatLog } from "./chatLog.ts";
+import { INBOUND_RETENTION_MS, SqliteChatLog } from "./chatLog.ts";
+import { WebInboundStore } from "./inbound.ts";
 import type { ChatEnvelope } from "./events.ts";
 
 function setup(opts: { maxRows?: number } = {}) {
@@ -161,5 +162,44 @@ describe("SqliteChatLog", () => {
     const pending = log.pending({ approvalsSince: since, asks: 2 });
     expect(pending.approvals.map((a) => [a.seq, a.nonce])).toEqual([[live, "live"]]);
     expect(pending.asks.map((a) => a.key)).toEqual(["o2", "o5"]);
+  });
+
+  test("at boot, every approval left undecided is cancelled, however old, and a decided one is left alone", () => {
+    const { log, advance } = setup();
+    const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+    log.append("approval", { nonce: "old", view }, "old");
+    advance(40 * 60_000);
+    log.append("approval", { nonce: "done", view }, "done");
+    log.append("approval_resolved", { nonce: "done", decision: "approve" }, "done");
+    log.append("approval", { nonce: "fresh", view }, "fresh");
+    const got: ChatEnvelope[] = [];
+    log.subscribe(null, (ev) => got.push(ev));
+    expect(log.cancelUnresolvedApprovals()).toBe(2);
+    expect(got.map((e) => e.data)).toEqual([
+      { nonce: "old", decision: "cancelled" },
+      { nonce: "fresh", decision: "cancelled" },
+    ]);
+    expect(log.pending({ approvalsSince: 0, asks: 10 }).approvals).toEqual([]);
+    expect(log.cancelUnresolvedApprovals()).toBe(0);
+  });
+});
+
+describe("web_inbound retention", () => {
+  test("routed rows go a week after routing; unrouted rows stay until they are a week old themselves", () => {
+    const { db } = setup();
+    const inbound = new WebInboundStore(db);
+    const day = 24 * 60 * 60 * 1000;
+    const row = (clientId: string, createdAt: number) => inbound.insert({ clientId, text: "t", uploadIds: [], seq: 1, createdAt });
+    const now = 100 * day;
+    row("routed-late", now - 10 * day);
+    inbound.markRouted("routed-late", now - 2 * day);
+    row("routed-early", now - 10 * day);
+    inbound.markRouted("routed-early", now - 8 * day);
+    row("unrouted-young", now - 6 * day);
+    row("unrouted-old", now - 8 * day);
+    inbound.prune(now);
+    const left = (db.query("SELECT client_id FROM web_inbound ORDER BY client_id").all() as { client_id: string }[]).map((r) => r.client_id);
+    expect(left).toEqual(["routed-late", "unrouted-young"]);
+    expect(inbound.unrouted(now - INBOUND_RETENTION_MS).map((r) => r.clientId)).toEqual(["unrouted-young"]);
   });
 });

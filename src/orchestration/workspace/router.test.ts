@@ -78,14 +78,28 @@ describe("router offline: reject", () => {
     expect(calls.sent).toEqual([]);
   });
 
-  test("chat/message refused while connected: the same notice, no fallback, nothing recorded", async () => {
+  test("chat/message refused while connected: messageRejected with the error, never workspaceOffline", async () => {
     const { deps, calls } = harness({ sendError: new RpcErrorReply("busy", -32000) });
     await handleOwnerMessage(message("hi"), deps);
     expect(calls.sent).toHaveLength(1);
-    expect(calls.notices).toEqual([{ type: "workspaceOffline" }]);
+    expect(calls.notices).toEqual([{ type: "messageRejected", error: "busy" }]);
     expect(calls.acks).toEqual([]);
     expect(calls.fallback).toBe(0);
     expect(calls.offline).toBe(0);
+  });
+
+  test("a send that fails because the link dropped is workspaceOffline", async () => {
+    const { deps, calls } = harness({ sendError: new Error("gone") });
+    let connected = true;
+    deps.link.isConnected = () => connected;
+    const send = deps.link.sendMessage;
+    deps.link.sendMessage = async (input) => {
+      connected = false;
+      return send(input);
+    };
+    await handleOwnerMessage(message("hi"), deps);
+    expect(calls.notices).toEqual([{ type: "workspaceOffline" }]);
+    expect(calls.acks).toEqual([]);
   });
 
   test("an unconfirmed send while connected is still left to the workspace as queued", async () => {

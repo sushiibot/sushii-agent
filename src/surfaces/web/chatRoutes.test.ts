@@ -63,7 +63,9 @@ class FakeLink {
     this.answered.push({ askId, choice, actor });
     return { status: "answered" as const, answer: "yes" };
   };
-  chatHistory = async (q: { before?: string; limit: number }) => {
+  historyTimeouts: Array<number | undefined> = [];
+  chatHistory = async (q: { before?: string; limit: number }, timeoutMs?: number) => {
+    this.historyTimeouts.push(timeoutMs);
     if (!this.history) throw new RpcErrorReply("method not found: chat/history", -32601);
     return this.history(q);
   };
@@ -73,7 +75,7 @@ function webConfig(): WebConfig {
   return { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW], push: undefined };
 }
 
-function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number } = {}) {
+function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; historyMaxBytes?: number; historyDeadlineMs?: number } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -98,6 +100,7 @@ function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; 
     workspaceEnabled: true,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.historyMaxBytes ? { historyMaxBytes: opts.historyMaxBytes } : {}),
+    ...(opts.historyDeadlineMs ? { historyDeadlineMs: opts.historyDeadlineMs } : {}),
     sse: { heartbeatMs: 20, maxLifetimeMs: 5_000 },
   });
   const config = webConfig();
@@ -469,8 +472,9 @@ describe("GET /api/chat/history", () => {
     expect(page.items.map((i) => [i.type, "verified" in i ? i.verified : null, "text" in i ? i.text : null])).toEqual([
       ["user", false, "tampered"],
       ["user", true, "bot copy"],
-      ["approval", null, null],
+      // Placed by the bot's own receive times: the reply came before the approval, whatever `at` the workspace claims.
       ["assistant", true, "bot reply"],
+      ["approval", null, null],
       ["assistant", false, "old reply"],
     ]);
   });
@@ -669,3 +673,128 @@ describe("fix round: wire and trust boundaries", () => {
     expect(Date.now() - t0).toBeLessThan(1_000);
   });
 });
+
+describe("holistic fix round: delivery, refusals, dead asks, history time", () => {
+  test("202 routed:false, the bot dies, the workspace reconnects before the app: the message reaches it exactly once", async () => {
+    const first = setup();
+    first.link.hold = new Promise(() => {}); // the process dies before chat/message reaches the workspace
+    expect(await (await post(first.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toEqual({ seq: expect.any(Number), routed: false });
+    expect(first.inbound.get(CLIENT)!.routedAt).toBeNull();
+
+    const workspace = new FakeLink();
+    const second = setup({ db: first.db, link: workspace });
+    // The workspace link comes back first. No request has brought a verified actor yet, so nothing routes.
+    second.routes.workspaceConnected();
+    await second.routes.idle();
+    expect(workspace.sent).toEqual([]);
+
+    // The app's stream reconnects and says online; the app re-sends its posted entry.
+    const hello = (await readFrames(await call(second.handler, "/api/chat/stream"), 1))[0]!;
+    expect(hello.event).toBe("hello");
+    expect((hello.data as { workspace: string }).workspace).toBe("online");
+    await post(second.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await second.routes.idle();
+
+    expect(workspace.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(second.log.list(["status"]).map((e) => e.data)).toEqual([{ clientId: CLIENT, state: "accepted" }]);
+    expect(second.inbound.get(CLIENT)!.routedAt).not.toBeNull();
+    expect(await (await post(second.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toMatchObject({ routed: true });
+    await second.routes.idle();
+    expect(workspace.sent).toHaveLength(1);
+    expect(userEvents(second.log)).toHaveLength(1);
+  });
+
+  test("a re-drive of a message the workspace already took counts its duplicate as the receipt", async () => {
+    const first = setup();
+    first.link.hold = new Promise(() => {});
+    await post(first.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    const workspace = new FakeLink();
+    workspace.seen.add(CLIENT);
+    const second = setup({ db: first.db, link: workspace });
+    await readFrames(await call(second.handler, "/api/chat/stream"), 1);
+    second.routes.workspaceConnected();
+    await second.routes.idle();
+    expect(workspace.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(second.log.list(["status"]).map((e) => e.data)).toEqual([{ clientId: CLIENT, state: "accepted" }]);
+    expect(second.inbound.get(CLIENT)!.routedAt).not.toBeNull();
+  });
+
+  test("a reconnect re-routes stored messages in the order they were sent, without the app resending", async () => {
+    const h = setup();
+    h.link.connected = false;
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "first" });
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "second" });
+    await h.routes.idle();
+    expect(h.link.sent).toEqual([]);
+    h.link.connected = true;
+    h.routes.workspaceConnected();
+    await until(() => h.link.sent.length === 2);
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.text)).toEqual(["first", "second"]);
+    expect([h.inbound.get(CLIENT)!.routedAt, h.inbound.get(CLIENT2)!.routedAt].every((t) => t !== null)).toBe(true);
+    h.routes.workspaceConnected();
+    await h.routes.idle();
+    expect(h.link.sent).toHaveLength(2);
+  });
+
+  test("a connected workspace that refuses a message: messageRejected for that message, no offline notice, and a retry re-routes it", async () => {
+    const h = setup();
+    const send = h.link.sendMessage;
+    h.link.sendMessage = async () => {
+      throw new RpcErrorReply("model auth failed", -32000);
+    };
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" });
+    await h.routes.idle();
+    expect(h.log.list(["notice"]).map((e) => e.data)).toEqual([{ type: "messageRejected", error: "model auth failed", clientId: CLIENT }]);
+    expect(h.inbound.get(CLIENT)!.routedAt).toBeNull();
+
+    h.link.sendMessage = send;
+    expect(await (await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "hi" })).json()).toMatchObject({ routed: false });
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(h.inbound.get(CLIENT)!.routedAt).not.toBeNull();
+  });
+
+  test("an ask the workspace no longer waits on is resolved, so the first frame stops offering it", async () => {
+    const h = setup();
+    h.link.answerAsk = async () => ({ status: "inactive" as const }) as never;
+    await h.adapter.askPrompt(null, { askId: "q1", question: "Which?", choices: ["red", "blue"] }, { ledger: { isSent: () => false, markSent: () => {} }, plain: false, outboxId: "o1" });
+    expect(h.log.pending({ approvalsSince: 0, asks: 10 }).asks.map((a) => a.askId)).toEqual(["q1"]);
+    // An out-of-range choice is a bad answer, not a dead ask.
+    expect(await (await post(h.handler, "/api/chat/asks/q1", { index: 9, label: "x" })).json()).toEqual({ status: "inactive" });
+    expect(h.log.list(["ask_resolved"])).toEqual([]);
+    expect(await (await post(h.handler, "/api/chat/asks/q1", { index: 0, label: "red" })).json()).toEqual({ status: "inactive" });
+    expect(h.log.list(["ask_resolved"]).map((e) => e.data)).toEqual([{ askId: "q1", answer: null }]);
+    expect(h.log.pending({ approvalsSince: 0, asks: 10 }).asks).toEqual([]);
+    const hello = (await readFrames(await call(h.handler, "/api/chat/stream"), 1))[0]!;
+    expect((hello.data as { pending: { asks: unknown[] } }).pending.asks).toEqual([]);
+  });
+
+  test("a workspace that never answers history gets a 502 inside the deadline, not a socket closed by the idle timeout", async () => {
+    const h = setup({ historyDeadlineMs: 60 });
+    h.link.history = () => new Promise(() => {});
+    const t0 = Date.now();
+    const res = await call(h.handler, "/api/chat/history");
+    expect(res.status).toBe(502);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(h.link.historyTimeouts[0]).toBeLessThanOrEqual(60);
+  });
+
+  test("the halving retries share the one deadline", async () => {
+    const h = setup({ historyMaxBytes: 1024, historyDeadlineMs: 120 });
+    const at = new Date().toISOString();
+    const limits: number[] = [];
+    h.link.history = async (q) => {
+      limits.push(q.limit);
+      await Bun.sleep(40);
+      return { items: Array.from({ length: q.limit }, (_, i) => ({ type: "assistant" as const, id: `m${i}`, at, text: "x".repeat(400), tools: [] })), before: "c" };
+    };
+    const res = await call(h.handler, "/api/chat/history?limit=40");
+    expect(res.status).toBe(502);
+    expect(limits.length).toBeLessThan(6);
+  });
+});
+
+async function until(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 100 && !check(); i++) await Bun.sleep(1);
+}

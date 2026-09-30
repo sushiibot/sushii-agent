@@ -225,6 +225,7 @@ test('an offline workspace queues the message and re-sends it when the agent is 
 	await open(page);
 	await type(page, 'Are you there?');
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'workspace', { state: 'offline' });
 	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
 	await expect(
 		page.getByText("The agent is offline. Your message is queued and sends when it's back.")
@@ -269,7 +270,11 @@ test('a reset reloads history and says so', async ({ page, context }) => {
 			verified: true
 		}
 	];
-	await push(page, 'reset', { headSeq: 40, pending: { approvals: [], asks: [] } });
+	await push(page, 'reset', {
+		headSeq: 40,
+		workspace: 'online',
+		pending: { approvals: [], asks: [] }
+	});
 	await expect(page.getByText('Reloaded the conversation.', { exact: false })).toBeVisible();
 	await expect(page.getByText('From the reloaded history')).toBeVisible();
 	expect(calls.filter((c) => c.path.startsWith('/api/chat/history')).length).toBe(2);
@@ -524,6 +529,7 @@ test('a posted message never re-uploads its photos on a later resend', async ({
 	await expect.poll(() => posts('/api/uploads').length).toBe(1);
 	await page.getByRole('button', { name: 'Send message' }).click();
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await push(page, 'workspace', { state: 'offline' });
 	await push(page, 'notice', { type: 'workspaceOffline' }, 1);
 	await page.clock.setSystemTime(Date.now() + 21 * 60 * 60 * 1000);
 	await push(page, 'workspace', { state: 'online' });
@@ -736,7 +742,7 @@ test('a held send that history already has settles in place and leaves the outbo
 	expect(posts('/api/chat/messages').length).toBe(1);
 });
 
-test('a reopened stream does not re-post a message the bot already holds', async ({
+test('a reopened stream does not re-post a held message while the agent is offline', async ({
 	page,
 	context
 }) => {
@@ -1200,4 +1206,77 @@ test('only the bot approval log draws the shield line; agent text that claims on
 	await expect(
 		page.locator('[data-message-id]').filter({ hasText: '🛡️' }).locator('[data-approval]')
 	).toHaveCount(0);
+});
+
+test('a posted message with no receipt is posted again after the wait, never marked sent', async ({
+	page,
+	context
+}) => {
+	await page.clock.install();
+	const { posts, opts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Still there?');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	await page.clock.fastForward(61_000);
+	// The jump can also time out the stream; its resumed hello re-sends too, always the same body.
+	await expect.poll(() => posts('/api/chat/messages').length).toBeGreaterThanOrEqual(2);
+	await expect(bubble(page, 'Still there?')).toContainText('Sending');
+	expect(await outboxSize(page)).toBe(1);
+	const [first, ...rest] = posts('/api/chat/messages').map((c) => c.body);
+	for (const body of rest) expect(body).toEqual(first);
+
+	// The bot routes it this time; only that receipt settles the entry.
+	opts.messageBody = { seq: 1, routed: true };
+	await page.clock.fastForward(61_000);
+	await expect(bubble(page, 'Still there?')).toContainText('Sent');
+	await expect.poll(() => outboxSize(page)).toBe(0);
+});
+
+test('a bot restart after a 202 with the agent already back: the stream resumes online and the message goes again', async ({
+	page,
+	context
+}) => {
+	const { posts, opts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Lost in the restart');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	// The bot answered 202 routed:false and died. The workspace reconnected first, so the resumed hello
+	// says online again: no workspace change for the client to notice.
+	opts.messageBody = { seq: 1, routed: true };
+	await endStreams(page);
+	await expect.poll(() => streamRequests(page)).toHaveLength(2);
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+	const ids = posts('/api/chat/messages').map((c) => (c.body as { clientId: string }).clientId);
+	expect(ids[1]).toBe(ids[0]);
+	await expect(bubble(page, 'Lost in the restart')).toContainText('Sent');
+	await expect.poll(() => outboxSize(page)).toBe(0);
+	await expect(
+		page.locator('[data-message-id]').filter({ hasText: 'Lost in the restart' })
+	).toHaveCount(1);
+});
+
+test('a message the connected agent refused fails with Retry and no offline banner', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await open(page);
+	await type(page, 'Refuse me');
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
+	await push(page, 'notice', { type: 'messageRejected', error: 'model auth failed', clientId }, 1);
+	await expect(bubble(page, 'Refuse me')).toContainText('Failed');
+	await expect(
+		page.getByText("Your message didn't reach the agent: model auth failed")
+	).toBeVisible();
+	await expect(page.getByText('The agent is offline.', { exact: false })).toHaveCount(0);
+	expect(await outboxSize(page)).toBe(1);
+	// A later hello doesn't auto-send a refused message; Retry does, with the same id.
+	await endStreams(page);
+	await expect.poll(() => streamRequests(page)).toHaveLength(2);
+	await page.waitForTimeout(300);
+	expect(posts('/api/chat/messages').length).toBe(1);
+	await page.getByRole('button', { name: 'Retry send' }).click();
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(2);
+	expect((posts('/api/chat/messages')[1].body as { clientId: string }).clientId).toBe(clientId);
 });

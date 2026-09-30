@@ -40,7 +40,7 @@ const HISTORY_PAGE = 40;
 const TOAST_MS = 4000;
 const TIMEOUT_COLLAPSE_MS = 4000;
 const SEEN_DEBOUNCE_MS = 1000;
-/** A 202 with no status this long after means a duplicate the router had already handled. */
+/** A 202'd message with no receipt this long after is posted again; the bot routes it or says it already did. */
 const UNACKED_MS = 60_000;
 const RETRY_MS = 30_000;
 /** The server GCs unreferenced uploads after 24h; re-upload well before that. */
@@ -276,11 +276,21 @@ export class ChatStore {
 				void this.#outbox.delete(e.clientId).catch(() => {});
 				break;
 			}
+			case 'failed': {
+				this.#failed.add(e.clientId);
+				this.#retrying.delete(e.clientId);
+				clearTimeout(this.#unacked.get(e.clientId));
+				this.#unacked.delete(e.clientId);
+				break;
+			}
 			case 'workspace':
 				if (e.state === 'online') {
 					this.#flushOutbox(true);
 					if (this.history === 'error') this.retryHistory();
 				}
+				break;
+			case 'resend':
+				this.#flushOutbox(true);
 				break;
 			case 'toast':
 				this.showToast(e.text);
@@ -525,10 +535,11 @@ export class ChatStore {
 			this.#unacked.set(
 				id,
 				setTimeout(() => {
-					if (!this.#pending.has(id) || this.workspace !== 'online') return;
-					this.#effect({ type: 'delivered', clientId: id });
-					setDelivery(this.#s, id, 'sent');
-					this.#commit();
+					this.#unacked.delete(id);
+					// Only a receipt settles an entry. While offline, the workspace's return re-sends it instead.
+					const current = this.#pending.get(id);
+					if (!current || this.#failed.has(id) || this.workspace !== 'online') return;
+					void this.#deliver(current);
 				}, UNACKED_MS)
 			);
 		} catch (err) {

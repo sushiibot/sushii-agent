@@ -18,7 +18,12 @@ export class WebInboundStore {
 
   get(clientId: string): InboundRow | null {
     const r = this.db.query("SELECT * FROM web_inbound WHERE client_id = ?").get(clientId) as Raw | null;
-    return r ? { clientId: r.client_id, text: r.text, uploadIds: JSON.parse(r.upload_ids), seq: r.seq, createdAt: r.created_at, routedAt: r.routed_at } : null;
+    return r ? toRow(r) : null;
+  }
+
+  /** Rows never routed, created at or after `since`, oldest first. */
+  unrouted(since: number): InboundRow[] {
+    return (this.db.query("SELECT * FROM web_inbound WHERE routed_at IS NULL AND created_at >= ? ORDER BY seq").all(since) as Raw[]).map(toRow);
   }
 
   insert(row: Omit<InboundRow, "routedAt">): void {
@@ -35,7 +40,13 @@ export class WebInboundStore {
     this.db.run("UPDATE web_inbound SET routed_at = ? WHERE client_id = ? AND routed_at IS NULL", [now, clientId]);
   }
 
+  /** Routed rows go INBOUND_RETENTION_MS after routing; unrouted ones only once that old themselves. */
   prune(now: number): void {
-    this.db.run("DELETE FROM web_inbound WHERE created_at < ?", [now - INBOUND_RETENTION_MS]);
+    const cutoff = now - INBOUND_RETENTION_MS;
+    this.db.run("DELETE FROM web_inbound WHERE (routed_at IS NOT NULL AND routed_at < ?) OR (routed_at IS NULL AND created_at < ?)", [cutoff, cutoff]);
   }
+}
+
+function toRow(r: Raw): InboundRow {
+  return { clientId: r.client_id, text: r.text, uploadIds: JSON.parse(r.upload_ids), seq: r.seq, createdAt: r.created_at, routedAt: r.routed_at };
 }

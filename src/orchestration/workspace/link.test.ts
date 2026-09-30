@@ -745,9 +745,10 @@ describe("preferred surface", () => {
   test("is matched case-insensitively and must have an adapter", () => {
     const registry = new SurfaceRegistry(" Discord ").register(new FakeAdapter("discord"));
     expect(registry.preferredSurface).toBe("discord");
-    expect(() => registry.assertPreferredRegistered()).not.toThrow();
+    expect(registry.hasPreferred()).toBe(true);
     const typo = new SurfaceRegistry("discrod").register(new FakeAdapter("discord"));
-    expect(() => typo.assertPreferredRegistered()).toThrow('WORKSPACE_PREFERRED_SURFACE "discrod" has no adapter; registered: discord');
+    expect(typo.hasPreferred()).toBe(false);
+    expect(typo.registered()).toEqual(["discord"]);
   });
 });
 

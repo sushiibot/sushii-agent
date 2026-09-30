@@ -78,7 +78,8 @@ export interface OwnerRouterDeps<M extends InboundMessage> {
   surface: InboundSurface<M>;
   cursor: MessageCursor;
   /** What happens to a message the workspace can't take. `fallback` (default) answers in-process and records
-   *  the exchange for replay; `reject` only sends a `workspaceOffline` notice and records nothing. */
+   *  the exchange for replay; `reject` records nothing and sends `workspaceOffline`, or `messageRejected`
+   *  when a connected workspace refused it. */
   offline?: "fallback" | "reject";
 }
 
@@ -185,6 +186,7 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
     await notice({ type: "transcript", text: transcript });
   }
 
+  let refused: { error: unknown } | null = null;
   if (workspace) {
     // A voice message's audio is already transcribed; only forward real attachments.
     const attachments = voice ? [] : message.attachments;
@@ -218,13 +220,16 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
         await ack("queued");
         return;
       }
-      log.warn({ err, messageId: message.id }, "chat/message not accepted; answering in-process");
+      log.warn({ err, messageId: message.id }, "chat/message not accepted by the workspace");
+      refused = { error: err };
     }
   }
 
   // No receipt here. A receipt tells the surface the message was taken, so it would never be resent.
   if (reject) {
-    await notice({ type: "workspaceOffline" });
+    // Only a link that is actually down is "offline"; a connected workspace that refused gets the error.
+    if (refused && link.isConnected()) await notice({ type: "messageRejected", error: errorText(refused.error) });
+    else await notice({ type: "workspaceOffline" });
     return;
   }
   // Immediate receipt ack; the in-process turn can take a while.

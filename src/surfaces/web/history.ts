@@ -1,19 +1,40 @@
-import { ID_MAX, type HistoryItem } from "../../orchestration/contracts.ts";
+import { CHAT_HISTORY_TIMEOUT_MS, ID_MAX, type HistoryItem } from "../../orchestration/contracts.ts";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import type { SqliteChatLog, StoredEvent } from "./chatLog.ts";
 import { MESSAGE_TEXT_MAX, MESSAGE_UPLOADS_MAX, type ApprovalDecision, type HistoryResponse, type UploadRef, type WebHistoryItem } from "./events.ts";
 import { capText, REPLY_TEXT_MAX, TOOL_SUMMARY_MAX, type WebUploadPort } from "./workspaceAdapter.ts";
 
 export interface HistorySource {
-  page(q: { before?: string; limit: number }): Promise<{ items: HistoryItem[]; before: string | null }>;
+  page(q: { before?: string; limit: number }, timeoutMs?: number): Promise<{ items: HistoryItem[]; before: string | null }>;
 }
 
 export class RpcHistorySource implements HistorySource {
   constructor(private readonly link: Pick<WorkspaceLink, "chatHistory">) {}
 
-  page(q: { before?: string; limit: number }): Promise<{ items: HistoryItem[]; before: string | null }> {
-    return this.link.chatHistory({ limit: q.limit, ...(q.before ? { before: q.before } : {}) });
+  page(q: { before?: string; limit: number }, timeoutMs?: number): Promise<{ items: HistoryItem[]; before: string | null }> {
+    return this.link.chatHistory({ limit: q.limit, ...(q.before ? { before: q.before } : {}) }, timeoutMs);
   }
+}
+
+/** The history route's shared time budget ran out. */
+export class HistoryDeadlineError extends Error {}
+
+/** A wall-clock budget shared by every RPC one history request makes. */
+export interface HistoryDeadline {
+  at: number;
+  now: () => number;
+}
+
+/** One page, bounded by what is left of `deadline`. */
+function fetchPage(source: HistorySource, q: { before?: string; limit: number }, deadline: HistoryDeadline | undefined) {
+  if (!deadline) return source.page(q);
+  const left = deadline.at - deadline.now();
+  if (left <= 0) return Promise.reject(new HistoryDeadlineError("history deadline passed"));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new HistoryDeadlineError("history deadline passed")), left);
+  });
+  return Promise.race([source.page(q, Math.min(left, CHAT_HISTORY_TIMEOUT_MS)), expired]).finally(() => clearTimeout(timer));
 }
 
 type UploadLookup = Pick<WebUploadPort, "lookup">;
@@ -36,9 +57,9 @@ export interface HistoryPage {
 export async function buildHistoryPage(
   source: HistorySource,
   q: { before?: string; limit: number },
-  deps: { log: SqliteChatLog; uploads?: UploadLookup; userFloor?: number },
+  deps: { log: SqliteChatLog; uploads?: UploadLookup; userFloor?: number; deadline?: HistoryDeadline },
 ): Promise<HistoryPage> {
-  const page = await source.page(q);
+  const page = await fetchPage(source, q, deps.deadline);
   const { log } = deps;
   const floor = deps.userFloor ?? Infinity;
   const clientIds = page.items.flatMap((i) => (i.type === "user" && i.clientId ? [i.clientId] : []));
@@ -62,6 +83,8 @@ export async function buildHistoryPage(
   };
 
   const items: WebHistoryItem[] = [];
+  // Where each item sits in time for placing approvals: the bot's own receive time when it has the item.
+  const times: (number | null)[] = [];
   // Verified owner messages must appear in the bot's order: one placed before an earlier-sent one isn't verified.
   let lastOwnerSeq = -Infinity;
   let lowestOwnerSeq = floor;
@@ -70,6 +93,7 @@ export async function buildHistoryPage(
       case "user": {
         const match = item.clientId ? (users.get(item.clientId) as StoredEvent<"user"> | undefined) : undefined;
         const ev = match && match.seq < floor && match.seq > lastOwnerSeq ? claim(match) : undefined;
+        times.push(match ? match.createdAt : atMs(item.at));
         if (ev) {
           lastOwnerSeq = ev.seq;
           lowestOwnerSeq = Math.min(lowestOwnerSeq, ev.seq);
@@ -87,7 +111,9 @@ export async function buildHistoryPage(
         break;
       }
       case "assistant": {
-        const ev = claim(item.outboxId ? (replies.get(item.outboxId) as StoredEvent<"reply"> | undefined) : undefined);
+        const known = item.outboxId ? (replies.get(item.outboxId) as StoredEvent<"reply"> | undefined) : undefined;
+        times.push(known ? known.createdAt : atMs(item.at));
+        const ev = claim(known);
         const usage = ev ? ev.data.usage : item.usage;
         const turnId = ev ? ev.data.turnId : item.turnId;
         items.push({
@@ -106,7 +132,9 @@ export async function buildHistoryPage(
         break;
       }
       case "ask": {
-        const ev = claim(asks.get(item.outboxId) as StoredEvent<"ask"> | undefined);
+        const known = asks.get(item.outboxId) as StoredEvent<"ask"> | undefined;
+        times.push(known ? known.createdAt : atMs(item.at));
+        const ev = claim(known);
         const askId = ev ? ev.data.askId : item.askId;
         const answer = (answers.get(askId) as StoredEvent<"ask_resolved"> | undefined)?.data.answer;
         items.push({
@@ -123,12 +151,13 @@ export async function buildHistoryPage(
         break;
       }
       case "divider":
+        times.push(atMs(item.at));
         items.push({ type: "divider", id: item.id, at: item.at, kind: item.kind, ...(item.summary !== undefined ? { summary: capText(item.summary, MESSAGE_TEXT_MAX) } : {}) });
         break;
     }
   }
-  const approvals = await approvalsIn(log, source, page.items, q.before === undefined, page.before);
-  return { response: { items: spliceApprovals(items, approvals), before: page.before }, userFloor: lowestOwnerSeq };
+  const approvals = await approvalsIn(log, source, times, q.before === undefined, page.before, deps.deadline);
+  return { response: { items: spliceApprovals(items, times, approvals), before: page.before }, userFloor: lowestOwnerSeq };
 }
 
 function byKey(events: StoredEvent[]): Map<string, StoredEvent> {
@@ -142,20 +171,40 @@ const atMs = (at: string) => {
   return Number.isNaN(t) ? null : t;
 };
 
+/** The bot's receive time for a workspace item it has a record of, else the workspace's own time. */
+function botTime(log: SqliteChatLog, item: HistoryItem): number | null {
+  const ev =
+    item.type === "user" && item.clientId
+      ? log.find("user", item.clientId)
+      : item.type === "assistant" && item.outboxId
+        ? (log.find("reply", item.outboxId) ?? log.find("proactive", item.outboxId))
+        : item.type === "ask"
+          ? log.find("ask", item.outboxId)
+          : null;
+  return ev ? ev.createdAt : atMs(item.at);
+}
+
 /** The bot's approvals after the next older item and up to this page's newest item, or up to now on the
  *  newest page. Adjacent pages share a boundary, so each approval lands on one page. */
-async function approvalsIn(log: SqliteChatLog, source: HistorySource, items: HistoryItem[], newest: boolean, olderCursor: string | null): Promise<WebHistoryItem[]> {
+async function approvalsIn(
+  log: SqliteChatLog,
+  source: HistorySource,
+  itemTimes: (number | null)[],
+  newest: boolean,
+  olderCursor: string | null,
+  deadline: HistoryDeadline | undefined,
+): Promise<WebHistoryItem[]> {
   const all = log.list(["approval"]) as StoredEvent<"approval">[];
   if (!all.length) return [];
-  const times = items.map((i) => atMs(i.at)).filter((t): t is number => t !== null);
+  const times = itemTimes.filter((t): t is number => t !== null);
   if (!times.length && !newest) return [];
   const to = newest ? Infinity : Math.max(...times);
   let from = -Infinity;
   const min = times.length ? Math.min(...times) : Infinity;
   if (olderCursor !== null && all.some((a) => a.createdAt < min)) {
     // Without the older page's boundary an approval could land on neither page; showing it twice is safer.
-    const probe = await source.page({ before: olderCursor, limit: 1 }).catch(() => null);
-    const older = probe?.items.map((i) => atMs(i.at)).filter((t): t is number => t !== null) ?? [];
+    const probe = await fetchPage(source, { before: olderCursor, limit: 1 }, deadline).catch(() => null);
+    const older = probe?.items.map((i) => botTime(log, i)).filter((t): t is number => t !== null) ?? [];
     from = !probe ? -Infinity : older.length ? Math.max(...older) : min;
   }
   const approvals = all.filter((e) => e.createdAt > from && e.createdAt <= to);
@@ -173,13 +222,13 @@ async function approvalsIn(log: SqliteChatLog, source: HistorySource, items: His
   }));
 }
 
-function spliceApprovals(items: WebHistoryItem[], approvals: WebHistoryItem[]): WebHistoryItem[] {
+function spliceApprovals(items: WebHistoryItem[], itemTimes: (number | null)[], approvals: WebHistoryItem[]): WebHistoryItem[] {
   if (!approvals.length) return items;
-  const out = [...items];
+  const out = items.map((item, i) => ({ item, t: itemTimes[i] ?? -Infinity }));
   for (const a of approvals) {
     const t = atMs(a.at)!;
-    const i = out.findIndex((x) => (atMs(x.at) ?? -Infinity) > t);
-    out.splice(i === -1 ? out.length : i, 0, a);
+    const i = out.findIndex((x) => x.t > t);
+    out.splice(i === -1 ? out.length : i, 0, { item: a, t });
   }
-  return out;
+  return out.map((x) => x.item);
 }

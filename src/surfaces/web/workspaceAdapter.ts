@@ -117,11 +117,12 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   }
 
   async notice(message: WebInbound, notice: RouterNotice): Promise<void> {
-    // workspaceOffline means nothing was taken: the client resends the same clientId later, so the notice
-    // must not name it (a notice with a clientId clears the client's outbox entry).
-    const consumed = notice.type !== "workspaceOffline";
+    // Neither workspaceOffline nor messageRejected took the message, so its row stays unrouted and a resend
+    // re-drives it. workspaceOffline names no clientId: the client keeps the entry queued, not failed.
+    const offline = notice.type === "workspaceOffline";
+    const consumed = !offline && notice.type !== "messageRejected";
     this.deps.log.transaction(() => {
-      this.deps.log.append("notice", consumed ? { ...notice, clientId: message.id } : notice);
+      this.deps.log.append("notice", offline ? notice : { ...notice, clientId: message.id });
       if (consumed) this.deps.inbound.markRouted(message.id, this.now());
     });
   }

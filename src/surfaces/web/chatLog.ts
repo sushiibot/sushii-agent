@@ -175,6 +175,18 @@ export class SqliteChatLog implements ChatLog {
     };
   }
 
+  /** Marks every undecided approval cancelled. Only for boot: the previous process's pending approvals
+   *  died with it, so none of them can be decided any more. Returns how many it cancelled. */
+  cancelUnresolvedApprovals(): number {
+    const rows = this.db
+      .query(`SELECT key FROM web_events e WHERE e.type = 'approval' AND e.key IS NOT NULL AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key) ORDER BY seq`)
+      .all() as { key: string }[];
+    this.transaction(() => {
+      for (const { key } of rows) this.append("approval_resolved", { nonce: key, decision: "cancelled" }, key);
+    });
+    return rows.length;
+  }
+
   findAsk(askId: string): StoredEvent<"ask"> | null {
     const row = this.db
       .query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = 'ask' AND json_extract(data, '$.askId') = ? ORDER BY seq DESC LIMIT 1")
