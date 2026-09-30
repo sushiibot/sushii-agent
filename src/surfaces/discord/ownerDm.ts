@@ -1,8 +1,9 @@
 import type { MessageCreateOptions } from "discord.js";
 import { handleOwnerMessage, type MessageCursor, type OwnerRouterDeps } from "../../orchestration/workspace/router.ts";
 import type { InboundSurface } from "../../orchestration/workspace/surface.ts";
+import type { OwnerDmMode } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
-import { discordInbound, type DiscordInbound } from "./workspaceAdapter.ts";
+import { discordInbound, type DiscordInbound, type DmChannelPort } from "./workspaceAdapter.ts";
 
 const log = getLogger("surfaces/discord/ownerDm");
 
@@ -49,6 +50,39 @@ export function snowflakeCursor(cursor: DmCursor): MessageCursor {
 /** Routes one owner DM through the surface-neutral owner router. */
 export function handleOwnerDm<P extends OwnerDmMessage>(message: P, deps: OwnerDmDeps<P>): Promise<void> {
   return handleOwnerMessage(discordInbound(message), { ...deps, cursor: snowflakeCursor(deps.cursor) });
+}
+
+export const WEB_APP_URL = "https://agent.sushii.bot";
+export const DM_REDIRECT_NOTICE = `Personal chat moved to ${WEB_APP_URL}`;
+export const DM_REDIRECT_WEB_DOWN = `Personal chat moved to ${WEB_APP_URL}, but the web app is down right now.`;
+export const BREAK_GLASS_APPROVAL = "An approval is pending. Open the app to decide.";
+
+/** OWNER_DM_MODE=redirect: the owner's DM gets one line pointing at the web app and goes nowhere else, not
+ *  to the workspace, the in-process agent, the login flow or a reply code. */
+export async function redirectOwnerDm(message: Pick<OwnerDmMessage, "send">, opts: { webUp: boolean }): Promise<void> {
+  await message.send({ content: opts.webUp ? DM_REDIRECT_NOTICE : DM_REDIRECT_WEB_DOWN, allowedMentions: { parse: [] } }).catch((err) => {
+    log.warn({ err }, "failed to send the owner DM redirect notice");
+  });
+}
+
+/** Wakes the owner when an approval can't reach them in the app. Deliberately not silent, and buttonless:
+ *  Discord is never where an approval is decided once web is preferred. Resolves false when it wasn't sent. */
+export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort | null>, text: string = BREAK_GLASS_APPROVAL): Promise<boolean> {
+  try {
+    const channel = await ownerChannel();
+    if (!channel) return false;
+    await channel.send({ content: text, allowedMentions: { parse: [] } });
+    return true;
+  } catch (err) {
+    log.warn({ err }, "failed to send the break-glass owner DM");
+    return false;
+  }
+}
+
+/** One owner DM, by OWNER_DM_MODE: routed to the workspace, or only redirected to the web app. */
+export function dispatchOwnerDm<P extends OwnerDmMessage>(message: P, deps: OwnerDmDeps<P> & { mode: OwnerDmMode; webUp: () => boolean }): Promise<void> {
+  if (deps.mode === "redirect") return redirectOwnerDm(message, { webUp: deps.webUp() });
+  return handleOwnerDm(message, deps);
 }
 
 export interface CatchUpCandidate {

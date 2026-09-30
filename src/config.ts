@@ -65,6 +65,9 @@ export interface Config {
   dmWorkspaceEnabled: boolean;
   /** Surface that gets the workspace's proactive messages and approval prompts (WORKSPACE_PREFERRED_SURFACE). Default discord. */
   workspacePreferredSurface: string;
+  /** What an owner Discord DM does (OWNER_DM_MODE): `workspace` routes it to the personal agent, `redirect`
+   *  only answers with a pointer to the web app. Independent of dmWorkspaceEnabled. Default workspace. */
+  ownerDmMode: OwnerDmMode;
   buzz: {
     /** Nostr private key (hex or nsec). Unset → the buzz surface is disabled entirely. */
     privateKey: string | undefined;
@@ -176,6 +179,15 @@ export function parseWebConfig(env: Record<string, string | undefined>): WebConf
     push,
     ...(reason ? { pushDisabledReason: reason } : {}),
   };
+}
+
+export type OwnerDmMode = "workspace" | "redirect";
+
+/** A typo must not quietly reopen owner DMs to the agent, so an unknown value is a startup error. */
+export function parseOwnerDmMode(raw: string | undefined): OwnerDmMode {
+  const value = raw?.trim().toLowerCase() || "workspace";
+  if (value === "workspace" || value === "redirect") return value;
+  throw new Error(`Invalid OWNER_DM_MODE: ${raw} (expected "workspace" or "redirect")`);
 }
 
 function required(name: string): string {
@@ -364,6 +376,7 @@ export const config: Config = {
   orchSecret: process.env["ORCH_SECRET"]?.trim() || undefined,
   dmWorkspaceEnabled: ["1", "true", "yes"].includes(optional("DM_WORKSPACE_ENABLED", "false").toLowerCase()),
   workspacePreferredSurface: optional("WORKSPACE_PREFERRED_SURFACE", "discord").trim() || "discord",
+  ownerDmMode: parseOwnerDmMode(process.env["OWNER_DM_MODE"]),
   buzz: {
     privateKey: process.env["BUZZ_PRIVATE_KEY"],
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),

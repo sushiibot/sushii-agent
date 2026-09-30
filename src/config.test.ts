@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseWebConfig, resolveOwnerPrincipals, resolveTeamsConfig, teamGuildConfigs } from "./config.ts";
+import { parseOwnerDmMode, parseWebConfig, resolveOwnerPrincipals, resolveTeamsConfig, teamGuildConfigs } from "./config.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
 import type { TeamConfig } from "./orchestration/teams.ts";
 
@@ -214,5 +214,18 @@ describe("parseWebConfig", () => {
     expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", NODE_ENV: "PRODUCTION" })?.devLogin).toBeUndefined();
     expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", WEB_BIND_ADDR: "172.31.250.2" })?.devLogin).toBeUndefined();
     expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", WEB_BIND_ADDR: "0.0.0.0" })?.devLogin).toBeUndefined();
+  });
+});
+
+describe("parseOwnerDmMode", () => {
+  test("defaults to workspace; accepts both modes in any case", () => {
+    expect(parseOwnerDmMode(undefined)).toBe("workspace");
+    expect(parseOwnerDmMode("")).toBe("workspace");
+    expect(parseOwnerDmMode(" Redirect ")).toBe("redirect");
+    expect(parseOwnerDmMode("workspace")).toBe("workspace");
+  });
+
+  test("an unknown value is a startup error, never a silent fallback to workspace", () => {
+    expect(() => parseOwnerDmMode("redirct")).toThrow("Invalid OWNER_DM_MODE");
   });
 });
