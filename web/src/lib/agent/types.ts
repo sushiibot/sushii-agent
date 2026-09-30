@@ -195,7 +195,13 @@ export interface PendingApproval {
 }
 
 export type ApprovalOutcome =
-	'pending' | 'approved' | 'denied' | 'timeout' | 'approved-elsewhere' | 'denied-elsewhere';
+	| 'pending'
+	| 'approved'
+	| 'denied'
+	| 'timeout'
+	| 'cancelled'
+	| 'approved-elsewhere'
+	| 'denied-elsewhere';
 
 export type AskState = 'pending' | 'answering' | 'answered' | 'elsewhere' | 'history';
 

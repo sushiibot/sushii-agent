@@ -49,6 +49,8 @@
 		stickToBottom = false,
 		tabBar = true,
 		banner,
+		scroller = $bindable(null),
+		onclosesheet,
 		children
 	}: {
 		active: NavId;
@@ -65,6 +67,10 @@
 		stickToBottom?: boolean;
 		tabBar?: boolean;
 		banner?: Snippet;
+		/** The scrolling message region, for callers that track the reader's position. */
+		scroller?: HTMLElement | null;
+		/** Tapping outside the sheet calls this; Escape and back are the caller's to wire. */
+		onclosesheet?: () => void;
 		children: Snippet;
 	} = $props();
 
@@ -153,6 +159,7 @@
 
 			<!-- column-reverse keeps a chat pinned to its newest message without scripting. -->
 			<main
+				bind:this={scroller}
 				class={cn(
 					'@container min-h-0 flex-1 overflow-y-auto overscroll-contain',
 					stickToBottom && 'flex flex-col-reverse'
@@ -208,7 +215,8 @@
 
 	{#if sheet}
 		<div class="absolute inset-0 z-20 flex flex-col justify-end @3xl:hidden">
-			<div class="absolute inset-0 bg-black/40" aria-hidden="true"></div>
+			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+			<div class="absolute inset-0 bg-black/40" aria-hidden="true" onclick={onclosesheet}></div>
 			<div
 				role="dialog"
 				aria-modal="true"

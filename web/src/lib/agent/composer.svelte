@@ -12,7 +12,7 @@
 	import type { PhotoDraft } from './types';
 
 	let {
-		value = '',
+		value = $bindable(''),
 		placeholder = 'Message your agent',
 		running = false,
 		stopping = false,
@@ -20,7 +20,11 @@
 		photos = [],
 		quotaFull = false,
 		attach = true,
-		onstop
+		onstop,
+		onsend,
+		onattach,
+		onremovephoto,
+		onretryphoto
 	}: {
 		value?: string;
 		placeholder?: string;
@@ -33,8 +37,13 @@
 		quotaFull?: boolean;
 		attach?: boolean;
 		onstop?: () => void;
+		onsend?: () => void;
+		onattach?: (files: File[]) => void;
+		onremovephoto?: (id: string) => void;
+		onretryphoto?: (id: string) => void;
 	} = $props();
 	const uid = $props.id();
+	let picker = $state<HTMLInputElement | null>(null);
 
 	const errors: Record<NonNullable<PhotoDraft['error']>, string> = {
 		upload: 'Upload failed',
@@ -53,9 +62,21 @@
 				: undefined
 	);
 	const canSend = $derived(!blocked && (!!value.trim() || photos.length > 0));
+
+	function submit(e: SubmitEvent) {
+		e.preventDefault();
+		if (canSend) onsend?.();
+	}
+	// Enter is a newline on a touch keyboard; Ctrl or Cmd+Enter sends from a hardware keyboard.
+	function keydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSend) {
+			e.preventDefault();
+			onsend?.();
+		}
+	}
 </script>
 
-<form class="flex flex-col gap-2 px-3 py-2.5" onsubmit={(e) => e.preventDefault()}>
+<form class="flex flex-col gap-2 px-3 py-2.5" onsubmit={submit}>
 	{#if photos.length}
 		<ul aria-label="Photos to send" class="-mx-3 flex gap-3 overflow-x-auto pt-4 pr-5 pb-1 pl-3">
 			{#each photos as photo, i (photo.id)}
@@ -98,6 +119,7 @@
 						type="button"
 						aria-label="Remove photo {i + 1}"
 						class="absolute -top-4 -right-4 grid size-12 place-items-center"
+						onclick={() => onremovephoto?.(photo.id)}
 					>
 						<span
 							class="grid size-6 place-items-center rounded-full border bg-background text-foreground shadow-sm"
@@ -117,7 +139,12 @@
 							{errors[photo.error ?? 'upload']}</span
 						>
 						{#if photo.error === 'upload'}
-							<Button variant="ghost" class="px-3"><RotateCcw />Retry</Button>
+							<Button
+								variant="ghost"
+								class="px-3"
+								aria-label="Retry photo {photos.indexOf(photo) + 1}"
+								onclick={() => onretryphoto?.(photo.id)}><RotateCcw />Retry</Button
+							>
 						{/if}
 					</li>
 				{/each}
@@ -152,19 +179,33 @@
 	{/if}
 	<div class="flex items-end gap-2">
 		{#if attach}
+			<input
+				bind:this={picker}
+				type="file"
+				accept="image/*"
+				multiple
+				hidden
+				onchange={(e) => {
+					const input = e.currentTarget;
+					if (input.files?.length) onattach?.([...input.files]);
+					input.value = '';
+				}}
+			/>
 			<Button
 				variant="ghost"
 				class="size-12 shrink-0 rounded-full px-0"
 				aria-label="Attach photos"
-				disabled={quotaFull}><ImagePlus class="size-5" /></Button
+				disabled={quotaFull}
+				onclick={() => picker?.click()}><ImagePlus class="size-5" /></Button
 			>
 		{/if}
 		<label for="{uid}-composer" class="sr-only">Message</label>
 		<Textarea
 			id="{uid}-composer"
 			rows={1}
-			{value}
+			bind:value
 			{placeholder}
+			onkeydown={keydown}
 			aria-describedby={blocked ? `${uid}-blocked` : undefined}
 			class="max-h-40 min-h-12 flex-1 resize-none rounded-3xl bg-card px-4 py-3 text-base kb:ring-2 kb:ring-ring/40"
 		/>

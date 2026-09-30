@@ -1,0 +1,650 @@
+// Folds history pages, durable events and streaming deltas into chat state. No I/O: side effects
+// come back as a list for the store to run, so the whole fold is testable without a browser.
+import { isDurableEvent } from './events';
+import type {
+	ApprovalView,
+	ChatEnvelope,
+	ChatEventMap,
+	ChatUsage,
+	RouterNotice,
+	ToolLine,
+	UploadRef,
+	WebHistoryItem,
+	WorkspaceState
+} from './events';
+
+export type Delivery = 'sending' | 'sent' | 'failed' | 'queued' | 'queued-agent';
+
+export interface Attachment {
+	name: string;
+	/** Null when the bot no longer has the file. */
+	ref: UploadRef | null;
+	/** Local object URL while the message is still ours to send. */
+	preview?: string;
+}
+
+export type TurnPhase = 'working' | 'done' | 'stopped' | 'interrupted';
+
+export interface TurnState {
+	phase: TurnPhase;
+	lines: ToolLine[];
+	startedAt: number;
+	durationMs?: number;
+	/** Replaces the step text, for command turns ("Starting a new chat…"). */
+	label?: string;
+}
+
+export type ChatItem =
+	| {
+			kind: 'user';
+			id: string;
+			clientId?: string;
+			text: string;
+			attachments: Attachment[];
+			at: string;
+			verified: boolean;
+			delivery?: Delivery;
+	  }
+	| {
+			kind: 'assistant';
+			id: string;
+			key?: string;
+			turnId?: string;
+			text: string;
+			files: UploadRef[];
+			usage?: ChatUsage;
+			turn?: TurnState;
+			/** Still receiving deltas. */
+			streaming: boolean;
+			/** The durable reply landed; later deltas and snapshots for the turn are stale. */
+			replied: boolean;
+			verified: boolean;
+	  }
+	| {
+			kind: 'ask';
+			id: string;
+			askId: string;
+			question: string;
+			choices: string[];
+			state: 'pending' | 'answering' | 'answered' | 'elsewhere' | 'history';
+			answer?: string;
+	  }
+	| {
+			kind: 'approval';
+			id: string;
+			nonce: string;
+			tool: string;
+			outcome:
+				| 'pending'
+				| 'approved'
+				| 'denied'
+				| 'timeout'
+				| 'cancelled'
+				| 'approved-elsewhere'
+				| 'denied-elsewhere';
+	  }
+	| { kind: 'divider'; id: string; divider: 'new' | 'rotated' | 'compacted'; summary?: string }
+	| { kind: 'line'; id: string; text: string }
+	| { kind: 'auth'; id: string; url: string; instructions: string };
+
+export interface TrayItem {
+	nonce: string;
+	view: ApprovalView;
+}
+
+export interface ChatState {
+	items: ChatItem[];
+	/** Pending approvals, oldest first. Filled only from the bot's approval events and approval log. */
+	approvals: TrayItem[];
+	/** The tray item that just timed out; the store clears it after a few seconds. */
+	timedOut: TrayItem | null;
+	cursor: number | null;
+	workspace: WorkspaceState | null;
+	stopping: boolean;
+	/** Dedupe keys of durable items already in `items`. */
+	keys: Set<string>;
+	/** Asks and approvals this device answered, to tell "you" from "another device". */
+	mine: Set<string>;
+	seq: number;
+}
+
+export type Effect =
+	| { type: 'delivered'; clientId: string }
+	| { type: 'workspace'; state: WorkspaceState }
+	| { type: 'toast'; text: string }
+	| { type: 'announce'; text: string }
+	| { type: 'reload' }
+	| { type: 'timedOut' };
+
+export const PENDING_TURN_ID = 'turn:pending';
+
+export function createState(): ChatState {
+	return {
+		items: [],
+		approvals: [],
+		timedOut: null,
+		cursor: null,
+		workspace: null,
+		stopping: false,
+		keys: new Set(),
+		mine: new Set(),
+		seq: 0
+	};
+}
+
+const uid = (s: ChatState, prefix: string) => `${prefix}:${++s.seq}`;
+
+function assistantFor(s: ChatState, turnId: string) {
+	return s.items.find(
+		(i): i is Extract<ChatItem, { kind: 'assistant' }> =>
+			i.kind === 'assistant' && i.turnId === turnId
+	);
+}
+
+/** The live item for a turn, adopting the "Working…" placeholder or appending a new one. */
+function turnItem(s: ChatState, turnId: string, now: number) {
+	const found = assistantFor(s, turnId);
+	if (found) return found;
+	const placeholder = s.items.find((i) => i.id === PENDING_TURN_ID);
+	if (placeholder?.kind === 'assistant') {
+		placeholder.id = uid(s, 'turn');
+		placeholder.turnId = turnId;
+		if (placeholder.turn) placeholder.turn.label = undefined;
+		return placeholder;
+	}
+	const item: Extract<ChatItem, { kind: 'assistant' }> = {
+		kind: 'assistant',
+		id: uid(s, 'turn'),
+		turnId,
+		text: '',
+		files: [],
+		turn: { phase: 'working', lines: [], startedAt: now },
+		streaming: true,
+		replied: false,
+		verified: true
+	};
+	s.items.push(item);
+	return item;
+}
+
+const live = (i: Extract<ChatItem, { kind: 'assistant' }>) =>
+	!i.replied && (!i.turn || i.turn.phase === 'working');
+
+function dropPlaceholder(s: ChatState) {
+	s.items = s.items.filter((i) => i.id !== PENDING_TURN_ID);
+}
+
+export function addPlaceholder(s: ChatState, now: number, label?: string) {
+	const running = s.items.some((i) => i.kind === 'assistant' && i.turn && live(i));
+	if (running) return;
+	s.items.push({
+		kind: 'assistant',
+		id: PENDING_TURN_ID,
+		text: '',
+		files: [],
+		turn: { phase: 'working', lines: [], startedAt: now, label },
+		streaming: false,
+		replied: false,
+		verified: true
+	});
+}
+
+export function noticeText(n: RouterNotice): { line?: string; toast?: string } {
+	switch (n.type) {
+		case 'workspaceOffline':
+		case 'newSessionStarted':
+			return {};
+		case 'newSessionFailed':
+			return { line: `Couldn't start a new chat: ${n.error}` };
+		case 'newWhileOffline':
+			return { toast: "Can't start a new chat while the agent is offline." };
+		case 'nothingToStop':
+			return { toast: 'Nothing to stop.' };
+		case 'stopFailed':
+			return { line: `Couldn't stop the turn: ${n.error}` };
+		case 'transcriptionFailed':
+			return { line: "Couldn't transcribe the voice message." };
+		case 'transcript':
+			return { line: `Transcript: ${n.text}` };
+		case 'approvalExpired':
+			return { toast: 'That approval had already expired.' };
+		case 'askAlreadyAnswered':
+			return { toast: 'That question was already answered.' };
+		case 'askNotDelivered':
+			return { line: `Your answer didn't reach the agent: ${n.error}` };
+		case 'loginOffline':
+			return { line: "Can't log in while the agent is offline." };
+		case 'loginAlreadyPending':
+			return { line: 'A login is already waiting for you to finish it.' };
+		case 'loginNotPending':
+			return { line: 'No login is waiting for a code.' };
+		case 'loginCallbackIgnored':
+			return { line: 'That login link was ignored.' };
+		case 'loginCallbackRejected':
+			return { line: `The login was rejected: ${n.error}` };
+		case 'loginFailed':
+			return { line: `Login failed: ${n.error}` };
+		case 'loginUsage':
+			return { line: "The login command wasn't understood." };
+		case 'commandResult':
+			return { line: n.text };
+		case 'commandOffline':
+			return { toast: "Can't run commands while the agent is offline." };
+		case 'commandFailed':
+			return { line: `The command failed: ${n.error}` };
+	}
+}
+
+function applyToolEvent(item: Extract<ChatItem, { kind: 'assistant' }>, e: ChatEventMap['tool']) {
+	const turn = (item.turn ??= { phase: 'working', lines: [], startedAt: Date.now() });
+	if (e.ok === undefined) {
+		turn.lines = [...turn.lines, { name: e.name, summary: e.summary, state: 'run' }];
+		return;
+	}
+	const state = e.ok ? 'ok' : 'err';
+	const idx = turn.lines.findLastIndex((l) => l.name === e.name && l.state === 'run');
+	turn.lines =
+		idx === -1
+			? [...turn.lines, { name: e.name, summary: e.summary, state }]
+			: turn.lines.map((l, i) =>
+					i === idx ? { ...l, summary: e.summary || l.summary, state } : l
+				);
+}
+
+function resolveApproval(s: ChatState, e: ChatEventMap['approval_resolved'], fx: Effect[]) {
+	const top = s.approvals[0];
+	const entry = s.approvals.find((a) => a.nonce === e.nonce);
+	s.approvals = s.approvals.filter((a) => a.nonce !== e.nonce);
+	const mine = s.mine.has(`p:${e.nonce}`);
+	// `cancelled` is in the contract notes but not yet in the shared type.
+	const decision = e.decision as string;
+	const outcome =
+		decision === 'approve'
+			? mine
+				? 'approved'
+				: 'approved-elsewhere'
+			: decision === 'deny'
+				? mine
+					? 'denied'
+					: 'denied-elsewhere'
+				: decision === 'timeout'
+					? 'timeout'
+					: 'cancelled';
+	for (const i of s.items) if (i.kind === 'approval' && i.nonce === e.nonce) i.outcome = outcome;
+	if (decision === 'timeout' && entry && top?.nonce === e.nonce) {
+		s.timedOut = entry;
+		fx.push({ type: 'timedOut' });
+	}
+}
+
+function addApproval(s: ChatState, nonce: string, view: ApprovalView) {
+	if (!s.approvals.some((a) => a.nonce === nonce)) s.approvals = [...s.approvals, { nonce, view }];
+}
+
+/** Applies one live event. Durable events at or below the cursor are replays and are skipped. */
+export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Effect[] {
+	const fx: Effect[] = [];
+	if (ev.seq !== undefined && isDurableEvent(ev.type)) {
+		if (s.cursor !== null && ev.seq <= s.cursor) return fx;
+		s.cursor = ev.seq;
+	}
+	switch (ev.type) {
+		case 'hello': {
+			if (s.cursor === null) s.cursor = ev.data.headSeq;
+			if (s.workspace !== ev.data.workspace) {
+				s.workspace = ev.data.workspace;
+				fx.push({ type: 'workspace', state: ev.data.workspace });
+			}
+			for (const view of ev.data.openTurns) {
+				fx.push(...applyEvent(s, { type: 'snapshot', data: { turnId: view.turnId, view } }, now));
+			}
+			break;
+		}
+		case 'reset': {
+			const keep = s.items.filter((i) => i.kind === 'user' && i.delivery && i.delivery !== 'sent');
+			Object.assign(s, createState(), { items: keep, workspace: s.workspace, mine: s.mine });
+			for (const i of keep) if (i.kind === 'user' && i.clientId) s.keys.add(`u:${i.clientId}`);
+			s.cursor = ev.data.headSeq;
+			fx.push({ type: 'reload' });
+			break;
+		}
+		case 'user': {
+			const key = `u:${ev.data.key}`;
+			if (s.keys.has(key)) break;
+			s.keys.add(key);
+			if (s.items.some((i) => i.kind === 'user' && i.clientId === ev.data.key)) break;
+			s.items.push({
+				kind: 'user',
+				id: uid(s, 'user'),
+				clientId: ev.data.key,
+				text: ev.data.text,
+				attachments: ev.data.uploadIds.map((id) => ({
+					name: 'Photo',
+					ref: { id, contentType: 'image/jpeg', bytes: 0, name: 'Photo', inline: true }
+				})),
+				at: ev.data.at,
+				verified: true
+			});
+			break;
+		}
+		case 'status': {
+			for (const i of s.items) {
+				if (i.kind === 'user' && i.clientId === ev.data.clientId) i.delivery = 'sent';
+			}
+			fx.push({ type: 'delivered', clientId: ev.data.clientId });
+			if (ev.data.state === 'accepted' || ev.data.state === 'newSession') addPlaceholder(s, now);
+			break;
+		}
+		case 'reply':
+		case 'proactive': {
+			const key = `r:${ev.data.key}`;
+			if (s.keys.has(key)) break;
+			s.keys.add(key);
+			const target = ev.data.turnId ? assistantFor(s, ev.data.turnId) : undefined;
+			if (target && !target.replied) {
+				Object.assign(target, {
+					key: ev.data.key,
+					text: ev.data.text,
+					files: ev.data.files,
+					usage: ev.data.usage,
+					streaming: false,
+					replied: true
+				});
+			} else {
+				s.items.push({
+					kind: 'assistant',
+					id: uid(s, 'reply'),
+					key: ev.data.key,
+					turnId: ev.data.turnId,
+					text: ev.data.text,
+					files: ev.data.files,
+					usage: ev.data.usage,
+					streaming: false,
+					replied: true,
+					verified: true
+				});
+			}
+			fx.push({ type: 'announce', text: 'Agent replied' });
+			break;
+		}
+		case 'turn_final': {
+			const item = assistantFor(s, ev.data.turnId);
+			s.stopping = false;
+			if (!item) {
+				dropPlaceholder(s);
+				break;
+			}
+			item.streaming = false;
+			const phase: TurnPhase =
+				ev.data.outcome === 'done'
+					? 'done'
+					: ev.data.outcome === 'stopped'
+						? 'stopped'
+						: 'interrupted';
+			item.turn = {
+				...(item.turn ?? { lines: [], startedAt: now }),
+				phase,
+				durationMs: ev.data.summary?.durationMs
+			};
+			if (!item.text && !item.turn.lines.length && phase === 'done') {
+				s.items = s.items.filter((i) => i !== item);
+			}
+			break;
+		}
+		case 'snapshot': {
+			const existing = assistantFor(s, ev.data.turnId);
+			if (existing && !live(existing)) break;
+			const item = turnItem(s, ev.data.turnId, now);
+			const v = ev.data.view;
+			item.text = v.text;
+			item.streaming = true;
+			item.turn = { phase: 'working', lines: [...v.lines], startedAt: v.startedAt };
+			break;
+		}
+		case 'delta': {
+			const existing = assistantFor(s, ev.data.turnId);
+			if (existing && !live(existing)) break;
+			if (!existing && ev.data.offset !== 0) break;
+			const item = existing ?? turnItem(s, ev.data.turnId, now);
+			if (ev.data.offset !== item.text.length) break;
+			item.text += ev.data.text;
+			item.streaming = true;
+			break;
+		}
+		case 'tool': {
+			const existing = assistantFor(s, ev.data.turnId);
+			if (existing && !live(existing)) break;
+			applyToolEvent(existing ?? turnItem(s, ev.data.turnId, now), ev.data);
+			break;
+		}
+		case 'ask': {
+			const key = `a:${ev.data.askId}`;
+			if (s.keys.has(key)) break;
+			s.keys.add(key);
+			s.items.push({
+				kind: 'ask',
+				id: uid(s, 'ask'),
+				askId: ev.data.askId,
+				question: ev.data.question,
+				choices: ev.data.choices,
+				state: 'pending'
+			});
+			break;
+		}
+		case 'ask_resolved': {
+			const mine = s.mine.has(`a:${ev.data.askId}`);
+			for (const i of s.items) {
+				if (i.kind === 'ask' && i.askId === ev.data.askId) {
+					i.state = mine ? 'answered' : 'elsewhere';
+					i.answer = ev.data.answer;
+				}
+			}
+			break;
+		}
+		case 'auth': {
+			const key = `auth:${ev.data.key}`;
+			if (s.keys.has(key)) break;
+			s.keys.add(key);
+			s.items.push({
+				kind: 'auth',
+				id: uid(s, 'auth'),
+				url: ev.data.url,
+				instructions: ev.data.instructions
+			});
+			break;
+		}
+		case 'approval': {
+			const key = `p:${ev.data.nonce}`;
+			if (s.keys.has(key)) break;
+			s.keys.add(key);
+			addApproval(s, ev.data.nonce, ev.data.view);
+			s.items.push({
+				kind: 'approval',
+				id: uid(s, 'approval'),
+				nonce: ev.data.nonce,
+				tool: ev.data.view.tool,
+				outcome: 'pending'
+			});
+			break;
+		}
+		case 'approval_resolved':
+			resolveApproval(s, ev.data, fx);
+			break;
+		case 'notice': {
+			if (ev.data.type === 'workspaceOffline') {
+				for (const i of s.items) {
+					if (i.kind === 'user' && i.delivery === 'sending') i.delivery = 'queued-agent';
+				}
+				dropPlaceholder(s);
+				if (s.workspace !== 'offline') {
+					s.workspace = 'offline';
+					fx.push({ type: 'workspace', state: 'offline' });
+				}
+			}
+			if (ev.data.type === 'nothingToStop' || ev.data.type === 'stopFailed') s.stopping = false;
+			const { line, toast } = noticeText(ev.data);
+			if (line) s.items.push({ kind: 'line', id: uid(s, 'line'), text: line });
+			if (toast) fx.push({ type: 'toast', text: toast });
+			break;
+		}
+		case 'session': {
+			dropPlaceholder(s);
+			s.items.push({
+				kind: 'divider',
+				id: uid(s, 'divider'),
+				divider: ev.data.kind === 'new' ? 'new' : 'compacted'
+			});
+			break;
+		}
+		case 'workspace': {
+			if (s.workspace !== ev.data.state) {
+				s.workspace = ev.data.state;
+				fx.push({ type: 'workspace', state: ev.data.state });
+			}
+			break;
+		}
+	}
+	return fx;
+}
+
+function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
+	switch (h.type) {
+		case 'user':
+			if (h.clientId) {
+				if (s.keys.has(`u:${h.clientId}`)) return null;
+				s.keys.add(`u:${h.clientId}`);
+			}
+			return {
+				kind: 'user',
+				id: `h:${h.id}`,
+				clientId: h.clientId,
+				text: h.text,
+				attachments: h.attachments.map((a) => ({ name: a.name, ref: a.file })),
+				at: h.at,
+				verified: h.verified
+			};
+		case 'assistant':
+			if (h.outboxId) {
+				if (s.keys.has(`r:${h.outboxId}`)) return null;
+				s.keys.add(`r:${h.outboxId}`);
+			}
+			return {
+				kind: 'assistant',
+				id: `h:${h.id}`,
+				key: h.outboxId,
+				turnId: h.turnId,
+				text: h.text,
+				files: h.files,
+				usage: h.usage,
+				turn: h.tools.length
+					? {
+							phase: 'done',
+							startedAt: 0,
+							lines: h.tools.map((t) => ({
+								name: t.name,
+								summary: t.summary,
+								state: t.ok ? 'ok' : 'err'
+							}))
+						}
+					: undefined,
+				streaming: false,
+				replied: true,
+				verified: h.verified
+			};
+		case 'ask':
+			if (s.keys.has(`a:${h.askId}`)) return null;
+			s.keys.add(`a:${h.askId}`);
+			return {
+				kind: 'ask',
+				id: `h:${h.id}`,
+				askId: h.askId,
+				question: h.question,
+				choices: h.choices,
+				// Only a bot-verified ask with no answer yet is still answerable.
+				state: h.verified && h.answer === undefined ? 'pending' : 'history',
+				answer: h.answer
+			};
+		case 'divider':
+			return { kind: 'divider', id: `h:${h.id}`, divider: h.kind, summary: h.summary };
+		case 'approval':
+			if (s.keys.has(`p:${h.nonce}`)) return null;
+			s.keys.add(`p:${h.nonce}`);
+			if (h.decision === null) addApproval(s, h.nonce, h.view);
+			return {
+				kind: 'approval',
+				id: `h:${h.id}`,
+				nonce: h.nonce,
+				tool: h.view.tool,
+				outcome:
+					h.decision === null
+						? 'pending'
+						: h.decision === 'approve'
+							? 'approved'
+							: h.decision === 'deny'
+								? 'denied'
+								: 'timeout'
+			};
+	}
+}
+
+/**
+ * Merges one history page, which is ordered oldest first. The newest page goes before any item
+ * already held (queued sends restored from the outbox); older pages go before everything.
+ */
+export function mergeHistory(s: ChatState, items: WebHistoryItem[]) {
+	const local = new Map<string, ChatItem>();
+	for (const i of s.items) if (i.kind === 'user' && i.clientId) local.set(i.clientId, i);
+	const mapped: ChatItem[] = [];
+	for (const h of items) {
+		if (h.type === 'user' && h.clientId && local.has(h.clientId)) {
+			const mine = local.get(h.clientId)!;
+			if (mine.kind === 'user' && h.verified) mine.verified = true;
+			continue;
+		}
+		const item = fromHistory(s, h);
+		if (item) mapped.push(item);
+	}
+	s.items = [...mapped, ...s.items];
+}
+
+/** The optimistic bubble for a send, before any network call. */
+export function addLocalSend(
+	s: ChatState,
+	m: { clientId: string; text: string; attachments: Attachment[]; at: string; delivery: Delivery }
+) {
+	s.keys.add(`u:${m.clientId}`);
+	s.items.push({ kind: 'user', id: `local:${m.clientId}`, verified: true, ...m });
+}
+
+export function setDelivery(s: ChatState, clientId: string, delivery: Delivery | undefined) {
+	for (const i of s.items) if (i.kind === 'user' && i.clientId === clientId) i.delivery = delivery;
+}
+
+export function removeLocal(s: ChatState, clientId: string) {
+	s.items = s.items.filter((i) => !(i.kind === 'user' && i.clientId === clientId));
+	s.keys.delete(`u:${clientId}`);
+}
+
+export function markAsk(s: ChatState, askId: string, answer: string | null) {
+	s.mine.add(`a:${askId}`);
+	for (const i of s.items) {
+		if (i.kind === 'ask' && i.askId === askId) {
+			if (answer === null) {
+				if (i.state === 'answering') {
+					i.state = 'pending';
+					i.answer = undefined;
+				}
+			} else {
+				i.state = 'answering';
+				i.answer = answer;
+			}
+		}
+	}
+}
+
+export function openTurns(s: ChatState) {
+	return s.items.filter(
+		(i): i is Extract<ChatItem, { kind: 'assistant' }> =>
+			i.kind === 'assistant' && !!i.turn && live(i)
+	);
+}
