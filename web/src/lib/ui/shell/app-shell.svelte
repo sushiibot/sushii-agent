@@ -232,7 +232,7 @@
 								href={item.href}
 								aria-current={current ? 'page' : undefined}
 								class={cn(
-									'relative flex h-14 flex-col items-center justify-center gap-1 text-[11px] text-muted-foreground',
+									'relative flex h-14 flex-col items-center justify-center gap-1 text-tab text-muted-foreground',
 									current && 'font-semibold text-foreground'
 								)}
 							>
@@ -240,7 +240,7 @@
 								{item.label}
 								{#if item.id === 'home' && waiting}
 									<span
-										class="absolute top-1.5 left-1/2 ml-1.5 min-w-4 rounded-full bg-waiting px-1 text-center text-[10px] leading-4 font-semibold text-background tabular-nums"
+										class="absolute top-1.5 left-1/2 ml-1.5 min-w-4 rounded-full bg-waiting px-1 text-center text-tab leading-4 font-semibold text-background tabular-nums"
 										>{waiting}<span class="sr-only"> waiting</span></span
 									>
 								{:else if item.id === 'chats' && unread}
@@ -264,7 +264,7 @@
 			)}
 		>
 			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-			<div class="absolute inset-0 bg-black/40" aria-hidden="true" onclick={onclosesheet}></div>
+			<div class="absolute inset-0 bg-scrim" aria-hidden="true" onclick={onclosesheet}></div>
 			<div
 				bind:this={dialog}
 				role="dialog"

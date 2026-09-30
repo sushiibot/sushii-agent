@@ -69,7 +69,7 @@
 					data-autofocus={i === 0 ? '' : undefined}
 					onclick={a.run}
 					class={cn(
-						'flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-[15px] font-medium hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+						'flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-body font-medium hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
 						a.tone
 					)}
 				>

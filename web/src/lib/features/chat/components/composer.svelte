@@ -93,7 +93,7 @@
 					/>
 					{#if photo.state === 'preparing' || photo.state === 'uploading'}
 						<span
-							class="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] font-semibold text-foreground"
+							class="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-xl text-tab font-semibold text-foreground"
 						>
 							<LoaderCircle
 								class="size-4 animate-spin motion-reduce:animate-none"

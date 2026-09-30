@@ -211,7 +211,7 @@
 						<dt class="text-xs text-muted-foreground">{field.key}</dt>
 						<dd
 							class={cn(
-								'font-mono text-[13px] leading-relaxed [overflow-wrap:anywhere]',
+								'font-mono text-code leading-relaxed [overflow-wrap:anywhere]',
 								field.kind === 'body' && 'whitespace-pre-wrap'
 							)}
 						>
@@ -221,7 +221,7 @@
 				{/each}
 				<div class="flex flex-col gap-0.5 border-t pt-2">
 					<dt class="text-xs text-muted-foreground">Requested by</dt>
-					<dd class="font-mono text-[13px] [overflow-wrap:anywhere]">
+					<dd class="font-mono text-code [overflow-wrap:anywhere]">
 						{view.agentName} <span class="font-sans text-muted-foreground">(self-reported)</span>
 					</dd>
 				</div>

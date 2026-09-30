@@ -26,7 +26,7 @@
 	aria-labelledby="{uid}-q"
 	data-surface="ask"
 	class={cn(
-		'flex flex-col gap-3 text-[15px] leading-relaxed',
+		'flex flex-col gap-3 text-body leading-relaxed',
 		focused && '-mx-2 rounded-xl px-2 py-2 ring-2 ring-brand/60'
 	)}
 >

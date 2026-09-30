@@ -55,8 +55,7 @@
 			>{:else if node.kind === 'em'}<em>{@render inlines(node.children)}</em
 			>{:else if node.kind === 'del'}<del>{@render inlines(node.children)}</del
 			>{:else if node.kind === 'code'}<code
-				class="rounded bg-muted px-1 font-mono text-[0.8125rem] [overflow-wrap:anywhere]"
-				>{node.text}</code
+				class="rounded bg-muted px-1 font-mono text-code [overflow-wrap:anywhere]">{node.text}</code
 			>{:else if node.kind === 'link'}<a
 				href={node.href}
 				target="_blank"
@@ -101,7 +100,7 @@
 		{:else if node.kind === 'code'}
 			<div class="relative">
 				<pre
-					class="min-h-12 overflow-x-auto rounded-lg bg-muted py-2 pr-12 pl-3 font-mono text-[0.8125rem] leading-relaxed"
+					class="min-h-12 overflow-x-auto rounded-lg bg-muted py-2 pr-12 pl-3 font-mono text-code leading-relaxed"
 					data-lang={node.lang}><code>{node.text}</code></pre>
 				<CodeCopyButton text={node.text} />
 			</div>
@@ -156,7 +155,7 @@
 	{/each}
 {/snippet}
 
-<div class="flex min-w-0 flex-col gap-2 text-[0.9375rem] leading-relaxed [overflow-wrap:anywhere]">
+<div class="flex min-w-0 flex-col gap-2 text-body leading-relaxed [overflow-wrap:anywhere]">
 	<!-- One reply that fails to render falls back to its text instead of taking the list down. -->
 	<svelte:boundary>
 		{@render blockList(tree)}

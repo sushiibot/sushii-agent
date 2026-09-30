@@ -214,7 +214,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 
 ### Tokens
 
-- **Colors come only from the tokens in `src/app.css`, never literal colors (`#hex`, `oklch(...)` in a class, `bg-[#...]`) or Tailwind palette colors (`text-red-500`).** Why: literal colors break dark mode and drift. Check: `rg -n -g '*.svelte' -e '-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]{2,3}\b' -e '\[#[0-9a-fA-F]{3,8}\]' -e '#[0-9a-fA-F]{6}\b' -g '!src/proto-routes/**' src` is empty (the proto's fake phone chrome is exempt); `src/app.css` is the only file that defines color values.
+- **Colors come only from the tokens in `src/app.css`, never literal colors (`#hex`, `oklch(...)` in a class, `bg-[#...]`) or Tailwind palette colors (`text-red-500`).** Why: literal colors break dark mode and drift. Check: `rg -n -g '*.svelte' -e '-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]{2,3}\b' -e '\[#[0-9a-fA-F]{3,8}\]' -e '#[0-9a-fA-F]{6}\b' -g '!src/proto-routes/**' src` is empty (the proto's fake phone chrome is exempt); `src/app.css` is the only file that defines color values. `bun run lint` runs this check as `scripts/check-tokens.ts`.
 - **Status meaning uses the status tokens, each paired with an icon and a label: `waiting`, `running`, `review`, `failed`, `taint`, plus `neutral`, via `StatePill`/`toneClass` in `src/lib/ui/status/status.ts`.** Why: one vocabulary across Home, chat and runs; color is never the only signal (WCAG 1.4.1). Check: `review`.
 - **`--brand` (indigo) is for focus rings, selection and small accents; primary buttons stay `--primary`.** Why: one accent keeps status colors readable. Check: `shot`.
 - **Every token pair used for text meets 4.5:1, and UI boundaries 3:1, in both themes.** Why: WCAG 1.4.3 / 1.4.11. Check: `axe` `color-contrast` in light and dark runs; for `*-soft` backgrounds, which axe can miss behind translucent layers, check by hand when a token changes.
@@ -231,6 +231,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 | Code         | 12–13px mono              | Code blocks, ids, tool names    |
 
 - **Nothing below 11px; body text never below 14px; inputs at least 16px.** Why: legibility at arm's length. Check: `review`.
+- **Text sizes come from the type-scale tokens in `src/app.css` (`text-body`, `text-ui`, `text-meta`, `text-tab`, `text-code`) or Tailwind's rem sizes.** `scripts/check-tokens.ts` rejects `text-[Npx]`.
 - **Text sizes use `rem`, never `px`.** Why: with `<meta name="text-scale" content="scale">` (already in `app.html`) the root font size follows the OS text-size setting in browsers that support it, but only `rem`/`em` text scales ([MDN text-scale](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/text-scale)); WCAG 1.4.4 Resize Text. Check: `phone` at the largest system font size; nothing clips or overlaps.
 - **Sentence case everywhere; no Title Case, no ALL CAPS labels.** Why: easier to read, and matches the rest of the app. Check: `review`.
 

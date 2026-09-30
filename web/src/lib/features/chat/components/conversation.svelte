@@ -206,8 +206,8 @@
 								'whitespace-pre-wrap',
 								hold && holdable,
 								owner
-									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[15px] leading-snug text-primary-foreground'
-									: 'text-[15px] leading-relaxed [overflow-wrap:anywhere]',
+									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-body leading-snug text-primary-foreground'
+									: 'text-body leading-relaxed [overflow-wrap:anywhere]',
 								message.streaming &&
 									"min-h-[4.5lh] after:ml-0.5 after:inline-block after:h-[1.1em] after:w-0.5 after:translate-y-[3px] after:animate-pulse after:bg-foreground after:content-[''] motion-reduce:after:animate-none"
 							)}
@@ -215,14 +215,14 @@
 							{part.text}
 						</p>
 					{:else if part.type === 'data-auth'}
-						<p class="text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+						<p class="text-body leading-relaxed [overflow-wrap:anywhere]">
 							{part.data.instructions}
 							{#if part.data.https}<a
 									href={part.data.url}
 									target="_blank"
 									rel="noopener noreferrer"
 									class="text-brand underline">Open the login page</a
-								>{:else}<code class="font-mono text-[13px]">{part.data.url}</code>{/if}
+								>{:else}<code class="font-mono text-code">{part.data.url}</code>{/if}
 						</p>
 					{:else if part.type === 'data-turn'}
 						<WorkingRow turn={part.data} open={openTurn === message.id} {openStep} />
@@ -231,7 +231,7 @@
 							<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
 							<span
 								>{outcome[part.data.outcome]}{part.data.outcome === 'pending' ? ':' : ' ·'}
-								<code class="font-mono text-[13px] text-foreground">{part.data.tool}</code></span
+								<code class="font-mono text-code text-foreground">{part.data.tool}</code></span
 							>
 						</p>
 					{:else if part.type === 'data-ask'}
@@ -381,8 +381,7 @@
 						<p class="flex items-center gap-1.5 text-xs text-muted-foreground">
 							<BookMarked class="size-3.5 shrink-0" aria-hidden="true" />
 							Saved to memory
-							<code class="truncate font-mono text-[11px] text-foreground/80">{part.data.file}</code
-							>
+							<code class="truncate font-mono text-tab text-foreground/80">{part.data.file}</code>
 						</p>
 					{:else if isTool(part) && i === firstTool}
 						<WorkingRow turn={toolTurn(message.parts)} open={openTurn === message.id} {openStep} />

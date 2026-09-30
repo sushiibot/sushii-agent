@@ -6,7 +6,7 @@ Personal agent web app: a SvelteKit SPA (adapter-static, `ssr = false`) installe
 bun install
 bun dev              # app at http://localhost:5173, /api proxied to http://localhost:8790
 bun run check        # svelte-check, warnings fail
-bun run lint         # prettier + scripts/check-no-raw-html.ts (no {@html} or DOM string sinks)
+bun run lint         # prettier, scripts/check-no-raw-html.ts (no {@html} or DOM string sinks), scripts/check-tokens.ts
 bun run test:unit    # bun test: markdown rules and server-rendered components
 bun run build        # app build in build/ (no prototype)
 bun run test:e2e     # builds, then Playwright against `vite preview` with /api mocked
