@@ -7,12 +7,20 @@
 	import Keyboard from './keyboard.svelte';
 	import SafariBar from './safari-bar.svelte';
 	import PushAlert from './push-alert.svelte';
+	import Notification from './notification.svelte';
 
 	let { frame, width }: { frame: Frame; width: number } = $props();
 	const go = getContext<(id: string) => void>('proto-go');
 
 	const KB = 305;
-	const w = $derived(frame.desktop ? 1280 : width);
+	const w = $derived(frame.desktop ? 1280 : (frame.width ?? width));
+	let screen = $state<HTMLElement>();
+
+	// Scrolled-up frames: a column-reverse list scrolls with negative offsets.
+	$effect(() => {
+		const main = screen?.querySelector('main');
+		if (main && frame.scrollUp) main.scrollTop = -frame.scrollUp;
+	});
 	const h = $derived(frame.desktop ? 800 : 844);
 	const chrome = $derived(frame.desktop ? 'none' : (frame.chrome ?? 'standalone'));
 	// Standalone apps draw under the status bar and home indicator; Safari and desktop own those areas.
@@ -60,7 +68,7 @@
 		{onclickcapture}
 	>
 		{#if chrome === 'safari'}<div class="h-[47px] shrink-0 bg-background"></div>{/if}
-		<div class="relative min-h-0 flex-1">
+		<div class="relative min-h-0 flex-1" bind:this={screen}>
 			<frame.screen {...frame.props} />
 		</div>
 		{#if chrome === 'safari'}<SafariBar />{/if}
@@ -70,5 +78,6 @@
 			<HomeIndicator light={chrome === 'bare'} />
 		{/if}
 		{#if frame.alert === 'push'}<PushAlert />{/if}
+		{#if frame.notification}<Notification {...frame.notification} />{/if}
 	</div>
 </figure>

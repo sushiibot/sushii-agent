@@ -6,9 +6,10 @@
 	import CornerDownRight from '@lucide/svelte/icons/corner-down-right';
 	import Frame from './components/frame.svelte';
 	import Connector from './components/connector.svelte';
-	import { flows } from './flows';
+	import CircleDashed from '@lucide/svelte/icons/circle-dashed';
+	import { deviations, flows } from './flows';
 
-	let width = $state(414);
+	let width = $state(412);
 	let dark = $state(false);
 
 	function go(id: string) {
@@ -63,7 +64,7 @@
 			</div>
 			<div class="ml-auto flex items-center gap-2">
 				<div role="group" aria-label="Phone width" class="flex rounded-full border bg-card p-0.5">
-					{#each [414, 320] as w (w)}
+					{#each [412, 320] as w (w)}
 						<button
 							type="button"
 							aria-pressed={width === w}
@@ -97,6 +98,38 @@
 	</header>
 
 	<main class="flex flex-col gap-16 px-4 py-8 sm:px-6">
+		{#snippet pending()}
+			<span
+				class="inline-flex shrink-0 items-center gap-1 rounded-full bg-waiting-soft px-2 py-0.5 text-xs font-medium text-waiting"
+				><CircleDashed class="size-3.5" aria-hidden="true" />Pending drk sign-off</span
+			>
+		{/snippet}
+		<section
+			id="deviations"
+			aria-labelledby="deviations-h"
+			class="flex max-w-3xl flex-col gap-3 rounded-xl border bg-card p-5"
+		>
+			<h2 id="deviations-h" class="text-xl font-semibold tracking-tight">
+				Deviations from the UX guidelines
+			</h2>
+			<p class="text-[15px] text-muted-foreground">
+				M1 differs from <code class="font-mono text-sm">docs/ux-guidelines.md</code> in these four places.
+				Each needs drk's sign-off before the real screens ship (UX gate, step 3).
+			</p>
+			<ol class="flex flex-col divide-y">
+				{#each deviations as d (d.id)}
+					<li class="flex flex-col gap-1 py-3">
+						<span class="flex flex-wrap items-center gap-2">
+							<span class="font-mono text-sm text-muted-foreground">{d.id}</span>
+							<a href="#{d.flow}" class="font-medium hover:underline">{d.title}</a>
+							{@render pending()}
+						</span>
+						<span class="text-sm text-muted-foreground">{d.detail}</span>
+					</li>
+				{/each}
+			</ol>
+		</section>
+
 		{#each flows as flow (flow.id)}
 			{@const row = flow.frames.filter((fr) => !fr.desktop && !fr.branch)}
 			{@const branches = flow.frames.filter((fr) => fr.branch)}
@@ -110,6 +143,18 @@
 						<span class="font-mono text-sm text-muted-foreground">{flow.code}</span>{flow.title}
 					</h2>
 					<p class="text-[15px] text-muted-foreground">{flow.intro}</p>
+					{#if flow.deviations?.length}
+						<ul class="mt-1 flex flex-col gap-1.5">
+							{#each deviations.filter((d) => flow.deviations?.includes(d.id)) as d (d.id)}
+								<li class="flex flex-wrap items-center gap-2 text-sm">
+									<a href="#deviations" class="text-muted-foreground hover:text-foreground"
+										>Deviation {d.id}: {d.title}</a
+									>
+									{@render pending()}
+								</li>
+							{/each}
+						</ul>
+					{/if}
 				</div>
 
 				<div class="-mx-4 overflow-x-auto px-4 pb-4 sm:-mx-6 sm:px-6">
