@@ -502,6 +502,9 @@ async function pushChannel(page: Page, context: BrowserContext) {
 	});
 	await cdp.send('ServiceWorker.enable');
 	const registrationId = await registered;
+	// Chromium opens a context's notification store lazily, and a showNotification racing another read or
+	// write during that first open can be dropped even though its promise resolves. Open it first.
+	await page.evaluate(async () => (await navigator.serviceWorker.ready).getNotifications());
 	const origin = new URL(page.url()).origin;
 	return (payload: unknown) =>
 		cdp.send('ServiceWorker.deliverPushMessage', {
