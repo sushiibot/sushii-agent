@@ -216,7 +216,7 @@ export const flows: Flow[] = [
 				id: 'ms-5',
 				label: 'Skill inspector',
 				screen: Skills,
-				props: { skills: f.skills, selected: 'deploy-sushii-bot' }
+				props: { skills: f.skills, selected: 'deploy-relay-bot' }
 			},
 			{
 				id: 'ms-d',
@@ -407,7 +407,7 @@ export const routes: [string, string][] = [
 	['/runs/run-deps', 'rd-2'],
 	['/runs*', 'rd-1'],
 	['/memory/skills', 'ms-4'],
-	['/memory/skills/deploy-sushii-bot', 'ms-5'],
+	['/memory/skills/deploy-relay-bot', 'ms-5'],
 	['/memory/skills/*', 'ms-d2'],
 	['/memory/*', 'ms-2'],
 	['/memory', 'ms-1'],

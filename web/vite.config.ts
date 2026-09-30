@@ -4,6 +4,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+	// Fonts too, so the single-file build has no sidecar assets.
+	build: { assetsInlineLimit: 200_000 },
 	plugins: [
 		tailwindcss(),
 		sveltekit({
@@ -13,6 +15,8 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 			adapter: adapter(),
+			// One self-contained HTML file, so the board can be shared without a server.
+			output: { bundleStrategy: "inline" },
 			// Screens link to real app routes that the prototype board intercepts; they don't exist yet.
 			prerender: { crawl: false }
 		})

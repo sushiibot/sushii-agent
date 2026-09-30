@@ -51,7 +51,7 @@
 				>
 					<StatePill of="verified" label="Test passed" class="self-start bg-background/60" />
 					<p class="text-foreground/85">
-						Would open a PR on sushii-sns with 5 minor updates. The registry token works again.
+						Would open a PR on notify-service with 5 minor updates. The registry token works again.
 						Nothing was sent.
 					</p>
 				</div>

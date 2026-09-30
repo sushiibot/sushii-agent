@@ -41,13 +41,13 @@ export const inbox: InboxItem[] = [
 		title: 'Weekly dependency sweep failed',
 		source: 'Schedule · Tuesdays 07:00',
 		when: '2 h ago',
-		summary: 'bun install hit a 403 from the registry mirror on sushii-sns. No PR opened.',
+		summary: 'bun install hit a 403 from the registry mirror on notify-service. No PR opened.',
 		runId: 'run-deps'
 	},
 	{
 		id: 'in-pr',
 		state: 'running',
-		title: 'Reviewing sushii-sns #212',
+		title: 'Reviewing notify-service #212',
 		source: 'Chat',
 		when: 'started 6 min ago',
 		summary: 'Reading 14 changed files. Step 5 of about 9.',
@@ -65,7 +65,7 @@ export const inbox: InboxItem[] = [
 	{
 		id: 'in-bot',
 		state: 'review',
-		title: 'sushii-bot 4.18.2 is live on green',
+		title: 'relay-bot 4.18.2 is live on green',
 		source: 'Chat',
 		when: 'Yesterday',
 		summary: 'Switched traffic, error rate flat for 30 min, blue drained.',
@@ -85,7 +85,7 @@ export const replySent: InboxItem[] = inbox.map((item) =>
 );
 
 export const hvacDraft: EmailDraft = {
-	from: 'drk@home.example',
+	from: 'sam@home.example',
 	to: 'Dana Whitfield <dana@maplerow-pm.example>',
 	subject: 'Re: HVAC maintenance, Unit 4B',
 	inReplyTo: {
@@ -100,7 +100,7 @@ Thursday works. Any time after 10am is fine, and I'll leave the side gate unlock
 Please send the permit to the front desk. Is there anything I should move away from the unit before the visit?
 
 Thanks,
-drk`
+Sam`
 };
 
 export const hvacEdited: EmailDraft = {
@@ -112,7 +112,7 @@ Thursday works. Any time after 10am is fine. I'll be home, so just knock.
 Please send the permit to the front desk. Is there anything I should move away from the unit before the visit?
 
 Thanks,
-drk`,
+Sam`,
 	changes: [
 		{ kind: 'ctx', text: 'Hi Dana,' },
 		{ kind: 'ctx', text: '' },
@@ -210,7 +210,7 @@ export const runs: Record<string, Run> = {
 				at: '14:03:31',
 				ms: 1150,
 				status: 'approved',
-				detail: 'Approved by drk after 1 edit.'
+				detail: 'Approved by you after 1 edit.'
 			},
 			{
 				id: 's5',
@@ -244,7 +244,7 @@ export const runs: Record<string, Run> = {
 			{
 				id: 'd1',
 				name: 'git_clone',
-				summary: 'Cloned sushiibot/sushii-sns',
+				summary: 'Cloned acme/notify-service',
 				at: '07:00:04',
 				ms: 3100,
 				status: 'ok'
@@ -325,11 +325,11 @@ export const memoryChanges: MemoryChange[] = [
 	},
 	{
 		id: 'mc3',
-		file: 'skills/deploy-sushii-bot/SKILL.md',
+		file: 'skills/deploy-relay-bot/SKILL.md',
 		summary: 'Skill updated: wait 30 min before draining blue',
 		when: 'Yesterday 21:40',
 		commit: 'e04d7b9',
-		run: { id: 'run-deploy', title: 'sushii-bot 4.18.2 blue/green switch' },
+		run: { id: 'run-deploy', title: 'relay-bot 4.18.2 blue/green switch' },
 		diff: [
 			{ kind: 'ctx', text: '4. Switch traffic to green.' },
 			{ kind: 'del', text: '5. Drain blue after 10 minutes.' },
@@ -353,8 +353,8 @@ export const memoryChanges: MemoryChange[] = [
 
 export const skills: Skill[] = [
 	{
-		name: 'deploy-sushii-bot',
-		description: 'Blue/green switch for sushii-bot production with error-rate watch.',
+		name: 'deploy-relay-bot',
+		description: 'Blue/green switch for relay-bot production with error-rate watch.',
 		stage: 'active',
 		uses: 23,
 		successRate: 0.96,
@@ -370,9 +370,9 @@ export const skills: Skill[] = [
 			{ when: 'Aug 30', event: 'Drafted', reason: 'Learned from a deploy you walked through.' }
 		],
 		runs: [
-			{ id: 'run-deploy', title: 'sushii-bot 4.18.2', ok: true, when: 'Yesterday' },
-			{ id: 'r-417', title: 'sushii-bot 4.17.0', ok: true, when: 'Sep 21' },
-			{ id: 'r-416', title: 'sushii-bot 4.16.3', ok: false, when: 'Sep 14' }
+			{ id: 'run-deploy', title: 'relay-bot 4.18.2', ok: true, when: 'Yesterday' },
+			{ id: 'r-417', title: 'relay-bot 4.17.0', ok: true, when: 'Sep 21' },
+			{ id: 'r-416', title: 'relay-bot 4.16.3', ok: false, when: 'Sep 14' }
 		]
 	},
 	{
@@ -436,7 +436,7 @@ export const jobs: Job[] = [
 		last: { result: 'failed', when: 'Today 07:00', note: 'Registry mirror returned 403' },
 		history: [
 			{ when: 'Today 07:00', result: 'failed', note: 'Registry mirror returned 403' },
-			{ when: 'Sep 22', result: 'sent', note: 'Opened sushii-sns #208' },
+			{ when: 'Sep 22', result: 'sent', note: 'Opened notify-service #208' },
 			{ when: 'Sep 15', result: 'quiet', note: 'Everything up to date' }
 		]
 	},
@@ -524,7 +524,7 @@ export const github: McpServer = {
 		{ when: 'Aug 14', event: 'Connected with OAuth. Snapshot of 5 tools saved.' }
 	],
 	usedBy: [
-		{ runId: 'run-pr', title: 'Reviewing sushii-sns #212', tool: 'get_pull_request', when: 'Now' },
+		{ runId: 'run-pr', title: 'Reviewing notify-service #212', tool: 'get_pull_request', when: 'Now' },
 		{ runId: 'r-208', title: 'Dependency sweep', tool: 'create_pull_request', when: 'Sep 22' }
 	]
 };
@@ -541,9 +541,9 @@ export const brief: BriefItem[] = [
 	{
 		id: 'b2',
 		section: 'Top of mind',
-		title: 'sushii-sns #212 is waiting on your review',
+		title: 'notify-service #212 is waiting on your review',
 		detail: 'Rate-limit fix for the Instagram poller. CI green, 14 files, +212 −88.',
-		source: { label: 'GitHub · sushiibot/sushii-sns', href: '/runs/run-pr' }
+		source: { label: 'GitHub · acme/notify-service', href: '/runs/run-pr' }
 	},
 	{
 		id: 'b3',
@@ -575,7 +575,7 @@ export const days: DaySummary[] = [
 			'Replied to Maple Row about the HVAC visit. Dependency sweep failed on a registry 403. Filed October rent.',
 		sessions: [
 			{ id: 'se1', title: 'HVAC reply to Dana', time: '14:01', messages: 6 },
-			{ id: 'se2', title: 'Review sushii-sns #212', time: '14:20', messages: 3 }
+			{ id: 'se2', title: 'Review notify-service #212', time: '14:20', messages: 3 }
 		],
 		runs: [
 			{
@@ -603,10 +603,10 @@ export const days: DaySummary[] = [
 	},
 	{
 		date: 'Mon, Sep 28',
-		summary: 'Booked NH 107 to Haneda. Deployed sushii-bot 4.18.2 to green.',
+		summary: 'Booked NH 107 to Haneda. Deployed relay-bot 4.18.2 to green.',
 		sessions: [
 			{ id: 'se3', title: 'October trip planning', time: '17:40', messages: 22 },
-			{ id: 'se4', title: 'Deploy sushii-bot', time: '21:05', messages: 9 }
+			{ id: 'se4', title: 'Deploy relay-bot', time: '21:05', messages: 9 }
 		],
 		runs: [
 			{
@@ -618,7 +618,7 @@ export const days: DaySummary[] = [
 			},
 			{
 				id: 'run-deploy',
-				title: 'sushii-bot 4.18.2',
+				title: 'relay-bot 4.18.2',
 				time: '21:10',
 				state: 'done',
 				outcome: 'verified'
@@ -642,7 +642,7 @@ Reply to Dana about the HVAC visit. Thursday is fine but not before 10.
 1. read_email "from:maplerow-pm.example HVAC" → 1 thread
 2. calendar_list Thu Oct 2 → free after 09:30
 3. draft_email → approval requested
-4. drk edited line 3, approved
+4. You edited line 3, approved
 5. send_email → 250 OK
 6. read_email Sent → Message-ID <c81f02.4b@home.example>
 
