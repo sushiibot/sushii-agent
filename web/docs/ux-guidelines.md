@@ -27,7 +27,7 @@ The primary device is an Android phone running the installed PWA (Chrome WebAPK,
 - **Use `min-h-12` (48px) for primary actions and icon buttons; the shadcn sizes are too small.** Why: `Button` renders `h-8` (32px) by default and `h-9` (36px) at `lg`. Check: `pw`.
 - **Adjacent targets have at least 8px between their hit areas.** Why: Material spacing guidance; mis-taps on approve/deny rows are costly. Check: `shot`, `pw`.
 - **Inline text links inside prose are exempt from the 48px rule, but nothing important is reachable only through one.** Why: WCAG 2.5.8 exempts inline links because they are small and easy to miss. Check: `review`.
-- **Primary actions sit in the bottom third of the screen: composer, approve/deny, the main button of a sheet.** Why: most phone use is one-handed and the top corners are the hardest reach ([Hoober, How do users really hold mobile devices](https://www.uxmatters.com/mt/archives/2013/02/how-do-users-really-hold-mobile-devices.php)). Check: `shot` at 412x915; the primary action's top edge is below y=610.
+- **Primary actions sit in the bottom third of the screen: composer, approve/deny, the main button of a sheet.** Why: about half of observed phone grips are one-handed, and the top corners are the hardest reach for that thumb ([Hoober, How do users really hold mobile devices](https://www.uxmatters.com/mt/archives/2013/02/how-do-users-really-hold-mobile-devices.php)). Check: `shot` at 412x915; the primary action's top edge is below y=610.
 - **The top bar holds title, back and secondary actions only.** Why: nothing there should need reaching for mid-task. Check: `review`.
 - **Destructive or outward actions (Deny, Delete, Send now) are never the largest target and never sit where a mis-tap from the primary lands.** Why: Fitts's law works against you for dangerous actions. Check: `shot`.
 - **No gesture-only actions. Every swipe or long-press has a visible button alternative.** Why: WCAG 2.5.7 Dragging Movements; gestures are undiscoverable. Check: `review`.
@@ -61,7 +61,7 @@ expect(small).toEqual([]);
 
 - **The keyboard never covers the composer or the focused field.** Why: the most common "this app is broken" moment on phones; also WCAG 2.4.11 Focus Not Obscured. Check: `phone`: open a chat, tap the composer, type three lines; the composer and its send button stay fully visible.
 - **Keep the `--kb` visualViewport fallback for iOS, where `interactive-widget` has not shipped.** Why: iOS overlays the keyboard; the layout does not resize. Check: `review` (the fallback is already in `app-shell.svelte`).
-- **The app root uses `100dvh` or `inset: 0`, never `100vh`.** Why: `100vh` ignores the dynamic browser UI and the keyboard. Check: `review`, `rg '100vh' src` returns nothing.
+- **The app root uses `100dvh` or `inset: 0`, never `100vh`.** Why: `100vh` ignores the dynamic browser UI and the keyboard. Check: `rg -n -g '!src/routes/proto/**' '100vh|h-screen' src` returns nothing (`h-screen`, `min-h-screen` and `max-h-screen` compile to `100vh`).
 - **Anything pinned to the top or bottom pads with `env(safe-area-inset-*)`: the header adds `--safe-top`, the tab bar and composer add `--safe-bottom`.** Why: edge-to-edge content otherwise sits under the status bar and the gesture bar. Check: `phone` with gesture navigation on; nothing tappable overlaps the gesture pill.
 - **The bottom tab bar hides while the keyboard is open.** Why: it eats a quarter of the space left above the keyboard. Check: `phone`.
 - **Text inputs use a font size of at least 16px.** Why: iOS zooms the page on focus below 16px; the same size reads well on Android. Check: `pw` computed style on `textarea, input`.
@@ -72,7 +72,7 @@ expect(small).toEqual([]);
 
 In a standalone PWA there is no browser back button: the Android back gesture is the only back control. It must do what the user expects on every screen.
 
-- **Back closes the topmost overlay first (sheet, dialog, menu), and only then leaves the screen.** Why: Android sends a close request that native `<dialog>` and `popover` handle for free; a `div role="dialog"` ignores it and back navigates away instead ([MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher), [WICG close-watcher](https://github.com/WICG/close-watcher)). Build overlays on `<dialog>`/`popover`, or have them push a history entry and close on `popstate`. Check: `phone`: open every sheet and press back; the sheet closes and the screen stays.
+- **Back closes the topmost overlay first (sheet, dialog, menu), and only then leaves the screen.** Why: Android sends a close request that native `<dialog>` and `popover` handle for free; a `div role="dialog"` ignores it and back navigates away instead ([MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher)). This applies to the shadcn-svelte Dialog and Sheet too: bits-ui renders them as `div`s, so each needs the history-entry wrapper or a verified close on the phone. Build overlays on `<dialog>`/`popover`, or have them push a history entry and close on `popstate`. Check: `phone`: open every sheet and press back; the sheet closes and the screen stays.
 - **Every pushed screen (chat, run detail, memory diff) is a real URL navigated with `goto`, never `replaceState` or in-component state.** Why: with one history entry, back exits the app. Check: `phone`: Home → chat → run detail, then back twice lands on Home.
 - **Back from a top-level tab goes to Home; back from Home exits.** Why: the Android convention for bottom-nav apps. Check: `phone`.
 - **A dirty composer or edit survives back and return.** Why: a mis-swipe must not cost a typed message. Keep the draft per chat in memory, and in `sessionStorage` for reloads. Check: `phone`: type, swipe back, reopen the chat; the text is there.
@@ -92,7 +92,7 @@ In a standalone PWA there is no browser back button: the Android back gesture is
 
 ### Streaming and scroll
 
-- **The chat opens at the newest message, with no visible scroll animation.** Why: the newest message is why you opened it. Check: `pw`: after load, `scrollTop` is at the bottom edge (±1px) and no scroll event fires after first paint.
+- **The chat opens at the newest message, with no visible scroll animation.** Why: the newest message is why you opened it. Check: `pw`: after load, the distance from the bottom (`scrollHeight - clientHeight - |scrollTop|`, which holds for both normal and `flex-col-reverse` containers) is ≤ 1px.
 - **Stick to the bottom only when the reader is already within 48px of it.** Why: auto-scrolling while someone reads older messages yanks the text away. Check: `pw` (below).
 - **When the reader is scrolled up and new content arrives, show a "New messages" pill above the composer; tapping it scrolls to the newest message.** Why: the reader learns something arrived without losing their place. Check: `pw` (below), `shot`.
 - **Streaming never shifts the text the reader is looking at.** Why: layout shift while reading is the main jank complaint in chat UIs. Use `overflow-anchor` or the column-reverse container, and reserve height for a message before its content lands. Check: `pw` (below).
@@ -101,7 +101,12 @@ In a standalone PWA there is no browser back button: the Android back gesture is
 
 ```ts
 // Scroll-jank test: reader scrolled up, new content arrives, nothing moves.
-await list.evaluate((el) => (el.scrollTop = el.scrollHeight / 3));
+// Scroll by delta: in a flex-col-reverse container scrollTop is 0 at the bottom and negative above it.
+await list.hover();
+await page.mouse.wheel(0, -600);
+const fromBottom = () =>
+	list.evaluate((el) => el.scrollHeight - el.clientHeight - Math.abs(el.scrollTop));
+expect(await fromBottom()).toBeGreaterThan(48); // precondition: the reader really left the bottom
 const topVisible = () =>
 	list.evaluate((el) => {
 		const box = el.getBoundingClientRect();
@@ -208,7 +213,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 
 ### Tokens
 
-- **Colors come only from the tokens in `src/routes/layout.css`, never literal hex or Tailwind palette colors (`text-red-500`).** Why: literal colors break dark mode and drift. Check: `rg -n '(text|bg|border)-(red|green|blue|amber|zinc|gray|slate)-[0-9]' src` is empty.
+- **Colors come only from the tokens in `src/routes/layout.css`, never literal colors (`#hex`, `oklch(...)` in a class, `bg-[#...]`) or Tailwind palette colors (`text-red-500`).** Why: literal colors break dark mode and drift. Check: `rg -n -g '*.svelte' -e '-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]{2,3}\b' -e '\[#[0-9a-fA-F]{3,8}\]' -e '#[0-9a-fA-F]{6}\b' -g '!src/routes/proto/**' src` is empty (the proto's fake phone chrome is exempt); `layout.css` is the only file that defines color values.
 - **Status meaning uses the status tokens, each paired with an icon and a label: `waiting`, `running`, `review`, `failed`, `taint`, plus `neutral`, via `StatePill`/`toneClass` in `status.ts`.** Why: one vocabulary across Home, chat and runs; color is never the only signal (WCAG 1.4.1). Check: `review`.
 - **`--brand` (indigo) is for focus rings, selection and small accents; primary buttons stay `--primary`.** Why: one accent keeps status colors readable. Check: `shot`.
 - **Every token pair used for text meets 4.5:1, and UI boundaries 3:1, in both themes.** Why: WCAG 1.4.3 / 1.4.11. Check: `axe` `color-contrast` in light and dark runs; for `*-soft` backgrounds, which axe can miss behind translucent layers, check by hand when a token changes.
@@ -225,7 +230,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 | Code         | 12–13px mono              | Code blocks, ids, tool names    |
 
 - **Nothing below 11px; body text never below 14px; inputs at least 16px.** Why: legibility at arm's length. Check: `review`.
-- **Text sizes use `rem` so the Android font-size setting scales them (`<meta name="text-scale" content="scale">` is already in `app.html`).** Why: WCAG 1.4.4 Resize Text. Check: `phone` at the largest system font size; nothing clips or overlaps.
+- **Text sizes use `rem`, never `px`.** Why: with `<meta name="text-scale" content="scale">` (already in `app.html`) the root font size follows the OS text-size setting in browsers that support it, but only `rem`/`em` text scales ([MDN text-scale](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/text-scale)); WCAG 1.4.4 Resize Text. Check: `phone` at the largest system font size; nothing clips or overlaps.
 - **Sentence case everywhere; no Title Case, no ALL CAPS labels.** Why: easier to read, and matches the rest of the app. Check: `review`.
 
 ### Spacing and density
@@ -351,13 +356,14 @@ Seen in open-source agent UIs and chat apps. Don't ship any of these.
 
 ## Known gaps in the prototype
 
-The prototype predates these rules in a few places. Fix each when the screen is ported out of `/proto`:
+The prototype currently breaks these rules. Fix each when its screen is ported out of `/proto`:
 
 - `Button` sizes `default` (32px) and `lg` (36px) are below 48px; approval actions and the thread offer use `lg`. The header back link is 40px tall.
 - `app.html`'s viewport meta lacks `viewport-fit=cover` and `interactive-widget=resizes-content`, and there is no `theme-color`.
 - The app-shell sheet is a `div role="dialog"`, so the Android back gesture does not close it.
 - Tool calls render as one `<details>` per call instead of one collapsed "Working" row per turn.
 - The chat has no "New messages" pill, no delivery states, and no offline or reconnecting banner.
+- `src/routes/+page.svelte` uses `min-h-screen`.
 - `bun run check` does not yet pass `--fail-on-warnings`, and there is no Playwright or axe suite yet.
 
 ## Sources
@@ -365,7 +371,7 @@ The prototype predates these rules in a few places. Fix each when the screen is 
 - Android: [API defaults, 48dp targets](https://developer.android.com/develop/ui/compose/accessibility/api-defaults), [Touch target size](https://support.google.com/accessibility/android/answer/7101858)
 - Material 3: [Easing and duration tokens](https://m3.material.io/styles/motion/easing-and-duration/tokens-specs)
 - Chrome: [Viewport resize behavior (`interactive-widget`)](https://developer.chrome.com/blog/viewport-resize-behavior), [Edge-to-edge on Android](https://developer.chrome.com/docs/css-ui/edge-to-edge)
-- Close requests: [MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher), [WICG close-watcher explainer](https://github.com/WICG/close-watcher)
+- Close requests and text scaling: [MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher), [MDN `<meta name="text-scale">`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/text-scale)
 - Performance: [web.dev INP](https://web.dev/articles/inp), [web.dev LCP](https://web.dev/articles/lcp)
 - WCAG: [WCAG 2.2 quick reference](https://www.w3.org/WAI/WCAG22/quickref/), [Understanding 2.4.11 Focus Not Obscured](https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum.html)
 - axe: [`@axe-core/playwright`](https://github.com/dequelabs/axe-core-npm/tree/develop/packages/playwright), [axe-core rule descriptions](https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md)
