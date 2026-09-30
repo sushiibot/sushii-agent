@@ -163,8 +163,15 @@ export interface UploadFetchOptions {
   /** Absolute path of `~/uploads`. */
   dir: string;
   request: (method: string, params: unknown, timeoutMs?: number) => Promise<unknown>;
+  /** Budget for all of a message's uploads together, retries included. */
   timeoutMs?: number;
+  /** Waits between "busy" retries; tests inject it. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+// The bot's upload/read answers this when it already has reads in flight, instead of queueing them.
+const UPLOAD_BUSY = "busy";
+const BUSY_BACKOFF_MS = [250, 500, 1000, 2000];
 
 /**
  * Pulls each `upload:<id>` attachment's bytes from the bot over upload/read and writes them to
@@ -180,7 +187,10 @@ export async function loadUploadAttachments(
     .map((a) => ({ a, id: parseUploadUrl(a.url) }))
     .filter((u): u is { a: Attachment; id: string } => u.id !== null)
     .slice(0, IMAGES_PER_MESSAGE_MAX);
-  const loaded = await Promise.all(uploads.map((u) => fetchUpload(u.a, u.id, opts, images)));
+  // One at a time: the bot turns away reads beyond a small in-flight limit.
+  const deadline = Date.now() + (opts.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS);
+  const loaded: Array<{ saved: boolean; image: ImageContent | null }> = [];
+  for (const u of uploads) loaded.push(await fetchUpload(u.a, u.id, opts, images, deadline));
   const saved = new Set<string>();
   const out: ImageContent[] = [];
   for (const [i, r] of loaded.entries()) {
@@ -190,12 +200,28 @@ export async function loadUploadAttachments(
   return { images: out, saved };
 }
 
-async function fetchUpload(a: Attachment, uploadId: string, opts: UploadFetchOptions, images: boolean): Promise<{ saved: boolean; image: ImageContent | null }> {
+async function readUpload(uploadId: string, opts: UploadFetchOptions, deadline: number) {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt++) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error("upload budget spent");
+    const res = uploadReadResult.parse(await opts.request(RPC_METHODS.uploadRead, { principalId: opts.principalId, uploadId }, left));
+    const delay = BUSY_BACKOFF_MS[attempt];
+    if (res.ok || res.error !== UPLOAD_BUSY || delay === undefined || Date.now() + delay >= deadline) return res;
+    await sleep(delay);
+  }
+}
+
+async function fetchUpload(
+  a: Attachment,
+  uploadId: string,
+  opts: UploadFetchOptions,
+  images: boolean,
+  deadline: number,
+): Promise<{ saved: boolean; image: ImageContent | null }> {
   let saved = false;
   try {
-    const res = uploadReadResult.parse(
-      await opts.request(RPC_METHODS.uploadRead, { principalId: opts.principalId, uploadId }, opts.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS),
-    );
+    const res = await readUpload(uploadId, opts, deadline);
     if (!res.ok) {
       log.info({ uploadId, error: res.error }, "the bot refused an upload's bytes; passing it as a note only");
       return { saved, image: null };

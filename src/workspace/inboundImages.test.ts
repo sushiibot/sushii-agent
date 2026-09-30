@@ -162,4 +162,82 @@ describe("owner uploads", () => {
       rmSync(elsewhere, { recursive: true, force: true });
     }
   });
+
+  describe("when the bot is busy", () => {
+    const png = { ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") };
+    const ids = ["AAAAAAAAAAAAAAAAAAAAA1", "AAAAAAAAAAAAAAAAAAAAA2", "AAAAAAAAAAAAAAAAAAAAA3"];
+
+    async function withDir(fn: (dir: string) => Promise<void>) {
+      const dir = mkdtempSync(join(tmpdir(), "ws-uploads-"));
+      try {
+        await fn(dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    test("uploads are read one at a time, and a busy answer is retried until the bytes come", async () => {
+      await withDir(async (dir) => {
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const tries = new Map<string, number>();
+        const waits: number[] = [];
+        const request = async (_m: string, p: unknown) => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 1));
+          inFlight--;
+          const id = (p as { uploadId: string }).uploadId;
+          tries.set(id, (tries.get(id) ?? 0) + 1);
+          return tries.get(id) === 1 ? { ok: false, error: "busy" } : png;
+        };
+        const atts = ids.map((id) => ({ name: "p.png", contentType: "image/png", url: `upload:${id}` }));
+        const { images, saved } = await loadUploadAttachments(atts, { principalId: "drk", dir, request, sleep: async (ms) => void waits.push(ms) }, true);
+        expect([...saved]).toEqual(ids);
+        expect(images).toHaveLength(3);
+        expect(maxInFlight).toBe(1);
+        expect(waits).toEqual([250, 250, 250]);
+        expect(readdirSync(dir).sort()).toEqual(ids.map((id) => `${id}.png`));
+      });
+    });
+
+    test("a bot that stays busy is given up on within the backoff bound", async () => {
+      await withDir(async (dir) => {
+        let calls = 0;
+        const waits: number[] = [];
+        const request = async () => {
+          calls++;
+          return { ok: false, error: "busy" };
+        };
+        const { images, saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request, sleep: async (ms) => void waits.push(ms) }, true);
+        expect(saved.size).toBe(0);
+        expect(images).toEqual([]);
+        expect(waits).toEqual([250, 500, 1000, 2000]);
+        expect(calls).toBe(5);
+      });
+    });
+
+    test("no retry is waited for that would end past the message's time budget", async () => {
+      await withDir(async (dir) => {
+        const waits: number[] = [];
+        const request = async () => ({ ok: false, error: "busy" });
+        const { saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request, timeoutMs: 600, sleep: async (ms) => void waits.push(ms) }, true);
+        expect(saved.size).toBe(0);
+        expect(waits).toEqual([250, 500]);
+      });
+    });
+
+    test("any other refusal is final", async () => {
+      await withDir(async (dir) => {
+        let calls = 0;
+        const request = async () => {
+          calls++;
+          return { ok: false, error: "not referenced" };
+        };
+        const { saved } = await loadUploadAttachments([up()], { principalId: "drk", dir, request, sleep: async () => {} }, true);
+        expect(saved.size).toBe(0);
+        expect(calls).toBe(1);
+      });
+    });
+  });
 });
