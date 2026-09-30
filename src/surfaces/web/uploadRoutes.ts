@@ -1,4 +1,4 @@
-import { uploadReadParams, uploadReadResult, type UploadReadResult } from "../../orchestration/contracts.ts";
+import { UPLOAD_READ_BUSY, uploadReadParams, uploadReadResult, type UploadReadResult } from "../../orchestration/contracts.ts";
 import type { ConnectionInfo } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { UPLOAD_ID_RE, UPLOAD_MAX_BYTES, type UploadResponse } from "./events.ts";
@@ -130,7 +130,7 @@ export function createUploadReadHandler(
     }
     if (inFlight >= limits.maxInFlight || inFlightBytes + size > limits.maxInFlightBytes) {
       log.warn({ uploadId: p.data.uploadId, inFlight, inFlightBytes }, "upload/read refused: busy");
-      return { ok: false, error: "busy" };
+      return { ok: false, error: UPLOAD_READ_BUSY };
     }
     inFlight++;
     inFlightBytes += size;

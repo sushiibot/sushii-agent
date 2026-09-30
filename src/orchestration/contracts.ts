@@ -216,6 +216,8 @@ export const uploadReadResult = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 export type UploadReadResult = z.infer<typeof uploadReadResult>;
+/** upload/read's error when the bot already has its budget of reads in flight; the caller retries. */
+export const UPLOAD_READ_BUSY = "busy";
 
 export const deliverFile = z.object({
   name: z.string().min(1).max(ID_MAX),

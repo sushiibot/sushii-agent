@@ -3,7 +3,7 @@ import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agen
 import { lstatSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { RPC_METHODS, base64Bytes, parseUploadUrl, uploadReadResult, type ChatMessageParams } from "../orchestration/contracts.ts";
+import { RPC_METHODS, UPLOAD_READ_BUSY, base64Bytes, parseUploadUrl, uploadReadResult, type ChatMessageParams } from "../orchestration/contracts.ts";
 import { getLogger } from "../logger.ts";
 
 const log = getLogger("workspace.images");
@@ -169,8 +169,6 @@ export interface UploadFetchOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-// The bot's upload/read answers this when it already has reads in flight, instead of queueing them.
-const UPLOAD_BUSY = "busy";
 const BUSY_BACKOFF_MS = [250, 500, 1000, 2000];
 
 /**
@@ -207,7 +205,7 @@ async function readUpload(uploadId: string, opts: UploadFetchOptions, deadline: 
     if (left <= 0) throw new Error("upload budget spent");
     const res = uploadReadResult.parse(await opts.request(RPC_METHODS.uploadRead, { principalId: opts.principalId, uploadId }, left));
     const delay = BUSY_BACKOFF_MS[attempt];
-    if (res.ok || res.error !== UPLOAD_BUSY || delay === undefined || Date.now() + delay >= deadline) return res;
+    if (res.ok || res.error !== UPLOAD_READ_BUSY || delay === undefined || Date.now() + delay >= deadline) return res;
     await sleep(delay);
   }
 }
