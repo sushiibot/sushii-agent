@@ -32,6 +32,8 @@ const log = getLogger("web/chatRoutes");
 export const MESSAGE_BODY_MAX = 64 * 1024;
 export const HISTORY_RESPONSE_MAX = 2 * 1024 * 1024;
 const HISTORY_DEFAULT_LIMIT = 40;
+/** The workspace's chat/history error for a cursor it can't resolve. */
+const UNKNOWN_HISTORY_CURSOR = "unknown history cursor";
 
 export const WEB_ORIGIN: ChatOrigin = Object.freeze({ surface: WEB_SURFACE, conversationId: WEB_CONVERSATION_ID });
 
@@ -287,6 +289,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       }
     } catch (err) {
       if (err instanceof RpcErrorReply && err.code === -32601) return json({ unsupported: true }, 501);
+      // A cursor from before a session rotation or restart: the client drops its pages and reloads from the head.
+      if (err instanceof RpcErrorReply && err.message.includes(UNKNOWN_HISTORY_CURSOR)) return json({ reset: true }, 409);
       if (err instanceof WorkspaceNotConnectedError) return json({ offline: true }, 503);
       log.warn({ err }, "chat/history failed");
       return json({ error: "history unavailable" }, 502);
