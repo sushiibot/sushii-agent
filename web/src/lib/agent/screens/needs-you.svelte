@@ -3,6 +3,9 @@
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Check from '@lucide/svelte/icons/check';
 	import SendHorizontal from '@lucide/svelte/icons/send-horizontal';
+	import ShieldCheck from '@lucide/svelte/icons/shield-check';
+	import MessageCircleQuestion from '@lucide/svelte/icons/message-circle-question';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { Button } from '$lib/components/ui/button';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { cn } from '$lib/utils';
@@ -10,7 +13,7 @@
 	import StatePill from '../state-pill.svelte';
 	import SetupHint from '../setup-hint.svelte';
 	import { status } from '../status';
-	import type { InboxItem, RunState } from '../types';
+	import type { InboxItem, PushState, RunState } from '../types';
 
 	let {
 		items,
@@ -18,13 +21,15 @@
 		draft = '',
 		notice,
 		hint,
+		push = 'default',
 		toast
 	}: {
 		items: InboxItem[];
 		peek?: string;
 		draft?: string;
 		notice?: string;
-		hint?: 'install' | 'push';
+		hint?: 'install' | 'push' | 'push-off';
+		push?: PushState;
 		toast?: string;
 	} = $props();
 	const uid = $props.id();
@@ -114,7 +119,7 @@
 >
 	<div class="@3xl:grid @3xl:h-full @3xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="flex flex-col gap-6 px-4 py-4 @3xl:overflow-y-auto @3xl:px-6">
-			{#if hint}<SetupHint kind={hint} />{/if}
+			{#if hint}<SetupHint kind={hint} {push} />{/if}
 			{#if notice}
 				<p role="status" class="rounded-md bg-running-soft px-3 py-2 text-sm text-running">
 					{notice}
@@ -135,22 +140,57 @@
 						{#each group.items as item (item.id)}
 							{@const open = peek === item.id}
 							<li>
-								<button
-									type="button"
-									aria-expanded={open}
-									onclick={() => (peek = open ? undefined : item.id)}
-									class={cn(
-										'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors hover:bg-muted/60',
-										open && 'bg-muted/60'
-									)}
-								>
-									<span class="flex items-baseline justify-between gap-3">
-										<span class="text-sm font-medium">{item.title}</span>
-										<span class="shrink-0 text-xs text-muted-foreground">{item.when}</span>
-									</span>
-									<span class="text-xs text-muted-foreground">{item.source}</span>
-									<span class="line-clamp-1 text-sm text-muted-foreground">{item.summary}</span>
-								</button>
+								{#if item.kind && item.href}
+									<!-- Deep link only: the tray or card is where the decision happens. -->
+									<a
+										href={item.href}
+										class="flex w-full items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/60"
+									>
+										{#if item.kind === 'approval'}
+											<span
+												class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-approval text-approval-surface"
+												><ShieldCheck class="size-4" aria-label="Approval" /></span
+											>
+										{:else}
+											<span
+												class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground"
+												><MessageCircleQuestion class="size-4" aria-label="Question" /></span
+											>
+										{/if}
+										<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+											<span class="flex items-baseline justify-between gap-3">
+												<span class="text-sm font-medium">{item.title}</span>
+												<span class="shrink-0 text-xs text-muted-foreground">{item.when}</span>
+											</span>
+											<span class="text-xs text-muted-foreground">{item.source}</span>
+											<span class="line-clamp-2 text-sm text-muted-foreground"
+												>{item.kind === 'ask' ? 'The agent asks: ' : ''}{item.question ??
+													item.summary}</span
+											>
+										</span>
+										<ChevronRight
+											class="mt-1 size-4 shrink-0 text-muted-foreground"
+											aria-hidden="true"
+										/>
+									</a>
+								{:else}
+									<button
+										type="button"
+										aria-expanded={open}
+										onclick={() => (peek = open ? undefined : item.id)}
+										class={cn(
+											'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors hover:bg-muted/60',
+											open && 'bg-muted/60'
+										)}
+									>
+										<span class="flex items-baseline justify-between gap-3">
+											<span class="text-sm font-medium">{item.title}</span>
+											<span class="shrink-0 text-xs text-muted-foreground">{item.when}</span>
+										</span>
+										<span class="text-xs text-muted-foreground">{item.source}</span>
+										<span class="line-clamp-1 text-sm text-muted-foreground">{item.summary}</span>
+									</button>
+								{/if}
 							</li>
 						{/each}
 					</ul>

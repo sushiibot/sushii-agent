@@ -1,28 +1,39 @@
 <script lang="ts">
-	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import Archive from '@lucide/svelte/icons/archive';
 	import BookMarked from '@lucide/svelte/icons/book-marked';
 	import Copy from '@lucide/svelte/icons/copy';
+	import Download from '@lucide/svelte/icons/download';
 	import Split from '@lucide/svelte/icons/split';
 	import MessageCircleQuestion from '@lucide/svelte/icons/message-circle-question';
+	import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import ServerOff from '@lucide/svelte/icons/server-off';
+	import Square from '@lucide/svelte/icons/square';
+	import FoldVertical from '@lucide/svelte/icons/fold-vertical';
+	import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
 	import { Button } from '$lib/components/ui/button';
-	import { Textarea } from '$lib/components/ui/textarea';
-	import { cn } from '$lib/utils';
 	import AppShell from '../app-shell.svelte';
-	import ApprovalCard from '../approval-card.svelte';
-	import ApprovalActions from '../approval-actions.svelte';
+	import ApprovalTray from '../approval-tray.svelte';
+	import Composer from '../composer.svelte';
+	import ConnectionBanner from '../connection-banner.svelte';
 	import Conversation from '../conversation.svelte';
-	import type { ChatMessage, EmailDraft, MemoryWrite, Session, ThreadClose } from '../types';
+	import type {
+		ChatMessage,
+		ConnectionState,
+		FileRef,
+		MemoryWrite,
+		PendingApproval,
+		PhotoDraft,
+		Session,
+		ThreadClose
+	} from '../types';
 
-	type Stage = 'drafting' | 'approval' | 'editing' | 'edited' | 'sent' | 'denied';
-	type Sheet = 'memory' | 'close' | 'actions' | 'aside';
+	type Sheet = 'memory' | 'close' | 'actions' | 'aside' | 'commands' | 'new' | 'viewer';
 	let {
 		session,
 		messages,
-		approval,
 		typing = '',
 		sheet: initialSheet,
 		pressed,
@@ -30,11 +41,24 @@
 		closing,
 		aside,
 		archived,
-		waiting = 2
+		waiting = 2,
+		tray,
+		running = false,
+		stopping = false,
+		connection,
+		photos = [],
+		quotaFull = false,
+		newMessages = false,
+		announce,
+		toast,
+		commandsOffline = false,
+		viewer: initialViewer,
+		openTurn,
+		openStep,
+		focusAsk
 	}: {
 		session: Session;
 		messages: ChatMessage[];
-		approval?: { draft: EmailDraft; stage: Stage; messageId?: string; runHref?: string };
 		typing?: string;
 		sheet?: Sheet;
 		pressed?: string;
@@ -43,68 +67,72 @@
 		aside?: { question: string; answer: string };
 		archived?: string;
 		waiting?: number;
+		tray?: {
+			items: PendingApproval[];
+			armed?: boolean;
+			state?: 'ready' | 'submitting' | 'timeout';
+		};
+		running?: boolean;
+		stopping?: boolean;
+		connection?: ConnectionState;
+		photos?: PhotoDraft[];
+		quotaFull?: boolean;
+		/** The reader is scrolled up and something arrived below. */
+		newMessages?: boolean;
+		/** Screen-reader announcement, set once when a reply completes. */
+		announce?: string;
+		/** A transient line above the composer, such as "Nothing to stop". */
+		toast?: string;
+		commandsOffline?: boolean;
+		viewer?: FileRef;
+		openTurn?: string;
+		openStep?: string;
+		focusAsk?: string;
 	} = $props();
-	const uid = $props.id();
 
 	// svelte-ignore state_referenced_locally
 	let sheet = $state<Sheet | undefined>(initialSheet);
+	// svelte-ignore state_referenced_locally
+	let viewer = $state<FileRef | undefined>(initialViewer);
 	const thread = $derived(session.kind === 'thread');
-	const mode = $derived(
-		approval?.stage === 'editing' || approval?.stage === 'sent' || approval?.stage === 'denied'
-			? approval.stage
-			: 'pending'
-	);
-	const blocking = $derived(
-		approval && approval.stage !== 'drafting' && (mode === 'pending' || mode === 'editing')
-	);
 	const pressedText = $derived(
 		messages
 			.find((m) => m.id === pressed)
 			?.parts.find((p) => p.type === 'text')
 			?.text.slice(0, 90)
 	);
+	const commands = $derived([
+		{
+			icon: MessageSquarePlus,
+			label: 'New chat',
+			note: commandsOffline
+				? "Can't start a new chat while the agent is offline."
+				: 'Archive this conversation and start fresh. The agent keeps its memory.',
+			disabled: commandsOffline
+		},
+		{
+			icon: Square,
+			label: 'Stop',
+			note: running ? 'Stop the turn that is running now.' : 'Nothing is running right now.',
+			disabled: commandsOffline || !running
+		},
+		{
+			icon: FoldVertical,
+			label: 'Compact',
+			note: 'Summarize older messages so the agent has room to work.',
+			disabled: commandsOffline
+		}
+	]);
 	const sheetLabels: Record<Sheet, string> = {
 		memory: 'Memory shared with Main',
 		close: 'Close thread',
 		actions: 'Message actions',
-		aside: 'Side question'
+		aside: 'Side question',
+		commands: 'Chat commands',
+		new: 'Start a new chat',
+		viewer: 'Image'
 	};
 </script>
-
-{#snippet composer(compact: boolean, placeholder?: string)}
-	<form class={cn('px-3', compact ? 'pt-1 pb-2' : 'py-2.5')} onsubmit={(e) => e.preventDefault()}>
-		<label for="{uid}-composer" class="sr-only">Message</label>
-		<div
-			class={cn(
-				'flex items-end gap-2 rounded-3xl border bg-card p-1 pl-2 focus-within:ring-2 focus-within:ring-ring/40',
-				'kb:ring-2 kb:ring-ring/40'
-			)}
-		>
-			<Textarea
-				id="{uid}-composer"
-				rows={1}
-				value={typing}
-				placeholder={placeholder ??
-					(compact
-						? 'Reply while this waits'
-						: thread
-							? `Message in ${session.title}`
-							: 'Message your agent')}
-				class={cn(
-					'resize-none border-0 bg-transparent text-base shadow-none focus-visible:ring-0 dark:bg-transparent',
-					compact ? 'min-h-8 py-1' : 'min-h-9'
-				)}
-			/>
-			<Button
-				size={compact ? 'icon' : 'icon-lg'}
-				type="submit"
-				aria-label="Send message"
-				class="rounded-full"
-				disabled={!typing}><ArrowUp /></Button
-			>
-		</div>
-	</form>
-{/snippet}
 
 {#snippet writeList(items: MemoryWrite[])}
 	<ul class="flex flex-col divide-y rounded-lg border">
@@ -203,29 +231,103 @@
 			</p>
 			<p class="text-[15px] leading-relaxed">{aside.answer}</p>
 		</div>
-		{@render composer(false, 'Ask another side question')}
+		<Composer placeholder="Ask another side question" attach={false} />
+	{:else if sheet === 'commands'}
+		<div class="flex flex-col gap-2 px-3 pt-1 pb-3">
+			<h2 class="px-2 pt-1 text-lg font-semibold">Chat commands</h2>
+			{#if commandsOffline}
+				<p
+					role="status"
+					class="mx-2 flex items-start gap-2 rounded-lg bg-waiting-soft px-3 py-2 text-sm text-waiting"
+				>
+					<ServerOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+					Can't run commands while the agent is offline.
+				</p>
+			{/if}
+			<ul class="flex flex-col">
+				{#each commands as c (c.label)}
+					<li>
+						<button
+							type="button"
+							disabled={c.disabled}
+							class="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left hover:bg-muted disabled:pointer-events-none disabled:opacity-55"
+						>
+							<c.icon class="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+							<span class="flex flex-col gap-0.5">
+								<span class="text-[15px] font-medium">{c.label}</span>
+								<span class="text-sm text-muted-foreground">{c.note}</span>
+							</span>
+						</button>
+					</li>
+				{/each}
+			</ul>
+		</div>
+	{:else if sheet === 'new'}
+		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
+			<div class="flex flex-col gap-1">
+				<h2 class="text-lg font-semibold">Start a new chat?</h2>
+				<p class="text-sm text-muted-foreground">
+					The agent keeps its memory; this conversation is archived. Starting can take up to 4
+					minutes.
+				</p>
+			</div>
+			<div class="flex flex-col gap-2">
+				<Button size="lg"><MessageSquarePlus />Start new chat</Button>
+				<Button size="lg" variant="ghost">Cancel</Button>
+			</div>
+		</div>
+	{:else if sheet === 'viewer' && viewer?.src}
+		<div class="flex flex-col gap-3 px-4 pt-1 pb-4">
+			<img src={viewer.src} alt={viewer.name} class="w-full rounded-xl border object-contain" />
+			<p class="text-sm [overflow-wrap:anywhere]">
+				{viewer.name} <span class="text-muted-foreground">· {viewer.size}</span>
+			</p>
+			<div class="flex gap-2">
+				<Button variant="outline" class="flex-1" href="/f/{viewer.id}" download={viewer.name}
+					><Download />Download</Button
+				>
+				<Button variant="ghost" class="flex-1" onclick={() => (sheet = undefined)}>Close</Button>
+			</div>
+		</div>
 	{/if}
 {/snippet}
 
 {#snippet footer()}
+	{#if newMessages}
+		<div class="pointer-events-none absolute inset-x-0 bottom-full flex justify-center pb-3">
+			<Button
+				variant="outline"
+				class="pointer-events-auto rounded-full bg-background px-4 shadow-md dark:bg-card"
+				><ArrowDown />New messages</Button
+			>
+		</div>
+	{/if}
+	{#if toast}
+		<p
+			role="status"
+			class="absolute inset-x-3 bottom-full mb-3 rounded-xl bg-foreground px-4 py-3 text-sm text-background shadow-lg"
+		>
+			{toast}
+		</p>
+	{/if}
 	{#if archived}
 		<div class="flex items-center gap-3 border-t px-4 py-3 text-sm text-muted-foreground">
 			<Archive class="size-4 shrink-0" aria-hidden="true" />
 			<span>Archived {archived}. Read only.</span>
 			<Button variant="outline" class="ml-auto"><RotateCcw />Reopen</Button>
 		</div>
-	{:else if blocking}
-		<div role="group" aria-label="Approve send_email" class="flex flex-col gap-2 border-t pt-2.5">
-			<p class="px-3 text-xs text-muted-foreground">
-				{mode === 'editing'
-					? 'Editing the body. The agent is paused.'
-					: 'The agent is paused until you decide.'}
-			</p>
-			<div class="px-3"><ApprovalActions editing={mode === 'editing'} /></div>
-			{#if mode === 'pending'}{@render composer(true)}{:else}<span class="h-2.5"></span>{/if}
-		</div>
 	{:else}
-		<div class="border-t">{@render composer(false)}</div>
+		<div class="border-t">
+			{#if tray}<ApprovalTray items={tray.items} armed={tray.armed} state={tray.state} />{/if}
+			<Composer
+				value={typing}
+				placeholder={thread ? `Message in ${session.title}` : 'Message your agent'}
+				{running}
+				{stopping}
+				{photos}
+				{quotaFull}
+			/>
+		</div>
 	{/if}
 {/snippet}
 
@@ -250,6 +352,18 @@
 			><Archive /><span class="@max-sm:sr-only">Close</span></Button
 		>
 	{/if}
+	{#if !archived}
+		<Button
+			variant="ghost"
+			class="size-12 px-0"
+			aria-label="Chat commands"
+			onclick={() => (sheet = 'commands')}><EllipsisVertical class="size-5" /></Button
+		>
+	{/if}
+{/snippet}
+
+{#snippet banner()}
+	{#if connection}<ConnectionBanner state={connection} />{/if}
 {/snippet}
 
 <AppShell
@@ -260,38 +374,23 @@
 	{waiting}
 	{actions}
 	{footer}
+	{banner}
 	sheet={sheet ? sheetBody : undefined}
 	sheetLabel={sheet ? sheetLabels[sheet] : undefined}
 	stickToBottom
 >
 	<div class="mx-auto max-w-2xl">
-		<Conversation {messages} {pressed} after={approval ? approvalTurn : undefined} />
+		<Conversation
+			{messages}
+			{pressed}
+			{openTurn}
+			{openStep}
+			{focusAsk}
+			onopenfile={(f) => {
+				viewer = f;
+				sheet = 'viewer';
+			}}
+		/>
 	</div>
+	<p role="status" class="sr-only">{announce ?? ''}</p>
 </AppShell>
-
-{#snippet approvalTurn()}
-	{#if approval}
-		{#if approval.stage === 'drafting'}
-			<p class="flex items-center gap-2 text-sm text-muted-foreground">
-				<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-				Drafting a reply to Dana…
-			</p>
-		{:else}
-			<p class="text-[15px] leading-relaxed">
-				{approval.stage === 'denied'
-					? "OK, I won't send it. Tell me what to change, or I'll drop it."
-					: approval.stage === 'sent'
-						? 'Sent. I checked the Sent folder and the message is there.'
-						: "Here's the reply. Nothing goes out until you approve it."}
-			</p>
-			<ApprovalCard
-				draft={approval.draft}
-				{mode}
-				tainted
-				messageId={approval.messageId}
-				runHref={approval.runHref}
-				actions={false}
-			/>
-		{/if}
-	{/if}
-{/snippet}

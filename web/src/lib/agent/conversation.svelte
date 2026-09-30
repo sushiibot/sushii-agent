@@ -1,39 +1,179 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import Wrench from '@lucide/svelte/icons/wrench';
 	import Split from '@lucide/svelte/icons/split';
 	import Bell from '@lucide/svelte/icons/bell';
 	import Archive from '@lucide/svelte/icons/archive';
 	import BookMarked from '@lucide/svelte/icons/book-marked';
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
+	import ShieldCheck from '@lucide/svelte/icons/shield-check';
+	import Clock from '@lucide/svelte/icons/clock';
+	import Check from '@lucide/svelte/icons/check';
+	import CircleAlert from '@lucide/svelte/icons/circle-alert';
+	import CloudOff from '@lucide/svelte/icons/cloud-off';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
 	import { cn } from '$lib/utils';
-	import type { ChatMessage } from './types';
+	import AskCard from './ask-card.svelte';
+	import FilesBlock from './files-block.svelte';
+	import Markdown from './markdown.svelte';
+	import WorkingRow from './working-row.svelte';
+	import type { ApprovalOutcome, ChatMessage, Delivery, FileRef, MessagePart, Turn } from './types';
 
-	let { messages, pressed, after }: { messages: ChatMessage[]; pressed?: string; after?: Snippet } =
-		$props();
+	let {
+		messages,
+		pressed,
+		after,
+		openTurn,
+		openStep,
+		focusAsk,
+		onopenfile
+	}: {
+		messages: ChatMessage[];
+		pressed?: string;
+		after?: Snippet;
+		/** Message id whose working row or divider starts expanded. */
+		openTurn?: string;
+		openStep?: string;
+		focusAsk?: string;
+		onopenfile?: (file: FileRef) => void;
+	} = $props();
 	const uid = $props.id();
+
+	const isTool = (p: MessagePart) => p.type.startsWith('tool-');
+	// Tool parts from SDK-shaped messages collapse into one finished turn row.
+	function toolTurn(parts: MessagePart[]): Turn {
+		return {
+			state: 'done',
+			steps: parts.flatMap((p) =>
+				p.type.startsWith('tool-') && 'toolCallId' in p
+					? [
+							{
+								id: p.toolCallId,
+								tool: p.type.slice(5),
+								label: p.output?.found ?? p.type.slice(5),
+								state: p.state === 'output-denied' ? ('failed' as const) : ('ok' as const),
+								input: JSON.stringify(p.input, null, 2),
+								output: p.output ? JSON.stringify(p.output, null, 2) : undefined
+							}
+						]
+					: []
+			)
+		};
+	}
+
+	const delivery: Record<Delivery, { icon: typeof Check; text: string; tone?: string }> = {
+		sending: { icon: Clock, text: 'Sending' },
+		sent: { icon: Check, text: 'Sent' },
+		failed: { icon: CircleAlert, text: 'Failed', tone: 'text-failed' },
+		queued: { icon: CloudOff, text: "Queued, sends when you're back online", tone: 'text-waiting' },
+		'queued-agent': {
+			icon: CloudOff,
+			text: 'Queued, sends when the agent is back',
+			tone: 'text-waiting'
+		}
+	};
+	const outcome: Record<ApprovalOutcome, string> = {
+		pending: 'Approval requested',
+		approved: 'Approved',
+		denied: 'Denied',
+		timeout: 'Timed out, denied',
+		'approved-elsewhere': 'Approved on another device',
+		'denied-elsewhere': 'Denied on another device'
+	};
 </script>
 
 <ol class="flex flex-col gap-4 px-4 py-4">
 	{#each messages as message (message.id)}
+		{@const owner = message.role === 'user' && !message.unverified}
+		{@const firstTool = message.parts.findIndex(isTool)}
 		<li
+			data-message-id={message.id}
 			class={cn(
-				message.role === 'user' ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2',
+				owner ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2',
 				pressed === message.id &&
 					'-mx-2 rounded-xl bg-muted px-2 py-2 ring-2 ring-brand/50 transition-colors'
 			)}
 		>
+			{#if message.unverified}
+				<span class="text-xs text-muted-foreground"
+					>{message.role === 'user' ? 'You · ' : ''}from workspace history (unverified)</span
+				>
+			{/if}
 			{#each message.parts as part, i (i)}
 				{#if part.type === 'text'}
 					<p
-						class={message.role === 'user'
-							? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[15px] leading-snug text-primary-foreground'
-							: 'text-[15px] leading-relaxed'}
+						class={cn(
+							owner
+								? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[15px] leading-snug text-primary-foreground'
+								: message.role === 'user'
+									? 'rounded-2xl border border-dashed px-3.5 py-2 text-[15px] leading-snug'
+									: 'text-[15px] leading-relaxed [overflow-wrap:anywhere]',
+							message.streaming &&
+								"min-h-[4.5lh] after:ml-0.5 after:inline-block after:h-[1.1em] after:w-0.5 after:translate-y-[3px] after:animate-pulse after:bg-foreground after:content-[''] motion-reduce:after:animate-none"
+						)}
 					>
 						{part.text}
 					</p>
+				{:else if part.type === 'data-markdown'}
+					<Markdown blocks={part.data} />
+				{:else if part.type === 'data-turn'}
+					<WorkingRow turn={part.data} open={openTurn === message.id} {openStep} />
+				{:else if part.type === 'data-approval'}
+					<p class="flex items-center gap-2 text-sm text-muted-foreground">
+						<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
+						<span
+							>{outcome[part.data.outcome]}{part.data.outcome === 'pending' ? ':' : ' ·'}
+							<code class="font-mono text-[13px] text-foreground">{part.data.tool}</code></span
+						>
+					</p>
+				{:else if part.type === 'data-ask'}
+					<AskCard ask={part.data} focused={focusAsk === part.data.askId} />
+				{:else if part.type === 'data-files'}
+					<FilesBlock files={part.data.files} dropped={part.data.dropped} onopen={onopenfile} />
+				{:else if part.type === 'data-divider'}
+					{@const label = {
+						new: 'New chat',
+						rotated: 'Conversation continued',
+						compacted: 'Conversation compacted'
+					}[part.data.kind]}
+					{#if part.data.summary}
+						<details open={openTurn === message.id} class="group/div w-full text-sm">
+							<summary
+								class="flex min-h-12 cursor-pointer list-none items-center gap-3 text-muted-foreground [&::-webkit-details-marker]:hidden"
+							>
+								<span class="h-px flex-1 bg-border"></span>
+								<span class="flex items-center gap-1 font-medium"
+									>{label}<ChevronDown
+										class="size-3.5 transition-transform group-open/div:rotate-180 motion-reduce:transition-none"
+										aria-hidden="true"
+									/></span
+								>
+								<span class="h-px flex-1 bg-border"></span>
+							</summary>
+							<p class="rounded-lg bg-muted px-3 py-2.5 text-sm leading-relaxed">
+								{part.data.summary}
+							</p>
+						</details>
+					{:else}
+						<p
+							class="flex w-full items-center gap-3 py-2 text-sm font-medium text-muted-foreground"
+						>
+							<span class="h-px flex-1 bg-border"></span>{label}<span class="h-px flex-1 bg-border"
+							></span>
+						</p>
+					{/if}
+				{:else if part.type === 'data-history-gap'}
+					<p
+						class="flex w-full items-center justify-between gap-3 rounded-lg border border-dashed py-1 pr-1 pl-3 text-sm text-muted-foreground"
+					>
+						Earlier messages unavailable right now
+						<Button variant="ghost" class="px-3"><RotateCcw />Retry</Button>
+					</p>
+				{:else if part.type === 'data-line'}
+					<p class="text-sm text-muted-foreground">{part.data.text}</p>
 				{:else if part.type === 'data-notice'}
 					<a
 						href={part.data.href}
@@ -131,24 +271,22 @@
 						Saved to memory
 						<code class="truncate font-mono text-[11px] text-foreground/80">{part.data.file}</code>
 					</p>
-				{:else}
-					<details class="group rounded-lg border bg-card text-sm">
-						<summary
-							class="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-muted-foreground"
-						>
-							<Wrench class="size-3.5 shrink-0" aria-hidden="true" />
-							<code class="font-mono text-xs text-foreground">{part.type.slice(5)}</code>
-							<span class="truncate">{part.output?.found ?? ''}</span>
-						</summary>
-						<pre
-							class="border-t px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted-foreground">{JSON.stringify(
-								part.input,
-								null,
-								2
-							)}</pre>
-					</details>
+				{:else if isTool(part) && i === firstTool}
+					<WorkingRow turn={toolTurn(message.parts)} open={openTurn === message.id} {openStep} />
 				{/if}
 			{/each}
+			{#if message.delivery}
+				{@const d = delivery[message.delivery]}
+				<p class={cn('flex items-center gap-1 text-xs text-muted-foreground', d.tone)}>
+					<d.icon class="size-3.5 shrink-0" aria-hidden="true" />{d.text}
+				</p>
+				{#if message.delivery === 'failed'}
+					<div class="flex gap-2">
+						<Button variant="ghost" class="px-3"><Trash2 />Delete</Button>
+						<Button variant="outline" class="px-4"><RotateCcw />Retry send</Button>
+					</div>
+				{/if}
+			{/if}
 		</li>
 	{/each}
 	{#if after}<li class="flex flex-col gap-2">{@render after()}</li>{/if}
