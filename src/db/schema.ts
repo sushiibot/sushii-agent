@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, real, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, unique, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const messages = sqliteTable(
   "messages",
@@ -266,3 +266,31 @@ export const webPushSubscriptions = sqliteTable("web_push_subscriptions", {
   createdAt: integer("created_at").notNull(),
   lastOkAt: integer("last_ok_at"),
 });
+
+/** Durable web chat events; `seq` is the SSE event id. AUTOINCREMENT so a seq is never reissued after a prune. */
+export const webEvents = sqliteTable(
+  "web_events",
+  {
+    seq: integer("seq").primaryKey({ autoIncrement: true }),
+    type: text("type").notNull(),
+    // Idempotency key (clientId, outboxId, nonce, …); null for events that are never retried.
+    key: text("key"),
+    data: text("data").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("uq_web_events_type_key").on(table.type, table.key), index("idx_web_events_created").on(table.createdAt)],
+);
+
+/** Owner web messages, persisted before the 202; `routedAt` is set once the workspace gave a receipt. */
+export const webInbound = sqliteTable(
+  "web_inbound",
+  {
+    clientId: text("client_id").primaryKey(),
+    text: text("text").notNull(),
+    uploadIds: text("upload_ids").notNull(),
+    seq: integer("seq").notNull(),
+    createdAt: integer("created_at").notNull(),
+    routedAt: integer("routed_at"),
+  },
+  (table) => [index("idx_web_inbound_created").on(table.createdAt)],
+);
