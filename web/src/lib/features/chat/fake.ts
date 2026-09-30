@@ -1,13 +1,8 @@
 // A scripted in-memory bot for `bun dev` with `?fake`: it speaks the same events and routes as the
 // real gateway, so the chat screen can be driven without the bot or a workspace.
 import type { ChatApi } from './api';
-import type {
-	ChatEnvelope,
-	ChatEventMap,
-	ChatEventType,
-	WebHistoryItem,
-	WorkspaceState
-} from '$lib/core/realtime/events';
+import type { WebHistoryItem } from '$lib/core/realtime/events';
+import { fakeTransport } from '$lib/core/realtime/fake-transport';
 import type { ChatTransport } from '$lib/core/realtime/transport';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -56,17 +51,11 @@ function history(): WebHistoryItem[] {
 }
 
 export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } {
-	let seq = 100;
-	let workspace: WorkspaceState = 'online';
-	const sinks = new Set<(ev: ChatEnvelope) => void>();
+	const stream = fakeTransport({ seq: 100, helloDelayMs: 200 });
+	const emit = stream.emit;
 	const all = history();
 	let turn: { id: string; stopped: boolean } | null = null;
 	const asks = new Map<string, string[]>();
-
-	function emit<T extends ChatEventType>(type: T, data: ChatEventMap[T], durable = true) {
-		const ev = { type, data, ...(durable ? { seq: ++seq } : {}) } as ChatEnvelope;
-		for (const s of sinks) s(ev);
-	}
 
 	async function runTurn(text: string) {
 		const id = rid();
@@ -150,21 +139,6 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 		turn = null;
 	}
 
-	const transport: ChatTransport = {
-		connect(_after, on, onState) {
-			const sink = (ev: ChatEnvelope) => on(ev);
-			sinks.add(sink);
-			setTimeout(() => {
-				onState('open');
-				on({
-					type: 'hello',
-					data: { headSeq: seq, workspace, openTurns: [], pending: { approvals: [], asks: [] } }
-				});
-			}, 200);
-			return () => sinks.delete(sink);
-		}
-	};
-
 	const api: ChatApi = {
 		async history({ before, limit }) {
 			await sleep(300);
@@ -184,22 +158,22 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 				at: new Date().toISOString()
 			});
 			if (text === 'offline') {
-				workspace = 'offline';
+				stream.workspace = 'offline';
 				emit('workspace', { state: 'offline' }, false);
 				emit('notice', { type: 'workspaceOffline' });
 				setTimeout(() => {
-					workspace = 'online';
+					stream.workspace = 'online';
 					emit('workspace', { state: 'online' }, false);
 				}, 6000);
-				return { seq, routed: false };
+				return { seq: stream.seq, routed: false };
 			}
-			if (workspace === 'offline') {
+			if (stream.workspace === 'offline') {
 				emit('notice', { type: 'workspaceOffline' });
-				return { seq, routed: false };
+				return { seq: stream.seq, routed: false };
 			}
 			emit('status', { clientId, state: turn ? 'steer' : 'accepted' });
 			if (!turn) void runTurn(text);
-			return { seq, routed: true };
+			return { seq: stream.seq, routed: true };
 		},
 		async discardMessage() {
 			await sleep(150);
@@ -238,5 +212,5 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 		}
 	};
 
-	return { transport, api };
+	return { transport: stream.transport, api };
 }

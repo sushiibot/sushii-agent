@@ -120,6 +120,7 @@ test.describe('closing notifications on open', () => {
 
 	test('closes chat plus the approvals, asks and sign-in Main shows, and nothing else', async () => {
 		const tags = tagsShownBy(
+			'main',
 			[
 				{ kind: 'approval', id: 'x', nonce: 'done1', tool: 't', outcome: 'approved' },
 				{

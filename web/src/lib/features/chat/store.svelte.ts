@@ -33,7 +33,13 @@ import {
 	type ChatState,
 	type Effect
 } from './reduce';
-import { fetchSse, type ChatTransport, type TransportState } from '$lib/core/realtime/transport';
+import {
+	createHub,
+	hub as appHub,
+	type ConversationId,
+	type Hub
+} from '$lib/core/realtime/hub.svelte';
+import type { TransportState } from '$lib/core/realtime/transport';
 import { ulid } from '$lib/core/storage/ulid';
 
 const HISTORY_PAGE = 40;
@@ -69,7 +75,7 @@ interface Photo extends PhotoDraft {
 }
 
 export interface ChatStoreDeps {
-	transport?: ChatTransport;
+	hub?: Hub;
 	api?: ChatApi;
 	outbox?: KeyValue<OutboxEntry>;
 	drafts?: KeyValue<Draft>;
@@ -77,7 +83,7 @@ export interface ChatStoreDeps {
 
 export class ChatStore {
 	#s: ChatState = createState();
-	#transport: ChatTransport;
+	#hub: Hub;
 	#api: ChatApi;
 	#outbox: KeyValue<OutboxEntry>;
 	#drafts: KeyValue<Draft>;
@@ -113,8 +119,6 @@ export class ChatStore {
 
 	#before: string | null = null;
 	#buffer: ChatEnvelope[] | null = [];
-	#queue: ChatEnvelope[] = [];
-	#frame: number | null = null;
 	#pending = new Map<string, OutboxEntry>();
 	/** Each send in flight, so a delete can wait for it to finish before deciding what to withdraw. */
 	#sending = new Map<string, Promise<void>>();
@@ -133,11 +137,14 @@ export class ChatStore {
 	#seenTimer: ReturnType<typeof setTimeout> | null = null;
 	#seenSent = 0;
 	#draftTimer: ReturnType<typeof setTimeout> | null = null;
-	#disconnect: (() => void) | null = null;
+	#started = false;
 	#cleanup: (() => void)[] = [];
 
-	constructor(deps: ChatStoreDeps = {}) {
-		this.#transport = deps.transport ?? fetchSse();
+	constructor(
+		readonly conversationId: ConversationId,
+		deps: ChatStoreDeps = {}
+	) {
+		this.#hub = deps.hub ?? appHub;
 		this.#api = deps.api ?? httpChatApi;
 		this.#outbox = deps.outbox ?? outbox;
 		this.#drafts = deps.drafts ?? drafts;
@@ -151,13 +158,14 @@ export class ChatStore {
 	}
 
 	async start() {
-		if (this.#disconnect) return;
+		if (this.#started) return;
+		this.#started = true;
 		requestPersistence();
-		this.#disconnect = this.#transport.connect(
-			null,
-			(ev) => this.apply(ev),
-			(state) => this.#onTransport(state)
+		this.#cleanup.push(
+			this.#hub.subscribe({ conversation: this.conversationId }, (batch) => this.#onBatch(batch)),
+			this.#hub.onState((state) => this.#onTransport(state))
 		);
+		this.#hub.start();
 		const onOnline = () => this.#flushOutbox(false);
 		const onVisibility = () => {
 			if (document.visibilityState === 'visible') this.#scheduleSeen();
@@ -177,11 +185,12 @@ export class ChatStore {
 			this.#outbox.all().catch(() => []),
 			this.#drafts.all().catch(() => [])
 		]);
-		const draft = saved.find((d) => d.id === 'main');
+		const draft = saved.find((d) => d.id === this.conversationId);
 		if (draft?.text && !this.draft) this.draft = draft.text;
 		if (draft?.photos?.length && !this.photos.length) this.#restorePhotos(draft.photos);
 		this.#draftRestored = true;
-		for (const e of entries.sort((a, b) => a.at.localeCompare(b.at))) {
+		const mine = entries.filter((e) => (e.conversationId ?? 'main') === this.conversationId);
+		for (const e of mine.sort((a, b) => a.at.localeCompare(b.at))) {
 			this.#pending.set(e.clientId, e);
 			addLocalSend(this.#s, {
 				clientId: e.clientId,
@@ -208,13 +217,13 @@ export class ChatStore {
 			new Promise<void>((r) => (waited = setTimeout(r, HELLO_WAIT_MS)))
 		]);
 		clearTimeout(waited);
-		if (!this.#disconnect) return;
+		if (!this.#started) return;
 		await this.#loadHistory();
 	}
 
+	/** Stops listening; the shared stream stays up for everyone else. */
 	destroy() {
-		this.#disconnect?.();
-		this.#disconnect = null;
+		this.#started = false;
 		for (const f of this.#cleanup.splice(0)) f();
 		for (const t of this.#unacked.values()) clearTimeout(t);
 		for (const t of [
@@ -227,27 +236,19 @@ export class ChatStore {
 			if (t) clearTimeout(t);
 		}
 		this.#draftTimer = null;
-		if (this.#frame !== null) cancelAnimationFrame(this.#frame);
 	}
 
-	/** Queues an event; everything queued lands in one DOM update per animation frame. */
-	apply(ev: ChatEnvelope) {
-		if (this.#buffer && ev.type !== 'hello' && ev.type !== 'reset') {
-			this.#buffer.push(ev);
-			return;
+	/** One hub batch, so everything that arrived in a frame lands in one DOM update. */
+	#onBatch(batch: readonly ChatEnvelope[]) {
+		const queue: ChatEnvelope[] = [];
+		for (const ev of batch) {
+			if (this.#buffer && ev.type !== 'hello' && ev.type !== 'reset') this.#buffer.push(ev);
+			else queue.push(ev);
 		}
-		this.#queue.push(ev);
-		if (this.#frame !== null) return;
-		if (typeof requestAnimationFrame === 'function' && document.visibilityState === 'visible') {
-			this.#frame = requestAnimationFrame(() => this.#flush());
-		} else {
-			this.#frame = setTimeout(() => this.#flush(), 16) as unknown as number;
-		}
+		this.#applyAll(queue);
 	}
 
-	#flush() {
-		this.#frame = null;
-		const queue = this.#queue.splice(0);
+	#applyAll(queue: readonly ChatEnvelope[]) {
 		const fx: Effect[] = [];
 		for (const ev of queue) fx.push(...applyEvent(this.#s, ev));
 		this.#commit();
@@ -343,7 +344,7 @@ export class ChatStore {
 		this.#commit();
 		const r = await this.#api.history({ limit: HISTORY_PAGE });
 		// hello (and anything else let through the buffer) applies first, so its head filters the rest.
-		if (this.#queue.length) this.#flush();
+		this.#hub.flush();
 		const fx: Effect[] = [];
 		if (r.ok) {
 			fx.push(...mergeHistory(this.#s, r.page.items));
@@ -356,8 +357,7 @@ export class ChatStore {
 		for (const e of fx) this.#effect(e);
 		const buffered = this.#buffer ?? [];
 		this.#buffer = null;
-		this.#queue.push(...buffered);
-		this.#flush();
+		this.#applyAll(buffered);
 		this.#flushOutbox(this.workspace === 'online');
 	}
 
@@ -419,7 +419,7 @@ export class ChatStore {
 				: []
 		);
 		void this.#drafts
-			.put({ id: 'main', text: this.draft, photos })
+			.put({ id: this.conversationId, text: this.draft, photos })
 			.catch((err) => console.warn("Couldn't save the draft.", err));
 	}
 
@@ -463,6 +463,7 @@ export class ChatStore {
 		const photos = this.photos;
 		const entry: OutboxEntry = {
 			clientId: ulid(),
+			conversationId: this.conversationId,
 			text: body,
 			uploadIds: photos.map((p) => p.uploadId!),
 			photos: photos.map((p) => ({
@@ -923,4 +924,25 @@ export class ChatStore {
 			});
 		}, SEEN_DEBOUNCE_MS);
 	}
+}
+
+const stores = new Map<ConversationId, Promise<ChatStore>>();
+
+/** A conversation's store, created and started on first use and kept for the app's life. */
+export function chatStore(id: ConversationId = 'main'): Promise<ChatStore> {
+	let store = stores.get(id);
+	if (!store) {
+		store = (async () => {
+			let deps: ChatStoreDeps = {};
+			if (import.meta.env.DEV && new URLSearchParams(location.search).has('fake')) {
+				const fake = (await import('./fake')).createFakeBackend();
+				deps = { api: fake.api, hub: createHub({ transport: fake.transport }) };
+			}
+			const s = new ChatStore(id, deps);
+			void s.start();
+			return s;
+		})();
+		stores.set(id, store);
+	}
+	return store;
 }

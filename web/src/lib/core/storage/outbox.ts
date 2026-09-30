@@ -1,5 +1,7 @@
 export interface OutboxEntry {
 	clientId: string;
+	/** Missing on rows written before conversations had ids; those belong to Main. */
+	conversationId?: string;
 	text: string;
 	uploadIds: string[];
 	/** The resized photos, kept so a message queued past the server's 24h orphan GC can re-upload them. */

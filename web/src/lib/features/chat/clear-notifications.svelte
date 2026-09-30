@@ -16,7 +16,9 @@
 	});
 
 	// Keyed on the tag set, so a streaming reply's frames don't each reach the worker.
-	const tagKey = $derived([...tagsShownBy(store.items, store.approvals)].sort().join('\n'));
+	const tagKey = $derived(
+		[...tagsShownBy(store.conversationId, store.items, store.approvals)].sort().join('\n')
+	);
 
 	$effect(() => {
 		if (!store.viewing || !visible) return;
