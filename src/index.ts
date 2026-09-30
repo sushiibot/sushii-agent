@@ -214,8 +214,17 @@ async function main() {
   const mcpServer = Bun.serve({ port: config.mcpBridgePort, fetch: mcpApp.fetch, idleTimeout: 60 });
   logger.info({ port: mcpServer.port }, "MCP bridge HTTP server listening");
 
-  const webServer = config.web ? startWebServer(config.web, db) : undefined;
-  if (!config.web) logger.info("WEB_OWNER_LOGIN not set — web gateway disabled");
+  let webServer: ReturnType<typeof startWebServer> | undefined;
+  if (config.web) {
+    try {
+      webServer = startWebServer(config.web, db);
+    } catch (err) {
+      // A bad bind address must not take the bot's other surfaces down with it.
+      logger.error({ err, bindAddr: config.web.bindAddr }, "web gateway failed to start");
+    }
+  } else {
+    logger.info("WEB_OWNER_LOGIN not set — web gateway disabled");
+  }
 
   let shuttingDown = false;
   const shutdown = async () => {
