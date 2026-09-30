@@ -138,7 +138,9 @@ export type RouterNotice =
   | { type: "commandOffline" }
   | { type: "commandFailed"; error: string }
   // The router's `offline: "reject"` mode: nothing was recorded, so the surface resends the same message later.
-  | { type: "workspaceOffline" };
+  | { type: "workspaceOffline" }
+  // `reject` mode with the workspace connected: it refused the message, which stays unrouted for a retry.
+  | { type: "messageRejected"; error: string };
 
 /** A user's message as the core sees it; adapters extend it with whatever they need to answer it. */
 export interface InboundMessage {
@@ -221,12 +223,6 @@ export class SurfaceRegistry {
   constructor(preferredSurface: string, opts: { pinned?: boolean } = {}) {
     this.preferredSurface = preferredSurface.trim().toLowerCase();
     this.pinned = opts.pinned === true;
-  }
-
-  /** Throws unless the preferred surface has an adapter: without one, proactive messages and approvals can't be sent. */
-  assertPreferredRegistered(): void {
-    if (this.hasPreferred()) return;
-    throw new Error(`WORKSPACE_PREFERRED_SURFACE "${this.preferredSurface}" has no adapter; registered: ${this.registered().join(", ") || "none"}`);
   }
 
   registered(): string[] {

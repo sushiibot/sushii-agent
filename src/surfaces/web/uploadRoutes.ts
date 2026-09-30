@@ -2,21 +2,16 @@ import { UPLOAD_READ_BUSY, uploadReadParams, uploadReadResult, type UploadReadRe
 import type { ConnectionInfo } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { UPLOAD_ID_RE, UPLOAD_MAX_BYTES, type UploadResponse } from "./events.ts";
-import { readBodyCapped } from "./server.ts";
+import { json, NO_STORE, readBodyCapped } from "./http.ts";
 import { UploadError, type DiskUploadStore, type UploadStore } from "./uploads.ts";
 
 const log = getLogger("web-uploads");
 
-const NO_STORE = "no-store";
 /** Per-file idempotency key from the app, e.g. `<message ULID>-<n>`; never the bare message id shared by several photos. */
 const CLIENT_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const RAW_NAME_MAX = 1024;
 export const FILE_CSP = "sandbox; default-src 'none'; img-src 'self'";
 const IMMUTABLE = "private, max-age=31536000, immutable";
-
-function json(body: unknown, status = 200): Response {
-  return Response.json(body, { status, headers: { "Cache-Control": NO_STORE } });
-}
 
 /** RFC 6266 Content-Disposition with an RFC 8187 (ex-5987) `filename*`, plus a plain ASCII fallback. */
 export function contentDisposition(kind: "inline" | "attachment", name: string): string {

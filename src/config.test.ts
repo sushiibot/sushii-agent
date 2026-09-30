@@ -234,8 +234,18 @@ describe("parseOwnerDmMode", () => {
     expect(parseOwnerDmMode("workspace", "web")).toBe("workspace");
   });
 
-  test("an unknown value is a startup error, never a silent fallback to workspace", () => {
-    expect(() => parseOwnerDmMode("redirct", "discord")).toThrow("Invalid OWNER_DM_MODE");
-    expect(() => parseOwnerDmMode("redirct", "web")).toThrow("Invalid OWNER_DM_MODE");
+  test("an unknown value logs an error and redirects, never throws or falls back to workspace", () => {
+    const errors: unknown[] = [];
+    const error = (ctx: Record<string, unknown>) => void errors.push(ctx);
+    expect(parseOwnerDmMode("redirct", "discord", error)).toBe("redirect");
+    expect(parseOwnerDmMode("redirct", "web", error)).toBe("redirect");
+    expect(errors).toEqual([{ ownerDmMode: "redirct" }, { ownerDmMode: "redirct" }]);
+  });
+});
+
+describe("principals web logins", () => {
+  test("a mixed-case web identity is lowercased at load, other surfaces are left alone", () => {
+    const out = resolveOwnerPrincipals({ drk: { owner: true, identities: { discord: "AbC1", web: " DrkLee3@GitHub " } } }, undefined, () => {});
+    expect(out.drk!.identities).toEqual({ discord: "AbC1", web: "drklee3@github" });
   });
 });

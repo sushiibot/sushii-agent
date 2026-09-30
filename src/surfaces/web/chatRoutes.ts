@@ -7,13 +7,15 @@ import type { InboundMessage, RouterNotice, SurfaceActor } from "../../orchestra
 import { APPROVAL_TIMEOUT_MS, NONCE_RE, type WorkspaceTools } from "../../orchestration/workspace/tools.ts";
 import { getLogger } from "../../logger.ts";
 import { WEB_SURFACE } from "./actor.ts";
-import type { SqliteChatLog } from "./chatLog.ts";
+import { INBOUND_RETENTION_MS, type SqliteChatLog } from "./chatLog.ts";
 import {
   CLIENT_ID_RE,
   HISTORY_LIMIT_MAX,
   MESSAGE_TEXT_MAX,
   MESSAGE_UPLOADS_MAX,
   UPLOAD_ID_RE,
+  type DiscardMessageResponse,
+  type DiscardMessageRoutedResponse,
   type HistoryResetResponse,
   type HistoryUnsupportedResponse,
   type PostApprovalResponse,
@@ -23,7 +25,7 @@ import {
   type UploadRef,
   type WebHistoryItem,
 } from "./events.ts";
-import { buildHistoryPage, RpcHistorySource, type HistorySource } from "./history.ts";
+import { buildHistoryPage, HistoryDeadlineError, RpcHistorySource, type HistorySource } from "./history.ts";
 import { forbidden, isJson, json, readJson } from "./http.ts";
 import type { InboundRow, WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
@@ -39,6 +41,10 @@ const HISTORY_DEFAULT_LIMIT = 40;
 const PENDING_ASKS_MAX = 10;
 const HISTORY_FLOORS_KEPT = 256;
 const SHUTDOWN_IDLE_MS = 2_000;
+/** How long a delete waits for a route already in flight to settle before calling the message delivered. */
+const DISCARD_WAIT_MS = 20_000;
+/** Every RPC one history request makes shares this budget, which stays under Bun's 30s idle timeout. */
+export const HISTORY_DEADLINE_MS = 25_000;
 
 export const WEB_ORIGIN: ChatOrigin = Object.freeze({ surface: WEB_SURFACE, conversationId: WEB_CONVERSATION_ID });
 
@@ -74,6 +80,8 @@ export interface ChatRouteDeps {
   now?: () => number;
   sse?: { heartbeatMs: number; maxLifetimeMs: number };
   historyMaxBytes?: number;
+  historyDeadlineMs?: number;
+  discardWaitMs?: number;
 }
 
 export interface ChatRoutes {
@@ -83,6 +91,8 @@ export interface ChatRoutes {
   idle(): Promise<void>;
   /** idle(), bounded for shutdown. */
   drain(timeoutMs?: number): Promise<void>;
+  /** The workspace link (re)connected: re-route messages that were stored but never routed. */
+  workspaceConnected(): void;
 }
 
 const messageBody = z
@@ -121,12 +131,17 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   };
 
   const online = () => deps.workspaceEnabled && link.isConnected();
+  // Routing needs a verified actor, which only a request carries; a re-drive waits for one.
+  let lastActor: SurfaceActor | undefined;
+  let redriveWanted = false;
+  let redriving = false;
   const notice = (n: RouterNotice) => void chatLog.append("notice", n);
 
   /** Routes a persisted message through the owner router. A receipt (or a consuming notice) marks it
    *  routed; a workspaceOffline notice leaves it for the client to resend. */
   function drive(row: { clientId: string; text: string; uploadIds: string[] }, actor: SurfaceActor): void {
-    if (routing.has(row.clientId)) return;
+    // Checked in the same tick routing starts, so a delete either sees this route in flight or wins outright.
+    if (routing.has(row.clientId) || inbound.get(row.clientId)?.state !== "pending") return;
     const run = (async () => {
       const known = row.uploadIds.length && deps.uploads ? deps.uploads.lookup(row.uploadIds) : new Map<string, UploadRef>();
       const attachments: InboundMessage["attachments"] = row.uploadIds.flatMap((id) => {
@@ -175,6 +190,25 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     routing.set(row.clientId, run);
   }
 
+  /** Routes every stored, never-routed message in the order it was sent. The workspace dedupes by clientId,
+   *  so one it already took answers as a duplicate and is marked routed. */
+  function redriveUnrouted(): void {
+    redriveWanted = true;
+    const actor = lastActor;
+    if (redriving || !actor || !online() || shutdown.signal.aborted) return;
+    redriving = true;
+    redriveWanted = false;
+    void (async () => {
+      for (const row of inbound.unrouted(now() - INBOUND_RETENTION_MS)) {
+        if (!online() || shutdown.signal.aborted) break;
+        drive(row, actor);
+        await routing.get(row.clientId);
+      }
+    })()
+      .catch((err) => log.error({ err }, "re-routing stored web messages failed"))
+      .finally(() => (redriving = false));
+  }
+
   async function postMessage(req: Request, actor: SurfaceActor): Promise<Response> {
     const body = await parseBody(req, messageBody, MESSAGE_BODY_MAX);
     if (body instanceof Response) return body;
@@ -182,8 +216,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     const existing = inbound.get(body.clientId);
     if (existing) {
       if (existing.text !== body.text) log.warn({ clientId: body.clientId }, "a resent web message differs from the stored one; keeping the stored one");
-      if (existing.routedAt === null) drive(existing, actor);
-      return json({ seq: existing.seq, routed: existing.routedAt !== null } satisfies PostMessageResponse, 202);
+      if (existing.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse, 410);
+      // A resend of a refused message is the owner's retry: it goes back to pending and is routed again.
+      if (existing.state === "rejected") inbound.markPending(existing.clientId);
+      if (existing.state !== "routed") drive(existing, actor);
+      return json({ seq: existing.seq, routed: existing.state === "routed" } satisfies PostMessageResponse, 202);
     }
     if (uploadIds.length && !deps.uploads) return json({ error: "uploads are not available" }, 400);
     const at = now();
@@ -199,14 +236,32 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
         const seq = chatLog.append("user", { key: body.clientId, text: body.text, uploadIds, at: new Date(at).toISOString() }, body.clientId);
         const stored = { clientId: body.clientId, text: body.text, uploadIds, seq, createdAt: at };
         inbound.insert(stored);
-        return { ...stored, routedAt: null };
+        return { ...stored, routedAt: null, state: "pending" as const };
       });
     } catch (err) {
       if (err instanceof UploadMissing) return json({ error: "upload_missing", ids: err.ids } satisfies PostMessageUploadMissingResponse, 409);
       throw err;
     }
-    if (row.routedAt === null) drive(row, actor);
-    return json({ seq: row.seq, routed: row.routedAt !== null } satisfies PostMessageResponse, 202);
+    if (row.state !== "routed") drive(row, actor);
+    return json({ seq: row.seq, routed: row.state === "routed" } satisfies PostMessageResponse, 202);
+  }
+
+  /** The owner deleted a posted message: it must never reach the agent, unless it already did. */
+  async function deleteMessage(clientId: string): Promise<Response> {
+    if (!CLIENT_ID_RE.test(clientId)) return json({ error: "not found" }, 404);
+    const inFlight = routing.get(clientId);
+    if (inFlight) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([inFlight, new Promise<void>((r) => (timer = setTimeout(r, deps.discardWaitMs ?? DISCARD_WAIT_MS)))]);
+      clearTimeout(timer);
+      // Still out with the workspace, which may already have it: it can't be called back.
+      if (routing.has(clientId)) return json({ routed: true } satisfies DiscardMessageRoutedResponse, 409);
+    }
+    const row = inbound.get(clientId);
+    if (!row) return json({ error: "not found" }, 404);
+    if (inbound.discard(clientId)) return json({ discarded: true } satisfies DiscardMessageResponse);
+    if (row.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse);
+    return json({ routed: true } satisfies DiscardMessageRoutedResponse, 409);
   }
 
   async function postStop(req: Request, actor: SurfaceActor): Promise<Response> {
@@ -271,6 +326,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     const res = await link.answerAsk(WEB_ORIGIN, askId, { text }, actor);
     if (res.status === "forbidden") return forbidden();
     if (res.status === "answered" || res.status === "duplicate") chatLog.append("ask_resolved", { askId, answer: res.answer }, askId);
+    // The workspace no longer waits on it, so it must not come back as answerable on the next open.
+    else if (res.status === "inactive") chatLog.append("ask_resolved", { askId, answer: null }, askId);
     return json({ status: res.status } satisfies PostAskResponse);
   }
 
@@ -303,10 +360,11 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     const userFloor = before === undefined ? Infinity : userFloors.get(before);
     if (userFloor === undefined) return json({ reset: true } satisfies HistoryResetResponse, 409);
     const ok = (text: string) => new Response(text, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+    const deadline = { at: now() + (deps.historyDeadlineMs ?? HISTORY_DEADLINE_MS), now };
     try {
       // Halve the page until it fits; the workspace's cursors stay valid for any limit.
       for (let n = limit; ; n = Math.floor(n / 2)) {
-        const page = await buildHistoryPage(history, { limit: n, ...(before ? { before } : {}) }, { log: chatLog, userFloor, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
+        const page = await buildHistoryPage(history, { limit: n, ...(before ? { before } : {}) }, { log: chatLog, userFloor, deadline, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
         let text = JSON.stringify(page.response);
         if (n === 1 && Buffer.byteLength(text) > historyMax) {
           text = JSON.stringify({ ...page.response, items: page.response.items.map((i) => (Buffer.byteLength(JSON.stringify(i)) > historyMax / 2 ? tooLarge(i) : i)) });
@@ -321,7 +379,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       // A cursor from before a session rotation or restart: the client drops its pages and reloads from the head.
       if (err instanceof RpcErrorReply && err.code === CHAT_HISTORY_UNKNOWN_CURSOR_CODE) return json({ reset: true } satisfies HistoryResetResponse, 409);
       if (err instanceof WorkspaceNotConnectedError) return json({ offline: true }, 503);
-      log.warn({ err }, "chat/history failed");
+      if (err instanceof HistoryDeadlineError) log.warn("chat/history ran out of time");
+      else log.warn({ err }, "chat/history failed");
       return json({ error: "history unavailable" }, 502);
     }
   }
@@ -349,10 +408,14 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   return {
     async handle(req, path, actor, server) {
       if (!path.startsWith("/api/chat/")) return null;
+      lastActor = actor;
+      if (redriveWanted) redriveUnrouted();
       const method = req.method;
       const sub = path.slice("/api/chat/".length);
       if (sub === "stream") return method === "GET" ? getStream(req, server) : methodNotAllowed();
       if (sub === "history") return method === "GET" ? getHistory(req) : methodNotAllowed();
+      const message = /^messages\/([^/]+)$/.exec(sub);
+      if (message) return method === "DELETE" ? deleteMessage(decodeSegment(message[1]!) ?? "") : methodNotAllowed();
       if (method !== "POST") return methodNotAllowed();
       if (sub === "messages") return postMessage(req, actor);
       if (sub === "stop") return postStop(req, actor);
@@ -372,6 +435,9 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     },
     async idle() {
       while (routing.size) await Promise.all([...routing.values()]);
+    },
+    workspaceConnected() {
+      redriveUnrouted();
     },
     async drain(timeoutMs = SHUTDOWN_IDLE_MS) {
       let timer: ReturnType<typeof setTimeout> | undefined;

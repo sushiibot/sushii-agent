@@ -64,4 +64,26 @@ describe("drizzle migrations", () => {
       rmSync(scratch, { recursive: true, force: true });
     }
   });
+
+  test("0015 gives web_inbound rows a state: routed where a receipt came, pending otherwise", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "migrations-pre0015-"));
+    cpSync(realMigrationsDir, scratch, { recursive: true });
+    const journal = readJournal(scratch);
+    journal.entries = journal.entries.filter((e) => e.idx <= 14);
+    writeFileSync(join(scratch, "meta", "_journal.json"), JSON.stringify(journal));
+
+    const db = new Database(":memory:");
+    try {
+      migrate(drizzle({ client: db, schema }), { migrationsFolder: scratch });
+      db.run("INSERT INTO web_inbound (client_id, text, upload_ids, seq, created_at, routed_at) VALUES ('a', 't', '[]', 1, 1, 5), ('b', 't', '[]', 2, 2, NULL)");
+      applySchema(db);
+      expect(db.query("SELECT client_id, state FROM web_inbound ORDER BY client_id").all()).toEqual([
+        { client_id: "a", state: "routed" },
+        { client_id: "b", state: "pending" },
+      ]);
+    } finally {
+      db.close();
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
 });

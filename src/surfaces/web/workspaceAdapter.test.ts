@@ -492,4 +492,19 @@ describe("web adapter bounds on what the workspace sends", () => {
     await h.adapter.notice(message, { type: "workspaceOffline" });
     expect(h.log.list(["notice"]).map((e) => e.data)).toEqual([{ type: "loginUsage", clientId: message.id }, { type: "workspaceOffline" }]);
   });
+
+  test("messageRejected names its message but leaves it unrouted, so a retry re-drives it", async () => {
+    const h = setup();
+    const inbound = new WebInboundStore(h.db);
+    const id = "01J9Z3W8K2M4N6P8Q0R2S4T6V9";
+    inbound.insert({ clientId: id, text: "hi", uploadIds: [], seq: 1, createdAt: 0 });
+    const message: InboundMessage = { origin: WEB, id, text: "hi", author: { id: "o", name: "drk" }, isVoice: false, attachments: [] };
+    await h.adapter.notice(message, { type: "messageRejected", error: "boom" });
+    expect(h.log.list(["notice"]).map((e) => e.data)).toEqual([{ type: "messageRejected", error: "boom", clientId: id }]);
+    expect(inbound.get(id)!.routedAt).toBeNull();
+    expect(inbound.get(id)!.state).toBe("rejected");
+    inbound.markPending(id);
+    await h.adapter.notice(message, { type: "loginUsage" });
+    expect(inbound.get(id)!.state).toBe("routed");
+  });
 });

@@ -78,6 +78,24 @@ describe("convertSession", () => {
     ]);
   });
 
+  test("a call still waiting for its result in the current turn is left out, not shown failed; an earlier turn's is failed", () => {
+    const d = agentDir();
+    const file = session(d, "s9", [
+      user(WEB("01J00000000000000000000001", "old")),
+      assistant([call("c0", "bash", { command: "lost" })], "toolUse"),
+      user(WEB("01J00000000000000000000002", "file it")),
+      assistant([call("c1", "read", { path: "x" })], "toolUse"),
+      result("c1"),
+      assistant([call("c2", "file_linear_issue", { title: "T" })], "toolUse"),
+    ]);
+    const { items } = convertSession(readFileSync(file, "utf8"), "s9");
+    const tools = items.flatMap((i) => (i.type === "assistant" ? [i.tools] : []));
+    expect(tools).toEqual([[{ name: "bash", summary: "lost", ok: false }], [{ name: "read", summary: "x", ok: true }]]);
+
+    const only = session(d, "s10", [user(WEB("01J00000000000000000000003", "approve me")), assistant([call("c3", "file_linear_issue", { title: "T" })], "toolUse")]);
+    expect(convertSession(readFileSync(only, "utf8"), "s10").items.map((i) => i.type)).toEqual(["user"]);
+  });
+
   test("flush turns, wakes' prompts, context, recap and bookkeeping entries stay out; the wake's reply stays in", () => {
     const d = agentDir();
     const file = session(d, "s1", [

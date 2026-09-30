@@ -30,6 +30,21 @@ export function decodeBase64url(value: string): Uint8Array | undefined {
 
 const isUncompressedP256 = (b: Uint8Array | undefined) => b?.length === 65 && b[0] === 0x04;
 
+/** Whether push encryption can use these keys: the shape checks, plus the point really being on P-256. */
+export async function subscriptionKeysUsable(keys: { p256dh: string; auth: string }): Promise<boolean> {
+  const pub = decodeBase64url(keys.p256dh);
+  if (!isUncompressedP256(pub) || decodeBase64url(keys.auth)?.length !== 16) return false;
+  try {
+    await crypto.subtle.importKey("raw", new Uint8Array(pub!), { name: "ECDH", namedCurve: "P-256" }, false, []);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The stored row's own keys can't be used, so no retry will ever deliver to it. */
+export class UnusableSubscriptionError extends Error {}
+
 const keyString = z.string().min(1).max(256);
 
 export const subscriptionSchema = z.object({
@@ -158,6 +173,7 @@ export type PushTransport = (sub: StoredSubscription, data: string) => Promise<n
 
 export function createWebPushTransport(vapid: WebPushConfig, timeoutMs = 10_000): PushTransport {
   return async (sub, data) => {
+    if (!(await subscriptionKeysUsable(sub))) throw new UnusableSubscriptionError("the subscription's keys can't be used for push encryption");
     const target: WebPushSubscription = { endpoint: sub.endpoint, expirationTime: null, keys: { p256dh: sub.p256dh, auth: sub.auth } };
     const req = await buildPushPayload({ data, options: { ttl: 24 * 60 * 60, urgency: "normal" } }, target, vapid);
     // A redirect from a push service is never legitimate, and following one would re-send the POST elsewhere.
@@ -209,7 +225,11 @@ export function createPushSender(store: PushSubscriptionStore, transport: PushTr
       results.forEach((r, i) => {
         const sub = subs[i]!;
         const host = URL.canParse(sub.endpoint) ? new URL(sub.endpoint).host : "invalid";
-        if (r.status === "rejected") {
+        if (r.status === "rejected" && r.reason instanceof UnusableSubscriptionError) {
+          out.pruned++;
+          store.remove(sub.endpoint);
+          logger.info({ host }, "pruned push subscription with unusable keys");
+        } else if (r.status === "rejected") {
           out.failed++;
           logger.warn({ err: r.reason, host }, "push delivery failed");
         } else if (r.value >= 200 && r.value < 300) {

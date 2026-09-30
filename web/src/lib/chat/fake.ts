@@ -187,6 +187,7 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			});
 			if (text === 'offline') {
 				workspace = 'offline';
+				emit('workspace', { state: 'offline' }, false);
 				emit('notice', { type: 'workspaceOffline' });
 				setTimeout(() => {
 					workspace = 'online';
@@ -201,6 +202,10 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			emit('status', { clientId, state: turn ? 'steer' : 'accepted' });
 			if (!turn) void runTurn(text);
 			return { seq, routed: true };
+		},
+		async discardMessage() {
+			await sleep(150);
+			return 'discarded';
 		},
 		async stop() {
 			await sleep(200);

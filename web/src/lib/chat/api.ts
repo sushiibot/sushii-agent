@@ -38,6 +38,8 @@ export type HistoryResult =
 export interface ChatApi {
 	history(q: { before?: string; limit: number }): Promise<HistoryResult>;
 	postMessage(body: PostMessageBody): Promise<PostMessageResponse>;
+	/** Asks the bot to never deliver a posted message. `unknown`: it never stored it. */
+	discardMessage(clientId: string): Promise<'discarded' | 'routed' | 'unknown'>;
 	stop(turnId?: string): Promise<void>;
 	command(command: 'new' | 'compact'): Promise<void>;
 	answerAsk(askId: string, body: PostAskBody): Promise<PostAskResponse>;
@@ -117,6 +119,16 @@ export const httpChatApi: ChatApi = {
 	},
 	async postMessage(body) {
 		return json(await send('POST', '/chat/messages', body));
+	},
+	async discardMessage(clientId) {
+		try {
+			await send('DELETE', `/chat/messages/${encodeURIComponent(clientId)}`);
+			return 'discarded';
+		} catch (err) {
+			if (err instanceof ChatHttpError && err.status === 409) return 'routed';
+			if (err instanceof ChatHttpError && err.status === 404) return 'unknown';
+			throw err;
+		}
 	},
 	async stop(turnId) {
 		await send('POST', '/chat/stop', turnId ? { turnId } : {});

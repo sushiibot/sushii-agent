@@ -102,6 +102,6 @@ describe("sse", () => {
     const hello = await drain(open(null));
     const reset = await drain(open(99));
     expect(hello).toContain(`"pending":${JSON.stringify(pending)}`);
-    expect(reset).toStartWith(`event: reset\ndata: {"headSeq":1,"pending":${JSON.stringify(pending)}}`);
+    expect(reset).toStartWith(`event: reset\ndata: {"headSeq":1,"workspace":"online","pending":${JSON.stringify(pending)}}`);
   });
 });

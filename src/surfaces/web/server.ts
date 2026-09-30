@@ -15,6 +15,7 @@ import {
   createPushSender,
   createWebPushTransport,
   setActivePushSender,
+  subscriptionKeysUsable,
   subscriptionSchema,
   type PushSender,
 } from "./push.ts";
@@ -139,7 +140,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
         if (body instanceof Response) return body;
         if (method === "POST") {
           const sub = subscriptionSchema.safeParse(body);
-          if (!sub.success) return json({ error: "invalid subscription" }, 400);
+          if (!sub.success || !(await subscriptionKeysUsable(sub.data.keys))) return json({ error: "invalid subscription" }, 400);
           pushStore.upsert(sub.data);
           return json({ ok: true });
         }

@@ -8,6 +8,7 @@ import { getLogger } from "./logger.ts";
 import { z } from "zod";
 import { dirname, join } from "node:path";
 import { isLoopback, parseIp } from "./surfaces/web/peers.ts";
+import { normalizeLogin, WEB_SURFACE } from "./surfaces/web/actor.ts";
 
 const logger = getLogger("config");
 
@@ -187,12 +188,18 @@ export function parseWebConfig(env: Record<string, string | undefined>): WebConf
 
 export type OwnerDmMode = "workspace" | "redirect";
 
-/** A typo must not quietly reopen owner DMs to the agent, so an unknown value is a startup error. Unset
- *  follows the preferred surface, so moving personal chat to web alone closes the Discord DM path. */
-export function parseOwnerDmMode(raw: string | undefined, preferredSurface: string): OwnerDmMode {
+/** A typo must not quietly reopen owner DMs to the agent, nor take the bot down, so an unknown value is
+ *  logged and read as `redirect`. Unset follows the preferred surface, so moving personal chat to web alone
+ *  closes the Discord DM path. */
+export function parseOwnerDmMode(
+  raw: string | undefined,
+  preferredSurface: string,
+  error: (ctx: Record<string, unknown>, msg: string) => void = (ctx, msg) => logger.error(ctx, msg),
+): OwnerDmMode {
   const value = raw?.trim().toLowerCase() || (preferredSurface.trim().toLowerCase() === "web" ? "redirect" : "workspace");
   if (value === "workspace" || value === "redirect") return value;
-  throw new Error(`Invalid OWNER_DM_MODE: ${raw} (expected "workspace" or "redirect")`);
+  error({ ownerDmMode: raw }, 'invalid OWNER_DM_MODE (expected "workspace" or "redirect"); owner DMs are redirected');
+  return "redirect";
 }
 
 function preferredSurface(): string {
@@ -241,12 +248,24 @@ export function resolveOwnerPrincipals(
         "principals.json owner's discord identity differs from OWNER_DISCORD_ID; the file wins",
       );
     }
-    return raw;
+    return lowercaseWebLogins(raw);
   }
   if (Object.keys(raw).length === 0 && ownerDiscordId) {
     return { owner: { owner: true, identities: { discord: ownerDiscordId } } };
   }
-  return raw;
+  return lowercaseWebLogins(raw);
+}
+
+/** Web actors carry lowercased logins, so a mixed-case `web` identity would never match one. */
+function lowercaseWebLogins(raw: Record<string, PrincipalConfig>): Record<string, PrincipalConfig> {
+  let out: Record<string, PrincipalConfig> | undefined;
+  for (const [id, p] of Object.entries(raw)) {
+    const web = p?.identities?.[WEB_SURFACE];
+    if (typeof web !== "string" || web === normalizeLogin(web)) continue;
+    out ??= { ...raw };
+    out[id] = { ...p, identities: { ...p.identities, [WEB_SURFACE]: normalizeLogin(web) } };
+  }
+  return out ?? raw;
 }
 
 /** Load + validate the manual principal registry. A missing DEFAULT file means "empty" (subject to

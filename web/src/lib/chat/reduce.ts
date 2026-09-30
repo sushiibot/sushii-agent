@@ -113,7 +113,11 @@ export interface ChatState {
 
 export type Effect =
 	| { type: 'delivered'; clientId: string }
+	/** The workspace refused the message; it waits for the owner's retry. */
+	| { type: 'failed'; clientId: string }
 	| { type: 'workspace'; state: WorkspaceState }
+	/** A first frame says the workspace is online: re-send every entry the bot hasn't routed yet. */
+	| { type: 'resend' }
 	| { type: 'toast'; text: string }
 	| { type: 'announce'; text: string }
 	| { type: 'reload' }
@@ -201,6 +205,8 @@ export function noticeText(n: RouterNotice): { line?: string; toast?: string } {
 		case 'workspaceOffline':
 		case 'newSessionStarted':
 			return {};
+		case 'messageRejected':
+			return { line: `Your message didn't reach the agent: ${n.error}` };
 		case 'newSessionFailed':
 			return { line: `Couldn't start a new chat: ${n.error}` };
 		case 'newWhileOffline':
@@ -346,10 +352,9 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 	switch (ev.type) {
 		case 'hello': {
 			if (s.cursor === null) s.cursor = ev.data.headSeq;
-			if (s.workspace !== ev.data.workspace) {
-				s.workspace = ev.data.workspace;
-				fx.push({ type: 'workspace', state: ev.data.workspace });
-			}
+			setWorkspace(s, ev.data.workspace, fx);
+			// Even with no change: the bot may have restarted and lost a message it answered 202 for.
+			if (ev.data.workspace === 'online') fx.push({ type: 'resend' });
 			for (const view of ev.data.openTurns) {
 				fx.push(...applyEvent(s, { type: 'snapshot', data: { turnId: view.turnId, view } }, now));
 			}
@@ -359,6 +364,8 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		case 'reset': {
 			fx.push(...restartHistory(s));
 			s.cursor = ev.data.headSeq;
+			// The history reload that follows re-sends unsettled entries when this says online.
+			setWorkspace(s, ev.data.workspace, fx);
 			applyPending(s, ev.data.pending);
 			break;
 		}
@@ -486,7 +493,11 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		case 'ask_resolved': {
 			const mine = s.mine.has(`a:${ev.data.askId}`);
 			for (const i of s.items) {
-				if (i.kind === 'ask' && i.askId === ev.data.askId) {
+				if (i.kind !== 'ask' || i.askId !== ev.data.askId) continue;
+				if (ev.data.answer === null) {
+					i.state = 'history';
+					i.answer = undefined;
+				} else {
 					i.state = mine ? 'answered' : 'elsewhere';
 					i.answer = ev.data.answer;
 				}
@@ -525,21 +536,21 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			break;
 		case 'notice': {
 			const clientId = ev.data.clientId || undefined;
-			if (clientId && ev.data.type !== 'workspaceOffline') {
+			if (clientId && ev.data.type === 'messageRejected') {
+				setDelivery(s, clientId, 'failed');
+				fx.push({ type: 'failed', clientId });
+			} else if (clientId && ev.data.type !== 'workspaceOffline') {
 				// The router handled the message, so the notice settles it.
 				setDelivery(s, clientId, 'sent');
 				fx.push({ type: 'delivered', clientId });
 			}
+			// The workspace state comes only from first frames and `workspace` events, never from a notice.
 			if (ev.data.type === 'workspaceOffline') {
 				for (const i of s.items) {
 					if (i.kind !== 'user' || !i.delivery || i.delivery === 'failed') continue;
 					if (i.delivery === 'sending' || i.clientId === clientId) i.delivery = 'queued-agent';
 				}
 				dropPlaceholder(s);
-				if (s.workspace !== 'offline') {
-					s.workspace = 'offline';
-					fx.push({ type: 'workspace', state: 'offline' });
-				}
 			}
 			if (ev.data.type === 'nothingToStop' || ev.data.type === 'stopFailed') s.stopping = false;
 			const { line, toast } = noticeText(ev.data);
@@ -556,15 +567,17 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			});
 			break;
 		}
-		case 'workspace': {
-			if (s.workspace !== ev.data.state) {
-				s.workspace = ev.data.state;
-				fx.push({ type: 'workspace', state: ev.data.state });
-			}
+		case 'workspace':
+			setWorkspace(s, ev.data.state, fx);
 			break;
-		}
 	}
 	return fx;
+}
+
+function setWorkspace(s: ChatState, state: WorkspaceState, fx: Effect[]) {
+	if (s.workspace === state) return;
+	s.workspace = state;
+	fx.push({ type: 'workspace', state });
 }
 
 function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
@@ -620,9 +633,9 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 				askId: h.askId,
 				question: h.question,
 				choices: h.choices,
-				// Only a bot-verified ask with no answer yet is still answerable.
+				// Only a bot-verified ask with no answer yet is still answerable; a null answer is a dead ask.
 				state: h.verified && h.answer === undefined ? 'pending' : 'history',
-				answer: h.answer
+				answer: h.answer ?? undefined
 			};
 		case 'divider':
 			return { kind: 'divider', id: `h:${h.id}`, divider: h.kind, summary: h.summary };
@@ -651,11 +664,32 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 }
 
 /**
+ * The transcript's copy of a turn still running: its unverified, undelivered assistant items at the end
+ * of the newest page. The live card already shows that turn, so these would repeat its steps.
+ */
+function liveTurnTail(items: WebHistoryItem[]): Set<WebHistoryItem> {
+	const tail = new Set<WebHistoryItem>();
+	for (let i = items.length - 1; i >= 0; i--) {
+		const h = items[i];
+		if (h.type === 'approval') continue;
+		if (h.type !== 'assistant' || h.verified || h.outboxId) break;
+		tail.add(h);
+	}
+	return tail;
+}
+
+/**
  * Merges one oldest-first history page ahead of the items held. A held send the page contains already
  * reached the workspace, so it moves into the page and settles; so does an ask seeded from the first frame.
+ * `newest` marks the page at the head of the conversation.
  */
-export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
+export function mergeHistory(
+	s: ChatState,
+	items: WebHistoryItem[],
+	opts: { newest?: boolean } = {}
+): Effect[] {
 	const fx: Effect[] = [];
+	const running = opts.newest && openTurns(s).length ? liveTurnTail(items) : null;
 	const local = new Map<string, Extract<ChatItem, { kind: 'user' }>>();
 	const seededAsks = new Map<string, ChatItem>();
 	for (const i of s.items) {
@@ -665,6 +699,7 @@ export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const moved = new Set<ChatItem>();
 	const mapped: ChatItem[] = [];
 	for (const h of items) {
+		if (running?.has(h)) continue;
 		const seeded = h.type === 'ask' ? seededAsks.get(h.askId) : undefined;
 		if (seeded && !moved.has(seeded)) {
 			moved.add(seeded);

@@ -261,7 +261,7 @@
 		const id = held.id;
 		closeSheet();
 		if (action === 'retry') store.retry(id);
-		else store.discard(id);
+		else void store.discard(id);
 	}
 
 	// Select mode waits for the sheet to close, since focus returning to the opener comes first.
@@ -582,7 +582,7 @@
 					openSheet('viewer');
 				}}
 				onretrysend={(id) => store.retry(id)}
-				ondeletesend={(id) => store.discard(id)}
+				ondeletesend={(id) => void store.discard(id)}
 				onanswer={(askId, answer) => store.answer(askId, answer)}
 				onretryhistory={() => store.retryHistory()}
 				onmessagemenu={openMessageMenu}

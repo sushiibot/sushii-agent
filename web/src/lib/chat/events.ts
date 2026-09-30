@@ -107,7 +107,9 @@ export type RouterNotice =
 	| { type: 'loginUsage' }
 	| { type: 'commandResult'; text: string }
 	| { type: 'commandOffline' }
-	| { type: 'commandFailed'; error: string };
+	| { type: 'commandFailed'; error: string }
+	/** The workspace is connected but refused the message; it stays unsent until a retry. */
+	| { type: 'messageRejected'; error: string };
 
 /** Unresolved items from the bot's own log, carried on the first frame so showing them never depends
  *  on the workspace's history. */
@@ -136,13 +138,14 @@ export interface ChatEventMap {
 		pending: PendingState;
 	};
 	/** `after` is outside the retained range: drop the local tail and reload history. */
-	reset: { headSeq: number; pending: PendingState };
+	reset: { headSeq: number; workspace: WorkspaceState; pending: PendingState };
 	user: { key: string; text: string; uploadIds: string[]; at: string };
 	status: { clientId: string; state: 'accepted' | 'steer' | 'queued' | 'stopped' | 'newSession' };
 	reply: { key: string; turnId?: string; text: string; usage?: ChatUsage; files: UploadRef[] };
 	proactive: { key: string; turnId?: string; text: string; usage?: ChatUsage; files: UploadRef[] };
 	ask: { key: string; askId: string; question: string; choices: string[] };
-	ask_resolved: { askId: string; answer: string };
+	/** A null `answer`: the ask is no longer waiting (it timed out, or the workspace restarted). */
+	ask_resolved: { askId: string; answer: string | null };
 	/** Render `url` as a link only when isHttpsUrl(url); otherwise as inert text. */
 	auth: { key: string; url: string; instructions: string };
 	approval: { nonce: string; view: ApprovalView };
@@ -152,8 +155,8 @@ export interface ChatEventMap {
 		outcome: TurnOutcome;
 		summary: { durationMs: number; toolCount: number } | null;
 	};
-	/** `clientId` is the owner message this notice answers. It is never set on `workspaceOffline`,
-	 *  which asks the client to resend. */
+	/** `clientId` is the owner message this notice answers, and settles it, except `messageRejected`,
+	 *  which fails it until a retry. It is never set on `workspaceOffline`, which asks the client to resend. */
 	notice: RouterNotice & { clientId?: string };
 	session: { kind: 'new' | 'compacted' };
 	snapshot: { turnId: string; view: ProgressView };
@@ -235,7 +238,8 @@ export type WebHistoryItem =
 			askId: string;
 			question: string;
 			choices: string[];
-			answer?: string;
+			/** Null: no longer waiting, and never answered. */
+			answer?: string | null;
 			verified: boolean;
 	  }
 	| {
@@ -287,6 +291,18 @@ export interface PostMessageResponse {
 export interface PostMessageUploadMissingResponse {
 	error: 'upload_missing';
 	ids: string[];
+}
+
+/**
+ * `DELETE /api/chat/messages/:clientId`, before the client drops a posted message. 200: the bot will never
+ * deliver it. 409 with `DiscardMessageRoutedResponse`: it already reached the agent. 404: the bot never
+ * stored it. A later POST of a discarded clientId answers 410 with `DiscardMessageResponse`.
+ */
+export interface DiscardMessageResponse {
+	discarded: true;
+}
+export interface DiscardMessageRoutedResponse {
+	routed: true;
 }
 
 export interface PostStopBody {

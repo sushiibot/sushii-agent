@@ -7,6 +7,8 @@ export interface OutboxEntry {
 	at: string;
 	/** The bot answered 202 at least once, so it holds the message durably. */
 	posted: boolean;
+	/** A POST went out at least once. Its 202 may have been lost, so the bot may hold the message. */
+	attempted?: boolean;
 }
 
 /** A composer photo kept with the draft, so an attached photo survives the app being killed. */

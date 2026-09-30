@@ -290,9 +290,9 @@ export class WorkspaceLink {
   }
 
   /** One page of the Main transcript. An old workspace without the method rejects with MethodNotFound. */
-  async chatHistory(q: Omit<ChatHistoryParams, "principalId">): Promise<ChatHistoryResult> {
+  async chatHistory(q: Omit<ChatHistoryParams, "principalId">, timeoutMs = CHAT_HISTORY_TIMEOUT_MS): Promise<ChatHistoryResult> {
     const params: ChatHistoryParams = { principalId: this.opts.principalId, ...q };
-    return chatHistoryResult.parse(await this.request(RPC_METHODS.chatHistory, params, CHAT_HISTORY_TIMEOUT_MS));
+    return chatHistoryResult.parse(await this.request(RPC_METHODS.chatHistory, params, timeoutMs));
   }
 
   isConnected(): boolean {

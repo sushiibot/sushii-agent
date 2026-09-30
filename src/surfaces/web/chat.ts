@@ -50,6 +50,9 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}),
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
+  // Approvals still undecided here belonged to the previous process, which took their pending state with it.
+  const orphaned = chatLog.cancelUnresolvedApprovals();
+  if (orphaned) log.info({ count: orphaned }, "cancelled approvals left undecided by the previous process");
   const routes = createChatRoutes({
     log: chatLog,
     inbound,
@@ -80,9 +83,10 @@ export function createWebChat(deps: WebChatDeps): WebChat {
       prune();
       const timer = setInterval(prune, PRUNE_EVERY_MS);
       timer.unref?.();
-      const off = deps.link.onConnectionChange((connected) =>
-        chatLog.publish({ type: "workspace", data: { state: connected && deps.workspaceEnabled ? "online" : "offline" } }),
-      );
+      const off = deps.link.onConnectionChange((connected) => {
+        chatLog.publish({ type: "workspace", data: { state: connected && deps.workspaceEnabled ? "online" : "offline" } });
+        if (connected) routes.workspaceConnected();
+      });
       return () => {
         clearInterval(timer);
         off();

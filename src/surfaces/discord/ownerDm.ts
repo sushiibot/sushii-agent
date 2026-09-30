@@ -72,14 +72,17 @@ const BREAK_GLASS_NONCE_TTL_MS = 2 * APPROVAL_TIMEOUT_MS;
 
 /** Wakes the owner when an approval can't reach them in the app: non-silent, buttonless and fixed-text, so
  *  Discord never decides it and nothing the workspace controls reaches it. False when not sent. */
-export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort | null>): Promise<boolean> {
+export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort | null>, logger: Pick<typeof log, "warn"> = log): Promise<boolean> {
   try {
     const channel = await ownerChannel();
-    if (!channel) return false;
+    if (!channel) {
+      logger.warn("break-glass owner DM not sent: the owner's Discord DM channel could not be resolved");
+      return false;
+    }
     await channel.send({ content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } });
     return true;
   } catch (err) {
-    log.warn({ err }, "failed to send the break-glass owner DM");
+    logger.warn({ err }, "failed to send the break-glass owner DM");
     return false;
   }
 }

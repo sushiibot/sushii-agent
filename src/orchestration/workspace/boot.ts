@@ -41,6 +41,8 @@ export interface WorkspaceConfig {
   /** Default: built from GITHUB_APP_* and GITHUB_BOT_* in the environment. */
   github?: Pick<GitHubTokenBroker, "handle">;
   secretGrants?: Record<string, SecretGrant>;
+  /** Wakes the owner on Discord when an approval is held because the preferred surface is missing. */
+  breakGlass?: (nonce: string) => Promise<boolean>;
   /** Serves the workspace's `upload/read`. */
   uploadRead?: (conn: ConnectionInfo, params: unknown) => Promise<UploadReadResult>;
   registry?: ToolRegistry;
@@ -85,6 +87,7 @@ export function bootWorkspace(cfg: WorkspaceConfig, adapters: SurfaceAdapter<any
     toolSpace: WORKSPACE_TOOL_SPACE,
     surfaces: registry,
     isOwner,
+    ...(cfg.breakGlass ? { onHeld: heldBreakGlass(cfg.breakGlass) } : {}),
     store: cfg.store,
     memory: cfg.memory,
     ...(cfg.registry ? { registry: cfg.registry } : {}),
@@ -138,6 +141,10 @@ export function checkOwnerDmMode(preferred: string, mode: OwnerDmMode, logger: P
     "OWNER_DM_MODE=workspace with web preferred: owner Discord DMs still reach the personal agent, and run in-process when the workspace is offline",
   );
   return false;
+}
+
+function heldBreakGlass(breakGlass: (nonce: string) => Promise<boolean>): (nonce: string) => void {
+  return (nonce) => void breakGlass(nonce).catch((err) => log.warn({ err }, "break-glass DM for a held approval failed"));
 }
 
 function checkWebOwnerMapping(cfg: WorkspaceConfig): void {

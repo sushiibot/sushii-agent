@@ -40,7 +40,7 @@ const HISTORY_PAGE = 40;
 const TOAST_MS = 4000;
 const TIMEOUT_COLLAPSE_MS = 4000;
 const SEEN_DEBOUNCE_MS = 1000;
-/** A 202 with no status this long after means a duplicate the router had already handled. */
+/** A 202'd message with no receipt this long after is posted again; the bot routes it or says it already did. */
 const UNACKED_MS = 60_000;
 const RETRY_MS = 30_000;
 /** The server GCs unreferenced uploads after 24h; re-upload well before that. */
@@ -276,11 +276,21 @@ export class ChatStore {
 				void this.#outbox.delete(e.clientId).catch(() => {});
 				break;
 			}
+			case 'failed': {
+				this.#failed.add(e.clientId);
+				this.#retrying.delete(e.clientId);
+				clearTimeout(this.#unacked.get(e.clientId));
+				this.#unacked.delete(e.clientId);
+				break;
+			}
 			case 'workspace':
 				if (e.state === 'online') {
 					this.#flushOutbox(true);
 					if (this.history === 'error') this.retryHistory();
 				}
+				break;
+			case 'resend':
+				this.#flushOutbox(true);
 				break;
 			case 'toast':
 				this.showToast(e.text);
@@ -332,7 +342,7 @@ export class ChatStore {
 		if (this.#queue.length) this.#flush();
 		const fx: Effect[] = [];
 		if (r.ok) {
-			fx.push(...mergeHistory(this.#s, r.page.items));
+			fx.push(...mergeHistory(this.#s, r.page.items, { newest: true }));
 			this.#before = r.page.before;
 			this.hasOlder = r.page.before !== null;
 			this.history = 'ready';
@@ -506,6 +516,10 @@ export class ChatStore {
 		this.#commit();
 		try {
 			await this.#refreshUploads(entry);
+			if (!entry.attempted) {
+				entry.attempted = true;
+				await this.#outbox.put(entry).catch(() => {});
+			}
 			const res = await this.#api.postMessage({
 				clientId: id,
 				text: entry.text,
@@ -525,10 +539,11 @@ export class ChatStore {
 			this.#unacked.set(
 				id,
 				setTimeout(() => {
-					if (!this.#pending.has(id) || this.workspace !== 'online') return;
-					this.#effect({ type: 'delivered', clientId: id });
-					setDelivery(this.#s, id, 'sent');
-					this.#commit();
+					this.#unacked.delete(id);
+					// Only a receipt settles an entry. While offline, the workspace's return re-sends it instead.
+					const current = this.#pending.get(id);
+					if (!current || this.#failed.has(id) || this.workspace !== 'online') return;
+					void this.#deliver(current);
 				}, UNACKED_MS)
 			);
 		} catch (err) {
@@ -626,13 +641,33 @@ export class ChatStore {
 		if (entry) void this.#deliver(entry);
 	}
 
-	/** Deletes an unsent message. */
-	discard(messageId: string) {
+	/** Deletes an unsent message. One the bot may hold is withdrawn there first, so it is never delivered. */
+	async discard(messageId: string) {
 		const clientId = this.#clientIdOf(messageId);
-		if (!clientId || !this.#pending.has(clientId)) return;
+		const entry = clientId && this.#pending.get(clientId);
+		if (!clientId || !entry) return;
+		if (entry.posted || entry.attempted) {
+			let outcome: 'discarded' | 'routed' | 'unknown';
+			try {
+				outcome = await this.#api.discardMessage(clientId);
+			} catch {
+				this.showToast("Couldn't delete the message. Try again.");
+				return;
+			}
+			if (!this.#pending.has(clientId)) return;
+			if (outcome === 'routed') {
+				setDelivery(this.#s, clientId, 'sent');
+				this.#effect({ type: 'delivered', clientId });
+				this.#commit();
+				this.showToast('Already delivered');
+				return;
+			}
+		}
 		this.#pending.delete(clientId);
 		this.#failed.delete(clientId);
 		this.#retrying.delete(clientId);
+		clearTimeout(this.#unacked.get(clientId));
+		this.#unacked.delete(clientId);
 		void this.#outbox.delete(clientId).catch(() => {});
 		removeLocal(this.#s, clientId);
 		this.#commit();
