@@ -188,12 +188,13 @@ test('a rejected send stays with Retry and Delete, and Retry reuses the client i
 	expect(a).toBe(b);
 
 	opts.messageStatus = 400;
+	opts.discardStatus = 404;
 	await type(page, 'Delete me');
 	await expect(bubble(page, 'Delete me')).toContainText('Failed');
 	await bubble(page, 'Delete me').getByRole('button', { name: 'Delete' }).click();
 	await expect(bubble(page, 'Delete me')).toHaveCount(0);
-	// Never posted, so nothing to withdraw from the bot.
-	expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+	// Its POST went out, so the bot is asked first; it never stored the message, so it goes locally.
+	expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
 });
 
 test('offline sends queue, survive a reload, and go out with the same id', async ({
@@ -1354,4 +1355,30 @@ test('a delete that fails keeps the message and says so', async ({ page, context
 	await expect(page.getByText("Couldn't delete the message. Try again.")).toBeVisible();
 	await expect(bubble(page, 'Keep me for now')).toBeVisible();
 	expect(await outboxSize(page)).toBe(1);
+});
+
+test('a message whose 202 was lost is withdrawn from the bot on Delete and never sent again', async ({
+	page,
+	context
+}) => {
+	const { posts, calls, opts } = await chatServer(context, { messageStatus: 'abort' });
+	await open(page);
+	await type(page, 'Lost answer');
+	// The POST reached the server; only its answer was dropped.
+	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
+	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
+	await expect(bubble(page, 'Lost answer')).toContainText('Queued');
+	await deleteFromSheet(page, 'Lost answer');
+	await expect(bubble(page, 'Lost answer')).toHaveCount(0);
+	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
+		`/api/chat/messages/${clientId}`
+	]);
+	await expect.poll(() => outboxSize(page)).toBe(0);
+
+	opts.messageStatus = 202;
+	await endStreams(page);
+	await expect.poll(() => streamRequests(page)).toHaveLength(2);
+	await page.evaluate(() => dispatchEvent(new Event('online')));
+	await page.waitForTimeout(500);
+	expect(posts('/api/chat/messages')).toHaveLength(1);
 });

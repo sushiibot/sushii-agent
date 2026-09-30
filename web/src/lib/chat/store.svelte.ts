@@ -516,6 +516,10 @@ export class ChatStore {
 		this.#commit();
 		try {
 			await this.#refreshUploads(entry);
+			if (!entry.attempted) {
+				entry.attempted = true;
+				await this.#outbox.put(entry).catch(() => {});
+			}
 			const res = await this.#api.postMessage({
 				clientId: id,
 				text: entry.text,
@@ -637,12 +641,12 @@ export class ChatStore {
 		if (entry) void this.#deliver(entry);
 	}
 
-	/** Deletes an unsent message. One the bot already holds is withdrawn there first, so it is never delivered. */
+	/** Deletes an unsent message. One the bot may hold is withdrawn there first, so it is never delivered. */
 	async discard(messageId: string) {
 		const clientId = this.#clientIdOf(messageId);
 		const entry = clientId && this.#pending.get(clientId);
 		if (!clientId || !entry) return;
-		if (entry.posted) {
+		if (entry.posted || entry.attempted) {
 			let outcome: 'discarded' | 'routed' | 'unknown';
 			try {
 				outcome = await this.#api.discardMessage(clientId);
