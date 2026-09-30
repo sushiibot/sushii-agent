@@ -73,7 +73,7 @@ async function decode(file: Blob): Promise<ImageBitmap> {
 				if (small.width === target.width && small.height === target.height) return small;
 				small.close();
 			} catch {
-				// Falls through to a full decode.
+				// Resize options unsupported for this input.
 			}
 		}
 	}
@@ -87,9 +87,8 @@ function hasAlpha(ctx: Ctx, width: number, height: number): boolean {
 }
 
 /**
- * Decodes, applies EXIF orientation, downsizes and re-encodes. The canvas encoder writes pixels only,
- * so EXIF and GPS metadata from the camera never leave the phone. Transparent images stay transparent
- * as WebP (or PNG where WebP can't be written); everything else becomes JPEG.
+ * Re-encodes through a canvas, which writes pixels only, so camera EXIF and GPS never leave the phone.
+ * Transparent images become WebP or PNG so their alpha survives.
  */
 export async function preparePhoto(file: Blob): Promise<Blob> {
 	let bitmap: ImageBitmap;
@@ -107,7 +106,7 @@ export async function preparePhoto(file: Blob): Promise<Blob> {
 				const blob = await encode(c, type, JPEG_QUALITY);
 				if (blob?.type === type && blob.size <= UPLOAD_MAX_BYTES) return blob;
 			}
-			// Too big to keep lossless: flatten onto white rather than black.
+			// Over the size cap with alpha, so flatten onto white, since JPEG would turn it black.
 			ctx.globalCompositeOperation = 'destination-over';
 			ctx.fillStyle = '#fff';
 			ctx.fillRect(0, 0, width, height);

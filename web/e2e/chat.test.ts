@@ -20,6 +20,7 @@ type Opts = {
 	messageStatus: number | 'abort';
 	messageBody: Record<string, unknown>;
 	approvalStatus: number;
+	askStatus: number;
 	uploadStatus: number;
 	/** Older pages by the `before` cursor they answer. */
 	older: Record<string, OlderPage>;
@@ -46,6 +47,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 		messageStatus: 202,
 		messageBody: { seq: 1 },
 		approvalStatus: 200,
+		askStatus: 200,
 		uploadStatus: 200,
 		older: {},
 		...initial
@@ -82,7 +84,10 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 			return json(opts.messageBody, 202);
 		}
 		if (path === '/api/chat/stop' || path === '/api/chat/command') return json({}, 202);
-		if (path.startsWith('/api/chat/asks/')) return json({ status: 'answered' });
+		if (path.startsWith('/api/chat/asks/')) {
+			if (opts.askStatus !== 200) return json({ error: 'no' }, opts.askStatus);
+			return json({ status: 'answered' });
+		}
 		if (path.startsWith('/api/chat/approvals/')) {
 			if (opts.approvalStatus !== 200) return json({ error: 'no' }, opts.approvalStatus);
 			return json({ status: 'decided' });
@@ -301,7 +306,7 @@ test('older pages load above with the server cursor, and a stale cursor reloads 
 		],
 		before: 'sess:u5',
 		older: {
-			// The stale cursor: the reload that follows sees a transcript with nothing older.
+			// A stale cursor, after which the reloaded transcript has nothing older.
 			'sess:u1': {
 				status: 409,
 				gate: new Promise<void>((r) => (release = r)),
@@ -955,4 +960,22 @@ test('older pages keep loading while the top of the list stays on screen', async
 	await open(page);
 	await expect(page.getByText('Page three')).toBeVisible();
 	expect(calls.filter((c) => c.path.includes('before=')).length).toBe(3);
+});
+
+test('an ask the bot no longer has goes to history with an accurate message', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { askStatus: 404 });
+	await open(page);
+	await push(
+		page,
+		'ask',
+		{ key: 'o1', askId: 'k1', question: 'Which day?', choices: ['Friday', 'Saturday'] },
+		1
+	);
+	await page.getByRole('button', { name: 'Saturday' }).click();
+	await expect(page.getByText('That question is no longer waiting for an answer.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Saturday' })).toHaveCount(0);
+	await expect(page.getByText('Check your connection')).toHaveCount(0);
 });

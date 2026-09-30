@@ -604,10 +604,8 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 }
 
 /**
- * Merges one history page, which is ordered oldest first. The newest page goes before any item
- * already held (queued sends restored from the outbox); older pages go before everything. A held
- * send that the page already contains reached the workspace: it moves to its place in the page
- * and settles.
+ * Merges one oldest-first history page ahead of the items held. A held send the page contains already
+ * reached the workspace, so it moves into the page and settles.
  */
 export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const fx: Effect[] = [];

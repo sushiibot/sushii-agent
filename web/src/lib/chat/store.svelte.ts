@@ -369,7 +369,7 @@ export class ChatStore {
 		for (const e of fx) this.#effect(e);
 	}
 
-	/** Retries whichever history load failed: the newest page, or the last older one. */
+	/** Retries the newest page if it failed, otherwise the last older page. */
 	retryHistory() {
 		if (this.history === 'error') {
 			this.#buffer ??= [];
@@ -569,10 +569,7 @@ export class ChatStore {
 		}, RETRY_MS);
 	}
 
-	/**
-	 * Sends what the bot doesn't hold yet. A 202'd entry waits in the bot for the workspace, so it goes
-	 * again only when `resendPosted` (the workspace came back) or when its own resend failed.
-	 */
+	/** A 202'd entry already waits in the bot, so it resends only when the workspace returns or its resend failed. */
 	#flushOutbox(resendPosted: boolean) {
 		if (this.#buffer) return;
 		for (const entry of this.#pending.values()) {
