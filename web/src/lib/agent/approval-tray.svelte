@@ -43,8 +43,11 @@
 	// Held from the first render, so Approve is never enabled before the timer starts.
 	// svelte-ignore state_referenced_locally
 	let heldNonce = $state<string | null>(items[0]?.nonce ?? null);
+	// Coming back to the app is "appearing" too: a tap meant for the lock screen must not land here.
+	let holdEpoch = $state(0);
 	$effect(() => {
 		const nonce = top.nonce;
+		void holdEpoch;
 		heldNonce = nonce;
 		const timer = setTimeout(() => {
 			if (heldNonce === nonce) heldNonce = null;
@@ -57,6 +60,12 @@
 	const still = () =>
 		typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 </script>
+
+<svelte:document
+	onvisibilitychange={() => {
+		if (document.visibilityState === 'visible') holdEpoch++;
+	}}
+/>
 
 {#if !collapsed}
 	<section

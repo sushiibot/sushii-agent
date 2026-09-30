@@ -63,7 +63,10 @@ describe('links', () => {
 		'./relative',
 		'#frag',
 		'https://agent.sushii.bot/api/chat/approvals/n',
-		'https://agent.sushii.bot/f/' + ID
+		'https://agent.sushii.bot/f/' + ID,
+		'https://agent.sushii.bot./api/me',
+		'http://agent.sushii.bot/api/me',
+		'https://AGENT.sushii.bot:8443/api/me'
 	])('%s renders as text', (url) => {
 		expect(links(`[click](<${url}>)`)).toEqual([]);
 		expect(textOf(`[click](<${url}>)`)).toContain('click');

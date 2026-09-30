@@ -70,8 +70,18 @@ export function safeHref(raw: string, origin?: string): string | null {
 		return null;
 	}
 	if (!LINK_PROTOCOLS.has(url.protocol)) return null;
-	if (url.protocol !== 'mailto:' && origin && url.origin === origin) return null;
+	if (url.protocol !== 'mailto:' && origin && sameHost(url, origin)) return null;
 	return url.href;
+}
+
+// Any scheme or port on the app's own host, including the trailing-dot FQDN form, counts as the app.
+function sameHost(url: URL, origin: string): boolean {
+	const bare = (host: string) => host.replace(/\.$/, '').toLowerCase();
+	try {
+		return bare(url.hostname) === bare(new URL(origin).hostname);
+	} catch {
+		return false;
+	}
 }
 
 /** `/f/<id>` for a source that names one of the allowed inline uploads exactly; null otherwise. */

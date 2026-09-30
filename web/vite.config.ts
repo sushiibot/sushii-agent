@@ -47,7 +47,8 @@ function contentVersion(): string {
 					.sort()
 					.flatMap((name) => walk(`${path}/${name}`))
 			: [path];
-	for (const file of BUILD_INPUTS.flatMap(walk)) {
+	// Unit tests never reach the bundle, so editing one must not ship an "Update ready".
+	for (const file of BUILD_INPUTS.flatMap(walk).filter((f) => !f.endsWith('.test.ts'))) {
 		hash
 			.update(file)
 			.update('\0')

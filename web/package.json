@@ -13,7 +13,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test:e2e": "playwright test",
-		"lint": "prettier --check . && bun scripts/check-no-raw-html.ts",
+		"lint": "prettier --check . && bun scripts/check-no-raw-html.ts && bun test",
 		"test:unit": "bun test",
 		"format": "prettier --write ."
 	},
