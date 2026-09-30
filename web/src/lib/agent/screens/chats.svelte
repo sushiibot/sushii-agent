@@ -101,7 +101,7 @@
 				type="search"
 				value={query}
 				placeholder="Search chats and threads"
-				class={cn('h-10 pl-9 text-base', q && 'ring-2 ring-ring/40')}
+				class="h-10 pl-9 text-base kb:ring-2 kb:ring-ring/40"
 			/>
 		</form>
 

@@ -62,7 +62,7 @@
 				bind:value={reply}
 				rows={2}
 				placeholder="Reply without opening the chat"
-				class={cn('text-base', reply && where === 'sheet' && 'ring-2 ring-ring/40')}
+				class={cn('text-base', where === 'sheet' && 'kb:ring-2 kb:ring-ring/40')}
 			/>
 			<div class="flex flex-wrap gap-2">
 				<Button size="lg" disabled={!reply.trim()}><SendHorizontal />Send reply</Button>

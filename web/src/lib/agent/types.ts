@@ -161,7 +161,7 @@ export interface EmailDraft {
 	changes?: DiffLine[];
 }
 
-// `project` sessions (repo-scoped coding work) are reserved; nothing renders them yet.
+// `project` (repo-scoped coding sessions) is reserved for later.
 export type SessionKind = 'main' | 'thread' | 'project';
 export type SessionState = 'needs-you' | 'running' | 'idle' | 'archived';
 

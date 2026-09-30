@@ -77,7 +77,7 @@
 		<div
 			class={cn(
 				'flex items-end gap-2 rounded-3xl border bg-card p-1 pl-2 focus-within:ring-2 focus-within:ring-ring/40',
-				typing && 'ring-2 ring-ring/40'
+				'kb:ring-2 kb:ring-ring/40'
 			)}
 		>
 			<Textarea

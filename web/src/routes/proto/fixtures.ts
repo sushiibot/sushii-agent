@@ -680,7 +680,7 @@ export const sessions: Session[] = [
 		title: 'Main',
 		state: 'idle',
 		lastActivity: '2 min ago',
-		preview: 'October trip closed: flight booked, hotel still open.',
+		preview: 'While you were out: rent receipt filed, dependency sweep failed.',
 		unread: 1
 	},
 	{
