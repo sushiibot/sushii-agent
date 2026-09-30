@@ -24,8 +24,8 @@ const TEXT_MAX = 16_000;
 const ERROR_SOURCE_MAX = 4_000;
 const REDACT_MARGIN = 200;
 const REDACT_GROW_LIMIT = 8_000;
-/** Longer than any secret prefix that slips past every pattern, so a cut through a secret never shows. */
-const FRAGMENT_MAX = 64;
+/** The slice end can cut through a secret whose prefix matches no pattern; drop the whole token run it ends in. */
+const TOKEN_TAIL = /[\w.+/=-]+$/;
 
 type Log = { warn: (obj: object, msg: string) => void };
 
@@ -104,9 +104,8 @@ const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, ma
 function redactHead(s: string, max: number): string {
   for (let len = max + REDACT_MARGIN; ; len *= 4) {
     if (s.length <= len) return redact(s);
-    const out = redact(s.slice(0, len));
-    if (out.length >= max + FRAGMENT_MAX) return out;
-    if (len * 4 > REDACT_GROW_LIMIT) return out.slice(0, Math.max(0, out.length - FRAGMENT_MAX));
+    const out = redact(s.slice(0, len)).replace(TOKEN_TAIL, "");
+    if (out.length >= max || len * 4 > REDACT_GROW_LIMIT) return out;
   }
 }
 

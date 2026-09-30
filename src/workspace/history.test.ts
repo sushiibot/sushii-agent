@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
-import { HistoryWriter, recordHistory, summaryTopic } from "./history.ts";
+import { HistoryWriter, recordHistory, renderTranscript, summaryTopic } from "./history.ts";
 import { scaffoldHome } from "./home.ts";
 import { flushPrompt } from "./memoryFlush.ts";
 import { RunLog } from "./runLog.ts";
@@ -374,5 +374,38 @@ describe("hostile or unusual input", () => {
     expect(secondMd).toContain("channel chatter");
     expect(secondMd).toContain("second answer");
     expect(secondMd).not.toContain("first request");
+  });
+});
+
+describe("cutting long text", () => {
+  test("a cut through a secret whose prefix matches no pattern doesn't show the prefix", () => {
+    let seed = 11;
+    const rnd = (n: number) => {
+      const cs = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+      let s = "";
+      do {
+        s = Array.from({ length: n }, () => cs[Math.floor((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648 * cs.length)]).join("");
+      } while (!/\d/.test(s) || !/[a-z]/i.test(s));
+      return s;
+    };
+    const fill = (n: number) => "lorem ipsum dolor sit amet ".repeat(Math.ceil(n / 27) + 1).slice(0, n);
+    const render = (content: string) =>
+      renderTranscript([{ type: "custom_message", timestamp: "2026-09-29T10:00:30.000Z", customType: "x", content } as never], "UTC").lines.join("\n");
+    let longest = 0;
+    for (let k = 0; k <= 8; k++) for (let pad = 0; pad < 500; pad += 30) for (const j of [5, 12, 20]) {
+      const head = Array.from({ length: 8 }, () => rnd(15)).join("-");
+      const token = `${head}.${rnd(6)}.${rnd(30)}`;
+      const prefix = Array.from({ length: k }, () => `ghp_${rnd(36)} `).join("") + fill(pad) + " ";
+      const start = 500 - (head.length + 1 + 6 + 1 + j);
+      if (start < prefix.length) continue;
+      const out = render(prefix + fill(start - prefix.length) + token + " " + fill(20_000));
+      for (let n = longest + 1; n <= head.length; n++) {
+        let seen = false;
+        for (let a = 0; a + n <= head.length && !seen; a++) seen = out.includes(head.slice(a, a + n));
+        if (!seen) break;
+        longest = n;
+      }
+    }
+    expect(longest).toBeLessThan(8);
   });
 });
