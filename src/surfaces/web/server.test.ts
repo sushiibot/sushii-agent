@@ -231,6 +231,8 @@ describe("push api", () => {
       { ...SUB, endpoint: "https://127.0.0.1:8787/x" },
       { ...SUB, keys: { ...SUB.keys, p256dh: "cDI1NmRo" } },
       { ...SUB, keys: { ...SUB.keys, auth: "YXV0aA" } },
+      // The right length and prefix, but not a point on P-256.
+      { ...SUB, keys: { ...SUB.keys, p256dh: Buffer.from([4, ...new Array(64).fill(1)]).toString("base64url") } },
       { endpoint: SUB.endpoint },
       "nope",
     ]) {

@@ -12,6 +12,7 @@ import {
   sendPush,
   setActivePushSender,
   subscriptionSchema,
+  UnusableSubscriptionError,
   type PushTransport,
 } from "./push.ts";
 
@@ -150,6 +151,29 @@ describe("createPushSender", () => {
     expect(s.list().map((r) => r.endpoint).sort()).toEqual(["https://push.example/1", "https://push.example/4", "https://push.example/5", "https://push.example/6"]);
     expect(s.list().find((r) => r.endpoint.endsWith("/1"))?.lastOkAt).not.toBeNull();
     expect(JSON.parse(seen[0]!)).toEqual({ title: "t", body: "b", url: "/" });
+  });
+
+  test("a row whose keys can't be used is pruned instead of failing on every push", async () => {
+    const s = store();
+    s.upsert({ endpoint: "https://fcm.googleapis.com/fcm/send/bad", keys: { p256dh: "p", auth: "a" } });
+    let fetched = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => (fetched++, new Response(null, { status: 201 }))) as unknown as typeof fetch;
+    try {
+      const sender = createPushSender(s, createWebPushTransport(PY_VAPID));
+      expect(await sender.send({ title: "t", body: "b", url: "/" })).toEqual({ sent: 0, pruned: 1, failed: 0 });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(fetched).toBe(0);
+    expect(s.list()).toEqual([]);
+
+    s.upsert(sub(1));
+    const fake = createPushSender(s, async () => {
+      throw new UnusableSubscriptionError("bad keys");
+    });
+    expect(await fake.send({ title: "t", body: "b", url: "/" })).toEqual({ sent: 0, pruned: 1, failed: 0 });
+    expect(s.list()).toEqual([]);
   });
 
   test("an oversized payload is sent with its body cut to fit, never refused", async () => {
