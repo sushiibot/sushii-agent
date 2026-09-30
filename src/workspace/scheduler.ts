@@ -421,7 +421,7 @@ export class Scheduler {
         lastRunAt: started.toISOString(),
         lastTrigger: ctx.trigger,
         lastStatus: outcome?.status ?? "error",
-        ...(outcome?.summary ? { lastSummary: outcome.summary } : {}),
+        ...(error !== undefined ? { lastSummary: alertErrorText(error) } : outcome?.summary ? { lastSummary: outcome.summary } : {}),
       });
       // A run cut short by shutdown is caught up on the next start, so its result says nothing about the job.
       if (this.stopped) return outcome;

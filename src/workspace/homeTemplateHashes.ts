@@ -13,6 +13,7 @@ export const SHIPPED_TEMPLATE_HASHES: Record<string, readonly string[]> = {
     "9b57cfc8fdd0e6e9633343309944e4c22fb62559ab2d62044233bbd34a183ce1",
     "a0d9c5dc1cdddb57e675b9e6ed949a1275d8ce86b48dc9a569219212b7c3c7b6",
     "a3434479f24ad0587489a894aa655be0e0c0eb7f56c80341f4c332c099e23a0c",
+    "a8e17a585e9695b9bb1801efbafd759ecfa87aabc3891a7965e88daab9be3620",
     "b4456357e6b4264403c4be767841669672d3776df11dd5cfb4c2392ea49215ed",
     "c1b17650b71bb83b6ad760a44412470e78c563248ceacea67beaf91d1123d3d8",
     "d072f081416c002dd7ecf69618532bc8dabe30e3b7c7ed43d4abc2a33ba32e30",
@@ -32,6 +33,7 @@ export const SHIPPED_TEMPLATE_HASHES: Record<string, readonly string[]> = {
     "b7000898cf1bed4d187adbd10193a9765a26b7be47b042c67a10e259f059546d",
   ],
   "agents-skills-documents-SKILL.md": [
+    "7eca8d497f561e3191aaedfafdad316334e9116c18056fb4a63eaaec7b6560a7",
     "e791de5521f3e7a6239dd677d34111c2a0b4d73c3fc1372a8b1ea611c786d4b2",
   ],
   "agents-agents-explore.md": [],

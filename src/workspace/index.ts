@@ -105,6 +105,7 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
+    tz: config.tz,
     factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github }),
     memory: {
       compactionTrigger,

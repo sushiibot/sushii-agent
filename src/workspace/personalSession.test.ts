@@ -1913,7 +1913,8 @@ describe("PersonalSession context economy", () => {
     expect(factoryCalls.at(-1)).toBeNull();
     expect(ctx.rotations).toHaveLength(1);
     const seeded = sessions[1].customs[0];
-    expect(String(seeded.content)).toStartWith(`Recap of our previous session (its transcript: ${sessions[0].file}`);
+    expect(String(seeded.content)).toMatch(/^Recap of our previous session \(the day's runs and recaps: ~\/history\/\d{4}-\d{2}-\d{2}\.md\):/);
+    expect(String(seeded.content)).not.toContain(sessions[0].file);
     expect(String(seeded.content)).toContain("- ship u22");
     expect(readWorkspaceState(stateDir)).toMatchObject({ chatSessionFile: sessions[1].file, recap: { sessionFile: sessions[1].file } });
     // Once per idle window, however long it stays idle and even if the new session were big.

@@ -24,6 +24,7 @@ import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborte
 import { Outbox, type OutboxEntry, type StagedFile } from "./outbox.ts";
 import { acceptsImages, loadImageAttachments, prepareSteerImages, type ImageFetchOptions } from "./inboundImages.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
+import { dailyFileRel } from "./history.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readFileSurfaces, readWorkspaceState, writeWorkspaceState } from "./state.ts";
 import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
@@ -188,6 +189,8 @@ export interface PersonalSessionOptions {
   clock?: () => number;
   /** Downloading image attachments for the model; tests inject fetch. */
   images?: ImageFetchOptions;
+  /** Time zone the history files are bucketed in. Default UTC. */
+  tz?: string;
 }
 
 interface OpenRun {
@@ -544,8 +547,9 @@ export class PersonalSession {
         if (old && reason === "new") this.recapInBackground(old, previousSessionFile);
         else old?.dispose();
         this.attach(session, sessionFile);
-        if (old && recap !== null) this.emitSummary({ reason, sessionFile: previousSessionFile, text: recap, at: new Date() });
-        const text = recap === null ? null : recapMessage(recap, previousSessionFile);
+        const recappedAt = new Date();
+        if (old && recap !== null) this.emitSummary({ reason, sessionFile: previousSessionFile, text: recap, at: recappedAt });
+        const text = recap === null ? null : recapMessage(recap, dailyFileRel(recappedAt, this.opts.tz ?? "UTC"));
         if (text !== null) await this.seedRecap(session, text).catch((err) => log.warn({ err }, "seeding the recap failed"));
         writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: text === null ? undefined : { sessionFile, text } });
         if (reason === "new") {
@@ -1413,9 +1417,9 @@ export class PersonalSession {
 
 const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
 
-function recapMessage(recap: string, previousSessionFile: string): string {
+function recapMessage(recap: string, dailyFile: string): string {
   return [
-    `Recap of our previous session (its transcript: ${previousSessionFile}; \`ws-runs\` has the detail):`,
+    `Recap of our previous session (the day's runs and recaps: ~/history/${dailyFile}):`,
     "",
     recap,
   ].join("\n");

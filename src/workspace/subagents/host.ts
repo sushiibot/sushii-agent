@@ -23,6 +23,7 @@ import {
 } from "../chatgptFallback.ts";
 import type { WorkspaceConfig } from "../config.ts";
 import { mapSessionEvent, newRunAccumulator, type RunAccumulator } from "../events.ts";
+import { runFileRel } from "../history.ts";
 import { createMemoryGuardExtension, resolveReal } from "../memoryGuard.ts";
 import { createCompactionHandoffExtension } from "../memoryFlush.ts";
 import { createWorkspaceBashTool } from "../piChatSession.ts";
@@ -127,6 +128,7 @@ type PiSessionManager = import("@earendil-works/pi-coding-agent").SessionManager
 /** Everything one spawn carries into the session factory, keyed by its (per-spawn) snapshot object. */
 interface Spawn {
   runId: string;
+  startedAt: Date;
   parentRunId: string;
   def: AgentDef;
   depth: number;
@@ -272,7 +274,7 @@ export class SubagentHost {
         `Run a subagent with its own fresh context and get back only its summary (at most ${cap} chars) plus a runId. ` +
         "Use it for work that would flood your context: exploring a codebase or many files, web research, log/trace " +
         "digging, a fresh-eyes review, multi-step coding in a repo. The child's transcript stays out of your context; " +
-        "read it later with `ws-runs show <runId>` if you need detail.\n\n" +
+        "its transcript is in ~/history (search by runId); `ws-runs show <runId> --full` has the raw tool output.\n\n" +
         `Agents (from ~/.agents/agents/):\n${agentList}\n\n` +
         "Write a complete brief in `task`: goal, what you already know, what to return. With mode \"fresh\" (default) " +
         "the child sees nothing else; mode \"fork\" starts it from a copy of this conversation. `continue` with a " +
@@ -335,8 +337,9 @@ export class SubagentHost {
     }
     this.activeFiles.add(resolve(sessionFile));
     let runId: string;
+    const startedAt = new Date();
     try {
-      runId = this.opts.runs.startRun({ agentName: def.name, parentRunId, task, sessionFile });
+      runId = this.opts.runs.startRun({ agentName: def.name, parentRunId, task, sessionFile, startedAt });
     } catch (err) {
       release();
       if (worktree) log.warn({ worktree: worktree.path }, "subagent run not recorded; its new worktree is left in place");
@@ -348,6 +351,7 @@ export class SubagentHost {
     const snapshot: ParentSnapshot = { cwd: sessionManager.getCwd(), systemPrompt: "", model: undefined, modelRegistry: { find: () => undefined, getAll: () => [] } };
     const spawn: Spawn = {
       runId,
+      startedAt,
       parentRunId,
       def,
       depth,
@@ -481,7 +485,8 @@ export class SubagentHost {
     const head = `[${spawn.def.name} · runId ${spawn.runId} · ${status}${why}]`;
     const tamper = spawn.tamper ? `\n${tamperNotice(spawn.tamper)}` : "";
     const wt = spawn.worktree ? `\nWorktree: ${spawn.worktree.path} (branch ${spawn.worktree.branch})` : "";
-    return `${head}${tamper}\n${body}${wt}\nFull transcript: ws-runs show ${spawn.runId}`;
+    const transcript = `~/history/${runFileRel(spawn.runId, spawn.startedAt, this.opts.config.tz)}`;
+    return `${head}${tamper}\n${body}${wt}\nTranscript: ${transcript} (raw tool output: ws-runs show ${spawn.runId} --full)`;
   }
 
   /** Persists the result first, then wakes main; the record is dropped only once main's session has it. */

@@ -11,6 +11,9 @@ description: Read PDF, Word (docx), PowerPoint (pptx), Excel (xlsx), OpenDocumen
 | docx, odt, pptx, epub, rtf, html | `pandoc -t gfm-raw_html file.docx` |
 | xlsx | `xlsx2csv -a file.xlsx` (all sheets as CSV) |
 
+An attachment from drk is a URL in the message; `curl -fsSL -o ~/scratch/<name> '<url>'` first.
+`send_file` can send a converted file back.
+
 ## PDF
 
 - `pdfinfo file.pdf` shows the page count and metadata.

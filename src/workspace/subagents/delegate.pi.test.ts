@@ -7,6 +7,7 @@ import { RPC_METHODS, type ChatDeliverParams, type ChatEventParams, type ToolCal
 import { runnerGit } from "../../agentRuntime/runnerGit.ts";
 import type { WorkspaceConfig } from "../config.ts";
 import { BackendSelector } from "../chatgptFallback.ts";
+import { runFileRel } from "../history.ts";
 import { scaffoldHome } from "../home.ts";
 import { PersonalSession, type ChatTransport } from "../personalSession.ts";
 import { createPiChatSessionFactory } from "../piChatSession.ts";
@@ -211,7 +212,8 @@ describe("delegate on real Pi sessions", () => {
     const toolResult = lastMessage(bodies.filter((b) => !isChild(b))[1]);
     expect(toolResult).toContain(`runId ${child.runId}`);
     expect(toolResult).toContain("cut at 100 of");
-    expect(toolResult).toContain(`ws-runs show ${child.runId}`);
+    expect(toolResult).toContain(`Transcript: ~/history/${runFileRel(child.runId, new Date(child.startedAt), h.cfg.tz)}`);
+    expect(toolResult).toContain(`ws-runs show ${child.runId} --full`);
     expect(toolResult).not.toContain("x".repeat(200));
 
     // Children are leaves with the def's tools plus the bot tools; no delegate, no ask/messaging tools.

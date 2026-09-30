@@ -147,7 +147,7 @@ describe("Scheduler", () => {
     const s = scheduler();
     s.register({ name: "consolidation", run: async () => Promise.reject(new Error("model down")) });
     await s.start();
-    expect(readSchedulerState(stateDir).jobs.consolidation!.lastStatus).toBe("error");
+    expect(readSchedulerState(stateDir).jobs.consolidation).toMatchObject({ lastStatus: "error", lastSummary: "model down" });
     await s.stop();
 
     const again = recordingJob();
