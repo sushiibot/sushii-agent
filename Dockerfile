@@ -113,7 +113,8 @@ RUN set -eu; \
     tar -xz -f /tmp/pandoc.tgz -C /usr/local/bin --strip-components=2 "pandoc-${PANDOC_VERSION}/bin/pandoc"; \
     rm /tmp/pandoc.tgz
 COPY package.json bun.lock* ./
-RUN bun install --production --frozen-lockfile
+# Root's HOME, not the agent's: an install as root would leave root-owned dirs in /data/home.
+RUN HOME=/root BUN_INSTALL=/root/.bun bun install --production --frozen-lockfile
 COPY . .
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
