@@ -20,7 +20,6 @@
 	import ApprovalTray from './components/approval-tray.svelte';
 	import Composer from './components/composer.svelte';
 	import Conversation from './components/conversation.svelte';
-	import MessageSheet from './components/message-sheet.svelte';
 	import { messagePlainText } from './render/plain-text';
 	import { formatCost, formatTokens, usageLine } from './render/usage';
 	import type { ChatUsage } from '$lib/core/realtime/events';
@@ -47,7 +46,6 @@
 		announce = '',
 		focusAsk,
 		sheet,
-		heldId,
 		viewer,
 		newMessages: initialNewMessages = false,
 		openTurn,
@@ -95,8 +93,6 @@
 		announce?: string;
 		focusAsk?: string;
 		sheet?: ChatSheet;
-		/** The message whose actions sheet is open. */
-		heldId?: string;
 		viewer?: FileRef;
 		/** Start with the pill shown, as if the reader had scrolled up while something arrived. */
 		newMessages?: boolean;
@@ -135,22 +131,15 @@
 	let slowLoad = $state(false);
 	let older = $state<HTMLElement | null>(null);
 
-	const held = $derived(
-		sheet === 'message' && heldId ? messages.find((m) => m.id === heldId) : undefined
-	);
-	const pressed = $derived(sheet === 'message' ? heldId : undefined);
 	// A closing sheet keeps its content until it has slid away.
 	// svelte-ignore state_referenced_locally
 	let shownSheet = $state<ChatSheet | undefined>(sheet);
-	let shownHeld = $state<ChatMessage | undefined>();
 	$effect.pre(() => {
 		if (sheet) shownSheet = sheet;
-		if (held) shownHeld = held;
 	});
 	const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
-	let selecting = $state<string | undefined>();
-	let pendingSelect: string | undefined;
 	let copyNote = $state('');
+	let copied = $state<string | undefined>();
 	const empty = $derived(history !== 'loading' && messages.length === 0);
 
 	// Approve stays locked for a moment whenever a new request reaches the top of the tray or the
@@ -263,88 +252,29 @@
 		return () => io.disconnect();
 	});
 
-	const messageEl = (id: string) =>
-		document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`);
-
-	function openMessageMenu(id: string) {
-		selecting = undefined;
-		if (pressed === id) return;
-		// Focus returns here when the sheet closes, whether a hold or the button opened it.
-		messageEl(id)?.querySelector<HTMLElement>('[data-message-focus]')?.focus({
-			preventScroll: true
-		});
-		onopensheet?.('message', id);
-	}
-
-	async function copyHeld() {
-		if (!held) return;
-		const text = messagePlainText(held, location.origin);
-		closeSheet();
+	async function copyMessage(message: ChatMessage) {
+		const text = messagePlainText(message, location.origin);
 		copyNote = '';
 		try {
 			if (!navigator.clipboard) throw new Error('no clipboard');
 			await navigator.clipboard.writeText(text);
 			copyNote = 'Copied';
+			copied = message.id;
 		} catch {
 			copyNote = "Couldn't copy";
 		}
 	}
 
-	function shareHeld() {
-		if (!held) return;
-		// Called before closing, while the tap's user activation still counts.
-		navigator.share({ text: messagePlainText(held, location.origin) }).catch(() => {});
-		closeSheet();
+	function shareMessage(message: ChatMessage) {
+		navigator.share({ text: messagePlainText(message, location.origin) }).catch(() => {});
 	}
-
-	function selectHeld() {
-		if (!held) return;
-		selecting = pendingSelect = held.id;
-		closeSheet();
-	}
-
-	function resendHeld(action: 'retry' | 'discard') {
-		if (!held) return;
-		const id = held.id;
-		closeSheet();
-		if (action === 'retry') onretrysend?.(id);
-		else ondeletesend?.(id);
-	}
-
-	// Select mode waits for the sheet to close, since focus returning to the opener comes first.
-	$effect(() => {
-		if (sheet || !pendingSelect) return;
-		const id = pendingSelect;
-		pendingSelect = undefined;
-		void tick().then(() => {
-			const parts = messageEl(id)?.querySelectorAll('[data-message-text]');
-			const sel = document.getSelection();
-			if (!parts?.length || !sel) return;
-			const range = document.createRange();
-			range.setStartBefore(parts[0]);
-			range.setEndAfter(parts[parts.length - 1]);
-			sel.removeAllRanges();
-			sel.addRange(range);
-		});
-	});
-
-	$effect(() => {
-		const id = selecting;
-		if (!id) return;
-		const leave = (e: PointerEvent) => {
-			if (
-				!(e.target instanceof Element) ||
-				!e.target.closest(`[data-message-id="${CSS.escape(id)}"]`)
-			)
-				selecting = undefined;
-		};
-		document.addEventListener('pointerdown', leave, { capture: true });
-		return () => document.removeEventListener('pointerdown', leave, { capture: true });
-	});
 
 	$effect(() => {
 		if (!copyNote) return;
-		const t = setTimeout(() => (copyNote = ''), 3000);
+		const t = setTimeout(() => {
+			copyNote = '';
+			copied = undefined;
+		}, 3000);
 		return () => clearTimeout(t);
 	});
 	function closeSheet() {
@@ -406,7 +336,6 @@
 		commands: 'Chat commands',
 		new: 'Start a new chat',
 		viewer: 'Image',
-		message: 'Message actions',
 		usage: 'Last reply usage'
 	};
 </script>
@@ -459,17 +388,6 @@
 				<Button size="lg" variant="ghost" onclick={closeSheet}>Cancel</Button>
 			</div>
 		</div>
-	{:else if shownSheet === 'message' && shownHeld}
-		<MessageSheet
-			message={shownHeld}
-			preview={messagePlainText(shownHeld).slice(0, 200)}
-			{canShare}
-			oncopy={copyHeld}
-			onshare={shareHeld}
-			onselect={selectHeld}
-			onretry={() => resendHeld('retry')}
-			ondelete={() => resendHeld('discard')}
-		/>
 	{:else if shownSheet === 'viewer' && viewer?.src}
 		<div class="flex flex-col gap-3 px-4 pt-1 pb-4">
 			<img src={viewer.src} alt={viewer.name} class="w-full rounded-xl border object-contain" />
@@ -658,9 +576,9 @@
 				ondeletesend={(id) => ondeletesend?.(id)}
 				onanswer={(askId, answer) => onanswer?.(askId, answer)}
 				onretryhistory={() => onretryhistory?.()}
-				onmessagemenu={openMessageMenu}
-				{pressed}
-				{selecting}
+				oncopy={copyMessage}
+				onshare={canShare ? shareMessage : undefined}
+				{copied}
 			/>
 		</div>
 	{/if}
@@ -668,9 +586,6 @@
 	<p role="status" class="sr-only">{copyNote}</p>
 </Screen>
 
-<RoutedSheet
-	open={!!sheet}
-	label={shownSheet ? sheetLabels[shownSheet] : ''}
-	desktop={shownSheet === 'message'}
-	onclose={closeSheet}>{@render sheetBody()}</RoutedSheet
+<RoutedSheet open={!!sheet} label={shownSheet ? sheetLabels[shownSheet] : ''} onclose={closeSheet}
+	>{@render sheetBody()}</RoutedSheet
 >

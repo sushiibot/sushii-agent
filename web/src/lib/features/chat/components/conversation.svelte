@@ -13,7 +13,8 @@
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
-	import Ellipsis from '@lucide/svelte/icons/ellipsis';
+	import Copy from '@lucide/svelte/icons/copy';
+	import Share2 from '@lucide/svelte/icons/share-2';
 	import { Button } from '$lib/ui/button';
 	import { Switch } from '$lib/ui/switch';
 	import { cn } from '$lib/utils';
@@ -21,7 +22,7 @@
 	import FilesBlock from './files-block.svelte';
 	import Markdown from '../render/markdown.svelte';
 	import WorkingRow from './working-row.svelte';
-	import { longPress } from './long-press';
+	import MessageActions, { type MessageAction } from './message-actions.svelte';
 	import { hasText } from '../render/plain-text';
 	import type {
 		ApprovalOutcome,
@@ -34,7 +35,6 @@
 
 	let {
 		messages,
-		pressed,
 		after,
 		openTurn,
 		openStep,
@@ -44,11 +44,11 @@
 		ondeletesend,
 		onanswer,
 		onretryhistory,
-		onmessagemenu,
-		selecting
+		oncopy,
+		onshare,
+		copied
 	}: {
 		messages: ChatMessage[];
-		pressed?: string;
 		after?: Snippet;
 		/** Message id whose working row or divider starts expanded. */
 		openTurn?: string;
@@ -59,43 +59,31 @@
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
 		onretryhistory?: () => void;
-		/** Opens the actions sheet for a message; without it messages have no menu. */
-		onmessagemenu?: (messageId: string) => void;
-		/** The message whose text is in select mode, where holding it selects text natively. */
-		selecting?: string;
+		/** Copy under each message; without it messages have no action row. */
+		oncopy?: (message: ChatMessage) => void;
+		/** Share, where the browser can. */
+		onshare?: (message: ChatMessage) => void;
+		/** The message just copied, whose Copy shows a check for a moment. */
+		copied?: string;
 	} = $props();
 
-	// Holding a bubble opens its menu, so on touch screens the hold must not start a native selection.
-	const holdable = 'pointer-coarse:select-none [-webkit-touch-callout:none]';
+	// The newest finished reply keeps its actions in view; older ones show them on hover or focus.
+	const latestReply = $derived(
+		messages.findLast((m) => m.role === 'assistant' && !m.streaming && hasText(m))?.id
+	);
 
-	function openHeld(el: HTMLElement) {
-		const id = el.closest<HTMLElement>('[data-message-id]')?.dataset.messageId;
-		if (id) onmessagemenu?.(id);
+	function actionsFor(message: ChatMessage): MessageAction[] {
+		if (!oncopy) return [];
+		const copy: MessageAction = {
+			id: 'copy',
+			label: 'Copy',
+			icon: copied === message.id ? Check : Copy,
+			onclick: () => oncopy(message)
+		};
+		if (message.role === 'user' || !onshare) return [copy];
+		return [copy, { id: 'share', label: 'Share', icon: Share2, onclick: () => onshare(message) }];
 	}
 
-	// Enter, Shift+F10 or the menu key on a focused message; keys inside it (links, buttons) pass.
-	const keyMenu = (node: HTMLElement) => {
-		const onKey = (e: KeyboardEvent) => {
-			const el = e.target as HTMLElement;
-			if (!el.matches?.('[data-message-focus]')) return;
-			const menuKey = e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
-			if (e.key !== 'Enter' && !menuKey) return;
-			e.preventDefault();
-			openHeld(el);
-		};
-		const onContextMenu = (e: MouseEvent) => {
-			const el = e.target as HTMLElement;
-			if (!el.matches?.('[data-message-focus]')) return;
-			e.preventDefault();
-			openHeld(el);
-		};
-		node.addEventListener('keydown', onKey);
-		node.addEventListener('contextmenu', onContextMenu);
-		return () => {
-			node.removeEventListener('keydown', onKey);
-			node.removeEventListener('contextmenu', onContextMenu);
-		};
-	};
 	const uid = $props.id();
 
 	const isTool = (p: MessagePart) => p.type.startsWith('tool-');
@@ -142,56 +130,26 @@
 	};
 </script>
 
-{#snippet actionsButton(id: string, extra: string)}
-	<button
-		type="button"
-		aria-label="Message actions"
-		aria-haspopup="dialog"
-		data-message-actions
-		onclick={() => onmessagemenu?.(id)}
-		class={cn(
-			'pointer-events-none absolute top-0 grid size-12 place-items-center rounded-lg border bg-background text-muted-foreground opacity-0 shadow-sm group-focus-visible/msg:pointer-events-auto group-focus-visible/msg:opacity-100 group-has-[:focus-visible]/msg:pointer-events-auto group-has-[:focus-visible]/msg:opacity-100 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
-			extra
-		)}
-	>
-		<Ellipsis class="size-4" aria-hidden="true" />
-	</button>
-{/snippet}
-
-<ol
-	class="flex flex-col gap-4 px-4 py-4"
-	{@attach longPress('[data-holdable]', openHeld)}
-	{@attach keyMenu}
->
+<ol class="flex flex-col gap-4 px-4 py-4">
 	{#each messages as message (message.id)}
 		{@const owner = message.role === 'user'}
 		{@const firstTool = message.parts.findIndex(isTool)}
-		{@const menu = !!onmessagemenu && !message.streaming && hasText(message)}
-		{@const hold = menu && selecting !== message.id}
 		{@const failed = message.delivery === 'failed'}
+		{@const queued = message.delivery === 'queued' || message.delivery === 'queued-agent'}
+		{@const unsent = owner && (failed || (queued && !message.unverified))}
+		{@const actions = !message.streaming && !unsent && hasText(message) ? actionsFor(message) : []}
 		<li data-message-id={message.id}>
-			<!-- A focusable article, as in the ARIA feed pattern: the keyboard path to the actions sheet. -->
-			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<div
-				role={menu ? 'article' : undefined}
-				tabindex={menu ? 0 : undefined}
-				aria-label={menu ? (owner ? 'Your message' : 'Agent message') : undefined}
-				aria-keyshortcuts={menu ? 'Enter Shift+F10' : undefined}
-				data-message-focus={menu || undefined}
 				class={cn(
-					'group/msg relative rounded-xl focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-4 focus-visible:ring-offset-background focus-visible:outline-none',
-					owner ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2',
-					pressed === message.id &&
-						'-mx-2 bg-muted px-2 py-2 ring-2 ring-brand/50 transition-colors'
+					'group/msg relative',
+					owner ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2'
 				)}
 			>
 				{#each message.parts as part, i (i)}
 					{#if part.type === 'text' && message.role === 'assistant'}
 						<div
 							data-message-text
-							data-holdable={hold || undefined}
 							class={cn(
-								hold && holdable,
 								message.streaming &&
 									"min-h-[4.5lh] [&_p:last-child]:after:ml-0.5 [&_p:last-child]:after:inline-block [&_p:last-child]:after:h-[1.1em] [&_p:last-child]:after:w-0.5 [&_p:last-child]:after:translate-y-[3px] [&_p:last-child]:after:animate-pulse [&_p:last-child]:after:bg-foreground [&_p:last-child]:after:content-[''] motion-reduce:[&_p:last-child]:after:animate-none"
 							)}
@@ -201,10 +159,8 @@
 					{:else if part.type === 'text'}
 						<p
 							data-message-text
-							data-holdable={hold || undefined}
 							class={cn(
 								'whitespace-pre-wrap',
-								hold && holdable,
 								owner
 									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-body leading-snug text-primary-foreground'
 									: 'text-body leading-relaxed [overflow-wrap:anywhere]',
@@ -393,7 +349,7 @@
 						<d.icon class="size-3.5 shrink-0" aria-hidden="true" />{d.text}
 					</p>
 				{/if}
-				{#if failed}
+				{#if unsent}
 					<div class="flex gap-2">
 						<Button variant="ghost" class="px-3" onclick={() => ondeletesend?.(message.id)}
 							><Trash2 />Delete</Button
@@ -403,7 +359,13 @@
 						>
 					</div>
 				{/if}
-				{#if menu}{@render actionsButton(message.id, owner ? 'left-0' : 'right-0')}{/if}
+				{#if actions.length}
+					<MessageActions
+						{actions}
+						always={message.id === latestReply}
+						align={owner ? 'end' : 'start'}
+					/>
+				{/if}
 			</div>
 		</li>
 	{/each}

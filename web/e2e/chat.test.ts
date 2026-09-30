@@ -340,12 +340,11 @@ test('a history-only message looks like a live one but offers only the read acti
 	expect(await classes('From the transcript')).toBe(await classes('Sent just now'));
 	await expect(page.getByText(/workspace history/)).toHaveCount(0);
 
-	await bubble(page, 'From the transcript')
-		.locator('[data-message-text]')
-		.click({ button: 'right' });
-	const sheet = page.getByRole('dialog', { name: 'Message actions' });
-	await expect(sheet.getByRole('button', { name: 'Copy text' })).toBeVisible();
-	await expect(sheet.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(0);
+	const transcript = bubble(page, 'From the transcript');
+	await expect(transcript.getByRole('button', { name: 'Copy' })).toBeVisible();
+	await expect(transcript.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(
+		0
+	);
 });
 
 test('older pages load above with the server cursor', async ({ page, context }) => {
@@ -1394,13 +1393,9 @@ test('a message the connected agent refused fails with Retry and no offline bann
 	expect((posts('/api/chat/messages')[1].body as { clientId: string }).clientId).toBe(clientId);
 });
 
-/** A queued message has no inline Delete; it is in the message actions sheet. */
-async function deleteFromSheet(page: Page, text: string) {
-	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
-	await page
-		.getByRole('dialog', { name: 'Message actions' })
-		.getByRole('button', { name: 'Delete' })
-		.click();
+/** An unsent message, queued or failed, has Delete under it. */
+async function deleteInline(page: Page, text: string) {
+	await bubble(page, text).getByRole('button', { name: 'Delete' }).click();
 }
 
 async function heldForAgent(
@@ -1425,7 +1420,7 @@ test('deleting a message the bot holds withdraws it there first, then removes it
 	context
 }) => {
 	const { calls, clientId } = await heldForAgent(page, context, 'Never mind this');
-	await deleteFromSheet(page, 'Never mind this');
+	await deleteInline(page, 'Never mind this');
 	await expect(bubble(page, 'Never mind this')).toHaveCount(0);
 	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
 		`/api/chat/messages/${clientId}`
@@ -1438,7 +1433,7 @@ test('deleting a message that already reached the agent keeps it, marked sent', 
 	context
 }) => {
 	await heldForAgent(page, context, 'Too late', 409);
-	await deleteFromSheet(page, 'Too late');
+	await deleteInline(page, 'Too late');
 	await expect(page.getByText('Already delivered')).toBeVisible();
 	await expect(bubble(page, 'Too late')).toContainText('Sent');
 	await expect.poll(() => outboxSize(page)).toBe(0);
@@ -1446,14 +1441,14 @@ test('deleting a message that already reached the agent keeps it, marked sent', 
 
 test('a delete the bot never heard of removes the message locally', async ({ page, context }) => {
 	await heldForAgent(page, context, 'Unknown to the bot', 404);
-	await deleteFromSheet(page, 'Unknown to the bot');
+	await deleteInline(page, 'Unknown to the bot');
 	await expect(bubble(page, 'Unknown to the bot')).toHaveCount(0);
 	await expect.poll(() => outboxSize(page)).toBe(0);
 });
 
 test('a delete that fails keeps the message and says so', async ({ page, context }) => {
 	await heldForAgent(page, context, 'Keep me for now', 500);
-	await deleteFromSheet(page, 'Keep me for now');
+	await deleteInline(page, 'Keep me for now');
 	await expect(page.getByText("Couldn't delete the message. Try again.")).toBeVisible();
 	await expect(bubble(page, 'Keep me for now')).toBeVisible();
 	expect(await outboxSize(page)).toBe(1);
@@ -1470,7 +1465,7 @@ test('a message whose 202 was lost is withdrawn from the bot on Delete and never
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
 	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
 	await expect(bubble(page, 'Lost answer')).toContainText('Queued');
-	await deleteFromSheet(page, 'Lost answer');
+	await deleteInline(page, 'Lost answer');
 	await expect(bubble(page, 'Lost answer')).toHaveCount(0);
 	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
 		`/api/chat/messages/${clientId}`
@@ -1525,19 +1520,20 @@ test('a refused message stays failed across a reload and goes again only on Retr
 	await expect.poll(async () => (await outboxEntries(page))[0]?.failed).toBe(false);
 });
 
-/** Opens the actions sheet on a queued bubble, then starts its resend and taps Delete in one task: the
- *  one window the UI leaves, since the sheet drops Delete once the bubble shows Sending. */
+/** Starts a queued bubble's resend and taps its Delete in one task: the one window the UI leaves,
+ *  since Delete goes away once the bubble shows Sending. */
 async function deleteAsResendStarts(page: Page, text: string) {
-	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
-	const dialog = page.getByRole('dialog', { name: 'Message actions' });
-	await expect(dialog.getByRole('button', { name: 'Delete message' })).toBeVisible();
-	await page.evaluate(() => {
-		const button = [...document.querySelectorAll('[role=dialog] button')].find((b) =>
-			b.textContent?.includes('Delete message')
+	await expect(bubble(page, text).getByRole('button', { name: 'Delete' })).toBeVisible();
+	await page.evaluate((text) => {
+		const message = [...document.querySelectorAll('[data-message-id]')].find((m) =>
+			m.textContent?.includes(text)
+		)!;
+		const button = [...message.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Delete'
 		) as HTMLButtonElement;
 		dispatchEvent(new Event('online'));
 		button.click();
-	});
+	}, text);
 }
 
 test('Delete in the same frame a resend starts stops it before it posts', async ({

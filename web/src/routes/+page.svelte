@@ -26,10 +26,8 @@
 		commands: routedSheet('commands'),
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
-		message: routedSheet('message'),
 		usage: routedSheet('usage')
 	};
-	const heldId = $derived(sheets.message.arg);
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
@@ -85,8 +83,8 @@
 		});
 	});
 
-	function openSheet(next: ChatSheet, messageId?: string) {
-		sheets[next].openWith(messageId);
+	function openSheet(next: ChatSheet) {
+		sheets[next].openWith();
 	}
 
 	function closeSheet() {
@@ -119,7 +117,6 @@
 		announce={s.announce}
 		{focusAsk}
 		{sheet}
-		{heldId}
 		{viewer}
 		settingsHref={resolve('/settings')}
 		onopensheet={openSheet}

@@ -825,43 +825,31 @@ export const flows: Flow[] = [
 	{
 		id: 'message-menu',
 		code: 'MM',
-		title: 'Hold a message for its actions',
+		title: 'Actions under each message',
 		intro:
-			'Holding a message, or right-clicking it on desktop, opens its actions in a sheet that Back closes. The ⋯ button under each message opens the same sheet. Copy takes the text as rendered, without markdown. Retry and Delete appear only on your own unsent messages, and nothing here can approve anything.',
+			"Small icon buttons sit under each message: Copy, and Share where the phone can share. The newest reply always shows them; older messages show them on touch screens, and on hover or focus with a mouse. Copy takes the text as rendered, without markdown. Holding and right-clicking are the browser's own, so a hold selects text. Retry and Delete stay inline on your own unsent messages, and nothing here can approve anything.",
 		frames: [
 			{
 				id: 'mm-1',
-				label: 'Hold an agent reply',
+				label: 'Copy and Share under the reply',
 				screen: ChatScreen,
-				props: {
-					messages: c.deliveryStates,
-					sheet: 'message',
-					heldId: 'd1r'
-				},
-				next: 'Your failed message'
-			},
-			{
-				id: 'mm-2',
-				label: 'Hold your failed message',
-				screen: ChatScreen,
-				props: {
-					messages: c.deliveryStates,
-					sheet: 'message',
-					heldId: 'd2'
-				},
-				branch: 'Retry and Delete join the list'
+				props: { messages: c.deliveryStates },
+				next: 'Narrow phone'
 			},
 			{
 				id: 'mm-3',
 				label: 'At 320 wide',
 				screen: ChatScreen,
-				props: {
-					messages: c.deliveryStates,
-					sheet: 'message',
-					heldId: 'd1r'
-				},
+				props: { messages: c.deliveryStates },
 				width: 320,
 				branch: 'Narrow phone'
+			},
+			{
+				id: 'mm-d',
+				label: 'Desktop: older rows appear on hover',
+				screen: ChatScreen,
+				props: { messages: c.deliveryStates },
+				desktop: true
 			}
 		]
 	},

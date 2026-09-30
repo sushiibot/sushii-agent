@@ -19,8 +19,6 @@
 	import Composer from '$lib/features/chat/components/composer.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import Conversation from '$lib/features/chat/components/conversation.svelte';
-	import MessageSheet from '$lib/features/chat/components/message-sheet.svelte';
-	import { messagePlainText } from '$lib/features/chat/render/plain-text';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 	import type {
 		ChatMessage,
@@ -31,7 +29,7 @@
 	} from '$lib/features/chat';
 	import type { Session, ThreadClose } from './types';
 
-	type Sheet = 'memory' | 'close' | 'actions' | 'message' | 'aside' | 'commands' | 'new' | 'viewer';
+	type Sheet = 'memory' | 'close' | 'actions' | 'aside' | 'commands' | 'new' | 'viewer';
 	let {
 		session,
 		messages,
@@ -96,9 +94,6 @@
 	// svelte-ignore state_referenced_locally
 	let sheet = $state<Sheet | undefined>(initialSheet);
 	// svelte-ignore state_referenced_locally
-	let held = $state<string | undefined>(pressed);
-	const heldMessage = $derived(messages.find((m) => m.id === held));
-	// svelte-ignore state_referenced_locally
 	let viewer = $state<FileRef | undefined>(initialViewer);
 	const thread = $derived(session.kind === 'thread');
 	const pressedText = $derived(
@@ -133,7 +128,6 @@
 		memory: 'Memory shared with Main',
 		close: 'Close thread',
 		actions: 'Message actions',
-		message: 'Message actions',
 		aside: 'Side question',
 		commands: 'Chat commands',
 		new: 'Start a new chat',
@@ -224,15 +218,6 @@
 				{/each}
 			</ul>
 		</div>
-	{:else if sheet === 'message' && heldMessage}
-		<MessageSheet
-			message={heldMessage}
-			preview={messagePlainText(heldMessage).slice(0, 200)}
-			oncopy={() => (sheet = undefined)}
-			onselect={() => (sheet = undefined)}
-			onretry={() => (sheet = undefined)}
-			ondelete={() => (sheet = undefined)}
-		/>
 	{:else if sheet === 'aside' && aside}
 		<div class="flex flex-col gap-4 px-5 pt-2 pb-2">
 			<div class="flex items-center justify-between gap-3">
@@ -394,18 +379,12 @@
 	{banner}
 	sheet={sheet ? sheetBody : undefined}
 	sheetLabel={sheet ? sheetLabels[sheet] : undefined}
-	sheetOnDesktop={sheet === 'message'}
 	onclosesheet={() => (sheet = undefined)}
 	stickToBottom
 >
 	<div class="mx-auto max-w-2xl">
 		<Conversation
 			{messages}
-			pressed={sheet === 'actions' || sheet === 'message' ? held : undefined}
-			onmessagemenu={(id) => {
-				held = id;
-				sheet = 'message';
-			}}
 			{openTurn}
 			{openStep}
 			{focusAsk}
