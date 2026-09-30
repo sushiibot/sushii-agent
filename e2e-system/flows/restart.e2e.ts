@@ -18,11 +18,14 @@ test("a bot restart mid-turn leaves exactly one copy of each message", async ({ 
   test.setTimeout(180_000);
   await openChat(page);
   const tag = nonce();
-  const slow = `E2E-SLOW long reply ${tag}`;
-  const queued = `E2E-ECHO ${tag} queued while offline`;
+  const qtag = nonce();
+  const slow = `E2E-SLOW long reply #${tag}`;
+  const queued = `E2E-ECHO queued while offline #${qtag}`;
+  const slowReply = bubble(page, `re-${tag}`);
+  const echoReply = bubble(page, `re-${qtag}`);
 
   expect((await send(page, slow)).status).toBe(202);
-  await expect(page.getByText("slow3", { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+  await expect(slowReply).toContainText("slow3", { timeout: 20_000 });
 
   await context.setOffline(true);
   await textbox(page).fill(queued);
@@ -32,19 +35,19 @@ test("a bot restart mid-turn leaves exactly one copy of each message", async ({ 
   await stack.restartBot({ waitReady: true });
   // Reconnect only after the slow turn is stored. Sent earlier, the queued message is steered into
   // the running turn, and whether it lands in that turn or a new one depends on timing.
-  const slowReply = () => stack.query("select 1 from web_events where type = 'reply' and data like ?", "%slow29%");
-  await expect.poll(slowReply, { timeout: 60_000 }).toHaveLength(1);
+  const stored = () => stack.query("select 1 from web_events where type = 'reply' and data like ? and data like ?", `%re-${tag}%`, "%slow29%");
+  await expect.poll(stored, { timeout: 60_000 }).toHaveLength(1);
   await context.setOffline(false);
 
-  await expect(page.getByText("slow29", { exact: false }).first()).toBeVisible({ timeout: 30_000 });
-  await expect(bubble(page, `Echo ${tag}.`)).toBeVisible({ timeout: 30_000 });
+  await expect(slowReply).toContainText("slow29", { timeout: 30_000 });
+  await expect(echoReply).toContainText("Echo queued.", { timeout: 30_000 });
   await expect.poll(() => outbox(page), { timeout: 30_000 }).toEqual([]);
 
   const counts = async () => ({
     slowUser: await bubble(page, slow).count(),
-    slowReply: await bubble(page, "slow29").count(),
+    slowReply: await slowReply.count(),
     queued: await bubble(page, queued).count(),
-    echo: await bubble(page, `Echo ${tag}.`).count(),
+    echo: await echoReply.count(),
   });
   const once = { slowUser: 1, slowReply: 1, queued: 1, echo: 1 };
   // Give any late duplicate (a replayed delivery or a second outbox send) time to show up.
@@ -53,7 +56,7 @@ test("a bot restart mid-turn leaves exactly one copy of each message", async ({ 
 
   await page.reload();
   await expect(textbox(page)).toBeVisible();
-  await expect(page.getByText("slow29", { exact: false }).first()).toBeVisible();
+  await expect(slowReply).toContainText("slow29");
   await expect.poll(counts).toEqual(once);
 
   const dupes = await stack.query("select type, key, count(*) n from web_events where key is not null group by type, key having n > 1");

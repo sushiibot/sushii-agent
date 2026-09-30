@@ -32,8 +32,9 @@ Every process is stopped on exit, including a failed start or Ctrl-C.
 
 | Env | Default | |
 |---|---|---|
-| `E2E_PORT_BASE` | `4500` | proxy = base, web = +1, llm = +2, mcp = +3, orch = +4, control = +5. Give each worktree its own base. |
+| `E2E_PORT_BASE` | one of 16 slots in 4500–4595, from a hash of the repo path | proxy = base, web = +1, llm = +2, mcp = +3, orch = +4, control = +5. Each worktree gets its own default slot. The runner prints the base, and the preflight names any busy port, so pick another base if two worktrees land on the same slot. |
 | `E2E_PROXY_PORT`, `E2E_WEB_PORT`, `E2E_LLM_PORT`, `E2E_MCP_PORT`, `E2E_ORCH_PORT`, `E2E_CONTROL_PORT` | from the base | set a single port |
+| `E2E_LOCAL_ADDR` | `127.0.0.1` | the fake model, the control server, and the address the workspace dials the bot's orchestration port on. The bot binds its orchestration and MCP ports on every interface (product code), so the preflight checks those two on `0.0.0.0`. |
 | `E2E_PROXY_ADDR` | `127.0.0.1` | where the browser reaches the proxy. Not `localhost`: GitHub's runners resolve it to `::1` first. |
 | `E2E_BOT_ADDR`, `E2E_PEER_ADDR`, `E2E_UNTRUSTED_ADDR` | `127.0.0.2`, `.3`, `.5` | must all be in 127.0.0.0/8 |
 | `E2E_OWNER_LOGIN` | `owner@e2e` | |
@@ -50,8 +51,8 @@ Every process is stopped on exit, including a failed start or Ctrl-C.
 ## Adding a flow
 
 Add one file per flow, `flows/<name>.e2e.ts`. Don't use `.test.ts`: the root `bun test` would pick that up. Flows run one at a time against one shared stack and database, in file-name order. So:
-- Put `nonce()` in every message you send.
-- Assert only on your own messages.
+- Put `#<nonce>` in every message you send. The fake model then starts each reply to that message with `re-<nonce>`, including tool-result replies.
+- Match your own messages with `bubble(page, text)` and your replies with `` bubble(page, `re-${tag}`) ``. Never use a page-wide `getByText(...).first()`: earlier flows leave the same texts behind.
 - Leave the stack running. `restartBot` waits for it to come back.
 
 ```ts
@@ -60,9 +61,10 @@ import { expect, nonce, stack, test } from "../lib/harness.ts";
 
 test("my flow", async ({ page, watch }) => {
   await openChat(page);
-  const text = `E2E-ECHO ${nonce()}`;
+  const tag = nonce();
+  const text = `E2E-ECHO hello #${tag}`;
   expect((await send(page, text)).status).toBe(202);
-  await expect(bubble(page, "Echo ")).toBeVisible();
+  await expect(bubble(page, `re-${tag}`)).toContainText("Echo hello.");
   const seen = await stack.waitForLlm((r) => r.userText.includes(text));
   const rows = await stack.query("select type from web_events where data like ?", `%${text}%`);
   expect(await watch.violations()).toEqual([]);
@@ -87,7 +89,7 @@ New stack capabilities go in `run.ts`'s control server, not in the flows:
 | Keyword | Reply |
 |---|---|
 | `E2E-ECHO <word>` | `Echo <word>.` |
-| `E2E-APPROVE` | a `file_linear_issue` tool call (needs an approval) |
+| `E2E-APPROVE` | a `file_linear_issue` tool call (needs an approval), titled `E2E approval <tag>` |
 | `E2E-PHOTO` | `I received N image part(s) in this turn …` |
 | `E2E-SLOW` | 30 pieces `slow0 … slow29`, 500 ms apart |
 | `E2E-FILL-<n>` | `Filler reply <n>.` |
@@ -96,4 +98,4 @@ New stack capabilities go in `run.ts`'s control server, not in the flows:
 
 ## CI
 
-The `e2e-system` job in `.github/workflows/ci.yml` runs this on every push. `docker-build` and `docker-build-workspace` both need it, so a red run blocks the deploy. On failure the job uploads the temp dir (logs and traces) as the `e2e-system` artifact.
+The `e2e-system` job in `.github/workflows/ci.yml` runs this on every push. `docker-build` and `docker-build-workspace` both need it, so a red run blocks the deploy. On failure the job uploads the logs and Playwright output (traces and screenshots) as the `e2e-system` artifact.

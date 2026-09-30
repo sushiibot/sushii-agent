@@ -10,6 +10,13 @@ import { stackConfig } from "./stack/config.ts";
 
 const HERE = import.meta.dir;
 const REPO = resolve(HERE, "..");
+// Each worktree defaults to its own slot of six ports in 4500-4595, so runs in parallel worktrees
+// don't collide. Set in process.env so every child and Playwright resolve the same ports.
+if (!process.env["E2E_PORT_BASE"]?.trim()) {
+  let h = 0;
+  for (const c of REPO) h = (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0;
+  process.env["E2E_PORT_BASE"] = String(4500 + (h % 16) * 6);
+}
 const cfg = stackConfig();
 const { ports, addrs } = cfg;
 const BUN = process.execPath;
@@ -153,10 +160,11 @@ async function preflight(): Promise<void> {
   const want: [string, string, number][] = [
     ["proxy", addrs.proxy, ports.proxy],
     ["web", addrs.bot, ports.web],
-    ["llm", "127.0.0.1", ports.llm],
-    ["mcp", "127.0.0.1", ports.mcp],
-    ["orch", "127.0.0.1", ports.orch],
-    ["control", "127.0.0.1", ports.control],
+    ["llm", addrs.local, ports.llm],
+    // The bot binds these two on every interface.
+    ["mcp", "0.0.0.0", ports.mcp],
+    ["orch", "0.0.0.0", ports.orch],
+    ["control", addrs.local, ports.control],
   ];
   const busy = [];
   for (const [name, host, port] of want) if (!(await portFree(host, port))) busy.push(`${name} ${host}:${port}`);
@@ -167,7 +175,7 @@ async function preflight(): Promise<void> {
 function controlServer(bot: Proc, llmURL: string) {
   return Bun.serve({
     port: ports.control,
-    hostname: "127.0.0.1",
+    hostname: addrs.local,
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
@@ -259,7 +267,7 @@ async function stopForeground(): Promise<void> {
 }
 
 async function main(): Promise<number> {
-  console.log(`[e2e] temp dir ${TMP}`);
+  console.log(`[e2e] temp dir ${TMP}; ports ${ports.proxy}-${ports.control} (E2E_PORT_BASE=${process.env["E2E_PORT_BASE"]})`);
   await preflight();
 
   if (process.env["E2E_SKIP_BUILD"] !== "1") {
@@ -278,7 +286,7 @@ async function main(): Promise<number> {
   writeFileSync(principals, JSON.stringify({ owner: { owner: true, identities: { discord: ownerDiscordId, web: cfg.ownerLogin } } }));
   writeFileSync(teams, "{}");
 
-  const llmURL = `http://127.0.0.1:${ports.llm}`;
+  const llmURL = `http://${addrs.local}:${ports.llm}`;
   // Built from scratch: nothing from the caller's shell (tokens, relay keys, OTel) reaches the stack.
   const common = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", E2E_MODEL_ID: cfg.model, TZ: "UTC" };
   const portEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^E2E_/.test(k))) as Record<string, string>;
@@ -333,7 +341,7 @@ async function main(): Promise<number> {
     env: {
       ...common,
       HOME: P.wsHome,
-      ORCH_URL: `ws://127.0.0.1:${ports.orch}`,
+      ORCH_URL: `ws://${addrs.local}:${ports.orch}`,
       ORCH_SECRET: orchSecret,
       OPENAI_API_KEY: "e2e-stub",
       OPENAI_BASE_URL: `${llmURL}/v1`,

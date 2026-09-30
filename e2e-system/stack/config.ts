@@ -27,6 +27,8 @@ export function stackConfig() {
       control: int("E2E_CONTROL_PORT", base + 5),
     },
     addrs: {
+      // The fake model, the control server, and the bot's orchestration and MCP ports as dialed.
+      local: addr("E2E_LOCAL_ADDR", "127.0.0.1"),
       // Where the browser reaches the proxy. Not "localhost": GitHub's runners resolve it to ::1 first.
       proxy: addr("E2E_PROXY_ADDR", "127.0.0.1"),
       bot: addr("E2E_BOT_ADDR", "127.0.0.2"),

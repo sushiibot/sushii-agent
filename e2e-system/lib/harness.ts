@@ -8,7 +8,7 @@ export { expect };
 export type { LlmRequest };
 
 const cfg = stackConfig();
-const control = `http://127.0.0.1:${cfg.ports.control}`;
+const control = `http://${cfg.addrs.local}:${cfg.ports.control}`;
 
 function required(name: string): string {
   const v = process.env[name];
@@ -53,8 +53,8 @@ export const stack = {
   },
 };
 
-/** A short random tag, so each flow's messages are unique across runs and flows. */
-export const nonce = () => Math.random().toString(36).slice(2, 8);
+/** A short random tag. Put `#<nonce>` in a message and the fake model starts each reply with `re-<nonce>`. */
+export const nonce = () => Math.random().toString(36).slice(2, 10).padEnd(8, "0");
 
 export interface Watch {
   console: string[];

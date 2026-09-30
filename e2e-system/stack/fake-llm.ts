@@ -1,8 +1,9 @@
 // OpenAI-compatible chat-completions stand-in for OpenRouter. Replies are scripted by keywords in the
-// last user message; see SCRIPT in the README. GET /__log returns every request it has seen.
+// last user message (see the README). A `#<tag>` in that message makes every reply start with
+// `re-<tag>`, so a flow can find its own reply. GET /__log returns every request it has seen.
 import { stackConfig } from "./config.ts";
 
-const { ports, model } = stackConfig();
+const { ports, addrs, model } = stackConfig();
 const enc = new TextEncoder();
 const seen: LlmRequest[] = [];
 let n = 0;
@@ -33,7 +34,8 @@ function textOf(content: unknown): string {
 
 const imagesIn = (content: unknown) => (Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "image_url").length : 0);
 
-function stream(pieces: string[], gapMs: number): Response {
+function stream(pieces: string[], gapMs: number, tag: string | undefined): Response {
+  if (tag) pieces = [`re-${tag} ${pieces[0] ?? ""}`, ...pieces.slice(1)];
   const body = new ReadableStream({
     async start(c) {
       for (const p of pieces) {
@@ -56,25 +58,27 @@ function toolCall(name: string, args: object): Response {
 
 function reply(msgs: Msg[], userText: string, lastUser: Msg | undefined): Response {
   const last = msgs[msgs.length - 1];
-  if (last?.role === "tool") return stream([`Tool finished. Result: ${textOf(last.content).slice(0, 160).replace(/\n/g, " ")}`], 50);
+  const tag = /#([a-z0-9]{4,16})\b/.exec(userText)?.[1];
+  if (last?.role === "tool") return stream([`Tool finished. Result: ${textOf(last.content).slice(0, 160).replace(/\n/g, " ")}`], 50, tag);
   if (userText.includes("E2E-APPROVE")) {
-    return toolCall("file_linear_issue", { repo_label: "sushii-agent", title: "E2E approval test", description: "Filed by the e2e fake model." });
+    const title = `E2E approval ${tag ?? "test"}`;
+    return toolCall("file_linear_issue", { repo_label: "sushii-agent", title, description: "Filed by the e2e fake model." });
   }
   if (userText.includes("E2E-PHOTO")) {
     const total = msgs.reduce((a, m) => a + imagesIn(m.content), 0);
-    return stream([`I received ${imagesIn(lastUser?.content)} image part(s) in this turn `, `(${total} in the whole context).`], 100);
+    return stream([`I received ${imagesIn(lastUser?.content)} image part(s) in this turn `, `(${total} in the whole context).`], 100, tag);
   }
-  if (userText.includes("E2E-SLOW")) return stream(Array.from({ length: 30 }, (_, i) => `slow${i} `), 500);
+  if (userText.includes("E2E-SLOW")) return stream(Array.from({ length: 30 }, (_, i) => `slow${i} `), 500, tag);
   const echo = /E2E-ECHO (\S+)/.exec(userText);
-  if (echo) return stream([`Echo ${echo[1]}.`], 10);
+  if (echo) return stream([`Echo ${echo[1]}.`], 10, tag);
   const fill = /E2E-FILL-(\d+)/.exec(userText);
-  if (fill) return stream([`Filler reply ${fill[1]}.`], 10);
-  return stream(["**Bold reply** with a list:\n\n", "- one\n- two\n\n", "```ts\nconst answer = 42;\nconsole.log(answer);\n```\n\n", "Done."], 400);
+  if (fill) return stream([`Filler reply ${fill[1]}.`], 10, tag);
+  return stream(["**Bold reply** with a list:\n\n", "- one\n- two\n\n", "```ts\nconst answer = 42;\nconsole.log(answer);\n```\n\n", "Done."], 400, tag);
 }
 
 Bun.serve({
   port: ports.llm,
-  hostname: "127.0.0.1",
+  hostname: addrs.local,
   idleTimeout: 120,
   async fetch(req) {
     const url = new URL(req.url);
@@ -100,4 +104,4 @@ Bun.serve({
     return reply(msgs, userText, lastUser);
   },
 });
-console.log(`fake llm on 127.0.0.1:${ports.llm}`);
+console.log(`fake llm on ${addrs.local}:${ports.llm}`);

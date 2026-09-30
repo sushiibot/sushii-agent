@@ -21,9 +21,10 @@ test("an uploaded photo reaches the workspace and the model", async ({ page }) =
   const { id } = (await up.json()) as { id: string };
   expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
 
-  const text = `E2E-PHOTO what is this ${nonce()}`;
+  const tag = nonce();
+  const text = `E2E-PHOTO what is this #${tag}`;
   expect((await send(page, text)).status).toBe(202);
-  await expect(page.getByText("I received 1 image part(s)").last()).toBeVisible({ timeout: 30_000 });
+  await expect(bubble(page, `re-${tag}`)).toContainText("I received 1 image part(s)", { timeout: 30_000 });
 
   const seen = await stack.waitForLlm((l) => l.userText.includes(text));
   expect(seen.lastImages).toBe(1);
