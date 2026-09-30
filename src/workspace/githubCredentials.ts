@@ -12,6 +12,8 @@ export const REFRESH_SLACK_MS = 5 * 60_000;
 export const FAILURE_BACKOFF_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 5_000;
 const GIT_TIMEOUT_MS = 2_000;
+const DEFAULT_BRANCH_TIMEOUT_MS = 5_000;
+const GITHUB_API = "https://api.github.com";
 
 type Log = { warn(obj: object, msg: string): void; info(obj: object, msg: string): void };
 
@@ -25,15 +27,18 @@ export interface GitHubCredentialsOptions {
   leaseWrite?: (homeRelPaths: string[]) => () => void;
   now?: () => number;
   log?: Log;
-  /** Test seam: runs `git <args>` in `cwd` and returns trimmed stdout, or null on any failure. */
-  git?: (cwd: string, args: string[]) => Promise<string | null>;
+  /** Test seam: runs `git <args>` in `cwd` (with `env` on top of the runner env) and returns trimmed stdout, or null on any failure. */
+  git?: (cwd: string, args: string[], env?: Record<string, string>) => Promise<string | null>;
+  /** Test seam for the GitHub API default-branch lookup. */
+  fetchImpl?: typeof fetch;
 }
 
 type Grant = { token: string; expiresAt: number; botName: string; botEmail: string };
 
-function runGit(cwd: string, args: string[]): Promise<string | null> {
+function runGit(cwd: string, args: string[], env?: Record<string, string>): Promise<string | null> {
   return new Promise((done) => {
-    execFile("git", ["-C", cwd, ...args], { env: runnerGitEnv(), timeout: GIT_TIMEOUT_MS }, (err, stdout) => done(err ? null : stdout.trim()));
+    const timeout = env ? DEFAULT_BRANCH_TIMEOUT_MS : GIT_TIMEOUT_MS;
+    execFile("git", ["-C", cwd, ...args], { env: { ...runnerGitEnv(), ...env }, timeout }, (err, stdout) => done(err ? null : stdout.trim()));
   });
 }
 
@@ -55,7 +60,9 @@ const CLONE_RE = new RegExp(`\\bgh\\s+repo\\s+clone\\s+["']?${NAME}`);
 const REPO_FLAG_RE = new RegExp(`(?:^|\\s)(?:-R\\s*|--repo[=\\s]\\s*)["']?${NAME}`);
 const GH_RE = /(?:^|[\s;&|(])gh\s/;
 
-/** The repo a command names: a github.com URL, `gh repo clone owner/name`, or a `gh` `-R`/`--repo owner/name`. */
+/** The repo a command names: a github.com URL, `gh repo clone owner/name`, or a `gh` `-R`/`--repo owner/name`.
+ *  Anything else (`gh api repos/o/n`, `GH_REPO=`, `git -C dir`, ssh with a port, www.github.com) finds no
+ *  repo and runs without a token, so a miss fails auth rather than using the wrong repo's token. */
 export function repoFromCommand(command: string): string | null {
   for (const re of [URL_RE, CLONE_RE]) {
     const m = re.exec(command);
@@ -92,7 +99,8 @@ export function effectiveCwd(command: string, cwd: string, home: string): string
 export class GitHubCredentials {
   private readonly now: () => number;
   private readonly log: Log;
-  private readonly git: (cwd: string, args: string[]) => Promise<string | null>;
+  private readonly git: (cwd: string, args: string[], env?: Record<string, string>) => Promise<string | null>;
+  private readonly fetchImpl: typeof fetch;
   private readonly grants = new Map<string, Grant>();
   private readonly inflight = new Map<string, Promise<Grant | null>>();
   private readonly failedUntil = new Map<string, number>();
@@ -105,6 +113,7 @@ export class GitHubCredentials {
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? getLogger("workspace.github");
     this.git = opts.git ?? runGit;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
   /** The repo a bash call works on: the cwd's github.com origin, else one the command names. */
@@ -128,11 +137,9 @@ export class GitHubCredentials {
         installAskpass(this.opts.askpassPath);
         this.askpassReady = true;
       }
-      if (target.localDir) await this.guard(target.localDir);
+      if (target.localDir) await this.guard(target.localDir, target.repo, grant.token);
       return {
-        GH_TOKEN: grant.token,
-        GIT_ASKPASS: this.opts.askpassPath,
-        GIT_TERMINAL_PROMPT: "0",
+        ...this.authEnv(grant.token),
         GIT_AUTHOR_NAME: grant.botName,
         GIT_AUTHOR_EMAIL: grant.botEmail,
         GIT_COMMITTER_NAME: grant.botName,
@@ -142,6 +149,19 @@ export class GitHubCredentials {
       this.log.warn({ err: err instanceof Error ? err.message : String(err) }, "github credentials: failed; running without them");
       return {};
     }
+  }
+
+  /** git/gh auth for one token. Only the askpass helper answers credential prompts: the config reset
+   *  drops any credential.helper (which git would also hand the token to on success). */
+  private authEnv(token: string): Record<string, string> {
+    return {
+      GH_TOKEN: token,
+      GIT_ASKPASS: this.opts.askpassPath,
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.helper",
+      GIT_CONFIG_VALUE_0: "",
+    };
   }
 
   private async grant(repo: string): Promise<Grant | null> {
@@ -177,7 +197,7 @@ export class GitHubCredentials {
   }
 
   /** Installs the default-branch pre-push guard in a repo under ~/projects, once per checkout. */
-  private async guard(dir: string): Promise<void> {
+  private async guard(dir: string, repo: string, token: string): Promise<void> {
     if (this.checked.has(dir)) return;
     this.checked.add(dir);
     const common = await this.git(dir, ["rev-parse", "--git-common-dir"]);
@@ -195,11 +215,36 @@ export class GitHubCredentials {
     const rel = relative(projects, gitDir);
     if (!rel || rel.startsWith("..") || isAbsolute(rel) || this.guarded.has(gitDir)) return;
     this.guarded.add(gitDir);
+    const defaultBranch = await this.defaultBranch(dir, repo, token);
     const end = this.opts.leaseWrite?.([`${relative(home, gitDir)}/hooks`]);
     try {
-      if (installPrePushGuard(gitDir)) this.log.info({ gitDir }, "installed the default-branch pre-push guard");
+      if (installPrePushGuard(gitDir, defaultBranch)) this.log.info({ gitDir, defaultBranch }, "installed the default-branch pre-push guard");
     } finally {
       end?.();
     }
+  }
+
+  /** origin/HEAD, else the remote's HEAD, else the GitHub API; null when all fail (the hook then
+   *  still protects main and master). */
+  private async defaultBranch(dir: string, repo: string, token: string): Promise<string | null> {
+    const local = await this.git(dir, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+    if (local) return local.replace(/^origin\//, "");
+    const remote = await this.git(dir, ["ls-remote", "--symref", "origin", "HEAD"], this.authEnv(token));
+    const m = remote && /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(remote);
+    if (m) return m[1]!;
+    try {
+      const res = await this.fetchImpl(`${GITHUB_API}/repos/${repo}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+        signal: AbortSignal.timeout(DEFAULT_BRANCH_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { default_branch?: unknown };
+        if (typeof body.default_branch === "string" && body.default_branch) return body.default_branch;
+      }
+    } catch {
+      // fall through: main and master stay protected
+    }
+    this.log.warn({ repo }, "could not resolve the default branch; the pre-push guard protects main and master");
+    return null;
   }
 }

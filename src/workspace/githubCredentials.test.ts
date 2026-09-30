@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,14 @@ const HOUR = 3600_000;
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { env: runnerGitEnv(), encoding: "utf8" }).trim();
 }
+
+/** Real git for local commands; anything that would reach the network answers null instead. */
+async function offlineGit(cwd: string, args: string[], env?: Record<string, string>): Promise<string | null> {
+  if (args[0] === "ls-remote") return null;
+  return new Promise((done) => execFile("git", ["-C", cwd, ...args], { env: { ...runnerGitEnv(), ...env } }, (err, out) => done(err ? null : out.trim())));
+}
+
+const noApi = (async () => new Response("", { status: 404 })) as unknown as typeof fetch;
 
 function initRepo(dir: string, origin?: string): void {
   mkdirSync(dir, { recursive: true });
@@ -107,6 +115,8 @@ describe("GitHubCredentials", () => {
       },
       now: () => now,
       log: { warn: (obj, msg) => warns.push({ obj, msg }), info: () => {} },
+      git: offlineGit,
+      fetchImpl: noApi,
       ...overrides,
     });
   }
@@ -120,6 +130,9 @@ describe("GitHubCredentials", () => {
       GH_TOKEN: TOKEN,
       GIT_ASKPASS: join(state, "git-askpass.sh"),
       GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.helper",
+      GIT_CONFIG_VALUE_0: "",
       GIT_AUTHOR_NAME: "sushii-runner[bot]",
       GIT_AUTHOR_EMAIL: "runner@users.noreply.github.com",
       GIT_COMMITTER_NAME: "sushii-runner[bot]",
@@ -229,5 +242,112 @@ describe("GitHubCredentials", () => {
     const ask = (prompt: string) => execFileSync(askpass, [prompt], { env: { PATH: process.env.PATH, GH_TOKEN: TOKEN }, encoding: "utf8" }).trim();
     expect(ask("Username for 'https://github.com': ")).toBe("x-access-token");
     expect(ask("Password for 'https://x-access-token@github.com': ")).toBe(TOKEN);
+  });
+
+  test("the askpass helper answers nothing, and fails, for any prompt not for https://github.com", async () => {
+    await creds().envFor("gh pr list -R acme/widgets", home);
+    const askpass = join(state, "git-askpass.sh");
+    for (const prompt of [
+      "Username for 'http://127.0.0.1:8080': ",
+      "Password for 'https://x-access-token@evil.test': ",
+      "Username for 'https://github.com.evil.test': ",
+      "Username for 'http://github.com': ",
+      "Username for 'https://github.com:8443': ",
+      "Password for 'https://x-access-token@github.com/@evil.test': ",
+      "Password for 'https://x-access-token@github.com': @evil.test': ",
+      "Password for 'https://drk@github.com': ",
+    ]) {
+      const res = spawnSync(askpass, [prompt], { env: { PATH: process.env.PATH, GH_TOKEN: TOKEN }, encoding: "utf8" });
+      expect({ prompt, out: res.stdout, failed: res.status !== 0 }).toEqual({ prompt, out: "", failed: true });
+    }
+    const noToken = spawnSync(askpass, ["Password for 'https://x-access-token@github.com': "], { env: { PATH: process.env.PATH }, encoding: "utf8" });
+    expect(noToken.status).not.toBe(0);
+  });
+
+  test("git in a github checkout sends no token to a non-GitHub host, even via insteadOf or a repo credential.helper", async () => {
+    const auths: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        auths.push(req.headers.get("authorization") ?? "");
+        return new Response("auth required", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="x"' } });
+      },
+    });
+    try {
+      const repo = join(home, "projects", "acme-widgets");
+      initRepo(repo, "https://github.com/acme/widgets.git");
+      git(repo, "config", "credential.helper", "store");
+      const env = await creds().envFor("git ls-remote", repo);
+      expect(env.GH_TOKEN).toBe(TOKEN);
+      const base = `http://127.0.0.1:${server.port}`;
+      const run = (...args: string[]) =>
+        new Promise<void>((done) => execFile("git", ["-C", repo, ...args], { env: { ...runnerGitEnv(), HOME: home, ...env } }, () => done()));
+      await run("ls-remote", `${base}/evil.git`);
+      await run("ls-remote", `http://x-access-token%40github.com%2F@127.0.0.1:${server.port}/evil.git`);
+      await run("-c", `url.${base}/.insteadOf=https://github.com/`, "ls-remote", "origin");
+      expect(auths.length).toBeGreaterThanOrEqual(3);
+      const decoded = auths.map((a) => (a.startsWith("Basic ") ? Buffer.from(a.slice(6), "base64").toString() : a));
+      expect(decoded.join("\n")).not.toContain(TOKEN);
+      expect(existsSync(join(home, ".git-credentials"))).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  describe("default branch the pre-push guard protects", () => {
+    const hookOf = (repo: string) => join(repo, ".git", "hooks", "pre-push");
+    const pushTo = (repo: string, branch: string) =>
+      spawnSync("sh", [hookOf(repo), "origin", "https://github.com/acme/widgets.git"], { cwd: repo, input: `refs/heads/x abc refs/heads/${branch} 000\n`, encoding: "utf8" }).status;
+
+    test("origin/HEAD when present", async () => {
+      const repo = join(home, "projects", "acme-widgets");
+      initRepo(repo, "https://github.com/acme/widgets.git");
+      git(repo, "update-ref", "refs/remotes/origin/trunk", "HEAD");
+      git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk");
+      await creds().envFor("git status", repo);
+      git(repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"); // the baked-in name must hold on its own
+      expect(pushTo(repo, "trunk")).not.toBe(0);
+      expect(pushTo(repo, "main")).not.toBe(0);
+      expect(pushTo(repo, "master")).not.toBe(0);
+      expect(pushTo(repo, "feat/x")).toBe(0);
+    });
+
+    test("the remote's HEAD, asked with the token env, when there is no origin/HEAD", async () => {
+      const repo = join(home, "projects", "acme-widgets");
+      initRepo(repo, "https://github.com/acme/widgets.git");
+      let lsEnv: Record<string, string> | undefined;
+      const git = async (cwd: string, args: string[], env?: Record<string, string>) => {
+        if (args[0] !== "ls-remote") return offlineGit(cwd, args, env);
+        lsEnv = env;
+        return "ref: refs/heads/develop\tHEAD\nabc123\tHEAD";
+      };
+      await creds({ git }).envFor("git status", repo);
+      expect(lsEnv).toMatchObject({ GH_TOKEN: TOKEN, GIT_ASKPASS: join(state, "git-askpass.sh") });
+      expect(pushTo(repo, "develop")).not.toBe(0);
+    });
+
+    test("the GitHub API with the bot's token when git can't tell", async () => {
+      const repo = join(home, "projects", "acme-widgets");
+      initRepo(repo, "https://github.com/acme/widgets.git");
+      const seen: Array<{ url: string; auth: string | null }> = [];
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        seen.push({ url, auth: new Headers(init?.headers).get("authorization") });
+        return Response.json({ default_branch: "release" });
+      }) as unknown as typeof fetch;
+      await creds({ fetchImpl }).envFor("git status", repo);
+      expect(seen).toEqual([{ url: "https://api.github.com/repos/acme/widgets", auth: `Bearer ${TOKEN}` }]);
+      expect(pushTo(repo, "release")).not.toBe(0);
+    });
+
+    test("main and master when nothing resolves", async () => {
+      const repo = join(home, "projects", "acme-widgets");
+      initRepo(repo, "https://github.com/acme/widgets.git");
+      await creds().envFor("git status", repo);
+      expect(pushTo(repo, "master")).not.toBe(0);
+      expect(pushTo(repo, "main")).not.toBe(0);
+      expect(pushTo(repo, "feat/x")).toBe(0);
+      expect(warns.map((w) => w.msg)).toContain("could not resolve the default branch; the pre-push guard protects main and master");
+    });
   });
 });

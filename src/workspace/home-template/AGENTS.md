@@ -116,8 +116,10 @@ The workspace runs jobs on its own and messages drk only when a job has somethin
 - GitHub: `git` and `gh` work as `sushii-runner[bot]` on repos the sushii GitHub App is installed
   on (the token is injected per command, for the repo you're in or the one the command names).
   Clone over https (`gh repo clone <owner>/<repo> projects/<owner>-<repo>`); ssh remotes have no
-  key. Work on a branch and open a PR; never push to the default branch. If auth fails, the App
-  likely isn't installed on that repo: tell drk rather than working around it.
+  key. Work on a branch and open a PR; never push to the default branch. A pre-push hook refuses
+  it; bypassing a hook (`--no-verify`, `core.hooksPath`, editing or deleting it) is against the
+  rules. If auth fails, the App likely isn't installed on that repo: tell drk rather than working
+  around it.
 
 ## Delegation
 

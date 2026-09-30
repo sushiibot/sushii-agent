@@ -72,6 +72,35 @@ describe("GitHubAppTokenProvider", () => {
     await expect(provider.tokenFor({ owner: "a", repo: "b" })).rejects.toThrow(/no GitHub App installation/);
   });
 
+  test("a 404 minting on a cached installation id looks the installation up again, once", async () => {
+    let now = 1_000_000;
+    const { impl, calls } = fakeFetch([
+      { body: { id: 7 } },
+      { body: { token: "t1", expires_at: new Date(now + 3600_000).toISOString() } },
+      { ok: false, status: 404, body: { message: "Not Found" } }, // App reinstalled: id 7 is gone
+      { body: { id: 8 } },
+      { body: { token: "t2", expires_at: new Date(now + 7200_000).toISOString() } },
+    ]);
+    const provider = new GitHubAppTokenProvider({ appId: "1", privateKey: testKey(), fetchImpl: impl, now: () => now });
+    await provider.tokenFor({ owner: "a", repo: "b" });
+    now += 3600_000;
+    expect((await provider.tokenFor({ owner: "a", repo: "b" })).token).toBe("t2");
+    expect(calls.map((c) => c.url.replace(/^.*github\.com/, ""))).toEqual([
+      "/repos/a/b/installation",
+      "/app/installations/7/access_tokens",
+      "/app/installations/7/access_tokens",
+      "/repos/a/b/installation",
+      "/app/installations/8/access_tokens",
+    ]);
+  });
+
+  test("a mint failure on a freshly looked-up installation is not retried", async () => {
+    const { impl, calls } = fakeFetch([{ body: { id: 7 } }, { ok: false, status: 401, body: { message: "Bad credentials" } }]);
+    const provider = new GitHubAppTokenProvider({ appId: "1", privateKey: testKey(), fetchImpl: impl });
+    await expect(provider.tokenFor({ owner: "a", repo: "b" })).rejects.toThrow(/failed: 401/);
+    expect(calls).toHaveLength(2);
+  });
+
   test("tokenProviderFromEnv returns null when unconfigured", () => {
     expect(tokenProviderFromEnv({})).toBeNull();
     expect(tokenProviderFromEnv({ GITHUB_APP_ID: "1" })).toBeNull();

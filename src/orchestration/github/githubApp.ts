@@ -72,19 +72,29 @@ export class GitHubAppTokenProvider implements GitTokenProvider {
     if (cached && cached.expiresAt - this.now() > TOKEN_TTL_SLACK_MS) return cached;
 
     const jwt = appJwt(this.appId, this.privateKey, this.now());
+    const cachedInstallation = this.installationIds.has(key);
+    let res = await this.mint(spec, jwt);
+    // A reinstalled App has a new installation id; a 404/401 on the cached one means look it up again.
+    if ((res.status === 404 || res.status === 401) && cachedInstallation) {
+      this.installationIds.delete(key);
+      res = await this.mint(spec, jwt);
+    }
+    if (!res.ok) throw new Error(`mint installation token for ${key} failed: ${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { token: string; expires_at: string };
+    const minted: RepoToken = { token: body.token, expiresAt: Date.parse(body.expires_at) };
+    this.tokens.set(key, minted);
+    return minted;
+  }
+
+  private async mint(spec: RepoSpec, jwt: string): Promise<Response> {
     const installationId = await this.installationFor(spec, jwt);
-    const res = await this.fetchImpl(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
+    return this.fetchImpl(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
       method: "POST",
       headers: this.appHeaders(jwt),
       // Scope the token to just this repo, so a token minted for one repo cannot touch another in
       // the same installation.
       body: JSON.stringify({ repositories: [spec.repo] }),
     });
-    if (!res.ok) throw new Error(`mint installation token for ${key} failed: ${res.status} ${await res.text()}`);
-    const body = (await res.json()) as { token: string; expires_at: string };
-    const minted: RepoToken = { token: body.token, expiresAt: Date.parse(body.expires_at) };
-    this.tokens.set(key, minted);
-    return minted;
   }
 
   private async installationFor(spec: RepoSpec, jwt: string): Promise<number> {
