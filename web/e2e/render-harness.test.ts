@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 // Drives the render components in Chromium, under the gateway's Trusted Types policy. The depth
 // payloads live here rather than only in bun tests because JSC overflows on them only sometimes.
-const HARNESS = 'http://localhost:4174/';
+const HARNESS = `http://localhost:${process.env.PW_HARNESS_PORT ?? 4174}/`;
 
 type Win = {
 	h: {
