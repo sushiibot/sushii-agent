@@ -40,6 +40,7 @@ import { startSlackAgentLoop, type SlackAgentClient } from "./surfaces/slack/gat
 import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
 import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
+import { startWebServer } from "./surfaces/web/server.ts";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -213,6 +214,9 @@ async function main() {
   const mcpServer = Bun.serve({ port: config.mcpBridgePort, fetch: mcpApp.fetch, idleTimeout: 60 });
   logger.info({ port: mcpServer.port }, "MCP bridge HTTP server listening");
 
+  const webServer = config.web ? startWebServer(config.web, db) : undefined;
+  if (!config.web) logger.info("WEB_OWNER_LOGIN not set — web gateway disabled");
+
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
@@ -220,6 +224,7 @@ async function main() {
     logger.info("Shutting down...");
     client.destroy();
     mcpServer.stop();
+    webServer?.stop();
     try {
       await slackApp?.stop();
     } catch (err) {

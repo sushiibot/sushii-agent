@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { resolveOwnerPrincipals, resolveTeamsConfig, teamGuildConfigs } from "./config.ts";
+import { parseWebConfig, resolveOwnerPrincipals, resolveTeamsConfig, teamGuildConfigs } from "./config.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
 import type { TeamConfig } from "./orchestration/teams.ts";
 
@@ -130,5 +130,51 @@ describe("teamGuildConfigs", () => {
       },
     };
     expect(teamGuildConfigs(teams)).toEqual({ g1: { allowedRoles: ["r1"] } });
+  });
+});
+
+describe("parseWebConfig", () => {
+  const vapid = { VAPID_PUBLIC_KEY: "BPubKey_-", VAPID_PRIVATE_KEY: "privKey-_", VAPID_SUBJECT: "mailto:me@example.com" };
+
+  test("disabled when WEB_OWNER_LOGIN is unset or blank, even with other web vars invalid", () => {
+    expect(parseWebConfig({})).toBeUndefined();
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "  ", WEB_PORT: "nope", VAPID_PUBLIC_KEY: "x" })).toBeUndefined();
+  });
+
+  test("defaults, with push off when the VAPID keys are absent", () => {
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me@example.com" })).toEqual({
+      port: 8790,
+      bindAddr: "127.0.0.1",
+      ownerLogin: "me@example.com",
+      distDir: "/app/web/build",
+      devLogin: undefined,
+      trustedPeers: ["172.31.250.1"],
+      push: undefined,
+    });
+  });
+
+  test("push on with both keys and a subject", () => {
+    const web = parseWebConfig({ WEB_OWNER_LOGIN: "me@example.com", ...vapid, WEB_TRUSTED_PEERS: "127.0.0.1, 172.31.250.1", WEB_BIND_ADDR: "172.31.250.2" });
+    expect(web?.push).toEqual({ publicKey: "BPubKey_-", privateKey: "privKey-_", subject: "mailto:me@example.com" });
+    expect(web?.trustedPeers).toEqual(["127.0.0.1", "172.31.250.1"]);
+    expect(web?.bindAddr).toBe("172.31.250.2");
+  });
+
+  test("a half-configured VAPID pair or a missing subject fails loudly", () => {
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", VAPID_PUBLIC_KEY: "abc" })).toThrow("set together");
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", VAPID_PUBLIC_KEY: "abc", VAPID_PRIVATE_KEY: "def" })).toThrow("VAPID_SUBJECT");
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_PORT: "70000" })).toThrow();
+  });
+
+  test("trusted peers are exact IPs and the bind address must be an IP", () => {
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_TRUSTED_PEERS: "172.31.250.0/24" })).toThrow("exact IPs");
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_TRUSTED_PEERS: " , " })).toThrow();
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_BIND_ADDR: "0.0.0.0/0" })).toThrow();
+    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_BIND_ADDR: "localhost" })).toThrow();
+  });
+
+  test("WEB_DEV_LOGIN is dropped in production", () => {
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me" })?.devLogin).toBe("me");
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", NODE_ENV: "production" })?.devLogin).toBeUndefined();
   });
 });
