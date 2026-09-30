@@ -19,7 +19,8 @@ describe("SPA CSP", () => {
     expect(web("src/lib/app/trusted-types.ts")).toContain("'sushii-sw-url'");
   });
 
-  test("vite preview enforces the same allowlist the bot serves", () => {
+  test("vite preview and the render harness enforce the same allowlist the bot serves", () => {
     expect(web("vite.config.ts")).toContain(`const TRUSTED_TYPE_POLICIES = '${TRUSTED_TYPE_POLICIES.join(" ")}';`);
+    expect(web("e2e/harness/vite.config.ts")).toContain(`'trusted-types ${TRUSTED_TYPE_POLICIES.join(" ")}'`);
   });
 });

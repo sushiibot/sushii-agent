@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 // same Trusted Types policy the gateway serves, before any route wires them up.
 const web = (path: string) => fileURLToPath(new URL(`../../${path}`, import.meta.url));
 
+// The policy names mirror TRUSTED_TYPE_POLICIES in src/surfaces/web/static.ts; a root test keeps them in step.
 const CSP = [
 	"default-src 'self'",
 	"script-src 'self'",
