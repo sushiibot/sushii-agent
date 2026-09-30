@@ -1,6 +1,7 @@
 import { mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeFileAtomic } from "./files.ts";
+import { redact } from "./secretPatterns.ts";
 
 // No logger import: the ws-consolidate CLI uses this module and pino would write JSON onto its stdout.
 
@@ -37,6 +38,8 @@ export interface ScheduledJob {
   name: string;
   /** Own trigger; without one the job runs at the scheduler's daily `at`, with a startup catch-up. */
   schedule?: JobSchedule;
+  /** A run past this is reported stuck (once); it is not aborted. Default DEFAULT_MAX_RUN_MS. */
+  maxRunMs?: number;
   run(ctx: JobContext): Promise<JobOutcome>;
 }
 
@@ -53,8 +56,26 @@ export interface JobRunState {
   lastSummary?: string;
 }
 
+/** Set once a failure streak has been reported; cleared by the next success. */
+export interface JobAlertState {
+  at: string;
+  kind: "failed" | "stuck";
+}
+
 export interface SchedulerState {
   jobs: Record<string, JobRunState>;
+  alerts: Record<string, JobAlertState>;
+}
+
+export interface JobAlert {
+  job: string;
+  kind: "failed" | "stuck" | "recovered";
+  trigger: JobTrigger;
+  startedAt: Date;
+  /** One line, redacted and truncated; on "failed" only. */
+  error?: string;
+  /** The job's schedule as formatSchedule renders it, e.g. "daily 04:00". */
+  schedule: string;
 }
 
 type Log = { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void; error: (obj: object, msg: string) => void };
@@ -69,6 +90,8 @@ export interface SchedulerOptions {
   /** How often due times and manual requests are checked. */
   pollMs?: number;
   log?: Log;
+  /** At most one "failed"/"stuck" per job per failure streak, and one "recovered" when a success ends it. */
+  onJobAlert?: (alert: JobAlert) => void | Promise<void>;
 }
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -76,6 +99,12 @@ const DAY_MS = 24 * 60 * 60_000;
 export const DAILY_GRACE_MS = 60 * 60_000;
 export const MIN_EVERY_MINUTES = 5;
 export const MAX_EVERY_MINUTES = 24 * 60;
+export const DEFAULT_MAX_RUN_MS = 30 * 60_000;
+export const ALERT_ERROR_MAX = 200;
+/** Outcome statuses that count as a failed run; "error" is what a thrown run records. */
+export const FAILED_STATUSES: readonly string[] = ["error", "failed", "rejected"];
+/** Outcome statuses that neither end nor extend a failure streak (e.g. a consolidation skipped on unchanged inputs). */
+export const NEUTRAL_STATUSES: readonly string[] = ["skipped", "rate_limited"];
 const JOB_NAME = /^[a-z0-9-]+$/;
 const AT = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -104,7 +133,24 @@ export function readJobIndex(stateDir: string): JobIndexEntry[] | null {
 
 export function readSchedulerState(stateDir: string): SchedulerState {
   const state = readJson<Partial<SchedulerState>>(schedulerStatePath(stateDir));
-  return { jobs: state?.jobs && typeof state.jobs === "object" ? state.jobs : {} };
+  return {
+    jobs: state?.jobs && typeof state.jobs === "object" ? state.jobs : {},
+    alerts: state?.alerts && typeof state.alerts === "object" ? state.alerts : {},
+  };
+}
+
+/** Secrets redacted before the text is cut, so a truncated token can't slip past the patterns. */
+export function alertErrorText(text: string, max = ALERT_ERROR_MAX): string {
+  const flat = redact(text).replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+export function jobAlertText(a: JobAlert): string {
+  if (a.kind === "recovered") return `✅ scheduled job \`${a.job}\` is working again (${a.trigger} run succeeded).`;
+  if (a.kind === "stuck") {
+    return `⚠️ scheduled job \`${a.job}\` (${a.trigger}) has been running since ${a.startedAt.toISOString()} and looks stuck; it was left running. Schedule: ${a.schedule}.`;
+  }
+  return `⚠️ scheduled job \`${a.job}\` failed (${a.trigger})${a.error ? `: ${a.error}` : ""}. It will retry on its schedule (${a.schedule}).`;
 }
 
 /** Queues a manual run of `job`; the running scheduler picks it up on its next poll. */
@@ -321,14 +367,22 @@ export class Scheduler {
     const job = this.jobs.get(name) ?? this.currentJobs().get(name);
     if (!job) return Promise.reject(new Error(`unknown job: ${name}`));
     const started = this.now();
+    const schedule = formatSchedule(job.schedule, this.opts.at);
+    const watchdog = setTimeout(() => {
+      if (!this.stopped) this.raise(name, { job: name, kind: "stuck", trigger: ctx.trigger, startedAt: started, schedule });
+    }, job.maxRunMs ?? DEFAULT_MAX_RUN_MS);
+    watchdog.unref?.();
     const run = (async () => {
       let outcome: JobOutcome | null = null;
+      let error: string | undefined;
       try {
         outcome = await job.run(ctx);
         this.opts.log?.info({ job: name, trigger: ctx.trigger, status: outcome.status }, "scheduled job finished");
       } catch (err) {
         this.opts.log?.error({ err, job: name, trigger: ctx.trigger }, "scheduled job failed");
+        error = err instanceof Error ? err.message : String(err);
       }
+      clearTimeout(watchdog);
       // Recorded after a failure too, so a job that throws retries tomorrow rather than on every restart.
       this.record(name, {
         lastRunAt: started.toISOString(),
@@ -336,8 +390,19 @@ export class Scheduler {
         lastStatus: outcome?.status ?? "error",
         ...(outcome?.summary ? { lastSummary: outcome.summary } : {}),
       });
+      const status = outcome?.status ?? "error";
+      const base = { job: name, trigger: ctx.trigger, startedAt: started, schedule };
+      if (FAILED_STATUSES.includes(status)) {
+        const text = error ?? outcome?.summary ?? status;
+        this.raise(name, { ...base, kind: "failed", error: alertErrorText(text) });
+      } else if (!NEUTRAL_STATUSES.includes(status)) {
+        this.clearStreak(name, base);
+      }
       return outcome;
-    })().finally(() => this.inFlight.delete(name));
+    })().finally(() => {
+      clearTimeout(watchdog);
+      this.inFlight.delete(name);
+    });
     this.inFlight.set(name, run);
     return run;
   }
@@ -392,15 +457,47 @@ export class Scheduler {
     }
   }
 
-  private record(name: string, run: JobRunState): void {
+  /** Sends `alert` unless this job's current failure streak was already reported. */
+  private raise(name: string, alert: JobAlert & { kind: "failed" | "stuck" }): void {
+    const state = readSchedulerState(this.opts.stateDir);
+    if (state.alerts[name]) return;
+    state.alerts[name] = { at: this.now().toISOString(), kind: alert.kind };
+    if (!this.writeState(state, name)) return;
+    this.emit(alert);
+  }
+
+  private clearStreak(name: string, base: Omit<JobAlert, "kind">): void {
+    const state = readSchedulerState(this.opts.stateDir);
+    if (!state.alerts[name]) return;
+    delete state.alerts[name];
+    if (this.writeState(state, name)) this.emit({ ...base, kind: "recovered" });
+  }
+
+  private emit(alert: JobAlert): void {
+    const hook = this.opts.onJobAlert;
+    if (!hook) return;
+    try {
+      void Promise.resolve(hook(alert)).catch((err) => this.opts.log?.warn({ err, job: alert.job }, "failed to send a scheduled job alert"));
+    } catch (err) {
+      this.opts.log?.warn({ err, job: alert.job }, "failed to send a scheduled job alert");
+    }
+  }
+
+  private writeState(state: SchedulerState, name: string): boolean {
     try {
       mkdirSync(this.opts.stateDir, { recursive: true });
-      const state = readSchedulerState(this.opts.stateDir);
-      state.jobs[name] = run;
       writeFileAtomic(schedulerStatePath(this.opts.stateDir), `${JSON.stringify(state, null, 2)}\n`);
+      return true;
     } catch (err) {
-      this.opts.log?.error({ err, job: name }, "failed to record a scheduled run");
+      this.opts.log?.error({ err, job: name }, "failed to write the scheduler state");
+      return false;
     }
+  }
+
+  private record(name: string, run: JobRunState): void {
+    const state = readSchedulerState(this.opts.stateDir);
+    state.jobs[name] = run;
+    this.writeState(state, name);
   }
 }
 
