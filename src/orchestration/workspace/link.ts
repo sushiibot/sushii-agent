@@ -30,6 +30,7 @@ import { getLogger } from "../../logger.ts";
 import type { GitHubTokenBroker } from "./githubToken.ts";
 import { progressEditDelay, realTimers, type Timers } from "./progress.ts";
 import {
+  DeliveryRejectedError,
   SurfaceUnavailableError,
   type AckKind,
   type AskView,
@@ -59,6 +60,8 @@ const NEW_SESSION_TIMEOUT_MS = 240_000;
 const PERSISTED_LINES = 8;
 const OUTBOX_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const ENDED_TURNS_KEPT = 100;
+// One main turn runs at a time; more open views than this are stale or a workspace flooding turnIds.
+export const MAX_OPEN_TURNS = 20;
 /** Consecutive failed sends of one delivery before it goes out as plain text instead. */
 export const DELIVERY_MAX_FAILURES = 3;
 /** chat/message id of an ask's answer: one per ask, whichever surface or button answered it, so the
@@ -766,6 +769,13 @@ export class WorkspaceLink {
           this.opts.store.deleteKv(failureKey(p.outboxId));
         } catch (err) {
           if (err instanceof SurfaceUnavailableError) throw err;
+          if (err instanceof DeliveryRejectedError) {
+            log.warn({ err, outboxId: p.outboxId, surface: adapter.surface }, "the surface refused a delivery; acking it so it isn't resent");
+            this.opts.store.deleteKv(failureKey(p.outboxId));
+            this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
+            await this.ackDelivery(p.outboxId);
+            return;
+          }
           // Persisted: the workspace resends mostly after a register, which usually follows a bot restart.
           const failures = Number(this.opts.store.getKv(failureKey(p.outboxId)) ?? "0") + 1;
           this.opts.store.setKv(failureKey(p.outboxId), String(failures));
@@ -776,14 +786,18 @@ export class WorkspaceLink {
         }
         this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
       }
-      await this.request(RPC_METHODS.chatAck, { outboxId: p.outboxId }, CONTROL_TIMEOUT_MS).catch((err) =>
-        log.warn({ err, outboxId: p.outboxId }, "chat/ack failed; the workspace will resend and be re-acked"),
-      );
+      await this.ackDelivery(p.outboxId);
     } catch (err) {
       log.warn({ err, outboxId: p.outboxId }, "failed to deliver workspace message");
     } finally {
       this.delivering.delete(p.outboxId);
     }
+  }
+
+  private async ackDelivery(outboxId: string): Promise<void> {
+    await this.request(RPC_METHODS.chatAck, { outboxId }, CONTROL_TIMEOUT_MS).catch((err) =>
+      log.warn({ err, outboxId }, "chat/ack failed; the workspace will resend and be re-acked"),
+    );
   }
 
   /** Finalizes the reply's progress view if it is still open; returns the turn's tool count if known. */
@@ -824,12 +838,9 @@ export class WorkspaceLink {
         this.endToolLine(this.turns.get(p.turnId), ev.name, ev.ok, undefined);
         return;
       case "turn_end": {
+        // A turn this process never saw start has nothing to finalize; the workspace can repeat these at will.
         const turn = this.turns.get(p.turnId);
         if (turn) this.finishTurn(turn, ev.aborted ? "stopped" : "done");
-        else if (ev.aborted && !this.endedTurns.has(p.turnId)) {
-          // A tool-less run that was stopped: no progress message exists, and no reply will follow.
-          void this.postFinal(origin, { outcome: "stopped", summary: { durationMs: 0, toolCount: 0 } });
-        }
         return;
       }
       case "text_delta": {
@@ -897,6 +908,7 @@ export class WorkspaceLink {
   private turnFor(turnId: string, origin: ChatOrigin | null): TurnProgress {
     let turn = this.turns.get(turnId);
     if (!turn) {
+      if (this.turns.size >= MAX_OPEN_TURNS) this.finishTurn(this.turns.values().next().value!, "interrupted");
       turn = {
         turnId,
         origin,
@@ -932,10 +944,10 @@ export class WorkspaceLink {
   }
 
   /** Posts a final state with no view to edit. */
-  private async postFinal(origin: ChatOrigin | null, final: ProgressFinal): Promise<void> {
+  private async postFinal(origin: ChatOrigin | null, turnId: string, final: ProgressFinal): Promise<void> {
     try {
       const s = this.surfaceFor(origin);
-      await s.adapter.progressFinalize(s.origin, null, final);
+      await s.adapter.progressFinalize(s.origin, null, { ...final, turnId });
     } catch (err) {
       log.warn({ err }, "failed to send workspace progress message");
     }
@@ -1006,7 +1018,7 @@ export class WorkspaceLink {
       turn.timer = null;
     }
     if (turn.message) void this.queueFinal(turn, outcome);
-    else if (outcome !== "done") void this.postFinal(turn.origin, { outcome, summary: { durationMs: this.now() - turn.startedAt, toolCount: 0 } });
+    else if (outcome !== "done") void this.postFinal(turn.origin, turn.turnId, { outcome, summary: { durationMs: this.now() - turn.startedAt, toolCount: 0 } });
     this.persistProgress();
   }
 }

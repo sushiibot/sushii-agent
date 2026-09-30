@@ -142,6 +142,9 @@ export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 
 export const CHAT_HISTORY_TIMEOUT_MS = 15_000;
 export const CHAT_HISTORY_LIMIT_MAX = 100;
+/** chat/history's JSON-RPC error when `before` names no entry it still has (a rotated or reset session). */
+export const CHAT_HISTORY_UNKNOWN_CURSOR = "unknown history cursor";
+export const CHAT_HISTORY_UNKNOWN_CURSOR_CODE = -32010;
 
 export const chatHistoryParams = z.object({
   principalId: z.string(),
@@ -261,9 +264,9 @@ export type ChatEventPayload = z.infer<typeof chatEventPayload>;
 export const chatEventParams = z.object({
   origin: chatOrigin.optional(),
   principalId: z.string(),
-  turnId: z.string(),
+  turnId: z.string().min(1).max(ID_MAX),
   agentId: z.string().min(1).max(ID_MAX), // "main" | <runId> of a subagent
-  parentRunId: z.string().optional(),
+  parentRunId: z.string().max(ID_MAX).optional(),
   ev: chatEventPayload,
 });
 export type ChatEventParams = z.infer<typeof chatEventParams>;

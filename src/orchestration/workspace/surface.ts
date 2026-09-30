@@ -35,6 +35,8 @@ export interface ProgressFinal {
   outcome: TurnOutcome;
   /** Null for a turn this process no longer tracks (it outlived a restart). */
   summary: { durationMs: number; toolCount: number } | null;
+  /** The turn a final without a handle belongs to. */
+  turnId?: string;
 }
 
 /** A surface's handle on a message it can edit later. `id` lets the view be found again after a restart. */
@@ -195,6 +197,12 @@ export interface SurfaceAdapter<M extends InboundMessage = InboundMessage, H ext
 
 /** The surface can't reach the principal at all (not a rendering failure). */
 export class SurfaceUnavailableError extends Error {}
+
+/** The surface is shedding load: the delivery stays unacked, without counting a failure, for a later resend. */
+export class SurfaceBusyError extends SurfaceUnavailableError {}
+
+/** The surface will never take this delivery, so it is acked and dropped rather than resent forever. */
+export class DeliveryRejectedError extends Error {}
 
 export interface ResolvedSurface {
   adapter: SurfaceAdapter;

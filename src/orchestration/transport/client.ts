@@ -39,6 +39,16 @@ export class RequestTimeoutError extends Error {
   }
 }
 
+/** Thrown by a request handler to answer with this JSON-RPC error code instead of the generic -32000. */
+export class RpcHandlerError extends Error {
+  constructor(
+    message: string,
+    readonly code: number,
+  ) {
+    super(message);
+  }
+}
+
 export interface OrchestrationClientOptions {
   url: string;
   runnerId: string;
@@ -307,7 +317,8 @@ export class OrchestrationClient {
         this.respondError(ws, id, `method not found: ${method}`, -32601);
       }
     } catch (err) {
-      this.respondError(ws, id, err instanceof Error ? err.message : String(err));
+      if (err instanceof RpcHandlerError) this.respondError(ws, id, err.message, err.code);
+      else this.respondError(ws, id, err instanceof Error ? err.message : String(err));
     }
   }
 
