@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { IMAGE_FETCH_TIMEOUT_MS, acceptsImages, isAllowedImageUrl, loadImageAttachments, prepareSteerImages, sniffImageType } from "./inboundImages.ts";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  IMAGE_FETCH_TIMEOUT_MS,
+  acceptsImages,
+  isAllowedImageUrl,
+  loadImageAttachments,
+  loadUploadAttachments,
+  prepareSteerImages,
+  sniffImageType,
+  uploadFileName,
+} from "./inboundImages.ts";
 import { MESSAGE_TIMEOUT_MS } from "../orchestration/workspace/link.ts";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]);
@@ -92,5 +104,36 @@ describe("helpers", () => {
     expect(acceptsImages({ model: { input: ["text", "image"] } })).toBe(true);
     expect(acceptsImages({ model: { input: ["text"] } })).toBe(false);
     expect(acceptsImages({})).toBe(true);
+  });
+});
+
+describe("owner uploads", () => {
+  const ID = "AAAAAAAAAAAAAAAAAAAAAA";
+  const up = (contentType = "image/png") => ({ name: "p.png", contentType, url: `upload:${ID}` });
+
+  test("the file extension comes from the declared type; anything unknown is .bin", () => {
+    expect(uploadFileName(ID, "image/png")).toBe(`${ID}.png`);
+    expect(uploadFileName(ID, "image/JPEG; q=1")).toBe(`${ID}.jpg`);
+    expect(uploadFileName(ID, "image/svg+xml")).toBe(`${ID}.bin`);
+  });
+
+  test("a symlink left at the target name is replaced, not written through", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ws-uploads-"));
+    try {
+      const victim = join(dir, "victim.txt");
+      writeFileSync(victim, "keep");
+      symlinkSync(victim, join(dir, `${ID}.png`));
+      const images = await loadUploadAttachments(
+        [up(), { name: "cdn.png", contentType: "image/png", url: "https://cdn.discordapp.com/a/b/cdn.png" }],
+        { principalId: "drk", dir, request: async () => ({ ok: true, name: "p.png", contentType: "image/png", dataBase64: Buffer.from(PNG).toString("base64") }) },
+        true,
+      );
+      expect(images.map((i) => i.mimeType)).toEqual(["image/png"]);
+      expect(readFileSync(victim, "utf8")).toBe("keep");
+      expect(lstatSync(join(dir, `${ID}.png`)).isSymbolicLink()).toBe(false);
+      expect(readdirSync(dir).sort()).toEqual([`${ID}.png`, "victim.txt"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

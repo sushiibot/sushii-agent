@@ -1,6 +1,9 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
-import { base64Bytes, type ChatMessageParams } from "../orchestration/contracts.ts";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { RPC_METHODS, base64Bytes, parseUploadUrl, uploadReadResult, type ChatMessageParams } from "../orchestration/contracts.ts";
 import { getLogger } from "../logger.ts";
 
 const log = getLogger("workspace.images");
@@ -101,7 +104,7 @@ async function fetchImage(a: Attachment, opts: ImageFetchOptions): Promise<Image
 
 /** The message's image attachments as model input; a failed or oversized download is left out, never thrown. */
 export async function loadImageAttachments(attachments: readonly Attachment[] | undefined, opts: ImageFetchOptions = {}): Promise<ImageContent[]> {
-  const images = (attachments ?? []).filter(isImageAttachment).slice(0, IMAGES_PER_MESSAGE_MAX);
+  const images = (attachments ?? []).filter((a) => isImageAttachment(a) && parseUploadUrl(a.url) === null).slice(0, IMAGES_PER_MESSAGE_MAX);
   const loaded = await Promise.all(images.map((a) => fetchImage(a, opts)));
   return loaded.filter((i): i is ImageContent => i !== null);
 }
@@ -144,4 +147,72 @@ export async function prepareSteerImages(
     }
   }
   return { text: hints.length ? `${text}\n\n${hints.join("\n")}` : text, images: out };
+}
+
+/** Owner uploads land in `~/uploads`, so the agent can open them again later. */
+export const UPLOADS_DIR = "uploads";
+const UPLOAD_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+
+/** `<id>.<ext>`, the extension from the bot's declared type. The id is the bot's 22-char upload id. */
+export function uploadFileName(uploadId: string, contentType: string): string {
+  return `${uploadId}.${UPLOAD_EXT[contentType.split(";")[0]!.trim().toLowerCase()] ?? "bin"}`;
+}
+
+export interface UploadFetchOptions {
+  principalId: string;
+  /** Absolute path of `~/uploads`. */
+  dir: string;
+  request: (method: string, params: unknown, timeoutMs?: number) => Promise<unknown>;
+  timeoutMs?: number;
+}
+
+/**
+ * Pulls each `upload:<id>` attachment's bytes from the bot over upload/read and writes them to
+ * `<dir>/<id>.<ext>`. Returns the ones that are images as model input when `images` is set; a failure
+ * leaves that attachment out and is never thrown.
+ */
+export async function loadUploadAttachments(attachments: readonly Attachment[] | undefined, opts: UploadFetchOptions, images: boolean): Promise<ImageContent[]> {
+  const uploads = (attachments ?? [])
+    .map((a) => ({ a, id: parseUploadUrl(a.url) }))
+    .filter((u): u is { a: Attachment; id: string } => u.id !== null)
+    .slice(0, IMAGES_PER_MESSAGE_MAX);
+  const loaded = await Promise.all(uploads.map((u) => fetchUpload(u.a, u.id, opts, images)));
+  return loaded.filter((i): i is ImageContent => i !== null);
+}
+
+async function fetchUpload(a: Attachment, uploadId: string, opts: UploadFetchOptions, images: boolean): Promise<ImageContent | null> {
+  try {
+    const res = uploadReadResult.parse(
+      await opts.request(RPC_METHODS.uploadRead, { principalId: opts.principalId, uploadId }, opts.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS),
+    );
+    if (!res.ok) {
+      log.info({ uploadId, error: res.error }, "the bot refused an upload's bytes; passing it as a note only");
+      return null;
+    }
+    const bytes = Buffer.from(res.dataBase64, "base64");
+    writeUpload(opts.dir, uploadFileName(uploadId, a.contentType), bytes);
+    if (!images) return null;
+    const mimeType = sniffImageType(bytes);
+    if (!mimeType) {
+      log.info({ uploadId, declared: a.contentType }, "upload isn't a PNG/JPEG/GIF/WEBP; saved to disk only");
+      return null;
+    }
+    return { type: "image", data: res.dataBase64, mimeType };
+  } catch (err) {
+    log.warn({ err, uploadId }, "fetching an upload's bytes failed; passing it as a note only");
+    return null;
+  }
+}
+
+// Rename replaces the directory entry, so a symlink the agent left at the final name is never followed.
+function writeUpload(dir: string, name: string, bytes: Uint8Array): void {
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    writeFileSync(tmp, bytes, { flag: "wx", mode: 0o644 });
+    renameSync(tmp, join(dir, name));
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 }
