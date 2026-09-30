@@ -8,6 +8,7 @@ import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
 import { createPeerMatcher } from "./peers.ts";
 import { PushSubscriptionStore, createPushSender, type PushTransport } from "./push.ts";
+import { QuietHoursStore } from "./pushRules.ts";
 import { createWebHandler, decodeEncodedWords, internalErrorResponse, readBodyCapped, startWebGateway, startWebServer, type WebHandler } from "./server.ts";
 
 const OWNER = "owner@example.com";
@@ -299,6 +300,36 @@ describe("push api", () => {
     expect((await handler(req("/api/push/key"), GW)).status).toBe(404);
     expect((await handler(jsonWrite("/api/push/subscribe", "POST", SUB), GW)).status).toBe(404);
     expect((await handler(req("/api/me"), GW)).status).toBe(200);
+  });
+});
+
+describe("quiet hours api", () => {
+  function quietSetup(push: boolean) {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const config = webConfig(push ? {} : { push: undefined });
+    const quietHours = new QuietHoursStore(db, "Europe/Berlin");
+    return { handler: createWebHandler({ config, peers: createPeerMatcher(config.trustedPeers), quietHours }), quietHours };
+  }
+
+  test("reads and writes the setting, with the zone it runs in, even without VAPID keys", async () => {
+    const { handler, quietHours } = quietSetup(false);
+    const get = await handler(req("/api/settings/quiet-hours", { headers: { "Sec-Fetch-Site": "same-origin" } }), GW);
+    expect(await get.json()).toEqual({ enabled: false, start: "22:00", end: "08:00", timeZone: "Europe/Berlin" });
+    const put = await handler(jsonWrite("/api/settings/quiet-hours", "PUT", { enabled: true, start: "23:00", end: "07:30" }), GW);
+    expect(put.status).toBe(200);
+    expect(quietHours.get()).toEqual({ enabled: true, start: "23:00", end: "07:30" });
+  });
+
+  test("refuses bad values, cross-site writes and other methods", async () => {
+    const { handler, quietHours } = quietSetup(true);
+    const path = "/api/settings/quiet-hours";
+    expect((await handler(jsonWrite(path, "PUT", { enabled: true, start: "24:00", end: "07:00" }), GW)).status).toBe(400);
+    expect((await handler(jsonWrite(path, "PUT", { enabled: "yes", start: "22:00", end: "07:00" }), GW)).status).toBe(400);
+    expect((await handler(jsonWrite(path, "PUT", { enabled: true, start: "22:00", end: "07:00" }, { "Sec-Fetch-Site": "cross-site" }), GW)).status).toBe(403);
+    expect((await handler(jsonWrite(path, "PUT", { enabled: true, start: "22:00", end: "07:00" }, { "Content-Type": "text/plain" }), GW)).status).toBe(415);
+    expect((await handler(jsonWrite(path, "POST", { enabled: true, start: "22:00", end: "07:00" }), GW)).status).toBe(405);
+    expect(quietHours.get().enabled).toBe(false);
   });
 });
 

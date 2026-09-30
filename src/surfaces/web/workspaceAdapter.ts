@@ -27,11 +27,11 @@ import { isHttpsUrl, MESSAGE_TEXT_MAX, type ApprovalDecision as WireDecision, ty
 import type { WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
 import type { PushPayload } from "./push.ts";
+import { pushFor, type PushEvent } from "./pushRules.ts";
 
 const log = getLogger("web/workspaceAdapter");
 
 export const SNAPSHOT_GAP_MS = 2_000;
-const PUSH_BODY_MAX = 140;
 
 // Bounds on what the workspace chooses. Replies match the workspace history's per-item cap, so a verified
 // history item never shows less than the transcript has.
@@ -69,6 +69,8 @@ export interface WebAdapterDeps {
   push?: { send(p: PushPayload): Promise<{ sent: number }> };
   /** Called with an approval's nonce when its push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
+  /** True during the owner's quiet hours; absent means never quiet. */
+  quietHours?: () => boolean;
   /** Without it the surface takes no files, so the workspace's send_file refuses. */
   uploads?: WebUploadPort;
   now?: () => number;
@@ -151,7 +153,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const turnId = reply.turnId && reply.turnId.length <= ID_MAX ? reply.turnId : undefined;
     const data = { key, text, files, ...(turnId ? { turnId } : {}), ...(reply.usage ? { usage: reply.usage } : {}) };
     const { seq, created } = this.deps.log.appendResult(reply.kind, data, key);
-    if (created) void this.notify(seq, { title: "sushii-agent", body: pushBody(text) || "Sent a file", url: "/", tag: "chat" });
+    if (created) void this.notify(seq, { kind: reply.kind, text });
   }
 
   /** An askId is unique among stored asks, since the answer route finds the ask by it. A reused or
@@ -171,10 +173,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
       const choices = askId ? ask.choices.slice(0, ASK_CHOICES_MAX).map((c) => capText(c, ID_MAX)) : [];
       return { ...this.deps.log.appendResult("ask", { key, askId, question: capText(ask.question, MESSAGE_TEXT_MAX), choices }, key), askId };
     });
-    if (created) {
-      const url = askId ? `/?ask=${encodeURIComponent(askId)}` : "/";
-      void this.notify(seq, { title: "The agent asks", body: pushBody(ask.question), url, tag: askId ? `ask:${askId}` : "chat" });
-    }
+    if (created) void this.notify(seq, { kind: "ask", askId, question: ask.question });
   }
 
   async authPrompt(origin: ChatOrigin | null, view: AuthPromptView, attempt: SendAttempt): Promise<void> {
@@ -190,7 +189,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
       return;
     }
     const { seq, created } = this.deps.log.appendResult("auth", { key, url: view.url, instructions }, key);
-    if (created) void this.notify(seq, { title: "sushii-agent", body: "Sign-in link ready", url: "/", tag: "auth" });
+    if (created) void this.notify(seq, { kind: "auth" });
   }
 
   progressEditGap(): number {
@@ -267,7 +266,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     }
     // One key per outcome, so a turn marked interrupted after a restart can still be marked done by its reply.
     const { seq, created } = this.deps.log.appendResult("turn_final", { turnId, outcome: final.outcome, summary: final.summary }, key);
-    if (created && final.outcome === "interrupted") void this.notify(seq, { title: "sushii-agent", body: "Turn interrupted", url: "/", tag: "chat" });
+    if (created && final.outcome === "interrupted") void this.notify(seq, { kind: "interrupted" });
   }
 
   /** Adds a live turn; past the cap the oldest is finalized as interrupted, so `hello` stays bounded. */
@@ -331,11 +330,12 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   }
 
   /** Pushes unless a seen receipt for `seq` arrives first. Resolves to the devices reached, null when suppressed. */
-  private async notify(seq: number, payload: PushPayload): Promise<number | null> {
+  private async notify(seq: number, event: PushEvent): Promise<number | null> {
     try {
       if (!(await this.deps.presence.shouldPush(seq))) return null;
       if (!this.deps.push) return 0;
-      return (await this.deps.push.send(payload)).sent;
+      const quiet = this.deps.quietHours?.() ?? false;
+      return (await this.deps.push.send(pushFor(event, { quiet }))).sent;
     } catch (err) {
       log.warn({ err }, "web push failed");
       return 0;
@@ -343,7 +343,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   }
 
   private async notifyApproval(seq: number, nonce: string, tool: string): Promise<void> {
-    const sent = await this.notify(seq, { title: "Approval needed", body: `sushii-agent needs your approval to run ${tool}`, url: "/", tag: `approval:${nonce}` });
+    const sent = await this.notify(seq, { kind: "approval", nonce, tool });
     if (sent !== 0 || !this.deps.breakGlass) return;
     await this.deps.breakGlass(nonce).catch((err) => log.warn({ err }, "break-glass DM failed"));
   }
@@ -384,9 +384,4 @@ class TokenBucket {
     this.tokens--;
     return true;
   }
-}
-
-function pushBody(text: string): string {
-  const plain = text.replace(/\s+/g, " ").trim();
-  return plain.length > PUSH_BODY_MAX ? `${plain.slice(0, PUSH_BODY_MAX - 1)}…` : plain;
 }

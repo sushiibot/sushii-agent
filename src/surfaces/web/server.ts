@@ -18,6 +18,7 @@ import {
   subscriptionSchema,
   type PushSender,
 } from "./push.ts";
+import { quietHoursSchema, type QuietHoursStore } from "./pushRules.ts";
 import { NO_STORE, forbidden, isJson, isSameOrigin, json, readJson } from "./http.ts";
 import { BASE_CSP, HtmlCspCache, cacheControlFor, resolveStatic } from "./static.ts";
 import { handleFileGet, handleUploadPost } from "./uploadRoutes.ts";
@@ -40,6 +41,8 @@ export interface WebHandlerDeps {
   uploads?: DiskUploadStore;
   /** The /api/chat routes; absent when the chat surface is not wired. */
   chat?: ChatRoutes;
+  /** Absent: /api/settings/quiet-hours answers 404. */
+  quietHours?: QuietHoursStore;
 }
 
 /** The slice of Bun's server a route may use: lifting the idle timeout for a stream. */
@@ -80,7 +83,7 @@ export function decodeEncodedWords(value: string): string {
 const unsubscribeSchema = z.object({ endpoint: z.string().min(1).max(2048) });
 
 export function createWebHandler(deps: WebHandlerDeps): WebHandler {
-  const { config, peers, pushStore, pushSender, uploads, chat } = deps;
+  const { config, peers, pushStore, pushSender, uploads, chat, quietHours } = deps;
   const owner = normalizeLogin(config.ownerLogin);
   // Also enforced at parse time; repeated here because a WebConfig can be built without the parser.
   const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
@@ -104,6 +107,20 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
       if (method !== "GET") return json({ error: "method not allowed" }, 405);
       const name = req.headers.get("Tailscale-User-Name");
       return json({ login, ...(name ? { displayName: decodeEncodedWords(name) } : {}) });
+    }
+
+    // Outside /api/push/ so the setting stays editable while VAPID is unconfigured.
+    if (path === "/api/settings/quiet-hours") {
+      if (!quietHours) return json({ error: "not found" }, 404);
+      if (method === "GET") return json({ ...quietHours.get(), timeZone: quietHours.timeZone });
+      if (method !== "PUT") return json({ error: "method not allowed" }, 405);
+      if (!isJson(req)) return json({ error: "content-type must be application/json" }, 415);
+      const body = await readJson(req);
+      if (body instanceof Response) return body;
+      const parsed = quietHoursSchema.safeParse(body);
+      if (!parsed.success) return json({ error: "invalid quiet hours" }, 400);
+      quietHours.set(parsed.data);
+      return json({ ...parsed.data, timeZone: quietHours.timeZone });
     }
 
     if (path === "/api/uploads") return uploads ? handleUploadPost(req, uploads) : json({ error: "not found" }, 404);
@@ -187,6 +204,7 @@ export function internalErrorResponse(err: unknown): Response {
 export interface WebServerOptions {
   uploads?: DiskUploadStore;
   chat?: ChatRoutes;
+  quietHours?: QuietHoursStore;
 }
 
 export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined>> {
@@ -213,6 +231,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     pushSender,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.chat ? { chat: opts.chat } : {}),
+    ...(opts.quietHours ? { quietHours: opts.quietHours } : {}),
   });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
