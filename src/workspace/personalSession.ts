@@ -221,6 +221,8 @@ interface OpenRun {
   hidden: boolean;
   /** Files send_file staged for the reply. */
   files: StagedFile[];
+  /** An assistant message ended since the turn began, so a steer arriving now answers after it. */
+  answered: boolean;
 }
 
 /** A user message handed to Pi that it hasn't yet turned into a user message_start. */
@@ -1178,6 +1180,8 @@ export class PersonalSession {
       return;
     }
     if (event.type === "message_start" && event.message.role === "user") {
+      // Before consumeInbound: the reply to the earlier message must not thread to the steer.
+      if (this.run?.answered && !this.run.hidden && !this.run.abortRequested && !this.run.suppressReply) this.splitRun(session, this.run);
       this.consumeInbound(userText(event.message));
     }
     if (event.type === "agent_start" && !this.run) {
@@ -1196,6 +1200,7 @@ export class PersonalSession {
         suppressReply: false,
         hidden: hidden !== null,
         files: [],
+        answered: false,
       };
       if (hidden?.abandoned) void session.abort().catch((err) => log.warn({ err }, "aborting an abandoned memory flush failed"));
       this.emit({ type: "turn_start" });
@@ -1207,6 +1212,7 @@ export class PersonalSession {
     }
     const run = this.run;
     if (!run) return;
+    if (event.type === "message_end" && event.message.role === "assistant") run.answered = true;
     for (const ev of mapSessionEvent(event, run.acc)) {
       if (ev.type === "text_delta") this.bufferDelta(run, ev.text);
       else this.emit(ev);
@@ -1232,6 +1238,19 @@ export class PersonalSession {
     if (run && !run.hidden) this.afterTurn(session, run.turnId);
     if (this.reloadDue) this.scheduleReload();
     this.retryWakes();
+  }
+
+  /**
+   * A steer drained after an assistant message starts a new turn in the same run. The answer so far is
+   * delivered as that turn's reply, the way Pi's transcript records it, so the text streamed for it stays.
+   */
+  private splitRun(session: ChatSession, run: OpenRun): void {
+    this.finishRun(session, run);
+    run.turnId = this.newId();
+    run.acc = newRunAccumulator();
+    run.files = [];
+    run.answered = false;
+    this.emitFor(run, { type: "turn_start" });
   }
 
   // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.
