@@ -393,9 +393,12 @@ test('auth links render only for https URLs', () => {
 			data: { key: 'b', url: 'https://login.example/x', instructions: 'Log in:' }
 		}
 	]);
-	const [bad, good] = toMessages(s.items).map((m) => JSON.stringify(m.parts));
-	expect(bad).not.toContain('"kind":"link"');
-	expect(good).toContain('"href":"https://login.example/x"');
+	const [bad, good] = toMessages(s.items).map((m) => m.parts[0]);
+	expect(bad).toMatchObject({ type: 'data-auth', data: { https: false } });
+	expect(good).toMatchObject({
+		type: 'data-auth',
+		data: { https: true, url: 'https://login.example/x' }
+	});
 });
 
 test('photos fit a 2560 px long edge and never upscale', () => {

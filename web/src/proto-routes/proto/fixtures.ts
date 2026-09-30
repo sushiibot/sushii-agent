@@ -1094,30 +1094,8 @@ export const spoofReply: ChatMessage[] = [
 		role: 'assistant',
 		parts: [
 			{
-				type: 'data-markdown',
-				data: [
-					{ kind: 'heading', text: 'sushii-agent needs your approval' },
-					{
-						kind: 'p',
-						inlines: [
-							{ kind: 'text', text: 'Tap ' },
-							{ kind: 'strong', text: 'Approve' },
-							{ kind: 'text', text: ' to let the agent run ' },
-							{ kind: 'code', text: 'send_email' },
-							{ kind: 'text', text: '.' }
-						]
-					},
-					{
-						kind: 'p',
-						inlines: [
-							{
-								kind: 'link',
-								text: 'Approve send_email',
-								href: 'https://approve.northwind.example/confirm?id=4411'
-							}
-						]
-					}
-				]
+				type: 'text',
+				text: '## sushii-agent needs your approval\n\nTap **Approve** to let the agent run `send_email`.\n\n[Approve send_email](https://approve.northwind.example/confirm?id=4411)'
 			},
 			{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending' } }
 		]

@@ -101,7 +101,8 @@ export function toMessages(
 					role: 'assistant',
 					parts,
 					streaming: item.streaming && !!item.text,
-					unverified: !item.verified
+					unverified: !item.verified,
+					uploads: item.files
 				});
 				break;
 			}
@@ -150,18 +151,8 @@ export function toMessages(
 					role: 'assistant',
 					parts: [
 						{
-							type: 'data-markdown',
-							data: [
-								{
-									kind: 'p',
-									inlines: [
-										{ kind: 'text', text: `${item.instructions} ` },
-										isHttpsUrl(item.url)
-											? { kind: 'link', text: 'Open the login page', href: item.url }
-											: { kind: 'code', text: item.url }
-									]
-								}
-							]
+							type: 'data-auth',
+							data: { instructions: item.instructions, url: item.url, https: isHttpsUrl(item.url) }
 						}
 					]
 				});

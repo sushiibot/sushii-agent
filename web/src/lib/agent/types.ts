@@ -1,3 +1,5 @@
+import type { UploadRef } from '$lib/chat/events';
+
 export type RunState = 'waiting' | 'running' | 'review' | 'failed' | 'done';
 export type Outcome = 'verified' | 'unverified';
 
@@ -140,7 +142,7 @@ export type MessagePart =
 	| { type: 'data-thread-report'; data: ThreadReport }
 	| { type: 'data-notice'; data: { source: string; items: string[]; href: string } }
 	| { type: 'data-memory-write'; data: MemoryWrite }
-	| { type: 'data-markdown'; data: MdBlock[] }
+	| { type: 'data-auth'; data: { instructions: string; url: string; https: boolean } }
 	| { type: 'data-turn'; data: Turn }
 	| { type: 'data-approval'; data: { tool: string; outcome: ApprovalOutcome } }
 	| { type: 'data-ask'; data: AskView }
@@ -166,6 +168,8 @@ export interface ChatMessage {
 	streaming?: boolean;
 	/** Found only in the workspace transcript, with no matching bot record. */
 	unverified?: boolean;
+	/** The bot's files for this reply, as sent; the markdown renderer inlines only these. */
+	uploads?: readonly UploadRef[];
 }
 
 export type Delivery = 'sending' | 'sent' | 'failed' | 'queued' | 'queued-agent';

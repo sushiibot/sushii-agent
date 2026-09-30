@@ -112,7 +112,16 @@
 				>
 			{/if}
 			{#each message.parts as part, i (i)}
-				{#if part.type === 'text'}
+				{#if part.type === 'text' && message.role === 'assistant'}
+					<div
+						class={cn(
+							message.streaming &&
+								"min-h-[4.5lh] [&_p:last-child]:after:ml-0.5 [&_p:last-child]:after:inline-block [&_p:last-child]:after:h-[1.1em] [&_p:last-child]:after:w-0.5 [&_p:last-child]:after:translate-y-[3px] [&_p:last-child]:after:animate-pulse [&_p:last-child]:after:bg-foreground [&_p:last-child]:after:content-[''] motion-reduce:[&_p:last-child]:after:animate-none"
+						)}
+					>
+						<Markdown text={part.text} streaming={message.streaming} files={message.uploads} />
+					</div>
+				{:else if part.type === 'text'}
 					<p
 						class={cn(
 							'whitespace-pre-wrap',
@@ -127,12 +136,20 @@
 					>
 						{part.text}
 					</p>
-				{:else if part.type === 'data-markdown'}
-					<Markdown blocks={part.data} />
+				{:else if part.type === 'data-auth'}
+					<p class="text-[15px] leading-relaxed [overflow-wrap:anywhere]">
+						{part.data.instructions}
+						{#if part.data.https}<a
+								href={part.data.url}
+								target="_blank"
+								rel="noopener noreferrer"
+								class="text-brand underline">Open the login page</a
+							>{:else}<code class="font-mono text-[13px]">{part.data.url}</code>{/if}
+					</p>
 				{:else if part.type === 'data-turn'}
 					<WorkingRow turn={part.data} open={openTurn === message.id} {openStep} />
 				{:else if part.type === 'data-approval'}
-					<p class="flex items-center gap-2 text-sm text-muted-foreground">
+					<p data-approval class="flex items-center gap-2 text-sm text-muted-foreground">
 						<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
 						<span
 							>{outcome[part.data.outcome]}{part.data.outcome === 'pending' ? ':' : ' ·'}

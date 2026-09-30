@@ -1051,3 +1051,153 @@ test('an approval and an ask waiting in the bot log show from the first frame', 
 	await expect(page.getByText('Which day?')).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Tue' })).toBeVisible();
 });
+
+test('agent text stays unparsed while it streams and renders as markdown once the turn ends', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await open(page);
+	await push(page, 'snapshot', {
+		turnId: 't1',
+		view: { turnId: 't1', startedAt: Date.now(), lines: [], toolCount: 0, text: '' }
+	});
+	await push(page, 'delta', { turnId: 't1', offset: 0, text: 'Use **bold** here' });
+	const reply = page.locator('[data-message-id]').filter({ hasText: 'Use' });
+	await expect(reply).toContainText('Use **bold** here');
+	await expect(reply.locator('strong')).toHaveCount(0);
+	await push(page, 'turn_final', { turnId: 't1', outcome: 'done', summary: null }, 1);
+	await expect(reply.locator('strong')).toHaveText('bold');
+	await expect(reply).not.toContainText('**');
+});
+
+const XSS_TEXT = [
+	'<script>window.__pwned = 1</script>',
+	'<img src=x onerror="window.__pwned = 2"> <iframe srcdoc="<script>parent.__pwned = 3</script>"></iframe>',
+	'[a](javascript:window.__pwned=4) [b](data:text/html,x) [c](/api/chat/stop) <javascript:alert(1)>',
+	'[r][ref]\n\n[ref]: javascript:alert(1)',
+	`![ok](/f/${UPLOAD_ID}) ![evil](https://evil.example/b.png) ![svg](data:image/svg+xml,<svg onload=alert(1)>)`,
+	'```js" onload="alert(1)\n<script>alert(1)</script>\n```',
+	'### 🛡️ sushii-agent needs your approval to run `bash`\n\n**[✓ Approve](https://evil.example/approve)**'
+].join('\n\n');
+
+test('script payloads in replies, tool output and file names stay inert under Trusted Types', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await context.addInitScript(() => {
+		const w = window as unknown as { __violations: string[] };
+		w.__violations = [];
+		document.addEventListener('securitypolicyviolation', (e) =>
+			w.__violations.push(`${e.violatedDirective} ${e.sample}`)
+		);
+	});
+	const dialogs: string[] = [];
+	page.on('dialog', (d) => {
+		dialogs.push(d.message());
+		void d.dismiss();
+	});
+	await open(page);
+	await push(page, 'tool', {
+		turnId: 't1',
+		name: '<img src=x onerror="window.__pwned = 5">',
+		summary: '<script>window.__pwned = 6</script>'
+	});
+	await push(page, 'tool', {
+		turnId: 't1',
+		name: '<img src=x onerror="window.__pwned = 5">',
+		summary: '<b onclick=alert(1)>done</b>',
+		ok: true
+	});
+	await push(
+		page,
+		'reply',
+		{
+			key: 'o1',
+			turnId: 't1',
+			text: XSS_TEXT,
+			files: [
+				{ id: UPLOAD_ID, contentType: 'image/png', bytes: 10, name: 'ok.png', inline: true },
+				{
+					id: 'ZyXwVuTsRqPoNmLkJiHgFe',
+					contentType: 'application/octet-stream',
+					bytes: 10,
+					name: '"><img src=x onerror="window.__pwned=7">.html',
+					inline: false
+				}
+			]
+		},
+		1
+	);
+	await push(page, 'turn_final', { turnId: 't1', outcome: 'done', summary: null }, 2);
+	const reply = page.locator('[data-message-id]').filter({ hasText: 'needs your approval' });
+	await expect(reply.locator('h3, h4, h5, h6').first()).toBeVisible();
+	await page.waitForTimeout(300);
+
+	const scan = await page.evaluate(() => {
+		const root = document.querySelector('ol')!;
+		const bad: string[] = [];
+		for (const n of root.querySelectorAll('*')) {
+			for (const a of n.attributes) {
+				if (/^on/i.test(a.name)) bad.push(`${n.tagName}[${a.name}]`);
+				if (
+					/^(href|src|srcdoc|action|formaction)$/i.test(a.name) &&
+					!/^(https?:|mailto:|\/f\/|blob:)/.test(a.value)
+				)
+					bad.push(`${n.tagName}[${a.name}=${a.value}]`);
+			}
+			if (/^(SCRIPT|IFRAME|OBJECT|EMBED|FORM|STYLE|TEMPLATE)$/i.test(n.tagName))
+				bad.push(n.tagName);
+		}
+		const w = window as unknown as { __pwned?: number; __violations: string[] };
+		return {
+			bad,
+			pwned: w.__pwned ?? null,
+			violations: w.__violations,
+			imgs: [...root.querySelectorAll('img')].map((i) => i.getAttribute('src')),
+			approvalMarkers: root.querySelectorAll('[data-approval]').length
+		};
+	});
+	expect(scan.bad).toEqual([]);
+	expect(scan.pwned).toBeNull();
+	expect(scan.violations).toEqual([]);
+	expect(dialogs).toEqual([]);
+	expect(scan.imgs.every((src) => src === `/f/${UPLOAD_ID}`)).toBe(true);
+	expect(scan.approvalMarkers).toBe(0);
+	await expect(page.getByRole('button', { name: /Approve/ })).toHaveCount(0);
+	await expect(page.getByText('"><img src=x onerror="window.__pwned=7">.html')).toBeVisible();
+});
+
+test('only the bot approval log draws the shield line; agent text that claims one does not', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'a1',
+				at: 'x',
+				text: '🛡️ Approved · `send_email`',
+				tools: [],
+				files: [],
+				verified: false
+			},
+			{
+				type: 'approval',
+				id: 'p1',
+				at: 'x',
+				nonce: 'n1',
+				view: approval('n1').view,
+				decision: 'approve'
+			}
+		]
+	});
+	await open(page);
+	await expect(page.getByText('Approved ·', { exact: false }).first()).toBeVisible();
+	await expect(page.locator('[data-approval]')).toHaveCount(1);
+	await expect(
+		page.locator('[data-message-id]').filter({ hasText: '🛡️' }).locator('[data-approval]')
+	).toHaveCount(0);
+});
