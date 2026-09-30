@@ -141,6 +141,14 @@ export class SqliteChatLog implements ChatLog {
     return row ? (toStored(row) as StoredEvent<T>) : null;
   }
 
+  /** The newest `ask` event carrying `askId`. */
+  findAsk(askId: string): StoredEvent<"ask"> | null {
+    const row = this.db
+      .query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = 'ask' AND json_extract(data, '$.askId') = ? ORDER BY seq DESC LIMIT 1")
+      .get(askId) as Row | null;
+    return row ? (toStored(row) as StoredEvent<"ask">) : null;
+  }
+
   /** Stored events of the given types, oldest first. */
   list<T extends DurableEventType>(types: readonly T[], opts: { keys?: readonly string[]; since?: number } = {}): StoredEvent<T>[] {
     if (!types.length || (opts.keys && !opts.keys.length)) return [];

@@ -78,6 +78,8 @@ export interface SendAttempt {
   ledger: PageLedger;
   /** Last resort after repeated failures: send the unsent text as plain messages, no rich rendering. */
   plain: boolean;
+  /** The delivery's workspace outbox id, for a surface that stores deliveries idempotently. */
+  outboxId?: string;
 }
 
 /** One validated argument on an approval prompt, in the tool's fixed display order. A `single` value is

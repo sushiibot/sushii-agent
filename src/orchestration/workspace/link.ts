@@ -1,8 +1,12 @@
 import {
   AUTH_METHODS,
   LOGIN_ALREADY_PENDING,
+  CHAT_HISTORY_TIMEOUT_MS,
   RPC_METHODS,
   chatDeliverParams,
+  chatHistoryResult,
+  type ChatHistoryParams,
+  type ChatHistoryResult,
   type AuthCancelResult,
   type AuthCompleteResult,
   type AuthStartResult,
@@ -208,6 +212,7 @@ export class WorkspaceLink {
   // Surface id → the ask whose choices a bare number answers there; only surfaces without buttons.
   private readonly numberedAsks = new Map<string, { askId: string; count: number }>();
   private connectWaiters: Array<() => void> = [];
+  private readonly connectionListeners = new Set<(connected: boolean) => void>();
   private replaying: Promise<void> | null = null;
   private replayAgain = false;
   // turnId → tool count for turns that have ended; null when the count is unknown (a restart).
@@ -250,13 +255,38 @@ export class WorkspaceLink {
     return {
       onRegister: (conn) => this.onRegister(conn),
       onDisconnect: (conn) => {
-        if (conn.principalId === this.opts.principalId) log.info({ runnerId: conn.runnerId }, "workspace disconnected");
+        if (conn.principalId !== this.opts.principalId) return;
+        log.info({ runnerId: conn.runnerId }, "workspace disconnected");
+        this.notifyConnection();
       },
       onSocketClosed: (conn) => this.opts.tools?.onSocketClosed(conn),
       toolManifest: (conn) => (conn.principalId === this.opts.principalId && this.toolsEnabled ? this.opts.tools!.manifest() : []),
       onRequest: (conn, method, params) => this.onRequest(conn, method, params),
       onNotification: (conn, method, params) => this.onNotification(conn, method, params),
     };
+  }
+
+  /** Called on every register and disconnect of the principal's workspace; returns an unsubscribe. */
+  onConnectionChange(listener: (connected: boolean) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => void this.connectionListeners.delete(listener);
+  }
+
+  private notifyConnection(): void {
+    const connected = this.isConnected();
+    for (const l of [...this.connectionListeners]) {
+      try {
+        l(connected);
+      } catch (err) {
+        log.warn({ err }, "workspace connection listener threw");
+      }
+    }
+  }
+
+  /** One page of the Main transcript. An old workspace without the method rejects with MethodNotFound. */
+  async chatHistory(q: Omit<ChatHistoryParams, "principalId">): Promise<ChatHistoryResult> {
+    const params: ChatHistoryParams = { principalId: this.opts.principalId, ...q };
+    return chatHistoryResult.parse(await this.request(RPC_METHODS.chatHistory, params, CHAT_HISTORY_TIMEOUT_MS));
   }
 
   isConnected(): boolean {
@@ -592,6 +622,7 @@ export class WorkspaceLink {
     const waiters = this.connectWaiters;
     this.connectWaiters = [];
     for (const w of waiters) w();
+    this.notifyConnection();
     this.restoreOrphans(conn.state === "streaming");
     // An idle workspace has no run in flight, so any turn still shown as working ended unobserved.
     if (conn.state === "idle") {
@@ -726,10 +757,10 @@ export class WorkspaceLink {
         };
         const send = (plain: boolean) =>
           delivery.type === "ask"
-            ? adapter.askPrompt(origin, delivery.view, { ledger, plain })
+            ? adapter.askPrompt(origin, delivery.view, { ledger, plain, outboxId: p.outboxId })
             : delivery.type === "auth"
-              ? adapter.authPrompt(origin, delivery.view, { ledger, plain })
-              : adapter.sendReply(origin, delivery.view, { ledger, plain });
+              ? adapter.authPrompt(origin, delivery.view, { ledger, plain, outboxId: p.outboxId })
+              : adapter.sendReply(origin, delivery.view, { ledger, plain, outboxId: p.outboxId });
         try {
           await send(false);
           this.opts.store.deleteKv(failureKey(p.outboxId));

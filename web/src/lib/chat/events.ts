@@ -80,7 +80,8 @@ export interface ApprovalView {
 	fields: ApprovalField[];
 }
 
-export type ApprovalDecision = 'approve' | 'deny' | 'timeout';
+/** `cancelled`: the workspace withdrew the call because its turn was stopped. */
+export type ApprovalDecision = 'approve' | 'deny' | 'timeout' | 'cancelled';
 
 export type ToolCallResult =
 	{ ok: true; result: string } | { ok: false; error: string; denied?: boolean };
