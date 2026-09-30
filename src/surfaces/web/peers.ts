@@ -54,6 +54,13 @@ export function parseIp(raw: string): Parsed | null {
   return { v: 6, n: v6 };
 }
 
+/** 127.0.0.0/8, ::1, or an IPv4-mapped loopback address. */
+export function isLoopback(ip: string): boolean {
+  const p = parseIp(ip);
+  if (!p) return false;
+  return p.v === 4 ? p.n >> 24n === 127n : p.n === 1n;
+}
+
 export type PeerMatcher = (ip: string | null | undefined) => boolean;
 
 /** Exact-IP allowlist: no ranges, so no other container on a shared bridge can ever qualify. */

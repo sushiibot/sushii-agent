@@ -1,11 +1,14 @@
+// The peer-IP check trusts that only the Serve host sends from WEB_TRUSTED_PEERS. Anything with host
+// networking or the docker socket on that host counts as the host and can impersonate the owner.
 import type { Database } from "bun:sqlite";
 import type { Server } from "bun";
 import { z } from "zod";
-import type { WebConfig } from "../../config.ts";
+import { parseWebConfig, type WebConfig } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
-import { createPeerMatcher, type PeerMatcher } from "./peers.ts";
+import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
   PushSubscriptionStore,
+  checkVapidKeys,
   createPushSender,
   createWebPushTransport,
   setActivePushSender,
@@ -17,6 +20,8 @@ import { BASE_CSP, HtmlCspCache, cacheControlFor, resolveStatic } from "./static
 const logger = getLogger("web");
 
 const MAX_BODY_BYTES = 8 * 1024;
+/** Transport-level ceiling; readJson enforces the real per-route limit while streaming. */
+const MAX_REQUEST_BODY_BYTES = 64 * 1024;
 const NO_STORE = "no-store";
 
 export interface WebHandlerDeps {
@@ -80,11 +85,38 @@ function isJson(req: Request): boolean {
   return type.split(";")[0]!.trim().toLowerCase() === "application/json";
 }
 
+/** Reads at most `limit` bytes, whether or not the body is chunked; undefined once the limit is exceeded. */
+export async function readBodyCapped(req: Request, limit: number): Promise<Uint8Array | undefined> {
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(req: Request): Promise<unknown | Response> {
-  const declared = Number(req.headers.get("Content-Length") ?? "0");
-  if (declared > MAX_BODY_BYTES) return json({ error: "body too large" }, 413);
-  const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) return json({ error: "body too large" }, 413);
+  const lengthHeader = req.headers.get("Content-Length");
+  if (lengthHeader !== null && !(/^\d+$/.test(lengthHeader) && Number(lengthHeader) <= MAX_BODY_BYTES)) {
+    return json({ error: "body too large" }, 413);
+  }
+  const bytes = await readBodyCapped(req, MAX_BODY_BYTES);
+  if (!bytes) return json({ error: "body too large" }, 413);
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return json({ error: "invalid json" }, 400);
+  }
   try {
     return JSON.parse(text);
   } catch {
@@ -97,6 +129,8 @@ const unsubscribeSchema = z.object({ endpoint: z.string().min(1).max(2048) });
 export function createWebHandler(deps: WebHandlerDeps): WebHandler {
   const { config, peers, pushStore, pushSender } = deps;
   const owner = normalizeLogin(config.ownerLogin);
+  // Also enforced at parse time; repeated here because a WebConfig can be built without the parser.
+  const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
   const cspCache = new HtmlCspCache();
 
   async function api(req: Request, path: string, login: string): Promise<Response> {
@@ -160,7 +194,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
       return withSecurityHeaders(forbidden());
     }
     const header = req.headers.get("Tailscale-User-Login");
-    const login = header ?? config.devLogin;
+    const login = header ?? devLogin;
     if (!login || normalizeLogin(login) !== owner) {
       logger.warn({ peer: peerIp, login: login ?? null }, "web request with non-owner login rejected");
       return withSecurityHeaders(forbidden());
@@ -173,21 +207,64 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
   };
 }
 
-export function startWebServer(config: WebConfig, db: Database): Server<undefined> {
+/** Replaces Bun's development error page, which echoes the stack to the client. */
+export function internalErrorResponse(err: unknown): Response {
+  logger.error({ err }, "web request handler threw");
+  return withSecurityHeaders(json({ error: "internal" }, 500));
+}
+
+export async function startWebServer(config: WebConfig, db: Database): Promise<Server<undefined>> {
   let pushStore: PushSubscriptionStore | undefined;
   let pushSender: PushSender | undefined;
-  if (config.push) {
-    pushStore = new PushSubscriptionStore(db);
-    pushSender = createPushSender(pushStore, createWebPushTransport(config.push));
+  let push = config.push;
+  if (config.pushDisabledReason) logger.error({ reason: config.pushDisabledReason }, "web push disabled: invalid VAPID config");
+  if (push) {
+    const problem = await checkVapidKeys(push);
+    if (problem) {
+      logger.error({ reason: problem }, "web push disabled: invalid VAPID config");
+      push = undefined;
+    }
   }
-  setActivePushSender(pushSender);
-  if (config.devLogin) logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
-  const handler = createWebHandler({ config, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender });
+  if (push) {
+    pushStore = new PushSubscriptionStore(db);
+    pushSender = createPushSender(pushStore, createWebPushTransport(push));
+  }
+  const effective: WebConfig = { ...config, push };
+  const handler = createWebHandler({ config: effective, peers: createPeerMatcher(config.trustedPeers), pushStore, pushSender });
+  if (config.devLogin && isLoopback(config.bindAddr)) {
+    logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
+  }
   const server = Bun.serve({
     port: config.port,
     hostname: config.bindAddr,
+    development: false,
+    idleTimeout: 30,
+    maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
     fetch: (req, srv) => handler(req, srv.requestIP(req)?.address),
+    error: internalErrorResponse,
   });
-  logger.info({ bindAddr: config.bindAddr, port: server.port, trustedPeers: config.trustedPeers, push: Boolean(config.push), distDir: config.distDir }, "web gateway listening");
+  setActivePushSender(pushSender);
+  logger.info({ bindAddr: config.bindAddr, port: server.port, trustedPeers: config.trustedPeers, push: Boolean(push), distDir: config.distDir }, "web gateway listening");
   return server;
+}
+
+/** Never throws, so a bad web config disables only the web surface. */
+export async function startWebGateway(env: Record<string, string | undefined>, db: Database): Promise<Server<undefined> | undefined> {
+  let config: WebConfig | undefined;
+  try {
+    config = parseWebConfig(env);
+  } catch (err) {
+    logger.error({ err }, "web gateway disabled: invalid web config");
+    return undefined;
+  }
+  if (!config) {
+    logger.info("WEB_OWNER_LOGIN not set — web gateway disabled");
+    return undefined;
+  }
+  try {
+    return await startWebServer(config, db);
+  } catch (err) {
+    logger.error({ err, bindAddr: config.bindAddr }, "web gateway failed to start");
+    return undefined;
+  }
 }

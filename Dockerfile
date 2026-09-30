@@ -4,7 +4,10 @@ WORKDIR /web
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY web/ ./
-RUN bun run build
+# Declared after the install so a new version only invalidates the build step. CI's reusable workflow passes GIT_HASH.
+ARG APP_VERSION
+ARG GIT_HASH
+RUN APP_VERSION="${APP_VERSION:-${GIT_HASH:-dev}}" bun run build
 
 FROM oven/bun:1 AS tools
 

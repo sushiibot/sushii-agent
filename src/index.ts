@@ -40,7 +40,7 @@ import { startSlackAgentLoop, type SlackAgentClient } from "./surfaces/slack/gat
 import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
 import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
-import { startWebServer } from "./surfaces/web/server.ts";
+import { startWebGateway } from "./surfaces/web/server.ts";
 
 async function main() {
   logger.info("Starting sushii-agent...");
@@ -214,17 +214,7 @@ async function main() {
   const mcpServer = Bun.serve({ port: config.mcpBridgePort, fetch: mcpApp.fetch, idleTimeout: 60 });
   logger.info({ port: mcpServer.port }, "MCP bridge HTTP server listening");
 
-  let webServer: ReturnType<typeof startWebServer> | undefined;
-  if (config.web) {
-    try {
-      webServer = startWebServer(config.web, db);
-    } catch (err) {
-      // A bad bind address must not take the bot's other surfaces down with it.
-      logger.error({ err, bindAddr: config.web.bindAddr }, "web gateway failed to start");
-    }
-  } else {
-    logger.info("WEB_OWNER_LOGIN not set — web gateway disabled");
-  }
+  const webServer = await startWebGateway(process.env, db);
 
   let shuttingDown = false;
   const shutdown = async () => {
@@ -233,7 +223,10 @@ async function main() {
     logger.info("Shutting down...");
     client.destroy();
     mcpServer.stop();
-    webServer?.stop();
+    // Graceful so in-flight push writes finish before the DB closes, but bounded to stay inside docker's 10s stop grace.
+    const webStopped = webServer
+      ? Promise.race([webServer.stop(), Bun.sleep(5000).then(() => webServer.stop(true))])
+      : undefined;
     try {
       await slackApp?.stop();
     } catch (err) {
@@ -244,6 +237,7 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "sushii-mcp client close failed");
     }
+    await webStopped;
     closeDb();
     try {
       await otelSDK?.shutdown();

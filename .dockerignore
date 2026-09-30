@@ -13,3 +13,6 @@ web/build/
 web/build-proto/
 web/.svelte-kit/
 web/proto-screenshots/
+web/test-results/
+web/playwright-report/
+web/.env*

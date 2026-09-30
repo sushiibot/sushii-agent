@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { buildPushPayload, type PushSubscription as WebPushSubscription } from "@block65/webcrypto-web-push";
 import { webPushSubscriptions } from "../../db/schema.ts";
@@ -9,16 +9,36 @@ import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("web-push");
 
-const base64url = z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+=*$/);
+/** Browser push services (Chrome/FCM, Firefox, Safari, Edge). Any other host would let a subscription aim our POSTs anywhere. */
+const PUSH_HOSTS = new Set(["fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"]);
+const PUSH_HOST_SUFFIXES = [".push.apple.com", ".notify.windows.com"];
+
+export function isAllowedPushEndpoint(endpoint: string): boolean {
+  if (!URL.canParse(endpoint)) return false;
+  const u = new URL(endpoint);
+  if (u.protocol !== "https:" || u.username || u.password || u.port !== "") return false;
+  const host = u.hostname.toLowerCase();
+  return PUSH_HOSTS.has(host) || PUSH_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+}
+
+/** Decodes base64url, tolerating the padding some encoders add; undefined if it is not base64url. */
+export function decodeBase64url(value: string): Uint8Array | undefined {
+  const bare = value.replace(/=+$/, "");
+  if (!/^[A-Za-z0-9_-]*$/.test(bare)) return undefined;
+  return new Uint8Array(Buffer.from(bare, "base64url"));
+}
+
+const isUncompressedP256 = (b: Uint8Array | undefined) => b?.length === 65 && b[0] === 0x04;
+
+const keyString = z.string().min(1).max(256);
 
 export const subscriptionSchema = z.object({
-  endpoint: z
-    .string()
-    .max(2048)
-    .url()
-    .refine((u) => u.startsWith("https://"), "endpoint must be https"),
+  endpoint: z.string().max(2048).refine(isAllowedPushEndpoint, "endpoint must be an https URL on a known push service"),
   expirationTime: z.number().nullable().optional(),
-  keys: z.object({ p256dh: base64url, auth: base64url }),
+  keys: z.object({
+    p256dh: keyString.refine((k) => isUncompressedP256(decodeBase64url(k)), "p256dh must be a 65-byte uncompressed P-256 point"),
+    auth: keyString.refine((k) => decodeBase64url(k)?.length === 16, "auth must be 16 bytes"),
+  }),
 });
 export type SubscriptionInput = z.infer<typeof subscriptionSchema>;
 
@@ -45,18 +65,43 @@ function ormFor(db: Database) {
   return drizzle({ client: db, schema: { webPushSubscriptions } });
 }
 
-export class PushSubscriptionStore {
-  constructor(private readonly db: Database) {}
+/** One owner has a handful of devices; stale rows from reinstalled browsers are what fills this up. */
+export const MAX_SUBSCRIPTIONS = 20;
 
+export class PushSubscriptionStore {
+  constructor(
+    private readonly db: Database,
+    private readonly maxSubscriptions = MAX_SUBSCRIPTIONS,
+  ) {}
+
+  /** Upserts by endpoint. A new endpoint at the cap evicts the least recently delivered-to subscription
+   *  rather than being refused, so a new device is never locked out by dead ones. */
   upsert(sub: SubscriptionInput, now = Date.now()): void {
-    ormFor(this.db)
-      .insert(webPushSubscriptions)
-      .values({ endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth, createdAt: now })
-      .onConflictDoUpdate({
-        target: webPushSubscriptions.endpoint,
-        set: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
-      })
-      .run();
+    const orm = ormFor(this.db);
+    orm.transaction((tx) => {
+      const exists = tx.select({ e: webPushSubscriptions.endpoint }).from(webPushSubscriptions).where(eq(webPushSubscriptions.endpoint, sub.endpoint)).get();
+      if (!exists) {
+        const count = tx.select({ n: sql<number>`count(*)` }).from(webPushSubscriptions).get()?.n ?? 0;
+        const excess = count - this.maxSubscriptions + 1;
+        if (excess > 0) {
+          const stale = tx
+            .select({ endpoint: webPushSubscriptions.endpoint })
+            .from(webPushSubscriptions)
+            .orderBy(sql`coalesce(${webPushSubscriptions.lastOkAt}, ${webPushSubscriptions.createdAt})`)
+            .limit(excess)
+            .all();
+          for (const row of stale) tx.delete(webPushSubscriptions).where(eq(webPushSubscriptions.endpoint, row.endpoint)).run();
+          logger.info({ evicted: stale.length }, "push subscription cap reached; evicted the least recently used");
+        }
+      }
+      tx.insert(webPushSubscriptions)
+        .values({ endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth, createdAt: now })
+        .onConflictDoUpdate({
+          target: webPushSubscriptions.endpoint,
+          set: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+        })
+        .run();
+    });
   }
 
   remove(endpoint: string): void {
@@ -79,10 +124,33 @@ export function createWebPushTransport(vapid: WebPushConfig, timeoutMs = 10_000)
   return async (sub, data) => {
     const target: WebPushSubscription = { endpoint: sub.endpoint, expirationTime: null, keys: { p256dh: sub.p256dh, auth: sub.auth } };
     const req = await buildPushPayload({ data, options: { ttl: 24 * 60 * 60, urgency: "normal" } }, target, vapid);
-    const res = await fetch(sub.endpoint, { ...req, signal: AbortSignal.timeout(timeoutMs) });
+    // A redirect from a push service is never legitimate, and following one would re-send the POST elsewhere.
+    const res = await fetch(sub.endpoint, { ...req, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
     await res.body?.cancel();
     return res.status;
   };
+}
+
+/** Checks the VAPID pair the push library will import on every send. Returns why it is unusable, or undefined. */
+export async function checkVapidKeys(vapid: WebPushConfig): Promise<string | undefined> {
+  if (/=/.test(vapid.publicKey) || /=/.test(vapid.privateKey)) return "VAPID keys must be base64url without padding";
+  const pub = decodeBase64url(vapid.publicKey);
+  if (!isUncompressedP256(pub)) return "VAPID_PUBLIC_KEY must decode to a 65-byte uncompressed P-256 point (leading 0x04)";
+  const d = decodeBase64url(vapid.privateKey);
+  if (d?.length !== 32) return "VAPID_PRIVATE_KEY must decode to exactly 32 bytes";
+  const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
+  try {
+    await crypto.subtle.importKey(
+      "jwk",
+      { kty: "EC", crv: "P-256", x: b64(pub!.slice(1, 33)), y: b64(pub!.slice(33, 65)), d: vapid.privateKey },
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["sign"],
+    );
+  } catch (err) {
+    return `VAPID key pair failed to import: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  return undefined;
 }
 
 export interface PushResult {
@@ -118,6 +186,9 @@ export function createPushSender(store: PushSubscriptionStore, transport: PushTr
           out.pruned++;
           store.remove(sub.endpoint);
           logger.info({ host, status: r.value }, "pruned expired push subscription");
+        } else if (r.value === 401 || r.value === 403) {
+          out.failed++;
+          logger.error({ host, status: r.value }, "push service rejected the VAPID signature; the client must resubscribe if the key changed");
         } else {
           out.failed++;
           logger.warn({ host, status: r.value }, "push service rejected delivery");

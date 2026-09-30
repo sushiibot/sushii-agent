@@ -1,4 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseWebConfig, resolveOwnerPrincipals, resolveTeamsConfig, teamGuildConfigs } from "./config.ts";
 import type { PrincipalConfig } from "./orchestration/principals.ts";
 import type { TeamConfig } from "./orchestration/teams.ts";
@@ -148,7 +151,7 @@ describe("parseWebConfig", () => {
       ownerLogin: "me@example.com",
       distDir: "/app/web/build",
       devLogin: undefined,
-      trustedPeers: ["172.31.250.1"],
+      trustedPeers: ["127.0.0.1"],
       push: undefined,
     });
   });
@@ -160,10 +163,41 @@ describe("parseWebConfig", () => {
     expect(web?.bindAddr).toBe("172.31.250.2");
   });
 
-  test("a half-configured VAPID pair or a missing subject fails loudly", () => {
-    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", VAPID_PUBLIC_KEY: "abc" })).toThrow("set together");
-    expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", VAPID_PUBLIC_KEY: "abc", VAPID_PRIVATE_KEY: "def" })).toThrow("VAPID_SUBJECT");
+  test("a half-configured VAPID pair or a missing subject turns push off with a reason", () => {
+    const half = parseWebConfig({ WEB_OWNER_LOGIN: "me", VAPID_PUBLIC_KEY: "abc" });
+    expect(half?.push).toBeUndefined();
+    expect(half?.pushDisabledReason).toContain("set together");
+    const noSubject = parseWebConfig({ WEB_OWNER_LOGIN: "me", VAPID_PUBLIC_KEY: "abc", VAPID_PRIVATE_KEY: "def" });
+    expect(noSubject?.push).toBeUndefined();
+    expect(noSubject?.pushDisabledReason).toContain("VAPID_SUBJECT");
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", ...vapid, VAPID_PRIVATE_KEY: "padded==" })?.push?.privateKey).toBe("padded==");
     expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_PORT: "70000" })).toThrow();
+  });
+
+  test("importing config never parses the web env, so a bad web setup cannot crash the bot", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "cfg-import-"));
+    try {
+      const proc = Bun.spawn([process.execPath, "-e", `await import(${JSON.stringify(join(import.meta.dir, "config.ts"))}); console.log("imported")`], {
+        cwd,
+        // An explicit env, not the parent's, so a local .env cannot fill in the missing VAPID half.
+        env: {
+          PATH: process.env["PATH"] ?? "",
+          DISCORD_BOT_TOKEN: "x",
+          OPENAI_API_KEY: "x",
+          WEB_OWNER_LOGIN: "me@example.com",
+          VAPID_PUBLIC_KEY: "BAAA",
+          WEB_PORT: "nope",
+          WEB_TRUSTED_PEERS: "10.0.0.0/8",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      expect({ code, err: code === 0 ? "" : err }).toEqual({ code: 0, err: "" });
+      expect(out).toContain("imported");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("trusted peers are exact IPs and the bind address must be an IP", () => {
@@ -173,8 +207,12 @@ describe("parseWebConfig", () => {
     expect(() => parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_BIND_ADDR: "localhost" })).toThrow();
   });
 
-  test("WEB_DEV_LOGIN is dropped in production", () => {
+  test("WEB_DEV_LOGIN is honoured only on a loopback bind outside production", () => {
     expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me" })?.devLogin).toBe("me");
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", WEB_BIND_ADDR: "::1" })?.devLogin).toBe("me");
     expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", NODE_ENV: "production" })?.devLogin).toBeUndefined();
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", NODE_ENV: "PRODUCTION" })?.devLogin).toBeUndefined();
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", WEB_BIND_ADDR: "172.31.250.2" })?.devLogin).toBeUndefined();
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: "me", WEB_DEV_LOGIN: "me", WEB_BIND_ADDR: "0.0.0.0" })?.devLogin).toBeUndefined();
   });
 });

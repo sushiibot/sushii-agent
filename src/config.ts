@@ -6,7 +6,7 @@ import { parseTeams, buildTeamIndex } from "./orchestration/teams.ts";
 import { parseRelayUrls } from "./surfaces/buzz/relayUrl.ts";
 import { getLogger } from "./logger.ts";
 import { z } from "zod";
-import { parseIp } from "./surfaces/web/peers.ts";
+import { isLoopback, parseIp } from "./surfaces/web/peers.ts";
 
 const logger = getLogger("config");
 
@@ -79,8 +79,6 @@ export interface Config {
      *  `buzz.avatarUrl` (see orchestration/teams.ts's buzzAvatarFor). */
     avatarUrl: string | undefined;
   };
-  /** Personal web app gateway. Undefined unless WEB_OWNER_LOGIN is set. */
-  web: WebConfig | undefined;
   slack: {
     /** Bot token (xoxb-). Unset → the Slack surface is disabled. */
     botToken: string | undefined;
@@ -118,17 +116,18 @@ export interface WebConfig {
   bindAddr: string;
   ownerLogin: string;
   distDir: string;
-  /** Local-dev stand-in for the Serve identity header; always undefined in production. */
+  /** Local-dev stand-in for the Serve identity header; only set when bound to loopback outside production. */
   devLogin: string | undefined;
   /** Exact peer IPs allowed to carry the identity header (the Serve host's side of the web network). */
   trustedPeers: string[];
-  /** Undefined when the VAPID keys are absent: push endpoints are off. */
+  /** Undefined when the VAPID keys are absent or incomplete: push endpoints are off. */
   push: WebPushConfig | undefined;
+  /** Why push is off although some VAPID env was set. */
+  pushDisabledReason?: string;
 }
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalString = z.preprocess(emptyToUndefined, z.string().trim().optional());
-const base64url = z.string().regex(/^[A-Za-z0-9_-]+$/, "must be base64url without padding");
 
 const webEnvSchema = z.object({
   WEB_OWNER_LOGIN: optionalString,
@@ -140,36 +139,42 @@ const webEnvSchema = z.object({
     emptyToUndefined,
     z
       .string()
-      .default("172.31.250.1")
+      .default("127.0.0.1")
       .transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean))
       .refine((ips) => ips.length > 0 && ips.every((ip) => parseIp(ip) !== null), "must be a comma-separated list of exact IPs (no CIDR ranges)"),
   ),
   NODE_ENV: optionalString,
-  VAPID_PUBLIC_KEY: z.preprocess(emptyToUndefined, base64url.optional()),
-  VAPID_PRIVATE_KEY: z.preprocess(emptyToUndefined, base64url.optional()),
-  VAPID_SUBJECT: z.preprocess(emptyToUndefined, z.string().regex(/^(mailto:|https:)/, "must be a mailto: or https: URL").optional()),
+  VAPID_PUBLIC_KEY: optionalString,
+  VAPID_PRIVATE_KEY: optionalString,
+  VAPID_SUBJECT: optionalString,
 });
 
-/** Parses the web gateway env. Throws on a half-configured VAPID key pair rather than silently disabling push. */
+function parseVapid(e: z.infer<typeof webEnvSchema>): { push?: WebPushConfig; reason?: string } {
+  const { VAPID_PUBLIC_KEY: publicKey, VAPID_PRIVATE_KEY: privateKey, VAPID_SUBJECT: subject } = e;
+  if (!publicKey && !privateKey) return {};
+  if (!publicKey || !privateKey) return { reason: "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be set together" };
+  if (!subject) return { reason: "VAPID_SUBJECT is required when the VAPID keys are set" };
+  if (!/^(mailto:|https:)/.test(subject)) return { reason: "VAPID_SUBJECT must be a mailto: or https: URL" };
+  return { push: { publicKey, privateKey, subject } };
+}
+
+/** Parses the web gateway env. Throws on an invalid gateway setting; a bad VAPID setup only turns push off.
+ *  Not called at import time, so a bad value here can never take the rest of the bot down. */
 export function parseWebConfig(env: Record<string, string | undefined>): WebConfig | undefined {
   if (!env["WEB_OWNER_LOGIN"]?.trim()) return undefined;
   const e = webEnvSchema.parse(env);
   if (!e.WEB_OWNER_LOGIN) return undefined;
-  const vapidSet = [e.VAPID_PUBLIC_KEY, e.VAPID_PRIVATE_KEY].filter(Boolean).length;
-  if (vapidSet === 1) throw new Error("VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must be set together");
-  let push: WebPushConfig | undefined;
-  if (e.VAPID_PUBLIC_KEY && e.VAPID_PRIVATE_KEY) {
-    if (!e.VAPID_SUBJECT) throw new Error("VAPID_SUBJECT is required when the VAPID keys are set");
-    push = { publicKey: e.VAPID_PUBLIC_KEY, privateKey: e.VAPID_PRIVATE_KEY, subject: e.VAPID_SUBJECT };
-  }
+  const { push, reason } = parseVapid(e);
+  const production = e.NODE_ENV?.toLowerCase() === "production";
   return {
     port: e.WEB_PORT,
     bindAddr: e.WEB_BIND_ADDR,
     ownerLogin: e.WEB_OWNER_LOGIN,
     distDir: e.WEB_DIST_DIR,
-    devLogin: e.NODE_ENV === "production" ? undefined : e.WEB_DEV_LOGIN,
+    devLogin: !production && isLoopback(e.WEB_BIND_ADDR) ? e.WEB_DEV_LOGIN : undefined,
     trustedPeers: e.WEB_TRUSTED_PEERS,
     push,
+    ...(reason ? { pushDisabledReason: reason } : {}),
   };
 }
 
@@ -366,7 +371,6 @@ export const config: Config = {
     displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
     avatarUrl: process.env["BUZZ_AVATAR_URL"],
   },
-  web: parseWebConfig(process.env),
   slack: {
     botToken: process.env["SLACK_BOT_TOKEN"],
     appToken: process.env["SLACK_APP_TOKEN"],

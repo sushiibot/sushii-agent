@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 
 export const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -18,6 +18,21 @@ function isFile(p: string): boolean {
   }
 }
 
+function realpathOrUndefined(p: string): string | undefined {
+  try {
+    return realpathSync(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The file's real path if it is a regular file whose real location is inside realRoot; symlinks out are refused. */
+function containedFile(realRoot: string, candidate: string): string | undefined {
+  const real = realpathOrUndefined(candidate);
+  if (!real || !real.startsWith(realRoot + sep)) return undefined;
+  return isFile(real) ? real : undefined;
+}
+
 /** Maps a URL pathname to a file under distDir, falling back to index.html for extensionless
  *  client routes. Anything that decodes to a path outside distDir is a bad request. */
 export function resolveStatic(distDir: string, pathname: string): StaticResolution {
@@ -34,14 +49,16 @@ export function resolveStatic(distDir: string, pathname: string): StaticResoluti
   // Dotfiles and dot-dirs are never part of a build's public output.
   if (decoded.split("/").some((seg) => seg.startsWith("."))) return { kind: "not-found" };
 
+  const realRoot = realpathOrUndefined(root);
+  if (!realRoot) return { kind: "not-found" };
   for (const candidate of [target, `${target}.html`, resolve(target, "index.html")]) {
-    if ((candidate === root || candidate.startsWith(root + sep)) && isFile(candidate)) {
-      return { kind: "file", path: candidate, fallback: false };
-    }
+    if (candidate !== root && !candidate.startsWith(root + sep)) continue;
+    const real = containedFile(realRoot, candidate);
+    if (real) return { kind: "file", path: real, fallback: false };
   }
   if (extname(decoded) !== "") return { kind: "not-found" };
-  const index = resolve(root, "index.html");
-  return isFile(index) ? { kind: "file", path: index, fallback: true } : { kind: "not-found" };
+  const index = containedFile(realRoot, resolve(root, "index.html"));
+  return index ? { kind: "file", path: index, fallback: true } : { kind: "not-found" };
 }
 
 export function cacheControlFor(pathname: string, fallback: boolean): string {
