@@ -2,8 +2,7 @@ import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 
 export const WEB_SURFACE = "web";
 
-// Identity, not shape: an actor counts as verified only if it is the very object minted here, so a
-// `{surface:"web"}` built anywhere else, or a spread copy of a minted one, never passes.
+// Checked by object identity, not shape. A look-alike or a spread copy of a minted actor never passes.
 const minted = new WeakSet<SurfaceActor>();
 
 export const normalizeLogin = (s: string) => s.trim().toLowerCase();

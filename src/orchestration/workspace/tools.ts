@@ -279,8 +279,8 @@ export class WorkspaceTools {
 
   private async approveThenExecute(conn: ConnectionInfo, entry: ToolEntry<keyof ToolHosts>, input: Record<string, unknown>, p: ToolCallParams, fields: ApprovalField[]): Promise<ToolCallResult> {
     const nonce = newNonce();
-    // Pending before the prompt exists, so a click racing the post's return, a cancel, a closed socket or
-    // the timeout all settle it, also while it is held for a missing surface.
+    // Pending before the prompt exists. A racing click, a cancel, a closed socket or the timeout then settles
+    // it, even while it is held.
     const decided = this.awaitDecision(conn, p.callId, nonce);
     const target = await this.approvalTarget(nonce, p, decided);
     if ("result" in target) return target.result;
@@ -314,8 +314,8 @@ export class WorkspaceTools {
     return result;
   }
 
-  /** The preferred surface to ask on. Without one the approval is held, never sent to another surface, until
-   *  that surface registers or the approval settles (timeout, cancel, closed socket), which denies it. */
+  /** The preferred surface to ask on. Without one, the approval is held and never sent elsewhere. It waits
+   *  for that surface to register, or is denied once it settles. */
   private async approvalTarget(nonce: string, p: ToolCallParams, decided: Promise<ApprovalDecision>): Promise<ResolvedSurface | { result: ToolCallResult }> {
     for (;;) {
       try {

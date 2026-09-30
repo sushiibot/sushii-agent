@@ -222,7 +222,7 @@ async function route<M extends InboundMessage>(message: M, deps: OwnerRouterDeps
     }
   }
 
-  // No receipt either: a receipt tells the surface the message was taken, so it would never be resent.
+  // No receipt here. A receipt tells the surface the message was taken, so it would never be resent.
   if (reject) {
     await notice({ type: "workspaceOffline" });
     return;

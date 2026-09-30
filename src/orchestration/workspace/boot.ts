@@ -24,7 +24,7 @@ export interface WorkspaceConfig {
   principalId: string;
   /** WORKSPACE_PREFERRED_SURFACE. `web` pins every personal delivery, ask and approval to web. */
   preferredSurface: string;
-  /** DM_WORKSPACE_ENABLED: gates the tool manifest and the GitHub broker, for every surface. */
+  /** DM_WORKSPACE_ENABLED. Gates the tool manifest and the GitHub broker on every surface. */
   enabled: boolean;
   orchPort: number;
   ownerDiscordId: string | undefined;
@@ -48,11 +48,8 @@ export interface WorkspaceBoot {
   server: OrchestrationServer;
 }
 
-/**
- * Who may act as the workspace's principal. Discord: the configured owner id. Web: only an actor the web
- * gateway minted from a verified login, and only when principals.json maps that login to this principal
- * as its owner. Every other surface: nobody.
- */
+/** Who may act as the principal. A web actor counts only if the gateway minted it and principals.json
+ *  maps its login to this principal as owner. Other surfaces never count. */
 export function workspaceOwnerCheck(o: { principalId: string; ownerDiscordId: string | undefined }): (actor: SurfaceActor) => boolean {
   return (actor) => {
     if (actor.surface === DISCORD) return !!o.ownerDiscordId && actor.userId === o.ownerDiscordId;
@@ -104,11 +101,8 @@ export function bootWorkspace(cfg: WorkspaceConfig, adapters: SurfaceAdapter<any
   return { registry, tools, link, server };
 }
 
-/**
- * Starts the workspace transport once every adapter is registered, so a workspace that registers at once
- * doesn't drain its outbox into a missing surface. Never throws: a missing preferred surface holds personal
- * approvals and deliveries, and a bind failure disables only the link; guild features keep running.
- */
+/** Call once every adapter is registered, or a workspace that connects at once drains its outbox into a
+ *  missing surface. Never throws, so guild features survive a missing surface or a bind failure. */
 export function listenWorkspace(boot: WorkspaceBoot, port: number): void {
   if (!boot.registry.hasPreferred()) {
     log.error(

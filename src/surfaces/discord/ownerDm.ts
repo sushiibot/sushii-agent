@@ -57,8 +57,8 @@ export const DM_REDIRECT_NOTICE = `Personal chat moved to ${WEB_APP_URL}`;
 export const DM_REDIRECT_WEB_DOWN = `Personal chat moved to ${WEB_APP_URL}, but the web app is down right now.`;
 export const BREAK_GLASS_APPROVAL = "An approval is pending. Open the app to decide.";
 
-/** OWNER_DM_MODE=redirect: the owner's DM gets one line pointing at the web app and goes nowhere else, not
- *  to the workspace, the in-process agent, the login flow or a reply code. */
+/** OWNER_DM_MODE=redirect. The DM gets one line pointing at the web app. It never reaches the workspace,
+ *  the in-process agent, the login flow or a reply code. */
 export async function redirectOwnerDm(message: Pick<OwnerDmMessage, "send">, opts: { webUp: boolean }): Promise<void> {
   await message.send({ content: opts.webUp ? DM_REDIRECT_NOTICE : DM_REDIRECT_WEB_DOWN, allowedMentions: { parse: [] } }).catch((err) => {
     log.warn({ err }, "failed to send the owner DM redirect notice");
