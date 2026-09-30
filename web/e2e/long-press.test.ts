@@ -67,6 +67,22 @@ async function send(page: Page, text: string) {
 const bubble = (page: Page, text: string) =>
 	page.locator('[data-message-id]').filter({ hasText: text });
 const sheet = (page: Page) => page.getByRole('dialog', { name: 'Message actions' });
+/** Message actions buttons a sighted user can see: they stay in the tab order but transparent. */
+const shownDots = (page: Page) =>
+	page.$$eval(
+		'[data-message-actions]',
+		(els) => els.filter((e) => getComputedStyle(e).opacity !== '0').length
+	);
+const article = (page: Page, text: string) => bubble(page, text).locator('[data-message-focus]');
+
+/** The keyboard path: focus the message itself, then Enter. */
+async function openMenu(page: Page, text: string) {
+	// A keypress first, so the focus counts as keyboard focus (:focus-visible), as a Tab would.
+	await page.keyboard.press('Shift');
+	await article(page, text).focus();
+	await page.keyboard.press('Enter');
+	await expect(sheet(page)).toBeVisible();
+}
 
 async function touch(page: Page) {
 	const cdp = await page.context().newCDPSession(page);
@@ -126,7 +142,7 @@ test('holding a bubble opens one sheet, and a scroll gesture does not', async ({
 	await expect(sheet(page)).toBeVisible();
 	await expect(page.getByRole('dialog')).toHaveCount(1);
 	await expect(sheet(page).getByRole('button', { name: 'Copy text' })).toBeFocused();
-	await expect(bubble(page, 'Booked Eastside')).toHaveClass(/ring-2/);
+	await expect(article(page, 'Booked Eastside')).toHaveClass(/ring-2/);
 	// The hold's own click never reaches the link it started on.
 	expect(context.pages()).toHaveLength(1);
 });
@@ -164,7 +180,7 @@ test('Retry and Delete appear only on your own unsent messages', async ({ page, 
 	const del = sheet(page).getByRole('button', { name: 'Delete message' });
 
 	for (const text of ['Book the car service', 'Booked Eastside']) {
-		await bubble(page, text).getByRole('button', { name: 'Message actions' }).click();
+		await openMenu(page, text);
 		await expect(sheet(page)).toBeVisible();
 		await expect(retry).toHaveCount(0);
 		await expect(del).toHaveCount(0);
@@ -176,7 +192,7 @@ test('Retry and Delete appear only on your own unsent messages', async ({ page, 
 	opts.messageStatus = 400;
 	await send(page, 'This one fails');
 	await expect(bubble(page, 'This one fails')).toContainText('Failed');
-	await bubble(page, 'This one fails').getByRole('button', { name: 'Message actions' }).click();
+	await openMenu(page, 'This one fails');
 	await expect(retry).toBeVisible();
 	await expect(del).toBeVisible();
 	opts.messageStatus = 202;
@@ -187,7 +203,7 @@ test('Retry and Delete appear only on your own unsent messages', async ({ page, 
 	opts.messageStatus = 400;
 	await send(page, 'Delete me');
 	await expect(bubble(page, 'Delete me')).toContainText('Failed');
-	await bubble(page, 'Delete me').getByRole('button', { name: 'Message actions' }).click();
+	await openMenu(page, 'Delete me');
 	await del.click();
 	await expect(bubble(page, 'Delete me')).toHaveCount(0);
 	await expect(sheet(page)).toHaveCount(0);
@@ -197,10 +213,20 @@ test('the sheet works from the keyboard, traps focus, and Escape and Back close 
 	page,
 	context
 }) => {
-	await chatServer(context, [item('assistant', 'r1', REPLY)]);
+	await chatServer(context, [
+		item('user', 'u1', 'Book the car service'),
+		item('assistant', 'r1', REPLY)
+	]);
 	await open(page);
-	const trigger = bubble(page, 'Booked Eastside').getByRole('button', { name: 'Message actions' });
+	expect(await shownDots(page)).toBe(0);
+
+	const trigger = article(page, 'Booked Eastside');
+	await page.keyboard.press('Shift');
 	await trigger.focus();
+	await expect(trigger).toHaveAccessibleName('Agent message');
+	// Focus reveals the button, and Tab reaches it.
+	await expect(trigger.getByRole('button', { name: 'Message actions' })).toHaveCSS('opacity', '1');
+	expect(await shownDots(page)).toBe(1);
 	await page.keyboard.press('Enter');
 	const copy = sheet(page).getByRole('button', { name: 'Copy text' });
 	await expect(copy).toBeFocused();
@@ -212,11 +238,23 @@ test('the sheet works from the keyboard, traps focus, and Escape and Back close 
 	await expect(sheet(page)).toHaveCount(0);
 	await expect(trigger).toBeFocused();
 
-	await trigger.click();
+	await page.keyboard.press('Shift+F10');
 	await expect(sheet(page)).toBeVisible();
 	await page.goBack();
 	await expect(sheet(page)).toHaveCount(0);
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+
+	await page.keyboard.press('Shift');
+	await article(page, 'Book the car service').focus();
+	await page.keyboard.press('Tab');
+	const mine = article(page, 'Book the car service').getByRole('button', {
+		name: 'Message actions'
+	});
+	await expect(mine).toBeFocused();
+	await expect(mine).toHaveCSS('opacity', '1');
+	await page.keyboard.press('Enter');
+	await expect(sheet(page)).toBeVisible();
+	await expect(sheet(page)).toContainText('Book the car service');
 });
 
 test('Select text makes the bubble selectable and selects its text', async ({ page, context }) => {
@@ -290,12 +328,24 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await expect(bubble(page, 'Add the confirmation')).toContainText('Failed');
 		expect(await axe(page)).toEqual([]);
 		expect(await smallTargets(page)).toEqual([]);
+		expect(await shownDots(page)).toBe(0);
+		for (const width of [412, 320]) {
+			await page.setViewportSize({ width, height: width === 412 ? 915 : 640 });
+			await page.screenshot({ path: `${SHOTS}/list-${width}-${colorScheme}.png` });
+		}
+		await page.setViewportSize({ width: 412, height: 915 });
+
+		await page.keyboard.press('Shift');
+		await article(page, 'Booked Eastside').focus();
+		expect(await axe(page)).toEqual([]);
+		expect(await smallTargets(page)).toEqual([]);
+		await page.screenshot({ path: `${SHOTS}/focused-412-${colorScheme}.png` });
 
 		for (const [held, name] of [
 			['Booked Eastside', 'reply'],
 			['Add the confirmation', 'failed']
 		] as const) {
-			await bubble(page, held).getByRole('button', { name: 'Message actions' }).click();
+			await openMenu(page, held);
 			await expect(sheet(page)).toBeVisible();
 			expect(await axe(page)).toEqual([]);
 			expect(await smallTargets(page)).toEqual([]);

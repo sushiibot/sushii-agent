@@ -223,7 +223,7 @@
 		selecting = undefined;
 		if (heldId === id) return;
 		// Focus returns here when the sheet closes, whether a hold or the button opened it.
-		messageEl(id)?.querySelector<HTMLElement>('[data-message-actions]')?.focus({
+		messageEl(id)?.querySelector<HTMLElement>('[data-message-focus]')?.focus({
 			preventScroll: true
 		});
 		openSheet('message', id);

@@ -31,6 +31,7 @@ The primary device is an Android phone running the installed PWA (Chrome WebAPK,
 - **The top bar holds title, back and secondary actions only.** Why: nothing there should need reaching for mid-task. Check: `review`.
 - **Destructive or outward actions (Deny, Delete, Send now) are never the largest target and never sit where a mis-tap from the primary lands.** Why: Fitts's law works against you for dangerous actions. Check: `shot`.
 - **No gesture-only actions. Every swipe or long-press has a visible button alternative.** Why: WCAG 2.5.7 Dragging Movements; gestures are undiscoverable. Check: `review`.
+  - Per-message actions are the accepted exception to "visible". Holding or right-clicking a message opens its actions sheet. Each message is also a focusable `role="article"` with a name, and Enter, Shift+F10 or the menu key on it opens the same sheet. Its "Message actions" button stays in the tab order but is transparent until the message or the button has `:focus-visible`, so it takes no space and shows only for keyboard users. Why: a visible button under every message is noise on a phone, and the keyboard and screen-reader path stays intact. Check: `pw` (`e2e/long-press.test.ts`).
 
 ```ts
 // 48px target assertion; run on every screen in the state matrix.
