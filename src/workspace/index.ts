@@ -13,6 +13,7 @@ import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { scanMemoryForSecrets } from "./memoryGuard.ts";
 import { RunLog, recordRotation } from "./runLog.ts";
+import { HistoryWriter, recordHistory } from "./history.ts";
 import { createConsolidationJob, waitIdle } from "./consolidation.ts";
 import { ToolStubs } from "./toolStubs.ts";
 import { GitHubCredentials } from "./githubCredentials.ts";
@@ -45,9 +46,12 @@ async function main(): Promise<void> {
   delete process.env.OPENAI_API_KEY;
   await scaffoldHome(config.home);
   // One instance for the whole process: later subagent and job runners record through it too.
-  const runs = new RunLog(config.stateDir);
-  const orphans = runs.reconcileOrphans();
+  const runLog = new RunLog(config.stateDir);
+  const orphans = runLog.reconcileOrphans();
   if (orphans) log.warn({ orphans }, "closed runs left open by a previous process");
+  const historyLog = getLogger("workspace.history");
+  const history = new HistoryWriter({ home: config.home, agentDir: config.agentDir, tz: config.tz });
+  const runs = recordHistory(runLog, history, historyLog);
   let client: OrchestrationClient | null = null;
   const toolStubs = new ToolStubs({
     principalId: config.principalId,
@@ -134,6 +138,7 @@ async function main(): Promise<void> {
           log.warn({ err }, "failed to record the rotation in the run log");
         }
       },
+      onSessionSummary: (s) => history.writeSession(s),
     },
     transport: {
       request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),

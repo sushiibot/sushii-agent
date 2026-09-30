@@ -33,7 +33,7 @@ export interface WsRunsIo {
 const inside = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
 
 // A root that is itself a symlink could point anywhere, e.g. `<agentDir>/chat -> <agentDir>`.
-function realRoots(agentDirs: string[]): string[] {
+export function realRoots(agentDirs: string[]): string[] {
   const roots: string[] = [];
   for (const r of agentDirs.flatMap(sessionRoots)) {
     try {
@@ -109,7 +109,7 @@ function listSessionFiles(roots: string[]): string[] {
 
 // --- transcript rendering ----------------------------------------------------------------------
 
-interface Entry {
+export interface Entry {
   type?: string;
   timestamp?: string;
   message?: {
@@ -129,7 +129,7 @@ interface Entry {
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max)}… [${s.length - max} more chars]`);
 
-function textOf(content: unknown): string {
+export function textOf(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
@@ -208,7 +208,7 @@ function renderRaw(entry: Entry, full: boolean, hide?: Hide): string[] {
   return [];
 }
 
-function parseEntry(line: string): Entry | null {
+export function parseEntry(line: string): Entry | null {
   try {
     const e = JSON.parse(line) as Entry;
     return e && typeof e === "object" ? e : null;

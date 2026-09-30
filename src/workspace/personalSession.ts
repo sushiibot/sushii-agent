@@ -128,8 +128,17 @@ export interface ContextHooks {
   busy?(): boolean;
   /** After a rotation, for the run log. */
   onRotated?(r: RotationRecord): void;
+  /** A recap of a chat session that ended (rotation, chat/new) or Pi's summary at a compaction, for the history files. */
+  onSessionSummary?(s: SessionSummaryRecord): void;
   /** How often idleness is checked. Default 60s; null leaves it to checkIdle() calls. */
   checkEveryMs?: number | null;
+}
+
+export interface SessionSummaryRecord {
+  reason: "rotate" | "new" | "compaction";
+  sessionFile: string;
+  text: string;
+  at: Date;
 }
 
 export interface RotationRecord {
@@ -498,14 +507,16 @@ export class PersonalSession {
           }
           // After the abort: a flush sent into a live run would join it as a steer.
           await this.flushBeforeNew(old, deadline, budgetMs, reason);
-          if (reason === "rotate") recap = await this.makeRecap(old, deadline - reserve);
+          // On chat/new the recap only goes to the history files, so it never eats the finish reserve.
+          if (reason === "rotate" || (hasConversation(old) && deadline - reserve > Date.now())) recap = await this.makeRecap(old, deadline - reserve);
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
         const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui });
         this.detach();
         old?.dispose();
         this.attach(session, sessionFile);
-        const text = recap === null ? null : recapMessage(recap, previousSessionFile);
+        if (old && recap !== null) this.emitSummary({ reason, sessionFile: previousSessionFile, text: recap, at: new Date() });
+        const text = recap === null || reason !== "rotate" ? null : recapMessage(recap, previousSessionFile);
         if (text !== null) await this.seedRecap(session, text).catch((err) => log.warn({ err }, "seeding the recap failed"));
         writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: text === null ? undefined : { sessionFile, text } });
         if (reason === "new") {
@@ -537,18 +548,26 @@ export class PersonalSession {
     });
   }
 
+  private emitSummary(s: SessionSummaryRecord): void {
+    try {
+      this.opts.context?.onSessionSummary?.(s);
+    } catch (err) {
+      log.warn({ err, reason: s.reason }, "recording the session summary failed");
+    }
+  }
+
   private async makeRecap(session: ChatSession, deadline: number): Promise<string | null> {
     const recap = this.opts.context?.recap;
     if (!recap) return null;
     try {
       const out = await bounded(recap(session), Math.max(deadline - Date.now(), 1000));
       if (out === TIMEOUT) {
-        log.warn("the recap didn't finish in time; rotating without one");
+        log.warn("the recap didn't finish in time; going on without one");
         return null;
       }
       return out;
     } catch (err) {
-      log.warn({ err }, "the recap failed; rotating without one");
+      log.warn({ err }, "the recap failed; going on without one");
       return null;
     }
   }
@@ -1041,7 +1060,10 @@ export class PersonalSession {
 
   private onEvent(session: ChatSession, event: AgentSessionEvent): void {
     if (event.type === "compaction_end") {
-      if (event.result && !event.aborted) this.flushedThisCycle = false;
+      if (event.result && !event.aborted) {
+        this.flushedThisCycle = false;
+        this.emitSummary({ reason: "compaction", sessionFile: this.sessionFile, text: event.result.summary, at: new Date() });
+      }
       this.releaseCompactionWaiters();
       if (this.reloadDue) this.scheduleReload();
       return;
