@@ -23,7 +23,9 @@ export async function resolveModelInfo(modelId: string, fallback: number): Promi
     const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number; architecture?: { input_modalities?: string[] } }> };
     const entry = payload.data?.find((m) => m.id === modelId);
     if (!entry?.context_length || entry.context_length <= 0) throw new Error(`model ${modelId} missing context_length`);
-    return { contextWindow: entry.context_length, image: entry.architecture?.input_modalities?.includes("image") === true };
+    const image = entry.architecture?.input_modalities?.includes("image") === true;
+    log.info({ modelId, contextWindow: entry.context_length, image }, "resolved model metadata from OpenRouter");
+    return { contextWindow: entry.context_length, image };
   } catch (err) {
     log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using fallback");
     return { contextWindow: fallback, image: false };

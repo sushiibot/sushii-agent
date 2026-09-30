@@ -1,13 +1,16 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { ChatMessageParams } from "../orchestration/contracts.ts";
+import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
+import { base64Bytes, type ChatMessageParams } from "../orchestration/contracts.ts";
 import { getLogger } from "../logger.ts";
 
 const log = getLogger("workspace.images");
 
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-export const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+// Under the bot's 10s chat/message timeout: the download is awaited before the message is acked.
+export const IMAGE_FETCH_TIMEOUT_MS = 7_000;
 export const IMAGES_PER_MESSAGE_MAX = 10;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const IMAGE_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 
 type Attachment = NonNullable<ChatMessageParams["attachments"]>[number];
 
@@ -15,6 +18,8 @@ export interface ImageFetchOptions {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
   maxBytes?: number;
   timeoutMs?: number;
+  /** Resizes a steer's images; tests inject it. Default Pi's resizeImage. */
+  resize?: ResizeFn;
 }
 
 export function isImageAttachment(a: Pick<Attachment, "contentType">): boolean {
@@ -56,11 +61,26 @@ async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array |
   return out;
 }
 
+/** Only Discord's CDN over https: the URL comes over the wire, and the fetch runs inside the workspace's network. */
+export function isAllowedImageUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && IMAGE_HOSTS.has(u.hostname) && !u.port && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}
+
 async function fetchImage(a: Attachment, opts: ImageFetchOptions): Promise<ImageContent | null> {
   const doFetch = opts.fetch ?? fetch;
   const maxBytes = opts.maxBytes ?? IMAGE_MAX_BYTES;
+  if (!isAllowedImageUrl(a.url)) {
+    log.info({ name: a.name }, "image attachment isn't on Discord's CDN; passing it as a link only");
+    return null;
+  }
   try {
-    const res = await doFetch(a.url, { signal: AbortSignal.timeout(opts.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS) });
+    // A redirect could point anywhere, so none is followed.
+    const res = await doFetch(a.url, { redirect: "error", signal: AbortSignal.timeout(opts.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const bytes = await readCapped(res, maxBytes);
     if (!bytes) {
@@ -90,4 +110,38 @@ export async function loadImageAttachments(attachments: readonly Attachment[] | 
 export function acceptsImages(session: unknown): boolean {
   const input = (session as { model?: { input?: unknown } } | null)?.model?.input;
   return !Array.isArray(input) || input.includes("image");
+}
+
+// Under the strictest provider's per-image cap (Anthropic: 5 MB of base64); used only when resizing fails.
+export const STEER_IMAGE_MAX_BYTES = 3.5 * 1024 * 1024;
+const OMITTED_HINT = "[Image omitted: could not be resized below the inline image size limit.]";
+
+export type ResizeFn = typeof resizeImage;
+
+/** A steer's images resized the way Pi resizes a prompt's (Pi queues a steer's images as they are), with
+ *  Pi's notes appended to the text the same way. An oversized image left in history fails every later request. */
+export async function prepareSteerImages(
+  text: string,
+  images: readonly ImageContent[],
+  resize: ResizeFn = resizeImage,
+): Promise<{ text: string; images: ImageContent[] }> {
+  const out: ImageContent[] = [];
+  const hints: string[] = [];
+  for (const image of images) {
+    try {
+      const resized = await resize(Buffer.from(image.data, "base64"), image.mimeType);
+      if (!resized) {
+        hints.push(OMITTED_HINT);
+        continue;
+      }
+      out.push({ type: "image", data: resized.data, mimeType: resized.mimeType });
+      const note = formatDimensionNote(resized);
+      if (note) hints.push(note);
+    } catch (err) {
+      log.warn({ err }, "resizing a steered image failed; keeping it only if it is small");
+      if (base64Bytes(image.data) <= STEER_IMAGE_MAX_BYTES) out.push(image);
+      else hints.push(OMITTED_HINT);
+    }
+  }
+  return { text: hints.length ? `${text}\n\n${hints.join("\n")}` : text, images: out };
 }

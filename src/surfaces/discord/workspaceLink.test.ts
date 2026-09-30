@@ -810,6 +810,21 @@ describe("reply files", () => {
     await expect(deliverViaServer(rpc, deliverParams({ files: [{ ...FILES[0]!, dataBase64: big }, { ...FILES[1]!, dataBase64: big }] }))).rejects.toThrow(/size cap/);
   });
 
+  test("a retry after the files message failed sends only the files, not the text again", async () => {
+    const { link, rpc, channel } = setup();
+    let failures = 1;
+    channel.failWhen = (o) => (o.files?.length ?? 0) > 0 && failures-- > 0;
+    await link.deliver(deliverParams({ files: FILES }));
+    expect(channel.sent).toHaveLength(1);
+    expect(rpc.calls).toHaveLength(0);
+    await link.deliver(deliverParams({ files: FILES }));
+    expect(channel.sent.filter((m) => textOf(m).includes("hello there"))).toHaveLength(1);
+    const uploads = channel.sent.filter((m) => (m.files?.length ?? 0) > 0);
+    expect(uploads).toHaveLength(1);
+    expect(attachmentNames(uploads[0]!)).toEqual(["chart.png", "report_1.pdf"]);
+    expect(rpc.calls.map((c) => c.method)).toEqual([RPC_METHODS.chatAck]);
+  });
+
   test("files Discord keeps rejecting fall back to a note after the plain text, and the delivery is acked", async () => {
     const { link, rpc, channel } = setup();
     channel.failWhen = (o) => (o.files?.length ?? 0) > 0;

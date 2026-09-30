@@ -2147,16 +2147,125 @@ describe("image attachments", () => {
     expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m0", "m1"]);
   });
 
-  test("a steer carries its images too", async () => {
-    const { host, sessions } = setup({ images: { fetch: async () => new Response(PNG) } });
+  const resized = (data: string, wasResized = true) => ({
+    data,
+    mimeType: "image/jpeg",
+    originalWidth: 4000,
+    originalHeight: 3000,
+    width: wasResized ? 2000 : 4000,
+    height: wasResized ? 1500 : 3000,
+    wasResized,
+  });
+
+  test("a steer's images are resized like a prompt's, with Pi's note, and the reply threads to it", async () => {
+    const { host, sessions, transport } = setup({ images: { fetch: async () => new Response(PNG), resize: async () => resized("UkVTSVpFRA==") } });
     await host.start();
-    const first = host.handleMessage(msg("m1", "hi"));
-    await first;
+    await host.handleMessage(msg("m1", "hi"));
     await host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
     const steer = sessions[0]!.prompts[1]!;
     expect(steer.options?.streamingBehavior).toBe("steer");
-    expect(steer.options?.images?.length).toBe(1);
+    expect(steer.options?.images).toEqual([{ type: "image", data: "UkVTSVpFRA==", mimeType: "image/jpeg" }]);
+    expect(steer.text).toContain("and this");
+    expect(steer.text).toMatch(/\n\n\[Image: original 4000x3000, displayed at 2000x1500\./);
     sessions[0]!.finish("ok");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m2"]);
+  });
+
+  test("a steered image that can't be resized is left out with a note; if resizing throws, only a small one is kept", async () => {
+    const big = new Uint8Array(4 * 1024 * 1024);
+    big.set(PNG);
+    const att = (name: string) => ({ ...IMAGE_ATTACHMENT, name, url: `https://cdn.discordapp.com/attachments/1/2/${name}` });
+    const { host, sessions } = setup({
+      images: {
+        fetch: async (url) => new Response(url.endsWith("big.png") ? big : PNG),
+        resize: async (bytes) => {
+          if (bytes.length === PNG.length && resizeCalls++ === 0) return null;
+          throw new Error("photon unavailable");
+        },
+      },
+    });
+    let resizeCalls = 0;
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleMessage(msg("m2", "these", { attachments: [att("a.png"), att("b.png"), att("big.png")] }));
+    const steer = sessions[0]!.prompts[1]!;
+    expect(steer.options?.images).toEqual([{ type: "image", mimeType: "image/png", data: Buffer.from(PNG).toString("base64") }]);
+    expect(steer.text.match(/\[Image omitted/g)?.length).toBe(2);
+    sessions[0]!.finish("ok");
+  });
+
+  test("a steer stranded at settle is re-prompted with the same text and its resized images", async () => {
+    const { host, sessions } = setup({ images: { fetch: async () => new Response(PNG), resize: async () => resized("UkVTSVpFRA==") } });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    await host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
+    const steer = sessions[0]!.prompts[1]!;
+    sessions[0]!.settleStranded("done");
+    await sleep(20);
+    const reprompt = sessions[0]!.prompts[2]!;
+    expect(reprompt.text).toBe(steer.text);
+    expect(reprompt.options?.images).toEqual(steer.options?.images);
+    sessions[0]!.finish("ok");
+  });
+
+  test("a run that settles during the resize sends the message as a prompt with its original images", async () => {
+    let releaseResize!: () => void;
+    const resizeGate = new Promise<void>((r) => (releaseResize = r));
+    const { host, sessions, transport } = setup({
+      images: {
+        fetch: async () => new Response(PNG),
+        resize: async () => {
+          await resizeGate;
+          return resized("UkVTSVpFRA==");
+        },
+      },
+    });
+    await host.start();
+    await host.handleMessage(msg("m1", "hi"));
+    const second = host.handleMessage(msg("m2", "and this", { attachments: [IMAGE_ATTACHMENT] }));
+    await sleep(5);
+    sessions[0]!.finish("first");
+    await sleep(10);
+    releaseResize();
+    expect((await second).mode).toBe("prompt");
+    const p = sessions[0]!.prompts[1]!;
+    expect(sessions[0]!.steers).toEqual([]);
+    expect(p.text).not.toContain("[Image:");
+    expect(p.options?.images).toEqual([{ type: "image", mimeType: "image/png", data: Buffer.from(PNG).toString("base64") }]);
+    sessions[0]!.finish("second");
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.replyTo)).toEqual(["m1", "m2"]);
+  });
+
+  test("a slow image download can't let a later message, or a stop, overtake it", async () => {
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((r) => (releaseFetch = r));
+    const { host, sessions } = setup({
+      images: {
+        fetch: async () => {
+          await fetchGate;
+          return new Response(PNG);
+        },
+      },
+    });
+    await host.start();
+    const a = host.handleMessage(msg("mA", "look", { attachments: [IMAGE_ATTACHMENT] }));
+    await sleep(5);
+    const b = host.handleMessage(msg("mB", "text only"));
+    const stop = host.handleAbort();
+    await sleep(10);
+    expect(sessions[0]!.prompts).toEqual([]);
+    expect(sessions[0]!.aborts).toBe(0);
+    releaseFetch();
+    await Promise.all([a, b]);
+    expect(sessions[0]!.prompts).toHaveLength(2);
+    expect(sessions[0]!.prompts[0]!.text).toContain("look");
+    expect(sessions[0]!.prompts[0]!.options?.images?.length).toBe(1);
+    expect(sessions[0]!.prompts[1]!.text).toContain("text only");
+    expect(sessions[0]!.prompts[1]!.options?.streamingBehavior).toBe("steer");
+    expect(await stop).toEqual({ aborted: true });
+    expect(sessions[0]!.aborts).toBe(1);
   });
 });
 

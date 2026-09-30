@@ -6,7 +6,6 @@ import {
   DELIVER_FILES_TOTAL_MAX_BYTES,
   DELIVER_FILE_MAX_BYTES,
   RPC_METHODS,
-  base64Bytes,
   chatAbortParams,
   chatAckParams,
   chatMessageParams,
@@ -23,7 +22,7 @@ import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
 import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborted, runUsage, type RunAccumulator } from "./events.ts";
 import { Outbox, type OutboxEntry, type StagedFile } from "./outbox.ts";
-import { acceptsImages, loadImageAttachments, type ImageFetchOptions } from "./inboundImages.ts";
+import { acceptsImages, loadImageAttachments, prepareSteerImages, type ImageFetchOptions } from "./inboundImages.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { RecentIds } from "./recentIds.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
@@ -43,8 +42,6 @@ import {
 const log = getLogger("workspace.session");
 
 const VOICE_MARKER = "voice message, transcribed";
-// Under the strictest provider's per-image cap (Anthropic: 5 MB of base64).
-const STEER_IMAGE_MAX_BYTES = 3.5 * 1024 * 1024;
 const DISCORD_EPOCH_MS = 1420070400000n;
 const SNOWFLAKE = /^\d{17,20}$/;
 const CONTEXT_CUSTOM_TYPE = "workspace_context";
@@ -890,26 +887,36 @@ export class PersonalSession {
 
   // Pi marks the run active only after async preflight, so gate the queue on preflightResult or a racing idle prompt starts a second run.
   private async promptOrSteer(messageId: string, text: string, origin: ChatOrigin | undefined, wakeId?: string, images?: ImageContent[]): Promise<"prompt" | "steer"> {
-    for (let attempt = 0; ; attempt++) {
+    let steered: { text: string; images: ImageContent[] } | undefined;
+    let retriedCompaction = false;
+    for (;;) {
       if (this.orphanFlush) await this.orphanFlush;
       await this.waitForCompaction();
       await this.waitForSettle();
       const session = this.requireSession();
+      // The model can change between accept and here (!model, the fallback).
+      if (images && !acceptsImages(session)) images = undefined;
+      if (session.isStreaming && images?.length && !steered) {
+        steered = await prepareSteerImages(text, images, this.opts.images?.resize);
+        // The run can settle during the resize; check the mode again.
+        continue;
+      }
       const mode = session.isStreaming ? "steer" : "prompt";
       // Context that arrived during the last run belongs before this prompt, not after its reply.
       if (mode === "prompt" && this.pendingContext.length) await this.flushPendingContext();
+      const input = mode === "steer" && steered ? steered : { text, images };
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
-      const pending: PendingInbound = { messageId, text, origin, ...(wakeId ? { wakeId } : {}), ...(images ? { images } : {}) };
+      // The text is exactly what Pi queues, so a stranded steer is found again by it.
+      const pending: PendingInbound = { messageId, text: input.text, origin, ...(wakeId ? { wakeId } : {}), ...(input.images ? { images: input.images } : {}) };
       this.unconsumed.push(pending);
       if (mode === "prompt") this.nextRunPrompt = pending;
-      // Pi resizes a prompt's images but queues a steer's as they are.
-      const sent = mode === "steer" ? images?.filter((i) => base64Bytes(i.data) <= STEER_IMAGE_MAX_BYTES) : images;
+      const sent = input.images;
       let accepted = false;
       let settlesAtAccept = 0;
       try {
         await new Promise<void>((resolve, reject) => {
           session
-            .prompt(text, {
+            .prompt(input.text, {
               streamingBehavior: "steer",
               // Chat text is literal: a Discord message starting with "/" must not run a skill or extension command.
               expandPromptTemplates: false,
@@ -934,7 +941,10 @@ export class PersonalSession {
       } catch (err) {
         this.unconsumed = this.unconsumed.filter((p) => p !== pending);
         if (this.nextRunPrompt === pending) this.nextRunPrompt = undefined;
-        if (attempt === 0 && isCompactionBusy(err)) continue;
+        if (!retriedCompaction && isCompactionBusy(err)) {
+          retriedCompaction = true;
+          continue;
+        }
         log.error({ err, messageId }, "chat prompt failed");
         throw err;
       }
