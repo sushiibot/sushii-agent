@@ -22,6 +22,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   "tasks/README.md": "tasks-README.md",
   ".agents/skills/README.md": "agents-skills-README.md",
   ".agents/skills/session-history/SKILL.md": "agents-skills-session-history-SKILL.md",
+  ".agents/skills/documents/SKILL.md": "agents-skills-documents-SKILL.md",
   ".agents/agents/explore.md": "agents-agents-explore.md",
   ".agents/agents/researcher.md": "agents-agents-researcher.md",
   ".agents/agents/reviewer.md": "agents-agents-reviewer.md",

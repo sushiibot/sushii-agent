@@ -14,6 +14,7 @@ export const UPGRADABLE_TEMPLATES: Record<string, string> = {
   ".gitignore": "gitignore",
   ".agents/skills/README.md": "agents-skills-README.md",
   ".agents/skills/session-history/SKILL.md": "agents-skills-session-history-SKILL.md",
+  ".agents/skills/documents/SKILL.md": "agents-skills-documents-SKILL.md",
   ".agents/agents/explore.md": "agents-agents-explore.md",
   ".agents/agents/researcher.md": "agents-agents-researcher.md",
   ".agents/agents/reviewer.md": "agents-agents-reviewer.md",

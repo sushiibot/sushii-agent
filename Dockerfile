@@ -1,4 +1,4 @@
-FROM oven/bun:1 AS base
+FROM oven/bun:1 AS tools
 
 # openssh-client: ssh-agent/ssh-add/ssh for wiki-sync's git push auth (docker-entrypoint.sh) and
 # git itself, for simple-git's clone/fetch/push. Neither ships in the base image.
@@ -53,6 +53,8 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
 
 WORKDIR /app
 
+FROM tools AS base
+
 COPY package.json bun.lock* ./
 RUN bun install --production --frozen-lockfile
 
@@ -69,7 +71,8 @@ CMD ["bun", "src/index.ts"]
 
 # Personal-agent workspace: same toolchain, run as uid 1000 with user-space installs under HOME
 # (apt stays root-only). Deployed as its own compose project, independent of the bot.
-FROM base AS workspace
+# Tools and user setup come before the source copy, so a code-only change rebuilds just the app layers.
+FROM tools AS workspace
 RUN usermod -l agent -d /data/home bun && groupmod -n agent bun \
     && mkdir -p /data/home && chown -R agent:agent /data
 ENV HOME=/data/home \
@@ -90,6 +93,28 @@ RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-consolidate.ts "$@"' > /usr/
 # `ws-schedule`: lists the scheduled jobs, or queues a run of one for the workspace's scheduler.
 RUN printf '%s\n' '#!/bin/sh' 'exec bun /app/bin/ws-schedule.ts "$@"' > /usr/local/bin/ws-schedule \
     && chmod 755 /usr/local/bin/ws-schedule
+# Document extraction for the documents skill (PDF is poppler-utils, in base). pandoc: docx/odt/pptx/epub
+# → markdown; upstream static build because Debian's is larger and can't read pptx. xlsx2csv: pandoc's
+# xlsx reader fails or drops text cells on common files (e.g. openpyxl output).
+RUN apt-get update && apt-get install -y --no-install-recommends xlsx2csv \
+    && rm -rf /var/lib/apt/lists/*
+ARG PANDOC_VERSION=3.11
+ARG PANDOC_SHA256_amd64=37edb3bbcf722f921a009941bf5874e2e0c09263226c9b4a2d980788cb062ab6
+ARG PANDOC_SHA256_arm64=56ed5566ec41d22ec9ee0704e6ac0b98ba102e92384efd5306173a22d314c79a
+ARG TARGETARCH
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) sum="$PANDOC_SHA256_amd64" ;; \
+      arm64) sum="$PANDOC_SHA256_arm64" ;; \
+      *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/pandoc.tgz "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-${TARGETARCH}.tar.gz"; \
+    echo "$sum  /tmp/pandoc.tgz" | sha256sum -c -; \
+    tar -xz -f /tmp/pandoc.tgz -C /usr/local/bin --strip-components=2 "pandoc-${PANDOC_VERSION}/bin/pandoc"; \
+    rm /tmp/pandoc.tgz
+COPY package.json bun.lock* ./
+RUN bun install --production --frozen-lockfile
+COPY . .
 USER agent
 ENTRYPOINT ["./scripts/workspace-entrypoint.sh"]
 CMD ["bun", "run", "workspace"]
