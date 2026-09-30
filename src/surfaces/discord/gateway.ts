@@ -52,7 +52,7 @@ import {
   OWNER_DM_CURSOR_KEY,
   catchUpOwnerDms,
   dispatchOwnerDm,
-  sendBreakGlassDm,
+  createBreakGlass,
   snowflakeCursor,
   type DmCursor,
   type OwnerDmMessage,
@@ -234,8 +234,9 @@ type GatewayDm = OwnerDmMessage & { raw: Message };
 
 export interface DiscordWorkspace {
   adapter: DiscordWorkspaceAdapter<GatewayDm>;
-  /** A non-silent, buttonless owner DM; the web adapter sends it when an approval push reached no device. */
-  breakGlass(text?: string): Promise<boolean>;
+  /** A fixed-text, non-silent, buttonless owner DM; the web adapter calls it with the approval's nonce when
+   *  its push reached no device. Deduped per nonce and rate-limited. */
+  breakGlass(nonce: string): Promise<boolean>;
 }
 
 /** The workspace's Discord adapter (the owner's DM) and the in-process DM agent it falls back to. Built
@@ -326,7 +327,7 @@ export function createDiscordWorkspace(deps: { client: Client<true>; core: Agent
       },
     },
   });
-  return { adapter, breakGlass: (text) => sendBreakGlassDm(ownerChannel, text) };
+  return { adapter, breakGlass: createBreakGlass(ownerChannel) };
 }
 
 /** A paused automod approval, recovered when the amka:/amkd: button is clicked. In-memory only,

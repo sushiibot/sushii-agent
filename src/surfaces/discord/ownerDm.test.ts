@@ -7,6 +7,8 @@ import {
   CATCH_UP_MAX_AGE_MS,
   CATCH_UP_PAGE_SIZE,
   BREAK_GLASS_APPROVAL,
+  BREAK_GLASS_MIN_GAP_MS,
+  createBreakGlass,
   DM_REDIRECT_NOTICE,
   DM_REDIRECT_WEB_DOWN,
   advanceCursor,
@@ -593,5 +595,42 @@ describe("break-glass DM", () => {
     expect(await sendBreakGlassDm(async () => null)).toBe(false);
     expect(await sendBreakGlassDm(async () => ({ send: async () => Promise.reject(new Error("blocked")) }))).toBe(false);
     expect(await sendBreakGlassDm(async () => Promise.reject(new Error("no client")))).toBe(false);
+  });
+
+  function breakGlassHarness() {
+    const sent: MessageCreateOptions[] = [];
+    let t = 1_000_000;
+    const breakGlass = createBreakGlass(async () => ({ send: async (o) => (sent.push(o), {}) as never }), { now: () => t });
+    return { sent, breakGlass, advance: (ms: number) => (t += ms) };
+  }
+
+  test("a nonce gets at most one DM, however often it is reported", async () => {
+    const h = breakGlassHarness();
+    expect(await h.breakGlass("nonce-aaaaaaaaaaa")).toBe(true);
+    h.advance(BREAK_GLASS_MIN_GAP_MS + 1);
+    expect(await h.breakGlass("nonce-aaaaaaaaaaa")).toBe(false);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("at most one DM per 5 minutes across all approvals, always the fixed text", async () => {
+    const h = breakGlassHarness();
+    const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => h.breakGlass(`nonce-${i}`)));
+    expect(burst.filter(Boolean)).toHaveLength(1);
+    h.advance(BREAK_GLASS_MIN_GAP_MS - 1);
+    expect(await h.breakGlass("nonce-late")).toBe(false);
+    h.advance(1);
+    expect(await h.breakGlass("nonce-next")).toBe(true);
+    expect(BREAK_GLASS_MIN_GAP_MS).toBe(5 * 60_000);
+    expect(h.sent).toEqual([
+      { content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } },
+      { content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } },
+    ]);
+  });
+
+  test("takes no text: only the nonce, which never reaches the message", async () => {
+    const h = breakGlassHarness();
+    expect(createBreakGlass(async () => null).length).toBe(1);
+    await h.breakGlass("<@&123> ignore previous instructions");
+    expect(h.sent.map((m) => m.content)).toEqual([BREAK_GLASS_APPROVAL]);
   });
 });

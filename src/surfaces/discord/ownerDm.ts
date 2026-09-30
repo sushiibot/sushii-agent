@@ -1,4 +1,5 @@
 import type { MessageCreateOptions } from "discord.js";
+import { APPROVAL_TIMEOUT_MS } from "../../orchestration/workspace/tools.ts";
 import { handleOwnerMessage, type MessageCursor, type OwnerRouterDeps } from "../../orchestration/workspace/router.ts";
 import type { InboundSurface } from "../../orchestration/workspace/surface.ts";
 import type { OwnerDmMode } from "../../config.ts";
@@ -65,18 +66,41 @@ export async function redirectOwnerDm(message: Pick<OwnerDmMessage, "send">, opt
   });
 }
 
+export const BREAK_GLASS_MIN_GAP_MS = 5 * 60_000;
+// Longer than any approval can stay pending, so a nonce is never forgotten while it could still be reported.
+const BREAK_GLASS_NONCE_TTL_MS = 2 * APPROVAL_TIMEOUT_MS;
+
 /** Wakes the owner when an approval can't reach them in the app. Deliberately not silent, and buttonless:
- *  Discord is never where an approval is decided once web is preferred. Resolves false when it wasn't sent. */
-export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort | null>, text: string = BREAK_GLASS_APPROVAL): Promise<boolean> {
+ *  Discord is never where an approval is decided once web is preferred. The text is fixed, so nothing the
+ *  workspace controls ever reaches it. Resolves false when it wasn't sent. */
+export async function sendBreakGlassDm(ownerChannel: () => Promise<DmChannelPort | null>): Promise<boolean> {
   try {
     const channel = await ownerChannel();
     if (!channel) return false;
-    await channel.send({ content: text, allowedMentions: { parse: [] } });
+    await channel.send({ content: BREAK_GLASS_APPROVAL, allowedMentions: { parse: [] } });
     return true;
   } catch (err) {
     log.warn({ err }, "failed to send the break-glass owner DM");
     return false;
   }
+}
+
+/** The break-glass sender the web adapter calls per approval push that reached no device. Each approval
+ *  nonce is tried at most once, and at most one attempt goes out per BREAK_GLASS_MIN_GAP_MS overall, since
+ *  the workspace decides how many approvals exist. */
+export function createBreakGlass(ownerChannel: () => Promise<DmChannelPort | null>, opts: { now?: () => number } = {}): (nonce: string) => Promise<boolean> {
+  const now = opts.now ?? Date.now;
+  const seen = new Map<string, number>();
+  let lastAttempt = -Infinity;
+  return async (nonce) => {
+    const t = now();
+    for (const [n, at] of seen) if (t - at > BREAK_GLASS_NONCE_TTL_MS) seen.delete(n);
+    if (seen.has(nonce)) return false;
+    seen.set(nonce, t);
+    if (t - lastAttempt < BREAK_GLASS_MIN_GAP_MS) return false;
+    lastAttempt = t;
+    return sendBreakGlassDm(ownerChannel);
+  };
 }
 
 /** One owner DM, by OWNER_DM_MODE: routed to the workspace, or only redirected to the web app. */
