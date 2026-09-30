@@ -12,6 +12,7 @@ AI agent Discord bot with guild config and OpenRouter.
 ## Deployment
 
 Auto-deploys via CI on every push to `main` (`.github/workflows/ci.yml`): `typecheck` +
-`test` → `docker-build` → `deploy` (`private-bots/sushii-agent` on host `apps`). No manual
+`test` → `docker-build` → `deploy` (`private-bots/sushii-agent` on host `apps`) → `deploy-workspace`
+(`private-bots/sushii-agent-workspace`, after the bot). No manual
 `deploy.sh` step is needed — pushing to `main` ships it. Verify with
 `gh run list --branch main` and the post-deploy logs.

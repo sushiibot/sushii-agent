@@ -73,11 +73,13 @@ jobs:
       packages: write
 
   # Workspace image (Dockerfile `workspace` target). The reusable docker-build workflow has no
-  # target input, so this builds inline. Pushed as <sha>-workspace; never deployed from here.
+  # target input, so this builds inline. Pushed as <sha>-workspace.
   docker-build-workspace:
     needs: [typecheck, test, browser-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      short_sha: ${{ steps.version.outputs.short_sha }}
     permissions:
       contents: read
       packages: write
@@ -115,6 +117,22 @@ jobs:
     with:
       service: private-bots/sushii-agent
       image_version: ${{ needs.docker-build.outputs.image_version }}
+      host: apps
+    secrets:
+      ANSIBLE_REPO_TOKEN: ${{ secrets.ANSIBLE_REPO_TOKEN }}
+      ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
+      ANSIBLE_KNOWN_HOSTS: ${{ secrets.ANSIBLE_KNOWN_HOSTS }}
+      ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+
+  # After the bot: a new workspace may send fields an older bot drops, and the two deploys would
+  # otherwise race pushing their tag bumps to sushii-ansible.
+  deploy-workspace:
+    needs: [deploy, docker-build-workspace]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: sushiibot/sushii-workflows/.github/workflows/deploy.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
+    with:
+      service: private-bots/sushii-agent-workspace
+      image_version: ${{ needs.docker-build-workspace.outputs.short_sha }}
       host: apps
     secrets:
       ANSIBLE_REPO_TOKEN: ${{ secrets.ANSIBLE_REPO_TOKEN }}

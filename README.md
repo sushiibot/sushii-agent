@@ -205,8 +205,8 @@ traffic stays in-process.
   `!login chatgpt`.
 - **Run history:** `runs.jsonl` in the state dir; `ws-runs` inside the container.
 
-Deploy: pushing to `main` builds both images and redeploys the bot only. The workspace deploys on
-its own: bump `workspace_image_tag` in sushii-ansible, then
+Deploy: pushing to `main` builds both images, deploys the bot, then deploys the workspace (CI bumps
+`workspace_image_tag` in sushii-ansible). A manual redeploy is
 `./deploy.sh -y apps private-bots/sushii-agent-workspace`. Tunables (`WORKSPACE_MODELS`,
 `WORKSPACE_COMPACT_TOKENS`, `WORKSPACE_TASK_*`, …; defaults in `src/workspace/config.ts`) go in
 `workspace_env_overrides` there. `DM_WORKSPACE_ENABLED` on the bot routes owner DMs to it.
