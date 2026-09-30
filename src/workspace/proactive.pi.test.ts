@@ -63,6 +63,13 @@ const SEARCH: ToolManifestEntry = {
   approval: "none",
 };
 
+const LINEAR: ToolManifestEntry = {
+  name: "file_linear_issue",
+  description: "File a Linear issue.",
+  inputSchema: { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false },
+  approval: "ask",
+};
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ws-proactive-pi-"));
   bodies = [];
@@ -104,7 +111,8 @@ describe("heartbeat on a real Pi session", () => {
         return { ok: true, result: "search hits" };
       },
     });
-    toolStubs.update([SEARCH]);
+    // Approval-gated stubs stay out of jobs even though the bot offers them.
+    toolStubs.update([SEARCH, LINEAR]);
     const delivered: string[] = [];
     const notes: string[] = [];
     script = [

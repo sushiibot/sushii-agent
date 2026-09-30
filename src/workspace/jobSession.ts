@@ -175,8 +175,10 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
     sessionRef.current = session;
     if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
     const builtins = withTools ? [...JOB_READ_TOOLS] : [];
-    assertExactTools(session, [...builtins, ...(stubs?.registeredNames() ?? [])], input.agentName, [...builtins, ...(stubs?.offered() ?? []).filter((n) => jobStubTools.includes(n))]);
-    stubs?.assertOwned(session, input.agentName);
+    // The tools allowlist keeps approval-gated stubs out of the session even though the binding registers them.
+    const allowed = (names: string[]) => names.filter((n) => jobStubTools.includes(n));
+    assertExactTools(session, [...builtins, ...allowed(stubs?.registeredNames() ?? [])], input.agentName, [...builtins, ...allowed(stubs?.offered() ?? [])]);
+    stubs?.assertOwned(session, input.agentName, jobStubTools);
   } catch (err) {
     stubs?.release();
     throw err;

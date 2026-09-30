@@ -203,9 +203,10 @@ export class StubBinding {
   }
 
   /** Throws unless each offered name resolves to this binding's own definition, not a same-named tool from
-   *  another extension. */
-  assertOwned(session: Pick<AgentSession, "getToolDefinition" | "dispose">, label: string): void {
+   *  another extension. `only` limits the check to the stubs a tool allowlist let into the session. */
+  assertOwned(session: Pick<AgentSession, "getToolDefinition" | "dispose">, label: string, only?: readonly string[]): void {
     for (const [name, r] of this.registered) {
+      if (only && !only.includes(name)) continue;
       if (session.getToolDefinition(name) === r.def) continue;
       session.dispose();
       throw new Error(`${label}: pi tool ${name} is not the bot-proxied stub`);
