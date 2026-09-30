@@ -9,6 +9,7 @@
 	import { Button } from '$lib/ui/button';
 	import { Textarea } from '$lib/ui/textarea';
 	import { cn } from '$lib/utils';
+	import type { Snippet } from 'svelte';
 	import type { PhotoDraft } from '../types';
 
 	let {
@@ -24,7 +25,8 @@
 		onsend,
 		onattach,
 		onremovephoto,
-		onretryphoto
+		onretryphoto,
+		status
 	}: {
 		value?: string;
 		placeholder?: string;
@@ -41,6 +43,8 @@
 		onattach?: (files: File[]) => void;
 		onremovephoto?: (id: string) => void;
 		onretryphoto?: (id: string) => void;
+		/** A muted line under the box, such as the last reply's usage. */
+		status?: Snippet;
 	} = $props();
 	const uid = $props.id();
 	let picker = $state<HTMLInputElement | null>(null);
@@ -78,80 +82,27 @@
 	}
 </script>
 
-<form class="flex flex-col gap-2 px-3 py-2.5" onsubmit={submit}>
-	{#if photos.length}
-		<ul aria-label="Photos to send" class="-mx-3 flex gap-3 overflow-x-auto pt-4 pr-5 pb-1 pl-3">
-			{#each photos as photo, i (photo.id)}
-				<li class="relative shrink-0">
-					<img
-						src={photo.src}
-						alt="Photo {i + 1}"
-						class={cn(
-							'size-18 rounded-xl border object-cover',
-							photo.state !== 'uploaded' && 'opacity-45'
-						)}
-					/>
-					{#if photo.state === 'preparing' || photo.state === 'uploading'}
-						<span
-							class="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-xl text-tab font-semibold text-foreground"
-						>
-							<LoaderCircle
-								class="size-4 animate-spin motion-reduce:animate-none"
-								aria-hidden="true"
-							/>
-							{photo.state === 'preparing' ? 'Preparing' : `Uploading ${photo.progress ?? 0}%`}
-						</span>
-						{#if photo.state === 'uploading'}
-							<span
-								class="absolute inset-x-1.5 bottom-1.5 h-1 overflow-hidden rounded-full bg-foreground/15"
-								aria-hidden="true"
-							>
-								<span
-									class="block h-full rounded-full bg-foreground"
-									style="width: {photo.progress ?? 0}%"
-								></span>
-							</span>
-						{/if}
-					{:else if photo.state === 'failed'}
-						<span class="absolute inset-0 grid place-items-center rounded-xl">
-							<CircleAlert class="size-6 text-failed" aria-label="Failed" />
-						</span>
-					{/if}
-					<button
-						type="button"
-						aria-label="Remove photo {i + 1}"
-						class="absolute -top-4 -right-4 grid size-12 place-items-center"
-						onclick={() => onremovephoto?.(photo.id)}
+<form class="mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pt-2.5 pb-2.5" onsubmit={submit}>
+	{#if failed.length}
+		<ul class="flex flex-col gap-1">
+			{#each failed as photo (photo.id)}
+				<li class="flex items-center gap-2 text-sm">
+					<CircleAlert class="size-4 shrink-0 text-failed" aria-hidden="true" />
+					<span class="min-w-0 flex-1"
+						><span class="font-medium">Photo {photos.indexOf(photo) + 1}:</span>
+						{errors[photo.error ?? 'upload']}</span
 					>
-						<span
-							class="grid size-6 place-items-center rounded-full border bg-background text-foreground shadow-sm"
-							><X class="size-3.5" aria-hidden="true" /></span
+					{#if photo.error === 'upload'}
+						<Button
+							variant="ghost"
+							class="px-3"
+							aria-label="Retry photo {photos.indexOf(photo) + 1}"
+							onclick={() => onretryphoto?.(photo.id)}><RotateCcw />Retry</Button
 						>
-					</button>
+					{/if}
 				</li>
 			{/each}
 		</ul>
-		{#if failed.length}
-			<ul class="flex flex-col gap-1">
-				{#each failed as photo (photo.id)}
-					<li class="flex items-center gap-2 text-sm">
-						<CircleAlert class="size-4 shrink-0 text-failed" aria-hidden="true" />
-						<span class="min-w-0 flex-1"
-							><span class="font-medium">Photo {photos.indexOf(photo) + 1}:</span>
-							{errors[photo.error ?? 'upload']}</span
-						>
-						{#if photo.error === 'upload'}
-							<Button
-								variant="ghost"
-								class="px-3"
-								aria-label="Retry photo {photos.indexOf(photo) + 1}"
-								onclick={() => onretryphoto?.(photo.id)}><RotateCcw />Retry</Button
-							>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		{/if}
 	{/if}
 	{#if running && stop}
 		<div class="flex items-center gap-3">
@@ -179,27 +130,62 @@
 			Photo storage is full. Free space before sending more.
 		</p>
 	{/if}
-	<div class="flex items-end gap-2">
-		{#if attach}
-			<input
-				bind:this={picker}
-				type="file"
-				accept="image/*"
-				multiple
-				hidden
-				onchange={(e) => {
-					const input = e.currentTarget;
-					if (input.files?.length) onattach?.([...input.files]);
-					input.value = '';
-				}}
-			/>
-			<Button
-				variant="ghost"
-				class="size-12 shrink-0 rounded-full px-0"
-				aria-label="Attach photos"
-				disabled={quotaFull}
-				onclick={() => picker?.click()}><ImagePlus class="size-5" /></Button
-			>
+	<!-- One box the width of the message column: text on top, photo and Send inside it. -->
+	<div
+		class="flex flex-col rounded-3xl border bg-card focus-within:ring-2 focus-within:ring-ring/40"
+	>
+		{#if photos.length}
+			<ul aria-label="Photos to send" class="flex gap-3 overflow-x-auto px-3 pt-4 pr-5 pb-1">
+				{#each photos as photo, i (photo.id)}
+					<li class="relative shrink-0">
+						<img
+							src={photo.src}
+							alt="Photo {i + 1}"
+							class={cn(
+								'size-18 rounded-xl border object-cover',
+								photo.state !== 'uploaded' && 'opacity-45'
+							)}
+						/>
+						{#if photo.state === 'preparing' || photo.state === 'uploading'}
+							<span
+								class="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-xl text-tab font-semibold text-foreground"
+							>
+								<LoaderCircle
+									class="size-4 animate-spin motion-reduce:animate-none"
+									aria-hidden="true"
+								/>
+								{photo.state === 'preparing' ? 'Preparing' : `Uploading ${photo.progress ?? 0}%`}
+							</span>
+							{#if photo.state === 'uploading'}
+								<span
+									class="absolute inset-x-1.5 bottom-1.5 h-1 overflow-hidden rounded-full bg-foreground/15"
+									aria-hidden="true"
+								>
+									<span
+										class="block h-full rounded-full bg-foreground"
+										style="width: {photo.progress ?? 0}%"
+									></span>
+								</span>
+							{/if}
+						{:else if photo.state === 'failed'}
+							<span class="absolute inset-0 grid place-items-center rounded-xl">
+								<CircleAlert class="size-6 text-failed" aria-label="Failed" />
+							</span>
+						{/if}
+						<button
+							type="button"
+							aria-label="Remove photo {i + 1}"
+							class="absolute -top-4 -right-4 grid size-12 place-items-center"
+							onclick={() => onremovephoto?.(photo.id)}
+						>
+							<span
+								class="grid size-6 place-items-center rounded-full border bg-background text-foreground shadow-sm"
+								><X class="size-3.5" aria-hidden="true" /></span
+							>
+						</button>
+					</li>
+				{/each}
+			</ul>
 		{/if}
 		<label for="{uid}-composer" class="sr-only">Message</label>
 		<Textarea
@@ -209,17 +195,41 @@
 			{placeholder}
 			onkeydown={keydown}
 			aria-describedby={blocked ? `${uid}-blocked` : undefined}
-			class="max-h-40 min-h-12 flex-1 resize-none rounded-3xl bg-card px-4 py-3 text-base kb:ring-2 kb:ring-ring/40"
+			class="max-h-40 min-h-12 resize-none rounded-none border-0 bg-transparent px-4 pt-3 pb-1 text-base shadow-none focus-visible:ring-0 dark:bg-transparent"
 		/>
-		<Button
-			type="submit"
-			aria-label="Send message"
-			aria-describedby={running && stop ? `${uid}-steer` : undefined}
-			class="size-12 shrink-0 rounded-full px-0"
-			disabled={!canSend}><ArrowUp class="size-5" /></Button
-		>
+		<div class="flex items-center px-1 pb-1">
+			{#if attach}
+				<input
+					bind:this={picker}
+					type="file"
+					accept="image/*"
+					multiple
+					hidden
+					onchange={(e) => {
+						const input = e.currentTarget;
+						if (input.files?.length) onattach?.([...input.files]);
+						input.value = '';
+					}}
+				/>
+				<Button
+					variant="ghost"
+					class="size-12 shrink-0 rounded-full px-0"
+					aria-label="Attach photos"
+					disabled={quotaFull}
+					onclick={() => picker?.click()}><ImagePlus class="size-5" /></Button
+				>
+			{/if}
+			<Button
+				type="submit"
+				aria-label="Send message"
+				aria-describedby={running && stop ? `${uid}-steer` : undefined}
+				class="ml-auto size-12 shrink-0 rounded-full px-0"
+				disabled={!canSend}><ArrowUp class="size-5" /></Button
+			>
+		</div>
 	</div>
 	{#if blocked}
 		<p id="{uid}-blocked" class="px-1 text-xs text-muted-foreground">{blocked}</p>
 	{/if}
+	{@render status?.()}
 </form>
