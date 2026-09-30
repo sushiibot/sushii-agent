@@ -18,6 +18,8 @@ export const RPC_METHODS = {
   toolCall: "tool/call",
   // Workspace → bot request: withdraw a still-pending tool/call (its turn was stopped) → { cancelled }.
   toolCancel: "tool/cancel",
+  // Workspace → bot request: a short-lived GitHub App installation token for one repo.
+  githubToken: "github/token",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -178,6 +180,18 @@ export const toolCancelParams = z.object({
 export type ToolCancelParams = z.infer<typeof toolCancelParams>;
 /** cancelled is false when the call already finished, is unknown, or is already executing. */
 export type ToolCancelResult = { cancelled: boolean };
+
+// ── GitHub credentials (workspace → bot). ──
+// Lands in an api.github.com path, so no dots-only names and nothing outside GitHub's own name charset.
+export const GITHUB_REPO_RE = /^[A-Za-z0-9-]{1,39}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+
+export const githubTokenParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  repo: z.string().regex(GITHUB_REPO_RE, "repo must be owner/name"),
+});
+export type GitHubTokenParams = z.infer<typeof githubTokenParams>;
+/** `expiresAt` is epoch ms. `botName`/`botEmail` are the App's commit identity. */
+export type GitHubTokenResult = { ok: true; token: string; expiresAt: number; botName: string; botEmail: string } | { ok: false; error: string };
 
 export const jsonRpcRequest = z.object({
   jsonrpc: z.literal("2.0"),

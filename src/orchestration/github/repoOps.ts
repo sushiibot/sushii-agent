@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SimpleGit } from "simple-git";
 import { getLogger } from "../../logger.ts";
@@ -100,11 +100,24 @@ export async function cloneIfAbsent(cwd: string, spec: RepoSpec, deps: RepoOpsDe
 /** (Re)write the askpass helper + pre-push guard into a checkout. Idempotent, so an existing checkout
  *  can be brought up to date. */
 export function configureForAgent(cwd: string): void {
-  const askpass = join(cwd, ASKPASS_REL);
-  writeFileSync(askpass, ASKPASS_SCRIPT);
-  chmodSync(askpass, 0o755);
-  const hook = join(cwd, ".git/hooks/pre-push");
+  installAskpass(join(cwd, ASKPASS_REL));
+  installPrePushGuard(join(cwd, ".git"));
+}
+
+/** Write the GIT_ASKPASS helper to `path`. It holds no secret: it echoes $GH_TOKEN. */
+export function installAskpass(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, ASKPASS_SCRIPT);
+  chmodSync(path, 0o755);
+}
+
+/** Write the default-branch pre-push guard into `gitDir` (a repo's common git dir). Returns false when it
+ *  was already there, so a caller can skip the write entirely. */
+export function installPrePushGuard(gitDir: string): boolean {
+  const hook = join(gitDir, "hooks", "pre-push");
+  if (existsSync(hook) && readFileSync(hook, "utf8") === PRE_PUSH_HOOK) return false;
   mkdirSync(dirname(hook), { recursive: true });
   writeFileSync(hook, PRE_PUSH_HOOK);
   chmodSync(hook, 0o755);
+  return true;
 }

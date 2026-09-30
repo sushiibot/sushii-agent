@@ -95,17 +95,39 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   return { modelRuntime, model, contextWindow, maxTokens };
 }
 
+export interface AgentBashToolOptions extends AgentEnvOptions {
+  exposeSessionEnvironment?: boolean;
+  /** Async per-call env (e.g. a repo-scoped git token), resolved before the command spawns. */
+  prepareEnv?: (command: string, cwd: string) => Promise<Record<string, string>>;
+}
+
 /** Pi's bash tool under the allowlisted agent env; `extraEnv` is read per spawn (e.g. a fresh git token). */
 export async function createAgentBashTool(
   cwd: string,
   extraEnv: () => Record<string, string> = () => ({}),
-  options: AgentEnvOptions & { exposeSessionEnvironment?: boolean } = {},
+  options: AgentBashToolOptions = {},
 ): Promise<ToolDefinition> {
   const { createBashToolDefinition } = await import("@earendil-works/pi-coding-agent");
+  // Pi's spawn hook is synchronous; `prepared` carries prepareEnv's result into it for exactly one call.
+  let prepared: Record<string, string> = {};
   const tool = createBashToolDefinition(cwd, {
     exposeSessionEnvironment: options.exposeSessionEnvironment,
-    spawnHook: (context) => ({ ...context, env: buildAgentEnv(context.env, extraEnv(), options) }),
+    spawnHook: (context) => ({ ...context, env: buildAgentEnv(context.env, { ...extraEnv(), ...prepared }, options) }),
   });
+  const prepare = options.prepareEnv;
+  if (prepare) {
+    const execute = tool.execute.bind(tool);
+    tool.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
+      const env = await prepare(params.command, ctx?.cwd || cwd).catch(() => ({}));
+      // Pi resolves the spawn context before its first await, so no other call can see this env.
+      prepared = env;
+      try {
+        return execute(toolCallId, params, signal, onUpdate, ctx);
+      } finally {
+        prepared = {};
+      }
+    };
+  }
   // Cast: the bash factory returns a specialized ToolDefinition; customTools wants the generic one.
   return tool as unknown as ToolDefinition;
 }

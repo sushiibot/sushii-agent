@@ -98,7 +98,7 @@ The workspace runs jobs on its own and messages drk only when a job has somethin
 
 ## Work
 
-- Clone repositories into `projects/<name>` and work there. Use `scratch/` for anything temporary.
+- Clone repositories into `projects/<owner>-<repo>` and work there. Use `scratch/` for anything temporary.
 - Never commit secrets or `.env` files anywhere.
 - Never read or print Pi's config/auth files or process environment; they hold credentials.
 - Ask before doing anything destructive or visible to other people (force-pushes, deleting
@@ -113,8 +113,11 @@ The workspace runs jobs on its own and messages drk only when a job has somethin
   logins or screenshots.
 - Bot tools (`web_search`, `fetch_url_content`, `search_logs`, `get_trace`, the Linear tools,
   `team_config`) run through the bot. Some need drk's approval in chat; if a call is denied, don't retry it.
-- GitHub: `gh` and `git`. A GitHub App token is injected into the environment when configured;
-  if `gh auth status` fails, say so rather than working around it.
+- GitHub: `git` and `gh` work as `sushii-runner[bot]` on repos the sushii GitHub App is installed
+  on (the token is injected per command, for the repo you're in or the one the command names).
+  Clone over https (`gh repo clone <owner>/<repo> projects/<owner>-<repo>`); ssh remotes have no
+  key. Work on a branch and open a PR; never push to the default branch. If auth fails, the App
+  likely isn't installed on that repo: tell drk rather than working around it.
 
 ## Delegation
 

@@ -47,6 +47,8 @@ import { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { kvCursor, routeDirectMessage } from "../../orchestration/workspace/router.ts";
 import { SurfaceRegistry, type SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
+import { DEFAULT_BOT_IDENTITY, GitHubTokenBroker } from "../../orchestration/workspace/githubToken.ts";
+import { tokenProviderFromEnv } from "../../orchestration/github/githubApp.ts";
 import { ACCENT, DISCORD_SURFACE, DiscordWorkspaceAdapter, WS_APPROVE_PREFIX, WS_ASK_PREFIX, WS_STOP_PREFIX, type DmChannelPort } from "./workspaceAdapter.ts";
 import { handleWorkspaceApprovalButton, handleWorkspaceAskButton, handleWorkspaceStopButton } from "./workspaceButtons.ts";
 import { OWNER_DM_CURSOR_KEY, catchUpOwnerDms, handleOwnerDm as routeOwnerDm, snowflakeCursor, type DmCursor, type OwnerDmMessage } from "./ownerDm.ts";
@@ -375,6 +377,14 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     isOwner: isWorkspaceOwner,
     tools: workspaceTools,
     enabled: config.dmWorkspaceEnabled,
+    github: new GitHubTokenBroker({
+      principalId: resolveOwnerPrincipalId(),
+      provider: tokenProviderFromEnv(),
+      bot: {
+        name: process.env.GITHUB_BOT_NAME || DEFAULT_BOT_IDENTITY.name,
+        email: process.env.GITHUB_BOT_EMAIL || DEFAULT_BOT_IDENTITY.email,
+      },
+    }),
   });
 
   function ownerDmMessage(message: Message): GatewayDm | null {

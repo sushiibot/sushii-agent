@@ -1,5 +1,6 @@
 // First: initialises OTel (when OTEL_EXPORTER_OTLP_ENDPOINT is set) before anything creates spans.
 import { otelSDK } from "../telemetry.ts";
+import { join } from "node:path";
 import { NotConnectedError, OrchestrationClient } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
@@ -10,6 +11,7 @@ import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } fro
 import { scanMemoryForSecrets } from "./memoryGuard.ts";
 import { RunLog } from "./runLog.ts";
 import { ToolStubs } from "./toolStubs.ts";
+import { GitHubCredentials } from "./githubCredentials.ts";
 import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { SubagentHost } from "./subagents/host.ts";
@@ -48,6 +50,15 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
   });
+  // Late-bound: the subagent watch leases a pre-push hook install, and subagents take these credentials.
+  let watchRef: SubagentHost["watch"] | null = null;
+  const github = new GitHubCredentials({
+    principalId: config.principalId,
+    home: config.home,
+    askpassPath: join(config.stateDir, "git-askpass.sh"),
+    request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
+    leaseWrite: (paths) => watchRef?.mainWrite(paths) ?? (() => {}),
+  });
   // The one backend selector: main, subagents, jobs and the auto-mode judge all start their calls on its
   // current backend, so a ChatGPT limit or auth failure anywhere moves them all to OpenRouter together.
   // Late-bound: the selector reports auth failures while the first session is built, before these exist.
@@ -74,15 +85,17 @@ async function main(): Promise<void> {
     runs,
     selector,
     toolStubs,
+    github,
     notify,
     currentTurn: () => turns.current(),
     wake: (r, consumed) => personalRef?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
   });
+  watchRef = subagents.watch;
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, github }),
     memory: {
       compactionTrigger,
       reload: reloadContext,

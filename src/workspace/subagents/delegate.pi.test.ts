@@ -12,6 +12,7 @@ import { PersonalSession, type ChatTransport } from "../personalSession.ts";
 import { createPiChatSessionFactory } from "../piChatSession.ts";
 import { RunLog } from "../runLog.ts";
 import { ToolStubs } from "../toolStubs.ts";
+import { GitHubCredentials, type GitHubCredentialsOptions } from "../githubCredentials.ts";
 import { runWsRuns } from "../wsRuns.ts";
 import { SubagentHost, type SubagentHostOptions, type SubagentLimits } from "./host.ts";
 import { PendingResults } from "./pendingResults.ts";
@@ -105,7 +106,7 @@ const SEARCH: ToolManifestEntry = {
   approval: "none",
 };
 
-async function host(limits: Partial<SubagentLimits> = {}) {
+async function host(limits: Partial<SubagentLimits> = {}, githubRequest?: GitHubCredentialsOptions["request"]) {
   const cfg = config();
   await scaffoldHome(cfg.home);
   const runs = new RunLog(cfg.stateDir);
@@ -127,11 +128,16 @@ async function host(limits: Partial<SubagentLimits> = {}) {
     if (method === RPC_METHODS.chatEvent) events.push(params as ChatEventParams);
   };
   let personalRef: PersonalSession | null = null;
+  let watchRef: SubagentHost["watch"] | null = null;
+  const github = githubRequest
+    ? new GitHubCredentials({ principalId: "drk", home: cfg.home, askpassPath: join(cfg.stateDir, "git-askpass.sh"), request: githubRequest, leaseWrite: (p) => watchRef!.mainWrite(p) })
+    : undefined;
   const subagents = new SubagentHost({
     config: cfg,
     runs,
     selector,
     toolStubs,
+    github,
     notify,
     currentTurn: () => turns.current(),
     limits,
@@ -148,10 +154,11 @@ async function host(limits: Partial<SubagentLimits> = {}) {
     principalId: "drk",
     model: cfg.model,
     stateDir: cfg.stateDir,
-    factory: createPiChatSessionFactory(cfg, { runs, toolStubs, subagents, selector }),
+    factory: createPiChatSessionFactory(cfg, { runs, toolStubs, subagents, selector, github }),
     transport,
     textDeltaMs: null,
   });
+  watchRef = subagents.watch;
   await personal.start();
   personalRef = personal;
   const dispose = async () => {
@@ -365,6 +372,38 @@ describe("delegate on real Pi sessions", () => {
     const toMain = lastMessage(bodies.filter((b) => !isChild(b))[1]);
     expect(toMain).toContain("changed protected paths");
     expect(toMain).toContain("MEMORY.md");
+    await h.dispose();
+  }, 30_000);
+
+  test("GitHub credentials: a coder's bash and main's bash both get the repo's token; the guard install isn't tamper", async () => {
+    const token = "ghs_coderCoderCoder0123456789";
+    const requested: string[] = [];
+    const h = await host({}, async (method, params) => {
+      if (method === RPC_METHODS.githubToken) requested.push((params as { repo: string }).repo);
+      return { ok: true, token, expiresAt: Date.now() + 3600_000, botName: "sushii-runner[bot]", botEmail: "runner@x" };
+    });
+    await initRepo(h.cfg.home, "acme-widgets");
+    await runnerGit(join(h.cfg.home, "projects", "acme-widgets")).addRemote("origin", "https://github.com/acme/widgets.git");
+    let step = 0;
+    respond = (b) => {
+      if (isChild(b)) {
+        step++;
+        if (step === 1) return { tool: { name: "bash", args: { command: 'printf "child:%s:%s" "$GH_TOKEN" "$GIT_COMMITTER_EMAIL"' } } };
+        return { text: "coded" };
+      }
+      const turn = mainTurn(b);
+      if (turn === 0) return { tool: { name: "delegate", args: { agent: "coder", task: "fix", repo: "acme-widgets", background: false } } };
+      if (turn === 1) return { tool: { name: "bash", args: { command: 'cd projects/acme-widgets && printf "main:%s:%s" "$GH_TOKEN" "$GIT_AUTHOR_NAME"' } } };
+      return { text: "done" };
+    };
+    await h.personal.handleMessage(user("m1", "go"));
+    await until(() => h.delivered.length === 1);
+    const [child] = h.runs.listRuns({ agentName: "coder" });
+    expect(child.status).toBe("done");
+    expect(text(bodies.filter(isChild).at(-1)!)).toContain(`child:${token}:runner@x`);
+    expect(text(bodies.filter((b) => !isChild(b)).at(-1)!)).toContain(`main:${token}:sushii-runner[bot]`);
+    expect(readFileSync(join(h.cfg.home, "projects", "acme-widgets", ".git", "hooks", "pre-push"), "utf8")).toContain("default branch");
+    expect(requested).toEqual(["acme/widgets"]);
     await h.dispose();
   }, 30_000);
 

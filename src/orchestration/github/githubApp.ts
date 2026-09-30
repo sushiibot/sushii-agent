@@ -20,6 +20,9 @@ export interface GitTokenProvider {
   tokenFor(spec: RepoSpec): Promise<RepoToken>;
 }
 
+/** The App has no installation covering the repo (or the repo doesn't exist). */
+export class GitHubAppNotInstalledError extends Error {}
+
 const GITHUB_API = "https://api.github.com";
 const TOKEN_TTL_SLACK_MS = 5 * 60_000; // re-mint this long before expiry
 
@@ -92,7 +95,8 @@ export class GitHubAppTokenProvider implements GitTokenProvider {
       headers: this.appHeaders(jwt),
     });
     if (!res.ok) {
-      throw new Error(
+      const Err = res.status === 404 ? GitHubAppNotInstalledError : Error;
+      throw new Err(
         `no GitHub App installation on ${key}: ${res.status} — install the App on this repo (${await res.text()})`,
       );
     }
