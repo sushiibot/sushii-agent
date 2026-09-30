@@ -37,7 +37,7 @@ import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker 
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { dailyFileRel } from "./history.ts";
 import { RecentIds } from "./recentIds.ts";
-import { readFileSurfaces, readWorkspaceState, writeWorkspaceState } from "./state.ts";
+import { readFileSurfaces, readPendingMarkers, readWorkspaceState, writeWorkspaceState, type PendingMarkers } from "./state.ts";
 import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
 import {
   COMPACTION_FLUSH_TIMEOUT_MS,
@@ -280,6 +280,8 @@ export class PersonalSession {
   private lastOrigin: ChatOrigin | undefined;
   // The message whose prompt() starts the next run; a later steer can't become the run's origin.
   private nextRunPrompt: PendingInbound | undefined;
+  /** Markers on the live session that aren't on disk yet, as stashed in state.json. */
+  private pendingMarkers: PendingMarkers | null = null;
   /** Surfaces the bot said can take file uploads, as of their latest message. */
   private readonly fileSurfaces = new Map<string, boolean>();
   private unconsumed: PendingInbound[] = [];
@@ -403,10 +405,14 @@ export class PersonalSession {
     const reopen = recorded && exists(recorded.chatSessionFile) ? recorded.chatSessionFile : null;
     const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen, ui: this.ui });
     this.attach(session, sessionFile);
-    // A rotation's recap lives only in memory until the new session's first message; a restart before then re-seeds it.
+    // Markers and a rotation's recap live only in memory until the new session's first message; a restart before then re-appends them.
+    const pending = readPendingMarkers(this.opts.stateDir);
+    const replay = reopen === null && pending && pending.sessionFile === recorded?.chatSessionFile ? pending.entries : [];
+    for (const m of replay) this.appendMarker(session, m.customType, m.data);
+    if (reopen !== null && pending) writeWorkspaceState(this.opts.stateDir, { markers: undefined });
     const stash = recorded?.recap;
     if (stash && reopen === null && stash.sessionFile === recorded?.chatSessionFile) {
-      this.markSession(session, "rotated");
+      if (!replay.some((m) => m.customType === SESSION_ENTRY)) this.markSession(session, "rotated");
       await this.seedRecap(session, stash.text).catch((err) => log.warn({ err }, "re-seeding the rotation recap failed"));
       writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: { sessionFile, text: stash.text } });
       log.info({ sessionFile }, "re-seeded the recap of the rotated session");
@@ -1403,13 +1409,33 @@ export class PersonalSession {
   }
 
   // Pi's custom entries stay out of model context and extend the branch from the leaf, even mid-run.
-  private appendMarker(session: ChatSession | null, type: string, data: object): void {
+  private appendMarker(session: ChatSession | null, type: string, data: unknown): void {
     const target = sessionLog(session);
     if (!target) return;
     try {
       target.appendCustomEntry(type, data);
     } catch (err) {
       log.warn({ err, type }, "appending a history marker to the session failed");
+      return;
+    }
+    if (session === this.session) this.stashMarker(type, data);
+  }
+
+  /** Pi writes a session file only at its first message; until then the markers are kept in state.json too. */
+  private stashMarker(customType: string, data: unknown): void {
+    try {
+      if ((this.opts.fileExists ?? existsSync)(this.sessionFile)) {
+        if (this.pendingMarkers?.sessionFile === this.sessionFile) {
+          this.pendingMarkers = null;
+          writeWorkspaceState(this.opts.stateDir, { markers: undefined });
+        }
+        return;
+      }
+      if (this.pendingMarkers?.sessionFile !== this.sessionFile) this.pendingMarkers = { sessionFile: this.sessionFile, entries: [] };
+      this.pendingMarkers.entries.push({ customType, data });
+      writeWorkspaceState(this.opts.stateDir, { markers: this.pendingMarkers });
+    } catch (err) {
+      log.warn({ err, customType }, "persisting a history marker failed");
     }
   }
 

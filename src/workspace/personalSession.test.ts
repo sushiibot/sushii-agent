@@ -2006,8 +2006,43 @@ describe("PersonalSession context economy", () => {
     const again = setup({ stateDir, fileExists: () => false });
     await again.host.start();
     expect(String(again.sessions[0].customs[0].content)).toBe(recap.text);
+    expect(sessionMarkers(again.sessions[0])).toEqual([{ reason: "rotated" }]);
     expect(readWorkspaceState(stateDir)).toMatchObject({ chatSessionFile: again.sessions[0].file, recap: { sessionFile: again.sessions[0].file, text: recap.text } });
     expect(sessions).toHaveLength(2);
+    await again.host.dispose();
+  });
+
+  const sessionMarkers = (s: FakeSession) => s.entries.filter((e) => e.customType === "sushii.session").map((e) => e.data);
+
+  test("a rotation marks the new session rotated, so the history divider says so", async () => {
+    const { host, sessions, advance } = await idleBigHost();
+    advance(26 * MIN);
+    expect(await host.checkIdle()).not.toBeNull();
+    expect(sessionMarkers(sessions[1])).toEqual([{ reason: "rotated" }]);
+    expect(sessionMarkers(sessions[0])).toEqual([]);
+  });
+
+  test("a rotation without a recap keeps its label across a restart before the new session reached disk", async () => {
+    const { host, stateDir, advance } = await idleBigHost({ recap: async () => null });
+    advance(26 * MIN);
+    expect(await host.checkIdle()).toMatchObject({ recapped: false });
+    await host.dispose();
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(sessionMarkers(again.sessions[0])).toEqual([{ reason: "rotated" }]);
+    expect(again.sessions[0].customs).toHaveLength(0);
+    await again.host.dispose();
+  });
+
+  test("a stashed recap from before markers were persisted still marks the re-seeded session rotated", async () => {
+    const { host, stateDir, advance } = await idleBigHost();
+    advance(26 * MIN);
+    await host.checkIdle();
+    await host.dispose();
+    writeWorkspaceState(stateDir, { markers: undefined });
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(sessionMarkers(again.sessions[0])).toEqual([{ reason: "rotated" }]);
     await again.host.dispose();
   });
 
@@ -2640,6 +2675,30 @@ describe("history markers", () => {
     void host.askOwner("Keep 1?", ["Keep 1", "Drop 1"], () => ({ value: true }));
     const [ask] = markers(sessions[0]!) as Array<Record<string, unknown>>;
     expect(ask).toMatchObject({ kind: "ask", text: "Keep 1?", ask: { askId: expect.any(String), question: "Keep 1?", choices: ["Keep 1", "Drop 1"] } });
+  });
+
+  test("markers on a session not yet on disk survive a restart; once it is on disk they aren't replayed", async () => {
+    const stateDir = tempDir();
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleNew();
+    first.host.deliverOutOfBand({ kind: "proactive", text: "morning brief" });
+    await first.host.dispose();
+
+    const lost = setup({ stateDir, fileExists: () => false });
+    await lost.host.start();
+    expect(markers(lost.sessions[0]!, "sushii.session")).toEqual([{ reason: "new" }]);
+    expect(markers(lost.sessions[0]!)).toMatchObject([{ kind: "proactive", text: "morning brief" }]);
+    await lost.host.dispose();
+
+    const kept = setup({ stateDir, fileExists: () => true });
+    await kept.host.start();
+    expect(kept.sessions[0]!.entries).toEqual([]);
+    await kept.host.dispose();
+    const again = setup({ stateDir, fileExists: () => false });
+    await again.host.start();
+    expect(again.sessions[0]!.entries).toEqual([]);
+    await again.host.dispose();
   });
 
   test("chat/new marks the new session so the history divider says why it began", async () => {
