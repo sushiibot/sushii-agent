@@ -336,12 +336,11 @@ test('a history-only message looks like a live one but offers only the read acti
 	expect(await classes('From the transcript')).toBe(await classes('Sent just now'));
 	await expect(page.getByText(/workspace history/)).toHaveCount(0);
 
-	await bubble(page, 'From the transcript')
-		.locator('[data-message-text]')
-		.click({ button: 'right' });
-	const sheet = page.getByRole('dialog', { name: 'Message actions' });
-	await expect(sheet.getByRole('button', { name: 'Copy text' })).toBeVisible();
-	await expect(sheet.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(0);
+	const transcript = bubble(page, 'From the transcript');
+	await expect(transcript.getByRole('button', { name: 'Copy' })).toBeVisible();
+	await expect(transcript.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(
+		0
+	);
 });
 
 test('older pages load above with the server cursor', async ({ page, context }) => {
@@ -624,6 +623,104 @@ test('streaming while scrolled up moves nothing and shows the New messages pill'
 	await pill.click();
 	await expect.poll(() => list.evaluate((el) => Math.abs(el.scrollTop))).toBeLessThanOrEqual(1);
 	await expect(pill).toBeHidden();
+});
+
+test("the last reply's usage sits under the composer, holds still while streaming, and opens its details", async ({
+	page,
+	context
+}) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'u1',
+				at: 'x',
+				text: 'Earlier answer',
+				tools: [],
+				files: [],
+				usage: {
+					model: 'openrouter/deepseek/deepseek-v4.1-flash',
+					inputTokens: 1200,
+					outputTokens: 80,
+					contextPct: 12.4,
+					costUsd: 0.002
+				}
+			}
+		]
+	});
+	await open(page);
+	const line = page.getByRole('button', { name: 'deepseek-v4.1-flash · ctx 12% · $0.0020' });
+	await expect(line).toBeVisible();
+	const top = await line.evaluate((e) => e.getBoundingClientRect().top);
+
+	await push(page, 'delta', { turnId: 't2', offset: 0, text: 'Streaming a new answer' });
+	await expect(page.getByText('Streaming a new answer')).toBeVisible();
+	await expect(line).toBeVisible();
+	expect(await line.evaluate((e) => e.getBoundingClientRect().top)).toBe(top);
+
+	const usage = {
+		model: 'anthropic/claude-sonnet-5',
+		inputTokens: 5000,
+		outputTokens: 321,
+		cacheRead: 4096,
+		contextPct: 40,
+		costUsd: 0.0312
+	};
+	await push(
+		page,
+		'reply',
+		{ key: 'r2', turnId: 't2', text: 'Streaming a new answer', usage, files: [] },
+		1
+	);
+	const next = page.getByRole('button', { name: 'claude-sonnet-5 · ctx 40% · $0.031' });
+	await expect(next).toBeVisible();
+
+	await next.click();
+	const sheet = page.getByRole('dialog', { name: 'Last reply usage' });
+	await expect(sheet).toContainText('not a running total');
+	await expect(sheet).toContainText('anthropic/claude-sonnet-5');
+	await expect(sheet).toContainText('5,000');
+	await expect(sheet).toContainText('4,096');
+	await expect(sheet).not.toContainText('Cache write');
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('no usage line before any reply has usage', async ({ page, context }) => {
+	await chatServer(context);
+	await open(page);
+	await expect(page.getByRole('button', { name: /ctx \d+%/ })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
+});
+
+test('the new-chat and image sheets each close on one back', async ({ page, context }) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'img1',
+				at: 'x',
+				text: 'Here is the chart.',
+				tools: [],
+				files: [
+					{ id: UPLOAD_ID, contentType: 'image/png', bytes: 10, name: 'chart.png', inline: true }
+				]
+			}
+		]
+	});
+	await open(page);
+	await page.getByRole('button', { name: 'Chat commands' }).click();
+	await page.getByRole('button', { name: /New chat/ }).click();
+	await expect(page.getByRole('dialog', { name: 'Start a new chat' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page).toHaveURL(/\/$/);
+
+	await page.getByRole('button', { name: 'Open image chart.png' }).click();
+	await expect(page.getByRole('dialog', { name: 'Image' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
 test('the commands sheet closes on back and leaves Main in place', async ({ page, context }) => {
@@ -1292,13 +1389,9 @@ test('a message the connected agent refused fails with Retry and no offline bann
 	expect((posts('/api/chat/messages')[1].body as { clientId: string }).clientId).toBe(clientId);
 });
 
-/** A queued message has no inline Delete; it is in the message actions sheet. */
-async function deleteFromSheet(page: Page, text: string) {
-	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
-	await page
-		.getByRole('dialog', { name: 'Message actions' })
-		.getByRole('button', { name: 'Delete' })
-		.click();
+/** An unsent message, queued or failed, has Delete under it. */
+async function deleteInline(page: Page, text: string) {
+	await bubble(page, text).getByRole('button', { name: 'Delete' }).click();
 }
 
 async function heldForAgent(
@@ -1323,7 +1416,7 @@ test('deleting a message the bot holds withdraws it there first, then removes it
 	context
 }) => {
 	const { calls, clientId } = await heldForAgent(page, context, 'Never mind this');
-	await deleteFromSheet(page, 'Never mind this');
+	await deleteInline(page, 'Never mind this');
 	await expect(bubble(page, 'Never mind this')).toHaveCount(0);
 	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
 		`/api/chat/messages/${clientId}`
@@ -1336,7 +1429,7 @@ test('deleting a message that already reached the agent keeps it, marked sent', 
 	context
 }) => {
 	await heldForAgent(page, context, 'Too late', 409);
-	await deleteFromSheet(page, 'Too late');
+	await deleteInline(page, 'Too late');
 	await expect(page.getByText('Already delivered')).toBeVisible();
 	await expect(bubble(page, 'Too late')).toContainText('Sent');
 	await expect.poll(() => outboxSize(page)).toBe(0);
@@ -1344,14 +1437,14 @@ test('deleting a message that already reached the agent keeps it, marked sent', 
 
 test('a delete the bot never heard of removes the message locally', async ({ page, context }) => {
 	await heldForAgent(page, context, 'Unknown to the bot', 404);
-	await deleteFromSheet(page, 'Unknown to the bot');
+	await deleteInline(page, 'Unknown to the bot');
 	await expect(bubble(page, 'Unknown to the bot')).toHaveCount(0);
 	await expect.poll(() => outboxSize(page)).toBe(0);
 });
 
 test('a delete that fails keeps the message and says so', async ({ page, context }) => {
 	await heldForAgent(page, context, 'Keep me for now', 500);
-	await deleteFromSheet(page, 'Keep me for now');
+	await deleteInline(page, 'Keep me for now');
 	await expect(page.getByText("Couldn't delete the message. Try again.")).toBeVisible();
 	await expect(bubble(page, 'Keep me for now')).toBeVisible();
 	expect(await outboxSize(page)).toBe(1);
@@ -1368,7 +1461,7 @@ test('a message whose 202 was lost is withdrawn from the bot on Delete and never
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
 	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
 	await expect(bubble(page, 'Lost answer')).toContainText('Queued');
-	await deleteFromSheet(page, 'Lost answer');
+	await deleteInline(page, 'Lost answer');
 	await expect(bubble(page, 'Lost answer')).toHaveCount(0);
 	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
 		`/api/chat/messages/${clientId}`
@@ -1423,19 +1516,20 @@ test('a refused message stays failed across a reload and goes again only on Retr
 	await expect.poll(async () => (await outboxEntries(page))[0]?.failed).toBe(false);
 });
 
-/** Opens the actions sheet on a queued bubble, then starts its resend and taps Delete in one task: the
- *  one window the UI leaves, since the sheet drops Delete once the bubble shows Sending. */
+/** Starts a queued bubble's resend and taps its Delete in one task: the one window the UI leaves,
+ *  since Delete goes away once the bubble shows Sending. */
 async function deleteAsResendStarts(page: Page, text: string) {
-	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
-	const dialog = page.getByRole('dialog', { name: 'Message actions' });
-	await expect(dialog.getByRole('button', { name: 'Delete message' })).toBeVisible();
-	await page.evaluate(() => {
-		const button = [...document.querySelectorAll('[role=dialog] button')].find((b) =>
-			b.textContent?.includes('Delete message')
+	await expect(bubble(page, text).getByRole('button', { name: 'Delete' })).toBeVisible();
+	await page.evaluate((text) => {
+		const message = [...document.querySelectorAll('[data-message-id]')].find((m) =>
+			m.textContent?.includes(text)
+		)!;
+		const button = [...message.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Delete'
 		) as HTMLButtonElement;
 		dispatchEvent(new Event('online'));
 		button.click();
-	});
+	}, text);
 }
 
 test('Delete in the same frame a resend starts stops it before it posts', async ({

@@ -411,7 +411,7 @@ test('the precached shell opens while offline', async ({ page, context }) => {
 	await context.setOffline(true);
 	await page.goto('/settings');
 	await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-	await expect(page.getByText(/You're offline/)).toBeVisible();
+	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
 });
 
 test('a 502 from the proxy during a restart still opens the cached shell', async ({

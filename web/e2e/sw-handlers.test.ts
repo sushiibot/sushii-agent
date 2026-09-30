@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { closeTagged, tagsShownBy } from '../src/lib/app/notifications';
+import { closeTagged } from '../src/lib/core/pwa/notifications';
+import { tagsShownBy } from '../src/lib/features/chat/notifications';
 import {
 	base64UrlToBytes,
 	navigationResponse,
@@ -9,7 +10,7 @@ import {
 	safeTarget,
 	sameKey,
 	type WindowLike
-} from '../src/lib/sw/handlers';
+} from '../src/lib/core/sw/handlers';
 
 const PUBLIC_KEY =
 	'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
@@ -119,6 +120,7 @@ test.describe('closing notifications on open', () => {
 
 	test('closes chat plus the approvals, asks and sign-in Main shows, and nothing else', async () => {
 		const tags = tagsShownBy(
+			'main',
 			[
 				{ kind: 'approval', id: 'x', nonce: 'done1', tool: 't', outcome: 'approved' },
 				{

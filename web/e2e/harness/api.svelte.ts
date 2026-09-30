@@ -1,4 +1,4 @@
-import type { ChatMessage, PendingApproval, TurnStep } from '$lib/agent/types';
+import type { ChatMessage, PendingApproval, TurnStep } from '$lib/features/chat/types';
 
 export const pending = (nonce: string, tool = 'bash'): PendingApproval =>
 	({

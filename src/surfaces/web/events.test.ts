@@ -8,7 +8,7 @@ import type * as Link from "../../orchestration/workspace/link.ts";
 import * as Wire from "./events.ts";
 
 const SERVER_COPY = fileURLToPath(new URL("./events.ts", import.meta.url));
-const CLIENT_COPY = fileURLToPath(new URL("../../../web/src/lib/chat/events.ts", import.meta.url));
+const CLIENT_COPY = fileURLToPath(new URL("../../../web/src/lib/core/realtime/events.ts", import.meta.url));
 
 // Compile-time: every bot-side value that crosses the wire must fit its wire copy. The direction is
 // server ⊆ wire, so a new RouterNotice or ToolLine state on the bot fails tsc here until the wire gains it.
