@@ -21,7 +21,7 @@ import {
   type PostMessageUploadMissingResponse,
   type UploadRef,
 } from "./events.ts";
-import { historyPage } from "./history.ts";
+import { historyPage, parseCursor as parseHistoryCursor } from "./history.ts";
 import { forbidden, isJson, json, readJson } from "./http.ts";
 import type { InboundRow, WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
@@ -345,8 +345,9 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     const limit = rawLimit === null ? HISTORY_DEFAULT_LIMIT : Number(rawLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_LIMIT_MAX) return json({ error: "invalid limit" }, 400);
     // Imported rows have seqs at or below zero.
-    if (rawBefore !== null && !/^-?\d{1,15}$/.test(rawBefore)) return json({ error: "invalid cursor" }, 400);
-    const page = historyPage(chatLog, { limit, ...(rawBefore !== null ? { before: Number(rawBefore) } : {}) }, { maxBytes: historyMax, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
+    const before = rawBefore === null ? undefined : parseHistoryCursor(rawBefore);
+    if (before === null) return json({ error: "invalid cursor" }, 400);
+    const page = historyPage(chatLog, { limit, ...(before ? { before } : {}) }, { maxBytes: historyMax, ...(deps.uploads ? { uploads: deps.uploads } : {}) });
     return new Response(JSON.stringify(page), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
   }
 

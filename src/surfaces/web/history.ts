@@ -1,4 +1,4 @@
-import type { SqliteChatLog, StoredEvent } from "./chatLog.ts";
+import type { HistoryPosition, SqliteChatLog, StoredEvent } from "./chatLog.ts";
 import { CLIENT_ID_RE, type ApprovalDecision, type DurableEventType, type HistoryResponse, type UploadRef, type WebHistoryItem } from "./events.ts";
 import type { WebUploadPort } from "./workspaceAdapter.ts";
 
@@ -8,12 +8,12 @@ const HISTORY_EVENTS = ["user", "reply", "proactive", "ask", "approval", "sessio
 type UploadLookup = Pick<WebUploadPort, "lookup">;
 
 /**
- * One page of the chat from the bot's own log: the newest `limit` items with a seq below `before`, oldest
- * first, within `maxBytes`. `before` in the result is the page's oldest seq, or null at the start.
+ * One page of the chat from the bot's own log: the newest `limit` items in history order below `before`,
+ * oldest first, within `maxBytes`. `before` in the result is the page's oldest position, or null at the start.
  */
 export function historyPage(
   log: SqliteChatLog,
-  q: { before?: number; limit: number },
+  q: { before?: HistoryPosition; limit: number },
   deps: { uploads?: UploadLookup; maxBytes: number },
 ): HistoryResponse {
   const rows = log.page(HISTORY_EVENTS, { ...(q.before !== undefined ? { before: q.before } : {}), limit: q.limit + 1 });
@@ -47,7 +47,19 @@ export function historyPage(
     bytes += size;
   }
   const oldest = events[items.length - 1];
-  return { items: items.reverse(), before: (more || cut) && oldest ? String(oldest.seq) : null };
+  return { items: items.reverse(), before: (more || cut) && oldest ? formatCursor({ order: oldest.order, seq: oldest.seq }) : null };
+}
+
+/** `<seq>` for a row in seq order, `<order>:<seq>` for one placed earlier. */
+export function formatCursor(p: HistoryPosition): string {
+  return p.order === p.seq ? String(p.seq) : `${p.order}:${p.seq}`;
+}
+
+export function parseCursor(raw: string): HistoryPosition | null {
+  const m = /^(-?\d{1,15})(?::(-?\d{1,15}))?$/.exec(raw);
+  if (!m) return null;
+  const order = Number(m[1]);
+  return { order, seq: m[2] === undefined ? order : Number(m[2]) };
 }
 
 function toItem(

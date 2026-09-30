@@ -153,7 +153,8 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const text = dropped.length ? `${body}\n\n${dropped.map((d) => `[file dropped: ${d}]`).join("\n")}` : body;
     const turnId = reply.turnId && reply.turnId.length <= ID_MAX ? reply.turnId : undefined;
     const data = { key, text, files, ...(turnId ? { turnId } : {}), ...(reply.usage ? { usage: reply.usage } : {}) };
-    const { seq, created } = this.deps.log.appendResult(reply.kind, data, key);
+    const anchor = turnId ? this.deps.log.turnAnchor(turnId) : null;
+    const { seq, created } = this.deps.log.appendResult(reply.kind, data, key, anchor ?? undefined);
     if (created) void this.notify(seq, { kind: reply.kind, text });
   }
 
@@ -278,6 +279,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   /** Adds a live turn; past the cap the oldest is finalized as interrupted, so `hello` stays bounded. */
   private track(turn: LiveTurn): LiveTurn {
     this.turns.delete(turn.turnId);
+    this.deps.log.anchorTurn(turn.turnId);
     while (this.turns.size >= MAX_OPEN_TURNS) {
       const oldest = this.turns.values().next().value!;
       this.finalize(oldest.turnId, { outcome: "interrupted", summary: null });
