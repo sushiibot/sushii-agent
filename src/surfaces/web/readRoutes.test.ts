@@ -2,13 +2,16 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
-import type { HistorySearchResult, RunSummary, RunsGetResult } from "../../orchestration/contracts.ts";
+import { historyDayResult, runsGetResult, type HistoryDayResult, type HistorySearchResult, type RunSummary, type RunsGetResult } from "../../orchestration/contracts.ts";
 import { WorkspaceBadResponseError } from "../../orchestration/workspace/link.ts";
 import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import { SqliteChatLog } from "./chatLog.ts";
+import { HISTORY_RESPONSE_MAX } from "./chatRoutes.ts";
+import { ChatIndex } from "./chatSearch.ts";
 import type { ApprovalView, HistoryDayResponse, RunDetailResponse, SearchResponse, WebFeature } from "./events.ts";
 import { createPeerMatcher } from "./peers.ts";
 import { NOTES_SEARCHES_MAX, createReadRoutes, type ReadRouteLink } from "./readRoutes.ts";
+import { RUN_FILES_SQL } from "./runJoins.ts";
 import { createWebHandler } from "./server.ts";
 
 const OWNER = "owner@example.com";
@@ -37,6 +40,7 @@ class FakeLink implements ReadRouteLink {
   getResult: RunsGetResult = { found: true, run: run(), children: [], session: "ok", steps: [], after: null };
   searchResult: HistorySearchResult = { hits: [], before: null, truncated: false };
   searchGate: Promise<void> | null = null;
+  dayResult: HistoryDayResult | null = null;
   isConnected() {
     return this.connected;
   }
@@ -55,6 +59,7 @@ class FakeLink implements ReadRouteLink {
     return this.go("history/days", q, { days: [{ date: "2026-09-30", runs: 2, sessions: 1 }], before: "2026-09-29" });
   }
   historyDay(q: { date: string }) {
+    if (this.dayResult) return this.go("history/day", q, this.dayResult);
     return this.go("history/day", q, { found: true as const, date: q.date, sessions: [{ heading: "## x", markdown: "<b>y</b>" }], runs: [run()], truncated: false });
   }
   async historySearch(q: object) {
@@ -69,13 +74,13 @@ function setup(opts: { features?: WebFeature[]; workspaceEnabled?: boolean; now?
   const db = new Database(":memory:");
   applySchema(db);
   let t = T0;
-  const log = new SqliteChatLog(db, { now: () => t });
+  const log = new SqliteChatLog(db, { now: () => t, index: new ChatIndex(db) });
   const link = new FakeLink();
   const reads = createReadRoutes({ db, link, features: opts.features ?? ["runs", "history"], workspaceEnabled: opts.workspaceEnabled ?? true, now: () => opts.now ?? T0 + 120_000 });
   const config = { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW] } as WebConfig;
   const handler = createWebHandler({ config, peers: createPeerMatcher([GW]), reads });
-  const get = async (path: string, headers: Record<string, string> = { "Sec-Fetch-Site": "same-origin" }, method = "GET") => {
-    const res = await handler(new Request(`http://apps.example.ts.net${path}`, { method, headers: { "Tailscale-User-Login": OWNER, ...headers } }), GW);
+  const get = async (path: string, headers: Record<string, string> = { "Sec-Fetch-Site": "same-origin" }, method = "GET", peer = GW) => {
+    const res = await handler(new Request(`http://apps.example.ts.net${path}`, { method, headers: { "Tailscale-User-Login": OWNER, ...headers } }), peer);
     return { status: res.status, body: res.headers.get("Content-Type")?.includes("json") ? ((await res.json()) as unknown) : await res.text() };
   };
   return { db, log, link, get, at: (ms: number) => (t = ms) };
@@ -90,6 +95,7 @@ describe("read routes: guards", () => {
       expect((await get(p, { "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
       expect((await get(p, { "Sec-Fetch-Site": "same-site" })).status).toBe(403);
       expect((await get(p, { "Sec-Fetch-Site": "same-origin", "Tailscale-User-Login": "eve@example.com" })).status).toBe(403);
+      expect((await get(p, { "Sec-Fetch-Site": "same-origin" }, "GET", "172.31.250.9")).status).toBe(403);
     }
     expect(link.calls).toEqual([]);
   });
@@ -157,6 +163,45 @@ describe("read routes: workspace failures", () => {
       for (const p of PATHS.slice(0, 4)) expect(await get(p)).toEqual({ status, body });
     });
   }
+
+  test("a cursor the workspace doesn't know is a 400", async () => {
+    const { link, get } = setup();
+    link.fail = new RpcErrorReply("unknown cursor", -32602);
+    expect(await get(`/api/runs/${RUN}?after=gone`)).toEqual({ status: 400, body: { error: "invalid cursor" } });
+    expect((await get("/api/runs?before=01J9ZZZZZZZZZZZZZZZZZZZZZC")).status).toBe(400);
+  });
+
+  test("an unexpected error is a logged 500, not offline", async () => {
+    const { link, get } = setup();
+    link.fail = new TypeError("boom");
+    for (const p of PATHS) expect(await get(p)).toEqual({ status: 500, body: { error: "internal" } });
+  });
+
+  test("a body over the size cap is a bad response, even when it fits the contract", async () => {
+    const { link, get } = setup();
+    // CJK: 3 UTF-8 bytes per UTF-16 unit, so 50 recaps at the contract's max are ~4.8 MB.
+    link.dayResult = historyDayResult.parse({
+      found: true,
+      date: "2026-09-30",
+      sessions: Array.from({ length: 50 }, () => ({ heading: "## 会话", markdown: "東".repeat(32_000) })),
+      runs: [],
+      truncated: false,
+    });
+    expect(await get("/api/history/days/2026-09-30")).toEqual({ status: 502, body: { bad_response: true } });
+    // Control characters: each one is a 6-byte JSON escape.
+    link.getResult = runsGetResult.parse({
+      found: true,
+      run: run(),
+      children: [],
+      session: "ok",
+      steps: Array.from({ length: 200 }, (_, i) => ({ type: "assistant", id: `s${i}`, at: "t", text: "\u0001".repeat(8_000) })),
+      after: null,
+    });
+    expect(await get(`/api/runs/${RUN}`)).toEqual({ status: 502, body: { bad_response: true } });
+    // Just under the cap still answers.
+    link.dayResult = { found: true, date: "2026-09-30", sessions: [{ heading: "h", markdown: "東".repeat(Math.floor(HISTORY_RESPONSE_MAX / 3) - 1_000) }], runs: [], truncated: false };
+    expect((await get("/api/history/days/2026-09-30")).status).toBe(200);
+  });
 
   test("a disabled or disconnected workspace is 503 without a request", async () => {
     for (const s of [setup({ workspaceEnabled: false }), (() => {
@@ -228,6 +273,37 @@ describe("runs", () => {
     expect(sub.files).toEqual([]);
   });
 
+  test("job, flush and rotate runs match in their half-open window; a finished run without endedAt matches only its id", async () => {
+    const { log, link, get, at } = setup({ now: T0 + 10 * 60_000 });
+    const approve = (nonce: string, agentId: string, ms: number) => {
+      at(ms);
+      log.append("approval", { nonce, view: { tool: "t", agentId, agentName: agentId, fields: [] } }, nonce);
+    };
+    approve("start", "main", T0);
+    approve("end", "main", T0 + 60_000);
+    approve("job-in", "job:nightly", T0 + 1_000);
+    approve("job-other", "job:weekly", T0 + 1_000);
+    approve("late", "main", T0 + 5 * 60_000);
+    const nonces = async (r: RunSummary) => {
+      link.getResult = { found: true, run: r, children: [], session: "ok", steps: [], after: null };
+      return ((await get(`/api/runs/${RUN}`)).body as RunDetailResponse).approvals.map((x) => x.nonce);
+    };
+    for (const kind of ["chat", "flush", "rotate"] as const) expect(await nonces(run({ kind }))).toEqual(["start"]);
+    expect(await nonces(run({ kind: "job", agentName: "job:nightly", jobName: "nightly" }))).toEqual(["job-in"]);
+    expect(await nonces(run({ kind: "agent", agentName: "main" }))).toEqual([]);
+    const { endedAt: _e, ...unended } = run({ status: "done" });
+    expect(await nonces(unended)).toEqual([]);
+    expect(await nonces({ ...unended, status: "running" })).toEqual(["start", "end", "late"]);
+  });
+
+  test("the files join is an index lookup by turnId", async () => {
+    const { db } = setup();
+    const plan = db
+      .query(`EXPLAIN QUERY PLAN ${RUN_FILES_SQL}`)
+      .all("t") as { detail: string }[];
+    expect(plan.map((p) => p.detail).join(" ")).toContain("idx_web_events_turn");
+  });
+
   test("a running run's window ends now", async () => {
     const { log, link, get, at } = setup({ now: T0 + 10_000 });
     at(T0 + 5_000);
@@ -295,7 +371,7 @@ describe("search", () => {
   });
 
   test("notes that can't be searched are listed as unavailable, and chat still answers 200", async () => {
-    for (const err of [new RpcErrorReply("method not found", -32601), new WorkspaceNotConnectedError("x"), new RpcTimeoutError("x"), new WorkspaceBadResponseError("history/search")]) {
+    for (const err of [new RpcErrorReply("method not found", -32601), new RpcErrorReply("busy", -32001), new WorkspaceNotConnectedError("x"), new RpcTimeoutError("x"), new WorkspaceBadResponseError("history/search")]) {
       const { log, link, get } = setup();
       const seq = log.append("reply", { key: "r", text: "heron", files: [] }, "r");
       link.fail = err;
@@ -313,7 +389,7 @@ describe("search", () => {
     let release!: () => void;
     link.searchGate = new Promise((r) => (release = r));
     const first = [get("/api/search?q=crane"), get("/api/search?q=crane")];
-    await Bun.sleep(5);
+    while (link.calls.filter((c) => c.method === "history/search").length < 2) await Bun.sleep(1);
     const third = await get("/api/search?q=crane");
     expect((third.body as SearchResponse).unavailable).toEqual(["notes"]);
     expect(link.calls.filter((c) => c.method === "history/search")).toHaveLength(2);
@@ -331,9 +407,10 @@ describe("search", () => {
     expect(link.calls).toEqual([]);
   });
 
-  test("a broken chat index marks chat unavailable", async () => {
-    const { db, get } = setup();
+  test("a broken chat index marks chat unavailable, and chat writes still land", async () => {
+    const { db, log, get } = setup();
     db.run("DROP TABLE web_chat_fts");
+    expect(log.append("reply", { key: "r", text: "heron", files: [] }, "r")).toBeGreaterThan(0);
     const body = (await get("/api/search?q=heron")).body as SearchResponse;
     expect(body.unavailable).toEqual(["chat"]);
   });
