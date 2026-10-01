@@ -107,7 +107,7 @@ describe("auth", () => {
   test("a trusted peer with the owner login gets through", async () => {
     const res = await handler(req("/api/me", { headers: { "Tailscale-User-Name": "=?utf-8?q?J=C3=BCrgen_Owner?=" } }), GW);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ login: OWNER, displayName: "Jürgen Owner" });
+    expect(await res.json()).toEqual({ login: OWNER, displayName: "Jürgen Owner", features: [] });
     expect((await handler(req("/", { login: "Owner@Example.com" }), `::ffff:${GW}`)).status).toBe(200);
   });
 
@@ -131,6 +131,23 @@ describe("auth", () => {
     const prod = parseWebConfig({ WEB_OWNER_LOGIN: OWNER, WEB_DEV_LOGIN: OWNER, NODE_ENV: "production", WEB_DIST_DIR: dist, WEB_TRUSTED_PEERS: "127.0.0.1" })!;
     const h = setup(prod).handler;
     expect((await h(req("/api/me", { login: null }), "127.0.0.1")).status).toBe(403);
+  });
+
+  test("/api/me lists the features WEB_FEATURES turns on", async () => {
+    const h = setup({ features: ["runs", "home"] }).handler;
+    expect(await (await h(req("/api/me"), GW)).json()).toEqual({ login: OWNER, features: ["runs", "home"] });
+  });
+
+  test("WEB_FEATURES: known names only, in a fixed order, never throwing", async () => {
+    const { parseWebFeatures, parseWebConfig } = await import("../../config.ts");
+    const warned: unknown[] = [];
+    const warn = (ctx: Record<string, unknown>) => void warned.push(ctx.feature);
+    expect(parseWebFeatures(" Alerts, runs,,bogus,runs ,history", warn)).toEqual(["runs", "history", "alerts"]);
+    expect(warned).toEqual(["bogus"]);
+    expect(parseWebFeatures(undefined, warn)).toEqual([]);
+    expect(parseWebFeatures("", warn)).toEqual([]);
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: OWNER, WEB_FEATURES: "home" })?.features).toEqual(["home"]);
+    expect(parseWebConfig({ WEB_OWNER_LOGIN: OWNER })?.features).toEqual([]);
   });
 
   test("every response carries the security headers", async () => {

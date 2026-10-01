@@ -12,6 +12,27 @@ export const MESSAGE_UPLOADS_MAX = 10;
 export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 export const HISTORY_LIMIT_MAX = 100;
 
+/** Workspace-issued run id (ULID). A lookup key only; the bot never puts it in a path. */
+export const RUN_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/** A History day in the host's own time zone. The bot also checks it names a real calendar date. */
+export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const JOB_NAME_RE = /^[a-z0-9-]{1,64}$/;
+export const RUN_KINDS = ['chat', 'flush', 'job', 'subagent', 'agent', 'rotate'] as const;
+export const RUN_STATUSES = ['running', 'done', 'failed', 'aborted', 'timeout'] as const;
+/** Code points after trimming. */
+export const SEARCH_QUERY_MIN = 2;
+export const SEARCH_QUERY_MAX = 200;
+/** Hits in one merged search response, both sources together. */
+export const SEARCH_HITS_MAX = 20;
+/** How far back Home looks for failed and finished background runs. */
+export const HOME_RECENT_HOURS = 72;
+/** Per Home run list (`running`, `failedRuns`, `review`). */
+export const HOME_RUNS_MAX = 20;
+
+/** Slices the bot turns on with `WEB_FEATURES`. A route whose feature is off answers 404. */
+export const WEB_FEATURES = ['runs', 'history', 'home', 'alerts'] as const;
+export type WebFeature = (typeof WEB_FEATURES)[number];
+
 /** Where the app loads an upload's bytes. */
 export function fileUrl(id: string): string {
 	return `/f/${id}`;
@@ -127,6 +148,111 @@ export interface PendingState {
 	}[];
 }
 
+export type RunKind = (typeof RUN_KINDS)[number];
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export interface RunUsage {
+	inputTokens: number;
+	outputTokens: number;
+	costUsd?: number;
+	model?: string;
+}
+
+/** One run as the workspace host recorded it. Agent-writable: show it as the agent's record. */
+export interface RunSummary {
+	runId: string;
+	parentRunId?: string;
+	turnId?: string;
+	kind: RunKind;
+	agentName: string;
+	jobName?: string;
+	/** One line, redacted: the first user text or the task. */
+	title: string;
+	status: RunStatus;
+	startedAt: string;
+	endedAt?: string;
+	usage?: RunUsage;
+	/** One line, redacted. */
+	resultSummary?: string;
+}
+
+export type RunStep =
+	| { type: 'user'; id: string; at: string; text: string }
+	| { type: 'assistant'; id: string; at: string; text: string }
+	| {
+			type: 'tool';
+			id: string;
+			at: string;
+			name: string;
+			args: string;
+			/** null: no result inside the run's window. */
+			ok: boolean | null;
+			result: string;
+			durationMs?: number;
+			agentId?: string;
+	  }
+	| {
+			type: 'note';
+			id: string;
+			at: string;
+			kind: 'compaction' | 'verify' | 'error' | 'aborted' | 'custom';
+			text: string;
+	  };
+
+export interface RunEvidence {
+	checks: { command: string; ok: boolean | null; at: string }[];
+	changedRepos: string[];
+	/** null: nothing under projects/ changed. */
+	checkAfterLastChange: boolean | null;
+	verifyNudged: boolean;
+	filesSent: { name: string; at: string }[];
+	memoryWrites: { path: string; tool: 'write' | 'edit' | 'bash'; at: string }[];
+}
+
+/** Why a run's steps may be empty. */
+export type RunSession = 'ok' | 'missing' | 'outside' | 'not-session';
+
+/** An approval from the bot's own log, shown read-only on a run. */
+export interface RunApprovalRecord {
+	nonce: string;
+	at: string;
+	tool: string;
+	decision: ApprovalDecision | null;
+}
+
+/** A scheduled job's failure streak event, as the workspace sent it. */
+export interface JobAlert {
+	source: 'job';
+	job: string;
+	kind: 'failed' | 'stuck' | 'recovered';
+	trigger: 'daily' | 'interval' | 'catchup' | 'manual';
+	startedAt: string;
+	/** One line, redacted. */
+	error?: string;
+	schedule: string;
+	/** A disabled job only runs on demand, so it won't retry on its own. */
+	disabled?: boolean;
+	runId?: string;
+}
+
+/** An open, undismissed job-alert streak (bot table `web_alerts`). */
+export interface HomeAlert {
+	/** "job:<name>" */
+	id: string;
+	job: string;
+	kind: 'failed' | 'stuck';
+	/** Streak start. */
+	firstAt: string;
+	lastAt: string;
+	trigger: JobAlert['trigger'];
+	error?: string;
+	schedule: string;
+	disabled?: boolean;
+	runId?: string;
+	/** The `alert` event, for seen receipts. */
+	seq: number;
+}
+
 // ── SSE events ──
 
 /** Payload of each SSE event, by event name. */
@@ -164,6 +290,17 @@ export interface ChatEventMap {
 	delta: { turnId: string; offset: number; text: string };
 	tool: { turnId: string; name: string; summary: string; ok?: boolean };
 	workspace: { state: WorkspaceState };
+	/** `key` is the workspace outbox id. `text` is the alert as plain text, for a client that can't show it. */
+	alert: { key: string; alert: JobAlert; text: string };
+	alert_cleared: { id: string; reason: 'recovered' | 'dismissed' };
+	/** A background run started or ended; refetch what shows it. */
+	run: {
+		runId: string;
+		kind: RunKind;
+		status: RunStatus;
+		parentRunId?: string;
+		jobName?: string;
+	};
 }
 export type ChatEventType = keyof ChatEventMap;
 
@@ -181,10 +318,12 @@ export const DURABLE_EVENTS = [
 	'approval_resolved',
 	'turn_final',
 	'notice',
-	'session'
+	'session',
+	'alert',
+	'alert_cleared'
 ] as const;
 /** Fanned out to open streams only, never stored. */
-export const EPHEMERAL_EVENTS = ['snapshot', 'delta', 'tool', 'workspace'] as const;
+export const EPHEMERAL_EVENTS = ['snapshot', 'delta', 'tool', 'workspace', 'run'] as const;
 
 export type FirstFrameEventType = (typeof FIRST_FRAME_EVENTS)[number];
 export type DurableEventType = (typeof DURABLE_EVENTS)[number];
@@ -321,4 +460,157 @@ export interface UploadResponse {
 	bytes: number;
 	width?: number;
 	height?: number;
+}
+
+/** GET /api/me. */
+export interface MeResponse {
+	login: string;
+	displayName?: string;
+	features: WebFeature[];
+}
+
+/**
+ * The workspace part of a bot response could not be had. 501 `unsupported`: an older workspace;
+ * 503 `offline`; 504 `timeout`; 502 `bad_response`: it answered something outside the contract.
+ */
+export type WorkspaceUnavailableResponse =
+	{ unsupported: true } | { offline: true } | { timeout: true } | { bad_response: true };
+
+/** GET /api/home. The bot part is always there; the workspace part waits at most 3 s. */
+export interface HomeResponse {
+	asOf: string;
+	waiting: {
+		approvals: PendingState['approvals'];
+		asks: PendingState['asks'];
+		/** The newest unresolved sign-in link. */
+		auth: { seq: number; at: string; key: string } | null;
+	};
+	/** Main turns in flight. */
+	openTurns: TurnView[];
+	/** Open, undismissed job alerts, newest first. */
+	failed: HomeAlert[];
+	workspace:
+		| {
+				state: 'online';
+				/** Running `job`, `subagent` and `agent` runs, newest first. */
+				running: RunSummary[];
+				/** `subagent` and `agent` runs that ended `failed` or `timeout` within HOME_RECENT_HOURS, not dismissed. */
+				failedRuns: RunSummary[];
+				/** `job`, `subagent` and `agent` runs that ended `done` within HOME_RECENT_HOURS and were never opened. */
+				review: RunSummary[];
+		  }
+		| { state: 'offline' | 'unsupported' | 'timeout' };
+}
+
+/** POST /api/home/dismiss → 204. A `job:` id hides the alert until its next failure; `run:` hides a failed run. */
+export interface HomeDismissBody {
+	id: string;
+}
+
+/**
+ * POST /api/home/opened → 204. Takes a run off "Ready for review" on every device. Only `run:<runId>`;
+ * the bot keeps the opened set 30 days, longer than HOME_RECENT_HOURS.
+ */
+export interface HomeOpenedBody {
+	id: string;
+}
+
+/** GET /api/runs?before=&limit=&kind=&status= (`kind` and `status` are comma lists). */
+export interface RunsPage {
+	runs: RunSummary[];
+	/** Cursor for older runs; null when there are none. */
+	before: string | null;
+	/** Older runs exist past the scan bound; they are reachable through History. */
+	truncated: boolean;
+}
+
+/** GET /api/runs/:runId?after=&limit=. 404 when the run is not found. */
+export interface RunDetailResponse {
+	run: RunSummary;
+	parent?: RunSummary;
+	children: RunSummary[];
+	session: RunSession;
+	steps: RunStep[];
+	/** Cursor for the next steps; null when the last step is here. */
+	after: string | null;
+	/** First page only. */
+	evidence?: RunEvidence;
+	/** "YYYY-MM/DD-<runId>.md", for the History link. */
+	historyFile?: string;
+	/** From the bot's approval log (30 days). */
+	approvals: RunApprovalRecord[];
+	/** Files the bot delivered for this run's turn, matched by turnId. */
+	files: UploadRef[];
+}
+
+export interface HistoryDay {
+	date: string;
+	runs: number;
+	sessions: number;
+}
+
+/** GET /api/history/days?before=&limit=. */
+export interface HistoryDaysPage {
+	days: HistoryDay[];
+	/** Cursor for older days; null when there are none. */
+	before: string | null;
+}
+
+/** GET /api/history/days/:date. */
+export type HistoryDayResponse =
+	| { found: false }
+	| {
+			found: true;
+			date: string;
+			/** The day's `## Sessions` recaps, as the agent wrote them. */
+			sessions: { heading: string; markdown: string }[];
+			/** Runs that started that local day. */
+			runs: RunSummary[];
+			/** The day's file was larger than the read cap. */
+			truncated: boolean;
+	  };
+
+/** [start, end) in code points of `snippet`. */
+export type SearchRange = [number, number];
+
+/** A match in the agent's notes under ~/history. */
+export interface NotesHit {
+	source: 'notes';
+	/** "<relPath>:<line>" */
+	id: string;
+	kind: 'daily' | 'run';
+	date: string;
+	runId?: string;
+	line: number;
+	/** The nearest heading above the match. */
+	heading?: string;
+	snippet: string;
+	ranges: SearchRange[];
+}
+
+/** A match in the chat the bot stores. */
+export interface ChatHit {
+	source: 'chat';
+	/** The matching message's WebHistoryItem id. */
+	id: string;
+	at: string;
+	role: 'user' | 'agent';
+	snippet: string;
+	ranges: SearchRange[];
+}
+
+export type SearchHit = NotesHit | ChatHit;
+
+/**
+ * GET /api/search?q=. Chat and notes merged newest first, at most SEARCH_HITS_MAX. A notes hit sorts as
+ * `<date>T23:59:59Z`. No cursor: a narrower query is the way to older matches.
+ */
+export interface SearchResponse {
+	/** The trimmed query this answers. */
+	query: string;
+	hits: SearchHit[];
+	/** A source stopped early or had more matches than fit, so some are missing. */
+	truncated: boolean;
+	/** Sources that could not be searched this time (offline, older workspace, or busy). */
+	unavailable: ('chat' | 'notes')[];
 }

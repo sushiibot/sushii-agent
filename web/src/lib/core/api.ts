@@ -1,6 +1,7 @@
+import type { MeResponse } from '$lib/core/realtime/events';
 import { request } from './http';
 
-export type Me = { login: string; displayName?: string };
+export type Me = MeResponse;
 export type PushKey = { publicKey: string };
 export type Ok = { ok: true };
 export type PushTestResult = { sent: number; pruned: number };

@@ -8,6 +8,7 @@ import { getLogger } from "../../logger.ts";
 import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { mintWebActor, normalizeLogin } from "./actor.ts";
 import type { ChatRoutes } from "./chatRoutes.ts";
+import type { MeResponse } from "./events.ts";
 import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
   PushSubscriptionStore,
@@ -104,7 +105,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     if (path === "/api/me") {
       if (method !== "GET") return json({ error: "method not allowed" }, 405);
       const name = req.headers.get("Tailscale-User-Name");
-      return json({ login, ...(name ? { displayName: decodeEncodedWords(name) } : {}) });
+      return json({ login, ...(name ? { displayName: decodeEncodedWords(name) } : {}), features: config.features ?? [] } satisfies MeResponse);
     }
 
     if (path === "/api/uploads") return uploads ? handleUploadPost(req, uploads) : json({ error: "not found" }, 404);

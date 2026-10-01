@@ -9,6 +9,7 @@ import { z } from "zod";
 import { dirname, join } from "node:path";
 import { isLoopback, parseIp } from "./surfaces/web/peers.ts";
 import { normalizeLogin, WEB_SURFACE } from "./surfaces/web/actor.ts";
+import { WEB_FEATURES, type WebFeature } from "./surfaces/web/events.ts";
 
 const logger = getLogger("config");
 
@@ -132,6 +133,8 @@ export interface WebConfig {
   push: WebPushConfig | undefined;
   /** Why push is off although some VAPID env was set. */
   pushDisabledReason?: string;
+  /** Slices turned on with WEB_FEATURES; absent = none. */
+  features?: WebFeature[];
 }
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
@@ -155,7 +158,23 @@ const webEnvSchema = z.object({
   VAPID_PUBLIC_KEY: optionalString,
   VAPID_PRIVATE_KEY: optionalString,
   VAPID_SUBJECT: optionalString,
+  WEB_FEATURES: optionalString,
 });
+
+/** A typo turns one slice off rather than taking the web gateway down. */
+export function parseWebFeatures(
+  raw: string | undefined,
+  warn: (ctx: Record<string, unknown>, msg: string) => void = (ctx, msg) => logger.warn(ctx, msg),
+): WebFeature[] {
+  const out = new Set<WebFeature>();
+  for (const part of (raw ?? "").split(",")) {
+    const name = part.trim().toLowerCase();
+    if (!name) continue;
+    if ((WEB_FEATURES as readonly string[]).includes(name)) out.add(name as WebFeature);
+    else warn({ feature: part.trim() }, "ignoring unknown WEB_FEATURES entry");
+  }
+  return WEB_FEATURES.filter((f) => out.has(f));
+}
 
 function parseVapid(e: z.infer<typeof webEnvSchema>): { push?: WebPushConfig; reason?: string } {
   const { VAPID_PUBLIC_KEY: publicKey, VAPID_PRIVATE_KEY: privateKey, VAPID_SUBJECT: subject } = e;
@@ -183,6 +202,7 @@ export function parseWebConfig(env: Record<string, string | undefined>): WebConf
     trustedPeers: e.WEB_TRUSTED_PEERS,
     push,
     ...(reason ? { pushDisabledReason: reason } : {}),
+    features: parseWebFeatures(e.WEB_FEATURES),
   };
 }
 
