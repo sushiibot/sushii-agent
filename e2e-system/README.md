@@ -4,7 +4,7 @@ End-to-end tests against the real processes. The runner builds `web/` and starts
 
 | Production piece | Here |
 |---|---|
-| bot (`src/index.ts`, `NODE_ENV=production`) | a bot process bound to `E2E_BOT_ADDR` (127.0.0.2), with `WEB_TRUSTED_PEERS` set to the proxy's peer address and `WEB_FEATURES=home,alerts`. The Discord login is stubbed (`stack/discord-stub.preload.ts`). |
+| bot (`src/index.ts`, `NODE_ENV=production`) | a bot process bound to `E2E_BOT_ADDR` (127.0.0.2), with `WEB_TRUSTED_PEERS` set to the proxy's peer address and `WEB_FEATURES=runs,history,home,alerts`. The Discord login is stubbed (`stack/discord-stub.preload.ts`). |
 | workspace (`src/workspace/index.ts`) | a workspace process running the real Pi session, connected to the bot over the real orchestration WebSocket |
 | OpenRouter | `stack/fake-llm.ts`, which returns scripted streaming chat completions |
 | Traefik + Tailscale whois shim | `stack/proxy.ts`. It strips client `Tailscale-*` headers, sets the owner login, and dials the bot from `E2E_PEER_ADDR` (127.0.0.3). |
