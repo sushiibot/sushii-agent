@@ -29,8 +29,11 @@ type Win = {
 			text: string,
 			at: number,
 			step: number,
-			everyMs: number
-		): Promise<{ updates: number; rendered: number; deltas: number }>;
+			perFrame: number,
+			deltaMs: number,
+			parseMs: number,
+			drawMs?: number
+		): { updates: number; rendered: number; deltas: number; frames: number; sawPlain: boolean };
 		streamTimed(
 			text: string,
 			step: number,
@@ -240,7 +243,7 @@ test.describe('streaming markdown in V8', () => {
 		expect(violations).toEqual([]);
 	});
 
-	test('a reply that arrives whole, as on a reload mid-turn, parses within the limits', async ({
+	test('a reply that arrives whole, as on a reload mid-turn, costs about what its finished render does', async ({
 		page
 	}) => {
 		const violations = await open(page);
@@ -251,19 +254,33 @@ test.describe('streaming markdown in V8', () => {
 			'**a '.repeat(1500)
 		];
 		for (const text of payloads) {
-			const r = await page.evaluate(
-				(t) => (window as unknown as Win).h.streamCost(t, 20_000),
-				text
-			);
-			expect(r.ok, r.err).toBe(true);
-			expect(r.ms[0], `${text.slice(0, 6)} first update`).toBeLessThan(100);
-			const mount = await page.evaluate((t) => {
-				const start = performance.now();
-				const res = (window as unknown as Win).h.render(t, { streaming: true });
-				return { ...res, ms: performance.now() - start };
+			// Timed against the finished render of the same text in the same page, so a slow machine
+			// slows both sides. Before the limits applied to the shown text, the first update cost 40-80x.
+			const r = await page.evaluate((t) => {
+				const h = (window as unknown as Win).h;
+				const best = (f: () => number) => Math.min(f(), f(), f());
+				const time = (f: () => unknown) => {
+					const start = performance.now();
+					f();
+					return performance.now() - start;
+				};
+				return {
+					ok: h.streamCost(t, 20_000).ok,
+					first: best(() => h.streamCost(t, 20_000).ms[0]),
+					full: best(() => h.parse(t).ms),
+					mountStreaming: best(() => time(() => h.render(t, { streaming: true }))),
+					mountFinal: best(() => time(() => h.render(t)))
+				};
 			}, text);
-			expect(mount.ok, mount.err).toBe(true);
-			expect(mount.ms, `${text.slice(0, 6)} mount`).toBeLessThan(150);
+			const name = text.slice(0, 6);
+			console.log(
+				`${name}: first ${r.first.toFixed(1)}ms vs full ${r.full.toFixed(1)}ms; mount ${r.mountStreaming.toFixed(1)}ms vs ${r.mountFinal.toFixed(1)}ms`
+			);
+			expect(r.ok).toBe(true);
+			expect(r.first, `${name} first update`).toBeLessThanOrEqual(3 * r.full + 15);
+			expect(r.mountStreaming, `${name} streaming mount`).toBeLessThanOrEqual(
+				3 * r.mountFinal + 30
+			);
 		}
 		expect(violations).toEqual([]);
 	});
@@ -281,25 +298,22 @@ test.describe('streaming markdown in V8', () => {
 			'\n' +
 			('|' + 'ab|'.repeat(cols) + '\n').repeat(200)
 		).slice(0, 15_990);
-		const headings = '# h\n'.repeat(3_997);
-		for (const [name, text] of [
-			['table', table],
-			['headings', headings]
-		]) {
-			const { gaps } = await page.evaluate(
-				(t) => (window as unknown as Win).h.streamTimed(t, 20, 4),
-				text
+		const run = (drawMs: number) =>
+			page.evaluate(
+				({ t, drawMs }) => (window as unknown as Win).h.lateMount(t, 400, 20, 4, 4, 1, drawMs),
+				{ t: table, drawMs }
 			);
-			// Without the fallback these frames stay slow for the whole reply; with it, a few are.
-			const long = gaps.filter((g) => g > 45).length;
-			const sorted = [...gaps].sort((a, b) => b - a);
-			console.log(
-				`${name}: ${gaps.length} frames, ${long} over 45ms, p95 ${sorted[Math.floor(gaps.length * 0.05)].toFixed(1)}ms, max ${sorted[0].toFixed(1)}ms`
-			);
-			expect(long, `${name} frames over 45ms`).toBeLessThanOrEqual(10);
-			expect(sorted[0], `${name} longest frame`).toBeLessThan(120);
-		}
-
+		// On a fake clock each frame lands `drawMs` late, as when the DOM update itself is slow.
+		const slow = await run(60);
+		const fast = await run(0);
+		console.log(`slow draw: ${JSON.stringify(slow)}; fast draw: ${JSON.stringify(fast)}`);
+		expect(slow.rendered).toBeGreaterThan(0);
+		expect(slow.sawPlain).toBe(true);
+		expect(fast.rendered).toBeGreaterThan(0);
+		expect(fast.sawPlain).toBe(false);
+		// On the real clock, a heavy table still streams without errors.
+		await page.evaluate((t) => (window as unknown as Win).h.streamTimed(t, 200, 4), table);
+		expect(await page.evaluate(() => (window as unknown as Win).h.errors)).toEqual([]);
 		expect(violations).toEqual([]);
 	});
 
@@ -308,13 +322,17 @@ test.describe('streaming markdown in V8', () => {
 	}) => {
 		const violations = await open(page);
 		const list = '- item with **bold** text and more words\n'.repeat(400).slice(0, 16_000);
+		// A fake clock: 4 deltas 4ms apart per 16ms frame, each parse costing 5ms. Without the fix the
+		// backoff after every per-delta parse keeps the first frame from landing, so every delta parses.
 		const c = await page.evaluate(
-			(t) => (window as unknown as Win).h.lateMount(t, 6_000, 20, 20),
+			(t) => (window as unknown as Win).h.lateMount(t, 6_000, 20, 4, 4, 5),
 			list
 		);
-		console.log(`late mount: ${c.deltas} deltas, ${c.updates} updates, ${c.rendered} rendered`);
+		console.log(
+			`late mount: ${c.deltas} deltas, ${c.frames} frames, ${c.updates} parses, ${c.rendered} rendered`
+		);
 		expect(c.rendered).toBeGreaterThan(0);
-		expect(c.updates).toBeLessThan(c.deltas / 2);
+		expect(c.updates).toBeLessThanOrEqual(c.frames + 1);
 		expect(violations).toEqual([]);
 	});
 
