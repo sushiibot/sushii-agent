@@ -70,6 +70,12 @@
 		return models.remote.watch();
 	});
 
+	// `!model`, another device or a workspace restart can change the model: reload whenever the agent
+	// comes (back) online, which also covers the first load.
+	$effect(() => {
+		if (s.workspace === 'online') untrack(() => models.refresh());
+	});
+
 	$effect(() => {
 		untrack(() => store.setViewing(true));
 		return () => store.setViewing(false);
@@ -95,6 +101,7 @@
 	});
 
 	function openSheet(next: ChatSheet) {
+		if (next === 'model') models.refresh();
 		sheets[next].openWith();
 	}
 

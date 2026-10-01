@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
-import { historyDayResult, runsGetResult, type HistoryDayResult, type HistorySearchResult, type RunSummary, type RunsGetResult } from "../../orchestration/contracts.ts";
+import { UNKNOWN_MODEL_CODE, historyDayResult, runsGetResult, type HistoryDayResult, type HistorySearchResult, type RunSummary, type RunsGetResult } from "../../orchestration/contracts.ts";
 import { WorkspaceBadResponseError } from "../../orchestration/workspace/link.ts";
 import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import { SqliteChatLog } from "./chatLog.ts";
@@ -67,6 +67,10 @@ class FakeLink implements ReadRouteLink {
     return this.go("models/get", {}, this.models);
   }
   modelsSet(alias: string) {
+    if (!this.models.models.some((m) => m.alias === alias)) {
+      this.calls.push({ method: "models/set", q: { alias } });
+      return Promise.reject(new RpcErrorReply(`unknown model "${alias}"`, UNKNOWN_MODEL_CODE));
+    }
     return this.go("models/set", { alias }, { ...this.models, current: alias });
   }
   async historySearch(q: object) {
@@ -109,7 +113,8 @@ describe("model routes", () => {
     expect((await h.post("/api/models", { alias: "" })).status).toBe(400);
     expect((await h.post("/api/models", { alias: "luna" }, "text/plain")).status).toBe(415);
     expect((await h.get("/api/models", undefined, "DELETE")).status).toBe(405);
-    expect(h.link.calls.map((c) => c.method)).toEqual(["models/get", "models/set"]);
+    expect(await h.post("/api/models", { alias: "gone" })).toEqual({ status: 409, body: { error: "unknown_model" } });
+    expect(h.link.calls.map((c) => c.method)).toEqual(["models/get", "models/set", "models/set"]);
     h.link.connected = false;
     expect(await h.get("/api/models")).toEqual({ status: 503, body: { offline: true } });
   });

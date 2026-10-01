@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
-import { checkScreen, fixtureApp } from './helpers';
+import { checkScreen, fixtureApp, push } from './helpers';
 
 const MODELS = [
 	{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' },
@@ -62,3 +62,48 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await checkScreen(page);
 	});
 }
+
+test('Stop sits beside Send while a turn runs, so steering never lands on Stop', async ({
+	page,
+	context
+}) => {
+	await withModels(context);
+	await page.goto('/chat');
+	await expect(page.getByRole('button', { name: /^Model:/ })).toBeVisible();
+	await push(page, 'snapshot', {
+		turnId: 't1',
+		view: { turnId: 't1', startedAt: Date.now(), lines: [], toolCount: 0, text: '' }
+	});
+	const stop = page.getByRole('button', { name: 'Stop' });
+	const send = page.getByRole('button', { name: 'Send message' });
+	await expect(stop).toBeVisible();
+	await expect(send).toBeDisabled();
+	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
+		'placeholder',
+		'Steer the agent…'
+	);
+	await page.getByRole('textbox', { name: 'Message' }).fill('also check X');
+	await expect(stop).toBeVisible();
+	await expect(send).toBeEnabled();
+	expect((await stop.boundingBox())!.x).toBeLessThan((await send.boundingBox())!.x);
+});
+
+test('a model the list no longer has says so and reloads the list', async ({ page, context }) => {
+	await fixtureApp(context, { override: '' });
+	let sets = 0;
+	await context.route('**/api/models', (route) => {
+		if (route.request().method() === 'POST') {
+			sets++;
+			return route.fulfill({ status: 409, json: { error: 'unknown_model' } });
+		}
+		return route.fulfill({
+			json: { current: 'sol', models: sets ? MODELS.slice(0, 1) : MODELS }
+		});
+	});
+	await page.goto('/chat');
+	await page.getByRole('button', { name: /^Model:/ }).click();
+	const sheet = page.getByRole('dialog', { name: 'Model' });
+	await sheet.getByRole('button', { name: /^or-luna/ }).click();
+	await expect(sheet.getByRole('alert')).toContainText('no longer on the list');
+	await expect(sheet.getByRole('button', { name: /^or-luna/ })).toHaveCount(0);
+});

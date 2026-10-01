@@ -104,6 +104,8 @@ export type ChatUsage = z.infer<typeof chatUsage>;
 export const ID_MAX = 256;
 
 export const MODELS_MAX = 20;
+/** models/set's JSON-RPC error code for an alias the workspace's list doesn't have. */
+export const UNKNOWN_MODEL_CODE = -32011;
 export const modelsGetParams = z.object({ principalId: z.string() });
 export const modelsSetParams = z.object({ principalId: z.string(), alias: z.string().min(1).max(ID_MAX) });
 export const modelsResult = z.object({

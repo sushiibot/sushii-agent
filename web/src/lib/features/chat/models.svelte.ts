@@ -24,6 +24,9 @@ export const httpModelsApi: ModelsApi = {
 		try {
 			return await request<ModelsResponse>('POST', '/models', { alias });
 		} catch (err) {
+			if (err instanceof HttpError && err.status === 409) {
+				throw new Error('That model is no longer on the list. Pick from the updated one.');
+			}
 			throw workspaceReadError(err, "This agent can't switch models from the app yet.");
 		}
 	}
@@ -43,6 +46,12 @@ export class ModelsStore {
 		this.remote = new Remote(() => api.get(), { refetchOnFocus: true });
 	}
 
+	/** Reloads the choice, which `!model` or another device may have changed; clears an old error. */
+	refresh() {
+		this.error = null;
+		void this.remote.refetch();
+	}
+
 	async pick(alias: string): Promise<boolean> {
 		if (this.picking) return false;
 		this.picking = alias;
@@ -55,6 +64,9 @@ export class ModelsStore {
 			return false;
 		} finally {
 			this.picking = null;
+			// Supersedes a load that started before the switch, and after a failure or timeout shows
+			// what the workspace actually has.
+			void this.remote.refetch();
 		}
 	}
 }

@@ -77,8 +77,8 @@
 				: undefined
 	);
 	const canSend = $derived(!blocked && (!!value.trim() || photos.length > 0));
-	// Stop takes Send's place while the box is empty; typing brings Send back, which steers the run.
-	const showStop = $derived(running && stop && !value.trim() && !photos.length);
+	// Stop sits beside Send rather than in its place, so a second tap on Send can't stop the run it steered.
+	const showStop = $derived(running && stop);
 	const hint = $derived(
 		running && stop
 			? stopping
@@ -160,7 +160,8 @@
 			{/each}
 		</ul>
 	{/if}
-	{#if hint}<p id="{uid}-steer" class="sr-only" aria-live="polite">{hint}</p>{/if}
+	<!-- Mounted from the start: a live region added together with its text is often not announced. -->
+	<p id="{uid}-steer" class="sr-only" aria-live="polite">{hint ?? ''}</p>
 	{#if quotaFull}
 		<p class="flex items-start gap-2 rounded-lg bg-failed-soft px-3 py-2 text-sm text-failed">
 			<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -280,20 +281,18 @@
 						disabled: stopping,
 						onclick: () => onstop?.(),
 						icon: stopIcon,
-						tone: 'strong'
+						tone: 'muted'
 					})}
-				{:else}
-					<button
-						type="submit"
-						aria-label="Send message"
-						aria-describedby={hint ? `${uid}-steer` : undefined}
-						class="group/round grid size-12 shrink-0 place-items-center rounded-full outline-none select-none disabled:pointer-events-none"
-						disabled={!canSend}
-					>
-						<span class={roundFace('primary')}><ArrowUp class="size-4.5" aria-hidden="true" /></span
-						>
-					</button>
 				{/if}
+				<button
+					type="submit"
+					aria-label="Send message"
+					aria-describedby={hint ? `${uid}-steer` : undefined}
+					class="group/round grid size-12 shrink-0 place-items-center rounded-full outline-none select-none disabled:pointer-events-none"
+					disabled={!canSend}
+				>
+					<span class={roundFace('primary')}><ArrowUp class="size-4.5" aria-hidden="true" /></span>
+				</button>
 			</div>
 		</div>
 	</div>

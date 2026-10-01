@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { ID_MAX, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
+import { ID_MAX, UNKNOWN_MODEL_CODE, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
 import { WorkspaceBadResponseError, type WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
@@ -257,7 +257,13 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     if (raw instanceof Response) return raw;
     const body = modelsBody.safeParse(raw);
     if (!body.success) return badRequest("invalid body");
-    return answer("models/set", async () => json(await fromWorkspace(() => link.modelsSet(body.data.alias))));
+    try {
+      return json(await fromWorkspace(() => link.modelsSet(body.data.alias)));
+    } catch (err) {
+      // The list changed since the app loaded it: say so, rather than blame the workspace's answer.
+      if (err instanceof RpcErrorReply && err.code === UNKNOWN_MODEL_CODE) return json({ error: "unknown_model" }, 409);
+      return answer("models/set", () => Promise.reject(err));
+    }
   }
 
   return {

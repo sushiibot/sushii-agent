@@ -1,6 +1,7 @@
 import {
   MODELS_MAX,
   RPC_METHODS,
+  UNKNOWN_MODEL_CODE,
   chatCommandParams,
   modelsGetParams,
   modelsSetParams,
@@ -8,6 +9,7 @@ import {
   type ChatCommandResult,
   type ModelsResult,
 } from "../orchestration/contracts.ts";
+import { RpcHandlerError } from "../orchestration/transport/client.ts";
 import type { ModelChoice } from "./modelChoice.ts";
 
 export interface CommandDeps {
@@ -65,7 +67,7 @@ export function commandHandlers(deps: CommandDeps): Record<string, (params: unkn
       const params = modelsSetParams.parse(p);
       checkPrincipal(params.principalId);
       const res = deps.choice.select(params.alias);
-      if (!res.ok) throw new Error(res.error);
+      if (!res.ok) throw new RpcHandlerError(res.error, UNKNOWN_MODEL_CODE);
       return models(deps.choice);
     },
     [RPC_METHODS.chatCommand]: async (p) => {

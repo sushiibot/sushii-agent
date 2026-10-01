@@ -445,6 +445,14 @@
 				<Button variant="ghost" class="flex-1" onclick={closeSheet}>Close</Button>
 			</div>
 		</div>
+	{:else if shownSheet === 'model' && !models}
+		<div class="flex flex-col gap-3 px-5 pt-2 pb-5">
+			<h2 class="text-lg font-semibold">Model</h2>
+			<p role="status" class="text-sm text-muted-foreground">
+				The agent can't say which models it has right now. Try again once it's back.
+			</p>
+			<Button size="lg" variant="ghost" onclick={closeSheet}>Close</Button>
+		</div>
 	{:else if shownSheet === 'model' && models}
 		<div class="flex flex-col gap-3 px-3 pt-1 pb-3">
 			<div class="flex flex-col gap-1 px-2 pt-1">
@@ -463,9 +471,10 @@
 						<button
 							type="button"
 							aria-pressed={current}
-							disabled={!!modelPicking}
-							onclick={() => (current ? closeSheet() : onpickmodel?.(m.alias))}
-							class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-muted disabled:pointer-events-none"
+							aria-disabled={!!modelPicking}
+							onclick={() =>
+								modelPicking ? undefined : current ? closeSheet() : onpickmodel?.(m.alias)}
+							class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-muted aria-disabled:cursor-progress"
 						>
 							<span class="flex min-w-0 flex-1 flex-col gap-0.5">
 								<span class="text-body font-medium">{m.alias}</span>

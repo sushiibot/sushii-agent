@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RPC_METHODS } from "../orchestration/contracts.ts";
+import { RPC_METHODS, UNKNOWN_MODEL_CODE } from "../orchestration/contracts.ts";
 import { commandHandlers, runCommand, type CommandDeps } from "./commands.ts";
 import { parseModelList, type WorkspaceConfig } from "./config.ts";
 import { ModelChoice } from "./modelChoice.ts";
@@ -72,7 +72,7 @@ describe("workspace commands", () => {
     expect(await h[RPC_METHODS.modelsGet]!({ principalId: "drk" })).toEqual({ current: "sol", models: list });
     expect(await h[RPC_METHODS.modelsSet]!({ principalId: "drk", alias: "or-luna" })).toEqual({ current: "or-luna", models: list });
     expect(config.provider).toBe("openrouter");
-    await expect(h[RPC_METHODS.modelsSet]!({ principalId: "drk", alias: "gpt-9" })).rejects.toThrow('unknown model "gpt-9"');
+    await expect(h[RPC_METHODS.modelsSet]!({ principalId: "drk", alias: "gpt-9" })).rejects.toMatchObject({ code: UNKNOWN_MODEL_CODE, message: expect.stringContaining('unknown model "gpt-9"') });
     await expect(h[RPC_METHODS.modelsGet]!({ principalId: "mallory" })).rejects.toThrow("principal mismatch");
   });
 });
