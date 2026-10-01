@@ -33,6 +33,8 @@ export interface WorkspaceHandler {
   onSocketClosed?(conn: ConnectionInfo): void;
   /** Tools advertised in the workspace's register result. */
   toolManifest?(conn: ConnectionInfo): ToolManifestEntry[];
+  /** Delivery kinds beyond the base set this bot accepts, advertised in the register result. */
+  features?(conn: ConnectionInfo): string[];
   /** Returns the result; throwing answers with a JSON-RPC error. Unknown methods throw MethodNotFoundError. */
   onRequest?(conn: ConnectionInfo, method: string, params: unknown): Promise<unknown>;
   onNotification?(conn: ConnectionInfo, method: string, params: unknown): void;
@@ -295,11 +297,13 @@ export class OrchestrationServer {
   }
 
   private workspaceRegisterResult(conn: ConnectionInfo): WorkspaceRegisterResult {
+    const features = this.workspaceHandler?.features?.(conn) ?? [];
+    const withFeatures = features.length ? { features } : {};
     try {
-      return { ok: true, tools: this.workspaceHandler?.toolManifest?.(conn) ?? [] };
+      return { ok: true, tools: this.workspaceHandler?.toolManifest?.(conn) ?? [], ...withFeatures };
     } catch (err) {
       logger.warn({ err, runnerId: conn.runnerId }, "workspace tool manifest failed; registering with no tools");
-      return { ok: true, tools: [] };
+      return { ok: true, tools: [], ...withFeatures };
     }
   }
 

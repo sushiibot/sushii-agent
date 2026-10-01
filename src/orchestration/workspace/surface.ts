@@ -1,4 +1,4 @@
-import type { ChatOrigin, ChatUsage, DeliverFile, ToolCallResult } from "../contracts.ts";
+import type { ChatOrigin, ChatUsage, DeliverFile, JobAlertWire, ToolCallResult } from "../contracts.ts";
 
 /** What a chat surface can render. The core consults these instead of assuming Discord's feature set. */
 export interface SurfaceCapabilities {
@@ -182,6 +182,8 @@ export interface SurfaceAdapter<M extends InboundMessage = InboundMessage, H ext
   askPrompt(origin: ChatOrigin | null, ask: AskView, attempt: SendAttempt): Promise<void>;
   /** A sign-in link. With `attempt.plain`, the URL and instructions as plain text. */
   authPrompt(origin: ChatOrigin | null, view: AuthPromptView, attempt: SendAttempt): Promise<void>;
+  /** A structured scheduled-job alert. Without it the link sends `text` as a proactive reply. */
+  alertPrompt?(origin: ChatOrigin | null, alert: JobAlertWire, text: string, attempt: SendAttempt): Promise<void>;
   /** Minimum gap between progress updates of a turn `ageMs` old; 0 updates on every change. */
   progressEditGap(ageMs: number): number;
   progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<H>;

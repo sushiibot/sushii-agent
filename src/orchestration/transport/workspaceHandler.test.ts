@@ -210,6 +210,22 @@ describe("workspace register result", () => {
     }
   });
 
+  test("the register result lists the handler's features, even when its manifest fails", async () => {
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
+    server.setWorkspaceHandler({
+      features: () => ["alert"],
+      toolManifest: () => {
+        throw new Error("boom");
+      },
+    });
+    server.listen();
+    try {
+      expect(await registerRaw(server.url, "workspace", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true, tools: [], features: ["alert"] } });
+    } finally {
+      server.stop();
+    }
+  });
+
   test("a failing manifest still registers, with no tools", async () => {
     const server = new OrchestrationServer({ secretGrants: GRANTS });
     server.setWorkspaceHandler({
