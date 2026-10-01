@@ -264,6 +264,8 @@ test('the auto-mode ask keeps its lines, clamps the command and expands it', asy
 	await expect(toggle).toBeVisible();
 	expect((await command.boundingBox())!.height).toBeCloseTo(clamped, 0);
 
+	await expect(card.getByText('Yes lets this one command run.')).toBeVisible();
+	await expect(card.getByText("doesn't give the agent permission")).toHaveCount(0);
 	await expectNoSideScroll(page, 'with the auto-mode ask');
 	expect(await axe(page)).toEqual([]);
 	expect(await smallTargets(page)).toEqual([]);
@@ -312,4 +314,20 @@ test('a short command has no toggle', async ({ page, context }) => {
 	const card = page.locator('[data-surface="ask"]');
 	await expect(card.getByRole('group', { name: 'bash command' })).toHaveText('rm -rf build');
 	await expect(card.getByRole('button', { name: 'Show full command' })).toHaveCount(0);
+});
+
+test('an ordinary ask keeps the not-a-permission note', async ({ page, context }) => {
+	await server(context);
+	await open(page);
+	await push(
+		page,
+		'ask',
+		{ key: 'o1', askId: 'k1', question: 'Which day?\nPick one', choices: ['Fri'] },
+		1
+	);
+	const card = page.locator('[data-surface="ask"]');
+	await expect(
+		card.getByText("Answering a question doesn't give the agent permission to act.")
+	).toBeVisible();
+	await expect(card.getByText('Yes lets this one command run.')).toHaveCount(0);
 });

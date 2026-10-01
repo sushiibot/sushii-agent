@@ -134,7 +134,11 @@
 			{/if}
 			<p class="flex items-start gap-1.5 text-xs text-muted-foreground">
 				<Info class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-				Answering a question doesn't give the agent permission to act.
+				{#if parts.action}
+					Yes lets this one command run.
+				{:else}
+					Answering a question doesn't give the agent permission to act.
+				{/if}
 			</p>
 		{:else}
 			<p class="text-sm">
