@@ -318,10 +318,10 @@ describe("web adapter push rules", () => {
     expect(h.pushes.map((p) => [p.tag, p.url])).toEqual([
       [`approval:${"n".repeat(16)}`, `/?approve=${"n".repeat(16)}`],
       ["ask:A", "/?ask=A"],
-      ["auth", "/"],
-      ["chat", "/"],
-      ["chat", "/"],
-      ["chat", "/"],
+      ["auth", "/chat"],
+      ["chat", "/chat"],
+      ["chat", "/chat"],
+      ["chat", "/chat"],
     ]);
     expect(h.pushes[0]!.requireInteraction).toBe(true);
     expect(h.pushes[1]!.body).toBe("Which one?");

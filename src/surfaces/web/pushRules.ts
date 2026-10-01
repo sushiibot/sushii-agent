@@ -23,13 +23,13 @@ export function pushFor(event: PushEvent): PushPayload {
     case "ask":
       return event.askId
         ? { title: "The agent asks", body: plainPushBody(event.question), url: `/?ask=${encodeURIComponent(event.askId)}`, tag: `ask:${event.askId}` }
-        : { title: "The agent asks", body: plainPushBody(event.question), url: "/", tag: "chat" };
+        : { title: "The agent asks", body: plainPushBody(event.question), url: "/chat", tag: "chat" };
     case "auth":
-      return { title: TITLE, body: "Sign-in link ready", url: "/", tag: "auth" };
+      return { title: TITLE, body: "Sign-in link ready", url: "/chat", tag: "auth" };
     case "reply":
-      return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/", tag: "chat", renotify: false };
+      return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/chat", tag: "chat", renotify: false };
     case "proactive":
-      return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/", tag: "chat" };
+      return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/chat", tag: "chat" };
     case "alert": {
       const { job, error } = event.alert;
       const body = error ? plainPushBody(`${job}: ${error}`) : job;
@@ -40,7 +40,7 @@ export function pushFor(event: PushEvent): PushPayload {
     case "alertRecovered":
       return { title: "Scheduled job working again", body: event.job, url: "/home", tag: `job:${event.job}`, silent: true };
     case "interrupted":
-      return { title: TITLE, body: "Turn interrupted", url: "/", tag: "chat" };
+      return { title: TITLE, body: "Turn interrupted", url: "/chat", tag: "chat" };
     case "quota":
       return { title: "Photo storage almost full", body: `${Math.round((event.usedBytes / event.capBytes) * 100)}% of the photo quota is used.`, url: "/", tag: "quota" };
   }

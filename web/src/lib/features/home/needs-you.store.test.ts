@@ -1,5 +1,5 @@
 /// <reference types="bun" />
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import { createHub } from '$lib/core/realtime/hub.svelte';
 import { fakeTransport } from '$lib/core/realtime/fake-transport';
 import type { JobAlert } from '$lib/core/realtime/events';
@@ -10,7 +10,13 @@ import { NeedsYouStore } from './needs-you.svelte';
 import type { HomeData } from './types';
 
 const g = globalThis as unknown as { document?: unknown };
-g.document ??= { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+// Removed after this file: a leftover document makes later files' UI libraries assume window exists.
+const stubbedDocument = g.document === undefined;
+if (stubbedDocument)
+	g.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+afterAll(() => {
+	if (stubbedDocument) delete g.document;
+});
 
 const NOW = Date.now();
 const job: JobAlert = {

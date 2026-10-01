@@ -1,5 +1,5 @@
 /// <reference types="bun" />
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import { createHub } from '$lib/core/realtime/hub.svelte';
 import { fakeTransport } from '$lib/core/realtime/fake-transport';
 import type { RunsApi } from './api';
@@ -7,7 +7,13 @@ import { RunsStore } from './runs.svelte';
 import type { RunDetail, RunSummary } from './types';
 
 const g = globalThis as unknown as { document?: unknown };
-g.document ??= { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+// Removed after this file: a leftover document makes later files' UI libraries assume window exists.
+const stubbedDocument = g.document === undefined;
+if (stubbedDocument)
+	g.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+afterAll(() => {
+	if (stubbedDocument) delete g.document;
+});
 
 const id = (n: number) => `01K6B${String(n).padStart(21, '0')}`;
 const run = (n: number, status: RunSummary['status'] = 'done'): RunSummary => ({
