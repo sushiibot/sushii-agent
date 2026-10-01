@@ -143,13 +143,13 @@ function newStore(): WorkspaceLinkStore {
   return new WorkspaceLinkStore(db);
 }
 
-function setup(opts: { streaming?: boolean; store?: WorkspaceLinkStore } = {}) {
+function setup(opts: { streaming?: boolean; store?: WorkspaceLinkStore; now?: () => number } = {}) {
   const test = new FakeAdapter("test", { streaming: opts.streaming ?? false });
   const discord = new FakeAdapter("discord");
   const surfaces = new SurfaceRegistry("test").register(test).register(discord);
   const store = opts.store ?? newStore();
   const rpc = new FakeRpc();
-  const link = new WorkspaceLink({ principalId: P, store, surfaces, owner: () => ({ id: "owner-1", name: "drk" }), timers: immediate });
+  const link = new WorkspaceLink({ principalId: P, store, surfaces, owner: () => ({ id: "owner-1", name: "drk" }), timers: immediate, ...(opts.now ? { now: opts.now } : {}) });
   link.attach(rpc);
   const event = (turnId: string, ev: ChatEventPayload, origin?: ChatOrigin) =>
     rpc.handler!.onNotification!(CONN, RPC_METHODS.chatEvent, { ...(origin ? { origin } : {}), principalId: P, turnId, agentId: "main", ev });
@@ -242,12 +242,14 @@ describe("surface routing", () => {
   });
 
   test("a stopped tool-less turn posts its final state, with its turnId, on the origin surface", async () => {
-    const { test, discord, event } = setup();
+    let now = 1_000;
+    const { test, discord, event } = setup({ now: () => now });
     event("t2", { type: "turn_start" }, TEST);
+    now += 250;
     event("t2", { type: "turn_end", aborted: true }, TEST);
     await tick();
     expect(test.of("progressFinalize")).toEqual([
-      { method: "progressFinalize", origin: TEST, arg: { id: null, final: { outcome: "stopped", summary: { durationMs: 0, toolCount: 0 }, turnId: "t2" } } },
+      { method: "progressFinalize", origin: TEST, arg: { id: null, final: { outcome: "stopped", summary: { durationMs: 250, toolCount: 0 }, turnId: "t2" } } },
     ]);
     expect(discord.calls).toEqual([]);
   });
