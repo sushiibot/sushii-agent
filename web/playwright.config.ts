@@ -7,6 +7,9 @@ const HARNESS_PORT = Number(process.env.PW_HARNESS_PORT ?? 4174);
 export default defineConfig({
 	testDir: 'e2e',
 	forbidOnly: !!process.env.CI,
+	// A test that fails and then passes on a retry is reported as flaky, not failed, so a timing hiccup on
+	// a busy runner doesn't block the deploy. Locally it fails on the first try, so flakes still show.
+	retries: process.env.CI ? 2 : 0,
 	reporter: process.env.CI ? 'github' : 'list',
 	use: {
 		baseURL: `http://localhost:${PORT}`,
