@@ -105,7 +105,7 @@
 		const open = () => {
 			if (done) return;
 			done = true;
-			replaceState(resolve('/'), {});
+			replaceState(resolve('/inbox'), {});
 			sheet.openWith(target);
 		};
 		const timer = setTimeout(open, DEEP_LINK_WAIT_MS);
@@ -165,7 +165,7 @@
 	}
 </script>
 
-<svelte:head><title>Home · Agent</title></svelte:head>
+<svelte:head><title>Inbox · Agent</title></svelte:head>
 
 <HomeScreen
 	groups={home.groups}

@@ -20,10 +20,10 @@ export type PushEvent =
 export function pushFor(event: PushEvent): PushPayload {
   switch (event.kind) {
     case "approval":
-      return { title: "Approval needed", body: `sushii-agent needs your approval to run ${event.tool}`, url: `/?approve=${encodeURIComponent(event.nonce)}`, tag: `approval:${event.nonce}`, requireInteraction: true };
+      return { title: "Approval needed", body: `sushii-agent needs your approval to run ${event.tool}`, url: `/inbox?approve=${encodeURIComponent(event.nonce)}`, tag: `approval:${event.nonce}`, requireInteraction: true };
     case "ask":
       return event.askId
-        ? { title: "The agent asks", body: plainPushBody(event.question), url: `/?ask=${encodeURIComponent(event.askId)}`, tag: `ask:${event.askId}` }
+        ? { title: "The agent asks", body: plainPushBody(event.question), url: `/inbox?ask=${encodeURIComponent(event.askId)}`, tag: `ask:${event.askId}` }
         : { title: "The agent asks", body: plainPushBody(event.question), url: "/chat", tag: "chat" };
     case "auth":
       return { title: TITLE, body: "Sign-in link ready", url: "/chat", tag: "auth" };
@@ -32,20 +32,20 @@ export function pushFor(event: PushEvent): PushPayload {
     case "proactive":
       return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/chat", tag: "chat" };
     case "inbox":
-      return { title: TITLE, body: plainPushBody(event.text), url: `/?item=${encodeURIComponent(`msg:${event.key}`)}`, tag: `msg:${event.key}` };
+      return { title: TITLE, body: plainPushBody(event.text), url: `/inbox?item=${encodeURIComponent(`msg:${event.key}`)}`, tag: `msg:${event.key}` };
     case "alert": {
       const { job, error } = event.alert;
       const body = error ? plainPushBody(`${job}: ${error}`) : job;
       // The job name already matched JOB_NAME_RE, so it needs no escaping in the URL.
       // renotify: a new streak's push replaces the last one's notification, and must still ring.
-      return { title: event.alert.kind === "stuck" ? "Scheduled job stuck" : "Scheduled job failed", body, url: `/home?item=job:${job}`, tag: `job:${job}`, renotify: true };
+      return { title: event.alert.kind === "stuck" ? "Scheduled job stuck" : "Scheduled job failed", body, url: `/inbox?item=job:${job}`, tag: `job:${job}`, renotify: true };
     }
     case "alertRecovered":
-      return { title: "Scheduled job working again", body: event.job, url: "/home", tag: `job:${event.job}`, silent: true };
+      return { title: "Scheduled job working again", body: event.job, url: "/inbox", tag: `job:${event.job}`, silent: true };
     case "interrupted":
       return { title: TITLE, body: "Turn interrupted", url: "/chat", tag: "chat" };
     case "quota":
-      return { title: "Photo storage almost full", body: `${Math.round((event.usedBytes / event.capBytes) * 100)}% of the photo quota is used.`, url: "/", tag: "quota" };
+      return { title: "Photo storage almost full", body: `${Math.round((event.usedBytes / event.capBytes) * 100)}% of the photo quota is used.`, url: "/chat", tag: "quota" };
   }
 }
 

@@ -1,14 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { backTo } from '$lib/core/nav/back';
 	import { keepScroll } from '$lib/core/nav/scroll';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { HistoryScreen, historyStore } from '$lib/features/history';
 
 	const history = historyStore();
 	const days = history.days;
-	const goBack = backTo(resolve('/more'));
 	let now = $state(Date.now());
 
 	onMount(() => {
@@ -29,7 +27,6 @@
 	remote={days}
 	days={[...(days.data?.days ?? []), ...history.older]}
 	{now}
-	back={{ href: resolve('/more'), label: 'Back', onclick: goBack }}
 	hasOlder={!!history.before}
 	olderLoading={history.olderLoading}
 	olderError={history.olderError}

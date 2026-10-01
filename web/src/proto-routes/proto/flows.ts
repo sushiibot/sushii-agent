@@ -1,5 +1,5 @@
 import type { Component } from 'svelte';
-import type { FeatureCheck } from '$lib/core/nav/tabs';
+import type { FeatureCheck } from '$lib/core/nav/nav';
 import { ChatScreen } from '$lib/features/chat';
 import { SettingsScreen } from '$lib/features/settings';
 import HomeScreen from './components/home-screen.svelte';

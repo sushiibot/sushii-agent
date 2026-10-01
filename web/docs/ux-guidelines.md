@@ -63,8 +63,7 @@ expect(small).toEqual([]);
 - **The keyboard never covers the composer or the focused field.** Why: the most common "this app is broken" moment on phones; also WCAG 2.4.11 Focus Not Obscured. Check: `phone`: open a chat, tap the composer, type three lines; the composer and its send button stay fully visible.
 - **Keep the `--kb` visualViewport fallback for iOS, where `interactive-widget` has not shipped.** Why: iOS overlays the keyboard; the layout does not resize. Check: `review` (the shell and sheets read `--kb`, defined in `app.css`).
 - **The app root uses `100dvh` or `inset: 0`, never `100vh`.** Why: `100vh` ignores the dynamic browser UI and the keyboard. Check: `rg -n -g '!src/proto-routes/**' '100vh|h-screen' src` returns nothing (`h-screen`, `min-h-screen` and `max-h-screen` compile to `100vh`).
-- **Anything pinned to the top or bottom pads with `env(safe-area-inset-*)`: the header adds `--safe-top`, the tab bar and composer add `--safe-bottom`.** Why: edge-to-edge content otherwise sits under the status bar and the gesture bar. Check: `phone` with gesture navigation on; nothing tappable overlaps the gesture pill.
-- **The bottom tab bar hides while the keyboard is open.** Why: it eats a quarter of the space left above the keyboard. Check: `phone`.
+- **Anything pinned to the top or bottom pads with `env(safe-area-inset-*)`: the header and the drawer add `--safe-top`, the composer and the drawer add `--safe-bottom`.** Why: edge-to-edge content otherwise sits under the status bar and the gesture bar. Check: `phone` with gesture navigation on; nothing tappable overlaps the gesture pill.
 - **Text inputs use a font size of at least 16px.** Why: iOS zooms the page on focus below 16px; the same size reads well on Android. Check: `pw` computed style on `textarea, input`.
 - **`theme-color` matches `--background` in both themes, via two `<meta name="theme-color" media="(prefers-color-scheme: ...)">` tags or a script that follows the theme toggle.** Why: a white status bar over a dark app looks broken. Check: `phone` in light and dark.
 - **`overscroll-behavior: none` on the document, `contain` on scroll regions.** Why: stops pull-to-refresh from reloading the app mid-chat and stops scroll chaining into the page. Check: `phone`: pull down at the top of a chat; the app does not reload.
@@ -75,10 +74,10 @@ In a standalone PWA there is no browser back button: the Android back gesture is
 
 - **Back closes the topmost overlay first (sheet, dialog, menu), and only then leaves the screen.** Why: Android sends a close request that native `<dialog>` and `popover` handle for free; a `div role="dialog"` ignores it and back navigates away instead ([MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher)). This applies to the shadcn-svelte Dialog and Sheet too: bits-ui renders them as `div`s, so each needs the history-entry wrapper or a verified close on the phone. Build overlays on `<dialog>`/`popover`, or have them push a history entry and close on `popstate`. Check: `phone`: open every sheet and press back; the sheet closes and the screen stays.
 - **Every pushed screen (chat, run detail, memory diff) is a real URL navigated with `goto`, never `replaceState` or in-component state.** Why: with one history entry, back exits the app. Check: `phone`: Home → chat → run detail, then back twice lands on Home.
-- **Back from a top-level tab goes to Home; back from Home exits.** Why: the Android convention for bottom-nav apps. Check: `phone`.
+- **Back closes the drawer first; back from a drawer destination returns to the chat; back from the chat exits.** Why: the Android convention for drawer apps, and the chat is where the app opens. Picking a destination from the drawer replaces the entry unless it is left from the chat. Check: `pw` (`e2e/nav.test.ts`), `phone`.
 - **A dirty composer or edit survives back and return.** Why: a mis-swipe must not cost a typed message. Keep the draft per chat in memory, and in `sessionStorage` for reloads. Check: `phone`: type, swipe back, reopen the chat; the text is there.
 - **No `target="_blank"` for in-app routes.** Why: it opens a Custom Tab and breaks back. Check: `review`.
-- **Tabs for top-level destinations only (Home, Chats, Briefing, More); detail screens show a back chevron and hide the tab bar.** Why: two navigation systems on one screen compete for the same thumb. Check: `shot`.
+- **The app opens on the chat. Top-level destinations (Chat, Inbox, Chats, Runs, History, ..., Settings) live in a drawer opened from the header's menu button on phones and in the sidebar on desktop; detail screens show a back chevron instead.** Why: the chat keeps the full height (no tab bar under the composer), and one navigation system per screen. The drawer is a native modal `<dialog>`, so Android back and Escape close it. The menu button carries a dot when the inbox has something waiting or unread. Check: `shot`, `pw` (`e2e/nav.test.ts`).
 
 ## Chat and agent
 
@@ -221,14 +220,14 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 
 ### Type scale
 
-| Role         | Size / line height        | Use                             |
-| ------------ | ------------------------- | ------------------------------- |
-| Screen title | 16px / semibold           | Header `h1`                     |
-| Message body | 15px / 1.5                | Chat text, approval body        |
-| UI text      | 14px                      | List rows, buttons, form labels |
-| Meta         | 12px                      | Timestamps, captions, pills     |
-| Tab label    | 11px / semibold on active | Bottom tab bar only             |
-| Code         | 12–13px mono              | Code blocks, ids, tool names    |
+| Role         | Size / line height | Use                             |
+| ------------ | ------------------ | ------------------------------- |
+| Screen title | 16px / semibold    | Header `h1`                     |
+| Message body | 15px / 1.5         | Chat text, approval body        |
+| UI text      | 14px               | List rows, buttons, form labels |
+| Meta         | 12px               | Timestamps, captions, pills     |
+| Code         | 12–13px mono       | Code blocks, ids, tool names    |
+| Small label  | 11px / semibold    | Photo states, file chips        |
 
 - **Nothing below 11px; body text never below 14px; inputs at least 16px.** Why: legibility at arm's length. Check: `review`.
 - **Text sizes come from the type-scale tokens in `src/app.css` (`text-body`, `text-ui`, `text-meta`, `text-tab`, `text-code`) or Tailwind's rem sizes.** `scripts/check-tokens.ts` rejects `text-[Npx]`.
@@ -274,7 +273,7 @@ Target: WCAG 2.2 AA. The criteria that matter for this app, and how each is chec
 | 2.1.1 Keyboard (A)                      | Approval tabs, tool rows, sheets on desktop                | `review`, manual keyboard pass |
 | 2.2.1 Timing Adjustable (A)             | Approval cards and toasts that need action never expire    | `review`                       |
 | 2.4.3 Focus Order / 2.4.7 Focus Visible | Sheets trap and return focus; `:focus-visible` ring stays  | manual keyboard pass           |
-| 2.4.11 Focus Not Obscured (AA)          | Sticky composer and tab bar vs focused items               | `phone`, `scroll-padding`      |
+| 2.4.11 Focus Not Obscured (AA)          | Sticky composer vs focused items                           | `phone`, `scroll-padding`      |
 | 2.5.7 Dragging Movements (AA)           | Swipe actions need a button alternative                    | `review`                       |
 | 2.5.8 Target Size (AA)                  | 24px floor; this app's own rule is 48px                    | `axe` + `pw` 48px assertion    |
 | 4.1.2 Name, Role, Value (A)             | Custom tabs, `div` dialogs, switches                       | `axe`, `check`                 |

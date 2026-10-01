@@ -32,7 +32,7 @@
 		remote: RemoteLike;
 		runs: RunSummary[];
 		now: number;
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		hasOlder?: boolean;
 		olderLoading?: boolean;
 		olderError?: string | null;

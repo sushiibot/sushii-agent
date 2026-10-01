@@ -19,7 +19,7 @@
 		remote: RemoteLike;
 		jobs: Job[];
 		now: number;
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		jobHref?: (id: string) => string;
 		onretry?: () => void;

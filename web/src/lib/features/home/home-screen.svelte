@@ -177,7 +177,7 @@
 {/snippet}
 
 <ListScreen
-	title="Home"
+	title="Inbox"
 	{banner}
 	toast={undo || updateReady ? toast : undefined}
 	state={{

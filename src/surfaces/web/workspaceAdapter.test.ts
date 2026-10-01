@@ -121,7 +121,7 @@ describe("web adapter deliveries", () => {
     expect(h.home.messages()).toMatchObject([{ key: "o1", job: "heartbeat", runId: job.runId, text: "Passport due Friday.", read: false }]);
     expect(h.events.filter((e) => e.type === "inbox").map((e) => e.data)).toEqual([{ key: "o1" }]);
     await tick();
-    expect(h.pushes).toEqual([{ title: "sushii-agent", body: "Passport due Friday.", url: "/?item=msg%3Ao1", tag: "msg:o1" }]);
+    expect(h.pushes).toEqual([{ title: "sushii-agent", body: "Passport due Friday.", url: "/inbox?item=msg%3Ao1", tag: "msg:o1" }]);
   });
 
   test("the last plain try of a job's message goes to the chat; a filed one isn't repeated there", async () => {
@@ -350,8 +350,8 @@ describe("web adapter push rules", () => {
     await h.adapter.progressFinalize(null, { id: "t3" }, { outcome: "interrupted", summary: null });
     await tick();
     expect(h.pushes.map((p) => [p.tag, p.url])).toEqual([
-      [`approval:${"n".repeat(16)}`, `/?approve=${"n".repeat(16)}`],
-      ["ask:A", "/?ask=A"],
+      [`approval:${"n".repeat(16)}`, `/inbox?approve=${"n".repeat(16)}`],
+      ["ask:A", "/inbox?ask=A"],
       ["auth", "/chat"],
       ["chat", "/chat"],
       ["chat", "/chat"],

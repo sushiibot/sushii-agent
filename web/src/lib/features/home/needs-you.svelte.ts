@@ -43,6 +43,7 @@ export class NeedsYouStore {
 
 	groups: HomeGroups = $derived.by(() => homeItems(this.live, this.data.data, this.local));
 	waitingCount = $derived(this.groups.waiting.length);
+	unreadCount = $derived(this.groups.review.filter((i) => 'read' in i && !i.read).length);
 
 	#hub: Hub;
 	#api: HomeApi;

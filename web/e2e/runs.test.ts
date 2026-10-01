@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { fakeBackend, type Scenario } from './fake-backend';
-import { axe, horizontalOverflow, push, smallTargets, stubStream } from './helpers';
+import { axe, horizontalOverflow, push, smallTargets, stubStream, openDrawer } from './helpers';
 
 const RUN = {
 	triage: '01K6B4D2F4H6K8M0P2R4T6V8X0',
@@ -152,14 +152,17 @@ test("a run event changes the run's status on screen without a reload", async ({
 	await expect(triage).toContainText('Done');
 });
 
-test('with Runs turned off on the bot, its screens send you Home', async ({ page, context }) => {
+test('with Runs turned off on the bot, its screens send you to the chat', async ({
+	page,
+	context
+}) => {
 	await server(context, undefined, { features: ['history', 'home', 'alerts'] });
 	await page.goto(`/runs/${RUN.triage}`);
-	await expect(page).toHaveURL(/\/$/);
-	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
-	await page.goto('/more');
-	await expect(page.getByRole('link', { name: /History/ })).toBeVisible();
-	await expect(page.getByRole('link', { name: /Runs/ })).toBeHidden();
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+	const menu = await openDrawer(page);
+	await expect(menu.getByRole('link', { name: /History/ })).toBeVisible();
+	await expect(menu.getByRole('link', { name: /Runs/ })).toBeHidden();
 });
 
 test('offline, the list keeps what it had and shows the banner', async ({ page, context }) => {
@@ -257,12 +260,12 @@ test('Open run from a Home peek replaces the sheet, and the run stays in the inb
 	context
 }) => {
 	await server(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
 	await page.getByRole('dialog').getByRole('button', { name: 'Open run' }).click();
 	await expect(page).toHaveURL(new RegExp(`/runs/${RUN.expenses}$`));
 	await page.goBack();
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/inbox$/);
 	await expect(page.getByRole('dialog')).toBeHidden();
 	await expect(
 		page.getByRole('button', { name: /Read: Draft the quarterly expenses summary/ })

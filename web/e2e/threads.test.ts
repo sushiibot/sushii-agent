@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { checkScreen, fixtureApp } from './helpers';
+import { checkScreen, fixtureApp, openDrawer } from './helpers';
 
 const reply = {
 	type: 'assistant',
@@ -14,8 +14,9 @@ test('Chats pins Main and groups threads by what they need', async ({ page, cont
 	await fixtureApp(context);
 	await page.goto('/chats');
 	await expect(page.getByRole('heading', { name: 'Chats', level: 1 })).toBeVisible();
-	const tabs = page.locator('nav[aria-label="Main"]').last();
-	await expect(tabs.getByRole('link', { name: 'Chats' })).toHaveAttribute('aria-current', 'page');
+	const menu = await openDrawer(page);
+	await expect(menu.getByRole('link', { name: 'Chats' })).toHaveAttribute('aria-current', 'page');
+	await page.keyboard.press('Escape');
 	await expect(page.getByRole('region', { name: 'Main' })).toContainText(
 		'Threads report back here'
 	);
@@ -57,7 +58,7 @@ test('closing a thread archives it and leaves a report in Main', async ({ page, 
 	await sheet.getByRole('button', { name: 'Close thread' }).click();
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByRole('link', { name: /Thread closed · October trip/ })).toBeVisible();
-	await page.getByRole('link', { name: 'Back to Chats' }).click();
+	await (await openDrawer(page)).getByRole('link', { name: 'Chats' }).click();
 	await expect(page).toHaveURL(/\/chats$/);
 	await expect(page.getByRole('link', { name: /October trip/ })).toContainText('Reported to Main');
 });
@@ -95,15 +96,12 @@ test('a list that fails to load says so and retries', async ({ page, context }) 
 	await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
 });
 
-test('with threads off, Chat is one conversation that goes back Home', async ({
-	page,
-	context
-}) => {
+test('with threads off, Chat is one conversation with no Chats list', async ({ page, context }) => {
 	await fixtureApp(context, { override: '' });
 	await page.goto('/chat');
-	await expect(page.getByRole('link', { name: 'Back to Home' })).toBeAttached();
+	await expect((await openDrawer(page)).getByRole('link', { name: 'Chats' })).toHaveCount(0);
 	await page.goto('/chats');
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/chat$/);
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {

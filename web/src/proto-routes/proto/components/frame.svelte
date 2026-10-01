@@ -8,7 +8,7 @@
 	import SafariBar from './safari-bar.svelte';
 	import PushAlert from './push-alert.svelte';
 	import Notification from './notification.svelte';
-	import { allOn, navFor, tabsFor } from '$lib/core/nav/tabs';
+	import { allOn, navFor } from '$lib/core/nav/nav';
 	import Shell from '$lib/ui/shell/shell.svelte';
 
 	let { frame, width }: { frame: Frame; width: number } = $props();
@@ -76,9 +76,7 @@
 			{#if frame.shell}
 				<Shell
 					nav={navFor(frame.features ?? allOn)}
-					tabs={tabsFor(frame.features ?? allOn)}
 					active={frame.tab ?? 'chat'}
-					tabBar={frame.tabBar ?? false}
 					badges={frame.badges}><frame.screen {...frame.props} /></Shell
 				>
 			{:else}

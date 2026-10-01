@@ -1,10 +1,9 @@
 import Activity from '@lucide/svelte/icons/activity';
 import BookMarked from '@lucide/svelte/icons/book-marked';
 import CalendarClock from '@lucide/svelte/icons/calendar-clock';
-import Ellipsis from '@lucide/svelte/icons/ellipsis';
 import Globe from '@lucide/svelte/icons/globe';
 import History from '@lucide/svelte/icons/history';
-import House from '@lucide/svelte/icons/house';
+import Inbox from '@lucide/svelte/icons/inbox';
 import MessageSquare from '@lucide/svelte/icons/message-square';
 import MessagesSquare from '@lucide/svelte/icons/messages-square';
 import Plug from '@lucide/svelte/icons/plug';
@@ -23,10 +22,9 @@ export interface NavEntry extends NavItem {
 export type FeatureCheck = (feature: AppFeature | undefined) => boolean;
 export const allOn: FeatureCheck = () => true;
 
-const home: NavEntry = { id: 'home', href: '/', label: 'Home', icon: House };
 const chat: NavEntry = { id: 'chat', href: '/chat', label: 'Chat', icon: MessageSquare };
-const chats: NavEntry = { id: 'chat', href: '/chats', label: 'Chats', icon: MessagesSquare };
-const moreTab: NavEntry = { id: 'more', href: '/more', label: 'More', icon: Ellipsis };
+const inbox: NavEntry = { id: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox };
+const chats: NavEntry = { id: 'chats', href: '/chats', label: 'Chats', icon: MessagesSquare };
 
 /** The More screen, top to bottom. */
 const moreEntries: NavEntry[] = [
@@ -103,40 +101,22 @@ const moreEntries: NavEntry[] = [
 	}
 ];
 
-/** The phone tab bar, left to right. Chat becomes the Chats list once threads exist. */
-export function tabsFor(on: FeatureCheck): NavEntry[] {
-	return [home, on('threads') ? chats : chat, moreTab];
-}
-
 /** The More screen's entries that are on. */
 export function moreFor(on: FeatureCheck): NavEntry[] {
 	return moreEntries.filter((e) => on(e.feature));
 }
 
-/** The desktop sidebar, top to bottom: the tabs, with More's entries under it. */
+/** The drawer and the desktop sidebar, top to bottom; Settings comes last. */
 export function navFor(on: FeatureCheck): NavEntry[] {
-	return [
-		...tabsFor(on),
-		...moreFor(on)
-			.filter((m) => m.id !== 'settings')
-			.map((m) => ({ ...m, sub: true }))
-	];
+	return [chat, inbox, ...(on('threads') ? [chats] : []), ...moreFor(on)];
 }
 
 const pathOf = (routeId: string) => routeId.replace(/\/\([^)]+\)/g, '') || '/';
 const sectionOf = (path: string) => path.match(/^\/[^/]+/)?.[0];
 
-/** The nav entry a route belongs to; the tab bar lights its tab, the sidebar its row. */
-export function activeTab(routeId: string | null): string | undefined {
+/** The nav entry a route belongs to, which the drawer and sidebar light. */
+export function activeNav(routeId: string | null): string | undefined {
 	if (!routeId) return undefined;
-	const path = pathOf(routeId);
-	if (path === '/') return 'home';
-	if (path === '/chat' || path.startsWith('/chats')) return 'chat';
-	const section = sectionOf(path);
-	return moreEntries.find((e) => e.href === section && e.id !== 'settings')?.id ?? 'more';
-}
-
-/** Routes in the `(tabs)` group show the tab bar; Chat and detail screens hide it. */
-export function showsTabBar(routeId: string | null): boolean {
-	return !!routeId?.startsWith('/(tabs)');
+	const section = sectionOf(pathOf(routeId));
+	return [chat, inbox, chats, ...moreEntries].find((e) => e.href === section)?.id;
 }

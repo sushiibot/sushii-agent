@@ -81,7 +81,7 @@ const isPresentational = (rest: string) =>
 /** What a screen or component may take from core: the wire types only. */
 const WIRE = `${LIB}core/realtime/events.ts`;
 /** The one module the prototype may take from core: the nav table. */
-const NAV_TABLE = `${LIB}core/nav/tabs.ts`;
+const NAV_TABLE = `${LIB}core/nav/nav.ts`;
 
 const isLibRoot = (path: string) => /^src\/lib\/[^/]+$/.test(path);
 /** A feature's modules that hold state or talk to the server. */

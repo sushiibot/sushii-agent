@@ -4,7 +4,7 @@
 	import { page } from '$app/state';
 	import favicon from '$lib/assets/favicon.svg';
 	import { features } from '$lib/core/features.svelte';
-	import { activeTab, navFor, showsTabBar, tabsFor } from '$lib/core/nav/tabs';
+	import { activeNav, navFor } from '$lib/core/nav/nav';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { markBooted } from '$lib/core/pwa/boot-recovery';
 	import { hub } from '$lib/core/realtime/hub.svelte';
@@ -15,7 +15,7 @@
 
 	// Before any route renders, so a cold deep link to any screen has live data.
 	hub.start();
-	// Listens from the start, so the Home badge counts what waits whatever screen is open.
+	// Listens from the start, so the inbox badge counts what waits whatever screen is open.
 	const home = needsYou();
 	home.start();
 
@@ -31,9 +31,7 @@
 <div class="h-dvh">
 	<Shell
 		nav={navFor(features.has)}
-		tabs={tabsFor(features.has)}
-		active={activeTab(page.route.id)}
-		tabBar={showsTabBar(page.route.id)}
-		badges={{ home: home.waitingCount }}>{@render children()}</Shell
+		active={activeNav(page.route.id)}
+		badges={{ inbox: home.waitingCount || home.unreadCount > 0 }}>{@render children()}</Shell
 	>
 </div>

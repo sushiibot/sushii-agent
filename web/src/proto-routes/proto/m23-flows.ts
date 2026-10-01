@@ -1,6 +1,6 @@
 // M2/M3 flows: the real Home, More, Runs and History screens on their feature fixtures, in every
 // state a route can put them in.
-import { allOn, moreFor } from '$lib/core/nav/tabs';
+import { allOn, moreFor } from '$lib/core/nav/nav';
 import {
 	HistoryDayScreen,
 	HistoryScreen,

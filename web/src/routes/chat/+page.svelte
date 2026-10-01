@@ -4,7 +4,6 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { features } from '$lib/core/features.svelte';
-	import { backTo } from '$lib/core/nav/back';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
@@ -21,11 +20,7 @@
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 
 	const store = chatStore();
-	// With threads, Main sits under the Chats list; without, Chat is a tab that goes back Home.
 	const threadsOn = $derived(features.has('threads'));
-	const parent = $derived(threadsOn ? resolve('/chats') : resolve('/'));
-	const goBackHome = backTo(resolve('/'));
-	const goBackChats = backTo(resolve('/chats'));
 	const threads = $derived(threadsOn ? threadsStore() : null);
 	const branch = routedSheet('branch');
 	let branchFrom = $state<{ id: string; quote: string } | null>(null);
@@ -145,12 +140,6 @@
 	{sheet}
 	{viewer}
 	settingsHref={resolve('/settings')}
-	back={{
-		href: parent,
-		label: threadsOn ? 'Back to Chats' : 'Back to Home',
-		onclick: threadsOn ? goBackChats : goBackHome,
-		desktop: false
-	}}
 	subtitle={threadsOn ? mainSubtitle : undefined}
 	onbranch={threadsOn ? openBranch : undefined}
 	onopensheet={openSheet}

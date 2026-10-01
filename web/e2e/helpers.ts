@@ -186,3 +186,11 @@ export async function checkScreen(page: Page) {
 	}
 	await page.setViewportSize({ width: 412, height: 915 });
 }
+
+/** Opens the phone drawer from the current screen's header and returns it. */
+export async function openDrawer(page: Page) {
+	await page.getByRole('button', { name: /^Menu/ }).click();
+	const menu = page.getByRole('dialog', { name: 'Menu' });
+	await expect(menu).toBeVisible();
+	return menu;
+}

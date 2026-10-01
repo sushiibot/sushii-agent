@@ -573,7 +573,7 @@ test('seen goes out only while Main is on screen', async ({ page, context }) => 
 	await push(page, 'approval', approval('n1'), 2);
 	await page.waitForTimeout(1500);
 	expect(posts('/api/chat/seen').length).toBe(1);
-	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await page.goBack();
 	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 2 });
 });
 
@@ -1716,6 +1716,6 @@ test('a job alert shows once in the chat, live or reloaded, with its error as pl
 	await expect(page.getByText('Scheduled job nightly-sync is working again')).toBeVisible();
 	await expect(line).toHaveCount(1);
 	await page.getByRole('link', { name: 'Details' }).click();
-	await expect(page).toHaveURL(/\/$/);
-	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+	await expect(page).toHaveURL(/\/inbox$/);
+	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
 });

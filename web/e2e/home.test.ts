@@ -76,33 +76,35 @@ async function groupLabels(page: Page) {
 	return page.locator('main h2').allTextContents();
 }
 
-test('groups what needs you in order and counts waiting items on the tab', async ({
+test('groups what needs you in order and counts waiting items on the menu', async ({
 	page,
 	context
 }) => {
 	await homeServer(context, { pending: busy() });
-	await page.goto('/');
-	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+	await page.goto('/inbox');
+	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
 	expect((await groupLabels(page)).map((t) => t.replace(/\s+/g, ' ').trim())).toEqual([
 		'Waiting on you 2',
 		'Failed 2',
 		'Running 1',
-		'Inbox 2'
+		'Updates 2'
 	]);
-	const homeTab = page
-		.getByRole('navigation', { name: 'Main' })
-		.getByRole('link', { name: /Home/ });
-	await expect(homeTab).toContainText('2 waiting');
-	await expect(homeTab).toHaveAttribute('aria-current', 'page');
+	const menu = page.getByRole('button', { name: /^Menu/ });
+	await expect(menu).toHaveAccessibleName('Menu, 2 waiting');
+	await menu.click();
+	const inboxLink = page.getByRole('dialog', { name: 'Menu' }).getByRole('link', { name: /Inbox/ });
+	await expect(inboxLink).toContainText('2 waiting');
+	await expect(inboxLink).toHaveAttribute('aria-current', 'page');
+	await page.keyboard.press('Escape');
 	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'approve' }, 5);
-	await expect(homeTab).toContainText('1 waiting');
+	await expect(menu).toHaveAccessibleName('Menu, 1 waiting');
 	await expect(page.getByText('Approve send_email')).toBeHidden();
 });
 
 test('a quiet day says nothing needs you, with a way into the chat', async ({ page, context }) => {
 	await homeServer(context, { fixtures: 'empty' });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(page.getByText('Nothing needs you')).toBeVisible();
 	await page.getByRole('button', { name: 'Open chat' }).click();
 	await expect(page).toHaveURL(/\/chat$/);
@@ -110,7 +112,7 @@ test('a quiet day says nothing needs you, with a way into the chat', async ({ pa
 
 test('a slow server shows a labelled skeleton, never a blank screen', async ({ page, context }) => {
 	await homeServer(context, { fixtures: 'slow', streamStatus: 503 });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(
 		page.getByRole('status').filter({ hasText: 'Loading what needs you' })
 	).toBeAttached();
@@ -122,7 +124,7 @@ test('a slow server part keeps the waiting items and says what is still loading'
 	context
 }) => {
 	await homeServer(context, { pending: busy(), fixtures: 'slow' });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(page.getByText('Approve send_email')).toBeVisible();
 	await expect(page.getByText('Loading failed and running work…')).toBeVisible();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible({ timeout: 6000 });
@@ -130,7 +132,7 @@ test('a slow server part keeps the waiting items and says what is still loading'
 
 test('a failed server part keeps approvals on screen and retries', async ({ page, context }) => {
 	const { backend } = await homeServer(context, { pending: busy(), fixtures: 'error' });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(page.getByText('Approve send_email')).toBeVisible();
 	const alert = page
 		.getByRole('alert')
@@ -144,7 +146,7 @@ test('a failed server part keeps approvals on screen and retries', async ({ page
 
 test('a server error with nothing loaded shows an error and Retry', async ({ page, context }) => {
 	const { backend } = await homeServer(context, { fixtures: 'error', streamStatus: 503 });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(page.getByText("Couldn't load Home.")).toBeVisible();
 	backend.set('home', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
@@ -153,7 +155,7 @@ test('a server error with nothing loaded shows an error and Retry', async ({ pag
 
 test('an unreachable agent says running work may be missing', async ({ page, context }) => {
 	await homeServer(context, { pending: busy(), fixtures: 'offline' });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(
 		page.getByText("Can't reach the agent, so running and failed work may be missing.")
 	).toBeVisible();
@@ -162,7 +164,7 @@ test('an unreachable agent says running work may be missing', async ({ page, con
 
 test('going offline shows the banner and keeps what was loaded', async ({ page, context }) => {
 	await homeServer(context, { pending: busy() });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
 	await context.setOffline(true);
 	await expect(page.getByText(/offline/i).first()).toBeVisible();
@@ -175,7 +177,7 @@ test('an approval peeks in a sheet with the real tray, held for a moment, and ba
 	context
 }) => {
 	const { posts } = await homeServer(context, { pending: busy() });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Approve send_email/ }).click();
 	const dialog = sheet(page);
 	await expect(dialog).toBeVisible();
@@ -185,7 +187,7 @@ test('an approval peeks in a sheet with the real tray, held for a moment, and ba
 	await expect(approve).toBeEnabled({ timeout: 2000 });
 	await page.goBack();
 	await expect(dialog).toBeHidden();
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/inbox$/);
 	expect(posts('/api/chat/approvals/')).toEqual([]);
 });
 
@@ -194,7 +196,7 @@ test('approving from the sheet posts the decision and says what happened', async
 	context
 }) => {
 	const { posts } = await homeServer(context, { pending: busy() });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Approve send_email/ }).click();
 	const approve = sheet(page).getByRole('button', { name: 'Approve send_email' });
 	await expect(approve).toBeEnabled({ timeout: 2000 });
@@ -215,7 +217,7 @@ test('a decision that fails to send says so in the sheet and can be tried again'
 	context
 }) => {
 	await homeServer(context, { pending: busy(), decide: 500 });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Approve send_email/ }).click();
 	await sheet(page).getByRole('button', { name: 'Deny send_email' }).click();
 	await expect(sheet(page).getByRole('alert')).toHaveText(
@@ -226,7 +228,7 @@ test('a decision that fails to send says so in the sheet and can be tried again'
 
 test('a question answers from the sheet with the ask card', async ({ page, context }) => {
 	const { posts } = await homeServer(context, { pending: busy() });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Which day works/ }).click();
 	await sheet(page).getByRole('button', { name: 'Saturday' }).click();
 	await expect
@@ -240,7 +242,7 @@ test('a failed job peeks with its error, and Dismiss takes it off Home', async (
 	context
 }) => {
 	await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
 	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeVisible();
@@ -254,7 +256,7 @@ test('Ask the agent opens the chat with the alert quoted in the composer', async
 	context
 }) => {
 	await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await sheet(page).getByRole('button', { name: 'Ask the agent' }).click();
 	await expect(page).toHaveURL(/\/chat$/);
@@ -262,8 +264,8 @@ test('Ask the agent opens the chat with the alert quoted in the composer', async
 		/^> Scheduled job nightly-sync failed\n> rsync/
 	);
 	await page.goBack();
-	await expect(page).toHaveURL(/\/$/);
-	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+	await expect(page).toHaveURL(/\/inbox$/);
+	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
 	await expect(sheet(page)).toBeHidden();
 });
 
@@ -277,7 +279,7 @@ for (const [link, item, text] of [
 		await page.goto(link);
 		await expect(sheet(page)).toBeVisible();
 		await expect(sheet(page).getByText(text).first()).toBeVisible();
-		await expect(page).toHaveURL(/\/$/);
+		await expect(page).toHaveURL(/\/inbox$/);
 	});
 }
 
@@ -286,7 +288,7 @@ test('a cold link to something already handled says so instead of waiting', asyn
 	context
 }) => {
 	await homeServer(context, { pending: busy() });
-	await page.goto('/?approve=gone');
+	await page.goto('/inbox?approve=gone');
 	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
 	await expect(sheet(page).getByText("This isn't waiting any more.")).toBeVisible();
 	await sheet(page).getByRole('button', { name: 'Close' }).click();
@@ -301,7 +303,7 @@ test('a cold link with the stream refused says it cannot check, without spinning
 	context
 }) => {
 	await homeServer(context, { streamStatus: 403 });
-	await page.goto('/?ask=a1');
+	await page.goto('/inbox?ask=a1');
 	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
 	await expect(sheet(page).getByText("can't be checked right now")).toBeVisible();
 });
@@ -313,7 +315,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 	}) => {
 		await page.emulateMedia({ colorScheme });
 		await homeServer(context, { pending: busy() });
-		await page.goto('/');
+		await page.goto('/inbox');
 		await expect(page.getByText('nightly-sync failed')).toBeVisible();
 		expect(await axe(page)).toEqual([]);
 		expect(await smallTargets(page)).toEqual([]);
@@ -346,7 +348,7 @@ test('an alert or run event refetches Home, so a new failure shows without a rel
 	context
 }) => {
 	const { backend } = await homeServer(context, { fixtures: 'empty' });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(page.getByText('Nothing needs you')).toBeVisible();
 	const loads = () => backend.calls.filter((c) => c.method === 'GET' && c.path === '/api/home');
 	const before = loads().length;
@@ -384,7 +386,7 @@ test("an agent answer outside the contract says Home's running work couldn't be 
 	context
 }) => {
 	await homeServer(context, { pending: busy(), fixtures: 'bad' });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(
 		page.getByText("The agent's list of running and failed work couldn't be read")
 	).toBeVisible();
@@ -396,7 +398,7 @@ test('with Home off on the bot, Home still shows what waits on you from the stre
 	context
 }) => {
 	await homeServer(context, { pending: busy(), features: ['runs', 'history'] });
-	await page.goto('/home?item=job%3Anightly-sync');
+	await page.goto('/inbox?item=job%3Anightly-sync');
 	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
 	await sheet(page).getByRole('button', { name: 'Close' }).click();
 	await expect(page.getByText('Approve send_email')).toBeVisible();
@@ -409,9 +411,9 @@ test('a cold link to a job alert that has cleared says Already handled', async (
 	context
 }) => {
 	await homeServer(context, { fixtures: 'empty' });
-	await page.goto('/home?item=job%3Anightly-sync');
+	await page.goto('/inbox?item=job%3Anightly-sync');
 	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/inbox$/);
 });
 
 test('opening a run tells the bot once, and it stays in the inbox as read on every device', async ({
@@ -419,7 +421,7 @@ test('opening a run tells the bot once, and it stays in the inbox as read on eve
 	context
 }) => {
 	const { backend } = await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
 	await sheet(page).getByRole('button', { name: 'Open run' }).click();
 	await expect(page).toHaveURL(/\/runs\//);
@@ -427,7 +429,7 @@ test('opening a run tells the bot once, and it stays in the inbox as read on eve
 		.poll(() => backend.calls.filter((c) => c.path === '/api/home/opened').map((c) => c.body))
 		.toEqual([{ id: 'run:01K6B3A1C3E5G7J9M1P3R5T7V9' }]);
 	await page.reload();
-	await page.goto('/');
+	await page.goto('/inbox');
 	await expect(
 		page.getByRole('button', { name: /Read: Draft the quarterly expenses summary/ })
 	).toBeVisible();
@@ -441,7 +443,7 @@ test("a job's message opens in full, Reply quotes it into the chat, and it stays
 	context
 }) => {
 	const { backend } = await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
 	await expect(sheet(page).getByRole('heading', { name: 'From heartbeat' })).toBeVisible();
 	await expect(sheet(page).locator('strong', { hasText: 'Friday' })).toBeVisible();
@@ -462,7 +464,7 @@ test('Done takes an item off Home on every device, and Undo brings it back', asy
 	context
 }) => {
 	const { backend } = await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Your passport renewal/ }).click();
 	await sheet(page).getByRole('button', { name: 'Done' }).click();
 	await expect(page.getByRole('dialog')).toBeHidden();
@@ -485,7 +487,7 @@ test('Done takes an item off Home on every device, and Undo brings it back', asy
 
 test('swiping an inbox row sideways marks it done', async ({ page, context }) => {
 	const { backend } = await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	const row = page.getByRole('button', { name: /Your passport renewal/ });
 	const box = (await row.boundingBox())!;
 	const y = box.y + box.height / 2;
@@ -516,7 +518,7 @@ test('swiping an inbox row sideways marks it done', async ({ page, context }) =>
 
 test("a job message's push opens it on Home", async ({ page, context }) => {
 	await homeServer(context);
-	await page.goto('/?item=msg%3Aob-heartbeat-1');
+	await page.goto('/inbox?item=msg%3Aob-heartbeat-1');
 	await expect(sheet(page).getByRole('heading', { name: 'From heartbeat' })).toBeVisible();
 });
 
@@ -525,7 +527,7 @@ test('a dismissed job is posted once and stays off Home after a reload', async (
 	context
 }) => {
 	const { backend } = await homeServer(context);
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await sheet(page).getByRole('button', { name: 'Dismiss' }).click();
 	await expect(page.getByText('nightly-sync failed')).toBeHidden();
@@ -539,7 +541,7 @@ test('a dismissed job is posted once and stays off Home after a reload', async (
 
 test('with Runs off on the bot, a failed job peek has no Open run', async ({ page, context }) => {
 	await homeServer(context, { features: ['home', 'alerts', 'history'] });
-	await page.goto('/');
+	await page.goto('/inbox');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
 	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeHidden();
@@ -550,7 +552,7 @@ test("a cold link to a job when Home's server part fails says it can't check, no
 	context
 }) => {
 	await homeServer(context, { pending: busy(), fixtures: 'error' });
-	await page.goto('/home?item=job%3Anightly-sync');
+	await page.goto('/inbox?item=job%3Anightly-sync');
 	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
 });
 
@@ -559,6 +561,6 @@ test("a cold link to a run while the agent is unreachable says it can't check", 
 	context
 }) => {
 	await homeServer(context, { fixtures: 'offline' });
-	await page.goto('/?item=run%3A01K6B3A1C3E5G7J9M1P3R5T7V9');
+	await page.goto('/inbox?item=run%3A01K6B3A1C3E5G7J9M1P3R5T7V9');
 	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
 });

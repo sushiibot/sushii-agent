@@ -75,19 +75,19 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
     expect(decrypt(push!, ua, auth)).toMatchObject({
       title: "Scheduled job failed",
       tag: `job:${JOB}`,
-      url: `/home?item=job:${JOB}`,
+      url: `/inbox?item=job:${JOB}`,
       body: expect.stringContaining(`${JOB}: `),
       renotify: true,
     });
 
-    // The push's link, cold: Home loads, finds the job and opens it in its sheet.
-    await page.goto("/");
+    // The push's link, cold: the inbox loads, finds the job and opens it in its sheet.
+    await page.goto("/inbox");
     const row = page.getByRole("button", { name: new RegExp(`${JOB} failed`) });
     await expect(row).toBeVisible();
-    await page.goto(`/home?item=job:${JOB}`);
+    await page.goto(`/inbox?item=job:${JOB}`);
     const sheet = page.getByRole("dialog");
     await expect(sheet.getByText("E2E-JOBFAIL").first()).toBeVisible();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/inbox$/);
 
     schedule("E2E-NOREPLY check something");
     requestRun();
@@ -95,7 +95,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
       .poll(async () => stack.query("select data from web_events where type = 'alert_cleared' and json_extract(data, '$.id') = ?", `job:${JOB}`), { timeout: 90_000, intervals: [1000] })
       .toHaveLength(1);
     expect((await home(request)).failed.map((a) => a.id)).not.toContain(`job:${JOB}`);
-    // Home was open the whole time: the cleared event takes the job off and its sheet says so.
+    // The inbox was open the whole time: the cleared event takes the job off and its sheet says so.
     await expect(sheet.getByRole("heading", { name: "Already handled" })).toBeVisible();
     await expect(row).toBeHidden();
     const kinds = await stack.query<{ k: string }>("select json_extract(data, '$.alert.kind') k from web_events where type = 'alert' and json_extract(data, '$.alert.job') = ? order by seq", JOB);
@@ -113,6 +113,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
     await page.goto("/chat");
     await expect(page.getByText(`Scheduled job ${JOB} failed`)).toHaveCount(1);
     await expect(page.getByText(`Scheduled job ${JOB} is working again`)).toHaveCount(1);
+    // A link from before the inbox moved still lands on the item.
     await page.goto(`/home?item=job:${JOB}`);
     await expect(page.getByRole("dialog").getByRole("heading", { name: "Already handled" })).toBeVisible();
     expect(await watch.violations()).toEqual([]);

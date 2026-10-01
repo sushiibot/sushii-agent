@@ -607,17 +607,15 @@ test('opening a pushed approval on Home closes its notification and leaves other
 		.toEqual(['other']);
 });
 
-test('the settings back chevron returns without stacking history', async ({ page, context }) => {
+test('settings from the chat goes back to the chat', async ({ page, context }) => {
 	await mockApi(context);
 	await stubPush(page);
 	await page.goto('/chat');
 	await page.getByRole('link', { name: 'Settings' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
-	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await page.goBack();
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
-	await page.goBack();
-	await expect(page).not.toHaveURL(/\/settings$/);
 });
 
 test('opening settings directly throws nothing', async ({ page, context }) => {
@@ -626,10 +624,8 @@ test('opening settings directly throws nothing', async ({ page, context }) => {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
 	await page.goto('/settings');
-	await expect(page.getByRole('link', { name: 'Back', exact: true })).toHaveAttribute(
-		'href',
-		'/more'
-	);
+	await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^Menu/ })).toBeVisible();
 	expect(errors).toEqual([]);
 });
 

@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+	import Menu from '@lucide/svelte/icons/menu';
 	import { cn } from '$lib/utils';
+	import { getDrawer } from '../shell/drawer';
 
 	let {
 		title,
@@ -31,6 +33,9 @@
 		scroller?: HTMLElement | null;
 		children: Snippet;
 	} = $props();
+
+	// A screen without a back chevron is a drawer destination; on a phone its header opens the drawer.
+	const drawer = getDrawer();
 </script>
 
 <header class="flex min-h-13 shrink-0 items-center gap-1 border-b px-2 py-1 @3xl:px-5">
@@ -47,8 +52,31 @@
 				>{back.label}</span
 			>
 		</a>
+	{:else if drawer}
+		<button
+			type="button"
+			aria-label={drawer.badge
+				? `Menu, ${typeof drawer.badge === 'number' ? `${drawer.badge} waiting` : 'something new'}`
+				: 'Menu'}
+			onclick={() => drawer.open()}
+			class="relative grid size-12 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground @3xl:hidden"
+		>
+			<Menu class="size-5" aria-hidden="true" />
+			{#if drawer.badge}
+				<span
+					class="absolute top-2.5 right-2.5 size-2.5 rounded-full border-2 border-background bg-waiting"
+					aria-hidden="true"
+				></span>
+			{/if}
+		</button>
 	{/if}
-	<div class={cn('flex min-w-0 flex-col', !back && 'pl-2 @3xl:pl-0')}>
+	<div
+		class={cn(
+			'flex min-w-0 flex-col',
+			!back && !drawer && 'pl-2 @3xl:pl-0',
+			!back && drawer && '@3xl:pl-0'
+		)}
+	>
 		<h1 class="truncate text-base leading-tight font-semibold">{title}</h1>
 		{@render subtitle?.()}
 	</div>
@@ -67,9 +95,7 @@
 	<div class={stickToBottom ? 'shrink-0' : 'h-full'}>{@render children()}</div>
 </main>
 
-<div
-	class="relative shrink-0 bg-background pb-(--safe-bottom) group-data-tabbar/shell:pb-0 @3xl:pb-0 kb:pb-0"
->
+<div class="relative shrink-0 bg-background pb-(--safe-bottom) @3xl:pb-0 kb:pb-0">
 	{#if toast}
 		<div
 			role="status"

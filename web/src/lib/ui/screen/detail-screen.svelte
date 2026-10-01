@@ -17,7 +17,7 @@
 		state,
 		children
 	}: Omit<ScreenProps, 'back' | 'children' | 'stickToBottom' | 'scroller'> & {
-		back: NonNullable<ScreenProps['back']>;
+		back?: ScreenProps['back'];
 		/** Leave out for a screen whose content is always there. */
 		state?: Omit<StateProps, 'children'>;
 		children: Snippet;

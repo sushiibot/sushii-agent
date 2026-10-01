@@ -31,7 +31,7 @@
 		remote: RemoteLike;
 		status?: BrowserStatus;
 		now: number;
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		pending?: BrowserPending;
 		error?: string | null;

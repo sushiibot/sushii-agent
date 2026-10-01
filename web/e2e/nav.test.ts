@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { stubStream } from './helpers';
+import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
 
 const LIVE = ['runs', 'history', 'home', 'alerts'];
 
@@ -23,56 +23,42 @@ async function server(
 	});
 }
 
-const tabBar = (page: Page) =>
-	page
-		.locator('nav[aria-label="Main"]')
-		.filter({ has: page.getByRole('link', { name: 'More' }) })
-		.last();
+/** Opens the phone drawer from the current screen's header. */
+async function drawer(page: Page) {
+	await page.getByRole('button', { name: /^Menu/ }).click();
+	const menu = page.getByRole('dialog', { name: 'Menu' });
+	await expect(menu).toBeVisible();
+	return menu;
+}
 
-test('only live slices show: one Chat tab, and More lists what the bot turned on', async ({
+test('the app opens on the chat; the drawer lists only live slices, Settings last', async ({
 	page,
 	context
 }) => {
 	await server(context);
-	await page.goto('/more');
-	await expect(tabBar(page).getByRole('link')).toHaveText(['Home', 'Chat', 'More']);
-	await expect(page.getByRole('main').getByRole('link')).toHaveText([
-		/^\s*Runs/,
-		/^\s*History/,
-		/^\s*Settings/
-	]);
+	await page.goto('/');
+	await expect(page).toHaveURL(/\/chat$/);
+	const menu = await drawer(page);
+	await expect(menu.getByRole('link')).toHaveText(['Chat', 'Inbox', 'Runs', 'History', 'Settings']);
+	await expect(menu.getByRole('link', { name: 'Chat' })).toHaveAttribute('aria-current', 'page');
 });
 
 test('a slice the bot leaves off hides its entry', async ({ page, context }) => {
 	await server(context, { live: ['home'] });
-	await page.goto('/more');
-	await expect(page.getByRole('main').getByRole('link')).toHaveText([/^\s*Settings/]);
+	await page.goto('/chat');
+	await expect((await drawer(page)).getByRole('link')).toHaveText(['Chat', 'Inbox', 'Settings']);
 });
 
-test('the fixture override shows every section, and Chat becomes Chats', async ({
+test('the fixture override shows every section, with Chats under Inbox', async ({
 	page,
 	context
 }) => {
 	await server(context, { override: 'all' });
-	await page.goto('/more');
-	await expect(tabBar(page).getByRole('link')).toHaveText(['Home', 'Chats', 'More']);
-	await expect(page.getByRole('main').getByRole('link')).toHaveText([
-		/^\s*Briefing/,
-		/^\s*Runs/,
-		/^\s*History/,
-		/^\s*Memory/,
-		/^\s*Skills/,
-		/^\s*Schedules/,
-		/^\s*Connectors/,
-		/^\s*Browser/,
-		/^\s*Settings/
-	]);
-	await page.setViewportSize({ width: 1280, height: 800 });
-	const sidebar = page.locator('nav[aria-label="Main"]').first();
-	await expect(sidebar.getByRole('link')).toHaveText([
-		'Home',
+	await page.goto('/chat');
+	const all = [
+		'Chat',
+		'Inbox',
 		'Chats',
-		'More',
 		'Briefing',
 		'Runs',
 		'History',
@@ -80,21 +66,47 @@ test('the fixture override shows every section, and Chat becomes Chats', async (
 		'Skills',
 		'Schedules',
 		'Connectors',
-		'Browser'
-	]);
+		'Browser',
+		'Settings'
+	];
+	await expect((await drawer(page)).getByRole('link')).toHaveText(all);
+	await page.keyboard.press('Escape');
+	await page.setViewportSize({ width: 1280, height: 800 });
+	await expect(page.getByRole('button', { name: /^Menu/ })).toBeHidden();
+	const sidebar = page.locator('nav[aria-label="Main"]').first();
+	await expect(sidebar.getByRole('link')).toHaveText(all);
 });
 
-test('a screen whose slice is off sends you Home', async ({ page, context }) => {
+test('picking from the drawer closes it; back from there returns to the chat, then the drawer closes before leaving', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.goto('/chat');
+	await (await drawer(page)).getByRole('link', { name: 'Runs' }).click();
+	await expect(page).toHaveURL(/\/runs$/);
+	await expect(page.getByRole('dialog', { name: 'Menu' })).toBeHidden();
+	await (await drawer(page)).getByRole('link', { name: 'History' }).click();
+	await expect(page).toHaveURL(/\/history$/);
+	await page.goBack();
+	await expect(page).toHaveURL(/\/chat$/);
+	await drawer(page);
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('dialog', { name: 'Menu' })).toBeHidden();
+	await expect(page).toHaveURL(/\/chat$/);
+});
+
+test('a screen whose slice is off sends you to the chat', async ({ page, context }) => {
 	await server(context);
 	await page.goto('/memory');
-	await expect(page).toHaveURL(/\/$/);
-	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
-test('an unknown address sends you Home', async ({ page, context }) => {
+test('an unknown address sends you to the chat', async ({ page, context }) => {
 	await server(context);
 	await page.goto('/no-such-screen');
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/chat$/);
 });
 
 test('a deep link waits for /api/me before deciding, so it never bounces early', async ({
@@ -119,7 +131,7 @@ for (const [path, api] of [
 	['/browser', /^\/api\/browser/],
 	['/briefing', /^\/api\/briefing/]
 ] as const) {
-	test(`${path} with its feature off goes Home without asking the bot for it`, async ({
+	test(`${path} with its feature off goes to the chat without asking the bot for it`, async ({
 		page,
 		context
 	}) => {
@@ -130,8 +142,26 @@ for (const [path, api] of [
 			if (api.test(p)) asked.push(p);
 		});
 		await page.goto(path);
-		await expect(page).toHaveURL(/\/$/);
-		await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+		await expect(page).toHaveURL(/\/chat$/);
+		await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 		expect(asked).toEqual([]);
+	});
+}
+
+for (const colorScheme of ['light', 'dark'] as const) {
+	test(`the open drawer passes axe, 48px targets and reflow in ${colorScheme}`, async ({
+		page,
+		context
+	}) => {
+		await page.emulateMedia({ colorScheme });
+		await server(context, { override: 'all' });
+		await page.goto('/chat');
+		await drawer(page);
+		expect(await axe(page)).toEqual([]);
+		expect(await smallTargets(page)).toEqual([]);
+		for (const width of [412, 320]) {
+			await page.setViewportSize({ width, height: 800 });
+			expect(await horizontalOverflow(page), `at ${width}px`).toEqual([]);
+		}
 	});
 }

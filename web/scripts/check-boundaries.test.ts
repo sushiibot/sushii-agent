@@ -13,7 +13,7 @@ const FILES = new Set([
 	'src/lib/core/pwa/pwa.svelte.ts',
 	'src/lib/core/realtime/hub.svelte.ts',
 	'src/lib/core/realtime/events.ts',
-	'src/lib/core/nav/tabs.ts',
+	'src/lib/core/nav/nav.ts',
 	'src/lib/features/chat/index.ts',
 	'src/lib/features/chat/fixtures.ts',
 	'src/lib/features/chat/types.ts',
@@ -116,7 +116,7 @@ describe('the layer rules', () => {
 			rules('src/lib/core/http.ts', ts("import S from '$lib/ui/shell/shell.svelte';"))
 		).toEqual(['core may not import ui components']);
 		expect(
-			rules('src/lib/core/nav/tabs.ts', ts("import type { NavItem } from '$lib/ui/shell/types';"))
+			rules('src/lib/core/nav/nav.ts', ts("import type { NavItem } from '$lib/ui/shell/types';"))
 		).toEqual([]);
 		expect(
 			rules('src/lib/core/pwa/pwa.svelte.ts', ts("import { dev } from '$app/environment';"))
@@ -212,7 +212,7 @@ describe('the layer rules', () => {
 	test('the prototype sees index.ts, fixtures, ui and the nav table, nothing else from core', () => {
 		const file = 'src/proto-routes/proto/flows.ts';
 		expect(rules(file, ts("import * as c from '$lib/features/chat/fixtures';"))).toEqual([]);
-		expect(rules(file, ts("import { tabs } from '$lib/core/nav/tabs';"))).toEqual([]);
+		expect(rules(file, ts("import { navFor } from '$lib/core/nav/nav';"))).toEqual([]);
 		for (const path of [
 			'$lib/core/realtime/hub.svelte',
 			'$lib/core/pwa/pwa.svelte',

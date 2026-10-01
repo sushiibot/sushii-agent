@@ -19,7 +19,7 @@
 	}: {
 		remote: RemoteLike;
 		servers: McpServerSummary[];
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		serverHref?: (id: string) => string;
 		addHref?: string;

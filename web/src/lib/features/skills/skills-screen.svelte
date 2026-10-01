@@ -18,7 +18,7 @@
 		remote: RemoteLike;
 		skills: SkillSummary[];
 		now: number;
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		skillHref?: (name: string) => string;
 		onretry?: () => void;

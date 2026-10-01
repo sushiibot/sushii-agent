@@ -1,13 +1,13 @@
 import { expect, test } from '@playwright/test';
-import { checkScreen, fixtureApp } from './helpers';
+import { checkScreen, fixtureApp, openDrawer } from './helpers';
 
 test('Memory lists recent changes and files, each opening its own screen', async ({
 	page,
 	context
 }) => {
 	await fixtureApp(context);
-	await page.goto('/more');
-	await page.getByRole('link', { name: /Memory/ }).click();
+	await page.goto('/chat');
+	await (await openDrawer(page)).getByRole('link', { name: /Memory/ }).click();
 	await expect(page.getByRole('heading', { name: 'Memory', level: 1 })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Recent changes' })).toBeVisible();
 	await page.getByRole('link', { name: /MEMORY\.md.*The index/ }).click();

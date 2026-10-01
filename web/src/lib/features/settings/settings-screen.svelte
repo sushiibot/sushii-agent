@@ -39,7 +39,7 @@
 		oninstall,
 		onreload
 	}: {
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		me: RemoteLike & { data?: { login: string; displayName?: string } };
 		push: PushState;
 		pushBusy?: boolean;

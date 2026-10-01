@@ -1,13 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { backTo } from '$lib/core/nav/back';
 	import { keepScroll } from '$lib/core/nav/scroll';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { RunListScreen, runsStore } from '$lib/features/runs';
 
 	const runs = runsStore();
-	const goBack = backTo(resolve('/more'));
 	const list = runs.list;
 	let now = $state(Date.now());
 
@@ -29,7 +27,6 @@
 	remote={list}
 	runs={[...(list.data?.runs ?? []), ...runs.older]}
 	{now}
-	back={{ href: resolve('/more'), label: 'Back', onclick: goBack }}
 	hasOlder={!!runs.before}
 	olderLoading={runs.olderLoading}
 	olderError={runs.olderError}

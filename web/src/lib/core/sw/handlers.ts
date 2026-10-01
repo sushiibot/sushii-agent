@@ -31,7 +31,7 @@ const NONCE = /^[A-Za-z0-9_-]{1,128}$/;
 // Printable ASCII up to the bot's id cap.
 const ASK_ID = /^[\x20-\x7e]{1,256}$/;
 const HOME_ITEM =
-	/^(?:job:[a-z0-9-]{1,64}|run:[0-9A-HJKMNP-TV-Z]{26}|approval:[A-Za-z0-9_-]{1,128}|(?:ask|turn):[\x20-\x7e]{1,256}|auth)$/;
+	/^(?:job:[a-z0-9-]{1,64}|run:[0-9A-HJKMNP-TV-Z]{26}|(?:approval|msg):[A-Za-z0-9_-]{1,128}|(?:ask|turn):[\x20-\x7e]{1,256}|auth)$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 type Route = {
@@ -41,8 +41,17 @@ type Route = {
 };
 const at = (exact: string) => (p: string) => p === exact;
 
-/** App routes a notification may open; anything else, including /api/ and /f/, opens Home. */
+/** App routes a notification may open; anything else, including /api/ and /f/, opens the chat. */
 const ROUTES: Route[] = [
+	{
+		path: at('/inbox'),
+		query: {
+			approve: (v) => NONCE.test(v),
+			ask: (v) => ASK_ID.test(v),
+			item: (v) => HOME_ITEM.test(v)
+		}
+	},
+	// Links in notifications from before the inbox moved.
 	{ path: at('/'), query: { approve: (v) => NONCE.test(v), ask: (v) => ASK_ID.test(v) } },
 	{ path: at('/home'), query: { item: (v) => HOME_ITEM.test(v) } },
 	{ path: at('/chat') },

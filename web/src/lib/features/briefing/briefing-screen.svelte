@@ -28,7 +28,7 @@
 		/** null: no briefing yet today. */
 		briefing?: Briefing | null;
 		now: number;
-		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		error?: string | null;
 		onvote?: (id: string, vote: BriefVote) => void;

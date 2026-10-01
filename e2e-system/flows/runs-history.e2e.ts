@@ -86,15 +86,15 @@ test("GET /api/history and /api/search read ~/history and never follow a planted
   expect(JSON.stringify(search)).not.toContain(SEED.secret);
 });
 
-test("Home, a run, a History day and search open in the app on the workspace's records", async ({ page, watch }) => {
-  // Home's server part answers from the bot and the workspace; the seeds are older than its 72 h window.
+test("the inbox, a run, a History day and search open in the app on the workspace's records", async ({ page, watch }) => {
+  // The inbox's server part answers from the bot and the workspace; the seeds are older than its 72 h window.
   const home = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/home");
-  await page.goto("/");
+  await page.goto("/inbox");
   expect((await home).status()).toBe(200);
-  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inbox", level: 1 })).toBeVisible();
   await expect(page.getByText(/Couldn't load|Can't reach the agent|couldn't be read/)).toHaveCount(0);
-  await page.getByRole("link", { name: "More" }).last().click();
-  await page.getByRole("main").getByRole("link", { name: /Runs/ }).click();
+  await page.getByRole("button", { name: /^Menu/ }).click();
+  await page.getByRole("dialog", { name: "Menu" }).getByRole("link", { name: /Runs/ }).click();
   await expect(page.getByRole("main").getByRole("listitem").filter({ hasText: "Run the nightly check" }).first()).toBeVisible();
 
   await page.goto(`/runs/${SEED.jobRunId}`);
