@@ -30,6 +30,6 @@ Imports point down this list only:
 - `src/lib/core/`: app infrastructure with no screens: the SSE stream (`realtime/`), IndexedDB (`storage/`), PWA and push (`pwa/`), service-worker logic (`sw/`).
 - `src/lib/ui/`: the design system, with no domain imports. shadcn-svelte adds components here (`components.json`).
 
-Screens that no milestone has shipped yet wait in `src/proto-routes/proto/screens/`.
+Screens that no milestone has shipped yet wait in `src/proto-routes/proto/screens/`. Until M4 ships threads and the workbench, those mock screens may import `features/chat/components` and `render` directly; nothing else outside the feature may.
 
 A screen is built from `ui/screen` (`Screen`, `ListScreen`, `DetailScreen`, `ScreenState`) inside the root layout's `Shell`, with data from a feature store (`core/remote.svelte.ts` for fetched data, `core/realtime/hub.svelte.ts` for the stream). Sheets are `ui/sheet/routed-sheet.svelte`, opened through `core/nav/sheet.ts` so Android back closes them. Screens, their `components/` and `render/` take props and callbacks only, so the prototype board and the e2e harness can render them from fixtures.

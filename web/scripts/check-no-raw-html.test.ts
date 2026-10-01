@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
-import { checkSource, COPY_BUTTON, MARKDOWN, RENDER_DIRS } from './check-no-raw-html';
+import { checkSource, COPY_BUTTON, MARKDOWN, MESSAGE_ACTIONS } from './check-no-raw-html';
 
 const rules = (file: string, source: string) => checkSource(file, source).map((v) => v.rule);
 
@@ -56,7 +56,22 @@ describe('check-no-raw-html', () => {
 			'render: dynamic svelte:element'
 		]);
 		expect(rules(tray, '<svelte:element this="h3">x</svelte:element>')).toEqual([]);
-		expect(rules('src/routes/x.svelte', '<svelte:element this={tag} />')).toEqual([]);
+		// Deny by default: a new folder is covered without anyone listing it.
+		for (const file of [
+			'src/routes/x.svelte',
+			'src/lib/features/home/peek.svelte',
+			'src/lib/ui/x.svelte'
+		]) {
+			expect(rules(file, '<svelte:element this={tag} />')).toEqual([
+				'render: dynamic svelte:element'
+			]);
+		}
+		expect(
+			rules('src/lib/ui/badge/badge.svelte', "<svelte:element this={href ? 'a' : 'span'} />")
+		).toEqual([]);
+		expect(rules('src/lib/ui/x.svelte', "<svelte:element this={href ? 'a' : tag} />")).toEqual([
+			'render: dynamic svelte:element'
+		]);
 	});
 
 	test('markdown: no svelte:element, spreads or handlers in any spelling', () => {
@@ -134,23 +149,23 @@ describe('check-no-raw-html', () => {
 		expect(rules(COPY_BUTTON, read(COPY_BUTTON) + '\n<span class="bg-approval"></span>')).toContain(
 			'markdown: approval surface token'
 		);
-		for (const dir of RENDER_DIRS) {
-			for (const sub of ['components', 'render']) {
-				const files = readdirSync(new URL(`../${dir}${sub}`, import.meta.url)).filter((f) =>
-					f.endsWith('.svelte')
-				);
-				expect(files.length).toBeGreaterThan(0);
-				for (const name of files) {
-					const file = `${dir}${sub}/${name}`;
-					const planted = read(file) + '\n<svelte:element this={tag}>x</svelte:element>{@html x}';
-					expect(rules(file, planted)).toEqual(
-						expect.arrayContaining([
-							file === MARKDOWN ? 'markdown: svelte:element' : 'render: dynamic svelte:element',
-							'{@html}'
-						])
-					);
-				}
-			}
+		expect(
+			rules(MESSAGE_ACTIONS, read(MESSAGE_ACTIONS) + '\n<span class="text-approval"></span>')
+		).toContain('markdown: approval surface token');
+		const files = (
+			readdirSync(new URL('../src/lib', import.meta.url), { recursive: true }) as string[]
+		)
+			.filter((f) => f.endsWith('.svelte'))
+			.map((f) => `src/lib/${f.replace(/\\/g, '/')}`);
+		expect(files.length).toBeGreaterThan(40);
+		for (const file of files) {
+			const planted = read(file) + '\n<svelte:element this={tag}>x</svelte:element>{@html x}';
+			expect(rules(file, planted)).toEqual(
+				expect.arrayContaining([
+					file === MARKDOWN ? 'markdown: svelte:element' : 'render: dynamic svelte:element',
+					'{@html}'
+				])
+			);
 		}
 	});
 });

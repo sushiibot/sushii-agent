@@ -18,6 +18,12 @@ const FILES = new Set([
 	'src/lib/features/chat/fixtures.ts',
 	'src/lib/features/chat/types.ts',
 	'src/lib/features/chat/store.svelte.ts',
+	'src/lib/features/chat/api.ts',
+	'src/lib/core/realtime/transport.ts',
+	'src/lib/core/realtime/sse.ts',
+	'src/lib/core/nav/sheet.ts',
+	'src/lib/core/storage/outbox.ts',
+	'src/lib/foo.ts',
 	'src/lib/features/chat/components/composer.svelte',
 	'src/lib/features/chat/render/plain-text.ts',
 	'src/lib/features/home/index.ts',
@@ -73,19 +79,31 @@ describe('finding imports', () => {
 });
 
 describe('the layer rules', () => {
+	const imp = (path: string) => svelte(`import x from '${path}';`);
+
 	test('ui imports only ui, utils and packages', () => {
 		const file = 'src/lib/ui/screen/screen.svelte';
 		expect(
 			rules(file, svelte("import { cn } from '$lib/utils';", "import X from 'bits-ui';"))
 		).toEqual([]);
-		expect(rules(file, svelte("import { page } from '$app/state';"))).toEqual([
-			'ui may not use $app'
+		expect(rules(file, imp('$app/state'))).toEqual(['ui may not use $app/state']);
+		expect(rules(file, imp('$env/static/public'))).toEqual(['ui may not use $env/static/public']);
+		expect(rules(file, imp('$service-worker'))).toEqual(['ui may not use $service-worker']);
+		expect(rules(file, imp('$lib/core/realtime/hub.svelte'))).toEqual([
+			'ui may not import core or features'
+		]);
+		expect(rules(file, imp('$lib/features/chat'))).toEqual(['ui may not import core or features']);
+	});
+
+	test('the lib root holds only utils.ts, and its files obey the ui rules', () => {
+		expect(rules('src/lib/ui/button/button.svelte', imp('$lib/foo'))).toEqual([
+			'src/lib holds only utils.ts at its root; put the module in a layer'
 		]);
 		expect(
-			rules(file, svelte("import type { Hub } from '$lib/core/realtime/hub.svelte';"))
+			rules('src/lib/foo.ts', ts("import { hub } from '$lib/core/realtime/hub.svelte';"))
 		).toEqual(['ui may not import core or features']);
-		expect(rules(file, svelte("import { ChatScreen } from '$lib/features/chat';"))).toEqual([
-			'ui may not import core or features'
+		expect(rules('src/lib/foo.ts', ts("import { page } from '$app/state';"))).toEqual([
+			'ui may not use $app/state'
 		]);
 	});
 
@@ -117,7 +135,10 @@ describe('the layer rules', () => {
 			'import chat through its index.ts'
 		]);
 		expect(rules(file, ts("import { page } from '$app/state';"))).toEqual([
-			'features may not use $app; the route passes values in'
+			'features may not use $app/state; the route passes values in'
+		]);
+		expect(rules(file, ts("import { env } from '$env/dynamic/public';"))).toEqual([
+			'features may not use $env/dynamic/public; the route passes values in'
 		]);
 		expect(
 			rules(
@@ -127,24 +148,38 @@ describe('the layer rules', () => {
 		).toEqual([]);
 	});
 
-	test('screens, components and render never read the hub or the PWA', () => {
+	test('screens, components and render take only the wire types from core, and no stores', () => {
 		for (const file of [
 			'src/lib/features/chat/chat-screen.svelte',
 			'src/lib/features/chat/components/composer.svelte',
 			'src/lib/features/chat/render/markdown.svelte'
 		]) {
-			expect(rules(file, svelte("import { hub } from '$lib/core/realtime/hub.svelte';"))).toEqual([
-				'screens and components may not read the hub'
+			for (const path of [
+				'$lib/core/realtime/hub.svelte',
+				'$lib/core/realtime/transport',
+				'$lib/core/realtime/sse',
+				'$lib/core/nav/sheet',
+				'$lib/core/storage/outbox',
+				'$lib/core/http',
+				'$lib/core/pwa/pwa.svelte'
+			]) {
+				expect(rules(file, imp(path)), path).toEqual([
+					'screens and components take only the wire types from core'
+				]);
+			}
+			expect(rules(file, imp('$lib/features/chat/store.svelte'))).toEqual([
+				'screens and components may not import stores or the API'
 			]);
-			expect(rules(file, svelte("import { pwa } from '$lib/core/pwa/pwa.svelte';"))).toEqual([
-				'screens and components may not read core/pwa'
+			expect(rules(file, imp('$lib/features/chat/api'))).toEqual([
+				'screens and components may not import stores or the API'
 			]);
-			expect(rules(file, svelte("import { goto } from '$app/navigation';"))).toEqual([
-				'features may not use $app; the route passes values in'
+			expect(rules(file, imp('$app/navigation'))).toEqual([
+				'features may not use $app/navigation; the route passes values in'
 			]);
 			expect(
 				rules(file, svelte("import type { UploadRef } from '$lib/core/realtime/events';"))
 			).toEqual([]);
+			expect(rules(file, imp('$lib/features/chat/types'))).toEqual([]);
 		}
 	});
 
@@ -159,31 +194,40 @@ describe('the layer rules', () => {
 				)
 			)
 		).toEqual([]);
-		expect(
-			rules(file, svelte("import C from '$lib/features/chat/components/composer.svelte';"))
-		).toEqual(['import chat through its index.ts']);
+		expect(rules(file, imp('$lib/features/chat/components/composer.svelte'))).toEqual([
+			'import chat through its index.ts'
+		]);
 	});
 
-	test('the prototype sees index.ts, fixtures and ui, never streams or the PWA', () => {
+	test('the prototype sees index.ts, fixtures, ui and the nav table, nothing else from core', () => {
 		const file = 'src/proto-routes/proto/flows.ts';
 		expect(rules(file, ts("import * as c from '$lib/features/chat/fixtures';"))).toEqual([]);
 		expect(rules(file, ts("import { tabs } from '$lib/core/nav/tabs';"))).toEqual([]);
-		expect(rules(file, ts("import { hub } from '$lib/core/realtime/hub.svelte';"))).toEqual([
-			'the prototype may not open streams or touch the PWA'
+		for (const path of [
+			'$lib/core/realtime/hub.svelte',
+			'$lib/core/pwa/pwa.svelte',
+			'$lib/core/nav/sheet',
+			'$lib/core/http'
+		]) {
+			expect(rules(file, ts(`import x from '${path}';`)), path).toEqual([
+				'the prototype takes only the nav table from core'
+			]);
+		}
+		expect(rules(file, ts("import { env } from '$env/static/public';"))).toEqual([
+			'the prototype may not use $env/static/public'
 		]);
-		expect(rules(file, ts("import { pwa } from '$lib/core/pwa/pwa.svelte';"))).toEqual([
-			'the prototype may not open streams or touch the PWA'
+		expect(rules('src/proto-routes/proto/components/frame.svelte', imp('$app/state'))).toEqual([
+			'the prototype may not use $app/state'
 		]);
-		expect(
-			rules(file, ts("import C from '$lib/features/chat/components/composer.svelte';"))
-		).toEqual(['import chat through its index.ts or fixtures.ts']);
+		expect(rules('src/proto-routes/proto/+page.svelte', imp('$app/navigation'))).toEqual([]);
+		expect(rules(file, imp('$lib/features/chat/components/composer.svelte'))).toEqual([
+			'import chat through its index.ts or fixtures.ts'
+		]);
 	});
 
 	test("future screens may borrow chat's components until they graduate", () => {
 		const file = 'src/proto-routes/proto/screens/thread-chat.svelte';
-		expect(
-			rules(file, svelte("import C from '$lib/features/chat/components/composer.svelte';"))
-		).toEqual([]);
+		expect(rules(file, imp('$lib/features/chat/components/composer.svelte'))).toEqual([]);
 		expect(
 			rules(
 				file,

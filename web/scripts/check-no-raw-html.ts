@@ -32,13 +32,18 @@ const SINKS: [RegExp, string][] = [
 const COMPUTED_KEY = /(?:[\w)\]]|\?\.)\s*\[([^\]]*['"`][^\]]*)\]/g;
 const SINK_FRAGMENT = /html|inner|outer|adjacent|srcdoc|['"`]doc['"`]/i;
 
-// Folders whose components render agent- or workspace-supplied data.
-export const RENDER_DIRS = ['src/lib/features/chat/'];
+// Any component may end up rendering agent- or workspace-supplied data, so none may pick its
+// element tag at runtime unless listed here with the reason.
+export const DYNAMIC_TAG_EXEMPT = new Set<string>([]);
 
 // Agent text renders here, so it may never emit a control, handler or the approval surface.
 export const MARKDOWN = 'src/lib/features/chat/render/markdown.svelte';
 // Markdown's one control: an icon button that copies its own code block.
 export const COPY_BUTTON = 'src/lib/features/chat/render/code-copy-button.svelte';
+// The row of buttons under each message: it sits next to agent text, so it may never look like
+// the approval surface either.
+export const MESSAGE_ACTIONS = 'src/lib/features/chat/components/message-actions.svelte';
+const NOT_APPROVAL = new Set([COPY_BUTTON, MESSAGE_ACTIONS]);
 const MARKDOWN_IMPORTS = new Set(['../types', './markdown', './code-copy-button.svelte']);
 
 const APPROVAL_LOOKALIKE: [RegExp, string][] = [
@@ -78,20 +83,27 @@ function visit(node: unknown, fn: (n: AstNode & { start: number }) => void): voi
 	}
 }
 
+type TagNode = { type?: string; consequent?: TagNode; alternate?: TagNode };
+
+/** A literal tag, or a choice between literal tags (`href ? 'a' : 'span'`). */
+function fixedTag(tag: unknown): boolean {
+	if (typeof tag !== 'object' || tag === null) return true;
+	const t = tag as TagNode;
+	if (t.type === 'Literal') return true;
+	return t.type === 'ConditionalExpression' && fixedTag(t.consequent) && fixedTag(t.alternate);
+}
+
 function templateRules(file: string, source: string): Violation[] {
 	const out: Violation[] = [];
 	const at = (start: number, rule: string) => out.push({ file, line: lineOf(source, start), rule });
 	const markdown = file === MARKDOWN;
-	const lookalike = markdown || file === COPY_BUTTON;
+	const lookalike = markdown || NOT_APPROVAL.has(file);
 	const ast = parse(source, { filename: file, modern: true });
 	visit(ast.fragment, (n) => {
 		if (n.type === 'HtmlTag') at(n.start, '{@html}');
-		if (n.type === 'SvelteElement' && RENDER_DIRS.some((d) => file.startsWith(d))) {
-			const tag = n.tag as { type?: string } | string | undefined;
+		if (n.type === 'SvelteElement' && !DYNAMIC_TAG_EXEMPT.has(file)) {
 			if (markdown) at(n.start, 'markdown: svelte:element');
-			else if (typeof tag === 'object' && tag?.type !== 'Literal') {
-				at(n.start, 'render: dynamic svelte:element');
-			}
+			else if (!fixedTag(n.tag)) at(n.start, 'render: dynamic svelte:element');
 		}
 		if (lookalike && n.type === 'SpreadAttribute') at(n.start, 'markdown: spread attributes');
 		if (markdown && n.type === 'OnDirective') at(n.start, 'markdown: event handler');
@@ -109,7 +121,7 @@ function templateRules(file: string, source: string): Violation[] {
 
 export function checkSource(file: string, source: string): Violation[] {
 	const out: Violation[] = file.endsWith('.svelte') ? templateRules(file, source) : [];
-	const lookalike = file === MARKDOWN || file === COPY_BUTTON;
+	const lookalike = file === MARKDOWN || NOT_APPROVAL.has(file);
 	source.split('\n').forEach((text, i) => {
 		const add = (rule: string) => out.push({ file, line: i + 1, rule });
 		for (const [re, rule] of SINKS) if (re.test(text)) add(rule);

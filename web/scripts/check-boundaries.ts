@@ -46,7 +46,7 @@ export function resolveSpecifier(
 	specifier: string,
 	exists: (path: string) => boolean
 ): string | null {
-	if (specifier.startsWith('$app/')) return specifier;
+	if (/^\$(app|env)\//.test(specifier) || specifier === '$service-worker') return specifier;
 	let base: string;
 	if (specifier === '$lib' || specifier.startsWith('$lib/')) {
 		base = join('src/lib', specifier.slice('$lib'.length));
@@ -78,17 +78,30 @@ const isPublic = (rest: string) => rest === 'index.ts';
 const isPresentational = (rest: string) =>
 	/(^|\/)[^/]*-screen\.svelte$/.test(rest) || /^(components|render)\//.test(rest);
 
+/** What a screen or component may take from core: the wire types only. */
+const WIRE = `${LIB}core/realtime/events.ts`;
+/** The one module the prototype may take from core: the nav table. */
+const NAV_TABLE = `${LIB}core/nav/tabs.ts`;
+
+const isLibRoot = (path: string) => /^src\/lib\/[^/]+$/.test(path);
+/** A feature's modules that hold state or talk to the server. */
+const isStateful = (rest: string) => /(^|\/)([^/]+\.svelte\.ts|api\.ts|fake\.ts)$/.test(rest);
+
 export function checkImport(from: string, target: string | null): string | null {
 	if (target === null) return null;
-	const app = target.startsWith('$app/') ? target : null;
-	const to = app ? '' : target;
+	const special = target.startsWith('$') ? target : null;
+	const to = special ? '' : target;
 	const toFeature = feature(to);
 	const fromFeature = feature(from);
 
 	if (to.startsWith(PROTO) && !from.startsWith(PROTO)) return 'nothing imports proto-routes';
+	if (isLibRoot(to) && to !== `${LIB}utils.ts` && !to.startsWith(`${LIB}assets`)) {
+		return 'src/lib holds only utils.ts at its root; put the module in a layer';
+	}
 
-	if (from.startsWith(`${LIB}ui/`)) {
-		if (app) return 'ui may not use $app';
+	// The design system, and anything at the lib root, which nothing may use to route around it.
+	if (from.startsWith(`${LIB}ui/`) || isLibRoot(from)) {
+		if (special) return `ui may not use ${special}`;
 		if (to.startsWith(`${LIB}core/`) || toFeature) return 'ui may not import core or features';
 		return null;
 	}
@@ -97,33 +110,46 @@ export function checkImport(from: string, target: string | null): string | null 
 		if (toFeature) return 'core may not import features';
 		if (to.startsWith(`${LIB}ui/`) && to.endsWith('.svelte'))
 			return 'core may not import ui components';
-		if (app) {
-			if (app === '$app/environment') return null;
-			if (from.startsWith(`${LIB}core/nav/`) && (app === '$app/navigation' || app === '$app/state'))
+		if (special) {
+			if (special === '$app/environment' || special.startsWith('$env/')) return null;
+			if (
+				from.startsWith(`${LIB}core/nav/`) &&
+				(special === '$app/navigation' || special === '$app/state')
+			)
 				return null;
-			return `core may not use ${app} outside core/nav`;
+			return `core may not use ${special} outside core/nav`;
 		}
 		return null;
 	}
 
 	if (fromFeature) {
-		if (app) return 'features may not use $app; the route passes values in';
+		if (special) return `features may not use ${special}; the route passes values in`;
 		if (toFeature && toFeature.name !== fromFeature.name && !isPublic(toFeature.rest)) {
 			return `import ${toFeature.name} through its index.ts`;
 		}
 		if (isPresentational(fromFeature.rest)) {
-			if (to.startsWith(`${LIB}core/pwa/`)) return 'screens and components may not read core/pwa';
-			if (to.startsWith(`${LIB}core/realtime/hub`))
-				return 'screens and components may not read the hub';
+			// Screens render from props, so the prototype and the harness can mount them bare.
+			if (to.startsWith(`${LIB}core/`) && to !== WIRE) {
+				return 'screens and components take only the wire types from core';
+			}
+			if (toFeature && toFeature.name === fromFeature.name && isStateful(toFeature.rest)) {
+				return 'screens and components may not import stores or the API';
+			}
 		}
 		return null;
 	}
 
 	if (from.startsWith(PROTO)) {
-		if (to.startsWith(`${LIB}core/realtime/`) || to.startsWith(`${LIB}core/pwa/`)) {
-			return 'the prototype may not open streams or touch the PWA';
+		// The board's own route files drive navigation; its screens and frames take props.
+		const routeFile = /\/\+[^/]+$/.test(from);
+		if (special && !(routeFile && special.startsWith('$app/'))) {
+			return `the prototype may not use ${special}`;
+		}
+		if (to.startsWith(`${LIB}core/`) && to !== NAV_TABLE) {
+			return 'the prototype takes only the nav table from core';
 		}
 		if (toFeature && !isPublic(toFeature.rest) && toFeature.rest !== 'fixtures.ts') {
+			// Until M4 ships threads and the workbench, their mock screens borrow chat's parts.
 			const exempt =
 				from.startsWith(PROTO_SCREENS) &&
 				toFeature.name === 'chat' &&
