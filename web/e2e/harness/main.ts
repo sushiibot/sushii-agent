@@ -61,6 +61,38 @@ Object.assign(window, {
 			flushSync();
 			return { frames };
 		},
+		/** Streams `text` on a timer, like a socket, and reports the gaps between frames meanwhile. */
+		async streamTimed(text: string, step: number, everyMs: number) {
+			api.stream = { text: '', streaming: true };
+			await new Promise(requestAnimationFrame);
+			const gaps: number[] = [];
+			let last = performance.now();
+			let alive = true;
+			let sawPlain = false;
+			const tick = () => {
+				const now = performance.now();
+				sawPlain ||= !!document.querySelector('#streamed p.whitespace-pre-wrap');
+				gaps.push(now - last);
+				last = now;
+				if (alive) requestAnimationFrame(tick);
+			};
+			requestAnimationFrame(tick);
+			await new Promise<void>((done) => {
+				let n = 0;
+				const next = () => {
+					n += step;
+					api.stream.text = text.slice(0, n);
+					if (n >= text.length) done();
+					else setTimeout(next, everyMs);
+				};
+				next();
+			});
+			await new Promise((r) => setTimeout(r, 300));
+			alive = false;
+			api.stream.streaming = false;
+			flushSync();
+			return { gaps, sawPlain };
+		},
 		/** Mounts one reply on its own and reports whether mounting threw. */
 		render(text: string, props: Record<string, unknown> = {}) {
 			const target = document.getElementById('solo')!;

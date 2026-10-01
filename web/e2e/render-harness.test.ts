@@ -25,6 +25,11 @@ type Win = {
 			step: number
 		): { ok: boolean; err?: string; ms: number[]; finishMs: number };
 		streamInto(text: string, step: number): Promise<{ frames: number[] }>;
+		streamTimed(
+			text: string,
+			step: number,
+			everyMs: number
+		): Promise<{ gaps: number[]; sawPlain: boolean }>;
 		step(fn: () => void): void;
 	};
 	ready?: boolean;
@@ -226,6 +231,67 @@ test.describe('streaming markdown in V8', () => {
 		}, DEEP[0][1]);
 		expect(mounted).toBeGreaterThan(0);
 		expect(await page.evaluate(() => (window as unknown as Win).h.errors)).toEqual([]);
+		expect(violations).toEqual([]);
+	});
+
+	test('a reply that arrives whole, as on a reload mid-turn, parses within the limits', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const payloads = [
+			'*a '.repeat(3000),
+			'_a '.repeat(3000),
+			'*a _a '.repeat(1500),
+			'**a '.repeat(1500)
+		];
+		for (const text of payloads) {
+			const r = await page.evaluate(
+				(t) => (window as unknown as Win).h.streamCost(t, 20_000),
+				text
+			);
+			expect(r.ok, r.err).toBe(true);
+			expect(r.ms[0], `${text.slice(0, 6)} first update`).toBeLessThan(100);
+			const mount = await page.evaluate((t) => {
+				const start = performance.now();
+				const res = (window as unknown as Win).h.render(t, { streaming: true });
+				return { ...res, ms: performance.now() - start };
+			}, text);
+			expect(mount.ok, mount.err).toBe(true);
+			expect(mount.ms, `${text.slice(0, 6)} mount`).toBeLessThan(150);
+		}
+		expect(violations).toEqual([]);
+	});
+
+	test('a tail that is cheap to parse but slow to draw falls back instead of janking', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const cols = 40;
+		const table = (
+			'|' +
+			'h|'.repeat(cols) +
+			'\n|' +
+			'-|'.repeat(cols) +
+			'\n' +
+			('|' + 'ab|'.repeat(cols) + '\n').repeat(200)
+		).slice(0, 15_990);
+		const headings = '# h\n'.repeat(3_997);
+		for (const [name, text] of [
+			['table', table],
+			['headings', headings]
+		]) {
+			const { gaps } = await page.evaluate(
+				(t) => (window as unknown as Win).h.streamTimed(t, 20, 4),
+				text
+			);
+			const long = gaps.filter((g) => g > 60).length;
+			const sorted = [...gaps].sort((a, b) => b - a);
+			console.log(
+				`${name}: ${gaps.length} frames, ${long} over 60ms, p95 ${sorted[Math.floor(gaps.length * 0.05)].toFixed(1)}ms, max ${sorted[0].toFixed(1)}ms`
+			);
+			expect(long, `${name} frames over 60ms`).toBeLessThanOrEqual(1);
+		}
+
 		expect(violations).toEqual([]);
 	});
 

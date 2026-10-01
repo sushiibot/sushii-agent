@@ -110,7 +110,9 @@ class Renderer {
 			if (node.type === 'definition' && !this.definitions.has(node.identifier)) {
 				this.definitions.set(node.identifier, node);
 			}
-			if ('children' in node) stack.push(...node.children);
+			// Reversed, so nodes pop in document order and the first definition of a label wins.
+			if ('children' in node)
+				for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
 		}
 	}
 
@@ -242,6 +244,16 @@ class Renderer {
 	}
 }
 
+function containsDefinition(node: Nodes): boolean {
+	const stack: Nodes[] = [node];
+	while (stack.length) {
+		const n = stack.pop()!;
+		if (n.type === 'definition' || n.type === 'footnoteDefinition') return true;
+		if ('children' in n) stack.push(...n.children);
+	}
+	return false;
+}
+
 function paragraphOf(text: string): MdBlockNode {
 	return { kind: 'paragraph', children: [{ kind: 'text', text }] };
 }
@@ -350,6 +362,8 @@ export interface TopLevelBlock {
 	start: number;
 	end: number;
 	blocks: MdBlockNode[];
+	/** Holds a link or footnote definition at any depth, which can change text before it. */
+	definition: boolean;
 }
 
 /** Each top-level node of `text` with its source offsets, or null when the parser throws.
@@ -361,7 +375,8 @@ export function parseTopLevel(text: string, ctx: RenderContext = {}): TopLevelBl
 		return root.children.map((node) => ({
 			start: node.position?.start.offset ?? 0,
 			end: node.position?.end.offset ?? text.length,
-			blocks: renderer.blocks([node], 0)
+			blocks: renderer.blocks([node], 0),
+			definition: containsDefinition(node)
 		}));
 	} catch {
 		return null;

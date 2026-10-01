@@ -116,6 +116,28 @@ describe('incremental parse', () => {
 	});
 });
 
+// Payloads from the adversarial review of streaming: a URL inside an unclosed label, a backslash in
+// a code span, and definitions that shadow each other from quotes, lists and multi-line labels.
+const REVIEWED_LINKS = [
+	'Read [the docs at https://evil.example/login first](https://good.example) ok\n',
+	'[see https://evil.com/a now](https://good.com) end\n',
+	'[visit www.evil.com today](https://good.com) end\n',
+	'[mail bob@evil.com x](https://good.com) end\n',
+	'[good\nref]: https://good.com\n\npara one\n\npara two\n\n[good ref]: https://evil.com\n\n[click here][good ref] and more text\n\nmore\n',
+	'> [r]: https://good.com\n\npara one\n\npara two\n\n> [r]: https://evil.com\n\n[click][r] tail\n\nmore\n',
+	'- [r]: https://good.com\n\npara one\n\npara two\n\n- [r]: https://evil.com\n\n[click][r] tail\n\nmore\n',
+	'[t](<https://evil.com/a b>) x\n',
+	'`a\\` [t](https://evil.com/partial "ti tle") x\n',
+	'[t](https://good.com/x "https://evil.com/y z") x\n',
+	'[a][b] x\n\n[b]: https://good.com/long/path\n',
+	'![alt https://evil.com/q z](https://good.com/i.png) x\n',
+	'[a [b](https://evil.com/x) c](https://good.com) x\n',
+	'x <https://evil.com/a> y\n',
+	'| a | b |\n|---|---|\n| [t](https://good.com) | https://evil.com/x y |\n',
+	'**bold https://evil.com/a** x\n',
+	'x `https://evil.com/abc def` y\n'
+];
+
 describe('display edits', () => {
 	const cases: [string, string][] = [
 		['**bol', '**bol**'],
@@ -142,7 +164,13 @@ describe('display edits', () => {
 		['para\n\n#', 'para\n\n'],
 		['| a | b |\n|--', ''],
 		['| a | b |\n|---|---|\n| x', '| a | b |\n|---|---|\n| x'],
-		['`a` **b `c', '`a` **b `c`**']
+		['`a` **b `c', '`a` **b `c`**'],
+		['`a\\` [t](https://evil.com/partial ', '`a\\` t'],
+		['[see https://evil.com/a now', ''],
+		['x [see https://evil.com/a now](https://go', 'x '],
+		['a\n\n[x]: https://example.com "Heads up: tap **Approve**', 'a\n\n'],
+		['a\n\n[label]:\n', 'a\n\n'],
+		['*a '.repeat(12), '*a '.repeat(12)]
 	];
 	for (const [input, shown] of cases) {
 		test(JSON.stringify(input), () => expect(streamingView(input)).toBe(shown));
@@ -173,7 +201,8 @@ describe('display edits', () => {
 		const docs = [
 			CORPUS['a typical reply'],
 			'Read [the guide](https://example.com/guide?a=1&b=2) then https://example.org/path_x.\n\nOr <https://example.net/z> or www.example.com/w or me@example.com now.',
-			'Inline ![img](/f/AAAAAAAAAAAAAAAAAAAAAA) and [nested [x]](https://example.com/n) and [a](https://example.com/p(1)) ok'
+			'Inline ![img](/f/AAAAAAAAAAAAAAAAAAAAAA) and [nested [x]](https://example.com/n) and [a](https://example.com/p(1)) ok',
+			...REVIEWED_LINKS
 		];
 		for (const doc of docs) {
 			const final = hrefs(parseMarkdown(doc, CTX));
@@ -192,6 +221,39 @@ describe('display edits', () => {
 		expect(tree.at(-1)).toEqual({ kind: 'code', lang: 'ts', text: 'const a = 1;\nconst b' });
 		expect(openFence('```\na\n```\n')).toBeNull();
 		expect(openFence('- ```\n  a')).toBe('`');
+	});
+});
+
+describe('limits', () => {
+	test('closers added for display never push a reply past the delimiter cap', () => {
+		const text = ' *a*'.repeat(1499) + ' **b';
+		const tree = new MarkdownStream().update(text, CTX);
+		expect(tree).toEqual([{ kind: 'plain', text }]);
+	});
+
+	test('slow rendered frames fall back to plain text; one noisy frame does not', () => {
+		const text = 'Some **text**\n\nmore';
+		const stream = new MarkdownStream();
+		stream.update(text, CTX);
+		stream.rendered(40, 0);
+		stream.rendered(10, 0);
+		stream.rendered(40, 0);
+		expect(stream.update(text + ' a', CTX)[0].kind).toBe('paragraph');
+		stream.rendered(40, 0);
+		stream.rendered(40, 0);
+		expect(stream.update(text + ' ab', CTX)).toEqual([{ kind: 'plain', text: text + ' ab' }]);
+		const once = new MarkdownStream();
+		once.update(text, CTX);
+		once.rendered(60, 0);
+		expect(once.update(text + ' a', CTX)[0].kind).toBe('plain');
+		expect(once.nextAt).toBeGreaterThan(0);
+		expect(once.finish(text + ' a', CTX)[0].kind).toBe('paragraph');
+	});
+
+	test('the first definition of a label wins', () => {
+		const doc =
+			'[x] and [y]\n\n[x]: https://a.example\n\n[x]: https://b.example\n\n> [y]: https://c.example\n\n[y]: https://d.example';
+		expect([...hrefs(parseMarkdown(doc))]).toEqual(['https://a.example/', 'https://c.example/']);
 	});
 });
 
