@@ -1,5 +1,5 @@
 import type { ChatMessage, MemoryWrite } from '$lib/features/chat';
-import type { BriefItem, DaySummary, InboxItem, Job, McpServer, Run } from './screens/types';
+import type { BriefItem, DaySummary, InboxItem, McpServer, Run } from './screens/types';
 
 // Every person, company, address and id below is invented.
 
@@ -210,81 +210,6 @@ export const runs: Record<string, Run> = {
 		file: 'runs/2026-09-29/deps-sweep.md'
 	}
 };
-
-export const jobs: Job[] = [
-	{
-		id: 'brief',
-		name: 'Morning briefing',
-		schedule: 'Daily 07:30',
-		next: 'Tomorrow 07:30',
-		enabled: true,
-		last: { result: 'sent', when: 'Today 07:30', note: '5 items sent to Discord DM' },
-		history: [
-			{ when: 'Today 07:30', result: 'sent', note: '5 items' },
-			{ when: 'Mon 07:30', result: 'sent', note: '3 items' },
-			{ when: 'Sun 07:30', result: 'sent', note: '4 items' }
-		]
-	},
-	{
-		id: 'deps',
-		name: 'Weekly dependency sweep',
-		schedule: 'Tuesdays 07:00',
-		next: 'Oct 6, 07:00',
-		enabled: true,
-		last: { result: 'failed', when: 'Today 07:00', note: 'Registry mirror returned 403' },
-		history: [
-			{ when: 'Today 07:00', result: 'failed', note: 'Registry mirror returned 403' },
-			{ when: 'Sep 22', result: 'sent', note: 'Opened notify-service #208' },
-			{ when: 'Sep 15', result: 'quiet', note: 'Everything up to date' }
-		]
-	},
-	{
-		id: 'inbox',
-		name: 'Inbox watch',
-		schedule: 'Every 30 min, 08:00–22:00',
-		next: 'Today 15:00',
-		enabled: true,
-		last: { result: 'quiet', when: 'Today 14:30', note: '12 new, none needed you' },
-		history: [
-			{ when: 'Today 14:30', result: 'quiet', note: '12 new, none needed you' },
-			{ when: 'Today 14:00', result: 'sent', note: 'Maple Row HVAC email flagged' },
-			{ when: 'Today 13:30', result: 'suppressed', note: 'Same newsletter as 13:00' }
-		]
-	},
-	{
-		id: 'prs',
-		name: 'PR review queue',
-		schedule: 'Weekdays 09:00',
-		next: 'Tomorrow 09:00',
-		enabled: true,
-		last: { result: 'suppressed', when: 'Today 09:00', note: 'Only your own PRs open' },
-		history: [
-			{ when: 'Today 09:00', result: 'suppressed', note: 'Only your own PRs open' },
-			{ when: 'Mon 09:00', result: 'sent', note: '2 PRs waiting on you' }
-		]
-	},
-	{
-		id: 'heartbeat',
-		name: 'Heartbeat',
-		schedule: 'Hourly',
-		next: 'Today 15:00',
-		enabled: true,
-		last: { result: 'outside-hours', when: 'Today 06:00', note: 'Active hours start at 08:00' },
-		history: [
-			{ when: 'Today 14:00', result: 'quiet', note: 'Nothing due' },
-			{ when: 'Today 06:00', result: 'outside-hours', note: 'Active hours start at 08:00' }
-		]
-	},
-	{
-		id: 'backup',
-		name: 'Home repo backup check',
-		schedule: 'Sundays 20:00',
-		next: 'Oct 4, 20:00',
-		enabled: false,
-		last: { result: 'skipped', when: 'Sun 20:00', note: 'Paused by you' },
-		history: [{ when: 'Sun 20:00', result: 'skipped', note: 'Paused by you' }]
-	}
-];
 
 export const linear: McpServer = {
 	name: 'Linear',

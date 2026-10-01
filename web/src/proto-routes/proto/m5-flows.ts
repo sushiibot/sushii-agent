@@ -8,6 +8,8 @@ import {
 import * as m from '$lib/features/memory/fixtures';
 import { SkillScreen, SkillsScreen, SkillVersionsScreen } from '$lib/features/skills';
 import * as sk from '$lib/features/skills/fixtures';
+import { JobScreen, SchedulesScreen } from '$lib/features/schedules';
+import * as sc from '$lib/features/schedules/fixtures';
 import type { Flow, Frame } from './flows';
 
 const NOW = new Date(2026, 8, 30, 16, 41).getTime();
@@ -228,6 +230,105 @@ const skillFrames: Frame[] = [
 	}
 ];
 
+const jobs = sc.jobDetails(NOW);
+const job = (id: string, props: Record<string, unknown> = {}) => ({
+	remote: ready,
+	job: jobs.find((j) => j.id === id),
+	now: NOW,
+	back: back('/schedules'),
+	...props
+});
+const jobList = (props: Record<string, unknown> = {}) => ({
+	remote: ready,
+	jobs,
+	now: NOW,
+	back: back('/more'),
+	...props
+});
+
+const scheduleFrames: Frame[] = [
+	{
+		id: 'sc-1',
+		label: 'Schedules: a failed job leads',
+		screen: SchedulesScreen,
+		props: jobList(),
+		...detail('schedules'),
+		next: 'Open the failed job',
+		hits: { 'back up projects': 'sc-2', 'inbox watch': 'sc-5' }
+	},
+	{
+		id: 'sc-2',
+		label: 'Job: next run, history, test run',
+		screen: JobScreen,
+		props: job('nightly-sync'),
+		...detail('schedules'),
+		next: 'Test run',
+		hits: { 'test run': 'sc-3' }
+	},
+	{
+		id: 'sc-3',
+		label: 'Test running, sending off',
+		screen: JobScreen,
+		props: job('nightly-sync', { test: { state: 'running', step: 'Running step 2 of about 4' } }),
+		...detail('schedules'),
+		next: 'Finishes'
+	},
+	{
+		id: 'sc-4',
+		label: 'Test result',
+		screen: JobScreen,
+		props: job('nightly-sync', {
+			test: {
+				state: 'done',
+				result: 'failed',
+				note: 'Still can’t reach the backup server. Nothing was sent.'
+			}
+		}),
+		...detail('schedules'),
+		hits: { 'test again': 'sc-3' }
+	},
+	{
+		id: 'sc-5',
+		label: 'A quiet job says why it was quiet',
+		screen: JobScreen,
+		props: job('inbox-triage'),
+		...detail('schedules'),
+		branch: 'Nothing new, suppressed, outside hours'
+	},
+	{
+		id: 'sc-6',
+		label: 'Paused',
+		screen: JobScreen,
+		props: job('repo-backup-check'),
+		...detail('schedules'),
+		branch: 'A job you paused'
+	},
+	{
+		id: 'sc-7',
+		label: 'No jobs yet',
+		screen: SchedulesScreen,
+		props: jobList({ jobs: [] }),
+		...detail('schedules'),
+		branch: 'Empty'
+	},
+	{
+		id: 'sc-8',
+		label: 'Loading, slowly',
+		screen: SchedulesScreen,
+		props: jobList({ remote: slow, jobs: [] }),
+		...detail('schedules'),
+		branch: 'Slow network'
+	},
+	{
+		id: 'sc-9',
+		label: 'Offline',
+		screen: JobScreen,
+		props: job('briefing', { online: false }),
+		...detail('schedules'),
+		branch: 'Phone offline: no test run'
+	}
+];
+
 export const m5Flows: Flow[] = [
 	{
 		id: 'memory',
@@ -244,6 +345,14 @@ export const m5Flows: Flow[] = [
 		intro:
 			'How-tos the agent wrote for itself, by stage, with why each is there, the runs that loaded it, and every version as a diff. A draft loads on its own only after three verified runs.',
 		frames: skillFrames
+	},
+	{
+		id: 'schedules',
+		code: 'SC',
+		title: 'Schedules',
+		intro:
+			'Each job shows its next run and says why its last run was quiet: nothing new, suppressed, skipped, outside hours or failed. Test-run a job, with sending off, before trusting it.',
+		frames: scheduleFrames
 	}
 ];
 
@@ -258,5 +367,9 @@ export const m5Routes: [string, string][] = [
 	['/skills/deploy-relay-bot', 'sk-2'],
 	['/skills/rent-receipts', 'sk-4'],
 	['/skills/*', 'sk-5'],
-	['/skills', 'sk-1']
+	['/skills', 'sk-1'],
+	['/schedules/nightly-sync', 'sc-2'],
+	['/schedules/repo-backup-check', 'sc-6'],
+	['/schedules/*', 'sc-5'],
+	['/schedules', 'sc-1']
 ];

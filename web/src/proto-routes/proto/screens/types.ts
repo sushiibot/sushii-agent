@@ -50,18 +50,6 @@ export interface Run {
 	file: string;
 }
 
-export type LastResult = 'sent' | 'quiet' | 'suppressed' | 'failed' | 'skipped' | 'outside-hours';
-
-export interface Job {
-	id: string;
-	name: string;
-	schedule: string;
-	next: string;
-	enabled: boolean;
-	last: { result: LastResult; when: string; note: string };
-	history: { when: string; result: LastResult; note: string }[];
-}
-
 export interface McpTool {
 	name: string;
 	description: string;

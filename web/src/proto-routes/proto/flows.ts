@@ -2,7 +2,6 @@ import type { Component } from 'svelte';
 import type { FeatureCheck } from '$lib/core/nav/tabs';
 import NeedsYou from './screens/needs-you.svelte';
 import { ChatScreen } from '$lib/features/chat';
-import Schedules from './screens/schedules.svelte';
 import Connectors from './screens/connectors.svelte';
 import McpServer from './screens/mcp-server.svelte';
 import Briefing from './screens/briefing.svelte';
@@ -803,52 +802,6 @@ export const flows: Flow[] = [
 	},
 	...m5Flows,
 	{
-		id: 'schedules',
-		code: 'SC',
-		title: 'Schedules',
-		intro:
-			'Each job says why its last run was quiet: nothing new, suppressed, skipped, outside hours or failed. Test-run a job before trusting it.',
-		frames: [
-			{
-				id: 'sc-1',
-				label: 'Jobs with failure alert',
-				screen: Schedules,
-				props: { jobs: f.jobs },
-				next: 'Fix and test'
-			},
-			{
-				id: 'sc-2',
-				label: 'Job detail',
-				screen: Schedules,
-				props: { jobs: f.jobs, selected: 'deps' },
-				next: 'Test run',
-				hits: { 'test run': 'sc-3' }
-			},
-			{
-				id: 'sc-3',
-				label: 'Test running',
-				screen: Schedules,
-				props: { jobs: f.jobs, selected: 'deps', test: 'running' },
-				next: 'Finishes'
-			},
-			{
-				id: 'sc-4',
-				label: 'Test passed',
-				screen: Schedules,
-				props: { jobs: f.jobs, selected: 'deps', test: 'done' },
-				hits: { 'test again': 'sc-3' }
-			},
-			{
-				id: 'sc-5',
-				label: 'A quiet job',
-				screen: Schedules,
-				props: { jobs: f.jobs, selected: 'inbox' },
-				branch: 'Why a job said nothing',
-				hits: { 'test run': 'sc-3' }
-			}
-		]
-	},
-	{
 		id: 'connectors',
 		code: 'MC',
 		title: 'Add an MCP server',
@@ -935,9 +888,6 @@ export const routes: [string, string][] = [
 	...m23Routes,
 	...m4Routes,
 	...m5Routes,
-	['/schedules/deps', 'sc-2'],
-	['/schedules/*', 'sc-5'],
-	['/schedules', 'sc-1'],
 	['/connectors/linear', 'mc-5'],
 	['/connectors/*', 'mc-6'],
 	['/connectors', 'mc-1'],
