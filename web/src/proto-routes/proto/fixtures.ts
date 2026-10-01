@@ -1,5 +1,5 @@
 import type { ChatMessage, MemoryWrite } from '$lib/features/chat';
-import type { BriefItem, DaySummary, InboxItem, Job, McpServer, Run, Skill } from './screens/types';
+import type { BriefItem, DaySummary, InboxItem, Job, McpServer, Run } from './screens/types';
 
 // Every person, company, address and id below is invented.
 
@@ -210,68 +210,6 @@ export const runs: Record<string, Run> = {
 		file: 'runs/2026-09-29/deps-sweep.md'
 	}
 };
-
-export const skills: Skill[] = [
-	{
-		name: 'deploy-relay-bot',
-		description: 'Blue/green switch for relay-bot production with error-rate watch.',
-		stage: 'active',
-		uses: 23,
-		successRate: 0.96,
-		lastUsed: 'Yesterday',
-		reason: 'Promoted after 5 runs in a row that ended with a verified health check.',
-		history: [
-			{
-				when: 'Sep 28',
-				event: 'Updated',
-				reason: 'You corrected the drain delay in chat. Diff scan: clean.'
-			},
-			{ when: 'Sep 12', event: 'Promoted to active', reason: '5 verified runs in a row.' },
-			{ when: 'Aug 30', event: 'Drafted', reason: 'Learned from a deploy you walked through.' }
-		],
-		runs: [
-			{ id: 'run-deploy', title: 'relay-bot 4.18.2', ok: true, when: 'Yesterday' },
-			{ id: 'r-417', title: 'relay-bot 4.17.0', ok: true, when: 'Sep 21' },
-			{ id: 'r-416', title: 'relay-bot 4.16.3', ok: false, when: 'Sep 14' }
-		]
-	},
-	{
-		name: 'rent-receipts',
-		description: 'File the monthly rent receipt and match it to the bank entry.',
-		stage: 'draft',
-		uses: 2,
-		successRate: 1,
-		lastUsed: 'Today',
-		reason: 'Held as draft: needs 3 verified runs before it can load automatically.',
-		history: [{ when: 'Sep 1', event: 'Drafted', reason: 'Written after a manual filing run.' }],
-		runs: [{ id: 'run-rent', title: 'October rent', ok: true, when: 'Today' }]
-	},
-	{
-		name: 'flight-checkin',
-		description: 'Check in 24h before departure and save the boarding pass.',
-		stage: 'stale',
-		uses: 4,
-		successRate: 0.75,
-		lastUsed: 'Jun 3',
-		reason: 'Marked stale: unused for 90 days and the airline site changed since.',
-		history: [
-			{ when: 'Sep 1', event: 'Marked stale', reason: 'No use in 90 days.' },
-			{ when: 'Apr 2', event: 'Promoted to active', reason: '3 verified runs.' }
-		],
-		runs: [{ id: 'r-jun', title: 'Check in FA 837', ok: true, when: 'Jun 3' }]
-	},
-	{
-		name: 'discord-mod-digest',
-		description: 'Summarize mod cases across guilds each morning.',
-		stage: 'archived',
-		uses: 41,
-		successRate: 0.9,
-		lastUsed: 'Jul 14',
-		reason: 'Archived when you deleted the morning mod digest schedule.',
-		history: [{ when: 'Jul 14', event: 'Archived', reason: 'Its schedule was deleted.' }],
-		runs: []
-	}
-];
 
 export const jobs: Job[] = [
 	{

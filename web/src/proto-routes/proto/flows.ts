@@ -2,7 +2,6 @@ import type { Component } from 'svelte';
 import type { FeatureCheck } from '$lib/core/nav/tabs';
 import NeedsYou from './screens/needs-you.svelte';
 import { ChatScreen } from '$lib/features/chat';
-import Skills from './screens/skills.svelte';
 import Schedules from './screens/schedules.svelte';
 import Connectors from './screens/connectors.svelte';
 import McpServer from './screens/mcp-server.svelte';
@@ -804,21 +803,6 @@ export const flows: Flow[] = [
 	},
 	...m5Flows,
 	{
-		id: 'skills',
-		code: 'SK',
-		title: 'Skills',
-		intro: 'Skills the agent wrote for itself.',
-		frames: [
-			{ id: 'sk-1', label: 'Skills', screen: Skills, props: { skills: f.skills } },
-			{
-				id: 'sk-2',
-				label: 'Skill inspector',
-				screen: Skills,
-				props: { skills: f.skills, selected: 'deploy-relay-bot' }
-			}
-		]
-	},
-	{
 		id: 'schedules',
 		code: 'SC',
 		title: 'Schedules',
@@ -951,8 +935,6 @@ export const routes: [string, string][] = [
 	...m23Routes,
 	...m4Routes,
 	...m5Routes,
-	['/memory/skills', 'sk-1'],
-	['/memory/skills/*', 'sk-2'],
 	['/schedules/deps', 'sc-2'],
 	['/schedules/*', 'sc-5'],
 	['/schedules', 'sc-1'],

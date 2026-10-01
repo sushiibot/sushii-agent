@@ -6,6 +6,8 @@ import {
 	MemoryWritesScreen
 } from '$lib/features/memory';
 import * as m from '$lib/features/memory/fixtures';
+import { SkillScreen, SkillsScreen, SkillVersionsScreen } from '$lib/features/skills';
+import * as sk from '$lib/features/skills/fixtures';
 import type { Flow, Frame } from './flows';
 
 const NOW = new Date(2026, 8, 30, 16, 41).getTime();
@@ -142,6 +144,90 @@ const memoryFrames: Frame[] = [
 	}
 ];
 
+const skills = sk.skillDetails(NOW);
+const skill = (name: string, props: Record<string, unknown> = {}) => ({
+	remote: ready,
+	skill: skills.find((s) => s.name === name),
+	now: NOW,
+	back: back('/skills'),
+	...props
+});
+const skillList = (props: Record<string, unknown> = {}) => ({
+	remote: ready,
+	skills: sk.skillSummaries(NOW),
+	now: NOW,
+	back: back('/more'),
+	...props
+});
+
+const skillFrames: Frame[] = [
+	{
+		id: 'sk-1',
+		label: 'Skills by stage',
+		screen: SkillsScreen,
+		props: skillList(),
+		...detail('skills'),
+		next: 'Open a skill',
+		hits: { 'deploy-relay-bot': 'sk-2', 'rent-receipts': 'sk-4' }
+	},
+	{
+		id: 'sk-2',
+		label: 'A skill in use',
+		screen: SkillScreen,
+		props: skill('deploy-relay-bot'),
+		...detail('skills'),
+		next: 'Versions',
+		hits: { versions: 'sk-3' }
+	},
+	{
+		id: 'sk-3',
+		label: 'SKILL.md and its versions, with diffs',
+		screen: SkillVersionsScreen,
+		props: skill('deploy-relay-bot', { back: back('/skills/deploy-relay-bot') }),
+		...detail('skills')
+	},
+	{
+		id: 'sk-4',
+		label: 'A draft: Use it now, or Archive',
+		screen: SkillScreen,
+		props: skill('rent-receipts'),
+		...detail('skills'),
+		branch: 'A skill still in draft'
+	},
+	{
+		id: 'sk-5',
+		label: 'Stale',
+		screen: SkillScreen,
+		props: skill('flight-checkin'),
+		...detail('skills'),
+		branch: 'Unused for 90 days'
+	},
+	{
+		id: 'sk-6',
+		label: 'No skills yet',
+		screen: SkillsScreen,
+		props: skillList({ skills: [] }),
+		...detail('skills'),
+		branch: 'Empty'
+	},
+	{
+		id: 'sk-7',
+		label: "Couldn't load",
+		screen: SkillsScreen,
+		props: skillList({ remote: failed, skills: [] }),
+		...detail('skills'),
+		branch: 'The server fails'
+	},
+	{
+		id: 'sk-8',
+		label: 'Loading, slowly',
+		screen: SkillScreen,
+		props: skill('deploy-relay-bot', { remote: slow, skill: undefined }),
+		...detail('skills'),
+		branch: 'Slow network'
+	}
+];
+
 export const m5Flows: Flow[] = [
 	{
 		id: 'memory',
@@ -150,6 +236,14 @@ export const m5Flows: Flow[] = [
 		intro:
 			'What the agent remembers, as files, and every change to them as a diff with the run or thread that wrote it and whether that run had read outside content. Revert is one tap, with Restore in the toast.',
 		frames: memoryFrames
+	},
+	{
+		id: 'skills',
+		code: 'SK',
+		title: 'Skills',
+		intro:
+			'How-tos the agent wrote for itself, by stage, with why each is there, the runs that loaded it, and every version as a diff. A draft loads on its own only after three verified runs.',
+		frames: skillFrames
 	}
 ];
 
@@ -159,5 +253,10 @@ export const m5Routes: [string, string][] = [
 	['/memory/writes/*', 'ms-2'],
 	['/memory/writes', 'ms-5'],
 	['/memory/files/*', 'ms-4'],
-	['/memory', 'ms-1']
+	['/memory', 'ms-1'],
+	['/skills/deploy-relay-bot/versions', 'sk-3'],
+	['/skills/deploy-relay-bot', 'sk-2'],
+	['/skills/rent-receipts', 'sk-4'],
+	['/skills/*', 'sk-5'],
+	['/skills', 'sk-1']
 ];

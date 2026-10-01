@@ -50,20 +50,6 @@ export interface Run {
 	file: string;
 }
 
-export type SkillStage = 'draft' | 'active' | 'stale' | 'archived';
-
-export interface Skill {
-	name: string;
-	description: string;
-	stage: SkillStage;
-	uses: number;
-	successRate: number;
-	lastUsed: string;
-	reason: string;
-	history: { when: string; event: string; reason: string }[];
-	runs: { id: string; title: string; ok: boolean; when: string }[];
-}
-
 export type LastResult = 'sent' | 'quiet' | 'suppressed' | 'failed' | 'skipped' | 'outside-hours';
 
 export interface Job {
