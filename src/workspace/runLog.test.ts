@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunLog, TASK_MAX, recordRotation, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
@@ -118,5 +119,59 @@ describe("recordRotation", () => {
       status: "done",
       resultSummary: "new session /s/new.jsonl",
     });
+  });
+});
+
+describe("RunLog on a planted runs.jsonl", () => {
+  const fifo = () => spawnSync("mkfifo", [runLogPath(dir)]);
+  const quick = <T>(fn: () => T): T => {
+    const t = Date.now();
+    const out = fn();
+    expect(Date.now() - t).toBeLessThan(1_000);
+    return out;
+  };
+
+  test("a FIFO at boot is moved aside and a fresh log starts: reconcile, start, get and end all return", () => {
+    fifo();
+    const warnings: object[] = [];
+    const log = quick(() => new RunLog(dir, { warn: (obj) => warnings.push(obj) }));
+    expect(warnings).toHaveLength(1);
+    expect(readdirSync(dir).some((n) => n.startsWith("runs.jsonl.unsafe-"))).toBe(true);
+    expect(quick(() => log.reconcileOrphans())).toBe(0);
+    const runId = quick(() => log.startRun({ agentName: "main", task: "t", sessionFile: "/x" }));
+    quick(() => log.endRun(runId, { status: "done" }));
+    expect(lines().map((r) => r.status)).toEqual(["running", "done"]);
+  });
+
+  test("a FIFO planted while running: reads see nothing, the next write moves it aside", () => {
+    const log = new RunLog(dir);
+    const runId = log.startRun({ agentName: "main", task: "t", sessionFile: "/x" });
+    rmSync(runLogPath(dir));
+    fifo();
+    expect(quick(() => log.getRun("01K6B0000000000000000000AA"))).toBeNull();
+    expect(quick(() => log.reconcileOrphans())).toBe(0);
+    expect(quick(() => [...tailLines(runLogPath(dir))])).toEqual([]);
+    quick(() => log.endRun(runId, { status: "done" }));
+    expect(lines().map((r) => r.status)).toEqual(["done"]);
+    // After a restart the run is unknown: endRun fails fast instead of hanging.
+    rmSync(runLogPath(dir));
+    fifo();
+    const restarted = quick(() => new RunLog(dir));
+    expect(() => quick(() => restarted.endRun("01K6B0000000000000000000AA", { status: "done" }))).toThrow(/unknown runId/);
+  });
+
+  test("a symlink or hardlink is never written through", () => {
+    const target = join(dir, "elsewhere.txt");
+    writeFileSync(target, "untouched\n");
+    symlinkSync(target, runLogPath(dir));
+    const log = new RunLog(dir);
+    log.startRun({ agentName: "main", task: "t", sessionFile: "/x" });
+    expect(readFileSync(target, "utf8")).toBe("untouched\n");
+    rmSync(runLogPath(dir));
+    linkSync(target, runLogPath(dir));
+    expect(log.getRun("01K6B0000000000000000000AA")).toBeNull();
+    log.startRun({ agentName: "main", task: "t2", sessionFile: "/x" });
+    expect(readFileSync(target, "utf8")).toBe("untouched\n");
+    expect(lines().map((r) => r.task)).toEqual(["t2"]);
   });
 });

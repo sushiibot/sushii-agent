@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { latestRuns, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
 import { resolveStateDir, sessionRoots } from "./sessionPaths.ts";
@@ -46,7 +46,7 @@ export function realRoots(agentDirs: string[]): string[] {
 
 /** Lines from the start of a file, read in chunks. */
 function* headLines(path: string): Generator<string> {
-  const fd = openSync(path, "r");
+  const fd = openSync(path, SAFE_OPEN);
   try {
     const buf = Buffer.alloc(64 * 1024);
     let carry = "";
@@ -65,27 +65,62 @@ function* headLines(path: string): Generator<string> {
   }
 }
 
-/** The real path of `file` when it is a Pi session file under the session roots, else null. */
-export function confineSessionFile(file: string, roots: string[]): string | null {
+// O_NONBLOCK: a FIFO swapped in for a session file would otherwise block the open until a writer shows up.
+const SAFE_OPEN = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+/** A Pi session header is one short line. */
+const HEADER_MAX = 64 * 1024;
+
+/**
+ * Opens `file` when it is a regular, singly linked Pi session file under the session roots, checking the open
+ * fd itself (type, links, real path, header), so callers read exactly the file that was checked.
+ */
+export function openConfinedSessionSync(file: string, roots: string[]): { fd: number; real: string; size: number } | null {
+  if (typeof file !== "string" || !file || file.includes("\0")) return null;
   let real: string;
   try {
     real = realpathSync(file);
   } catch {
     return null;
   }
-  if (!real.endsWith(".jsonl")) return null;
-  if (!roots.some((r) => inside(real, r))) return null;
+  if (!real.endsWith(".jsonl") || !roots.some((r) => inside(real, r))) return null;
+  let fd: number;
   try {
-    const st = statSync(real);
-    if (!st.isFile() || st.nlink > 1) return null;
-    for (const line of headLines(real)) {
-      const header = JSON.parse(line) as { type?: unknown };
-      return header?.type === "session" ? real : null;
-    }
+    fd = openSync(real, SAFE_OPEN);
   } catch {
     return null;
   }
-  return null;
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) throw new Error("refused");
+    const now = fdPath(fd);
+    if (now !== null && now !== real) throw new Error("refused");
+    const buf = Buffer.alloc(Math.min(HEADER_MAX, st.size));
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    const nl = buf.subarray(0, n).indexOf(0x0a);
+    const header = nl === -1 ? null : (parseEntry(buf.subarray(0, nl).toString("utf8")) as { type?: unknown } | null);
+    if (header?.type !== "session") throw new Error("refused");
+    return { fd, real, size: st.size };
+  } catch {
+    closeSync(fd);
+    return null;
+  }
+}
+
+/** The path an open fd really names (Linux /proc), or null where /proc is unavailable. */
+function fdPath(fd: number): string | null {
+  try {
+    return readlinkSync(`/proc/self/fd/${fd}`);
+  } catch {
+    return null;
+  }
+}
+
+/** The real path of `file` when it is a Pi session file under the session roots, else null. */
+export function confineSessionFile(file: string, roots: string[]): string | null {
+  const opened = openConfinedSessionSync(file, roots);
+  if (!opened) return null;
+  closeSync(opened.fd);
+  return opened.real;
 }
 
 function listSessionFiles(roots: string[]): string[] {

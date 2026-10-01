@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   delete process.env.OPENAI_API_KEY;
   await scaffoldHome(config.home);
   // One instance for the whole process: later subagent and job runners record through it too.
-  const runLog = new RunLog(config.stateDir);
+  const runLog = new RunLog(config.stateDir, { warn: (obj, msg) => log.warn(obj, msg) });
   const orphans = runLog.reconcileOrphans();
   if (orphans) log.warn({ orphans }, "closed runs left open by a previous process");
   const historyLog = getLogger("workspace.history");
