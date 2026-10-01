@@ -94,7 +94,7 @@
 							class="flex min-h-12 cursor-pointer list-none items-center gap-2.5 px-3 py-1.5 [&::-webkit-details-marker]:hidden"
 						>
 							{@render stepIcon(step)}
-							<span class="flex min-w-0 flex-1 flex-col">
+							<span class="flex min-w-0 flex-1 flex-col [overflow-wrap:anywhere]">
 								<span class={cn(step.state === 'failed' && 'text-failed')}>{step.label}</span>
 								<code class="font-mono text-xs text-muted-foreground">{step.tool}</code>
 							</span>

@@ -140,7 +140,7 @@
 		data-surface="approval"
 		out:slide={{ duration: still() ? 0 : 320, easing: cubicOut }}
 		class={cn(
-			'relative mx-2 mt-2 mb-3 flex flex-col gap-2 rounded-2xl border-2 border-approval/60 bg-approval-surface p-3 text-foreground shadow-[0_-8px_24px_-16px_rgb(0_0_0/0.45)]',
+			'relative mx-2 mt-2 mb-3 flex min-w-0 flex-col gap-2 rounded-2xl border-2 border-approval/60 bg-approval-surface p-3 text-foreground shadow-[0_-8px_24px_-16px_rgb(0_0_0/0.45)]',
 			// The next request peeks out underneath, so a stack reads as a stack.
 			items.length > 1 &&
 				'mb-4 shadow-[0_6px_0_-2px_var(--approval-surface),0_6px_0_0_color-mix(in_oklch,var(--approval)_45%,transparent)]'
@@ -157,7 +157,8 @@
 					{timedOut ? 'Approval timed out' : 'sushii-agent needs your approval to run'}
 				</span>
 				<span class="flex flex-wrap items-baseline gap-x-2">
-					<code class="min-w-0 font-mono text-sm leading-snug font-semibold break-words"
+					<code
+						class="min-w-0 font-mono text-sm leading-snug font-semibold [overflow-wrap:anywhere]"
 						>{view.tool}</code
 					>
 					{#if items.length > 1 && !timedOut}<span
@@ -208,7 +209,7 @@
 			>
 				{#each view.fields as field, i (i)}
 					<div class="flex flex-col gap-0.5">
-						<dt class="text-xs text-muted-foreground">{field.key}</dt>
+						<dt class="text-xs [overflow-wrap:anywhere] text-muted-foreground">{field.key}</dt>
 						<dd
 							class={cn(
 								'font-mono text-code leading-relaxed [overflow-wrap:anywhere]',
@@ -229,7 +230,7 @@
 			{#if top.tainted}
 				<p class="flex items-start gap-2 rounded-lg bg-taint-soft px-2 py-1 text-xs leading-snug">
 					<TriangleAlert class="mt-px size-3.5 shrink-0 text-taint" aria-hidden="true" />
-					<span class="text-taint">{top.tainted}</span>
+					<span class="min-w-0 [overflow-wrap:anywhere] text-taint">{top.tainted}</span>
 				</p>
 			{/if}
 
