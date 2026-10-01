@@ -22,6 +22,7 @@
 	$effect(() => {
 		const main = screen?.querySelector('main');
 		if (main && frame.scrollUp) main.scrollTop = -frame.scrollUp;
+		if (main && frame.scrollTo) main.scrollTop = frame.scrollTo;
 	});
 	const h = $derived(frame.desktop ? 800 : 844);
 	const chrome = $derived(frame.desktop ? 'none' : (frame.chrome ?? 'standalone'));
@@ -73,7 +74,13 @@
 		<!-- The transform makes this the box for the fixed-position sheets the shell portals in. -->
 		<div class="relative min-h-0 flex-1 transform-gpu" bind:this={screen}>
 			{#if frame.shell}
-				<Shell {nav} {tabs} active="home" tabBar={false}><frame.screen {...frame.props} /></Shell>
+				<Shell
+					{nav}
+					{tabs}
+					active={frame.tab ?? 'chat'}
+					tabBar={frame.tabBar ?? false}
+					badges={frame.badges}><frame.screen {...frame.props} /></Shell
+				>
 			{:else}
 				<frame.screen {...frame.props} />
 			{/if}

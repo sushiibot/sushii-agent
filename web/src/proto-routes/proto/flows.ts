@@ -3,22 +3,19 @@ import type { Session } from './screens/types';
 import NeedsYou from './screens/needs-you.svelte';
 import ThreadChat from './screens/thread-chat.svelte';
 import { ChatScreen } from '$lib/features/chat';
-import RunDetail from './screens/run-detail.svelte';
 import Memory from './screens/memory.svelte';
 import Skills from './screens/skills.svelte';
 import Schedules from './screens/schedules.svelte';
 import Connectors from './screens/connectors.svelte';
 import McpServer from './screens/mcp-server.svelte';
 import Briefing from './screens/briefing.svelte';
-import History from './screens/history.svelte';
-import RunFile from './screens/run-file.svelte';
 import Chats from './screens/chats.svelte';
-import More from './screens/more.svelte';
 import Workbench from './screens/workbench.svelte';
 import HomeScreen from './components/home-screen.svelte';
 import DiscordDm from './components/discord-dm.svelte';
 import * as f from './fixtures';
 import * as c from '$lib/features/chat/fixtures';
+import { m23Flows, m23Routes } from './m23-flows';
 
 export interface Frame {
 	id: string;
@@ -46,6 +43,12 @@ export interface Frame {
 	scrollUp?: number;
 	/** Render inside the app's Shell, as routes do; the legacy prototype screens bring their own. */
 	shell?: boolean;
+	/** The Shell's lit nav entry, tab bar and badges, as the route's layout sets them. */
+	tab?: string;
+	tabBar?: boolean;
+	badges?: Record<string, number>;
+	/** Start a top-anchored screen scrolled down this many px. */
+	scrollTo?: number;
 }
 
 export interface Flow {
@@ -165,38 +168,7 @@ export const flows: Flow[] = [
 			}
 		]
 	},
-	{
-		id: 'needs-you',
-		code: 'NY',
-		title: 'Home: needs you',
-		intro:
-			'Grouped by what blocks progress, not by time. Approvals (shield) and questions (the agent’s voice) list first and count in the tab badge. Tapping one opens it in the chat and never answers it. Failed and running items still peek in a sheet.',
-		deviations: [1],
-		frames: [
-			{
-				id: 'ny-1',
-				label: 'Home: 2 approvals, 1 question',
-				screen: NeedsYou,
-				props: { items: f.inbox },
-				next: 'Tap an approval',
-				hits: { 'weekly dependency': 'ny-2' }
-			},
-			{
-				id: 'ny-2',
-				label: 'A failed run peeks in a sheet',
-				screen: NeedsYou,
-				props: { items: f.inbox, peek: 'in-deploy-fail' },
-				branch: 'Tap a failed run'
-			},
-			{
-				id: 'ny-d',
-				label: 'Desktop: list and peek side by side',
-				screen: NeedsYou,
-				props: { items: f.inbox, peek: 'in-deploy-fail' },
-				desktop: true
-			}
-		]
-	},
+	...m23Flows,
 	{
 		id: 'chats',
 		code: 'CS',
@@ -229,23 +201,6 @@ export const flows: Flow[] = [
 					]
 				},
 				desktop: true
-			}
-		]
-	},
-	{
-		id: 'more',
-		code: 'NV',
-		title: 'Tabs and More',
-		intro:
-			'Four tabs: Home, Chats, Briefing, More. The tab bar shows only on those four screens. More holds this device’s notification settings: status and a test send.',
-		frames: [
-			{ id: 'nv-1', label: 'More, notifications off', screen: More, props: {} },
-			{
-				id: 'nv-2',
-				label: 'Notifications on, test sent',
-				screen: More,
-				props: { push: 'granted', testSent: true },
-				branch: 'After enabling'
 			}
 		]
 	},
@@ -906,8 +861,8 @@ export const flows: Flow[] = [
 					title: 'Approval needed',
 					body: 'sushii-agent needs your approval to run send_email'
 				},
-				next: 'Tap',
-				hits: { agent: 'ch-2' }
+				next: 'Tap: Home opens its peek',
+				hits: { agent: 'hm-2' }
 			},
 			{
 				id: 'pu-2',
@@ -916,8 +871,8 @@ export const flows: Flow[] = [
 				props: {},
 				chrome: 'bare',
 				notification: { title: 'The agent asks', body: 'Aisle 24C or window 31K?' },
-				branch: 'Lands on AS-1, card in view and focused',
-				hits: { agent: 'as-1' }
+				branch: 'Lands on HM-5, the question in its peek',
+				hits: { agent: 'hm-5' }
 			},
 			{
 				id: 'pu-3',
@@ -993,35 +948,6 @@ export const flows: Flow[] = [
 					running: true,
 					tray: { items: [c.hvacApproval] }
 				}
-			}
-		]
-	},
-	{
-		id: 'runs',
-		code: 'RD',
-		title: 'Run detail',
-		intro:
-			'One line per tool call, with the evidence the agent collected. A run that finished without proof is marked unverified, not green.',
-		frames: [
-			{
-				id: 'rd-1',
-				label: 'Verified run',
-				screen: RunDetail,
-				props: { run: f.runs['run-hvac'], open: ['s4'] },
-				next: 'Compare'
-			},
-			{
-				id: 'rd-2',
-				label: 'Finished but unverified',
-				screen: RunDetail,
-				props: { run: f.runs['run-deps'], open: ['d3'] }
-			},
-			{
-				id: 'rd-d',
-				label: 'Desktop: timeline with outcome rail',
-				screen: RunDetail,
-				props: { run: f.runs['run-hvac'], open: ['s1'] },
-				desktop: true
 			}
 		]
 	},
@@ -1210,50 +1136,18 @@ export const flows: Flow[] = [
 				props: { items: f.brief, dismissed: ['b5'], votes: { b2: 'up', b3: 'up', b4: 'down' } }
 			}
 		]
-	},
-	{
-		id: 'history',
-		code: 'HS',
-		title: 'History search',
-		intro:
-			'Search across chats and runs. Each day has a summary, its sessions and its runs, and every run has a plain file.',
-		frames: [
-			{
-				id: 'hs-1',
-				label: 'Recent days',
-				screen: History,
-				props: { days: f.days },
-				next: 'Search'
-			},
-			{
-				id: 'hs-2',
-				label: 'Search results',
-				screen: History,
-				props: { days: f.days, query: 'maple' },
-				next: 'Open a run'
-			},
-			{
-				id: 'hs-3',
-				label: 'Run file',
-				screen: RunFile,
-				props: { path: f.runs['run-hvac'].file, content: f.runFile, runId: 'run-hvac' }
-			}
-		]
 	}
 ];
 
 // First match wins; a trailing * matches by prefix.
 export const routes: [string, string][] = [
-	['/', 'ny-1'],
+	...m23Routes,
 	['/chats/main?approve=*', 'ch-2'],
 	['/chats/main?ask=*', 'as-1'],
 	['/chats/main', 'cl-2'],
 	['/chats/oct-trip-archived', 'cl-3'],
 	['/chats/oct-trip', 'th-3'],
 	['/chats', 'cs-1'],
-	['/more', 'nv-1'],
-	['/runs/run-deps', 'rd-2'],
-	['/runs*', 'rd-1'],
 	['/memory/skills', 'ms-4'],
 	['/memory/skills/deploy-relay-bot', 'ms-5'],
 	['/memory/skills/*', 'ms-6'],
@@ -1268,9 +1162,7 @@ export const routes: [string, string][] = [
 	['/connectors/linear', 'mc-5'],
 	['/connectors/*', 'mc-6'],
 	['/connectors', 'mc-1'],
-	['/brief', 'br-1'],
-	['/history/*', 'hs-3'],
-	['/history', 'hs-1']
+	['/brief', 'br-1']
 ];
 
 export function frameFor(path: string): string | undefined {
