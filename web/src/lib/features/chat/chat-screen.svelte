@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { LocationReply } from './location';
 	import { tick, type ComponentProps, type Snippet } from 'svelte';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronUp from '@lucide/svelte/icons/chevron-up';
@@ -165,7 +166,7 @@
 		onretrysend?: (messageId: string) => void;
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
-		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
+		ondecide?: (nonce: string, decision: 'approve' | 'deny', location?: LocationReply) => void;
 		oninstall?: () => Promise<'accepted' | 'dismissed' | 'failed'>;
 		onreload?: () => void;
 		/** Starts a thread from a reply; without it replies have no Start-a-thread button. */
@@ -526,7 +527,7 @@
 			{#if shownTray}
 				<ApprovalTray
 					{...shownTray}
-					onapprove={(nonce) => ondecide?.(nonce, 'approve')}
+					onapprove={(nonce, location) => ondecide?.(nonce, 'approve', location)}
 					ondeny={(nonce) => ondecide?.(nonce, 'deny')}
 				/>
 			{/if}

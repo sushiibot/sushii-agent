@@ -264,3 +264,28 @@ The shipped home `AGENTS.md` describes this policy.
 Unedited home instructions upgrade automatically after deployment.
 If the owner edited that file, the workspace preserves it. Update its GitHub instructions manually.
 The repository's root instructions live in `AGENTS.md`. `CLAUDE.md` is a symlink to that file.
+
+## One-time browser location
+
+In the owner's personal conversation, `request_current_location({ reason })` can ask for a
+location fix to answer a nearby question. The request appears in the web chat and Inbox using
+the existing authenticated approval stream; **Share current location** is the only action that
+calls the user's own browser's `navigator.geolocation.getCurrentPosition`. The server/workspace
+browser is not used. The user can deny or cancel. Browser permission is still required, even
+if permission was previously granted; there is no watch or background tracking.
+
+The browser requests high accuracy, no cached fix, and a 15-second acquisition timeout (with a
+20-second UI fallback covering unanswered permission prompts). Requests expire after 90 seconds
+if no client responds. Errors tell the agent to ask for a city/area instead. This currently supports
+only the owner's `main` conversation, not guild chats, subagents or scheduled jobs. The web gateway
+must be enabled and served in a secure browser context (HTTPS, or localhost for development).
+
+Replies are capped, strictly validated (coordinate ranges, finite numbers, accuracy and timestamp
+freshness), owner-authenticated, same-origin, and correlated by a single-use random nonce to the
+pending tool call and workspace connection. Browser-provided positions are not attested: the owner
+can override their own device's location. Coordinates are returned only to the requesting tool,
+not copied into the bot's approval records, push payloads, analytics or audit logs. Pi tool/session
+history necessarily stores the returned fix and the model provider receives it; chat replies may
+also be retained. The UI discloses this before sharing. The tool and memory-flush instructions tell
+the agent not to save exact fixes in durable memory or repeat them in replies unnecessarily; this
+is not a sandbox preventing the general coding agent from writing arbitrary files.

@@ -1,3 +1,4 @@
+import { locationReply, type BrowserLocationRequests } from "../../orchestration/workspace/location.ts";
 import { z } from "zod";
 import { ID_MAX, WEB_CONVERSATION_ID, uploadUrl, type ChatMessageParams, type ChatOrigin } from "../../orchestration/contracts.ts";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
@@ -68,6 +69,7 @@ export interface ChatRouteDeps {
   tools: Pick<WorkspaceTools, "decide">;
   workspaceEnabled: boolean;
   uploads?: WebUploadPort;
+  location?: BrowserLocationRequests;
   now?: () => number;
   sse?: { heartbeatMs: number; maxLifetimeMs: number };
   historyMaxBytes?: number;
@@ -391,6 +393,16 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (ask) {
         const askId = decodeSegment(ask[1]!);
         return askId ? postAsk(req, askId, actor) : json({ error: "not found" }, 404);
+      }
+      const location = /^location\/([A-Za-z0-9_-]{16})$/.exec(sub);
+      if (location && deps.location) {
+        if (!link.isOwner(actor)) return forbidden();
+        const body = await parseBody(req, locationReply, 1024);
+        if (body instanceof Response) return body;
+        const status = deps.location.fulfill(location[1]!, body, actor);
+        if (status === "forbidden") return forbidden();
+        if (status === "invalid") return json({ error: "invalid location result" }, 400);
+        return json({ status });
       }
       const approval = /^approvals\/([^/]+)$/.exec(sub);
       if (approval) return postApproval(req, approval[1]!, actor);

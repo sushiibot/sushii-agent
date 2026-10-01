@@ -1,3 +1,4 @@
+import { BrowserLocationRequests } from "../../orchestration/workspace/location.ts";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import type { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
@@ -33,6 +34,7 @@ export interface WebChatDeps {
 
 export interface WebChat {
   adapter: WebWorkspaceAdapter;
+  location: BrowserLocationRequests;
   routes: ChatRoutes;
   home: HomeRoutes;
   log: SqliteChatLog;
@@ -58,6 +60,11 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}),
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
+  const location = new BrowserLocationRequests({
+    isOwner: (actor) => deps.tools.isOwner(actor),
+    prompt: (view, nonce) => adapter.approvalPrompt(null, view, nonce),
+    resolved: (handle, view, nonce, decision) => adapter.resolveApproval({ id: handle.id ?? nonce }, view, nonce, decision),
+  });
   // Approvals still undecided here belonged to the previous process, which took their pending state with it.
   const orphaned = chatLog.cancelUnresolvedApprovals();
   if (orphaned) log.info({ count: orphaned }, "cancelled approvals left undecided by the previous process");
@@ -69,6 +76,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     link: deps.link,
     tools: deps.tools,
     workspaceEnabled: deps.workspaceEnabled,
+    location,
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
 
@@ -101,6 +109,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
 
   return {
     adapter,
+    location,
     routes,
     home,
     log: chatLog,

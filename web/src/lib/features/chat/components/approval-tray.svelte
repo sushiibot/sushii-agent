@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { currentLocation, type LocationReply } from '../location';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
@@ -33,7 +34,7 @@
 		/** Set a few seconds after a timeout so the tray folds into its chat marker; the caller owns the timer. */
 		collapsed?: boolean;
 		holdMs?: number;
-		onapprove?: (nonce: string) => void;
+		onapprove?: (nonce: string, location?: LocationReply) => void;
 		ondeny?: (nonce: string) => void;
 	} = $props();
 	const uid = $props.id();
@@ -83,12 +84,38 @@
 		return armed && shownReleased(top?.nonce);
 	});
 
+	const isLocation = $derived(top?.view.tool === 'request_current_location');
+	let locating = $state(false);
+	let capture: AbortController | undefined;
+	$effect(() => {
+		void top?.nonce;
+		return () => {
+			capture?.abort();
+			locating = false;
+		};
+	});
+	async function share(nonce: string) {
+		if (locating) return;
+		locating = true;
+		const controller = new AbortController();
+		capture = controller;
+		const reply = await currentLocation(controller.signal);
+		if (!controller.signal.aborted && top?.nonce === nonce) onapprove?.(nonce, reply);
+		locating = false;
+	}
 	/** Acts only for the item the button was drawn for, and only once its hold has cleared. */
 	function decide(e: MouseEvent, approve: boolean) {
 		const nonce = (e.currentTarget as HTMLElement).dataset.nonce;
 		if (!nonce || nonce !== top?.nonce) return;
-		if (!approve) return ondeny?.(nonce);
-		if (armed && released(nonce)) onapprove?.(nonce);
+		if (!approve) {
+			capture?.abort();
+			locating = false;
+			return ondeny?.(nonce);
+		}
+		if (armed && released(nonce)) {
+			if (isLocation) void share(nonce);
+			else onapprove?.(nonce);
+		}
 	}
 
 	// Buttons that shift under the finger (keyboard, rotation, the tray resizing) are "appearing" again.
@@ -154,7 +181,11 @@
 			</span>
 			<h2 id="{uid}-h" class="flex min-w-0 flex-1 flex-col">
 				<span class="text-xs leading-tight font-medium text-muted-foreground">
-					{timedOut ? 'Approval timed out' : 'sushii-agent needs your approval to run'}
+					{timedOut
+						? 'Request timed out'
+						: isLocation
+							? 'The agent asks for your location'
+							: 'sushii-agent needs your approval to run'}
 				</span>
 				<span class="flex flex-wrap items-baseline gap-x-2">
 					<code
@@ -193,11 +224,23 @@
 			<p role="status" class="flex items-start gap-2 text-sm">
 				<TimerOff class="mt-0.5 size-4 shrink-0 text-failed" aria-hidden="true" />
 				<span
-					><span class="font-semibold">Timed out, denied.</span> Nobody decided within 30 minutes, so
-					it did not run.</span
+					><span class="font-semibold">Timed out, denied.</span>
+					{isLocation
+						? 'No browser responded within 90 seconds. Give the agent a city or area instead.'
+						: 'Nobody decided within 30 minutes, so it did not run.'}</span
 				>
 			</p>
 		{:else}
+			{#if isLocation}
+				<p class="text-sm [overflow-wrap:anywhere]">
+					{view.fields.find((f) => f.key === 'reason')?.value}
+				</p>
+				<p class="text-sm text-muted-foreground">
+					Share once from this device, with your browser's permission. No background tracking. Exact
+					coordinates go to the agent and are stored in tool history; replies may also be stored in
+					chat history. This request expires after 90 seconds.
+				</p>
+			{/if}
 			<!-- tabindex: the field list scrolls, so keyboard users need to reach it. -->
 			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<dl
@@ -234,11 +277,20 @@
 				</p>
 			{/if}
 
-			{#if phase === 'submitting'}
+			{#if phase === 'submitting' || locating}
 				<p role="status" class="flex h-12 items-center gap-2 text-sm font-medium">
 					<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-					Sending your approval…
+					{locating
+						? 'Waiting for browser location permission…'
+						: isLocation
+							? 'Sending location result…'
+							: 'Sending your approval…'}
 				</p>
+				{#if locating}<Button
+						variant="outline"
+						data-nonce={top.nonce}
+						onclick={(e) => decide(e, false)}>Cancel location request</Button
+					>{/if}
 			{:else}
 				<div bind:this={row} class="flex gap-3">
 					<Button
@@ -251,7 +303,7 @@
 					<Button
 						class="relative min-w-0 flex-1 overflow-hidden"
 						disabled={!ready}
-						aria-label="Approve {view.tool}"
+						aria-label={isLocation ? 'Share current location' : `Approve ${view.tool}`}
 						aria-describedby={ready ? undefined : `${uid}-hold`}
 						data-nonce={top.nonce}
 						onclick={(e) => decide(e, true)}
@@ -264,7 +316,7 @@
 								></span>
 							{/key}
 						{/if}
-						<Check />Approve
+						<Check />{isLocation ? 'Share current location' : 'Approve'}
 					</Button>
 				</div>
 				<!-- Always laid out, so the buttons don't shift when the hold clears. -->

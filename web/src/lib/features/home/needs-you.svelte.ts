@@ -1,3 +1,4 @@
+import { locationOutcome, httpChatApi, type LocationReply } from '$lib/features/chat';
 import { HttpError } from '$lib/core/http';
 import type { ChatEnvelope } from '$lib/core/realtime/events';
 import { hub as appHub, type Hub } from '$lib/core/realtime/hub.svelte';
@@ -173,20 +174,24 @@ export class NeedsYouStore {
 		this.results = next;
 	}
 
-	async decide(nonce: string, decision: 'approve' | 'deny') {
+	async decide(nonce: string, decision: 'approve' | 'deny', location?: LocationReply) {
 		const id = `approval:${nonce}`;
 		if (this.submitting.includes(nonce)) return;
 		this.submitting = [...this.submitting, nonce];
 		this.#result(id, null);
 		try {
-			const r = await this.#chat().decide(nonce, { decision });
+			const r = location
+				? await (this.#chat().location ?? httpChatApi.location!)(nonce, location)
+				: await this.#chat().decide(nonce, { decision });
 			this.#result(
 				id,
 				r.status === 'expired'
 					? { ok: false, text: 'That approval had already expired, so it did not run.' }
-					: decision === 'approve'
-						? { ok: true, text: 'Approved. The agent carries on.' }
-						: { ok: true, text: "Denied. The agent won't run it." }
+					: location
+						? { ok: location.status === 'shared', text: locationOutcome(location) }
+						: decision === 'approve'
+							? { ok: true, text: 'Approved. The agent carries on.' }
+							: { ok: true, text: "Denied. The agent won't run it." }
 			);
 		} catch (err) {
 			const gone = err instanceof HttpError && err.status === 404;

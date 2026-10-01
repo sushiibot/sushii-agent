@@ -165,7 +165,10 @@ async function main() {
     ...(config.transcriptionEnabled ? { dictation: createDictationRoutes({ transcribe: transcribeAudio }) } : {}),
   });
   const stopWebChat = webServer ? webChat.start() : undefined;
-  if (webServer) workspace.registry.register(webChat.adapter);
+  if (webServer) {
+    workspace.registry.register(webChat.adapter);
+    workspace.tools.setLocationRequests(webChat.location);
+  }
   listenWorkspace(workspace, config.orchPort);
   await client.login(config.discordBotToken);
 
