@@ -1,8 +1,8 @@
-import type { HomeAlert, HomeResponse } from '$lib/core/realtime/events';
+import type { HomeAlert, HomeMessage, HomeResponse } from '$lib/core/realtime/events';
 import type { AskView, PendingApproval } from '$lib/features/chat';
 import type { RunSummary } from '$lib/features/runs';
 
-export type { HomeAlert };
+export type { HomeAlert, HomeMessage };
 
 /**
  * GET /api/home without the parts the stream keeps live: pending approvals, asks and open Main
@@ -28,7 +28,17 @@ export type HomeItem =
 	| { id: string; group: 'waiting'; kind: 'ask'; at: string; ask: AskView }
 	| { id: string; group: 'waiting'; kind: 'auth'; at: string }
 	| { id: string; group: 'failed'; kind: 'alert'; at: string; alert: HomeAlert }
-	| { id: string; group: 'failed' | 'running' | 'review'; kind: 'run'; at: string; run: RunSummary }
+	| { id: string; group: 'failed' | 'running'; kind: 'run'; at: string; run: RunSummary }
+	/** Opening one marks it read; it stays until marked done. */
+	| { id: string; group: 'review'; kind: 'run'; at: string; run: RunSummary; read: boolean }
+	| {
+			id: string;
+			group: 'review';
+			kind: 'message';
+			at: string;
+			message: HomeMessage;
+			read: boolean;
+	  }
 	| { id: string; group: 'running'; kind: 'turn'; at: string; turn: TurnItem };
 
 export type HomeGroups = Record<HomeGroup, HomeItem[]>;

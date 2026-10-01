@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -12,6 +12,7 @@
 	import {
 		deepLinkItem,
 		HomeScreen,
+		messagePreview,
 		needsYou,
 		type HomeItem,
 		type HomePeek
@@ -80,6 +81,12 @@
 		};
 	});
 
+	// Opening an inbox item reads it; it stays until marked done.
+	$effect(() => {
+		const id = peek?.item?.group === 'review' ? peek.id : undefined;
+		if (id) untrack(() => home.markRead(id));
+	});
+
 	// Item ids are the push tags, so opening an item clears its notification.
 	$effect(() => {
 		const id = peek?.item ? peek.id : undefined;
@@ -128,6 +135,26 @@
 
 	const openChat = () => void leaveTo(resolve('/chat'));
 
+	function done(id: string) {
+		const item = items.find((i) => i.id === id);
+		if (!item) return;
+		const label =
+			item.kind === 'message'
+				? messagePreview(item.message.text)
+				: item.kind === 'run'
+					? item.run.title
+					: id;
+		home.done(id, label);
+		if (sheet.arg === id) sheet.close();
+	}
+
+	function reply(item: HomeItem) {
+		if (item.kind !== 'message') return;
+		const quote = item.message.text.split('\n').map((l) => `> ${l}`);
+		chatStore().setDraft(`> From ${item.message.job}:\n${quote.join('\n')}\n\n`);
+		openChat();
+	}
+
 	function askAgent(item: HomeItem) {
 		if (item.kind !== 'alert') return;
 		const a = item.alert;
@@ -162,6 +189,10 @@
 		void home.dismiss(id);
 		sheet.close();
 	}}
+	ondone={done}
+	onreply={reply}
+	undo={home.undoable}
+	onundo={() => void home.undo()}
 	onopenrun={features.has('runs') ? (id) => void leaveTo(resolve('/runs/[id]', { id })) : undefined}
 	onopenchat={openChat}
 	onaskagent={askAgent}

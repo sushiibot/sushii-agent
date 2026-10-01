@@ -18,5 +18,8 @@ export const fixtureHomeApi: HomeApi = {
 	async dismiss() {
 		await fixtureDelay('normal');
 	},
+	async restore() {
+		await fixtureDelay('normal');
+	},
 	async opened() {}
 };

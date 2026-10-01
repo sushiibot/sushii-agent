@@ -1,8 +1,11 @@
 <script lang="ts">
 	// Alerts and runs are the agent's own records: neutral styling, plain text, never the approval look.
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
+	import Check from '@lucide/svelte/icons/check';
+	import Reply from '@lucide/svelte/icons/reply';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import X from '@lucide/svelte/icons/x';
+	import { Markdown } from '$lib/features/chat';
 	import { kindLabel } from '$lib/features/runs';
 	import { Button } from '$lib/ui/button';
 	import { ago, duration } from '$lib/ui/format/time';
@@ -15,6 +18,8 @@
 		onopenrun,
 		onopenchat,
 		ondismiss,
+		ondone,
+		onreply,
 		onaskagent
 	}: {
 		item: Exclude<HomeItem, { kind: 'approval' | 'ask' }>;
@@ -22,6 +27,8 @@
 		onopenrun?: (runId: string) => void;
 		onopenchat?: () => void;
 		ondismiss?: (id: string) => void;
+		ondone?: (id: string) => void;
+		onreply?: (item: HomeItem) => void;
 		onaskagent?: (item: HomeItem) => void;
 	} = $props();
 
@@ -82,6 +89,23 @@
 				>
 			</div>
 		</div>
+	{:else if item.kind === 'message'}
+		{@const m = item.message}
+		<p class="text-sm text-muted-foreground">Scheduled · {m.job} · {ago(m.at, now)}</p>
+		<div class="text-ui [overflow-wrap:anywhere]"><Markdown text={m.text} /></div>
+		<div class="flex flex-col gap-2">
+			<Button onclick={() => onreply?.(item)}><Reply />Reply in chat</Button>
+			<div class="flex gap-2">
+				{#if m.runId && onopenrun}
+					<Button variant="outline" class="flex-1" onclick={() => onopenrun(m.runId!)}
+						>Open run<ArrowUpRight /></Button
+					>
+				{/if}
+				<Button variant="outline" class="flex-1" onclick={() => ondone?.(item.id)}
+					><Check />Done</Button
+				>
+			</div>
+		</div>
 	{:else if item.kind === 'run'}
 		{@const r = item.run}
 		<div class="flex flex-wrap items-center gap-2">
@@ -107,6 +131,10 @@
 			{#if item.group === 'failed'}
 				<Button variant="ghost" class="px-4" onclick={() => ondismiss?.(item.id)}
 					><X />Dismiss</Button
+				>
+			{:else if item.group === 'review'}
+				<Button variant="outline" class="px-4" onclick={() => ondone?.(item.id)}
+					><Check />Done</Button
 				>
 			{/if}
 		</div>

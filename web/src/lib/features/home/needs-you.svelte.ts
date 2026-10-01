@@ -16,8 +16,10 @@ export interface HomeDeps {
 type Result = { ok: boolean; text: string };
 
 /** Live events that change Home's server part; a burst of them refetches once. */
-const REFETCH_ON = new Set(['run', 'alert', 'alert_cleared']);
+const REFETCH_ON = new Set(['run', 'alert', 'alert_cleared', 'inbox']);
 const REFETCH_DEBOUNCE_MS = 1000;
+/** How long Undo stays offered after marking an item done. */
+export const UNDO_MS = 6000;
 
 function failureText(err: unknown, what: 'decision' | 'answer'): string {
 	const status = err instanceof HttpError ? err.status : 0;
@@ -36,6 +38,8 @@ export class NeedsYouStore {
 	submitting = $state.raw<readonly string[]>([]);
 	/** What happened to the last thing done from Home, by item id. */
 	results = $state.raw<Readonly<Record<string, Result>>>({});
+	/** The item last marked done, while Undo is offered. */
+	undoable = $state.raw<{ id: string; label: string } | null>(null);
 
 	groups: HomeGroups = $derived.by(() => homeItems(this.live, this.data.data, this.local));
 	waitingCount = $derived(this.groups.waiting.length);
@@ -50,6 +54,9 @@ export class NeedsYouStore {
 	#loads = 0;
 	/** Local hides (dismissed, opened, cleared) by item id, with the load count when the bot had them. */
 	#acked = new Map<string, number>();
+	#undoTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Done requests in flight, so an Undo lands after its done. */
+	#doing = new Map<string, Promise<boolean>>();
 
 	constructor(deps: HomeDeps = {}) {
 		this.#hub = deps.hub ?? appHub;
@@ -128,7 +135,8 @@ export class NeedsYouStore {
 					'turn_final',
 					'alert',
 					'alert_cleared',
-					'run'
+					'run',
+					'inbox'
 				],
 				globals: ['approval', 'approval_resolved']
 			},
@@ -236,18 +244,72 @@ export class NeedsYouStore {
 		}
 	}
 
-	/** Opening a finished run takes it off "Ready for review". */
+	/** Opening a finished run marks it read. */
 	markOpened(runId: string) {
-		// With Home off on the bot there is no list to take it off.
+		this.markRead(`run:${runId}`);
+	}
+
+	/** Opening an inbox item marks it read on every device; it stays until marked done. */
+	markRead(id: string) {
+		// With Home off on the bot there is no inbox.
 		if (this.data.status === 'ready' && this.data.data === null) return;
-		const id = `run:${runId}`;
 		if (this.local.opened.includes(id)) return;
+		if (this.groups.review.some((i) => i.id === id && 'read' in i && i.read)) return;
 		this.#hide(id, 'opened');
-		// The local mark already hides it here; a lost POST only means another device still lists it.
+		// The local mark already shows it read here; a lost POST only means another device shows it unread.
 		this.#api.opened(id).then(
 			() => this.#acked.set(id, this.#loads),
 			() => {}
 		);
+	}
+
+	/** Takes an inbox item off Home on every device, with Undo offered for a while. */
+	done(id: string, label: string) {
+		this.#acked.delete(id);
+		this.#hide(id, 'dismissed');
+		this.#offerUndo({ id, label });
+		const req = this.#api.dismiss(id).then(
+			() => {
+				this.#acked.set(id, this.#loads);
+				return true;
+			},
+			() => {
+				this.#unhide(id);
+				if (this.undoable?.id === id) this.#offerUndo(null);
+				this.#result(id, { ok: false, text: "Couldn't mark it done. Try again." });
+				return false;
+			}
+		);
+		this.#doing.set(id, req);
+		void req.finally(() => {
+			if (this.#doing.get(id) === req) this.#doing.delete(id);
+		});
+	}
+
+	/** Brings back the item last marked done. */
+	async undo() {
+		const last = this.undoable;
+		if (!last) return;
+		this.#offerUndo(null);
+		this.#unhide(last.id);
+		if ((await this.#doing.get(last.id)) === false) return;
+		try {
+			await this.#api.restore(last.id);
+		} catch {
+			this.#hide(last.id, 'dismissed');
+			this.#result(last.id, { ok: false, text: "Couldn't bring it back. Try again." });
+		}
+		this.#scheduleRefetch();
+	}
+
+	dismissUndo() {
+		this.#offerUndo(null);
+	}
+
+	#offerUndo(next: { id: string; label: string } | null) {
+		if (this.#undoTimer) clearTimeout(this.#undoTimer);
+		this.#undoTimer = next ? setTimeout(() => (this.undoable = null), UNDO_MS) : null;
+		this.undoable = next;
 	}
 
 	clearResult(id: string) {

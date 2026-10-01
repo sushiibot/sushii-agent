@@ -5,7 +5,7 @@ import { fakeTransport } from '$lib/core/realtime/fake-transport';
 import type { JobAlert } from '$lib/core/realtime/events';
 import type { ChatApi } from '$lib/features/chat';
 import type { HomeApi } from './api';
-import { homeData, nightlyAlert, RUN_IDS } from './fixtures';
+import { HEARTBEAT_KEY, homeData, nightlyAlert, RUN_IDS } from './fixtures';
 import { NeedsYouStore } from './needs-you.svelte';
 import type { HomeData } from './types';
 
@@ -34,6 +34,7 @@ interface Server {
 	loads: number;
 	dismissed: string[];
 	opened: string[];
+	restored: string[];
 	api: HomeApi;
 }
 
@@ -43,13 +44,15 @@ function server(first: HomeData | null = homeData(NOW)): Server {
 		loads: 0,
 		dismissed: [] as string[],
 		opened: [] as string[],
+		restored: [] as string[],
 		api: {
 			load: async () => {
 				s.loads++;
 				return s.data;
 			},
 			dismiss: async (id: string) => void s.dismissed.push(id),
-			opened: async (id: string) => void s.opened.push(id)
+			opened: async (id: string) => void s.opened.push(id),
+			restore: async (id: string) => void s.restored.push(id)
 		}
 	};
 	return s;
@@ -117,14 +120,25 @@ test('with Home off on the bot, the stream part still shows and nothing is poste
 	expect(home.groups.failed).toEqual([]);
 });
 
-test('opening a run posts it once and keeps it off review on this device', async () => {
+test('opening a run posts it once and shows it read, still in the inbox', async () => {
 	const { home, srv } = await setup();
-	const review = home.groups.review.map((i) => i.id);
-	expect(review.length).toBeGreaterThan(0);
-	const runId = review[0]!.slice('run:'.length);
-	home.markOpened(runId);
-	home.markOpened(runId);
+	const id = `run:${RUN_IDS.expenses}`;
+	home.markOpened(RUN_IDS.expenses);
+	home.markOpened(RUN_IDS.expenses);
 	await Bun.sleep(10);
-	expect(srv.opened).toEqual([`run:${runId}`]);
-	expect(home.groups.review.map((i) => i.id)).not.toContain(`run:${runId}`);
+	expect(srv.opened).toEqual([id]);
+	expect(home.groups.review.find((i) => i.id === id)).toMatchObject({ read: true });
+});
+
+test('done hides an item at once and Undo brings it back after the done lands', async () => {
+	const { home, srv } = await setup();
+	const id = `msg:${HEARTBEAT_KEY}`;
+	home.done(id, 'From heartbeat');
+	expect(ids(home)).not.toContain(id);
+	expect(home.undoable).toEqual({ id, label: 'From heartbeat' });
+	await home.undo();
+	expect(srv.dismissed).toEqual([id]);
+	expect(srv.restored).toEqual([id]);
+	expect(home.undoable).toBeNull();
+	expect(ids(home)).toContain(id);
 });

@@ -81,7 +81,9 @@ export function applyLive(s: LiveState, ev: ChatEnvelope, now = Date.now()): Liv
 
 /** Choices made from Home that the stream hasn't confirmed yet. */
 export interface LocalState {
+	/** Dismissed failures and items marked done. */
 	dismissed: readonly string[];
+	/** Inbox items opened, so shown read. */
 	opened: readonly string[];
 	asks: Readonly<Record<string, Pick<AskView, 'state' | 'answer'>>>;
 }
@@ -118,7 +120,7 @@ export function homeItems(
 	if (data?.auth) waiting.push({ id: 'auth', group: 'waiting', kind: 'auth', at: data.auth.at });
 
 	const dismissed = new Set(local.dismissed);
-	const gone = new Set([...local.dismissed, ...local.opened]);
+	const opened = new Set(local.opened);
 	const online = data?.workspace.state === 'online' ? data.workspace : null;
 	const failed: HomeItem[] = [
 		...(data?.failed ?? []).map((alert): HomeItem => ({
@@ -154,15 +156,30 @@ export function homeItems(
 		}))
 	];
 
-	const review: HomeItem[] = (online?.review ?? [])
-		.map((run): HomeItem => ({
-			id: `run:${run.runId}`,
-			group: 'review',
-			kind: 'run',
-			at: run.endedAt ?? run.startedAt,
-			run
-		}))
-		.filter((i) => !gone.has(i.id));
+	const review: HomeItem[] = [
+		...(data?.inbox ?? []).map((message): HomeItem => {
+			const id = `msg:${message.key}`;
+			return {
+				id,
+				group: 'review',
+				kind: 'message',
+				at: message.at,
+				message,
+				read: message.read || opened.has(id)
+			};
+		}),
+		...(online?.review ?? []).map(({ read, ...run }): HomeItem => {
+			const id = `run:${run.runId}`;
+			return {
+				id,
+				group: 'review',
+				kind: 'run',
+				at: run.endedAt ?? run.startedAt,
+				run,
+				read: read || opened.has(id)
+			};
+		})
+	].filter((i) => !dismissed.has(i.id));
 
 	return {
 		waiting: waiting.sort((a, b) => a.at.localeCompare(b.at)),

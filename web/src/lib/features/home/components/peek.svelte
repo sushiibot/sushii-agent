@@ -15,6 +15,8 @@
 		ondecide,
 		onanswer,
 		ondismiss,
+		ondone,
+		onreply,
 		onopenrun,
 		onopenchat,
 		onaskagent
@@ -25,6 +27,8 @@
 		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
 		onanswer?: (askId: string, answer: string, index?: number) => void;
 		ondismiss?: (id: string) => void;
+		ondone?: (id: string) => void;
+		onreply?: (item: HomeItem) => void;
 		onopenrun?: (runId: string) => void;
 		onopenchat?: () => void;
 		onaskagent?: (item: HomeItem) => void;
@@ -55,7 +59,16 @@
 		</div>
 	{:else if peek.item}
 		<div class="px-1">
-			<RecordPeek item={peek.item} {now} {onopenrun} {onopenchat} {ondismiss} {onaskagent} />
+			<RecordPeek
+				item={peek.item}
+				{now}
+				{onopenrun}
+				{onopenchat}
+				{ondismiss}
+				{ondone}
+				{onreply}
+				{onaskagent}
+			/>
 		</div>
 	{:else if !peek.result}
 		<p role="status" class="px-1 text-sm">

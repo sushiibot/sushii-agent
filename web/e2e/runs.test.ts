@@ -252,7 +252,7 @@ test('an unknown run says it was not found instead of loading forever', async ({
 	await expect(page).toHaveURL(/\/runs$/);
 });
 
-test('Open run from a Home peek replaces the sheet, and the run leaves Ready for review', async ({
+test('Open run from a Home peek replaces the sheet, and the run stays in the inbox as read', async ({
 	page,
 	context
 }) => {
@@ -264,8 +264,9 @@ test('Open run from a Home peek replaces the sheet, and the run leaves Ready for
 	await page.goBack();
 	await expect(page).toHaveURL(/\/$/);
 	await expect(page.getByRole('dialog')).toBeHidden();
-	await expect(page.getByText('Check dependencies for updates')).toBeVisible();
-	await expect(page.getByText('Draft the quarterly expenses summary')).toBeHidden();
+	await expect(
+		page.getByRole('button', { name: /Read: Draft the quarterly expenses summary/ })
+	).toBeVisible();
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {

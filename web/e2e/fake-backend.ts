@@ -57,7 +57,8 @@ function failure(route: Route, scenario: Scenario) {
 	}
 }
 
-function homeResponse(scenario: Scenario, hidden: Set<string>): HomeResponse {
+/** `hidden`: dismissed or done item ids; `read`: opened ones. */
+function homeResponse(scenario: Scenario, hidden: Set<string>, read: Set<string>): HomeResponse {
 	const now = Date.now();
 	const data = scenario === 'empty' ? emptyHomeData(now) : homeData(now);
 	const shown = <T extends { runId: string }>(runs: T[]) =>
@@ -71,7 +72,10 @@ function homeResponse(scenario: Scenario, hidden: Set<string>): HomeResponse {
 					? {
 							...data.workspace,
 							failedRuns: shown(data.workspace.failedRuns),
-							review: shown(data.workspace.review)
+							review: shown(data.workspace.review).map((r) => ({
+								...r,
+								read: r.read || read.has(`run:${r.runId}`)
+							}))
 						}
 					: data.workspace;
 	return {
@@ -79,6 +83,9 @@ function homeResponse(scenario: Scenario, hidden: Set<string>): HomeResponse {
 		waiting: { approvals: [], asks: [], auth: data.auth },
 		openTurns: [],
 		failed: data.failed.filter((a) => !hidden.has(a.id)),
+		inbox: data.inbox
+			.filter((m) => !hidden.has(`msg:${m.key}`))
+			.map((m) => ({ ...m, read: m.read || read.has(`msg:${m.key}`) })),
 		workspace
 	};
 }
@@ -110,6 +117,7 @@ export async function fakeBackend(
 	const features = opts.features ?? ALL;
 	/** Dismissed and opened Home items, as the bot keeps them. */
 	const hidden = new Set<string>();
+	const read = new Set<string>();
 
 	await context.route('**/api/**', async (route) => {
 		const req = route.request();
@@ -145,11 +153,14 @@ export async function fakeBackend(
 
 		if (area === 'home') {
 			if (req.method() === 'POST') {
-				hidden.add((JSON.parse(raw ?? '{}') as { id: string }).id);
+				const { id } = JSON.parse(raw ?? '{}') as { id: string };
+				if (path === '/api/home/opened') read.add(id);
+				else if (path === '/api/home/restore') hidden.delete(id);
+				else hidden.add(id);
 				return route.fulfill({ status: 204 });
 			}
 			if (scenario === 'error') return failure(route, scenario);
-			return json(route, homeResponse(scenario, hidden));
+			return json(route, homeResponse(scenario, hidden, read));
 		}
 
 		if (area === 'search') {

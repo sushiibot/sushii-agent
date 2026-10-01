@@ -2,6 +2,7 @@
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import Undo2 from '@lucide/svelte/icons/undo-2';
 	import ConnectionBanner, { type ConnectionState } from '$lib/ui/connection-banner.svelte';
 	import UpdateToast from '$lib/ui/pwa/update-toast.svelte';
 	import { Button } from '$lib/ui/button';
@@ -31,6 +32,10 @@
 		ondecide,
 		onanswer,
 		ondismiss,
+		ondone,
+		onreply,
+		undo,
+		onundo,
 		onopenrun,
 		onaskagent,
 		onopenchat,
@@ -55,6 +60,12 @@
 		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
 		onanswer?: (askId: string, answer: string, index?: number) => void;
 		ondismiss?: (id: string) => void;
+		/** Marks an inbox item done. */
+		ondone?: (id: string) => void;
+		onreply?: (item: HomeItem) => void;
+		/** What was last marked done, while Undo is offered. */
+		undo?: { label: string } | null;
+		onundo?: () => void;
 		onopenrun?: (runId: string) => void;
 		onaskagent?: (item: HomeItem) => void;
 		onopenchat?: () => void;
@@ -102,7 +113,20 @@
 {#snippet banner()}
 	{#if connection}<ConnectionBanner state={connection} />{/if}
 {/snippet}
-{#snippet toast()}<UpdateToast onreload={() => onreload?.()} />{/snippet}
+{#snippet toast()}
+	{#if undo}
+		<span class="line-clamp-1 min-w-0 flex-1">Done: {undo.label}</span>
+		<button
+			type="button"
+			onclick={() => onundo?.()}
+			class="-my-2 -mr-2 flex h-12 shrink-0 items-center gap-1.5 rounded-lg px-3 font-semibold text-background underline-offset-4 hover:underline"
+		>
+			<Undo2 class="size-4" aria-hidden="true" />Undo
+		</button>
+	{:else}
+		<UpdateToast onreload={() => onreload?.()} />
+	{/if}
+{/snippet}
 
 {#snippet skeleton()}
 	<div class="flex flex-col gap-3" aria-hidden="true">
@@ -121,7 +145,13 @@
 {/snippet}
 
 {#snippet row(item: HomeItem)}
-	<HomeRow {item} {now} selected={peek?.id === item.id} {onopen} />
+	<HomeRow
+		{item}
+		{now}
+		selected={peek?.id === item.id}
+		{onopen}
+		ondone={item.group === 'review' ? ondone : undefined}
+	/>
 {/snippet}
 
 {#snippet after()}
@@ -149,7 +179,7 @@
 <ListScreen
 	title="Home"
 	{banner}
-	toast={updateReady ? toast : undefined}
+	toast={undo || updateReady ? toast : undefined}
 	state={{
 		remote,
 		offline:
@@ -183,6 +213,8 @@
 			{ondecide}
 			{onanswer}
 			{ondismiss}
+			{ondone}
+			{onreply}
 			{onopenrun}
 			{onopenchat}
 			{onaskagent}

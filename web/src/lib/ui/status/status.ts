@@ -38,7 +38,7 @@ export const toneClass: Record<Tone, string> = {
 export const status = {
 	waiting: { label: 'Waiting on you', icon: Hand, tone: 'waiting' },
 	running: { label: 'Running', icon: LoaderCircle, tone: 'running' },
-	review: { label: 'Ready for review', icon: MessageSquareDot, tone: 'review' },
+	review: { label: 'Inbox', icon: MessageSquareDot, tone: 'review' },
 	failed: { label: 'Failed', icon: CircleX, tone: 'failed' },
 	done: { label: 'Done', icon: CircleCheck, tone: 'neutral' },
 	aborted: { label: 'Stopped', icon: CircleStop, tone: 'neutral' },

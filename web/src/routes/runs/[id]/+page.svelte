@@ -18,7 +18,7 @@
 		const runId = id;
 		untrack(() => {
 			void v.remote.ensure();
-			// Opening a finished run takes it off Home's "Ready for review".
+			// Opening a finished run marks it read in Home's inbox.
 			needsYou().markOpened(runId);
 		});
 		return v.remote.watch();

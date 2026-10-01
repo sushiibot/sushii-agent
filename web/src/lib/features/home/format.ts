@@ -20,5 +20,16 @@ export function peekTitle(peek: HomePeek): string {
 			return 'Main chat is working';
 		case 'run':
 			return item.run.title;
+		case 'message':
+			return `From ${item.message.job}`;
 	}
+}
+
+/** A message's text as one plain line, for a row title. */
+export function messagePreview(text: string): string {
+	return text
+		.replace(/[*_`~]+/g, '')
+		.replace(/^[\s#>-]+/gm, '')
+		.replace(/\s+/g, ' ')
+		.trim();
 }

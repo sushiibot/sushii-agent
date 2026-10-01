@@ -88,7 +88,7 @@ test('groups what needs you in order and counts waiting items on the tab', async
 		'Waiting on you 2',
 		'Failed 2',
 		'Running 1',
-		'Ready for review 2'
+		'Inbox 2'
 	]);
 	const homeTab = page
 		.getByRole('navigation', { name: 'Main' })
@@ -414,7 +414,7 @@ test('a cold link to a job alert that has cleared says Already handled', async (
 	await expect(page).toHaveURL(/\/$/);
 });
 
-test('opening a run tells the bot, so it leaves Ready for review on every device', async ({
+test('opening a run tells the bot once, and it stays in the inbox as read on every device', async ({
 	page,
 	context
 }) => {
@@ -428,8 +428,96 @@ test('opening a run tells the bot, so it leaves Ready for review on every device
 		.toEqual([{ id: 'run:01K6B3A1C3E5G7J9M1P3R5T7V9' }]);
 	await page.reload();
 	await page.goto('/');
-	await expect(page.getByText('Check dependencies for updates')).toBeVisible();
-	await expect(page.getByText('Draft the quarterly expenses summary')).toBeHidden();
+	await expect(
+		page.getByRole('button', { name: /Read: Draft the quarterly expenses summary/ })
+	).toBeVisible();
+	await expect(page.getByRole('button', { name: /Your passport renewal/ })).not.toContainText(
+		'Read:'
+	);
+});
+
+test("a job's message opens in full, Reply quotes it into the chat, and it stays read", async ({
+	page,
+	context
+}) => {
+	const { backend } = await homeServer(context);
+	await page.goto('/');
+	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
+	await expect(sheet(page).getByRole('heading', { name: 'From heartbeat' })).toBeVisible();
+	await expect(sheet(page).locator('strong', { hasText: 'Friday' })).toBeVisible();
+	await expect
+		.poll(() => backend.calls.filter((c) => c.path === '/api/home/opened').map((c) => c.body))
+		.toEqual([{ id: 'msg:ob-heartbeat-1' }]);
+	await sheet(page).getByRole('button', { name: 'Reply in chat' }).click();
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('textbox')).toHaveValue(
+		/^> From heartbeat:\n> Your passport renewal is due \*\*Friday\*\*/
+	);
+	await page.goBack();
+	await expect(page.getByRole('button', { name: /Read: Your passport renewal/ })).toBeVisible();
+});
+
+test('Done takes an item off Home on every device, and Undo brings it back', async ({
+	page,
+	context
+}) => {
+	const { backend } = await homeServer(context);
+	await page.goto('/');
+	await page.getByRole('button', { name: /Your passport renewal/ }).click();
+	await sheet(page).getByRole('button', { name: 'Done' }).click();
+	await expect(page.getByRole('dialog')).toBeHidden();
+	await expect(page.getByRole('button', { name: /Your passport renewal/ })).toBeHidden();
+	await page.getByRole('button', { name: 'Undo' }).click();
+	await expect(page.getByRole('button', { name: /Your passport renewal/ })).toBeVisible();
+	await expect
+		.poll(() => backend.calls.filter((c) => c.method === 'POST').map((c) => [c.path, c.body]))
+		.toEqual([
+			['/api/home/opened', { id: 'msg:ob-heartbeat-1' }],
+			['/api/home/dismiss', { id: 'msg:ob-heartbeat-1' }],
+			['/api/home/restore', { id: 'msg:ob-heartbeat-1' }]
+		]);
+	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
+	await sheet(page).getByRole('button', { name: 'Done' }).click();
+	await page.reload();
+	await expect(page.getByRole('button', { name: /Your passport renewal/ })).toBeVisible();
+	await expect(page.getByRole('button', { name: /Draft the quarterly expenses/ })).toBeHidden();
+});
+
+test('swiping an inbox row sideways marks it done', async ({ page, context }) => {
+	const { backend } = await homeServer(context);
+	await page.goto('/');
+	const row = page.getByRole('button', { name: /Your passport renewal/ });
+	const box = (await row.boundingBox())!;
+	const y = box.y + box.height / 2;
+	const touch = { pointerType: 'touch', isPrimary: true, pointerId: 7 };
+	// A short swipe snaps back and doesn't eat the next tap.
+	await row.dispatchEvent('pointerdown', { ...touch, clientX: box.x + 200, clientY: y });
+	await row.dispatchEvent('pointermove', { ...touch, clientX: box.x + 170, clientY: y });
+	await row.dispatchEvent('pointerup', { ...touch, clientX: box.x + 170, clientY: y });
+	await row.click();
+	await expect(sheet(page).getByRole('heading', { name: 'From heartbeat' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toBeHidden();
+	await row.dispatchEvent('pointerdown', { ...touch, clientX: box.x + box.width - 20, clientY: y });
+	for (const dx of [20, 60, 120, 200, 260]) {
+		await row.dispatchEvent('pointermove', {
+			...touch,
+			clientX: box.x + box.width - 20 - dx,
+			clientY: y
+		});
+	}
+	await row.dispatchEvent('pointerup', { ...touch, clientX: box.x + 20, clientY: y });
+	await expect(row).toBeHidden();
+	await expect(page.getByRole('dialog')).toBeHidden();
+	expect(backend.calls.filter((c) => c.path === '/api/home/dismiss').map((c) => c.body)).toEqual([
+		{ id: 'msg:ob-heartbeat-1' }
+	]);
+});
+
+test("a job message's push opens it on Home", async ({ page, context }) => {
+	await homeServer(context);
+	await page.goto('/?item=msg%3Aob-heartbeat-1');
+	await expect(sheet(page).getByRole('heading', { name: 'From heartbeat' })).toBeVisible();
 });
 
 test('a dismissed job is posted once and stays off Home after a reload', async ({
@@ -445,7 +533,7 @@ test('a dismissed job is posted once and stays off Home after a reload', async (
 		{ id: 'job:nightly-sync' }
 	]);
 	await page.reload();
-	await expect(page.getByText('Check dependencies for updates')).toBeVisible();
+	await expect(page.getByRole('button', { name: /Your passport renewal/ })).toBeVisible();
 	await expect(page.getByText('nightly-sync failed')).toBeHidden();
 });
 

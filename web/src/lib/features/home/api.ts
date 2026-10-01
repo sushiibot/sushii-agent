@@ -6,9 +6,11 @@ import type { HomeData } from './types';
 export interface HomeApi {
 	/** null: the bot has Home turned off, so only the stream's part shows. */
 	load(): Promise<HomeData | null>;
-	/** Hides a failed job alert ("job:<name>") or failed run ("run:<runId>") from Home. */
+	/** Hides a failed job alert ("job:<name>"), or marks a run ("run:<runId>") or message ("msg:<key>") done. */
 	dismiss(id: string): Promise<void>;
-	/** Takes a finished run ("run:<runId>") off "Ready for review" on every device. */
+	/** Undoes marking a run or message done. */
+	restore(id: string): Promise<void>;
+	/** Marks an inbox run or message read on every device. */
 	opened(id: string): Promise<void>;
 }
 
@@ -18,6 +20,7 @@ export function toHomeData(res: HomeResponse): HomeData {
 		asOf: res.asOf,
 		auth: res.waiting.auth,
 		failed: res.failed,
+		inbox: res.inbox,
 		workspace: res.workspace
 	};
 }
@@ -39,6 +42,9 @@ export const httpHomeApi: HomeApi = {
 			if (err instanceof HttpError && err.status === 404) return;
 			throw err;
 		}
+	},
+	async restore(id) {
+		await send('POST', '/home/restore', { id });
 	},
 	async opened(id) {
 		await send('POST', '/home/opened', { id });

@@ -2,7 +2,7 @@
 // relative to `now`, so the screens read the same whenever they are rendered.
 import type { AskView, PendingApproval } from '$lib/features/chat';
 import type { RunSummary } from '$lib/features/runs';
-import type { HomeAlert, HomeData, HomeGroups, HomeItem, TurnItem } from './types';
+import type { HomeAlert, HomeData, HomeGroups, HomeItem, HomeMessage, TurnItem } from './types';
 
 const MIN = 60_000;
 const iso = (now: number, minsAgo: number) => new Date(now - minsAgo * MIN).toISOString();
@@ -83,6 +83,20 @@ export function expensesRun(now: number): RunSummary {
 	};
 }
 
+export const HEARTBEAT_KEY = 'ob-heartbeat-1';
+
+/** What the heartbeat sent to Home's inbox. */
+export function heartbeatMessage(now: number): HomeMessage {
+	return {
+		key: HEARTBEAT_KEY,
+		job: 'heartbeat',
+		runId: RUN_IDS.weeklyDeps,
+		text: 'Your passport renewal is due **Friday**. The form is still in `scratch/`, unsigned.',
+		at: iso(now, 40),
+		read: false
+	};
+}
+
 export function depsRun(now: number): RunSummary {
 	return {
 		runId: RUN_IDS.weeklyDeps,
@@ -103,11 +117,12 @@ export function homeData(now: number): HomeData {
 		asOf: iso(now, 0),
 		auth: null,
 		failed: [nightlyAlert(now)],
+		inbox: [heartbeatMessage(now)],
 		workspace: {
 			state: 'online',
 			running: [triageRun(now)],
 			failedRuns: [flightsRun(now)],
-			review: [expensesRun(now), depsRun(now)]
+			review: [{ ...expensesRun(now), read: false }]
 		}
 	};
 }
@@ -116,6 +131,7 @@ export const emptyHomeData = (now: number): HomeData => ({
 	asOf: iso(now, 0),
 	auth: null,
 	failed: [],
+	inbox: [],
 	workspace: { state: 'online', running: [], failedRuns: [], review: [] }
 });
 
@@ -171,13 +187,14 @@ export function mainTurn(now: number): TurnItem {
 export function busyGroups(now: number): HomeGroups {
 	const data = homeData(now);
 	const online = data.workspace.state === 'online' ? data.workspace : null;
-	const run = (group: 'failed' | 'running' | 'review', r: RunSummary): HomeItem => ({
+	const run = (group: 'failed' | 'running', r: RunSummary): HomeItem => ({
 		id: `run:${r.runId}`,
 		group,
 		kind: 'run',
 		at: r.endedAt ?? r.startedAt,
 		run: r
 	});
+	const message = heartbeatMessage(now);
 	return {
 		waiting: [
 			{
@@ -215,7 +232,24 @@ export function busyGroups(now: number): HomeGroups {
 			},
 			...(online?.running ?? []).map((r) => run('running', r))
 		],
-		review: (online?.review ?? []).map((r) => run('review', r))
+		review: [
+			{
+				id: `msg:${message.key}`,
+				group: 'review',
+				kind: 'message',
+				at: message.at,
+				message,
+				read: false
+			},
+			...(online?.review ?? []).map(({ read, ...r }): HomeItem => ({
+				id: `run:${r.runId}`,
+				group: 'review',
+				kind: 'run',
+				at: r.endedAt ?? r.startedAt,
+				run: r,
+				read
+			}))
+		]
 	};
 }
 
