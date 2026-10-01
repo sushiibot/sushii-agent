@@ -1,10 +1,18 @@
 // Until the M2/M3 routes exist on the bot, feature stores read typed fixtures through their fake
 // APIs. This picks the state a fake serves, so tests and the dev server can show every one.
-// localStorage `fixtures:<feature>` = empty | error | slow | offline | unsupported.
+// localStorage `fixtures:<feature>` = empty | error | slow | offline | unsupported | truncated.
 
-export type FixtureScenario = 'normal' | 'empty' | 'error' | 'slow' | 'offline' | 'unsupported';
+export type FixtureScenario =
+	'normal' | 'empty' | 'error' | 'slow' | 'offline' | 'unsupported' | 'truncated';
 
-const KNOWN = new Set<FixtureScenario>(['empty', 'error', 'slow', 'offline', 'unsupported']);
+const KNOWN = new Set<FixtureScenario>([
+	'empty',
+	'error',
+	'slow',
+	'offline',
+	'unsupported',
+	'truncated'
+]);
 
 export function fixtureScenario(feature: string): FixtureScenario {
 	try {
