@@ -1,43 +1,16 @@
+import type { HomeAlert, HomeResponse } from '$lib/core/realtime/events';
 import type { AskView, PendingApproval } from '$lib/features/chat';
 import type { RunSummary } from '$lib/features/runs';
 
-/** An open, undismissed job-alert streak (M23-ARCH `HomeAlert`). */
-export interface HomeAlert {
-	/** "job:<name>" */
-	id: string;
-	job: string;
-	kind: 'failed' | 'stuck';
-	/** Streak start. */
-	firstAt: string;
-	lastAt: string;
-	trigger: string;
-	error?: string;
-	schedule: string;
-	disabled?: boolean;
-	runId?: string;
-	seq: number;
-}
+export type { HomeAlert };
 
 /**
  * GET /api/home without the parts the stream keeps live: pending approvals, asks and open Main
- * turns come from the hub. `review` is not in the pinned HomeResponse yet.
+ * turns come from the hub, so only the sign-in link is kept from `waiting`.
  */
-export interface HomeData {
-	asOf: string;
-	/** Newest unresolved sign-in link. */
-	auth: { seq: number; at: string; key: string } | null;
-	failed: HomeAlert[];
-	workspace:
-		| {
-				state: 'online';
-				running: RunSummary[];
-				/** Background runs that failed in the last 72 h, not dismissed. */
-				failedRuns: RunSummary[];
-				/** Finished background or scheduled runs not opened yet. */
-				review: RunSummary[];
-		  }
-		| { state: 'offline' | 'unsupported' | 'timeout' };
-}
+export type HomeData = Omit<HomeResponse, 'waiting' | 'openTurns'> & {
+	auth: HomeResponse['waiting']['auth'];
+};
 
 /** A Main turn in flight. */
 export interface TurnItem {

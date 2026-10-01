@@ -157,6 +157,8 @@ export class NeedsYouStore {
 		const id = `run:${runId}`;
 		if (!this.local.opened.includes(id)) {
 			this.local = { ...this.local, opened: [...this.local.opened, id] };
+			// The local mark already hides it here; a lost POST only means another device still lists it.
+			this.#api.opened(id).catch(() => {});
 		}
 	}
 
