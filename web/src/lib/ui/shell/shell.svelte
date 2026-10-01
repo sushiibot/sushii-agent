@@ -40,7 +40,7 @@
 		{:else}
 			<span
 				class="absolute top-1.5 left-1/2 ml-1.5 min-w-4 rounded-full bg-waiting px-1 text-center text-tab leading-4 font-semibold text-background tabular-nums"
-				>{value}<span class="sr-only"> waiting</span></span
+				>{value}<span class="sr-only">{' waiting'}</span></span
 			>
 		{/if}
 	{:else if value === true}

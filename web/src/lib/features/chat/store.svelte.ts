@@ -947,3 +947,8 @@ export function chatStore(id: ConversationId = 'main'): ChatStore {
 	}
 	return store;
 }
+
+/** The API chat posts through, for other screens that answer the same approvals and asks. */
+export function chatApi(): ChatApi {
+	return configured.api ?? httpChatApi;
+}

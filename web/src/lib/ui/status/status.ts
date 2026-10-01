@@ -15,6 +15,8 @@ import VolumeX from '@lucide/svelte/icons/volume-x';
 import Archive from '@lucide/svelte/icons/archive';
 import PencilLine from '@lucide/svelte/icons/pencil-line';
 import Hourglass from '@lucide/svelte/icons/hourglass';
+import CircleStop from '@lucide/svelte/icons/circle-stop';
+import TimerOff from '@lucide/svelte/icons/timer-off';
 
 export type Tone = 'waiting' | 'running' | 'review' | 'failed' | 'taint' | 'neutral';
 
@@ -39,6 +41,8 @@ export const status = {
 	review: { label: 'Ready for review', icon: MessageSquareDot, tone: 'review' },
 	failed: { label: 'Failed', icon: CircleX, tone: 'failed' },
 	done: { label: 'Done', icon: CircleCheck, tone: 'neutral' },
+	aborted: { label: 'Stopped', icon: CircleStop, tone: 'neutral' },
+	timeout: { label: 'Timed out', icon: TimerOff, tone: 'failed' },
 	verified: { label: 'Verified', icon: ShieldCheck, tone: 'review' },
 	unverified: { label: 'Unverified', icon: ShieldAlert, tone: 'waiting' },
 	tainted: { label: 'Read external content', icon: CircleAlert, tone: 'taint' },

@@ -22,13 +22,13 @@
 	let viewer = $state<FileRef | undefined>();
 	let now = $state(Date.now());
 
-	const sheet = $derived(page.state.sheet);
 	const sheets: Record<ChatSheet, ReturnType<typeof routedSheet>> = {
 		commands: routedSheet('commands'),
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
 		usage: routedSheet('usage')
 	};
+	const sheet = $derived((Object.keys(sheets) as ChatSheet[]).find((s) => sheets[s].open));
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {

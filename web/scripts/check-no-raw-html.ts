@@ -50,6 +50,22 @@ const MARKDOWN_IMPORTS = new Set([
 	'./code-copy-button.svelte'
 ]);
 
+// Runs, history and Home's alert and run peeks show the agent's own records. They render agent text
+// and may never borrow the approval look, so nothing in a record can pass for a decision card.
+export const AGENT_RECORD_DIRS = ['src/lib/features/runs/', 'src/lib/features/history/'];
+export const AGENT_RECORD_FILES = new Set(['src/lib/features/home/components/record-peek.svelte']);
+const isAgentRecord = (file: string) =>
+	AGENT_RECORD_FILES.has(file) || AGENT_RECORD_DIRS.some((d) => file.startsWith(d));
+const RECORD_BANNED: [RegExp, string][] = [
+	[
+		/\b(?:bg|text|border|ring|fill|stroke|outline|from|to|via)-approval\b|approval-surface/,
+		'record: approval token'
+	],
+	[/data-surface/, 'record: data-surface'],
+	[/\bShield\w*|icons\/shield/, 'record: shield icon'],
+	[/\bApprovalTray\b|approval-tray/, 'record: approval tray']
+];
+
 const APPROVAL_LOOKALIKE: [RegExp, string][] = [
 	[/approval|data-surface/i, 'markdown: approval surface token'],
 	[/Shield\w*|icons\/shield/i, 'markdown: shield icon']
@@ -134,6 +150,7 @@ export function checkSource(file: string, source: string): Violation[] {
 		}
 		if (lookalike) for (const [re, rule] of APPROVAL_LOOKALIKE) if (re.test(text)) add(rule);
 		if (file === MARKDOWN) for (const [re, rule] of MARKDOWN_BANNED) if (re.test(text)) add(rule);
+		if (isAgentRecord(file)) for (const [re, rule] of RECORD_BANNED) if (re.test(text)) add(rule);
 	});
 	return out;
 }

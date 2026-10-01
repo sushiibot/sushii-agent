@@ -1,6 +1,13 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
-import { checkSource, COPY_BUTTON, MARKDOWN, MESSAGE_ACTIONS } from './check-no-raw-html';
+import {
+	AGENT_RECORD_DIRS,
+	AGENT_RECORD_FILES,
+	checkSource,
+	COPY_BUTTON,
+	MARKDOWN,
+	MESSAGE_ACTIONS
+} from './check-no-raw-html';
 
 const rules = (file: string, source: string) => checkSource(file, source).map((v) => v.rule);
 
@@ -33,6 +40,37 @@ describe('check-no-raw-html', () => {
 		);
 		expect(
 			rules('src/lib/features/chat/components/other.svelte', '<Button>Approve</Button>')
+		).toEqual([]);
+	});
+
+	test("the agent's records may not borrow the approval look", async () => {
+		const { readdirSync, readFileSync } = await import('node:fs');
+		const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+		const files = [
+			...AGENT_RECORD_FILES,
+			...AGENT_RECORD_DIRS.flatMap((dir) =>
+				(readdirSync(new URL(`../${dir}`, import.meta.url), { recursive: true }) as string[])
+					.filter((f) => /\.(svelte|ts)$/.test(f) && !f.endsWith('.test.ts'))
+					.map((f) => `${dir}${f.replace(/\\/g, '/')}`)
+			)
+		];
+		expect(files.filter((f) => f.endsWith('.svelte')).length).toBeGreaterThan(0);
+		for (const file of files) {
+			expect(rules(file, read(file)), file).toEqual([]);
+			const planted =
+				read(file) +
+				'\n<span class="bg-approval-surface" data-surface="approval"><ShieldCheck /></span>';
+			expect(rules(file, planted), file).toEqual(
+				expect.arrayContaining([
+					'record: approval token',
+					'record: data-surface',
+					'record: shield icon'
+				])
+			);
+		}
+		expect(rules('src/lib/features/home/components/peek.svelte', '<ApprovalTray />')).toEqual([]);
+		expect(
+			rules('src/lib/features/runs/run-detail-screen.svelte', '<p>{run.approvals.length}</p>')
 		).toEqual([]);
 	});
 
