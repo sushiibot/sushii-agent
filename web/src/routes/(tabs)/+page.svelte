@@ -4,6 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { routedSheet } from '$lib/core/nav/sheet';
+	import { closeShownNotifications } from '$lib/core/pwa/notifications';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
 	import { chatStore } from '$lib/features/chat';
@@ -63,6 +64,15 @@
 			submitting: nonce ? home.submitting.includes(nonce) : false,
 			result: home.results[id]
 		};
+	});
+
+	// Item ids are the push tags, so opening an item clears its notification.
+	$effect(() => {
+		const id = peek?.item ? peek.id : undefined;
+		if (!id) return;
+		void closeShownNotifications(new Set([id])).catch(() => {
+			// Nothing to clear if the worker is gone.
+		});
 	});
 
 	// A push opens /?approve=, /?ask= or /?item=; once Home knows what is waiting, the item opens

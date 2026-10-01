@@ -566,6 +566,43 @@ test('opening the chat closes the chat notification and leaves others', async ({
 		.toEqual(['other']);
 });
 
+test('opening a pushed approval on Home closes its notification and leaves others', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['notifications']);
+	await mockApi(context);
+	await context.addInitScript(() => {
+		(window as unknown as { __sse: { hello: { pending: unknown } } }).__sse.hello.pending = {
+			approvals: [
+				{
+					seq: 3,
+					at: new Date().toISOString(),
+					nonce: 'n1',
+					view: { tool: 'send_email', agentId: 'main', agentName: 'sushii-agent', fields: [] }
+				}
+			],
+			asks: []
+		};
+	});
+	await page.goto('/settings');
+	await controlled(page);
+	const push = await pushChannel(page, context);
+	await push({
+		title: 'Approval needed',
+		body: 'send_email',
+		url: '/?approve=n1',
+		tag: 'approval:n1'
+	});
+	await push({ title: 'Other', body: 'x', url: '/', tag: 'other' });
+	await expect.poll(async () => (await shownNotifications(page)).length).toBe(2);
+	await page.goto('/?approve=n1');
+	await expect(page.getByRole('dialog', { name: 'Approval needed' })).toBeVisible();
+	await expect
+		.poll(async () => (await shownNotifications(page)).map((n) => n.tag))
+		.toEqual(['other']);
+});
+
 test('the settings back chevron returns without stacking history', async ({ page, context }) => {
 	await mockApi(context);
 	await stubPush(page);
