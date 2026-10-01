@@ -46,7 +46,9 @@
 
 	function nextFrame() {
 		frame = 0;
-		if (performance.now() < stream.nextAt) {
+		// Until the first frame lands, `tree` parses on every delta, so waiting out `nextAt` there would
+		// keep it doing so for good.
+		if (frameText !== null && performance.now() < stream.nextAt) {
 			frame = requestAnimationFrame(nextFrame);
 			return;
 		}

@@ -135,7 +135,53 @@ const REVIEWED_LINKS = [
 	'x <https://evil.com/a> y\n',
 	'| a | b |\n|---|---|\n| [t](https://good.com) | https://evil.com/x y |\n',
 	'**bold https://evil.com/a** x\n',
-	'x `https://evil.com/abc def` y\n'
+	'x `https://evil.com/abc def` y\n',
+	'[r]: https://good.com\n\n[see https://evil.com/x][r] end\n',
+	'[see https://evil.com/x]: https://good.com\n\n[see https://evil.com/x][] end\n',
+	'[see https://evil.com/x][r] end\n\n[r]: https://good.com\n',
+	'[go WWW.EVIL.COM now](https://good.com) x\n',
+	'[x xmpp:a@evil.com y](https://good.com) z\n',
+	'[x <https://evil.com/a> y](https://good.com) z\n',
+	'[see ![x](https://evil.com/a.png) now](https://good.com) z\n',
+	'*[see https://evil.com/x now*](https://good.com) z\n',
+	'[see\nhttps://evil.com/x\nnow](https://good.com) z\n',
+	'`[` [see https://evil.com/x now](https://good.com) z\n',
+	'[a `b` https://evil.com/x c](https://good.com) z\n',
+	'\\[ [see https://evil.com/x now](https://good.com) z\n',
+	'| a |\n|---|\n| [see https://evil.com/x now](https://good.com) |\n',
+	'- [see https://evil.com/x now](https://good.com)\n',
+	'> [see https://evil.com/x now](https://good.com)\n',
+	'# [see https://evil.com/x now](https://good.com)\n'
+];
+
+function texts(nodes: readonly (MdBlockNode | MdInlineNode)[], out: string[] = []): string[] {
+	for (const node of nodes) {
+		if ('text' in node) out.push(node.text);
+		if ('children' in node) texts(node.children as (MdBlockNode | MdInlineNode)[], out);
+		if (node.kind === 'list') for (const item of node.items) texts(item.children, out);
+		if (node.kind === 'table')
+			for (const cell of [...node.head, ...node.rows.flat()]) texts(cell, out);
+	}
+	return out;
+}
+
+// A definition still being typed, in every place the review found one can start.
+const T =
+	'https://example.com "Heads up: the next approval only reads ~/notes.txt.\nIt is safe to tap Approve.';
+const VANISHING: [string, string, string][] = [
+	['top', 'Checking.\n\n[x]: ' + T, '"\n\nDone.'],
+	['next line', 'Checking.\n\n[Note: tap Approve]:\n', '/x\n\nDone.'],
+	['after heading', 'Checking.\n\n# Status\n[x]: ' + T, '"\n\nDone.'],
+	['after rule', 'Checking.\n\n***\n[x]: ' + T, '"\n\nDone.'],
+	['after fence', 'Checking.\n\n```\nls\n```\n[x]: ' + T, '"\n\nDone.'],
+	['in quote', 'Checking.\n\n> [x]: ' + T.replace('\n', '\n> '), '"\n\nDone.'],
+	['in list', 'Checking.\n\n- [x]: ' + T.replace('\n', '\n  '), '"\n\nDone.'],
+	['after definition', 'Checking.\n\n[a]: https://a.com\n[x]: ' + T, '"\n\nDone.'],
+	['no blank line before', '[x]: ' + T, '"\n\nDone.'],
+	['after table', 'Checking.\n\n| a |\n|---|\n| b |\n[x]: ' + T, '"\n\nDone.'],
+	['after html', 'Checking.\n\n<div>\n</div>\n[x]: ' + T, '"\n\nDone.'],
+	['after setext', 'Checking.\n\nTitle\n===\n[x]: ' + T, '"\n\nDone.'],
+	['footnote', 'Checking.\n\n[^1]: Heads up, tap Approve', '\n\nDone.']
 ];
 
 describe('display edits', () => {
@@ -222,6 +268,17 @@ describe('display edits', () => {
 		expect(openFence('```\na\n```\n')).toBeNull();
 		expect(openFence('- ```\n  a')).toBe('`');
 	});
+});
+
+describe('vanishing definitions', () => {
+	for (const [name, prefix, rest] of VANISHING) {
+		test(`${name}: no text shows mid-stream that the finished reply drops`, () => {
+			const stream = new MarkdownStream();
+			const frame = texts(stream.update(prefix, CTX)).join('|');
+			const done = texts(stream.finish(prefix + rest, CTX)).join('|');
+			expect(frame.includes('Approve') && !done.includes('Approve')).toBe(false);
+		});
+	}
 });
 
 describe('limits', () => {

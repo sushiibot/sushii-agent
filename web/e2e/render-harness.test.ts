@@ -25,6 +25,12 @@ type Win = {
 			step: number
 		): { ok: boolean; err?: string; ms: number[]; finishMs: number };
 		streamInto(text: string, step: number): Promise<{ frames: number[] }>;
+		lateMount(
+			text: string,
+			at: number,
+			step: number,
+			everyMs: number
+		): Promise<{ updates: number; rendered: number; deltas: number }>;
 		streamTimed(
 			text: string,
 			step: number,
@@ -284,14 +290,31 @@ test.describe('streaming markdown in V8', () => {
 				(t) => (window as unknown as Win).h.streamTimed(t, 20, 4),
 				text
 			);
-			const long = gaps.filter((g) => g > 60).length;
+			// Without the fallback these frames stay slow for the whole reply; with it, a few are.
+			const long = gaps.filter((g) => g > 45).length;
 			const sorted = [...gaps].sort((a, b) => b - a);
 			console.log(
-				`${name}: ${gaps.length} frames, ${long} over 60ms, p95 ${sorted[Math.floor(gaps.length * 0.05)].toFixed(1)}ms, max ${sorted[0].toFixed(1)}ms`
+				`${name}: ${gaps.length} frames, ${long} over 45ms, p95 ${sorted[Math.floor(gaps.length * 0.05)].toFixed(1)}ms, max ${sorted[0].toFixed(1)}ms`
 			);
-			expect(long, `${name} frames over 60ms`).toBeLessThanOrEqual(1);
+			expect(long, `${name} frames over 45ms`).toBeLessThanOrEqual(10);
+			expect(sorted[0], `${name} longest frame`).toBeLessThan(120);
 		}
 
+		expect(violations).toEqual([]);
+	});
+
+	test('a reply mounted mid-stream, as after a reload, is throttled from its first frame', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const list = '- item with **bold** text and more words\n'.repeat(400).slice(0, 16_000);
+		const c = await page.evaluate(
+			(t) => (window as unknown as Win).h.lateMount(t, 6_000, 20, 20),
+			list
+		);
+		console.log(`late mount: ${c.deltas} deltas, ${c.updates} updates, ${c.rendered} rendered`);
+		expect(c.rendered).toBeGreaterThan(0);
+		expect(c.updates).toBeLessThan(c.deltas / 2);
 		expect(violations).toEqual([]);
 	});
 

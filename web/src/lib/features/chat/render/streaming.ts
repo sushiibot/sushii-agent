@@ -16,8 +16,9 @@ import {
  *  Each alternative starts on a different character and the label class excludes newlines, so
  *  nothing backtracks past one line. Definitions nested in quotes and list items count too. */
 const DEFINITION_RE = /^(?:[ \t>]|[-*+][ \t]|\d{1,9}[.)][ \t])*\[[^\]\n]+\]:/m;
-/** A top-level definition still being typed shows as a paragraph that vanishes once it completes. */
-const DEFINITION_START_RE = /^ {0,3}\[[^\]\n]+\]:/;
+/** A definition still being typed shows as text that vanishes once it completes. Applied per line,
+ *  so it also finds one after a heading, rule or fence, or inside a quote or list item. */
+const DEFINITION_LINE_RE = /^(?:[ \t>]|[-*+][ \t]|\d{1,9}[.)][ \t])*\[[^\]\n]+\]:/;
 /** Unclosed emphasis past this many openers is left raw rather than closed for display. */
 const CLOSERS_MAX = 8;
 
@@ -214,7 +215,8 @@ function lastBlankLineEnd(text: string): number {
 
 /** What a still-growing reply shows: unfinished syntax at its end is completed or held back, so it
  *  never flashes raw and then snaps, and a half-typed URL never becomes a link. Display only. */
-export function streamingView(text: string): string {
+export function streamingView(raw: string): string {
+	const text = defuseReferenceLabels(raw);
 	const fence = openFence(text);
 	if (fence) {
 		// A closing fence being typed would otherwise show up as code for a frame.
@@ -223,8 +225,8 @@ export function streamingView(text: string): string {
 		return last && [...last].every((c) => c === fence) ? text.slice(0, nl + 1) : text;
 	}
 	const start = lastBlankLineEnd(text);
-	if (DEFINITION_START_RE.test(text.slice(start, start + 1000))) return text.slice(0, start);
-	let seg = holdBackLines(text.slice(start));
+	let seg = holdBackDefinition(text.slice(start));
+	seg = holdBackLines(seg);
 	seg = completeLinks(seg);
 	// Holding back the last word can reopen a label it closed, so links are checked again after.
 	seg = completeLinks(holdBackUrl(seg));
@@ -235,11 +237,21 @@ export function streamingView(text: string): string {
 /** The fence character when `text` ends inside an open fenced code block. Fences nested in quotes
  *  or list items count too; being approximate only costs display. */
 export function openFence(text: string): string | null {
+	return scanFences(text);
+}
+
+/** Walks the lines of `text`, telling `onLine` which belong to a fenced code block (fences
+ *  included), and returns the fence character when the text ends inside one. */
+function scanFences(
+	text: string,
+	onLine?: (start: number, end: number, fenced: boolean) => void
+): string | null {
 	let open: { ch: number; len: number } | null = null;
 	let i = 0;
 	while (i < text.length) {
 		let nl = text.indexOf('\n', i);
 		if (nl < 0) nl = text.length;
+		let fenced = open !== null;
 		let j = i;
 		for (;;) {
 			const c = text.charCodeAt(j);
@@ -264,15 +276,84 @@ export function openFence(text: string): string | null {
 				if (!open) {
 					let tickInInfo = false;
 					if (c === 96) for (let t = k; t < nl && !tickInInfo; t++) tickInInfo = text[t] === '`';
-					if (!tickInInfo) open = { ch: c, len: run };
+					if (!tickInInfo) {
+						open = { ch: c, len: run };
+						fenced = true;
+					}
 				} else if (c === open.ch && run >= open.len && !text.slice(k, nl).trim()) {
 					open = null;
 				}
 			}
 		}
+		onLine?.(i, nl, fenced);
 		i = nl + 1;
 	}
 	return open ? String.fromCharCode(open.ch) : null;
+}
+
+/** `[label][ref]` may get its definition later. Until then GFM autolinks a URL in the label to an
+ *  address the finished reply won't link, so a word joiner (invisible) splits the URL. A backslash
+ *  escape would not do: mdast-util-gfm finds autolinks in the decoded text. */
+export function defuseReferenceLabels(text: string): string {
+	if (!text.includes('][')) return text;
+	const at = new Set<number>();
+	const opens: number[] = [];
+	let code = 0;
+	scanFences(text, (start, end, fenced) => {
+		if (fenced) {
+			opens.length = 0;
+			code = 0;
+			return;
+		}
+		for (let i = start; i < end; i++) {
+			const c = text.charCodeAt(i);
+			if (c === 92 && !code) {
+				i++;
+				continue;
+			}
+			if (c === 96) {
+				let k = i;
+				while (text.charCodeAt(k) === 96) k++;
+				if (!code) code = k - i;
+				else if (code === k - i) code = 0;
+				i = k - 1;
+				continue;
+			}
+			if (code) continue;
+			if (c === 91) opens.push(i);
+			else if (c === 93 && opens.length) {
+				const open = opens.pop()!;
+				if (text.charCodeAt(i + 1) !== 91) continue;
+				const label = text.slice(open + 1, i);
+				// Code spans keep every character, so such labels are left alone.
+				if (label.includes('`')) continue;
+				for (const m of label.matchAll(URLISH_GLOBAL_RE)) {
+					const w = m[0].toLowerCase();
+					const offset = w === '@' ? 0 : w === 'www.' ? 3 : w.indexOf(':');
+					at.add(open + 1 + m.index + offset);
+				}
+			}
+		}
+	});
+	if (!at.size) return text;
+	let out = '';
+	let from = 0;
+	for (const i of [...at].sort((a, b) => a - b)) {
+		out += text.slice(from, i) + '\u2060';
+		from = i;
+	}
+	return out + text.slice(from);
+}
+
+/** Cuts the block at the first line that opens a definition; it reappears at the next blank line. */
+function holdBackDefinition(seg: string): string {
+	for (let i = 0; i < seg.length;) {
+		let nl = seg.indexOf('\n', i);
+		if (nl < 0) nl = seg.length;
+		if (DEFINITION_LINE_RE.test(seg.slice(i, nl))) return seg.slice(0, i);
+		i = nl + 1;
+	}
+	return seg;
 }
 
 const MARKERS = new Set(' \t-+*=_#>~`|:.)[]0123456789');
@@ -323,6 +404,13 @@ function completeLinks(s: string): string {
 		else if (c === 93 /* ] */ && opens.length) {
 			const open = opens.pop()!;
 			lastClose = { open, close: i };
+			// `[label][ref]`: its definition may arrive later, and until then a URL in the label
+			// autolinks to an address the finished reply won't link.
+			if (s.charCodeAt(i + 1) === 91 /* [ */ && URLISH_RE.test(s.slice(open + 1, i))) {
+				cutAt = s.charCodeAt(open - 1) === 33 ? open - 1 : open;
+				lastClose = null;
+				break;
+			}
 			if (s.charCodeAt(i + 1) !== 40 /* ( */) continue;
 			let depth = 1;
 			let k = i + 2;

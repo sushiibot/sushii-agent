@@ -93,6 +93,56 @@ Object.assign(window, {
 			flushSync();
 			return { gaps, sawPlain };
 		},
+		/** Mounts a reply mid-stream at `at` chars, as after a reload, then streams the rest on a timer.
+		 *  Counts tail parses and rendered-frame reports, to show the throttle took over. */
+		async lateMount(text: string, at: number, step: number, everyMs: number) {
+			const counts = { updates: 0, rendered: 0, deltas: 0 };
+			const proto = MarkdownStream.prototype;
+			const { update, rendered } = proto;
+			let last: unknown;
+			// Counts parses only: an update with unchanged text returns the same array.
+			proto.update = function (...args) {
+				const tree = update.apply(this, args);
+				if (tree !== last) counts.updates++;
+				last = tree;
+				return tree;
+			};
+			proto.rendered = function (...args) {
+				counts.rendered++;
+				return rendered.apply(this, args);
+			};
+			const target = document.getElementById('solo')!;
+			if (solo) unmount(solo);
+			target.replaceChildren();
+			api.late = { text: text.slice(0, at), streaming: true };
+			solo = mount(Markdown, {
+				target,
+				props: {
+					get text() {
+						return api.late.text;
+					},
+					get streaming() {
+						return api.late.streaming;
+					}
+				}
+			});
+			flushSync();
+			await new Promise<void>((done) => {
+				let n = at;
+				const next = () => {
+					n += step;
+					counts.deltas++;
+					api.late.text = text.slice(0, n);
+					if (n >= text.length) done();
+					else setTimeout(next, everyMs);
+				};
+				next();
+			});
+			await new Promise((r) => setTimeout(r, 300));
+			proto.update = update;
+			proto.rendered = rendered;
+			return counts;
+		},
 		/** Mounts one reply on its own and reports whether mounting threw. */
 		render(text: string, props: Record<string, unknown> = {}) {
 			const target = document.getElementById('solo')!;
