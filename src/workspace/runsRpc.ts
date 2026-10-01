@@ -26,7 +26,7 @@ import { localTime, runFileRel } from "./history.ts";
 import { existingRunFile, historyRoot, historyRunSummary } from "./historyFiles.ts";
 import { MEMORY_PATHS } from "./home.ts";
 import { runLogPath, type RunRecord, type RunRecorder } from "./runLog.ts";
-import { entriesInWindow, openSession, realRoots, runIdTime, runKindOf, safeText, scanRunIndex, textOf, toRunSummary, type Entry, type RunIndex } from "./runReader.ts";
+import { SLICE_SLACK, entriesInWindow, openSession, realRoots, runIdTime, runKindOf, safeText, scanRunIndex, textOf, toRunSummary, type Entry, type RunIndex } from "./runReader.ts";
 import { SEND_FILE_TOOL } from "./sendFile.ts";
 import { VERIFY_CUSTOM_TYPE, bashChangedRepo, bashMutates, isCheckCommand } from "./verifyGate.ts";
 
@@ -38,7 +38,7 @@ const STAMP_MAX = 40;
 /** Pi entry ids are short hex; anything else gets a positional id. */
 const ENTRY_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** Commands are matched by regexes that backtrack on long input. */
-const COMMAND_SCAN_MAX = 2_000;
+const COMMAND_SCAN_MAX = 500;
 /** A whole runs/get result, serialized, stays under this: the bot rejects anything over 2 MB. */
 export const RUNS_GET_BUDGET = 1_400_000;
 const CHECKS_MAX = 20;
@@ -98,91 +98,153 @@ interface ToolCallItem {
   arguments?: unknown;
 }
 
-interface ToolResultInfo {
-  isError: boolean;
-  text: string;
-  at: string;
-  details?: unknown;
+/** One tool call, cut at read time to what steps and evidence use. Strings are raw (not yet redacted). */
+interface SlimCall {
+  id?: string;
+  name: string;
+  argsJson: string;
+  command?: string;
+  path?: string;
+  fileName?: string;
 }
 
-/** One tool call as evidence sees it: the raw arguments, before any clipping. */
+/** A session entry cut at read time: texts sliced just past their caps (so redaction still sees the cut), no image data. */
+export interface SlimEntry {
+  type: "user" | "assistant" | "toolResult" | "compaction" | "custom";
+  id?: string;
+  at: string;
+  text: string;
+  calls?: SlimCall[];
+  stop?: { reason: "error" | "aborted"; message: string };
+  toolCallId?: string;
+  isError?: boolean;
+  childRunId?: string;
+  customType?: string;
+}
+
+const isStamp = (v: unknown): v is string => str(v) && v.length <= STAMP_MAX && !Number.isNaN(Date.parse(v));
+/** Long enough that `safeText` still knows the text was cut. */
+const head = (s: string, max: number) => (s.length > max + SLICE_SLACK ? s.slice(0, max + SLICE_SLACK + 1) : s);
+const PATH_MAX = 4_096;
+
+function slimCall(c: ToolCallItem): SlimCall {
+  const args = c.arguments && typeof c.arguments === "object" && !Array.isArray(c.arguments) ? (c.arguments as Record<string, unknown>) : {};
+  let argsJson = "";
+  try {
+    argsJson = JSON.stringify(c.arguments ?? {}) ?? "";
+  } catch {}
+  return {
+    ...(str(c.id) ? { id: c.id.slice(0, ID_MAX) } : {}),
+    name: head(c.name as string, ID_MAX),
+    argsJson: head(argsJson, RUN_STEP_LIMITS.toolArgs),
+    ...(str(args.command) ? { command: args.command.slice(0, COMMAND_SCAN_MAX) } : {}),
+    ...(str(args.path) ? { path: args.path.slice(0, PATH_MAX) } : {}),
+    ...(str(args.name) ? { fileName: head(args.name, ID_MAX) } : {}),
+  };
+}
+
+/** The parts of a session entry a run detail shows, or null for entries it skips. */
+export function slimEntry(e: Entry): SlimEntry | null {
+  if (!isStamp(e.timestamp)) return null;
+  const base = { at: e.timestamp, ...(str(e.id) ? { id: e.id.slice(0, 128) } : {}) };
+  const m = e.message;
+  if (e.type === "message" && m?.role === "user") return { ...base, type: "user", text: head(textOf(m.content), RUN_STEP_LIMITS.user) };
+  if (e.type === "message" && m?.role === "assistant") {
+    const calls = Array.isArray(m.content) ? (m.content as ToolCallItem[]).filter((c) => c?.type === "toolCall" && str(c.name)).map(slimCall) : [];
+    const stop = m.stopReason === "error" || m.stopReason === "aborted" ? { reason: m.stopReason as "error" | "aborted", message: str(m.errorMessage) ? m.errorMessage.slice(0, 4_000) : "" } : undefined;
+    return { ...base, type: "assistant", text: head(textOf(m.content).trim(), RUN_STEP_LIMITS.assistant), calls, ...(stop ? { stop } : {}) };
+  }
+  if (e.type === "message" && m?.role === "toolResult" && str(m.toolCallId)) {
+    const child = (m.details as { runId?: unknown } | undefined)?.runId;
+    return {
+      ...base,
+      type: "toolResult",
+      text: head(textOf(m.content), RUN_STEP_LIMITS.toolResult),
+      toolCallId: m.toolCallId.slice(0, ID_MAX),
+      isError: m.isError === true,
+      ...(str(child) && RUN_ID_RE.test(child) ? { childRunId: child } : {}),
+    };
+  }
+  if (e.type === "compaction" && str(e.summary)) return { ...base, type: "compaction", text: head(e.summary, RUN_STEP_LIMITS.note) };
+  if (e.type === "custom_message") {
+    return { ...base, type: "custom", text: head(textOf(e.content), RUN_STEP_LIMITS.note), ...(str(e.customType) ? { customType: e.customType.slice(0, 64) } : {}) };
+  }
+  return null;
+}
+
+/** One tool call as evidence sees it. */
 export interface ToolUse {
-  name: string;
-  args: Record<string, unknown>;
+  call: SlimCall;
   ok: boolean | null;
   at: string;
 }
 
+/** A step whose id and place are fixed; its redacted text is built only when a page includes it. */
+export interface PendingStep {
+  id: string;
+  render: () => RunStep;
+}
+
 export interface BuiltSteps {
-  steps: RunStep[];
+  steps: PendingStep[];
   uses: ToolUse[];
   verifyNudged: boolean;
 }
 
-const isStamp = (v: unknown): v is string => str(v) && v.length <= STAMP_MAX && !Number.isNaN(Date.parse(v));
-
 /** The steps of a run's window, in file order. Ids are stable while the run appends: positional ones count from the window start. */
-export function buildSteps(entries: Entry[]): BuiltSteps {
-  const results = new Map<string, ToolResultInfo>();
-  for (const e of entries) {
-    const m = e.message;
-    if (e.type === "message" && m?.role === "toolResult" && str(m.toolCallId) && isStamp(e.timestamp) && !results.has(m.toolCallId)) {
-      results.set(m.toolCallId, { isError: m.isError === true, text: textOf(m.content), at: e.timestamp, details: m.details });
-    }
-  }
+export function buildSteps(entries: SlimEntry[]): BuiltSteps {
+  const results = new Map<string, SlimEntry>();
+  for (const e of entries) if (e.type === "toolResult" && e.toolCallId && !results.has(e.toolCallId)) results.set(e.toolCallId, e);
   const used = new Set<string>();
-  const steps: RunStep[] = [];
+  const steps: PendingStep[] = [];
   const uses: ToolUse[] = [];
   let verifyNudged = false;
-  const push = (s: RunStep) => {
-    if (runStep.safeParse(s).success) steps.push(s);
-  };
+  const add = (id: string, render: () => RunStep) => steps.push({ id, render });
   entries.forEach((e, i) => {
-    if (!isStamp(e.timestamp)) return;
-    const at = e.timestamp;
-    const id = str(e.id) && ENTRY_ID.test(e.id) && !used.has(e.id) ? e.id : `#${i}`;
+    if (e.type === "toolResult") return;
+    const at = e.at;
+    const id = e.id && ENTRY_ID.test(e.id) && !used.has(e.id) ? e.id : `#${i}`;
     used.add(id);
-    const m = e.message;
-    if (e.type === "message" && m?.role === "user") {
-      push({ type: "user", id, at, text: safeText(textOf(m.content), RUN_STEP_LIMITS.user) });
-    } else if (e.type === "message" && m?.role === "assistant") {
-      const text = textOf(m.content).trim();
-      if (text) push({ type: "assistant", id, at, text: safeText(text, RUN_STEP_LIMITS.assistant) });
-      const calls = Array.isArray(m.content) ? (m.content as ToolCallItem[]).filter((c) => c?.type === "toolCall" && str(c.name)) : [];
-      calls.forEach((c, k) => {
-        const result = str(c.id) ? results.get(c.id) : undefined;
-        const args = c.arguments && typeof c.arguments === "object" && !Array.isArray(c.arguments) ? (c.arguments as Record<string, unknown>) : {};
+    if (e.type === "user") {
+      add(id, () => ({ type: "user", id, at, text: safeText(e.text, RUN_STEP_LIMITS.user) }));
+    } else if (e.type === "assistant") {
+      if (e.text) add(id, () => ({ type: "assistant", id, at, text: safeText(e.text, RUN_STEP_LIMITS.assistant) }));
+      (e.calls ?? []).forEach((c, k) => {
+        const result = c.id ? results.get(c.id) : undefined;
         const ok = result ? !result.isError : null;
-        uses.push({ name: c.name as string, args, ok, at });
-        const duration = result ? Date.parse(result.at) - Date.parse(at) : Number.NaN;
-        const child = (result?.details as { runId?: unknown } | undefined)?.runId;
-        let argText = "";
-        try {
-          argText = JSON.stringify(c.arguments ?? {}) ?? "";
-        } catch {}
-        push({
-          type: "tool",
-          id: `${id}/t${k}`,
-          at,
-          name: safeText(c.name as string, ID_MAX, { oneLine: true }),
-          args: safeText(argText, RUN_STEP_LIMITS.toolArgs, { oneLine: true }),
-          ok,
-          result: result ? safeText(result.text, RUN_STEP_LIMITS.toolResult) : "",
-          ...(Number.isFinite(duration) && duration >= 0 ? { durationMs: Math.round(duration) } : {}),
-          ...(str(child) && RUN_ID_RE.test(child) ? { agentId: child } : {}),
+        uses.push({ call: c, ok, at });
+        add(`${id}/t${k}`, () => {
+          const duration = result ? Date.parse(result.at) - Date.parse(at) : Number.NaN;
+          return {
+            type: "tool",
+            id: `${id}/t${k}`,
+            at,
+            name: safeText(c.name, ID_MAX, { oneLine: true }),
+            args: safeText(c.argsJson, RUN_STEP_LIMITS.toolArgs, { oneLine: true }),
+            ok,
+            result: result ? safeText(result.text, RUN_STEP_LIMITS.toolResult) : "",
+            ...(Number.isFinite(duration) && duration >= 0 ? { durationMs: Math.round(duration) } : {}),
+            ...(result?.childRunId ? { agentId: result.childRunId } : {}),
+          };
         });
       });
-      if (m.stopReason === "error" || m.stopReason === "aborted") {
-        const why = str(m.errorMessage) && m.errorMessage ? publicAuthError(m.errorMessage.slice(0, 4_000)) : m.stopReason;
-        push({ type: "note", id: `${id}/stop`, at, kind: m.stopReason, text: safeText(why, RUN_STEP_LIMITS.note, { oneLine: true }) });
+      const stop = e.stop;
+      if (stop) {
+        add(`${id}/stop`, () => ({
+          type: "note",
+          id: `${id}/stop`,
+          at,
+          kind: stop.reason,
+          text: safeText(stop.message ? publicAuthError(stop.message) : stop.reason, RUN_STEP_LIMITS.note, { oneLine: true }),
+        }));
       }
-    } else if (e.type === "compaction" && str(e.summary)) {
-      push({ type: "note", id, at, kind: "compaction", text: safeText(e.summary, RUN_STEP_LIMITS.note) });
-    } else if (e.type === "custom_message") {
+    } else if (e.type === "compaction") {
+      add(id, () => ({ type: "note", id, at, kind: "compaction", text: safeText(e.text, RUN_STEP_LIMITS.note) }));
+    } else {
       const verify = e.customType === VERIFY_CUSTOM_TYPE;
       if (verify) verifyNudged = true;
-      const label = str(e.customType) && !verify ? `[${e.customType.slice(0, 64)}] ` : "";
-      push({ type: "note", id, at, kind: verify ? "verify" : "custom", text: safeText(label + textOf(e.content), RUN_STEP_LIMITS.note) });
+      const label = e.customType && !verify ? `[${e.customType}] ` : "";
+      add(id, () => ({ type: "note", id, at, kind: verify ? "verify" : "custom", text: safeText(label + e.text, RUN_STEP_LIMITS.note) }));
     }
   });
   return { steps, uses, verifyNudged };
@@ -202,50 +264,53 @@ function homeRelative(path: string, home: string): string | null {
 const isMemoryRel = (rel: string) => MEMORY_PATHS.some((m) => (m.endsWith("/") ? rel.startsWith(m) : rel === m));
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const MEMORY_IN_BASH = new RegExp(`(?:^|[\\s"'=/~(])(${MEMORY_PATHS.map(escape).join("|")})`);
+/** Tool uses examined between yields to the event loop. */
+const EVIDENCE_SLICE = 100;
 
-export function buildEvidence(uses: ToolUse[], verifyNudged: boolean, home: string): RunEvidence {
-  const checks: RunEvidence["checks"] = [];
+export async function buildEvidence(uses: ToolUse[], verifyNudged: boolean, home: string): Promise<RunEvidence> {
+  const checks: { command: string; ok: boolean | null; at: string }[] = [];
   const repos = new Set<string>();
-  const filesSent: RunEvidence["filesSent"] = [];
-  const memoryWrites: RunEvidence["memoryWrites"] = [];
+  const filesSent: { name: string; at: string }[] = [];
+  const memoryWrites: { path: string; tool: "write" | "edit" | "bash"; at: string }[] = [];
   let changed = false;
   let unverified = false;
   const change = (repo: string) => {
-    repos.add(safeText(repo, 100, { oneLine: true }));
+    if (repos.size < REPOS_MAX) repos.add(repo.slice(0, 200));
     changed = true;
     unverified = true;
   };
-  for (const u of uses) {
-    const path = str(u.args.path) ? u.args.path.slice(0, 4_096) : null;
-    if (u.name === "bash" && str(u.args.command)) {
-      const cmd = u.args.command.slice(0, COMMAND_SCAN_MAX);
+  for (let i = 0; i < uses.length; i++) {
+    if (i > 0 && i % EVIDENCE_SLICE === 0) await new Promise<void>((r) => setImmediate(r));
+    const { call, ok, at } = uses[i]!;
+    if (call.name === "bash" && call.command !== undefined) {
+      const cmd = call.command;
       const repo = bashChangedRepo(cmd);
       if (repo) change(repo);
-      const mem = bashMutates(cmd) ? MEMORY_IN_BASH.exec(cmd)?.[1] : undefined;
-      if (mem) memoryWrites.push({ path: mem, tool: "bash", at: u.at });
+      const mem = memoryWrites.length < MEMORY_WRITES_MAX && bashMutates(cmd) ? MEMORY_IN_BASH.exec(cmd)?.[1] : undefined;
+      if (mem) memoryWrites.push({ path: mem, tool: "bash", at });
       // A failing check still counts, as in the verify gate: the agent saw the result.
       if (isCheckCommand(cmd)) {
-        checks.push({ command: safeText(cmd, 200, { oneLine: true }), ok: u.ok, at: u.at });
+        checks.push({ command: cmd, ok, at });
+        if (checks.length > CHECKS_MAX) checks.shift();
         unverified = false;
       }
-    } else if ((u.name === "edit" || u.name === "write") && path && u.ok !== false) {
-      const rel = homeRelative(path, home);
+    } else if ((call.name === "edit" || call.name === "write") && call.path && ok !== false) {
+      const rel = homeRelative(call.path, home);
       if (!rel) continue;
       const parts = rel.split("/");
       if (parts[0] === "projects" && parts[1]) change(parts[1]);
-      if (isMemoryRel(rel)) memoryWrites.push({ path: safeText(rel, 300, { oneLine: true }), tool: u.name, at: u.at });
-    } else if (u.name === SEND_FILE_TOOL && path && u.ok === true) {
-      const name = str(u.args.name) && u.args.name.trim() ? u.args.name.trim() : basename(path);
-      filesSent.push({ name: safeText(name, ID_MAX, { oneLine: true }), at: u.at });
+      if (memoryWrites.length < MEMORY_WRITES_MAX && isMemoryRel(rel)) memoryWrites.push({ path: rel, tool: call.name, at });
+    } else if (call.name === SEND_FILE_TOOL && call.path && ok === true && filesSent.length < FILES_SENT_MAX) {
+      filesSent.push({ name: call.fileName?.trim() || basename(call.path), at });
     }
   }
   return {
-    checks: checks.slice(-CHECKS_MAX),
-    changedRepos: [...repos].slice(0, REPOS_MAX),
+    checks: checks.map((c) => ({ ...c, command: safeText(c.command, 200, { oneLine: true }) })),
+    changedRepos: [...repos].map((r) => safeText(r, 100, { oneLine: true })),
     checkAfterLastChange: changed ? !unverified : null,
     verifyNudged,
-    filesSent: filesSent.slice(0, FILES_SENT_MAX),
-    memoryWrites: memoryWrites.slice(0, MEMORY_WRITES_MAX),
+    filesSent: filesSent.map((f) => ({ ...f, name: safeText(f.name, ID_MAX, { oneLine: true }) })),
+    memoryWrites: memoryWrites.map((w) => ({ ...w, path: safeText(w.path, 300, { oneLine: true }) })),
   };
 }
 
@@ -278,7 +343,7 @@ async function fromHistory(opts: RunsRpcOptions, root: string, runId: string): P
   return null;
 }
 
-function page(steps: RunStep[], after: string | undefined, limit: number, budget: number): { steps: RunStep[]; after: string | null } {
+function page(steps: PendingStep[], after: string | undefined, limit: number, budget: number): { steps: RunStep[]; after: string | null } {
   let start = 0;
   if (after !== undefined) {
     const at = steps.findIndex((s) => s.id === after);
@@ -287,13 +352,16 @@ function page(steps: RunStep[], after: string | undefined, limit: number, budget
   }
   const out: RunStep[] = [];
   let bytes = 0;
-  for (let i = start; i < steps.length && out.length < limit; i++) {
-    const size = Buffer.byteLength(JSON.stringify(steps[i]));
-    if (out.length && bytes + size + 1 > budget) break;
-    bytes += size + 1;
-    out.push(steps[i]!);
+  let i = start;
+  for (; i < steps.length && out.length < limit; i++) {
+    const step = steps[i]!.render();
+    if (!runStep.safeParse(step).success) continue;
+    const size = Buffer.byteLength(JSON.stringify(step)) + 1;
+    if (out.length && bytes + size > budget) break;
+    bytes += size;
+    out.push(step);
   }
-  return { steps: out, after: start + out.length < steps.length ? out.at(-1)!.id : null };
+  return { steps: out, after: i < steps.length && out.length ? out.at(-1)!.id : null };
 }
 
 export async function runsGet(opts: RunsRpcOptions, p: unknown): Promise<RunsGetResult> {
@@ -327,7 +395,12 @@ export async function runsGet(opts: RunsRpcOptions, p: unknown): Promise<RunsGet
     try {
       const from = Date.parse(run.startedAt);
       const to = run.endedAt ? Date.parse(run.endedAt) : (opts.now?.() ?? new Date()).getTime();
-      built = buildSteps((await entriesInWindow(session, from, Number.isNaN(to) ? Number.POSITIVE_INFINITY : to)).entries);
+      const read = await entriesInWindow(session, from, Number.isNaN(to) ? Number.POSITIVE_INFINITY : to, slimEntry);
+      built = buildSteps(read.entries);
+      if (read.truncated) {
+        const note: RunStep = { type: "note", id: "#head", at: run.startedAt, kind: "custom", text: "The start of this run is past the transcript read limit and isn't shown." };
+        built.steps.unshift({ id: note.id, render: () => note });
+      }
     } finally {
       await session.fh.close();
     }
@@ -341,7 +414,7 @@ export async function runsGet(opts: RunsRpcOptions, p: unknown): Promise<RunsGet
     ...(parent ? { parent } : {}),
     children: childrenOf(index, run.runId),
     session: session.state,
-    ...(params.after === undefined ? { evidence: buildEvidence(built.uses, built.verifyNudged, opts.home) } : {}),
+    ...(params.after === undefined ? { evidence: await buildEvidence(built.uses, built.verifyNudged, opts.home) } : {}),
     ...(historyFile ? { historyFile } : {}),
   };
   const budget = RUNS_GET_BUDGET - Buffer.byteLength(JSON.stringify({ ...rest, steps: [], after: "x".repeat(ID_MAX) }));

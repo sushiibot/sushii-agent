@@ -371,6 +371,54 @@ describe("runs/get response size", () => {
   });
 });
 
+describe("runs/get past the session read cap", () => {
+  test("a window larger than the read cap starts with a note saying its start isn't shown", async () => {
+    const runId = id(0);
+    const file = join(agentDir, "chat", "huge.jsonl");
+    const big = "word ".repeat(2_000_000);
+    const lines = [JSON.stringify({ type: "session", version: 3, id: "s", timestamp: iso(-1), cwd: home })];
+    for (let i = 0; i < 8; i++) lines.push(JSON.stringify(msg(`u${i}`, 1, { role: "user", content: big })));
+    lines.push(JSON.stringify(msg("last", 2, { role: "assistant", content: [{ type: "text", text: "the end" }], stopReason: "stop" })));
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    record({ runId, sessionFile: file, endedAt: iso(3) });
+    const r = await get(runId);
+    expect(r.steps[0]).toMatchObject({ type: "note", id: "#head", kind: "custom" });
+    expect(r.steps.at(-1)).toMatchObject({ type: "assistant", text: "the end" });
+    expect(r.steps.length).toBeLessThan(10);
+  });
+});
+
+describe("runs/get and the event loop", () => {
+  test("a ~20 MiB window with hostile commands never blocks the loop for long", async () => {
+    const runId = id(0);
+    const file = join(agentDir, "chat", "long.jsonl");
+    const command = "sed ".repeat(500);
+    const result = "0123456789abcdef".repeat(128);
+    const lines: string[] = [JSON.stringify({ type: "session", version: 3, id: "s", timestamp: iso(-1), cwd: home })];
+    for (let i = 0; i < 4_500; i++) {
+      lines.push(JSON.stringify(msg(`a${i}`, 1, { role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "bash", arguments: { command } }], stopReason: "toolUse" })));
+      lines.push(JSON.stringify(msg(`r${i}`, 2, { role: "toolResult", toolCallId: `c${i}`, toolName: "bash", content: [{ type: "text", text: result }], isError: false })));
+    }
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    record({ runId, sessionFile: file, endedAt: iso(3) });
+    let last = performance.now();
+    let gap = 0;
+    const timer = setInterval(() => {
+      const now = performance.now();
+      gap = Math.max(gap, now - last);
+      last = now;
+    }, 5);
+    try {
+      const r = await get(runId, { limit: 200 });
+      expect(r.steps).toHaveLength(200);
+      expect(r.evidence?.checks).toEqual([]);
+    } finally {
+      clearInterval(timer);
+    }
+    expect(gap).toBeLessThan(200);
+  });
+});
+
 describe("runs/changed", () => {
   function recorder() {
     const sent: unknown[] = [];

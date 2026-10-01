@@ -21,6 +21,8 @@ export const SEARCH_WALL_MS = 5_000;
 export const SEARCH_STDOUT_MAX = 4 * 1024 * 1024;
 export const SEARCH_MATCHES_MAX = 500;
 export const SEARCH_CONCURRENCY = 2;
+export const SEARCH_DEADLINE_MS = 6_500;
+export const SEARCH_READ_BUDGET = 32 * 1024 * 1024;
 /** `-M` has no effect under `--json`, so lines are clipped here, around the match, before a snippet is built. */
 const LINE_WINDOW = 2_000;
 const LEADING_TOKEN = /^[A-Za-z0-9_.+/=~-]+/;
@@ -39,7 +41,12 @@ export interface HistorySearchOptions {
   principalId: string;
   home: string;
   rgPath?: string | null;
+  /** rg's own wall clock. */
   wallMs?: number;
+  /** The whole call, rg plus re-reading hit files; under the bot's 8 s timeout. */
+  deadlineMs?: number;
+  /** Bytes of hit files re-read per call. */
+  readBudget?: number;
 }
 
 interface Candidate {
@@ -230,14 +237,14 @@ function hitMeta(rel: string): Pick<SearchHit, "kind" | "date" | "runId"> {
 }
 
 /** The lines of a hit file from our own checked read, or null when the file is refused. */
-async function readLines(root: string, rel: string): Promise<string[] | null> {
+async function readLines(root: string, rel: string): Promise<{ lines: string[]; bytes: number } | null> {
   const opened = await openHistoryFile(root, rel);
   if (!opened) return null;
   try {
     const len = Math.min(opened.size, HIT_FILE_MAX);
     const buf = Buffer.alloc(len);
     const { bytesRead } = await opened.fh.read(buf, 0, len, 0);
-    return buf.subarray(0, bytesRead).toString("utf8").split("\n");
+    return { lines: buf.subarray(0, bytesRead).toString("utf8").split("\n"), bytes: bytesRead };
   } catch {
     return null;
   } finally {
@@ -278,20 +285,32 @@ export class HistorySearch {
   }
 
   private async run(query: string, scope: "all" | "daily" | "runs", cursor: Candidate | null, limit: number, rgPath: string): Promise<HistorySearchResult> {
+    const deadline = Date.now() + (this.opts.deadlineMs ?? SEARCH_DEADLINE_MS);
     const root = await historyRoot(this.opts.home);
     if (!root) return { hits: [], before: null, truncated: false };
-    const rg = await runRg(rgPath, root, query, scope === "daily", this.opts.wallMs ?? SEARCH_WALL_MS);
+    const rg = await runRg(rgPath, root, query, scope === "daily", Math.min(this.opts.wallMs ?? SEARCH_WALL_MS, Math.max(0, deadline - Date.now())));
     const wanted = rg.candidates
       .filter((c) => (scope === "daily" ? DAILY_FILE_RE.test(c.rel) : scope === "runs" ? RUN_FILE_RE.test(c.rel) : true))
       .sort(compareCandidates)
       .filter((c) => !cursor || compareCandidates(c, cursor) > 0);
-    const files = new Map<string, string[] | null>();
+    // Candidates are grouped by file, so only the current file's lines are kept.
+    let file = null as { rel: string; lines: string[] | null } | null;
+    let readBudget = this.opts.readBudget ?? SEARCH_READ_BUDGET;
+    let truncated = rg.truncated;
     const hits: SearchHit[] = [];
     let i = 0;
     for (; i < wanted.length && hits.length < limit; i++) {
       const c = wanted[i]!;
-      if (!files.has(c.rel)) files.set(c.rel, await readLines(root, c.rel));
-      const lines = files.get(c.rel);
+      if (file?.rel !== c.rel) {
+        if (Date.now() > deadline || readBudget <= 0) {
+          truncated = true;
+          break;
+        }
+        const read = await readLines(root, c.rel);
+        readBudget -= read?.bytes ?? 0;
+        file = { rel: c.rel, lines: read?.lines ?? null };
+      }
+      const lines = file.lines;
       const text = lines?.[c.line - 1];
       if (text === undefined) continue;
       const snip = buildSnippet(text, query);
@@ -300,8 +319,8 @@ export class HistorySearch {
       const hit: SearchHit = { id: `${c.rel}:${c.line}`, ...hitMeta(c.rel), line: c.line, ...(heading ? { heading } : {}), ...snip };
       if (searchHit.safeParse(hit).success) hits.push(hit);
     }
-    const more = i < wanted.length || rg.truncated;
-    return historySearchResult.parse({ hits, before: more && hits.length ? hits.at(-1)!.id : null, truncated: rg.truncated });
+    const more = i < wanted.length || truncated;
+    return historySearchResult.parse({ hits, before: more && hits.length ? hits.at(-1)!.id : null, truncated });
   }
 }
 

@@ -166,6 +166,23 @@ describe("history/search", () => {
     expect(await s.search(q)).toMatchObject({ truncated: true });
   });
 
+  itIfRg("candidates that redaction rejects stop at the read budget and the deadline, and free the slot", async () => {
+    // Each line matches for rg but the match sits inside a token that redaction removes, so every candidate is read and rejected.
+    const line = `ghp_NEEDLE${"A1b2C3d4".repeat(5)}\n`;
+    for (let d = 1; d <= 28; d++) writeFileSync(join(hist, `2026-09-${String(d).padStart(2, "0")}.md`), line.repeat(4_000));
+    const budgeted = new HistorySearch({ principalId: "owner", home, readBudget: 300_000 });
+    const r = await budgeted.search({ principalId: "owner", query: "NEEDLE" });
+    expect(r).toEqual({ hits: [], before: null, truncated: true });
+    const late = new HistorySearch({ principalId: "owner", home, deadlineMs: 1 });
+    expect(await late.search({ principalId: "owner", query: "NEEDLE" })).toMatchObject({ hits: [], truncated: true });
+    writeFileSync(join(hist, "2026-09-30.md"), "plain needle\n");
+    expect((await late.search({ principalId: "owner", query: "plain" })).truncated).toBe(true);
+    const a = budgeted.search({ principalId: "owner", query: "NEEDLE" });
+    const b = budgeted.search({ principalId: "owner", query: "NEEDLE" });
+    await Promise.all([a, b]);
+    expect((await budgeted.search({ principalId: "owner", query: "plain" })).hits).toHaveLength(1);
+  });
+
   test("checks the principal and needs ripgrep", async () => {
     await expect(search.search({ principalId: "x", query: "needle" })).rejects.toThrow(/principal/);
     const none = new HistorySearch({ principalId: "owner", home, rgPath: null });

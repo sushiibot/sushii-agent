@@ -19,7 +19,7 @@ const LONG_TOKEN = new RegExp(`(?<![${TOKEN_CHARS}])[${TOKEN_CHARS}]{${TOKEN_RUN
 const TOKEN_TAIL = new RegExp(`[${TOKEN_CHARS}]+$`);
 // C0/C1 controls blow up JSON escaping; bidi overrides and line separators can disguise text on screen.
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g;
-const SLICE_SLACK = 1024;
+export const SLICE_SLACK = 1024;
 
 /** Cuts to `max` UTF-16 units (what zod's `.max` counts), never through a surrogate pair. */
 export function clipUnits(s: string, max: number): string {
@@ -486,11 +486,12 @@ export const SESSION_READ_MAX_BYTES = 64 * 1024 * 1024;
 const SESSION_LINE_MAX = 16 * 1024 * 1024;
 
 /**
- * The entries stamped within [from, to], in file order. Reads from the tail and stops at the first entry
- * before `from` or after `SESSION_READ_MAX_BYTES`.
+ * The entries stamped within [from, to], in file order, each passed through `slim` as it is read so a
+ * window never holds whole image or file payloads. Reads from the tail and stops at the first entry before
+ * `from` or after `SESSION_READ_MAX_BYTES`.
  */
-export async function entriesInWindow(s: OpenedSession, from: number, to: number): Promise<{ entries: Entry[]; truncated: boolean }> {
-  const out: Entry[] = [];
+export async function entriesInWindow<T>(s: OpenedSession, from: number, to: number, slim: (e: Entry) => T | null): Promise<{ entries: T[]; truncated: boolean }> {
+  const out: T[] = [];
   const state = { truncated: false };
   for await (const line of tailLinesOf(s.fh, s.size, { maxBytes: SESSION_READ_MAX_BYTES, maxLine: SESSION_LINE_MAX }, state)) {
     const entry = parseEntry(line);
@@ -498,7 +499,9 @@ export async function entriesInWindow(s: OpenedSession, from: number, to: number
     const t = Date.parse(entry.timestamp);
     if (Number.isNaN(t)) continue;
     if (t < from) break;
-    if (t <= to) out.push(entry);
+    if (t > to) continue;
+    const slimmed = slim(entry);
+    if (slimmed !== null) out.push(slimmed);
   }
   return { entries: out.reverse(), truncated: state.truncated };
 }
