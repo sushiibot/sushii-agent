@@ -12,6 +12,7 @@
 		ClearNotifications,
 		chatStore,
 		modelsStore,
+		Dictation,
 		type ChatSheet,
 		type ChatTray,
 		type ChatMessage,
@@ -38,6 +39,11 @@
 		model: routedSheet('model')
 	};
 	const models = modelsStore();
+	// The transcript joins whatever is already in the box, like keyboard dictation.
+	const dictation = new Dictation((text) => {
+		const draft = store.draft.trimEnd();
+		store.setDraft(draft ? `${draft} ${text}` : text);
+	});
 	const sheet = $derived((Object.keys(sheets) as ChatSheet[]).find((s) => sheets[s].open));
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 
@@ -67,7 +73,11 @@
 
 	onMount(() => {
 		void models.remote.ensure();
-		return models.remote.watch();
+		const unwatch = models.remote.watch();
+		return () => {
+			unwatch();
+			dictation.cancel();
+		};
 	});
 
 	// `!model`, another device or a workspace restart can change the model: reload whenever the agent
@@ -148,6 +158,10 @@
 	models={models.remote.data ?? null}
 	modelPicking={models.picking}
 	modelError={models.error}
+	dictation={features.dictation
+		? { state: dictation.state, seconds: dictation.seconds, error: dictation.error }
+		: null}
+	ondictate={() => dictation.toggle()}
 	onpickmodel={(alias) => void models.pick(alias).then((ok) => ok && closeSheet())}
 	{connection}
 	commandsOffline={s.workspace === 'offline'}

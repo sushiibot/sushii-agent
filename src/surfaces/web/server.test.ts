@@ -107,7 +107,7 @@ describe("auth", () => {
   test("a trusted peer with the owner login gets through", async () => {
     const res = await handler(req("/api/me", { headers: { "Tailscale-User-Name": "=?utf-8?q?J=C3=BCrgen_Owner?=" } }), GW);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ login: OWNER, displayName: "Jürgen Owner", features: [] });
+    expect(await res.json()).toEqual({ login: OWNER, displayName: "Jürgen Owner", features: [], dictation: false });
     expect((await handler(req("/", { login: "Owner@Example.com" }), `::ffff:${GW}`)).status).toBe(200);
   });
 
@@ -135,7 +135,7 @@ describe("auth", () => {
 
   test("/api/me lists the features WEB_FEATURES turns on", async () => {
     const h = setup({ features: ["runs", "home"] }).handler;
-    expect(await (await h(req("/api/me"), GW)).json()).toEqual({ login: OWNER, features: ["runs", "home"] });
+    expect(await (await h(req("/api/me"), GW)).json()).toEqual({ login: OWNER, features: ["runs", "home"], dictation: false });
   });
 
   test("WEB_FEATURES: known names only, in a fixed order, never throwing", async () => {

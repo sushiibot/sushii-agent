@@ -478,6 +478,8 @@ export interface MeResponse {
 	login: string;
 	displayName?: string;
 	features: WebFeature[];
+	/** POST /api/dictation turns speech into text. Absent from an older bot. */
+	dictation?: boolean;
 }
 
 /**

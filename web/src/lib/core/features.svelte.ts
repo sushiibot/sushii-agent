@@ -69,12 +69,14 @@ export class Features {
 	fresh = $state(false);
 	/** Turned on here for fixture screens, whatever the bot says. */
 	override = $state.raw<ReadonlySet<AppFeature>>(new Set());
+	/** The bot can turn speech into text (POST /api/dictation). */
+	dictation = $state(false);
 
-	#load: () => Promise<{ features?: WebFeature[] }>;
+	#load: () => Promise<{ features?: WebFeature[]; dictation?: boolean }>;
 	#inflight: Promise<void> | null = null;
 
 	constructor(
-		load: () => Promise<{ features?: WebFeature[] }> = api.me,
+		load: () => Promise<{ features?: WebFeature[]; dictation?: boolean }> = api.me,
 		initial = cached(),
 		override = storedOverride()
 	) {
@@ -116,6 +118,7 @@ export class Features {
 			.then((me) => {
 				const list = WEB_FEATURES.filter((f) => me.features?.includes(f));
 				this.list = list;
+				this.dictation = me.dictation === true;
 				this.fresh = true;
 				remember(list);
 			})

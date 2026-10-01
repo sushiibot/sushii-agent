@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick, type Snippet } from 'svelte';
+	import { tick, type ComponentProps, type Snippet } from 'svelte';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronUp from '@lucide/svelte/icons/chevron-up';
 	import Download from '@lucide/svelte/icons/download';
@@ -47,6 +47,8 @@
 		modelPicking = null,
 		modelError = null,
 		onpickmodel,
+		dictation = null,
+		ondictate,
 		connection,
 		commandsOffline = false,
 		toast,
@@ -112,6 +114,9 @@
 		modelPicking?: string | null;
 		modelError?: string | null;
 		onpickmodel?: (alias: string) => void;
+		/** Speech to text in the composer; null hides the mic. */
+		dictation?: ComponentProps<typeof Composer>['dictation'];
+		ondictate?: () => void;
 		connection?: ConnectionState | 'forbidden';
 		commandsOffline?: boolean;
 		toast?: string | null;
@@ -594,6 +599,8 @@
 				onretryphoto={(id) => onretryphoto?.(id)}
 				model={models ? (models.current ?? 'Default') : null}
 				onmodel={() => onopensheet?.('model')}
+				{dictation}
+				{ondictate}
 				status={usageStatus}
 			/>
 		</div>

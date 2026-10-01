@@ -166,3 +166,5 @@ export interface ChatTray {
 	details?: boolean;
 	collapsed?: boolean;
 }
+
+export type DictationState = 'idle' | 'starting' | 'recording' | 'transcribing';

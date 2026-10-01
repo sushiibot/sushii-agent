@@ -43,6 +43,8 @@ import { startSlackAgentLoop, type SlackAgentClient } from "./surfaces/slack/gat
 import { registerSlackProgressHooks } from "./surfaces/slack/progress.ts";
 import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
+import { createTranscriber } from "./agent/transcribe.ts";
+import { createDictationRoutes } from "./surfaces/web/dictationRoutes.ts";
 import { startWebGateway } from "./surfaces/web/server.ts";
 import { createWebChat } from "./surfaces/web/chat.ts";
 import { createUploadReadHandler } from "./surfaces/web/uploadRoutes.ts";
@@ -160,6 +162,7 @@ async function main() {
     home: webChat.home,
     uploads,
     reads: { db, link: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
+    ...(config.transcriptionEnabled ? { dictation: createDictationRoutes({ transcribe: createTranscriber() }) } : {}),
   });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) workspace.registry.register(webChat.adapter);

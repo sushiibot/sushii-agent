@@ -3,6 +3,7 @@
 	import Square from '@lucide/svelte/icons/square';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Mic from '@lucide/svelte/icons/mic';
 	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
@@ -11,7 +12,7 @@
 	import { Textarea } from '$lib/ui/textarea';
 	import { cn } from '$lib/utils';
 	import type { Snippet } from 'svelte';
-	import type { PhotoDraft } from '../types';
+	import type { DictationState, PhotoDraft } from '../types';
 
 	let {
 		value = $bindable(''),
@@ -29,7 +30,8 @@
 		onretryphoto,
 		model,
 		onmodel,
-		mic,
+		dictation = null,
+		ondictate,
 		status
 	}: {
 		value?: string;
@@ -50,8 +52,9 @@
 		/** The model the next turn uses; the chip shows it and opens the picker. */
 		model?: string | null;
 		onmodel?: () => void;
-		/** A dictation button, placed before Send. */
-		mic?: Snippet;
+		/** Speech to text: shown when set; the transcript lands in the box. */
+		dictation?: { state: DictationState; seconds: number; error: string | null } | null;
+		ondictate?: () => void;
 		/** A muted line under the box, such as the last reply's usage. */
 		status?: Snippet;
 	} = $props();
@@ -99,6 +102,8 @@
 		}
 	}
 
+	const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
 	type Tone = 'muted' | 'strong' | 'primary';
 	function roundFace(tone: Tone) {
 		return cn(
@@ -110,6 +115,15 @@
 	}
 </script>
 
+{#snippet micIcon()}
+	{#if dictation?.state === 'recording'}
+		<Square class="size-3.5 fill-current" aria-hidden="true" />
+	{:else if dictation?.state === 'transcribing' || dictation?.state === 'starting'}
+		<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+	{:else}
+		<Mic class="size-5" aria-hidden="true" />
+	{/if}
+{/snippet}
 {#snippet attachIcon()}<Plus class="size-5" aria-hidden="true" />{/snippet}
 {#snippet stopIcon()}
 	{#if stopping}
@@ -274,7 +288,33 @@
 				</button>
 			{/if}
 			<div class="ml-auto flex shrink-0 items-center gap-0.5">
-				{@render mic?.()}
+				{#if dictation}
+					{@const d = dictation}
+					{#if d.state === 'recording'}
+						<span
+							class="flex items-center gap-1.5 px-1 text-meta text-muted-foreground tabular-nums"
+						>
+							<span
+								class="size-2 rounded-full bg-failed motion-safe:animate-pulse"
+								aria-hidden="true"
+							></span>{clock(d.seconds)}
+						</span>
+					{/if}
+					{@render round({
+						label:
+							d.state === 'recording'
+								? 'Stop dictating'
+								: d.state === 'transcribing'
+									? 'Turning speech into text…'
+									: d.state === 'starting'
+										? 'Starting the microphone…'
+										: 'Dictate',
+						disabled: d.state === 'starting' || d.state === 'transcribing',
+						onclick: () => ondictate?.(),
+						icon: micIcon,
+						tone: d.state === 'recording' ? 'strong' : 'muted'
+					})}
+				{/if}
 				{#if showStop}
 					{@render round({
 						label: stopping ? 'Stopping…' : 'Stop',
@@ -298,6 +338,9 @@
 	</div>
 	{#if blocked}
 		<p id="{uid}-blocked" class="px-1 text-xs text-muted-foreground">{blocked}</p>
+	{/if}
+	{#if dictation?.error}
+		<p role="alert" class="px-1 text-xs text-failed">{dictation.error}</p>
 	{/if}
 	{@render status?.()}
 </form>

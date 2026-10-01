@@ -4,6 +4,7 @@ export { default as ApprovalTray } from './components/approval-tray.svelte';
 export { default as AskCard } from './components/ask-card.svelte';
 export { default as Markdown } from './render/markdown.svelte';
 export { chatApi, chatStore, configureChat } from './store.svelte';
+export { Dictation, type DictationState, type Transcribe } from './dictation.svelte';
 export {
 	configureModels,
 	createFixtureModelsApi,
