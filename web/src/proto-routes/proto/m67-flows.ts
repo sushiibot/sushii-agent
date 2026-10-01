@@ -1,5 +1,7 @@
 // M6 and M7 flows: the browser takeover placeholder, the briefing and connectors, on fixtures.
 import { BrowserScreen } from '$lib/features/browser';
+import { BriefingScreen } from '$lib/features/briefing';
+import * as br from '$lib/features/briefing/fixtures';
 import type { Flow, Frame } from './flows';
 
 const NOW = new Date(2026, 8, 30, 16, 41).getTime();
@@ -88,6 +90,75 @@ const browserFrames: Frame[] = [
 	}
 ];
 
+const brief = br.briefing(NOW);
+const rated = {
+	...brief,
+	items: brief.items.map((i) =>
+		i.id === 'b-review'
+			? { ...i, vote: 'up' as const }
+			: i.id === 'b-backup'
+				? { ...i, vote: 'up' as const }
+				: i.id === 'b-flight'
+					? { ...i, vote: 'down' as const }
+					: i.id === 'b-lease'
+						? { ...i, dismissed: true }
+						: i
+	)
+};
+const briefingProps = (props: Record<string, unknown> = {}) => ({
+	remote: ready,
+	briefing: brief,
+	now: NOW,
+	back: back('/more'),
+	...props
+});
+
+const briefingFrames: Frame[] = [
+	{
+		id: 'br-1',
+		label: 'Briefing: items with sources',
+		screen: BriefingScreen,
+		props: briefingProps(),
+		...detail('briefing'),
+		next: 'Rate and dismiss'
+	},
+	{
+		id: 'br-2',
+		label: 'After feedback',
+		screen: BriefingScreen,
+		props: briefingProps({ briefing: rated }),
+		...detail('briefing'),
+		scrollTo: 300
+	},
+	{
+		id: 'br-3',
+		label: 'No briefing yet',
+		screen: BriefingScreen,
+		props: briefingProps({ briefing: null }),
+		...detail('briefing'),
+		branch: 'Before the first morning'
+	},
+	{
+		id: 'br-4',
+		label: "A vote that didn't save",
+		screen: BriefingScreen,
+		props: briefingProps({
+			error: "Couldn't save that. Check your connection and try again.",
+			online: false
+		}),
+		...detail('briefing'),
+		branch: 'Phone offline'
+	},
+	{
+		id: 'br-5',
+		label: 'Loading, slowly',
+		screen: BriefingScreen,
+		props: briefingProps({ remote: { status: 'loading', slow: true }, briefing: undefined }),
+		...detail('briefing'),
+		branch: 'Slow network'
+	}
+];
+
 export const m67Flows: Flow[] = [
 	{
 		id: 'browser',
@@ -96,7 +167,18 @@ export const m67Flows: Flow[] = [
 		intro:
 			'A placeholder for the state flow only: the agent drives, you take over and it is locked out, you hand back. The real address always shows. The live view and the field sheet come with the browser container.',
 		frames: browserFrames
+	},
+	{
+		id: 'brief',
+		code: 'BR',
+		title: 'Morning briefing',
+		intro:
+			'Each item has its source, Useful and Not useful buttons that tune tomorrow’s ranking, and Dismiss with Undo. All are plain buttons; nothing hides behind a gesture.',
+		frames: briefingFrames
 	}
 ];
 
-export const m67Routes: [string, string][] = [['/browser', 'bt-1']];
+export const m67Routes: [string, string][] = [
+	['/browser', 'bt-1'],
+	['/briefing', 'br-1']
+];

@@ -4,7 +4,6 @@ import NeedsYou from './screens/needs-you.svelte';
 import { ChatScreen } from '$lib/features/chat';
 import Connectors from './screens/connectors.svelte';
 import McpServer from './screens/mcp-server.svelte';
-import Briefing from './screens/briefing.svelte';
 import HomeScreen from './components/home-screen.svelte';
 import DiscordDm from './components/discord-dm.svelte';
 import * as f from './fixtures';
@@ -860,28 +859,6 @@ export const flows: Flow[] = [
 				branch: 'A server changed its tools since the last snapshot'
 			}
 		]
-	},
-	{
-		id: 'brief',
-		code: 'BR',
-		title: 'Morning briefing',
-		intro:
-			'Delivered to Discord at 07:30. Here each item has its source, a dismiss, and a vote that tunes tomorrow’s ranking.',
-		frames: [
-			{
-				id: 'br-1',
-				label: 'Briefing',
-				screen: Briefing,
-				props: { items: f.brief },
-				next: 'Rate and dismiss'
-			},
-			{
-				id: 'br-2',
-				label: 'After feedback',
-				screen: Briefing,
-				props: { items: f.brief, dismissed: ['b5'], votes: { b2: 'up', b3: 'up', b4: 'down' } }
-			}
-		]
 	}
 ];
 
@@ -893,8 +870,7 @@ export const routes: [string, string][] = [
 	...m67Routes,
 	['/connectors/linear', 'mc-5'],
 	['/connectors/*', 'mc-6'],
-	['/connectors', 'mc-1'],
-	['/brief', 'br-1']
+	['/connectors', 'mc-1']
 ];
 
 export function frameFor(path: string): string | undefined {

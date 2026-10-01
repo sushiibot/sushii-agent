@@ -66,14 +66,6 @@ export interface McpServer {
 	usedBy: { runId: string; title: string; tool: string; when: string }[];
 }
 
-export interface BriefItem {
-	id: string;
-	section: 'Top of mind' | 'Looking ahead';
-	title: string;
-	detail: string;
-	source: { label: string; href: string };
-}
-
 export interface DaySummary {
 	date: string;
 	summary: string;

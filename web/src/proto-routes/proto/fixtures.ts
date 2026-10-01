@@ -1,5 +1,5 @@
 import type { ChatMessage, MemoryWrite } from '$lib/features/chat';
-import type { BriefItem, DaySummary, InboxItem, McpServer, Run } from './screens/types';
+import type { DaySummary, InboxItem, McpServer, Run } from './screens/types';
 
 // Every person, company, address and id below is invented.
 
@@ -256,45 +256,6 @@ export const github: McpServer = {
 		{ runId: 'r-208', title: 'Dependency sweep', tool: 'create_pull_request', when: 'Sep 22' }
 	]
 };
-
-export const brief: BriefItem[] = [
-	{
-		id: 'b1',
-		section: 'Top of mind',
-		title: 'Maple Row wants to service the HVAC on Thursday',
-		detail:
-			'Dana offered Thu Oct 2, 8am to 12pm, and asked where the van permit goes. Not answered yet.',
-		source: { label: 'Email · Maple Row', href: '/history' }
-	},
-	{
-		id: 'b2',
-		section: 'Top of mind',
-		title: 'notify-service #212 is waiting on your review',
-		detail: 'Rate-limit fix for the feed poller. CI green, 14 files, +212 −88.',
-		source: { label: 'GitHub · acme/notify-service', href: '/runs/run-pr' }
-	},
-	{
-		id: 'b3',
-		section: 'Top of mind',
-		title: 'Dependency sweep failed on a registry 403',
-		detail: 'No PR this week. The bunfig mirror needs a new token.',
-		source: { label: 'Run · deps sweep', href: '/runs/run-deps' }
-	},
-	{
-		id: 'b4',
-		section: 'Looking ahead',
-		title: 'FA 107 to Haneda, Oct 9 at 11:05',
-		detail: 'Check-in opens Oct 8 at 11:05. Seat not chosen.',
-		source: { label: 'Email · Ferro Air itinerary', href: '/history' }
-	},
-	{
-		id: 'b5',
-		section: 'Looking ahead',
-		title: 'Lease renewal notice due Dec 1',
-		detail: 'Unit 4B renews Mar 1. Maple Row asks for 90 days notice either way.',
-		source: { label: 'File · home/lease-4B.pdf', href: '/history' }
-	}
-];
 
 export const days: DaySummary[] = [
 	{
