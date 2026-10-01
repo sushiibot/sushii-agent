@@ -6,11 +6,11 @@ describe("pushFor", () => {
     expect(pushFor({ kind: "approval", nonce: "n1", tool: "file_linear_issue" })).toEqual({
       title: "Approval needed",
       body: "sushii-agent needs your approval to run file_linear_issue",
-      url: "/inbox?approve=n1",
+      url: "/?approve=n1",
       tag: "approval:n1",
       requireInteraction: true,
     });
-    expect(pushFor({ kind: "ask", askId: "a 1", question: "Which?" })).toEqual({ title: "The agent asks", body: "Which?", url: "/inbox?ask=a%201", tag: "ask:a 1" });
+    expect(pushFor({ kind: "ask", askId: "a 1", question: "Which?" })).toEqual({ title: "The agent asks", body: "Which?", url: "/?ask=a%201", tag: "ask:a 1" });
     expect(pushFor({ kind: "auth" })).toMatchObject({ tag: "auth", body: "Sign-in link ready" });
     expect(pushFor({ kind: "reply", text: "done" })).toEqual({ title: "sushii-agent", body: "done", url: "/chat", tag: "chat", renotify: false });
     expect(pushFor({ kind: "proactive", text: "" })).toMatchObject({ tag: "chat", body: "Sent a file" });

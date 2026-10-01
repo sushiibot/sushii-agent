@@ -6,7 +6,8 @@ import {
 	push,
 	smallTargets,
 	streamRequests,
-	stubStream
+	stubStream,
+	openDrawer
 } from './helpers';
 
 const CLIENT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -568,7 +569,7 @@ test('seen goes out only while Main is on screen', async ({ page, context }) => 
 	await open(page);
 	await push(page, 'proactive', { key: 'p1', text: 'On screen', files: [] }, 1);
 	await expect.poll(() => posts('/api/chat/seen').length).toBe(1);
-	await page.getByRole('link', { name: 'Settings' }).click();
+	await (await openDrawer(page)).getByRole('link', { name: 'Settings' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
 	await push(page, 'approval', approval('n1'), 2);
 	await page.waitForTimeout(1500);

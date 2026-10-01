@@ -268,12 +268,12 @@ describe("alert push", () => {
     expect(pushFor({ kind: "alert", alert: { job: "nightly", kind: "failed", error: "**boom** at `x`" } })).toEqual({
       title: "Scheduled job failed",
       body: "nightly: boom at x",
-      url: "/inbox?item=job:nightly",
+      url: "/home?item=job:nightly",
       tag: "job:nightly",
       renotify: true,
     });
-    expect(pushFor({ kind: "alert", alert: { job: "nightly", kind: "stuck" } })).toEqual({ title: "Scheduled job stuck", body: "nightly", url: "/inbox?item=job:nightly", tag: "job:nightly", renotify: true });
-    expect(pushFor({ kind: "alertRecovered", job: "nightly" })).toEqual({ title: "Scheduled job working again", body: "nightly", url: "/inbox", tag: "job:nightly", silent: true });
+    expect(pushFor({ kind: "alert", alert: { job: "nightly", kind: "stuck" } })).toEqual({ title: "Scheduled job stuck", body: "nightly", url: "/home?item=job:nightly", tag: "job:nightly", renotify: true });
+    expect(pushFor({ kind: "alertRecovered", job: "nightly" })).toEqual({ title: "Scheduled job working again", body: "nightly", url: "/home", tag: "job:nightly", silent: true });
   });
 
   test("a seen receipt for the alert suppresses its push", async () => {

@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
+import { axe, horizontalOverflow, smallTargets, stubStream, openDrawer } from './helpers';
 
 const ENDPOINT = 'https://push.example.test/sub/abc';
 const PUBLIC_KEY =
@@ -611,7 +611,7 @@ test('settings from the chat goes back to the chat', async ({ page, context }) =
 	await mockApi(context);
 	await stubPush(page);
 	await page.goto('/chat');
-	await page.getByRole('link', { name: 'Settings' }).click();
+	await (await openDrawer(page)).getByRole('link', { name: 'Settings' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
 	await page.goBack();
 	await expect(page).toHaveURL(/\/chat$/);
@@ -659,6 +659,6 @@ test('the app runs under enforced Trusted Types with only its own policies', asy
 	expect(probe).toEqual({ innerHTML: 'blocked', policy: 'blocked' });
 	// The probe's own violations are expected; anything after it is not.
 	ttErrors.get(page)?.splice(0);
-	await page.getByRole('link', { name: 'Settings' }).click();
+	await (await openDrawer(page)).getByRole('link', { name: 'Settings' }).click();
 	await expect(page.getByTestId('login')).toHaveText('drk@example.com');
 });

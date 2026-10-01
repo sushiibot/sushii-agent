@@ -165,3 +165,33 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		}
 	});
 }
+
+test('Chat from the drawer steps back to the chat underneath instead of stacking another', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.goto('/chat');
+	await (await drawer(page)).getByRole('link', { name: 'Inbox' }).click();
+	await expect(page).toHaveURL(/\/inbox$/);
+	await (await drawer(page)).getByRole('link', { name: 'Chat' }).click();
+	await expect(page).toHaveURL(/\/chat$/);
+	await page.goForward();
+	await expect(page).toHaveURL(/\/inbox$/);
+	await page.goBack();
+	await page.goBack();
+	await expect(page).not.toHaveURL(/\/chat$/);
+});
+
+test('widening past the sidebar breakpoint closes an open drawer, so the page stays usable', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.goto('/chat');
+	await drawer(page);
+	await page.setViewportSize({ width: 1280, height: 800 });
+	await expect(page.getByRole('dialog', { name: 'Menu' })).toBeHidden();
+	await page.locator('nav[aria-label="Main"]').first().getByRole('link', { name: 'Runs' }).click();
+	await expect(page).toHaveURL(/\/runs$/);
+});

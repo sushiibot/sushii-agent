@@ -75,7 +75,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
     expect(decrypt(push!, ua, auth)).toMatchObject({
       title: "Scheduled job failed",
       tag: `job:${JOB}`,
-      url: `/inbox?item=job:${JOB}`,
+      url: `/home?item=job:${JOB}`,
       body: expect.stringContaining(`${JOB}: `),
       renotify: true,
     });

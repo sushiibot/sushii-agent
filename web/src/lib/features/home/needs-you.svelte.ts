@@ -43,6 +43,8 @@ export class NeedsYouStore {
 
 	groups: HomeGroups = $derived.by(() => homeItems(this.live, this.data.data, this.local));
 	waitingCount = $derived(this.groups.waiting.length);
+	/** What the menu badge counts: what waits on you and what failed. */
+	needsYouCount = $derived(this.groups.waiting.length + this.groups.failed.length);
 	unreadCount = $derived(this.groups.review.filter((i) => 'read' in i && !i.read).length);
 
 	#hub: Hub;
@@ -151,7 +153,9 @@ export class NeedsYouStore {
 			}
 		);
 		this.#hub.start();
-		// The badge counts what waits on every screen, so the server part refreshes app-wide.
+		// The menu badge counts what waits on every screen, and the app opens on the chat, so the server
+		// part loads from the start and refreshes app-wide.
+		void this.data.ensure();
 		this.data.watch();
 	}
 

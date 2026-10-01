@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import favicon from '$lib/assets/favicon.svg';
 	import { features } from '$lib/core/features.svelte';
+	import { previousPathIs } from '$lib/core/nav/back';
 	import { activeNav, navFor } from '$lib/core/nav/nav';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { markBooted } from '$lib/core/pwa/boot-recovery';
@@ -32,6 +33,12 @@
 	<Shell
 		nav={navFor(features.has)}
 		active={activeNav(page.route.id)}
-		badges={{ inbox: home.waitingCount || home.unreadCount > 0 }}>{@render children()}</Shell
+		badges={{ inbox: home.needsYouCount || home.unreadCount > 0 }}
+		onhome={(e) => {
+			// Back to the chat entry already under this one, rather than stacking a second.
+			if (!previousPathIs('/chat')) return;
+			e.preventDefault();
+			history.back();
+		}}>{@render children()}</Shell
 	>
 </div>

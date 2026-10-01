@@ -16,3 +16,26 @@ export function backTo(parent: string): (e: MouseEvent) => void {
 		else void goto(parent, { replaceState: true });
 	};
 }
+
+interface NavigationEntries {
+	currentEntry: { index: number } | null;
+	entries(): { url: string | null }[];
+}
+
+/** Whether the history entry before this one is `path` in this app; false where the browser can't say. */
+export function previousPathIs(path: string): boolean {
+	const nav = (globalThis as { navigation?: NavigationEntries }).navigation;
+	const index = nav?.currentEntry?.index ?? 0;
+	if (!nav || index < 1) return false;
+	const url = nav.entries()[index - 1]?.url;
+	return !!url && new URL(url).origin === location.origin && new URL(url).pathname === path;
+}
+
+/** Goes to `path` by stepping back when it is the entry underneath, else in place of this entry. */
+export function returnTo(path: string): Promise<void> {
+	if (previousPathIs(path)) {
+		history.back();
+		return Promise.resolve();
+	}
+	return goto(path, { replaceState: true });
+}

@@ -4,6 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { features } from '$lib/core/features.svelte';
+	import { returnTo } from '$lib/core/nav/back';
 	import { routedSheet } from '$lib/core/nav/sheet';
 	import { closeShownNotifications } from '$lib/core/pwa/notifications';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
@@ -133,7 +134,16 @@
 		await goto(href);
 	}
 
-	const openChat = () => void leaveTo(resolve('/chat'));
+	// The chat is usually the entry under the inbox: step back to it rather than stack another.
+	const openChat = async () => {
+		if (sheet.open) {
+			const popped = new Promise((r) => addEventListener('popstate', r, { once: true }));
+			sheet.close();
+			await popped;
+			await tick();
+		}
+		await returnTo(resolve('/chat'));
+	};
 
 	function done(id: string) {
 		const item = items.find((i) => i.id === id);
@@ -152,7 +162,7 @@
 		if (item.kind !== 'message') return;
 		const quote = item.message.text.split('\n').map((l) => `> ${l}`);
 		chatStore().setDraft(`> From ${item.message.job}:\n${quote.join('\n')}\n\n`);
-		openChat();
+		void openChat();
 	}
 
 	function askAgent(item: HomeItem) {
@@ -161,7 +171,7 @@
 		const what = a.kind === 'stuck' ? 'is stuck' : 'failed';
 		const quote = [`> Scheduled job ${a.job} ${what}`, ...(a.error ? [`> ${a.error}`] : [])];
 		chatStore().setDraft(`${quote.join('\n')}\n\n`);
-		openChat();
+		void openChat();
 	}
 </script>
 

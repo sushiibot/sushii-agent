@@ -350,8 +350,8 @@ describe("web adapter push rules", () => {
     await h.adapter.progressFinalize(null, { id: "t3" }, { outcome: "interrupted", summary: null });
     await tick();
     expect(h.pushes.map((p) => [p.tag, p.url])).toEqual([
-      [`approval:${"n".repeat(16)}`, `/inbox?approve=${"n".repeat(16)}`],
-      ["ask:A", "/inbox?ask=A"],
+      [`approval:${"n".repeat(16)}`, `/?approve=${"n".repeat(16)}`],
+      ["ask:A", "/?ask=A"],
       ["auth", "/chat"],
       ["chat", "/chat"],
       ["chat", "/chat"],

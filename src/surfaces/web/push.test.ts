@@ -278,7 +278,7 @@ describe("fitPayload", () => {
     ["JSON-escaped newline", "\n"],
     ["six-byte control escape", "\u0001"],
   ])("cuts a %s body on a code point and stays within the cap", (_name, unit) => {
-    const out = fitPayload({ title: "Approval needed", body: unit.repeat(5000), url: "/inbox?ask=a", tag: "ask:a" });
+    const out = fitPayload({ title: "Approval needed", body: unit.repeat(5000), url: "/?ask=a", tag: "ask:a" });
     expect(bytes(out)).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
     const body: string = JSON.parse(out).body;
     expect(body.endsWith("…")).toBe(true);

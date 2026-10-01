@@ -56,7 +56,7 @@
 		<button
 			type="button"
 			aria-label={drawer.badge
-				? `Menu, ${typeof drawer.badge === 'number' ? `${drawer.badge} waiting` : 'something new'}`
+				? `Menu, ${typeof drawer.badge === 'number' ? `${drawer.badge} need you` : 'something new'}`
 				: 'Menu'}
 			onclick={() => drawer.open()}
 			class="relative grid size-12 shrink-0 place-items-center rounded-md text-muted-foreground hover:text-foreground @3xl:hidden"

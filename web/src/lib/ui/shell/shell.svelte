@@ -10,6 +10,7 @@
 		active,
 		home = 'chat',
 		badges = {},
+		onhome,
 		children
 	}: {
 		/** The phone drawer and the desktop sidebar. */
@@ -19,6 +20,8 @@
 		home?: string;
 		/** A count for a pill, or true for an unread dot, by nav id. */
 		badges?: Record<string, number | boolean | undefined>;
+		/** Called on a click of the `home` entry, before it navigates; it may take over the click. */
+		onhome?: (e: MouseEvent) => void;
 		children: Snippet;
 	} = $props();
 
@@ -45,6 +48,14 @@
 		void active;
 		drawer?.close();
 	});
+
+	// Wide enough for the sidebar, the drawer hides, and an open modal would leave the page inert.
+	$effect(() => {
+		const wide = matchMedia('(min-width: 48rem)');
+		const close = () => wide.matches && drawer?.close();
+		wide.addEventListener('change', close);
+		return () => wide.removeEventListener('change', close);
+	});
 </script>
 
 {#snippet badge(id: string)}
@@ -52,7 +63,7 @@
 	{#if typeof value === 'number' && value > 0}
 		<span
 			class="ml-auto rounded-full bg-waiting-soft px-1.5 text-xs font-semibold text-waiting tabular-nums"
-			>{value}<span class="sr-only">{' waiting'}</span></span
+			>{value}<span class="sr-only">{' need you'}</span></span
 		>
 	{:else if value === true}
 		<span class="ml-auto size-2 rounded-full bg-brand"><span class="sr-only">Unread</span></span>
@@ -65,7 +76,10 @@
 			href={item.href}
 			aria-current={active === item.id ? 'page' : undefined}
 			data-sveltekit-replacestate={active && active !== home && item.id !== active ? '' : undefined}
-			onclick={() => drawer?.close()}
+			onclick={(e) => {
+				drawer?.close();
+				if (item.id === home && item.id !== active) onhome?.(e);
+			}}
 			class={cn(
 				'flex h-12 shrink-0 items-center gap-3 rounded-md px-2 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground',
 				where === 'sidebar' ? 'gap-2.5 text-sm' : 'text-base',

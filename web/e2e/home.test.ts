@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { fakeBackend, type Scenario } from './fake-backend';
-import { axe, horizontalOverflow, push, smallTargets, stubStream } from './helpers';
+import { axe, horizontalOverflow, push, smallTargets, stubStream, openDrawer } from './helpers';
 
 type Call = { method: string; path: string; body: unknown };
 
@@ -91,14 +91,14 @@ test('groups what needs you in order and counts waiting items on the menu', asyn
 		'Updates 2'
 	]);
 	const menu = page.getByRole('button', { name: /^Menu/ });
-	await expect(menu).toHaveAccessibleName('Menu, 2 waiting');
+	await expect(menu).toHaveAccessibleName('Menu, 4 need you');
 	await menu.click();
 	const inboxLink = page.getByRole('dialog', { name: 'Menu' }).getByRole('link', { name: /Inbox/ });
-	await expect(inboxLink).toContainText('2 waiting');
+	await expect(inboxLink).toContainText('4 need you');
 	await expect(inboxLink).toHaveAttribute('aria-current', 'page');
 	await page.keyboard.press('Escape');
 	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'approve' }, 5);
-	await expect(menu).toHaveAccessibleName('Menu, 1 waiting');
+	await expect(menu).toHaveAccessibleName('Menu, 3 need you');
 	await expect(page.getByText('Approve send_email')).toBeHidden();
 });
 
@@ -251,7 +251,25 @@ test('a failed job peeks with its error, and Dismiss takes it off Home', async (
 	await expect(page.getByText('nightly-sync failed')).toBeHidden();
 });
 
-test('Ask the agent opens the chat with the alert quoted in the composer', async ({
+test('Ask the agent steps back to the chat under the inbox, with the alert quoted', async ({
+	page,
+	context
+}) => {
+	await homeServer(context);
+	await page.goto('/chat');
+	await (await openDrawer(page)).getByRole('link', { name: 'Inbox' }).click();
+	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
+	await sheet(page).getByRole('button', { name: 'Ask the agent' }).click();
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue(
+		/^> Scheduled job nightly-sync failed\n> rsync/
+	);
+	await page.goForward();
+	await expect(page).toHaveURL(/\/inbox$/);
+	await expect(sheet(page)).toBeHidden();
+});
+
+test('from a cold inbox link, Ask the agent opens the chat in place of the inbox', async ({
 	page,
 	context
 }) => {
@@ -260,13 +278,8 @@ test('Ask the agent opens the chat with the alert quoted in the composer', async
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await sheet(page).getByRole('button', { name: 'Ask the agent' }).click();
 	await expect(page).toHaveURL(/\/chat$/);
-	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue(
-		/^> Scheduled job nightly-sync failed\n> rsync/
-	);
 	await page.goBack();
-	await expect(page).toHaveURL(/\/inbox$/);
-	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
-	await expect(sheet(page)).toBeHidden();
+	await expect(page).not.toHaveURL(/\/(inbox|chat)/);
 });
 
 for (const [link, item, text] of [
@@ -455,7 +468,7 @@ test("a job's message opens in full, Reply quotes it into the chat, and it stays
 	await expect(page.getByRole('textbox')).toHaveValue(
 		/^> From heartbeat:\n> Your passport renewal is due \*\*Friday\*\*/
 	);
-	await page.goBack();
+	await (await openDrawer(page)).getByRole('link', { name: 'Inbox' }).click();
 	await expect(page.getByRole('button', { name: /Read: Your passport renewal/ })).toBeVisible();
 });
 
@@ -563,4 +576,16 @@ test("a cold link to a run while the agent is unreachable says it can't check", 
 	await homeServer(context, { fixtures: 'offline' });
 	await page.goto('/inbox?item=run%3A01K6B3A1C3E5G7J9M1P3R5T7V9');
 	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
+});
+
+test('launched on the chat, the menu already flags what waits and what failed', async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { pending: busy() });
+	await page.goto('/');
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('button', { name: /^Menu/ })).toHaveAccessibleName(
+		'Menu, 4 need you'
+	);
 });
