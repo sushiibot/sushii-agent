@@ -106,9 +106,9 @@
 		e.preventDefault();
 		if (canSend) onsend?.();
 	}
-	// Enter is a newline on a touch keyboard; Ctrl or Cmd+Enter sends from a hardware keyboard.
+	// Enter sends; Shift+Enter inserts a newline.
 	function keydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSend) {
+		if (e.key === 'Enter' && !e.shiftKey && canSend) {
 			e.preventDefault();
 			onsend?.();
 		}
