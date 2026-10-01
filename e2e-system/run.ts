@@ -342,6 +342,7 @@ async function main(): Promise<number> {
       WEB_TRUSTED_PEERS: addrs.trustedPeer,
       WEB_OWNER_LOGIN: cfg.ownerLogin,
       WEB_DIST_DIR: distDir,
+      WEB_FEATURES: "runs,history",
       VAPID_PUBLIC_KEY: vapid.publicKey,
       VAPID_PRIVATE_KEY: vapid.privateKey,
       VAPID_SUBJECT: "mailto:e2e@example.invalid",
