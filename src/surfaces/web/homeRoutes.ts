@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ID_MAX, JOB_NAME_RE, RUN_ID_RE, type RunSummary, type RunsListParams, type RunsListResult } from "../../orchestration/contracts.ts";
+import { ID_MAX, JOB_NAME_RE, RUN_ID_RE, type RunSummary, type RunsListResult, type runsListParams } from "../../orchestration/contracts.ts";
 import { LOGIN_PENDING_MS } from "../../orchestration/workspace/link.ts";
 import { APPROVAL_TIMEOUT_MS } from "../../orchestration/workspace/tools.ts";
 import { RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/server.ts";
@@ -21,7 +21,7 @@ const JSON_RPC_METHOD_NOT_FOUND = -32601;
 export interface HomeLink {
   isConnected(): boolean;
   isLoginPending(): boolean;
-  runsList(q: Omit<RunsListParams, "principalId">, timeoutMs?: number): Promise<RunsListResult>;
+  runsList(q: Omit<z.input<typeof runsListParams>, "principalId">, timeoutMs?: number): Promise<RunsListResult>;
 }
 
 export interface HomeRouteDeps {

@@ -134,6 +134,13 @@
       "when": 1790822011443,
       "tag": "0018_web_home",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1790822012000,
+      "tag": "0019_web_chat_search",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
-import type { RunSummary, RunsListParams, RunsListResult } from "../../orchestration/contracts.ts";
+import type { RunSummary, RunsListResult } from "../../orchestration/contracts.ts";
 import { RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/server.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import type { HomeResponse, WebFeature } from "./events.ts";
@@ -23,12 +23,12 @@ function run(o: Partial<RunSummary> & Pick<RunSummary, "kind" | "status">): RunS
   return { runId: rid(), agentName: o.kind === "job" ? "job:x" : "helper", title: "t", startedAt: iso(NOW - 80 * HOUR), ...o };
 }
 
-function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: boolean; loginPending?: boolean; runs?: (q: Omit<RunsListParams, "principalId">) => Promise<RunsListResult> } = {}) {
+function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: boolean; loginPending?: boolean; runs?: (q: Parameters<HomeLink["runsList"]>[0]) => Promise<RunsListResult> } = {}) {
   const db = new Database(":memory:");
   applySchema(db);
   const log = new SqliteChatLog(db, { now: () => NOW });
   const store = new WebHomeStore(db, { now: () => NOW });
-  const calls: Array<Omit<RunsListParams, "principalId">> = [];
+  const calls: Array<Parameters<HomeLink["runsList"]>[0]> = [];
   const link: HomeLink = {
     isConnected: () => opts.connected ?? true,
     isLoginPending: () => opts.loginPending ?? false,
@@ -46,7 +46,7 @@ function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: b
 }
 
 /** Answers the running call and the finished call from two lists. */
-const lists = (running: RunSummary[], finished: RunSummary[]) => async (q: Omit<RunsListParams, "principalId">) => ({
+const lists = (running: RunSummary[], finished: RunSummary[]) => async (q: Parameters<HomeLink["runsList"]>[0]) => ({
   runs: q.statuses?.includes("running") ? running : finished,
   before: null,
   truncated: false,

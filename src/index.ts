@@ -155,7 +155,12 @@ async function main() {
     // The gateway parses WEB_FEATURES again and warns about unknown entries there.
     features: parseWebFeatures(process.env["WEB_FEATURES"], () => {}),
   });
-  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, home: webChat.home, uploads });
+  const webServer = await startWebGateway(process.env, db, {
+    chat: webChat.routes,
+    home: webChat.home,
+    uploads,
+    reads: { db, link: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
+  });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) workspace.registry.register(webChat.adapter);
   listenWorkspace(workspace, config.orchPort);
