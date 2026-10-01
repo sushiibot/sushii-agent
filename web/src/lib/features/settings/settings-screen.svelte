@@ -6,6 +6,7 @@
 <script lang="ts">
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import BellRing from '@lucide/svelte/icons/bell-ring';
+	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 	import { Button } from '$lib/ui/button';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import UpdateToast from '$lib/ui/pwa/update-toast.svelte';
@@ -230,6 +231,9 @@
 					<dd>{standalone ? 'Yes' : 'No, running in the browser'}</dd>
 				</div>
 			</dl>
+			<Button variant="outline" class="w-full" onclick={() => onreload?.()}>
+				<RotateCw aria-hidden="true" />Reload app
+			</Button>
 			{#if canInstall}
 				<Button class="w-full" onclick={() => oninstall?.()}>Install the app</Button>
 			{/if}

@@ -79,6 +79,12 @@ class Pwa {
 		this.waiting.postMessage({ type: 'SKIP_WAITING' });
 	}
 
+	/** Applies a waiting update if there is one, otherwise just reloads. */
+	reload() {
+		if (this.waiting) this.applyUpdate();
+		else location.reload();
+	}
+
 	/** Re-sends the push subscription; concurrent callers share one attempt. */
 	syncPush(): Promise<void> {
 		this.#syncing ??= resyncPush()

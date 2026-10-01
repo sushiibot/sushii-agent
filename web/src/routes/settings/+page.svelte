@@ -31,5 +31,5 @@
 	ontest={() => void settings.sendTest()}
 	onchoosetheme={(t) => settings.chooseTheme(t)}
 	oninstall={() => void settings.install()}
-	onreload={() => pwa.applyUpdate()}
+	onreload={() => pwa.reload()}
 />
