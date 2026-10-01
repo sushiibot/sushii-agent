@@ -22,7 +22,7 @@
 	});
 </script>
 
-<svelte:head><title>{remote.data?.name ?? 'Job'} · Agent</title></svelte:head>
+<svelte:head><title>{remote.data?.name ?? 'Job'} · sushii</title></svelte:head>
 
 <JobScreen
 	{remote}

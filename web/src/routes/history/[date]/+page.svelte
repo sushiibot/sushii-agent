@@ -23,7 +23,7 @@
 	});
 </script>
 
-<svelte:head><title>History · Agent</title></svelte:head>
+<svelte:head><title>History · sushii</title></svelte:head>
 
 <HistoryDayScreen
 	{date}

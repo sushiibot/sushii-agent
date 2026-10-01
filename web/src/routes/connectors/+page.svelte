@@ -11,7 +11,7 @@
 	});
 </script>
 
-<svelte:head><title>Connectors · Agent</title></svelte:head>
+<svelte:head><title>Connectors · sushii</title></svelte:head>
 
 <ConnectorsScreen
 	remote={list}

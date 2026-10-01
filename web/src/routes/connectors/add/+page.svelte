@@ -27,7 +27,7 @@
 	}
 </script>
 
-<svelte:head><title>Add a server · Agent</title></svelte:head>
+<svelte:head><title>Add a server · sushii</title></svelte:head>
 
 <AddServerScreen
 	add={connectors.add}

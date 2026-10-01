@@ -175,7 +175,7 @@
 	}
 </script>
 
-<svelte:head><title>Inbox · Agent</title></svelte:head>
+<svelte:head><title>Inbox · sushii</title></svelte:head>
 
 <HomeScreen
 	groups={home.groups}

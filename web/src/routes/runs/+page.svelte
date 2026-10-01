@@ -21,7 +21,7 @@
 	keepScroll('runs', () => document.querySelector('main'));
 </script>
 
-<svelte:head><title>Runs · Agent</title></svelte:head>
+<svelte:head><title>Runs · sushii</title></svelte:head>
 
 <RunListScreen
 	remote={list}

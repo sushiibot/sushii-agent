@@ -20,7 +20,7 @@
 	keepScroll('schedules', () => document.querySelector('main'));
 </script>
 
-<svelte:head><title>Schedules · Agent</title></svelte:head>
+<svelte:head><title>Schedules · sushii</title></svelte:head>
 
 <SchedulesScreen
 	remote={list}

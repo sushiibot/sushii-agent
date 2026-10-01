@@ -22,7 +22,7 @@
 	});
 </script>
 
-<svelte:head><title>Skill · Agent</title></svelte:head>
+<svelte:head><title>Skill · sushii</title></svelte:head>
 
 <SkillScreen
 	{remote}

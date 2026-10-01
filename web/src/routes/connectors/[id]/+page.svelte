@@ -21,7 +21,7 @@
 	});
 </script>
 
-<svelte:head><title>{remote.data?.name ?? 'Server'} · Agent</title></svelte:head>
+<svelte:head><title>{remote.data?.name ?? 'Server'} · sushii</title></svelte:head>
 
 <McpServerScreen
 	{remote}

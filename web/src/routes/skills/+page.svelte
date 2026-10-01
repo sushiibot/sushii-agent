@@ -20,7 +20,7 @@
 	keepScroll('skills', () => document.querySelector('main'));
 </script>
 
-<svelte:head><title>Skills · Agent</title></svelte:head>
+<svelte:head><title>Skills · sushii</title></svelte:head>
 
 <SkillsScreen
 	remote={list}

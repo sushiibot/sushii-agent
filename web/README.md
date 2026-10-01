@@ -19,7 +19,11 @@ bun run dev:proto    # http://localhost:5173/proto
 bun run build:proto  # single-file board at build-proto/proto.html
 ```
 
-Icons are rendered from `icons-src/*.svg` with `bun scripts/render-icons.ts`.
+Brand assets are rendered from the transparent PNG masters in `brand-src/` with
+`bun scripts/render-icons.ts`. This rebuilds `static/brand/`, the favicon, install
+icons, and the monochrome notification badge. The maskable icon keeps the character
+inside the central safe area on a cream background. Generation prompts are saved
+in `brand-src/prompts.json`.
 
 ## Layout
 

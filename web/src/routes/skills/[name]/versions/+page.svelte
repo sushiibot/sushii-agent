@@ -19,7 +19,7 @@
 	});
 </script>
 
-<svelte:head><title>Skill versions · Agent</title></svelte:head>
+<svelte:head><title>Skill versions · sushii</title></svelte:head>
 
 <SkillVersionsScreen
 	{remote}

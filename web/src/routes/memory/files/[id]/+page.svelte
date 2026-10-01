@@ -22,7 +22,7 @@
 	});
 </script>
 
-<svelte:head><title>Memory file · Agent</title></svelte:head>
+<svelte:head><title>Memory file · sushii</title></svelte:head>
 
 <MemoryFileScreen
 	{remote}

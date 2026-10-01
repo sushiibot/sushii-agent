@@ -189,7 +189,7 @@
 				<div class="flex flex-col gap-2 rounded-xl bg-waiting-soft px-4 py-3 text-sm">
 					<p class="font-medium">Turn notifications back on</p>
 					<ol class="flex list-decimal flex-col gap-1 pl-5">
-						<li>Long-press the Agent icon on your home screen and tap App info.</li>
+						<li>Long-press the sushii icon on your home screen and tap App info.</li>
 						<li>Tap Notifications and switch them on.</li>
 						<li>Come back here and turn notifications on.</li>
 					</ol>

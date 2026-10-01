@@ -19,7 +19,7 @@
 	});
 </script>
 
-<svelte:head><title>Browser · Agent</title></svelte:head>
+<svelte:head><title>Browser · sushii</title></svelte:head>
 
 <BrowserScreen
 	remote={status}

@@ -18,7 +18,7 @@
 	});
 </script>
 
-<svelte:head><title>Briefing · Agent</title></svelte:head>
+<svelte:head><title>Briefing · sushii</title></svelte:head>
 
 <BriefingScreen
 	remote={today}

@@ -21,7 +21,7 @@
 	keepScroll('memory', () => document.querySelector('main'));
 </script>
 
-<svelte:head><title>Memory · Agent</title></svelte:head>
+<svelte:head><title>Memory · sushii</title></svelte:head>
 
 <MemoryScreen
 	remote={overview}

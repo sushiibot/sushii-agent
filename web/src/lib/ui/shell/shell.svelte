@@ -96,17 +96,8 @@
 
 {#snippet brand()}
 	<div class="mb-4 flex items-center gap-2 px-2 pt-1">
-		<span class="grid size-7 place-items-center rounded-md bg-foreground text-background">
-			<svg viewBox="0 0 16 16" class="size-4" aria-hidden="true"
-				><circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="2" /><circle
-					cx="8"
-					cy="8"
-					r="1.6"
-					fill="currentColor"
-				/></svg
-			>
-		</span>
-		<span class="text-sm font-semibold">Agent</span>
+		<img src="/brand/mark.png" alt="" width="40" height="25" class="h-7 w-10 object-contain" />
+		<span class="text-sm font-semibold">sushii</span>
 	</div>
 {/snippet}
 

@@ -29,7 +29,7 @@
 	});
 </script>
 
-<svelte:head><title>Run · Agent</title></svelte:head>
+<svelte:head><title>Run · sushii</title></svelte:head>
 
 <RunDetailScreen
 	remote={view.remote}

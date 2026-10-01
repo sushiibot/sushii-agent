@@ -8,7 +8,7 @@
 	onMount(() => settings.open());
 </script>
 
-<svelte:head><title>Settings · Agent</title></svelte:head>
+<svelte:head><title>Settings · sushii</title></svelte:head>
 
 <SettingsScreen
 	me={settings.me}

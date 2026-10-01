@@ -28,7 +28,7 @@
 	}
 </script>
 
-<svelte:head><title>Search · Agent</title></svelte:head>
+<svelte:head><title>Search · sushii</title></svelte:head>
 
 <SearchScreen
 	bind:query={() => search.query, setQuery}

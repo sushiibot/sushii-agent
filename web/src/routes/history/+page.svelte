@@ -21,7 +21,7 @@
 	keepScroll('history', () => document.querySelector('main'));
 </script>
 
-<svelte:head><title>History · Agent</title></svelte:head>
+<svelte:head><title>History · sushii</title></svelte:head>
 
 <HistoryScreen
 	remote={days}

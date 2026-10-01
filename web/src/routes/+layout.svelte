@@ -2,7 +2,6 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import favicon from '$lib/assets/favicon.svg';
 	import { features } from '$lib/core/features.svelte';
 	import { previousPathIs } from '$lib/core/nav/back';
 	import { activeNav, navFor } from '$lib/core/nav/nav';
@@ -27,7 +26,9 @@
 	});
 </script>
 
-<svelte:head><link rel="icon" href={favicon} type="image/svg+xml" /></svelte:head>
+<svelte:head
+	><link rel="icon" href="/icons/favicon-32.png" type="image/png" sizes="32x32" /></svelte:head
+>
 
 <div class="h-dvh">
 	<Shell

@@ -10,9 +10,9 @@
 	});
 </script>
 
-<svelte:head><title>Agent</title></svelte:head>
+<svelte:head><title>sushii</title></svelte:head>
 
-<Screen title="Agent">
+<Screen title="sushii">
 	<div class="mx-auto flex max-w-2xl flex-col items-start gap-3 px-4 py-6">
 		{#if page.status === 404}
 			<p role="status" class="text-sm text-muted-foreground">Opening the chat…</p>

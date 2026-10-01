@@ -31,7 +31,7 @@
 	});
 </script>
 
-<svelte:head><title>Memory change · Agent</title></svelte:head>
+<svelte:head><title>Memory change · sushii</title></svelte:head>
 
 <MemoryWriteScreen
 	{remote}
