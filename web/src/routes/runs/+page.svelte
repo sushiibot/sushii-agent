@@ -37,6 +37,8 @@
 	online={pwa.online}
 	runHref={(id) => resolve('/runs/[id]', { id })}
 	historyHref={resolve('/history')}
+	filter={runs.filter}
+	onfilter={(f) => runs.setFilter(f)}
 	onretry={() => void list.refetch()}
 	onloadolder={() => void runs.loadOlder()}
 />

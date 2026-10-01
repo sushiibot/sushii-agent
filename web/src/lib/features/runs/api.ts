@@ -1,10 +1,10 @@
 import { HttpError, request } from '$lib/core/http';
 import { workspaceReadError } from '$lib/core/workspace-error';
-import type { RunDetail, RunsPage } from './types';
+import type { RunDetail, RunKind, RunsPage } from './types';
 
 export interface RunsApi {
-	/** Newest first; `before` is the previous page's cursor. */
-	list(q: { before?: string }): Promise<RunsPage>;
+	/** Newest first; `before` is the previous page's cursor. No `kinds`: every kind. */
+	list(q: { before?: string; kinds?: readonly RunKind[] }): Promise<RunsPage>;
 	/** null: no run with that id. `after` pages the steps. */
 	get(runId: string, q?: { after?: string }): Promise<RunDetail | null>;
 }
@@ -19,9 +19,9 @@ function query(params: Record<string, string | undefined>): string {
 }
 
 export const httpRunsApi: RunsApi = {
-	async list({ before }) {
+	async list({ before, kinds }) {
 		try {
-			return await request<RunsPage>('GET', `/runs${query({ before })}`);
+			return await request<RunsPage>('GET', `/runs${query({ before, kind: kinds?.join(',') })}`);
 		} catch (err) {
 			throw workspaceReadError(err, UNSUPPORTED);
 		}

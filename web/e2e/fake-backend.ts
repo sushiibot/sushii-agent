@@ -182,7 +182,10 @@ export async function fakeBackend(
 			const before = url.searchParams.get('before');
 			if (before && scenario === 'stale') return json(route, { error: 'invalid cursor' }, 400);
 			if (scenario === 'empty') return json(route, { runs: [], before: null, truncated: false });
-			const all = runSummaries(now).map(withStatus);
+			const kinds = url.searchParams.get('kind')?.split(',');
+			const all = runSummaries(now)
+				.map(withStatus)
+				.filter((r) => !kinds || kinds.includes(r.kind));
 			const start = before ? all.findIndex((r) => r.runId === before) + 1 : 0;
 			const runs = all.slice(start, start + PAGE);
 			const more = start + PAGE < all.length;

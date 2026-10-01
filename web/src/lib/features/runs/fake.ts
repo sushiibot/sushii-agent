@@ -13,13 +13,13 @@ function failure(scenario: string): Error | null {
 }
 
 export const fixtureRunsApi: RunsApi = {
-	async list({ before }) {
+	async list({ before, kinds }) {
 		const scenario = fixtureScenario('runs');
 		await fixtureDelay(scenario);
 		const err = failure(scenario);
 		if (err) throw err;
 		if (scenario === 'empty') return { runs: [], before: null, truncated: false };
-		const all = runSummaries(Date.now());
+		const all = runSummaries(Date.now()).filter((r) => !kinds || kinds.includes(r.kind));
 		const start = before ? all.findIndex((r) => r.runId === before) + 1 : 0;
 		const runs = all.slice(start, start + PAGE);
 		const more = start + PAGE < all.length;

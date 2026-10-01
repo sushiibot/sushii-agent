@@ -16,9 +16,13 @@ afterAll(() => {
 });
 
 const id = (n: number) => `01K6B${String(n).padStart(21, '0')}`;
-const run = (n: number, status: RunSummary['status'] = 'done'): RunSummary => ({
+const run = (
+	n: number,
+	status: RunSummary['status'] = 'done',
+	kind: RunSummary['kind'] = 'subagent'
+): RunSummary => ({
 	runId: id(n),
-	kind: 'subagent',
+	kind,
 	agentName: 'explore',
 	title: `run ${n}`,
 	status,
@@ -28,9 +32,11 @@ const run = (n: number, status: RunSummary['status'] = 'done'): RunSummary => ({
 function setup(all: RunSummary[], page = 3) {
 	const calls = { list: 0, get: 0 };
 	const api: RunsApi = {
-		async list({ before }) {
+		async list({ before, kinds }) {
 			calls.list++;
-			const sorted = [...all].sort((a, b) => (a.runId < b.runId ? 1 : -1));
+			const sorted = all
+				.filter((r) => !kinds || kinds.includes(r.kind))
+				.sort((a, b) => (a.runId < b.runId ? 1 : -1));
 			const start = before ? sorted.findIndex((r) => r.runId === before) + 1 : 0;
 			const runs = sorted.slice(start, start + page);
 			return {
@@ -87,4 +93,26 @@ test('a new run joins the top of the list without losing older pages or repeatin
 	await Bun.sleep(1200);
 	expect(shown(store)).toEqual(['run 7', 'run 6', 'run 5', 'run 4', 'run 3', 'run 2', 'run 1']);
 	expect(store.before).toBeNull();
+});
+
+test('the type filter reloads the list from the newest with only that kind', async () => {
+	const { store } = setup([
+		run(1, 'done', 'chat'),
+		run(2),
+		run(3, 'done', 'job'),
+		run(4),
+		run(5, 'done', 'chat'),
+		run(6)
+	]);
+	await store.list.refetch();
+	await store.loadOlder();
+	expect(shown(store)).toHaveLength(6);
+	store.setFilter('subagent');
+	expect(store.older).toEqual([]);
+	await Bun.sleep(10);
+	expect(shown(store)).toEqual(['run 6', 'run 4', 'run 2']);
+	expect(store.before).toBeNull();
+	store.setFilter('all');
+	await Bun.sleep(10);
+	expect(shown(store)).toEqual(['run 6', 'run 5', 'run 4']);
 });

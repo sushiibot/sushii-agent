@@ -2,6 +2,7 @@ import type { ChatEnvelope } from '$lib/core/realtime/events';
 import { hub as appHub, type Hub } from '$lib/core/realtime/hub.svelte';
 import { Remote } from '$lib/core/remote.svelte';
 import { httpRunsApi, type RunsApi } from './api';
+import { filterKinds, type RunFilter } from './format';
 import type { RunDetail, RunStatus, RunStep, RunSummary, RunsPage } from './types';
 
 const REFRESH_DEBOUNCE_MS = 1000;
@@ -63,6 +64,8 @@ export class RunsStore {
 	truncated = $state(false);
 	olderLoading = $state(false);
 	olderError = $state<string | null>(null);
+	/** Which kinds of run the list shows; kept for the app's life. */
+	filter = $state<RunFilter>('all');
 
 	#api: RunsApi;
 	#hub: Hub;
@@ -76,7 +79,7 @@ export class RunsStore {
 		this.#hub = hub;
 		this.list = new Remote(
 			async () => {
-				const page = await api.list({});
+				const page = await api.list({ kinds: filterKinds(this.filter) });
 				this.older = [];
 				this.before = page.before;
 				this.truncated = page.truncated;
@@ -86,17 +89,32 @@ export class RunsStore {
 		);
 	}
 
+	/** Shows only the runs the filter picks, reloading the list from the newest. */
+	setFilter(filter: RunFilter) {
+		if (filter === this.filter) return;
+		this.filter = filter;
+		this.older = [];
+		this.before = null;
+		this.truncated = false;
+		this.olderError = null;
+		void this.list.refetch();
+	}
+
 	async loadOlder() {
 		if (!this.before || this.olderLoading) return;
+		const filter = this.filter;
 		this.olderLoading = true;
 		this.olderError = null;
 		try {
-			const page = await this.#api.list({ before: this.before });
+			const page = await this.#api.list({ before: this.before, kinds: filterKinds(filter) });
+			// The filter changed meanwhile, and the list restarted under the new one.
+			if (filter !== this.filter) return;
 			this.older = [...this.older, ...page.runs];
 			this.before = page.before;
 			this.truncated = page.truncated;
 		} catch (err) {
-			this.olderError = err instanceof Error ? err.message : 'Something went wrong.';
+			if (filter === this.filter)
+				this.olderError = err instanceof Error ? err.message : 'Something went wrong.';
 		} finally {
 			this.olderLoading = false;
 		}
@@ -155,10 +173,11 @@ export class RunsStore {
 	async #refreshHead() {
 		const head = this.list.data;
 		if (this.list.status !== 'ready' || !head) return;
+		const filter = this.filter;
 		try {
-			const page = await this.#api.list({});
+			const page = await this.#api.list({ kinds: filterKinds(filter) });
 			// A full reload started meanwhile and wins.
-			if (this.list.status !== 'ready') return;
+			if (this.list.status !== 'ready' || filter !== this.filter) return;
 			if (!this.older.length) {
 				this.list.data = page;
 				this.before = page.before;

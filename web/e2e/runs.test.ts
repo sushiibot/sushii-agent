@@ -56,6 +56,25 @@ test('older runs load under the first page, then point to History', async ({ pag
 	await expect(page.getByText('Older runs are in History.')).toBeVisible();
 });
 
+test('the type filter asks the bot for one kind and shows only those runs', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.goto('/runs');
+	await expect(rows(page)).toHaveCount(10);
+	const asked = page.waitForRequest(
+		(r) => new URL(r.url()).searchParams.get('kind') === 'subagent'
+	);
+	await page.getByRole('radio', { name: 'Background' }).click();
+	await asked;
+	await expect(rows(page)).toHaveCount(2);
+	await expect(rows(page).filter({ hasText: 'Compare flight prices' })).toBeVisible();
+	await expect(rows(page).filter({ hasText: 'Book the car service' })).toBeHidden();
+	await page.getByRole('radio', { name: 'All' }).click();
+	await expect(rows(page)).toHaveCount(10);
+});
+
 test('no runs yet says what will appear', async ({ page, context }) => {
 	await server(context, 'empty');
 	await page.goto('/runs');

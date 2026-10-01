@@ -2,13 +2,14 @@
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { Button } from '$lib/ui/button';
+	import * as RadioGroup from '$lib/ui/radio-group';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import { byDay } from '$lib/ui/format/time';
 	import ListScreen from '$lib/ui/screen/list-screen.svelte';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
 	import RunRow from './components/run-row.svelte';
-	import { runTime } from './format';
+	import { RUN_FILTERS, runTime, type RunFilter } from './format';
 	import type { RunSummary } from './types';
 
 	let {
@@ -23,6 +24,8 @@
 		online = true,
 		runHref = (id) => `/runs/${id}`,
 		historyHref = '/history',
+		filter = 'all',
+		onfilter,
 		onretry,
 		onloadolder
 	}: {
@@ -38,15 +41,37 @@
 		online?: boolean;
 		runHref?: (runId: string) => string;
 		historyHref?: string;
+		filter?: RunFilter;
+		/** Shows the type filter when set. */
+		onfilter?: (filter: RunFilter) => void;
 		onretry?: () => void;
 		onloadolder?: () => void;
 	} = $props();
 
 	const sections = $derived(byDay(runs, runTime, now));
+	const shown = $derived(RUN_FILTERS.find((f) => f.value === filter) ?? RUN_FILTERS[0]);
 </script>
 
 {#snippet banner()}
 	{#if !online}<ConnectionBanner state={{ kind: 'app-offline' }} />{/if}
+{/snippet}
+
+{#snippet lead()}
+	{#if onfilter}
+		<RadioGroup.Root
+			value={filter}
+			onValueChange={(v) => onfilter(v as RunFilter)}
+			orientation="horizontal"
+			aria-label="Type of run"
+			class="flex w-auto flex-wrap gap-2"
+		>
+			{#each RUN_FILTERS as f (f.value)}
+				<RadioGroup.Card value={f.value} class="shrink-0 rounded-full px-4"
+					>{f.label}</RadioGroup.Card
+				>
+			{/each}
+		</RadioGroup.Root>
+	{/if}
 {/snippet}
 
 {#snippet skeleton()}
@@ -90,16 +115,24 @@
 	title="Runs"
 	{back}
 	{banner}
+	lead={onfilter ? lead : undefined}
 	state={{
 		remote,
 		offline: !online,
 		errorTitle: "Couldn't load runs.",
 		onretry,
 		skeleton,
-		empty: {
-			title: 'No runs yet',
-			body: 'Chat turns, scheduled jobs and background work show up here once they run.'
-		}
+		empty:
+			filter === 'all'
+				? {
+						title: 'No runs yet',
+						body: 'Chat turns, scheduled jobs and background work show up here once they run.'
+					}
+				: {
+						title: `No ${shown.noun} yet`,
+						body: 'They show up here once one runs.',
+						action: onfilter && { label: 'Show all runs', onclick: () => onfilter('all') }
+					}
 	}}
 	{sections}
 	key={(r) => r.runId}
