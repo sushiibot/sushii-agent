@@ -336,3 +336,35 @@ export const webInbound = sqliteTable(
   },
   (table) => [index("idx_web_inbound_created").on(table.createdAt)],
 );
+
+/** One row per scheduled job that has alerted: its open failure streak, or the last one, cleared. */
+export const webAlerts = sqliteTable(
+  "web_alerts",
+  {
+    job: text("job").primaryKey(),
+    // "open" | "cleared"
+    state: text("state").notNull(),
+    // The streak's latest JobAlert as the workspace sent it (failed or stuck).
+    alert: text("alert").notNull(),
+    // The streak's first failing run's startedAt.
+    firstAt: text("first_at").notNull(),
+    // The latest `alert` event's seq and outbox key.
+    seq: integer("seq").notNull(),
+    key: text("key").notNull(),
+    dismissedAt: integer("dismissed_at"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_web_alerts_state").on(table.state, table.updatedAt)],
+);
+
+/** Failed background runs the owner hid from Home. */
+export const webDismissedRuns = sqliteTable("web_dismissed_runs", {
+  runId: text("run_id").primaryKey(),
+  at: integer("at").notNull(),
+});
+
+/** Runs the owner opened, which leave "Ready for review" on every device. */
+export const webOpenedRuns = sqliteTable("web_opened_runs", {
+  runId: text("run_id").primaryKey(),
+  at: integer("at").notNull(),
+});

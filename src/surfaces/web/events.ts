@@ -392,6 +392,15 @@ export type WebHistoryItem =
 			nonce: string;
 			view: ApprovalView;
 			decision: ApprovalDecision | null;
+	  }
+	| {
+			/** A scheduled job's alert; `outboxId` is the live `alert` event's `key`. */
+			type: 'alert';
+			id: string;
+			at: string;
+			outboxId: string;
+			alert: JobAlert;
+			text: string;
 	  };
 
 export interface HistoryResponse {
@@ -499,7 +508,8 @@ export interface HomeResponse {
 				/** `job`, `subagent` and `agent` runs that ended `done` within HOME_RECENT_HOURS and were never opened. */
 				review: RunSummary[];
 		  }
-		| { state: 'offline' | 'unsupported' | 'timeout' };
+		/** `bad_response`: the workspace answered outside the contract. */
+		| { state: 'offline' | 'unsupported' | 'timeout' | 'bad_response' };
 }
 
 /** POST /api/home/dismiss → 204. A `job:` id hides the alert until its next failure; `run:` hides a failed run. */

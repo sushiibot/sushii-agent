@@ -631,6 +631,9 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 			};
 		case 'divider':
 			return { kind: 'divider', id: `h:${h.id}`, divider: h.kind, summary: h.summary };
+		case 'alert':
+			// Not rendered in the chat yet; skipped like any item this client doesn't know.
+			return null;
 		case 'approval':
 			if (s.keys.has(`p:${h.nonce}`)) return null;
 			s.keys.add(`p:${h.nonce}`);

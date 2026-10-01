@@ -87,7 +87,9 @@
 					? 'The agent took too long to answer, so running and failed work may be missing.'
 					: workspace === 'unsupported'
 						? "Running and failed work aren't available yet."
-						: null
+						: workspace === 'bad_response'
+							? "The agent's list of running and failed work couldn't be read, so some may be missing."
+							: null
 	);
 	// Keeps the closing sheet's content while it slides away.
 	let kept = $state<HomePeek>();

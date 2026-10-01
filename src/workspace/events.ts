@@ -3,17 +3,9 @@ import type { ChatEventPayload, ChatUsage } from "../orchestration/contracts.ts"
 import { summarizeToolArgs } from "../agentRuntime/piShared.ts";
 import { CHATGPT_PROVIDER, modelLabel, publicAuthError } from "./chatgptFallback.ts";
 
-export const NO_REPLY = "NO_REPLY";
-const NO_REPLY_EDGE = /^NO_REPLY(?:$|[\s.,;:!?—–-])|(?:^|[\s.,;:!?—–-])NO_REPLY$/;
+import { isNoReply } from "../orchestration/contracts.ts";
 
-/** Whether a reply means "say nothing": NO_REPLY alone or leading/trailing, even wrapped in markdown, quotes or punctuation. */
-export function isNoReply(text: string): boolean {
-  const bare = text
-    .replace(/[*`"'“”‘’~]/g, "")
-    .replace(/^[\s_]+/, "")
-    .replace(/[\s_.!?,;:…]+$/, "");
-  return NO_REPLY_EDGE.test(bare);
-}
+export { NO_REPLY, isNoReply } from "../orchestration/contracts.ts";
 
 const TOOL_SUMMARY_MAX = 120;
 

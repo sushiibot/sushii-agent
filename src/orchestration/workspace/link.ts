@@ -6,6 +6,7 @@ import {
   HISTORY_SEARCH_TIMEOUT_MS,
   RPC_METHODS,
   RUNS_TIMEOUT_MS,
+  WORKSPACE_FEATURES,
   historyDayParams,
   historyDayResult,
   historyDaysParams,
@@ -23,6 +24,8 @@ import {
   type RunsListResult,
   chatDeliverParams,
   chatExportResult,
+  runsChangedParams,
+  type RunsChangedParams,
   type ChatExportParams,
   type ChatExportResult,
   type AuthCancelResult,
@@ -223,7 +226,7 @@ export function deliveryView(p: ChatDeliverParams, toolCount: number | null = nu
   return {
     type: "reply",
     view: {
-      // Until a surface handles structured alerts, an alert shows as its plain-text proactive message.
+      // A surface without alertPrompt shows an alert as its plain-text proactive message.
       kind: p.kind === "proactive" || p.kind === "alert" ? "proactive" : "reply",
       text: p.text,
       toolCount,
@@ -248,6 +251,7 @@ export class WorkspaceLink {
   private readonly numberedAsks = new Map<string, { askId: string; count: number }>();
   private connectWaiters: Array<() => void> = [];
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
+  private readonly runListeners = new Set<(p: RunsChangedParams) => void>();
   private replaying: Promise<void> | null = null;
   private replayAgain = false;
   // turnId → tool count for turns that have ended; null when the count is unknown (a restart).
@@ -296,9 +300,17 @@ export class WorkspaceLink {
       },
       onSocketClosed: (conn) => this.opts.tools?.onSocketClosed(conn),
       toolManifest: (conn) => (conn.principalId === this.opts.principalId && this.toolsEnabled ? this.opts.tools!.manifest() : []),
+      // Advertised whatever WEB_FEATURES says: a surface without alertPrompt still shows an alert as its text.
+      features: (conn) => (conn.principalId === this.opts.principalId ? [...WORKSPACE_FEATURES] : []),
       onRequest: (conn, method, params) => this.onRequest(conn, method, params),
       onNotification: (conn, method, params) => this.onNotification(conn, method, params),
     };
+  }
+
+  /** Called with each `runs/changed` notification from the principal's workspace; returns an unsubscribe. */
+  onRunsChanged(listener: (p: RunsChangedParams) => void): () => void {
+    this.runListeners.add(listener);
+    return () => void this.runListeners.delete(listener);
   }
 
   /** Called on every register and disconnect of the principal's workspace; returns an unsubscribe. */
@@ -324,8 +336,9 @@ export class WorkspaceLink {
     return chatExportResult.parse(await this.request(RPC_METHODS.chatExport, params, CHAT_EXPORT_TIMEOUT_MS));
   }
 
-  async runsList(q: Omit<z.input<typeof runsListParams>, "principalId">): Promise<RunsListResult> {
-    return this.read(RPC_METHODS.runsList, runsListParams, runsListResult, q, RUNS_TIMEOUT_MS);
+  /** `timeoutMs` lets Home answer within its own budget. */
+  async runsList(q: Omit<z.input<typeof runsListParams>, "principalId">, timeoutMs = RUNS_TIMEOUT_MS): Promise<RunsListResult> {
+    return this.read(RPC_METHODS.runsList, runsListParams, runsListResult, q, timeoutMs);
   }
 
   async runsGet(q: Omit<z.input<typeof runsGetParams>, "principalId">): Promise<RunsGetResult> {
@@ -792,6 +805,21 @@ export class WorkspaceLink {
   }
 
   private onNotification(conn: ConnectionInfo, method: string, params: unknown): void {
+    if (method === RPC_METHODS.runsChanged) {
+      const parsed = runsChangedParams.safeParse(params);
+      if (!parsed.success || parsed.data.principalId !== conn.principalId || parsed.data.principalId !== this.opts.principalId) {
+        log.debug({ method }, "dropping a malformed or foreign runs/changed");
+        return;
+      }
+      for (const l of [...this.runListeners]) {
+        try {
+          l(parsed.data);
+        } catch (err) {
+          log.warn({ err }, "runs/changed listener threw");
+        }
+      }
+      return;
+    }
     if (method !== RPC_METHODS.chatEvent) {
       log.debug({ method }, "ignoring workspace notification");
       return;
@@ -824,8 +852,11 @@ export class WorkspaceLink {
           isSent: (i) => this.opts.store.hasSeenOutbox(`${p.outboxId}#${i}`),
           markSent: (i) => this.opts.store.markOutboxSeen(`${p.outboxId}#${i}`, p.principalId, this.now()),
         };
+        const alert = p.kind === "alert" && p.alert && adapter.alertPrompt ? p.alert : null;
         const send = (plain: boolean) =>
-          delivery.type === "ask"
+          alert
+            ? adapter.alertPrompt!(origin, alert, p.text, { ledger, plain, outboxId: p.outboxId })
+            : delivery.type === "ask"
             ? adapter.askPrompt(origin, delivery.view, { ledger, plain, outboxId: p.outboxId })
             : delivery.type === "auth"
               ? adapter.authPrompt(origin, delivery.view, { ledger, plain, outboxId: p.outboxId })

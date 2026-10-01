@@ -93,54 +93,97 @@ Object.assign(window, {
 			flushSync();
 			return { gaps, sawPlain };
 		},
-		/** Mounts a reply mid-stream at `at` chars, as after a reload, then streams the rest on a timer.
-		 *  Counts tail parses and rendered-frame reports, to show the throttle took over. */
-		async lateMount(text: string, at: number, step: number, everyMs: number) {
-			const counts = { updates: 0, rendered: 0, deltas: 0 };
+		/** Mounts a reply mid-stream at `at` chars, as after a reload, then streams the rest on a fake
+		 *  clock: deltas `deltaMs` apart, each in its own flush, a frame every `perFrame` deltas arriving
+		 *  `drawMs` late, and every parse costing `parseMs`. Counts parses and rendered-frame reports, so the result depends only
+		 *  on the throttle's logic, not on how fast the machine is. */
+		lateMount(
+			text: string,
+			at: number,
+			step: number,
+			perFrame: number,
+			deltaMs: number,
+			parseMs: number,
+			drawMs = 0
+		) {
+			const counts = { updates: 0, rendered: 0, deltas: 0, frames: 0, sawPlain: false };
+			const target = document.getElementById('solo')!;
 			const proto = MarkdownStream.prototype;
 			const { update, rendered } = proto;
+			const realRaf = window.requestAnimationFrame;
+			const realCaf = window.cancelAnimationFrame;
+			let clock = performance.now();
+			let parsing = false;
+			const frames = new Map<number, FrameRequestCallback>();
+			let nextId = 0;
+			// Inside an update every clock read advances it, so the stream sees each parse take `parseMs`.
+			Object.defineProperty(performance, 'now', {
+				configurable: true,
+				value: () => {
+					const t = clock;
+					if (parsing) clock += parseMs;
+					return t;
+				}
+			});
+			window.requestAnimationFrame = (cb) => {
+				frames.set(++nextId, cb);
+				return nextId;
+			};
+			window.cancelAnimationFrame = (id) => void frames.delete(id);
 			let last: unknown;
-			// Counts parses only: an update with unchanged text returns the same array.
 			proto.update = function (...args) {
-				const tree = update.apply(this, args);
-				if (tree !== last) counts.updates++;
-				last = tree;
-				return tree;
+				parsing = true;
+				try {
+					const tree = update.apply(this, args);
+					// An update with unchanged text returns the same array: a memo hit, not a parse.
+					if (tree !== last) counts.updates++;
+					last = tree;
+					return tree;
+				} finally {
+					parsing = false;
+				}
 			};
 			proto.rendered = function (...args) {
 				counts.rendered++;
 				return rendered.apply(this, args);
 			};
-			const target = document.getElementById('solo')!;
-			if (solo) unmount(solo);
-			target.replaceChildren();
-			api.late = { text: text.slice(0, at), streaming: true };
-			solo = mount(Markdown, {
-				target,
-				props: {
-					get text() {
-						return api.late.text;
-					},
-					get streaming() {
-						return api.late.streaming;
+			try {
+				if (solo) unmount(solo);
+				target.replaceChildren();
+				api.late = { text: text.slice(0, at), streaming: true };
+				solo = mount(Markdown, {
+					target,
+					props: {
+						get text() {
+							return api.late.text;
+						},
+						get streaming() {
+							return api.late.streaming;
+						}
 					}
-				}
-			});
-			flushSync();
-			await new Promise<void>((done) => {
-				let n = at;
-				const next = () => {
-					n += step;
+				});
+				flushSync();
+				for (let n = at + step; n < text.length + step; n += step) {
+					clock += deltaMs;
 					counts.deltas++;
 					api.late.text = text.slice(0, n);
-					if (n >= text.length) done();
-					else setTimeout(next, everyMs);
-				};
-				next();
-			});
-			await new Promise((r) => setTimeout(r, 300));
-			proto.update = update;
-			proto.rendered = rendered;
+					flushSync();
+					if (counts.deltas % perFrame) continue;
+					counts.frames++;
+					clock += drawMs;
+					const due = [...frames.values()];
+					frames.clear();
+					for (const cb of due) cb(clock);
+					flushSync();
+					counts.sawPlain ||= !!target.querySelector('p.whitespace-pre-wrap');
+				}
+			} finally {
+				delete (performance as { now?: unknown }).now;
+				window.requestAnimationFrame = realRaf;
+				window.cancelAnimationFrame = realCaf;
+				proto.update = update;
+				proto.rendered = rendered;
+			}
 			return counts;
 		},
 		/** Mounts one reply on its own and reports whether mounting threw. */

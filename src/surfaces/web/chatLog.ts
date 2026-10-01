@@ -9,7 +9,7 @@ export const EVENTS_MAX_ROWS = 50_000;
 export const INBOUND_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PRUNED_THROUGH_KEY = "web_events:pruned_through";
 /** The chat itself, kept forever: neither the age prune nor the row cap ever deletes these. */
-export const PERMANENT_EVENTS = ["user", "reply", "proactive", "ask", "ask_resolved", "approval", "approval_resolved", "session"] as const satisfies readonly DurableEventType[];
+export const PERMANENT_EVENTS = ["user", "reply", "proactive", "ask", "ask_resolved", "approval", "approval_resolved", "session", "alert"] as const satisfies readonly DurableEventType[];
 const PRUNABLE = `type NOT IN (${PERMANENT_EVENTS.map((t) => `'${t}'`).join(",")})`;
 
 /** A row for `prepend`, its data typed by its event type. */

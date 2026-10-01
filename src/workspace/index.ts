@@ -21,7 +21,7 @@ import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { SubagentHost } from "./subagents/host.ts";
 import { MainTurnTracker } from "./subagents/turnTracker.ts";
-import { Scheduler, jobAlertText } from "./scheduler.ts";
+import { Scheduler, jobAlertText, jobAlertWire } from "./scheduler.ts";
 import { wireProactiveJobs } from "./proactive.ts";
 import { ulid } from "./ulid.ts";
 import { ChatExportReader, chatExportHandlers } from "./chatExport.ts";
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
     at: config.consolidateAt,
     tz: config.tz,
     log: getLogger("workspace.scheduler"),
-    onJobAlert: (alert) => personal.deliverOutOfBand({ kind: "proactive", text: jobAlertText(alert) }),
+    onJobAlert: (alert) => personal.deliverAlert(jobAlertWire(alert), jobAlertText(alert)),
   });
   const consolidation = createConsolidationJob(config, { runs, selector, live: personal });
   // Its memory and task writes are main-side: the subagents' protected watch must not undo them.
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
     },
     onRegistered: (result) => {
       toolStubs.update(result?.tools ?? []);
-      personal.onRegistered();
+      personal.onRegistered(result?.features ?? []);
     },
   });
 

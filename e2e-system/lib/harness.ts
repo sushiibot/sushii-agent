@@ -29,6 +29,14 @@ export const stack = {
   get wsHome() {
     return required("E2E_WS_HOME");
   },
+  /** The workspace's state dir (scheduler requests go in `requests/`). */
+  get wsState() {
+    return required("E2E_WS_STATE");
+  },
+  /** Every Web Push request the bot sent, oldest first; `body` is the encrypted payload in base64. */
+  async pushes(): Promise<CapturedPush[]> {
+    return (await call("/push/log")).json() as Promise<CapturedPush[]>;
+  },
   /** Every chat-completions request the fake model has received, oldest first. */
   async llmLog(): Promise<LlmRequest[]> {
     return (await call("/llm/log")).json() as Promise<LlmRequest[]>;
@@ -55,6 +63,12 @@ export const stack = {
 
 /** A short random tag. Put `#<nonce>` in a message and the fake model starts each reply with `re-<nonce>`. */
 export const nonce = () => Math.random().toString(36).slice(2, 10).padEnd(8, "0");
+
+export interface CapturedPush {
+  endpoint: string;
+  headers: Record<string, string>;
+  body: string;
+}
 
 export interface Watch {
   console: string[];

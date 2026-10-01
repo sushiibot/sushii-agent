@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { OrchestrationClient } from "./client.ts";
+import { OrchestrationClient, RpcErrorResponse } from "./client.ts";
 import {
   MethodNotFoundError,
   OrchestrationServer,
@@ -11,7 +11,7 @@ import {
   type ConnectionInfo,
   type SecretGrant,
 } from "./server.ts";
-import { RPC_METHODS } from "../contracts.ts";
+import { RPC_METHODS, chatDeliverParams } from "../contracts.ts";
 
 const SECRET = "ws-secret";
 const PRINCIPAL = "drk";
@@ -53,6 +53,28 @@ describe("workspace handler routing", () => {
       client.notify(RPC_METHODS.heartbeat, {});
       await until(() => notes.length > 0);
       expect(notes).toEqual([{ method: RPC_METHODS.chatEvent, params: { turnId: "t" } }]);
+    } finally {
+      client.close();
+      server.stop();
+    }
+  });
+
+  test("a request whose params fail the contract is refused as -32602; other failures stay -32000", async () => {
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
+    server.setWorkspaceHandler({
+      onRequest: async (_conn, method, params) => {
+        if (method === RPC_METHODS.chatDeliver) return chatDeliverParams.parse(params);
+        throw new Error("busy");
+      },
+    });
+    server.listen();
+    const client = workspaceClient(server.url);
+    try {
+      await client.connect();
+      client.listen();
+      await expect(client.request(RPC_METHODS.chatDeliver, { kind: "alert" })).rejects.toMatchObject({ code: -32602 });
+      await expect(client.request(RPC_METHODS.chatAck, {})).rejects.toMatchObject({ code: -32000, message: "busy" });
+      await expect(client.request(RPC_METHODS.chatAck, {})).rejects.toBeInstanceOf(RpcErrorResponse);
     } finally {
       client.close();
       server.stop();
@@ -205,6 +227,22 @@ describe("workspace register result", () => {
     try {
       expect(await registerRaw(server.url, "workspace", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true, tools: TOOLS } });
       expect(await registerRaw(server.url, "task-runner", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "invalid register params" } });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("the register result lists the handler's features, even when its manifest fails", async () => {
+    const server = new OrchestrationServer({ secretGrants: GRANTS });
+    server.setWorkspaceHandler({
+      features: () => ["alert"],
+      toolManifest: () => {
+        throw new Error("boom");
+      },
+    });
+    server.listen();
+    try {
+      expect(await registerRaw(server.url, "workspace", SECRET)).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true, tools: [], features: ["alert"] } });
     } finally {
       server.stop();
     }

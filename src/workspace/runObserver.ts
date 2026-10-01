@@ -34,6 +34,8 @@ export interface RunObserver {
   unsubscribe(): void;
   /** The runId of the run in progress, e.g. a subagent's parentRunId; null between runs. */
   currentRunId(): string | null;
+  /** The runId of the latest run started, still set after it ends; null before the first. */
+  lastRunId(): string | null;
 }
 
 /**
@@ -42,6 +44,7 @@ export interface RunObserver {
  */
 export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions): RunObserver {
   let run: OpenRun | null = null;
+  let lastRunId: string | null = null;
 
   const begin = (r: OpenRun, task: string): string => {
     if (r.runId) return r.runId;
@@ -53,6 +56,7 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
       startedAt: r.startedAt,
     });
     r.runId = runId;
+    lastRunId = runId;
     r.span.setAttribute("runId", runId);
     log.info({ runId, agentName: opts.agentName }, "run started");
     return runId;
@@ -143,7 +147,7 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
       dispose();
     }
   };
-  return { unsubscribe, currentRunId: () => run?.runId ?? null };
+  return { unsubscribe, currentRunId: () => run?.runId ?? null, lastRunId: () => lastRunId };
 }
 
 function isOutput(event: AgentSessionEvent): boolean {

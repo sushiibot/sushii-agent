@@ -113,6 +113,16 @@ describe("OrchestrationClient register result", () => {
     ]);
   });
 
+  test("the bot's features survive a malformed tool list", async () => {
+    expect(await registeredWith({ ok: true, tools: [{ name: 1 }, WEB_SEARCH], features: ["alert"] })).toEqual([
+      { ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"], features: ["alert"] },
+    ]);
+    expect(await registeredWith({ ok: true, tools: "web_search", features: ["alert"] })).toEqual([{ ok: true, tools: [], features: ["alert"] }]);
+    expect(await registeredWith({ ok: true, tools: [WEB_SEARCH], features: ["alert", "future"] })).toEqual([
+      { ok: true, tools: [WEB_SEARCH] as WorkspaceRegisterResult["tools"], features: ["alert", "future"] },
+    ]);
+  });
+
   test("a result with no tools list reads as no tools", async () => {
     expect(await registeredWith({ ok: true, tools: "web_search" })).toEqual([{ ok: true, tools: [] }]);
   });
