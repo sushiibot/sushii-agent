@@ -4,10 +4,10 @@
 	import {
 		fromLegacyBlocks,
 		legacyPlainText,
-		parseMarkdown,
 		type MdBlockNode,
 		type MdInlineNode
 	} from './markdown';
+	import { caretHost, MarkdownStream } from './streaming';
 
 	// Agent text is untrusted: no controls besides Copy and no security-surface styling here, so
 	// nothing in a reply can pass for a decision card. scripts/check-no-raw-html.ts enforces it.
@@ -23,7 +23,8 @@
 		blocks?: MdBlock[];
 		/** Files the bot attached to this same message; inline ones may appear as `![](/f/<id>)`. */
 		files?: readonly { id: string; inline: boolean }[];
-		/** While true `text` shows unparsed, so a stream of deltas never re-runs the parser. */
+		/** While true, `text` is still growing: it is re-parsed at most once a frame, only from its
+		 *  last unfinished block, and a caret follows the last line. */
 		streaming?: boolean;
 	} = $props();
 
@@ -35,18 +36,48 @@
 			.join(' ')
 	);
 
+	const stream = new MarkdownStream();
+	// The text the stream last rendered. Deltas land in `text` as they arrive; this follows at most
+	// once a frame, and slower when parsing is slow.
+	let frameText = $state<string | null>(null);
+	let frame = 0;
+
+	function nextFrame() {
+		frame = 0;
+		if (performance.now() < stream.nextAt) {
+			frame = requestAnimationFrame(nextFrame);
+			return;
+		}
+		frameText = text ?? '';
+	}
+
+	$effect(() => {
+		if (streaming && text !== undefined && text !== frameText && !frame) {
+			frame = requestAnimationFrame(nextFrame);
+		}
+	});
+	$effect(() => () => cancelAnimationFrame(frame));
+
 	const tree = $derived.by((): MdBlockNode[] => {
-		if (streaming && text !== undefined) return [{ kind: 'plain', text }];
 		const ctx = {
 			origin: typeof location === 'undefined' ? undefined : location.origin,
 			imageIds: imageKey ? imageKey.split(' ') : []
 		};
-		if (text !== undefined) return parseMarkdown(text, ctx);
-		return fromLegacyBlocks(blocks ?? [], ctx);
+		if (text === undefined) return fromLegacyBlocks(blocks ?? [], ctx);
+		if (!streaming) return stream.finish(text, ctx, imageKey);
+		return stream.update(frameText ?? text, ctx, imageKey);
 	});
+	const caretAt = $derived(streaming ? caretHost(tree) : null);
 
 	const alignClass = { left: 'text-left', right: 'text-right', center: 'text-center' } as const;
 </script>
+
+<!-- Zero net width, so it never wraps a full line and removing it can't change a block's height. -->
+{#snippet caret()}<span
+		data-caret
+		aria-hidden="true"
+		class="-mr-1 ml-0.5 inline-block h-[1.1em] w-0.5 translate-y-[3px] animate-pulse bg-foreground motion-reduce:animate-none"
+	></span>{/snippet}
 
 {#snippet inlines(nodes: MdInlineNode[])}
 	{#each nodes as node, i (i)}
@@ -84,24 +115,38 @@
 {#snippet blockList(nodes: MdBlockNode[])}
 	{#each nodes as node, i (i)}
 		{#if node.kind === 'paragraph'}
-			<p>{@render inlines(node.children)}</p>
+			<p>
+				{@render inlines(node.children)}{#if node === caretAt}{@render caret()}{/if}
+			</p>
 		{:else if node.kind === 'plain'}
-			<p class="whitespace-pre-wrap">{node.text}</p>
+			<p class="whitespace-pre-wrap">
+				{node.text}{#if node === caretAt}{@render caret()}{/if}
+			</p>
 		{:else if node.kind === 'heading'}
 			{#if node.level <= 2}
-				<h3 class="text-base font-semibold">{@render inlines(node.children)}</h3>
+				<h3 class="text-base font-semibold">
+					{@render inlines(node.children)}{#if node === caretAt}{@render caret()}{/if}
+				</h3>
 			{:else if node.level === 3}
-				<h4 class="text-base font-semibold">{@render inlines(node.children)}</h4>
+				<h4 class="text-base font-semibold">
+					{@render inlines(node.children)}{#if node === caretAt}{@render caret()}{/if}
+				</h4>
 			{:else if node.level === 4}
-				<h5 class="text-base font-semibold">{@render inlines(node.children)}</h5>
+				<h5 class="text-base font-semibold">
+					{@render inlines(node.children)}{#if node === caretAt}{@render caret()}{/if}
+				</h5>
 			{:else}
-				<h6 class="text-base font-semibold">{@render inlines(node.children)}</h6>
+				<h6 class="text-base font-semibold">
+					{@render inlines(node.children)}{#if node === caretAt}{@render caret()}{/if}
+				</h6>
 			{/if}
 		{:else if node.kind === 'code'}
 			<div class="relative">
 				<pre
 					class="min-h-12 overflow-x-auto rounded-lg bg-muted py-2 pr-12 pl-3 font-mono text-code leading-relaxed"
-					data-lang={node.lang}><code>{node.text}</code></pre>
+					data-lang={node.lang}><code
+						>{node.text}{#if node === caretAt}{@render caret()}{/if}</code
+					></pre>
 				<CodeCopyButton text={node.text} />
 			</div>
 		{:else if node.kind === 'quote'}
@@ -127,7 +172,8 @@
 										'border-b bg-muted px-2.5 py-1.5 font-semibold',
 										alignClass[node.align[j] ?? 'left'],
 										j === 0 && 'sticky left-0'
-									]}>{@render inlines(cell)}</th
+									]}
+									>{@render inlines(cell)}{#if cell === caretAt}{@render caret()}{/if}</th
 								>
 							{/each}
 						</tr>
@@ -141,7 +187,8 @@
 											'border-b px-2.5 py-1.5 align-top',
 											alignClass[node.align[j] ?? 'left'],
 											j === 0 && 'sticky left-0 bg-background'
-										]}>{@render inlines(cell)}</td
+										]}
+										>{@render inlines(cell)}{#if cell === caretAt}{@render caret()}{/if}</td
 									>
 								{/each}
 							</tr>
@@ -159,6 +206,7 @@
 	<!-- One reply that fails to render falls back to its text instead of taking the list down. -->
 	<svelte:boundary>
 		{@render blockList(tree)}
+		{#if streaming && !tree.length}<p>{@render caret()}</p>{/if}
 		{#snippet failed()}
 			<p class="whitespace-pre-wrap">{text ?? legacyPlainText(blocks ?? [])}</p>
 		{/snippet}

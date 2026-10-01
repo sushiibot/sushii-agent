@@ -18,6 +18,7 @@ class Api {
 	approved: string[] = [];
 	steps = $state<TurnStep[]>([]);
 	chat = $state<ChatMessage[]>([]);
+	stream = $state({ text: '', streaming: false });
 
 	push(text: string, files?: unknown) {
 		this.messages.push({ text, files });

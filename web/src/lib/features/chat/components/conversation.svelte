@@ -76,12 +76,15 @@
 		if (!oncopy) return [];
 		const copy: MessageAction = {
 			id: 'copy',
-			label: 'Copy',
+			label: message.role === 'user' ? 'Copy your message' : 'Copy reply',
 			icon: copied === message.id ? Check : Copy,
 			onclick: () => oncopy(message)
 		};
 		if (message.role === 'user' || !onshare) return [copy];
-		return [copy, { id: 'share', label: 'Share', icon: Share2, onclick: () => onshare(message) }];
+		return [
+			copy,
+			{ id: 'share', label: 'Share reply', icon: Share2, onclick: () => onshare(message) }
+		];
 	}
 
 	const uid = $props.id();
@@ -137,23 +140,20 @@
 		{@const failed = message.delivery === 'failed'}
 		{@const queued = message.delivery === 'queued' || message.delivery === 'queued-agent'}
 		{@const unsent = owner && (failed || queued)}
-		{@const actions = !message.streaming && !unsent && hasText(message) ? actionsFor(message) : []}
+		{@const actions = hasText(message) ? actionsFor(message) : []}
 		<li data-message-id={message.id}>
 			<div
 				class={cn(
 					'group/msg relative',
-					owner ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2'
+					owner
+						? // With a mouse the actions sit beside the bubble, so the column hugs it.
+							'flex flex-col items-end gap-2 [@media(hover:hover)]:ml-auto [@media(hover:hover)]:w-fit [@media(hover:hover)]:max-w-[85%]'
+						: 'flex flex-col gap-2'
 				)}
 			>
 				{#each message.parts as part, i (i)}
 					{#if part.type === 'text' && message.role === 'assistant'}
-						<div
-							data-message-text
-							class={cn(
-								message.streaming &&
-									"min-h-[4.5lh] [&_p:last-child]:after:ml-0.5 [&_p:last-child]:after:inline-block [&_p:last-child]:after:h-[1.1em] [&_p:last-child]:after:w-0.5 [&_p:last-child]:after:translate-y-[3px] [&_p:last-child]:after:animate-pulse [&_p:last-child]:after:bg-foreground [&_p:last-child]:after:content-[''] motion-reduce:[&_p:last-child]:after:animate-none"
-							)}
-						>
+						<div data-message-text>
 							<Markdown text={part.text} streaming={message.streaming} files={message.uploads} />
 						</div>
 					{:else if part.type === 'text'}
@@ -162,7 +162,7 @@
 							class={cn(
 								'whitespace-pre-wrap',
 								owner
-									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-body leading-snug text-primary-foreground'
+									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-body leading-snug text-primary-foreground [@media(hover:hover)]:max-w-full'
 									: 'text-body leading-relaxed [overflow-wrap:anywhere]',
 								message.streaming &&
 									"min-h-[4.5lh] after:ml-0.5 after:inline-block after:h-[1.1em] after:w-0.5 after:translate-y-[3px] after:animate-pulse after:bg-foreground after:content-[''] motion-reduce:after:animate-none"
@@ -351,6 +351,15 @@
 				{/if}
 				{#if unsent}
 					<div class="flex gap-2">
+						{#each actions as a (a.id)}
+							<Button
+								variant="ghost"
+								class="size-12 px-0"
+								aria-label={a.label}
+								title={a.label}
+								onclick={a.onclick}><a.icon aria-hidden="true" /></Button
+							>
+						{/each}
 						<Button variant="ghost" class="px-3" onclick={() => ondeletesend?.(message.id)}
 							><Trash2 />Delete</Button
 						>
@@ -359,11 +368,14 @@
 						>
 					</div>
 				{/if}
-				{#if actions.length}
+				{#if actions.length && !unsent}
 					<MessageActions
 						{actions}
+						label={owner ? 'Actions for your message' : 'Actions for the reply'}
 						always={message.id === latestReply}
 						align={owner ? 'end' : 'start'}
+						pending={message.streaming}
+						beside={owner}
 					/>
 				{/if}
 			</div>
