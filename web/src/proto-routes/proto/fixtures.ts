@@ -1,14 +1,5 @@
 import type { ChatMessage, MemoryWrite } from '$lib/features/chat';
-import type {
-	BriefItem,
-	DaySummary,
-	InboxItem,
-	Job,
-	McpServer,
-	MemoryChange,
-	Run,
-	Skill
-} from './screens/types';
+import type { BriefItem, DaySummary, InboxItem, Job, McpServer, Run, Skill } from './screens/types';
 
 // Every person, company, address and id below is invented.
 
@@ -219,80 +210,6 @@ export const runs: Record<string, Run> = {
 		file: 'runs/2026-09-29/deps-sweep.md'
 	}
 };
-
-export const memoryChanges: MemoryChange[] = [
-	{
-		id: 'mc5',
-		file: 'travel/2026-10-tokyo.md',
-		summary: 'Hotel shortlist near Kuramae, with cancellation dates',
-		when: '12 min ago',
-		commit: 'a51c0e2',
-		run: { id: 'run-trip-hotels', title: 'Compare Kuramae hotels' },
-		session: { id: 'oct-trip', title: 'October trip' },
-		diff: [
-			{ kind: 'add', text: '## Hotels (Oct 9–16, under ¥25k)' },
-			{ kind: 'add', text: '- Ryokan Asagi ¥24.5k, breakfast, free cancel until Oct 6' },
-			{ kind: 'add', text: '- Kawabune Inn ¥19k, free cancel until Oct 7' }
-		]
-	},
-	{
-		id: 'mc1',
-		file: 'MEMORY.md',
-		summary: 'Added: Maple Row prefers email over phone for scheduling',
-		when: 'Today 14:04',
-		commit: '7f3c2a1',
-		run: { id: 'run-hvac', title: 'Reply to Maple Row about the HVAC visit' },
-		taint: 'Read external email',
-		diff: [
-			{ kind: 'ctx', text: '## Home' },
-			{ kind: 'ctx', text: '- Unit 4B, lease renews 2027-03-01.' },
-			{
-				kind: 'add',
-				text: '- Maple Row (Dana Whitfield) prefers email for scheduling; replies within a day.'
-			},
-			{ kind: 'add', text: '- Maintenance visits: side gate code is 4417.' }
-		]
-	},
-	{
-		id: 'mc2',
-		file: 'USER.md',
-		summary: 'Changed: no meetings before 10am on Thursdays',
-		when: 'Today 14:03',
-		commit: '1ab9e04',
-		run: { id: 'run-hvac', title: 'Reply to Maple Row about the HVAC visit' },
-		diff: [
-			{ kind: 'ctx', text: '## Schedule' },
-			{ kind: 'del', text: '- Avoid meetings before 09:30.' },
-			{ kind: 'add', text: '- Avoid meetings before 09:30, and before 10:00 on Thursdays.' }
-		]
-	},
-	{
-		id: 'mc3',
-		file: 'skills/deploy-relay-bot/SKILL.md',
-		summary: 'Skill updated: wait 30 min before draining blue',
-		when: 'Yesterday 21:40',
-		commit: 'e04d7b9',
-		run: { id: 'run-deploy', title: 'relay-bot 4.18.2 blue/green switch' },
-		diff: [
-			{ kind: 'ctx', text: '4. Switch traffic to green.' },
-			{ kind: 'del', text: '5. Drain blue after 10 minutes.' },
-			{ kind: 'add', text: '5. Watch error rate for 30 minutes, then drain blue.' }
-		]
-	},
-	{
-		id: 'mc4',
-		file: 'memory/2026-09-28.md',
-		summary: 'Daily note: flight to HND booked, seat not chosen',
-		when: 'Yesterday 18:15',
-		commit: 'c2290fe',
-		run: { id: 'run-trip', title: 'Book October trip' },
-		taint: 'Read external email',
-		diff: [
-			{ kind: 'add', text: '- Booked FA 107 SFO→HND, Oct 9, conf. QX7R2L.' },
-			{ kind: 'add', text: '- Seat not chosen yet; check-in opens 24h before.' }
-		]
-	}
-];
 
 export const skills: Skill[] = [
 	{

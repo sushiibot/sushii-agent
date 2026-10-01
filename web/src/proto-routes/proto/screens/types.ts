@@ -50,23 +50,6 @@ export interface Run {
 	file: string;
 }
 
-export interface DiffLine {
-	kind: 'add' | 'del' | 'ctx';
-	text: string;
-}
-
-export interface MemoryChange {
-	id: string;
-	file: string;
-	summary: string;
-	when: string;
-	commit: string;
-	run: { id: string; title: string };
-	session?: { id: string; title: string };
-	taint?: string;
-	diff: DiffLine[];
-}
-
 export type SkillStage = 'draft' | 'active' | 'stale' | 'archived';
 
 export interface Skill {

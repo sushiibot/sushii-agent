@@ -2,7 +2,6 @@ import type { Component } from 'svelte';
 import type { FeatureCheck } from '$lib/core/nav/tabs';
 import NeedsYou from './screens/needs-you.svelte';
 import { ChatScreen } from '$lib/features/chat';
-import Memory from './screens/memory.svelte';
 import Skills from './screens/skills.svelte';
 import Schedules from './screens/schedules.svelte';
 import Connectors from './screens/connectors.svelte';
@@ -14,6 +13,7 @@ import * as f from './fixtures';
 import * as c from '$lib/features/chat/fixtures';
 import { m23Flows, m23Routes } from './m23-flows';
 import { m4Flows, m4Routes } from './m4-flows';
+import { m5Flows, m5Routes } from './m5-flows';
 
 export interface Frame {
 	id: string;
@@ -802,63 +802,19 @@ export const flows: Flow[] = [
 			}
 		]
 	},
+	...m5Flows,
 	{
-		id: 'memory',
-		code: 'MS',
-		title: 'Memory and skill timeline',
-		intro:
-			'Every memory write is a commit with its diff, the run and thread that made it, and whether that run had read outside content. Revert is one tap, with Restore in the toast.',
+		id: 'skills',
+		code: 'SK',
+		title: 'Skills',
+		intro: 'Skills the agent wrote for itself.',
 		frames: [
+			{ id: 'sk-1', label: 'Skills', screen: Skills, props: { skills: f.skills } },
 			{
-				id: 'ms-1',
-				label: 'Change timeline',
-				screen: Memory,
-				props: { changes: f.memoryChanges },
-				next: 'Open a change'
-			},
-			{
-				id: 'ms-2',
-				label: 'Tainted change',
-				screen: Memory,
-				props: { changes: f.memoryChanges, selected: 'mc1' },
-				next: 'Revert',
-				hits: { 'revert this change': 'ms-3' }
-			},
-			{
-				id: 'ms-3',
-				label: 'Reverted, with Restore',
-				screen: Memory,
-				props: { changes: f.memoryChanges, selected: 'mc1', reverted: true },
-				next: 'Skills tab',
-				hits: { restore: 'ms-2' }
-			},
-			{
-				id: 'ms-4',
-				label: 'Skills',
-				screen: Skills,
-				props: { skills: f.skills },
-				next: 'Open a skill'
-			},
-			{
-				id: 'ms-5',
+				id: 'sk-2',
 				label: 'Skill inspector',
 				screen: Skills,
 				props: { skills: f.skills, selected: 'deploy-relay-bot' }
-			},
-			{
-				id: 'ms-6',
-				label: 'Draft skill',
-				screen: Skills,
-				props: { skills: f.skills, selected: 'rent-receipts' },
-				branch: 'A skill still in draft'
-			},
-			{
-				id: 'ms-d',
-				label: 'Desktop: timeline and diff',
-				screen: Memory,
-				props: { changes: f.memoryChanges, selected: 'mc1' },
-				desktop: true,
-				hits: { 'revert this change': 'ms-3' }
 			}
 		]
 	},
@@ -994,14 +950,9 @@ export const flows: Flow[] = [
 export const routes: [string, string][] = [
 	...m23Routes,
 	...m4Routes,
-	['/memory/skills', 'ms-4'],
-	['/memory/skills/deploy-relay-bot', 'ms-5'],
-	['/memory/skills/*', 'ms-6'],
-	['/memory/mc5', 'ms-1'],
-	['/memory/mc6', 'ms-1'],
-	['/memory/mc7', 'ms-1'],
-	['/memory/*', 'ms-2'],
-	['/memory', 'ms-1'],
+	...m5Routes,
+	['/memory/skills', 'sk-1'],
+	['/memory/skills/*', 'sk-2'],
 	['/schedules/deps', 'sc-2'],
 	['/schedules/*', 'sc-5'],
 	['/schedules', 'sc-1'],

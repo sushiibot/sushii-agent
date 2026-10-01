@@ -1,6 +1,12 @@
+<script lang="ts" module>
+	export interface DiffLine {
+		kind: 'add' | 'del' | 'ctx';
+		text: string;
+	}
+</script>
+
 <script lang="ts">
 	import { cn } from '$lib/utils';
-	import type { DiffLine } from './types';
 
 	let {
 		lines,
@@ -12,15 +18,17 @@
 	const mark = { add: '+', del: '−', ctx: ' ' };
 </script>
 
-<figure class={cn('overflow-hidden rounded-lg border bg-card text-[13px]', className)}>
+<!-- A gutter mark and screen-reader words carry each change, so colour is never the only signal. -->
+<figure class={cn('overflow-hidden rounded-xl border bg-card text-code', className)}>
 	{#if file}
 		<figcaption
-			class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-1.5 font-mono text-xs"
+			class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-2 font-mono text-meta"
 		>
-			<span class="truncate">{file}</span>
+			<span class="min-w-0 [overflow-wrap:anywhere]">{file}</span>
 			<span class="shrink-0 tabular-nums">
 				<span class="text-review">+{added}</span>
 				<span class="text-failed">−{removed}</span>
+				<span class="sr-only">: {added} lines added, {removed} removed</span>
 			</span>
 		</figcaption>
 	{/if}
@@ -36,7 +44,7 @@
 				<span class="text-center text-muted-foreground select-none" aria-hidden="true"
 					>{mark[line.kind]}</span
 				>
-				<span class="pr-3 break-words whitespace-pre-wrap"
+				<span class="pr-3 [overflow-wrap:anywhere] whitespace-pre-wrap"
 					>{#if line.kind !== 'ctx'}<span class="sr-only"
 							>{line.kind === 'add' ? 'Added: ' : 'Removed: '}</span
 						>{/if}{line.text || ' '}</span
