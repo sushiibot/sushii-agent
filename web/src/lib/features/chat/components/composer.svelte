@@ -219,13 +219,19 @@
 					onclick={() => picker?.click()}><ImagePlus class="size-5" /></Button
 				>
 			{/if}
-			<Button
+			<!-- A 36px circle inside the 48px target. -->
+			<button
 				type="submit"
 				aria-label="Send message"
 				aria-describedby={running && stop ? `${uid}-steer` : undefined}
-				class="ml-auto size-12 shrink-0 rounded-full px-0"
-				disabled={!canSend}><ArrowUp class="size-5" /></Button
+				class="group/send ml-auto grid size-12 shrink-0 place-items-center rounded-full outline-none select-none disabled:pointer-events-none"
+				disabled={!canSend}
 			>
+				<span
+					class="grid size-9 place-items-center rounded-full bg-primary text-primary-foreground transition-colors group-hover/send:bg-primary/80 group-focus-visible/send:ring-3 group-focus-visible/send:ring-ring/50 group-active/send:translate-y-px group-disabled/send:opacity-50"
+					><ArrowUp class="size-4.5" aria-hidden="true" /></span
+				>
+			</button>
 		</div>
 	</div>
 	{#if blocked}
