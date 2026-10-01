@@ -78,3 +78,24 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		}
 	});
 }
+
+test('Fastmail token connection can disconnect, reconnect and remove its credentials', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/connectors/add');
+	await page.getByRole('textbox', { name: 'Server address' }).fill('https://api.fastmail.com/mcp');
+	await page.getByLabel('API token (optional)').fill('read-only-test-token');
+	await page.getByRole('button', { name: 'Continue', exact: true }).click();
+	await expect(page.getByText('Connected. The agent can use these tools')).toBeVisible();
+	await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+	await expect(page.getByText('Sign in again', { exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Disconnect', exact: true })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
+	await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Remove…', exact: true }).click();
+	await page.getByRole('button', { name: 'Remove connection', exact: true }).click();
+	await expect(page).toHaveURL(/\/connectors$/);
+	await expect(page.getByRole('link', { name: /api.fastmail.com/ })).toHaveCount(0);
+});

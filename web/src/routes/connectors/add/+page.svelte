@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { backTo } from '$lib/core/nav/back';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
@@ -7,6 +8,7 @@
 
 	const connectors = connectorsStore();
 	connectors.resetAdd();
+	connectors.add.url = page.url.searchParams.get('url') ?? '';
 	const goBack = backTo(resolve('/connectors'));
 	let copied = $state(false);
 
@@ -18,6 +20,11 @@
 		} catch {
 			copied = false;
 		}
+	}
+
+	async function begin() {
+		const id = await connectors.begin();
+		if (id) await goto(resolve('/connectors/[id]', { id }), { replaceState: true });
 	}
 
 	async function finish() {
@@ -34,9 +41,10 @@
 	back={{ href: resolve('/connectors'), label: 'Back', onclick: goBack }}
 	online={pwa.online}
 	{copied}
+	ontoken={(v) => (connectors.add.token = v)}
 	onurl={(v) => (connectors.add.url = v)}
 	onredirect={(v) => (connectors.add.redirect = v)}
-	onbegin={() => void connectors.begin()}
+	onbegin={() => void begin()}
 	onsignedin={() => connectors.signedIn()}
 	onfinish={() => void finish()}
 	onstepback={() => connectors.stepBack()}

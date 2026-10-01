@@ -5,13 +5,14 @@ export interface McpTool {
 	name: string;
 	description: string;
 	/** Changed since the snapshot you accepted. */
-	change?: 'added' | 'removed';
+	change?: 'added' | 'removed' | 'changed';
 }
 
 export interface McpServerSummary {
 	id: string;
 	name: string;
 	url: string;
+	enabled?: boolean;
 	status: 'connected' | 'error' | 'signed-out';
 	/** What went wrong, for `error` and `signed-out`. */
 	problem?: string;
@@ -32,6 +33,7 @@ export type AddStage = 'url' | 'oauth' | 'paste';
 
 export interface AddState {
 	stage: AddStage;
+	token?: string;
 	url: string;
 	/** The sign-in link the server handed back, for `oauth`. */
 	authUrl?: string;

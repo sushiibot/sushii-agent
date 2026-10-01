@@ -36,6 +36,7 @@ export const RPC_METHODS = {
   // Workspace → bot notification: a run started or ended. Ephemeral; an older bot drops it.
   runsChanged: "runs/changed",
   // Bot → workspace requests: the owner's model choice, as `!model` reads and sets it.
+  connectors: "connectors/manage",
   modelsGet: "models/get",
   modelsSet: "models/set",
   // Bot → workspace request: OpenRouter's tool-capable models matching a query, for the app's picker.
@@ -711,3 +712,31 @@ export const registerParams = z.object({
   state: z.enum(["idle", "streaming"]).optional(),
 });
 export type RegisterParams = z.infer<typeof registerParams>;
+
+// Owner-managed remote MCP connections. Credentials never appear in responses.
+export const CONNECTOR_ERROR_CODE = -32042;
+export const connectorTool = z.object({ name: z.string(), description: z.string(), change: z.enum(["added", "removed", "changed"]).optional() });
+export const connectorServer = z.object({
+  id: z.string(), name: z.string(), url: z.string(), status: z.enum(["connected", "error", "signed-out"]),
+  problem: z.string().optional(), tools: z.number(), changed: z.boolean(), enabled: z.boolean(),
+  snapshotAt: z.string(), toolList: z.array(connectorTool),
+  history: z.array(z.object({ at: z.string(), event: z.string() })),
+  usedBy: z.array(z.object({ runId: z.string(), title: z.string(), tool: z.string(), at: z.string() })),
+});
+export type ConnectorServer = z.infer<typeof connectorServer>;
+export const connectorRequest = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("list") }),
+  z.object({ action: z.literal("get"), id: z.string().uuid() }),
+  z.object({ action: z.literal("begin"), url: z.string().url().max(2048), token: z.string().min(1).max(8192).optional() }),
+  z.object({ action: z.literal("finish"), url: z.string().url().max(2048), redirect: z.string().max(4096) }),
+  z.object({ action: z.enum(["accept", "reconnect", "disconnect", "remove"]), id: z.string().uuid() }),
+]);
+export type ConnectorRequest = z.infer<typeof connectorRequest>;
+export const connectorsParams = z.object({ principalId: z.string(), request: connectorRequest });
+export const connectorsResult = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("list"), servers: z.array(connectorServer) }),
+  z.object({ kind: z.literal("server"), server: connectorServer.nullable() }),
+  z.object({ kind: z.literal("auth"), name: z.string(), authUrl: z.string().url() }),
+  z.object({ kind: z.literal("removed") }),
+]);
+export type ConnectorsResult = z.infer<typeof connectorsResult>;

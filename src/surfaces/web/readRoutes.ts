@@ -1,3 +1,4 @@
+import { connectorRequest, CONNECTOR_ERROR_CODE } from "../../orchestration/contracts.ts";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import { ID_MAX, UNKNOWN_MODEL_CODE, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
@@ -43,6 +44,7 @@ export interface ReadRouteDeps {
   features: readonly WebFeature[];
   workspaceEnabled: boolean;
   now?: () => number;
+  connectors?: Pick<WorkspaceLink, "connectors">;
 }
 
 export interface ReadRoutes {
@@ -268,6 +270,37 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
 
   return {
     async handle(req, path) {
+      if (path === "/api/connectors" || path.startsWith("/api/connectors/")) {
+        if (!has("connectors") || !deps.connectors) return notFound();
+        let request: unknown;
+        const suffix = path.slice("/api/connectors".length);
+        if (req.method === "GET") request = suffix ? { action: "get", id: suffix.slice(1) } : { action: "list" };
+        else if (req.method === "POST") {
+          if (!isJson(req)) return json({ error: "expected application/json" }, 415);
+          const body = await readJson(req);
+          if (body instanceof Response) return body;
+          if (suffix === "/begin" || suffix === "/finish") request = { ...(body as object), action: suffix.slice(1) };
+          else {
+            const match = /^\/([^/]+)\/(accept|reconnect|disconnect|remove)$/.exec(suffix);
+            if (!match) return notFound();
+            request = { action: match[2], id: match[1] };
+          }
+        } else return json({ error: "method not allowed" }, 405);
+        const parsed = connectorRequest.safeParse(request);
+        if (!parsed.success) return badRequest("invalid connector request");
+        return answer("connectors/manage", async () => {
+          try {
+            const result = await fromWorkspace(() => deps.connectors!.connectors(parsed.data));
+            if (result.kind === "list") return cappedJson(result.servers);
+            if (result.kind === "server") return result.server ? cappedJson(result.server) : notFound();
+            if (result.kind === "auth") return json({ name: result.name, authUrl: result.authUrl });
+            return json({ removed: true });
+          } catch (err) {
+            if (err instanceof RpcErrorReply && err.code === CONNECTOR_ERROR_CODE) return json({ error: err.message }, 422);
+            throw err;
+          }
+        });
+      }
       if (path === "/api/models") return models(req);
       if (path === "/api/models/search") {
         if (req.method !== "GET") return json({ error: "method not allowed" }, 405);

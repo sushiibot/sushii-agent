@@ -108,9 +108,13 @@ export async function fixtureRoutes(
 
 		if (path === '/connectors') return answer(route, 'connectors', () => connectors.list());
 		if (path === '/connectors/begin')
-			return answer(route, 'connectors', () => connectors.begin(body.url));
+			return answer(route, 'connectors', () => connectors.begin(body.url, body.token));
 		if (path === '/connectors/finish')
 			return answer(route, 'connectors', () => connectors.finish(body.url, body.redirect));
+		if ((hit = m(/^\/connectors\/([^/]+)\/(reconnect|disconnect|remove)$/)))
+			return answer(route, 'connectors', () =>
+				connectors.action!(hit![1], hit![2] as 'reconnect' | 'disconnect' | 'remove')
+			);
 		if ((hit = m(/^\/connectors\/([^/]+)\/accept$/)))
 			return answer(route, 'connectors', () => connectors.acceptTools(hit![1]));
 		if ((hit = m(/^\/connectors\/([^/]+)$/)))

@@ -50,20 +50,50 @@ export class ConnectorsStore {
 		this.add.stage = this.add.stage === 'paste' ? 'oauth' : 'url';
 	}
 
-	async begin() {
+	async begin(): Promise<string | null> {
 		this.add.error = null;
 		if (!/^https:\/\/[^/\s]+/i.test(this.add.url.trim())) {
 			this.add.error = 'That isn’t an https:// address.';
-			return;
+			return null;
 		}
 		this.add.busy = true;
 		try {
-			const { name, authUrl } = await this.#api.begin(this.add.url.trim());
-			this.add = { ...this.add, name, authUrl, stage: 'oauth' };
+			const result = await this.#api.begin(
+				this.add.url.trim(),
+				this.add.token?.trim() || undefined
+			);
+			this.add.token = '';
+			if ('id' in result) {
+				this.server(result.id).data = result;
+				this.justConnected = result.id;
+				void this.list.refetch();
+				this.add = blank();
+				return result.id;
+			}
+			this.add = { ...this.add, name: result.name, authUrl: result.authUrl, stage: 'oauth' };
 		} catch (err) {
 			this.add.error = errorText(err);
 		} finally {
 			this.add.busy = false;
+		}
+		return null;
+	}
+
+	async action(id: string, action: 'reconnect' | 'disconnect' | 'remove'): Promise<boolean> {
+		if (!this.#api.action || this.busy) return false;
+		this.busy = true;
+		this.error = null;
+		try {
+			const result = await this.#api.action(id, action);
+			if ('id' in result) this.server(id).data = result;
+			else this.server(id).data = null;
+			void this.list.refetch();
+			return true;
+		} catch (err) {
+			this.error = errorText(err);
+			return false;
+		} finally {
+			this.busy = false;
 		}
 	}
 

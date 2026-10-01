@@ -217,3 +217,50 @@ Deploy: pushing to `main` builds both images, deploys the bot, then deploys the 
 bun --watch src/index.ts   # auto-restart
 bunx tsc --noEmit          # type-check
 ```
+
+## MCP connections
+
+The personal workspace supports remote MCP servers through the web app's Connectors screen.
+The agent can list accepted tools and call them during a chat turn.
+Other chat surfaces and scheduled jobs do not receive these tools.
+
+1. Add `connectors` to the bot's `WEB_FEATURES` configuration.
+2. Restart the bot and workspace with the updated code.
+3. Open **Connectors → Add a server**.
+4. Enter the server's HTTPS address.
+5. For token authentication, enter an API token.
+6. For OAuth authentication, leave the token blank and follow the sign-in steps.
+
+For Fastmail, use `https://api.fastmail.com/mcp`.
+Create an API token with **Type: MCP** and only **Read data** selected.
+Fastmail enforces this permission on its server.
+This permission covers email, contacts, and calendars.
+Fastmail's MCP server does not support attachments.
+See [Fastmail's MCP instructions](https://www.fastmail.help/hc/en-us/articles/15869557281295-Connecting-AI-tools-via-Fastmail-s-MCP-server).
+
+The workspace stores credentials in `connectors.json` under its protected Pi agent directory, with file mode `0600`.
+The browser receives no saved credentials.
+Disconnect disables agent access and retains credentials for reconnection.
+Remove erases the saved connection and its credentials.
+Remove does not revoke the token at the provider.
+
+The agent blocks new or changed tool definitions until the owner accepts the current tool list.
+Tools without a read-only annotation require owner approval before each call.
+The annotation comes from the MCP server. Use a read-only token to enforce read-only access.
+Connections support Streamable HTTP, bearer tokens, and OAuth with dynamic client registration.
+Local servers, stdio, legacy SSE, and OAuth clients that need manual registration are outside this UI's scope.
+
+## Owner-approved GitHub pushes
+
+The personal workspace can commit directly on the default branch when the owner requests that workflow.
+The `github_push` tool asks the owner to approve the repository, destination branch, and exact commit.
+It pushes only that commit and does not force-push.
+The pre-push hook permits only the approved URL, branch, and commit for that call.
+Ordinary shell pushes to the default branch remain blocked.
+Autonomous work uses a task branch and PR.
+GitHub branch protection and GitHub App permissions still apply.
+
+The shipped home `AGENTS.md` describes this policy.
+Unedited home instructions upgrade automatically after deployment.
+If the owner edited that file, the workspace preserves it. Update its GitHub instructions manually.
+The repository's root instructions live in `AGENTS.md`. `CLAUDE.md` is a symlink to that file.

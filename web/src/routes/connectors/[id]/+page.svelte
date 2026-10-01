@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -33,6 +34,13 @@
 	busy={connectors.busy}
 	error={connectors.error}
 	runHref={(run) => resolve('/runs/[id]', { id: run })}
+	signInHref={resolve('/connectors/add') + '?url=' + encodeURIComponent(remote.data?.url ?? '')}
+	onreconnect={() => void connectors.action(id, 'reconnect')}
+	ondisconnect={() => void connectors.action(id, 'disconnect')}
+	onremove={async () => {
+		if (await connectors.action(id, 'remove'))
+			await goto(resolve('/connectors'), { replaceState: true });
+	}}
 	onaccept={() => void connectors.acceptTools(id)}
 	onretry={() => void remote.refetch()}
 />

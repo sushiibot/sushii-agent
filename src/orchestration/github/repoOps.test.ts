@@ -58,6 +58,14 @@ describe("configureForAgent", () => {
         stdio: ["pipe", "pipe", "pipe"],
       });
 
+    const approved = (extra: Record<string, string> = {}) => execFileSync("sh", [hook, "origin", "https://github.com/x/y.git"], {
+      cwd, input: "refs/heads/local abc refs/heads/main 000\n", stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, SUSHII_APPROVED_PUSH_URL: "https://github.com/x/y.git", SUSHII_APPROVED_PUSH_REF: "refs/heads/main", SUSHII_APPROVED_PUSH_SHA: "abc", ...extra },
+    });
+    expect(approved().toString()).toBe("");
+    expect(() => approved({ SUSHII_APPROVED_PUSH_SHA: "different" })).toThrow();
+    expect(() => approved({ SUSHII_APPROVED_PUSH_REF: "refs/heads/other" })).toThrow();
+    expect(() => approved({ SUSHII_APPROVED_PUSH_URL: "https://github.com/other/repo.git" })).toThrow();
     expect(() => run("refs/heads/main")).toThrow(); // default branch → non-zero exit
     expect(run("refs/heads/sushii/task-1").toString()).toBe(""); // task branch → allowed
   });

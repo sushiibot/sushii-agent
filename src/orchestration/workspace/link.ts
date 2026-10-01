@@ -1,3 +1,4 @@
+import { connectorsParams, connectorsResult, type ConnectorRequest, type ConnectorsResult } from "../contracts.ts";
 import type { z } from "zod";
 import {
   AUTH_METHODS,
@@ -363,6 +364,10 @@ export class WorkspaceLink {
 
   async historySearch(q: Omit<z.input<typeof historySearchParams>, "principalId">): Promise<HistorySearchResult> {
     return this.read(RPC_METHODS.historySearch, historySearchParams, historySearchResult, q, HISTORY_SEARCH_TIMEOUT_MS);
+  }
+
+  async connectors(request: ConnectorRequest): Promise<ConnectorsResult> {
+    return this.read(RPC_METHODS.connectors, connectorsParams, connectorsResult, { request }, 60_000);
   }
 
   async modelsGet(): Promise<ModelsResult> {

@@ -1,3 +1,5 @@
+import { createGitHubPushTool, GITHUB_PUSH_TOOL } from "./githubPush.ts";
+import { CONNECTOR_TOOLS, type ConnectorManager } from "./connectors.ts";
 import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../agentRuntime/piShared.ts";
 import type { AgentSession, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
@@ -150,6 +152,7 @@ export function createPiChatSessionFactory(
     subagents?: SubagentHost;
     choice?: ModelChoice;
     github?: GitHubCredentials;
+    connectors?: ConnectorManager;
     /** The Main turn in progress, stamped on each main run so the bot can join its replies and files. */
     mainTurnId?: () => string | undefined;
   } = {},
@@ -230,6 +233,8 @@ export function createPiChatSessionFactory(
     });
     const stubs = opts.toolStubs?.binding();
     const observerRef: { current: RunObserver | null } = { current: null };
+    const pushTools = opts.github ? [GITHUB_PUSH_TOOL] : [];
+    const connectorTools = opts.connectors ? CONNECTOR_TOOLS : [];
     const delegate = opts.subagents?.offersDelegate(0) ? ["delegate"] : [];
     const loopState: LoopGuardState = { nudged: false };
     const hygieneState: HygieneState = { armed: true };
@@ -244,6 +249,7 @@ export function createPiChatSessionFactory(
         { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log, state: loopState }) },
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, stateDir: config.stateDir, log: guardLog }) },
         { name: "sushii-model-fallback", factory: fallbackExtension },
+        ...(opts.connectors ? [{ name: "sushii-connectors", factory: opts.connectors.extensionFor(() => observerRef.current?.currentRunId() ?? null) }] : []),
         ...(stubs ? [{ name: "sushii-tool-stubs", factory: stubs.factory }] : []),
         { name: "sushii-memory-guard", factory: createMemoryGuardExtension({ home: config.home, cwd, log: memoryLog }) },
         { name: "sushii-verify-gate", factory: createVerifyGateExtension({ home: config.home, cwd, log, loopNudged: () => loopState.nudged }) },
@@ -325,13 +331,13 @@ export function createPiChatSessionFactory(
         settingsManager,
         // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
         // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
-        tools: [...WORKSPACE_TOOLS, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
-        customTools: [bashTool, sendFileTool],
+        tools: [...WORKSPACE_TOOLS, ...pushTools, ...connectorTools, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
+        customTools: [bashTool, sendFileTool, ...(opts.github ? [createGitHubPushTool(cwd, opts.github)] : [])],
         excludeTools: ["ask_question"],
         sessionManager,
       }));
       sessionRef.current = session;
-      assertExactTools(session, [...WORKSPACE_TOOLS, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...delegate, ...(stubs?.offered() ?? [])]);
+      assertExactTools(session, [...WORKSPACE_TOOLS, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.offered() ?? [])]);
       stubs?.assertOwned(session, "workspace");
       // Pi keeps this binding across session.reload(), so each new session binds once.
       if (ui) await session.bindExtensions({ uiContext: ui, mode: "rpc" });

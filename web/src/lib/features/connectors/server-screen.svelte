@@ -24,6 +24,10 @@
 		error = null,
 		runHref = (id) => `/runs/${id}`,
 		onaccept,
+		onreconnect,
+		ondisconnect,
+		onremove,
+		signInHref,
 		onretry
 	}: {
 		remote: RemoteLike;
@@ -36,11 +40,16 @@
 		busy?: boolean;
 		error?: string | null;
 		runHref?: (id: string) => string;
+		onreconnect?: () => void;
+		ondisconnect?: () => void;
+		onremove?: () => void;
+		signInHref?: string;
 		onaccept?: () => void;
 		onretry?: () => void;
 	} = $props();
 	const uid = $props.id();
-	const mark = { added: '+', removed: '−' };
+	const mark = { added: '+', removed: '−', changed: '~' };
+	let removing = $state(false);
 </script>
 
 {#snippet banner()}
@@ -108,6 +117,34 @@
 					>{server.url}</code
 				>
 				{#if server.problem}<p class="text-sm">{server.problem}</p>{/if}
+				<div class="flex flex-wrap gap-2">
+					<Button variant="outline" disabled={busy || !online} onclick={onreconnect}
+						>Reconnect</Button
+					>
+					{#if server.enabled !== false}<Button
+							variant="outline"
+							disabled={busy || !online}
+							onclick={ondisconnect}>Disconnect</Button
+						>{/if}
+					{#if signInHref}<Button variant="outline" href={signInHref}
+							>Sign in / replace token</Button
+						>{/if}
+					<Button variant="ghost" disabled={busy || !online} onclick={() => (removing = !removing)}
+						>Remove…</Button
+					>
+				</div>
+				{#if removing}
+					<p class="text-sm">
+						Remove this connection and its saved credentials? Your account data stays with the
+						provider.
+					</p>
+					<div class="flex gap-2">
+						<Button variant="outline" disabled={busy || !online} onclick={onremove}
+							>Remove connection</Button
+						><Button variant="ghost" onclick={() => (removing = false)}>Cancel</Button>
+					</div>
+				{/if}
+				{#if error}<p role="alert" class="text-sm text-failed">{error}</p>{/if}
 			</header>
 
 			<section aria-labelledby="{uid}-tools" class="flex flex-col gap-2">
@@ -144,7 +181,11 @@
 									>
 									{#if t.change}
 										<span class="text-meta font-medium"
-											>{t.change === 'added' ? 'New on the server' : 'Gone from the server'}</span
+											>{t.change === 'added'
+												? 'New on the server'
+												: t.change === 'changed'
+													? 'Definition changed'
+													: 'Gone from the server'}</span
 										>
 									{/if}
 								</span>

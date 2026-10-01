@@ -27,6 +27,11 @@ const ASK_ACTION_MAX = 1500;
 
 /** Tools the judge never sees: Pi's read-only built-ins, the bot-proxied lookups, and bot tools the bot gates itself. */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  // This tool pins its push to a mandatory owner approval.
+  "github_push",
+  "mcp_list_tools",
+  // Connector execution applies its own approval gate before calling the server.
+  "mcp_call_tool",
   "read",
   "grep",
   "find",

@@ -1,5 +1,6 @@
 // First: initialises OTel (when OTEL_EXPORTER_OTLP_ENDPOINT is set) before anything creates spans.
 import { otelSDK } from "../telemetry.ts";
+import { ConnectorManager } from "./connectors.ts";
 import { join } from "node:path";
 import { NotConnectedError, OrchestrationClient } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
@@ -108,13 +109,15 @@ async function main(): Promise<void> {
     wake: (r, consumed) => personalRef?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
   });
   watchRef = subagents.watch;
+  const connectors = new ConnectorManager(config.agentDir);
+  await connectors.start();
   const personal = new PersonalSession({
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
     tz: config.tz,
     uploads: { dir: join(config.home, UPLOADS_DIR) },
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, mainTurnId: () => personalTurn?.currentTurnId() }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, mainTurnId: () => personalTurn?.currentTurnId() }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -227,6 +230,7 @@ async function main(): Promise<void> {
     state: () => personal.state,
     handlers: {
       ...personal.handlers(),
+      ...connectors.handlers(config.principalId),
       ...chatExportHandlers({ principalId: config.principalId, reader: new ChatExportReader({ agentDir: config.agentDir }) }),
       // Session roots come from the host's own agent dir (process env set by the deploy), never from a run record.
       ...runsHandlers({ principalId: config.principalId, stateDir: config.stateDir, home: config.home, tz: config.tz, agentDirs: [config.agentDir] }),
@@ -253,7 +257,7 @@ async function main(): Promise<void> {
     client?.close();
     // Children first: they record their runs and persist background results while main can still take them.
     await subagents.dispose();
-    await Promise.all([scheduler.stop(), personal.dispose()]);
+    await Promise.all([scheduler.stop(), personal.dispose(), connectors.dispose()]);
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
   };

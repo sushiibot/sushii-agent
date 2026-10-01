@@ -106,7 +106,7 @@ describe("web events contract", () => {
     expect(Wire.EPHEMERAL_EVENTS).toContain("run");
   });
 
-  test("web features", () => expect(Wire.WEB_FEATURES).toEqual(["runs", "history", "home", "alerts"]));
+  test("web features", () => expect(Wire.WEB_FEATURES).toEqual(["runs", "history", "home", "alerts", "connectors"]));
 
   test("client ids are ULIDs", () => {
     expect(Wire.CLIENT_ID_RE.test("01J9ZQ8M3V7B6XKQ2T4R5S6Y7Z")).toBe(true);

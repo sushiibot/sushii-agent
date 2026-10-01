@@ -161,7 +161,7 @@ async function main() {
     chat: webChat.routes,
     home: webChat.home,
     uploads,
-    reads: { db, link: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
+    reads: { db, link: workspace.link, connectors: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
     ...(config.transcriptionEnabled ? { dictation: createDictationRoutes({ transcribe: transcribeAudio }) } : {}),
   });
   const stopWebChat = webServer ? webChat.start() : undefined;

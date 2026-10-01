@@ -58,9 +58,12 @@ protected="${branches.join(" ")}"
 live=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
 [ -n "$live" ] && protected="$protected $live"
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ -n "\${SUSHII_APPROVED_PUSH_SHA}" ] && [ "$2" = "\${SUSHII_APPROVED_PUSH_URL}" ] && [ "$remote_ref" = "\${SUSHII_APPROVED_PUSH_REF}" ] && [ "$_local_sha" = "\${SUSHII_APPROVED_PUSH_SHA}" ]; then
+    continue
+  fi
   for b in $protected; do
     if [ "$remote_ref" = "refs/heads/$b" ]; then
-      echo "sushii-agent: refusing to push to the default branch ($b). Use a task branch + PR." >&2
+      echo "sushii-agent: refusing to push to the default branch ($b). Use github_push for an owner-approved push, or a task branch + PR." >&2
       exit 1
     fi
   done

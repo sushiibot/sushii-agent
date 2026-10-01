@@ -17,8 +17,12 @@ export function createFixtureConnectorsApi(
 	pick: () => FixtureScenario = () => fixtureScenario('connectors')
 ): ConnectorsApi {
 	const added: McpServer[] = [];
+	const removed = new Set<string>();
 	const changed = new Map<string, McpServer>();
-	const all = () => [...servers(Date.now()), ...added].map((s) => changed.get(s.id) ?? s);
+	const all = () =>
+		[...servers(Date.now()), ...added]
+			.filter((s) => !removed.has(s.id))
+			.map((s) => changed.get(s.id) ?? s);
 	async function gate() {
 		const scenario = pick();
 		await fixtureDelay(scenario);
@@ -59,7 +63,29 @@ export function createFixtureConnectorsApi(
 			changed.set(id, next);
 			return next;
 		},
-		async begin(url) {
+		async action(id, action) {
+			await gate();
+			const s = all().find((s) => s.id === id);
+			if (!s) throw new Error('That server is gone.');
+			if (action === 'remove') {
+				removed.add(id);
+				return { removed: true };
+			}
+			const next: McpServer = {
+				...s,
+				enabled: action === 'reconnect',
+				status: action === 'reconnect' ? 'connected' : 'signed-out'
+			};
+			changed.set(id, next);
+			return next;
+		},
+		async begin(url, token) {
+			if (token) {
+				await gate();
+				const s = newServer(Date.now(), url, new URL(url).hostname);
+				added.push(s);
+				return s;
+			}
 			await fixtureDelay('normal');
 			let host: string;
 			try {

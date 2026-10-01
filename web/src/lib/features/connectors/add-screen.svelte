@@ -16,6 +16,7 @@
 		online = true,
 		copied = false,
 		onurl,
+		ontoken,
 		onredirect,
 		onbegin,
 		onsignedin,
@@ -27,6 +28,7 @@
 		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		copied?: boolean;
+		ontoken?: (token: string) => void;
 		onurl?: (url: string) => void;
 		onredirect?: (redirect: string) => void;
 		onbegin?: () => void;
@@ -99,8 +101,22 @@
 					class="h-12 font-mono text-base"
 				/>
 				<p class="text-sm text-muted-foreground">
-					An https:// address for a Streamable HTTP or SSE server. The agent checks it and asks it
-					how to sign in.
+					An https:// address for a Streamable HTTP MCP server. Leave the token blank to sign in
+					with OAuth.
+				</p>
+				<label for="{uid}-token" class="mt-3 text-sm font-medium">API token (optional)</label>
+				<Input
+					id="{uid}-token"
+					type="password"
+					value={add.token ?? ''}
+					oninput={(e) => ontoken?.(e.currentTarget.value)}
+					autocomplete="off"
+					spellcheck={false}
+					class="h-12 text-base"
+				/>
+				<p class="text-sm text-muted-foreground">
+					For Fastmail, use https://api.fastmail.com/mcp and create an MCP token with only “Read
+					data” enabled. The token is stored on the workspace server.
 				</p>
 			</section>
 		{:else if add.stage === 'oauth'}
@@ -144,7 +160,7 @@
 					class="h-12 font-mono text-base"
 				/>
 				<p class="text-sm text-muted-foreground">
-					It starts with http://localhost:7461/callback and has a code in it.
+					Copy the whole localhost callback address, including its code and state.
 				</p>
 				{#if add.redirect && !hasCode}
 					<p class="text-sm text-failed">
