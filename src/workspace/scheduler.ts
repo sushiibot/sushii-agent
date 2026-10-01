@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeFileAtomic } from "./files.ts";
-import { ALERT_ERROR_MAX } from "../orchestration/contracts.ts";
+import { ALERT_ERROR_MAX, RUN_ID_RE, type JobAlertWire } from "../orchestration/contracts.ts";
 import { redact } from "./secretPatterns.ts";
 
 export { ALERT_ERROR_MAX };
@@ -19,6 +19,8 @@ export interface JobContext {
 export interface JobOutcome {
   status: string;
   summary?: string;
+  /** The run-index id of the job's session run, when it had one. */
+  runId?: string;
 }
 
 /** Local "HH:MM"–"HH:MM" in the scheduler's zone; `end` before `start` wraps midnight. */
@@ -81,6 +83,8 @@ export interface JobAlert {
   schedule: string;
   /** A disabled job only runs on demand, so it won't retry on its own. */
   disabled?: boolean;
+  /** The run that failed (or, on "recovered", succeeded), when the job recorded one. */
+  runId?: string;
 }
 
 type Log = { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void; error: (obj: object, msg: string) => void };
@@ -167,6 +171,33 @@ export function readSchedulerState(stateDir: string): SchedulerState {
 export function alertErrorText(text: string, max = ALERT_ERROR_MAX): string {
   const flat = redact(text).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** Tags an error a job throws with the run it recorded, so the alert can link to that run. */
+export function withRunId<E>(err: E, runId: string | null | undefined): E {
+  if (runId && err instanceof Error) Object.defineProperty(err, "runId", { value: runId, enumerable: false });
+  return err;
+}
+
+/** The runId withRunId put on `err`, if it is a valid one. */
+export function runIdOf(err: unknown): string | undefined {
+  const id = err instanceof Error ? (err as { runId?: unknown }).runId : undefined;
+  return typeof id === "string" && RUN_ID_RE.test(id) ? id : undefined;
+}
+
+/** The chat/deliver `alert` for `a`. */
+export function jobAlertWire(a: JobAlert): JobAlertWire {
+  return {
+    source: "job",
+    job: a.job,
+    kind: a.kind,
+    trigger: a.trigger,
+    startedAt: a.startedAt.toISOString(),
+    ...(a.error !== undefined ? { error: a.error } : {}),
+    schedule: a.schedule,
+    ...(a.disabled ? { disabled: true } : {}),
+    ...(a.runId && RUN_ID_RE.test(a.runId) ? { runId: a.runId } : {}),
+  };
 }
 
 export function jobAlertText(a: JobAlert, now: Date = new Date()): string {
@@ -409,10 +440,13 @@ export class Scheduler {
     const run = (async () => {
       let outcome: JobOutcome | null = null;
       let error: string | undefined;
+      let runId: string | undefined;
       try {
         outcome = await job.run(ctx);
+        runId = outcome.runId;
         this.opts.log?.info({ job: name, trigger: ctx.trigger, status: outcome.status }, "scheduled job finished");
       } catch (err) {
+        runId = runIdOf(err);
         this.opts.log?.error({ err, job: name, trigger: ctx.trigger }, "scheduled job failed");
         error = err instanceof Error ? err.message : String(err);
         const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
@@ -431,9 +465,9 @@ export class Scheduler {
       const kind = outcomeKind(status);
       if (kind === "failure") {
         const text = error ?? outcome?.summary ?? status;
-        this.raise(name, { ...base, kind: "failed", error: alertErrorText(text) });
+        this.raise(name, { ...base, kind: "failed", error: alertErrorText(text), ...(runId ? { runId } : {}) });
       } else if (kind === "success") {
-        this.clearStreak(name, base);
+        this.clearStreak(name, { ...base, ...(runId ? { runId } : {}) });
       } else if (!NEUTRAL_STATUSES.includes(status)) {
         this.opts.log?.warn({ job: name, status }, "scheduled job returned an unknown status; the alert streak is unchanged");
       }

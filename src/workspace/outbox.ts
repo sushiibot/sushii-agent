@@ -101,6 +101,14 @@ export class Outbox {
     this.pending.set(entry.outboxId, entry);
   }
 
+  /** Replaces a pending entry in place (same outboxId, same position). False when it isn't pending. */
+  replace(entry: OutboxEntry): boolean {
+    if (!this.pending.has(entry.outboxId)) return false;
+    this.write({ type: "entry", entry: onDisk(entry) });
+    this.pending.set(entry.outboxId, entry);
+    return true;
+  }
+
   /** False when the id was unknown or already acked. */
   ack(outboxId: string): boolean {
     const entry = this.pending.get(outboxId);

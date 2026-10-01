@@ -13,6 +13,7 @@ import {
   outcomeKind,
   jobAlertText,
   inActiveHours,
+  jobAlertWire,
   lastOccurrence,
   parseActiveHours,
   parseWhen,
@@ -26,7 +27,9 @@ import {
   type JobContext,
   type JobOutcome,
   type JobSchedule,
+  withRunId,
 } from "./scheduler.ts";
+import { chatDeliverParams } from "../orchestration/contracts.ts";
 import { runWsConsolidate } from "./wsConsolidate.ts";
 import { runWsSchedule } from "./wsSchedule.ts";
 
@@ -450,6 +453,25 @@ describe("job alerts", () => {
     fail = true;
     await s.runJob("consolidation", { trigger: "daily", force: false });
     expect(alerts.map((a) => a.kind)).toEqual(["failed", "recovered", "failed"]);
+  });
+
+  test("an alert names the run that failed, and recovered the run that succeeded", async () => {
+    const { s, alerts } = alerting();
+    const failedRun = "01J0000000000000000000000A";
+    const okRun = "01J0000000000000000000000B";
+    let fail = true;
+    s.register({ name: "nightly", run: async () => (fail ? Promise.reject(withRunId(new Error("model down"), failedRun)) : { status: "sent", runId: okRun }) });
+    await s.runJob("nightly", { trigger: "daily", force: false });
+    fail = false;
+    await s.runJob("nightly", { trigger: "manual", force: true });
+    expect(alerts.map((a) => [a.kind, a.runId])).toEqual([["failed", failedRun], ["recovered", okRun]]);
+  });
+
+  test("jobAlertWire is what chat/deliver accepts, and drops a runId that isn't one", () => {
+    const a: JobAlert = { job: "nightly", kind: "failed", trigger: "daily", startedAt: new Date("2026-09-30T04:00:00Z"), error: "boom", schedule: "daily 04:00", runId: "not-a-run" };
+    const wire = jobAlertWire(a);
+    expect(wire).toEqual({ source: "job", job: "nightly", kind: "failed", trigger: "daily", startedAt: "2026-09-30T04:00:00.000Z", error: "boom", schedule: "daily 04:00" });
+    expect(chatDeliverParams.safeParse({ outboxId: "o", principalId: "p", kind: "alert", text: jobAlertText(a), alert: wire }).success).toBe(true);
   });
 
   test("the streak survives a restart, so a new process doesn't alert again", async () => {

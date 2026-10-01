@@ -177,9 +177,10 @@ describe("heartbeat on a real Pi session", () => {
       deliver: (t) => delivered.push(t),
       note: async () => {},
     }).run({ trigger: "interval", force: false });
-    expect(outcome).toEqual({ status: "no_reply" });
+    const [run] = runs.listRuns({ agentName: "job:heartbeat" });
+    expect(outcome).toEqual({ status: "no_reply", runId: run!.runId });
     expect(delivered).toEqual([]);
     expect(toolNames(bodies[0]!)).toEqual(["find", "grep", "ls", "read"]);
-    expect(runs.listRuns({ agentName: "job:heartbeat" })[0]).toMatchObject({ status: "done" });
+    expect(run).toMatchObject({ status: "done" });
   });
 });

@@ -7,6 +7,7 @@ import {
   DELIVER_FILE_MAX_BYTES,
   RPC_METHODS,
   chatAbortParams,
+  chatDeliverParams,
   chatAckParams,
   chatMessageParams,
   chatNewParams,
@@ -17,8 +18,10 @@ import {
   type ChatMessageResult,
   type ChatNewResult,
   type ChatOrigin,
+  type JobAlertWire,
   parseUploadUrl,
 } from "../orchestration/contracts.ts";
+import { ConnectionClosedError, NotConnectedError, RequestTimeoutError } from "../orchestration/transport/client.ts";
 import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
 import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborted, runUsage, type RunAccumulator } from "./events.ts";
@@ -296,6 +299,8 @@ export class PersonalSession {
   private settleWaiters: Array<() => void> = [];
   private readonly sending = new Set<string>();
   private resendTimer: ReturnType<typeof setInterval> | null = null;
+  // The delivery kinds the bot listed when it last registered; null until the first register.
+  private botFeatures: readonly string[] | null = null;
   // The next run to start is a memory flush.
   private hiddenNext: HiddenPrompt | null = null;
   // An abandoned flush prompt still in Pi's preflight: user prompts wait for it so they can't join or become its run.
@@ -887,8 +892,11 @@ export class PersonalSession {
     return {};
   }
 
-  /** Called after every (re)register: resends right away, then keeps retrying on an interval while connected. */
-  onRegistered(): void {
+  /** Called after every (re)register with the bot's advertised features: resends right away, then keeps retrying
+   *  on an interval while connected. A bot without `alert` (an older one, or a rollback) gets queued alerts as text. */
+  onRegistered(features: readonly string[] = []): void {
+    this.botFeatures = features;
+    if (!features.includes("alert")) for (const entry of this.outbox.unacked()) if (entry.kind === "alert") this.downgradeAlert(entry);
     this.resendUnacked();
     if (this.resendTimer) return;
     this.resendTimer = setInterval(() => {
@@ -1362,6 +1370,29 @@ export class PersonalSession {
     this.send(entry);
   }
 
+  /** A scheduled job's alert: structured when the bot accepts `alert`, else its text as a proactive message. */
+  deliverAlert(alert: JobAlertWire, text: string): void {
+    const entry: ChatDeliverParams = { outboxId: this.newId(), principalId: this.opts.principalId, kind: "alert", text, alert };
+    // An alert the bot would refuse at parse would be resent forever, so one outside the contract goes as text.
+    const valid = chatDeliverParams.safeParse(entry);
+    if (!valid.success || (this.botFeatures !== null && !this.botFeatures.includes("alert"))) {
+      if (!valid.success) log.warn({ job: alert.job, error: valid.error.issues[0]?.message }, "job alert outside the contract; sending it as text");
+      this.deliverOutOfBand({ kind: "proactive", text });
+      return;
+    }
+    this.outbox.append(entry);
+    this.markDelivery(entry, false);
+    this.send(entry);
+  }
+
+  /** Rewrites a queued alert as its proactive text; `alert` must go, since the contract refuses it on a proactive. */
+  private downgradeAlert(entry: OutboxEntry): OutboxEntry {
+    const { alert: _alert, ...rest } = entry;
+    const text: OutboxEntry = { ...rest, kind: "proactive" };
+    this.outbox.replace(text);
+    return text;
+  }
+
   /** Asks drk something outside any turn; resolves to the parsed answer, or undefined when it expires. */
   askOwner<T>(question: string, choices: string[], parse: (text: string) => { value: T } | null): Promise<T | undefined> {
     return this.ownerAsks.ask<T | undefined>(question, choices, parse, undefined);
@@ -1461,6 +1492,11 @@ export class PersonalSession {
   }
 
   private send(entry: OutboxEntry): void {
+    if (entry.kind === "alert") {
+      // Unregistered: whether the bot takes alerts is unknown, and the register resends everything anyway.
+      if (this.botFeatures === null) return;
+      if (!this.botFeatures.includes("alert")) entry = this.downgradeAlert(entry);
+    }
     this.sending.add(entry.outboxId);
     let params: ChatDeliverParams;
     try {
@@ -1472,7 +1508,12 @@ export class PersonalSession {
     }
     this.opts.transport
       .request(RPC_METHODS.chatDeliver, params, this.opts.deliverTimeoutMs ?? DELIVER_TIMEOUT_MS)
-      .catch((err) => log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend"))
+      .catch((err) => {
+        log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend");
+        // The bot answered and refused it: an alert it can't take would be refused on every resend.
+        const refused = !(err instanceof NotConnectedError || err instanceof ConnectionClosedError || err instanceof RequestTimeoutError);
+        if (refused && entry.kind === "alert") this.downgradeAlert(entry);
+      })
       .finally(() => this.sending.delete(entry.outboxId));
   }
 
