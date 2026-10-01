@@ -6,7 +6,7 @@ import { getLogger } from "../logger.ts";
 import { isNoReply } from "./events.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { SESSION_DIRS } from "./sessionPaths.ts";
-import { confineSessionFile, parseEntry, realRoots, textOf } from "./wsRuns.ts";
+import { confineSessionFile, parseEntry, realRoots, textOf } from "./runReader.ts";
 
 const log = getLogger("workspace.chatExport");
 

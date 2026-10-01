@@ -20,6 +20,8 @@ export interface ObserveRunsOptions {
   parentRunId?: string;
   /** Model label when the run produced no assistant message. */
   defaultModel?: string;
+  /** The Main turn this run answers, read when the run starts. */
+  turnId?: () => string | undefined;
 }
 
 interface OpenRun {
@@ -45,9 +47,11 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
 
   const begin = (r: OpenRun, task: string): string => {
     if (r.runId) return r.runId;
+    const turnId = opts.turnId?.();
     const runId = opts.recorder.startRun({
       agentName: opts.agentName,
       ...(opts.parentRunId ? { parentRunId: opts.parentRunId } : {}),
+      ...(turnId ? { turnId } : {}),
       task,
       sessionFile: opts.sessionFile,
       startedAt: r.startedAt,

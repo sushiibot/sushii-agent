@@ -19,6 +19,8 @@ export interface RunUsage {
 export interface RunRecord {
   runId: string;
   parentRunId?: string;
+  /** The Main turn a main run answers: the join key to the bot's replies and files. Absent on older records. */
+  turnId?: string;
   /** "main" | agent def name | "job:<name>" */
   agentName: string;
   task: string;
@@ -41,6 +43,7 @@ export function runLogPath(stateDir: string): string {
 export interface StartRunInput {
   agentName: string;
   parentRunId?: string;
+  turnId?: string;
   task: string;
   sessionFile: string;
   /** Defaults to now; pass the moment the run actually began when the start line is written late. */
@@ -147,6 +150,7 @@ export class RunLog implements RunRecorder {
     const record: RunRecord = {
       runId: this.newId(),
       ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
+      ...(input.turnId ? { turnId: input.turnId } : {}),
       agentName: input.agentName,
       task: clip(input.task, TASK_MAX),
       sessionFile: input.sessionFile,

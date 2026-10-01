@@ -5,7 +5,7 @@ import { tailLines, type EndRunInput, type ListRunsQuery, type RunRecord, type R
 import { publicAuthError } from "./chatgptFallback.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { redact } from "./secretPatterns.ts";
-import { confineSessionFile, parseEntry, realRoots, textOf, type Entry } from "./wsRuns.ts";
+import { confineSessionFile, parseEntry, realRoots, textOf, type Entry } from "./runReader.ts";
 
 // Plain-markdown history under $HOME/history, for the agent to read with rg/cat. Written by the host
 // after every run and at the end of every chat session; never versioned (the home .gitignore is an allowlist).

@@ -143,7 +143,16 @@ function chatgptJudgeModel(runtime: Pick<ModelRuntime, "getModel">, config: Work
  *  configured and signed in; OpenRouter is the fallback. */
 export function createPiChatSessionFactory(
   config: WorkspaceConfig,
-  opts: { runs?: RunRecorder; toolStubs?: ToolStubs; selector?: BackendSelector; subagents?: SubagentHost; choice?: ModelChoice; github?: GitHubCredentials } = {},
+  opts: {
+    runs?: RunRecorder;
+    toolStubs?: ToolStubs;
+    selector?: BackendSelector;
+    subagents?: SubagentHost;
+    choice?: ModelChoice;
+    github?: GitHubCredentials;
+    /** The Main turn in progress, stamped on each main run so the bot can join its replies and files. */
+    mainTurnId?: () => string | undefined;
+  } = {},
 ): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
   // The process-wide selector in production; a fallback instance only for tests that build a factory alone.
@@ -321,7 +330,7 @@ export function createPiChatSessionFactory(
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
     sessionOverrides.set(session, { session, overrides });
-    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: "main", defaultModel: config.model });
+    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: "main", defaultModel: config.model, turnId: opts.mainTurnId });
     observerRef.current = observer;
     runObservers.set(session, observer);
     return { session, sessionFile: file, currentRunId: () => observer.currentRunId() };
