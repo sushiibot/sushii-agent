@@ -76,7 +76,10 @@ test("my flow", async ({ page, watch }) => {
 - `stack.llmLog()` and `stack.waitForLlm(match)` return what the fake model received.
 - `stack.query(sql, ...params)` runs a read-only query on the bot DB. It uses `bun:sqlite` in the runner, because flows run in node.
 - `stack.restartBot({ waitReady })` sends the bot SIGTERM and starts it again on the same data.
+- `stack.linkRequest(method, params)` sends a bot → workspace RPC over the real link, through `stack/link-probe.preload.ts` in the bot process. It returns the result and the pinned contract schema's verdict on it. Use it for workspace RPCs the bot has no HTTP route for yet.
 - `stack.wsHome` is the workspace `$HOME`. `stack.config` holds the ports and addresses.
+
+The workspace starts with seeded runs, a job transcript and `~/history` files, plus links planted into `~/history` that must never be read (`stack/seed-runs.ts`). Flows assert on the seeded ids and date, never on counts, since other flows add runs too.
 
 `lib/chat.ts` has `openChat`, `send`, `textbox` and `bubble`. When the app's routes change (e.g. Home moves to `/`), update `openChat` there, not in each flow.
 

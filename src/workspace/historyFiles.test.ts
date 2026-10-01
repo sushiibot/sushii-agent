@@ -123,7 +123,7 @@ describe("history/day", () => {
     }
     expect(Date.now() - t).toBeLessThan(1_000);
     const days = await historyDays(opts, { principalId: "owner" });
-    expect(JSON.stringify(days)).not.toContain("2026-09-04");
+    expect(days.days).toEqual([]);
 
     rmSync(hist, { recursive: true });
     const elsewhere = join(root, "elsewhere");

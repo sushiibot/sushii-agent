@@ -116,6 +116,27 @@ export async function readHistoryFile(root: string, rel: string, max = HISTORY_F
   }
 }
 
+/** A regular file with one link: a hardlink from elsewhere on the volume doesn't count as a history file. */
+async function singleFile(path: string): Promise<boolean> {
+  try {
+    const st = await lstat(path);
+    return st.isFile() && st.nlink === 1;
+  } catch {
+    return false;
+  }
+}
+
+/** The entries of `dir` for which `keep` holds, checked a batch at a time. */
+async function filterFiles<T>(dir: string, items: T[], name: (t: T) => string): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < items.length; i += 256) {
+    const batch = items.slice(i, i + 256);
+    const ok = await Promise.all(batch.map((t) => singleFile(join(dir, name(t)))));
+    batch.forEach((t, k) => ok[k] && out.push(t));
+  }
+  return out;
+}
+
 async function listDir(path: string, max: number): Promise<Dirent[]> {
   const out: Dirent[] = [];
   try {
@@ -137,12 +158,8 @@ async function runIdsOn(root: string, date: string, max: number): Promise<string
   const month = date.slice(0, 7);
   const day = date.slice(8, 10);
   if (!(await plainDir(join(root, month)))) return [];
-  const ids: string[] = [];
-  for (const e of await listDir(join(root, month), max)) {
-    const m = RUN_NAME_RE.exec(e.name);
-    if (m && m[1] === day && e.isFile()) ids.push(m[2]!);
-  }
-  return ids.sort().reverse();
+  const names = (await listDir(join(root, month), max)).filter((e) => e.isFile() && RUN_NAME_RE.exec(e.name)?.[1] === day).map((e) => e.name);
+  return (await filterFiles(join(root, month), names, (n) => n)).map((n) => RUN_NAME_RE.exec(n)![2]!).sort().reverse();
 }
 
 // --- the daily file's Sessions section -----------------------------------------------------------
@@ -230,22 +247,21 @@ export async function historyDays(opts: HistoryReadOptions, p: unknown): Promise
   const day = (date: string) => days.get(date) ?? days.set(date, { daily: false, runs: 0 }).get(date)!;
   let budget = DAYS_SCAN_MAX;
   const months: string[] = [];
+  const dailies: string[] = [];
   for (const e of await listDir(root, DIR_ENTRIES_MAX)) {
     const daily = DAILY_FILE_RE.exec(e.name);
-    if (daily && e.isFile() && isCalendarDate(daily[1]!)) day(daily[1]!).daily = true;
+    if (daily && e.isFile() && isCalendarDate(daily[1]!)) dailies.push(daily[1]!);
     else if (MONTH_RE.test(e.name) && e.isDirectory()) months.push(e.name);
   }
+  for (const date of await filterFiles(root, dailies, (d) => `${d}.md`)) day(date).daily = true;
   budget -= DIR_ENTRIES_MAX;
   for (const month of months.sort().reverse()) {
     if (params.before && month > params.before.slice(0, 7)) continue;
     if (budget <= 0 || !(await plainDir(join(root, month)))) continue;
     const entries = await listDir(join(root, month), Math.min(DIR_ENTRIES_MAX, budget));
     budget -= entries.length;
-    for (const e of entries) {
-      const m = RUN_NAME_RE.exec(e.name);
-      const date = m && `${month}-${m[1]}`;
-      if (date && e.isFile() && isCalendarDate(date)) day(date).runs++;
-    }
+    const names = entries.filter((e) => e.isFile() && RUN_NAME_RE.test(e.name) && isCalendarDate(`${month}-${e.name.slice(0, 2)}`)).map((e) => e.name);
+    for (const n of await filterFiles(join(root, month), names, (x) => x)) day(`${month}-${n.slice(0, 2)}`).runs++;
   }
   const dates = [...days.keys()].filter((d) => !params.before || d < params.before).sort().reverse();
   const page = dates.slice(0, params.limit);
