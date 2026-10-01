@@ -134,13 +134,23 @@ describe('markdown', () => {
 		expect(els.some((e) => e.attrs['aria-live'] === 'polite')).toBe(true);
 	});
 
-	test('while streaming, text shows unparsed', async () => {
+	test('while streaming, finished syntax renders and an unfinished link stays text', async () => {
 		const { els, text } = await dom(Markdown, {
-			text: '**bold** [x](https://ok.example)\n\n```\ncode\n```',
+			text: '**bold** and `code`\n\n```sh\nls\n```\n\nsee [docs](https://ok.exa',
 			streaming: true
 		});
-		expect(els.some((e) => ['a', 'strong', 'pre', 'button'].includes(e.tag))).toBe(false);
-		expect(text).toContain('**bold** [x](https://ok.example)');
+		expect(els.some((e) => e.tag === 'strong')).toBe(true);
+		expect(els.some((e) => e.tag === 'pre')).toBe(true);
+		expect(els.some((e) => e.tag === 'a')).toBe(false);
+		expect(text).toContain('see docs');
+		expect(text).not.toContain('](');
+		const carets = els.filter((e) => 'data-caret' in e.attrs);
+		expect(carets.map((c) => c.attrs['aria-hidden'])).toEqual(['true']);
+	});
+
+	test('the caret is gone once the reply is finished', async () => {
+		const { els } = await dom(Markdown, { text: '**bold**', streaming: false });
+		expect(els.some((e) => 'data-caret' in e.attrs)).toBe(false);
 	});
 
 	test('legacy blocks drop unsafe links too', async () => {
