@@ -1,5 +1,5 @@
 import type { ChatMessage, MemoryWrite } from '$lib/features/chat';
-import type { DaySummary, InboxItem, McpServer, Run } from './screens/types';
+import type { DaySummary, InboxItem, Run } from './screens/types';
 
 // Every person, company, address and id below is invented.
 
@@ -209,52 +209,6 @@ export const runs: Record<string, Run> = {
 		evidence: [],
 		file: 'runs/2026-09-29/deps-sweep.md'
 	}
-};
-
-export const linear: McpServer = {
-	name: 'Linear',
-	url: 'https://mcp.linear.example/sse',
-	status: 'connected',
-	connectedAt: 'Just now',
-	tools: [
-		{ name: 'list_issues', description: 'Search and filter issues' },
-		{ name: 'get_issue', description: 'Read one issue with comments' },
-		{ name: 'create_issue', description: 'Create an issue in a team' },
-		{ name: 'update_issue', description: 'Change state, assignee, labels' },
-		{ name: 'list_projects', description: 'List projects and milestones' },
-		{ name: 'add_comment', description: 'Comment on an issue' }
-	],
-	history: [{ when: 'Just now', event: 'Connected with OAuth. Snapshot of 6 tools saved.' }],
-	usedBy: []
-};
-
-export const github: McpServer = {
-	name: 'GitHub',
-	url: 'https://api.githubcopilot.example/mcp',
-	status: 'connected',
-	connectedAt: 'Aug 14',
-	tools: [
-		{ name: 'get_pull_request', description: 'Read a PR and its diff' },
-		{ name: 'list_pull_requests', description: 'List PRs by repo and state' },
-		{ name: 'create_review', description: 'Submit a PR review' },
-		{ name: 'merge_pull_request', description: 'Merge a PR', change: 'added' },
-		{ name: 'search_code', description: 'Search code across repos' },
-		{ name: 'delete_branch', description: 'Delete a branch', change: 'removed' }
-	],
-	history: [
-		{ when: 'Sep 27', event: 'Tool list changed: +merge_pull_request, −delete_branch' },
-		{ when: 'Sep 2', event: 'Token refreshed' },
-		{ when: 'Aug 14', event: 'Connected with OAuth. Snapshot of 5 tools saved.' }
-	],
-	usedBy: [
-		{
-			runId: 'run-pr',
-			title: 'Reviewing notify-service #212',
-			tool: 'get_pull_request',
-			when: 'Now'
-		},
-		{ runId: 'r-208', title: 'Dependency sweep', tool: 'create_pull_request', when: 'Sep 22' }
-	]
 };
 
 export const days: DaySummary[] = [

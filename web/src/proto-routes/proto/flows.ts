@@ -2,8 +2,6 @@ import type { Component } from 'svelte';
 import type { FeatureCheck } from '$lib/core/nav/tabs';
 import NeedsYou from './screens/needs-you.svelte';
 import { ChatScreen } from '$lib/features/chat';
-import Connectors from './screens/connectors.svelte';
-import McpServer from './screens/mcp-server.svelte';
 import HomeScreen from './components/home-screen.svelte';
 import DiscordDm from './components/discord-dm.svelte';
 import * as f from './fixtures';
@@ -801,77 +799,11 @@ export const flows: Flow[] = [
 		]
 	},
 	...m5Flows,
-	...m67Flows,
-	{
-		id: 'connectors',
-		code: 'MC',
-		title: 'Add an MCP server',
-		intro:
-			'The agent runs on a server, so OAuth ends on a localhost page that fails to load. You paste that address back and the agent finishes the exchange.',
-		frames: [
-			{
-				id: 'mc-1',
-				label: 'Connectors',
-				screen: Connectors,
-				props: { servers: [f.github] },
-				next: 'Add server',
-				hits: { 'add mcp server': 'mc-2' }
-			},
-			{
-				id: 'mc-2',
-				label: 'Paste URL',
-				screen: Connectors,
-				props: { servers: [], stage: 'url', url: 'https://mcp.linear.example/sse' },
-				next: 'Continue',
-				hits: { continue: 'mc-3' }
-			},
-			{
-				id: 'mc-3',
-				label: 'OAuth link',
-				screen: Connectors,
-				props: { servers: [], stage: 'oauth' },
-				next: 'Signed in',
-				hits: { "i've signed in": 'mc-4' }
-			},
-			{
-				id: 'mc-4',
-				label: 'Paste redirect URL',
-				screen: Connectors,
-				props: {
-					servers: [],
-					stage: 'paste',
-					redirect: 'http://localhost:7461/callback?code=lin_8f2Kq0x&state=q8Zt2'
-				},
-				next: 'Connect',
-				hits: { connect: 'mc-5' }
-			},
-			{
-				id: 'mc-5',
-				label: 'Connected, tools snapshot',
-				screen: McpServer,
-				props: { server: f.linear, justConnected: true }
-			},
-			{
-				id: 'mc-6',
-				label: 'Tool list changed',
-				screen: McpServer,
-				props: { server: f.github },
-				branch: 'A server changed its tools since the last snapshot'
-			}
-		]
-	}
+	...m67Flows
 ];
 
 // First match wins; a trailing * matches by prefix.
-export const routes: [string, string][] = [
-	...m23Routes,
-	...m4Routes,
-	...m5Routes,
-	...m67Routes,
-	['/connectors/linear', 'mc-5'],
-	['/connectors/*', 'mc-6'],
-	['/connectors', 'mc-1']
-];
+export const routes: [string, string][] = [...m23Routes, ...m4Routes, ...m5Routes, ...m67Routes];
 
 export function frameFor(path: string): string | undefined {
 	return routes.find(([p]) =>

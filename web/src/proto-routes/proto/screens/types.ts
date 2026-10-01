@@ -50,22 +50,6 @@ export interface Run {
 	file: string;
 }
 
-export interface McpTool {
-	name: string;
-	description: string;
-	change?: 'added' | 'removed';
-}
-
-export interface McpServer {
-	name: string;
-	url: string;
-	status: 'connected' | 'error';
-	connectedAt: string;
-	tools: McpTool[];
-	history: { when: string; event: string }[];
-	usedBy: { runId: string; title: string; tool: string; when: string }[];
-}
-
 export interface DaySummary {
 	date: string;
 	summary: string;
