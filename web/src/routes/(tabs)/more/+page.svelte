@@ -1,10 +1,14 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
-	import Screen from '$lib/ui/screen/screen.svelte';
+	import { pwa } from '$lib/core/pwa/pwa.svelte';
+	import { more } from '$lib/core/nav/tabs';
+	import { MoreScreen } from '$lib/features/more';
 </script>
 
 <svelte:head><title>More · Agent</title></svelte:head>
 
-<Screen title="More">
-	<a class="mx-4 my-4 flex h-12 items-center text-sm" href={resolve('/settings')}>Settings</a>
-</Screen>
+<MoreScreen
+	entries={more}
+	online={pwa.online}
+	updateReady={!!pwa.waiting}
+	onreload={() => pwa.applyUpdate()}
+/>
