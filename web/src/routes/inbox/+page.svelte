@@ -193,7 +193,7 @@
 	}}
 	onclose={() => sheet.close()}
 	onretry={() => void data.refetch()}
-	ondecide={(nonce, d) => void home.decide(nonce, d)}
+	ondecide={(nonce, d, location) => void home.decide(nonce, d, location)}
 	onanswer={(askId, answer, index) => void home.answer(askId, answer, index)}
 	ondismiss={(id) => {
 		void home.dismiss(id);

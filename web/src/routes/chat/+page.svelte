@@ -203,7 +203,7 @@
 	onretrysend={(id) => s.retry(id)}
 	ondeletesend={(id) => void s.discard(id)}
 	onanswer={(askId, answer) => s.answer(askId, answer)}
-	ondecide={(nonce, decision) => s.decide(nonce, decision)}
+	ondecide={(nonce, decision, location) => s.decide(nonce, decision, location)}
 	oninstall={() => pwa.install()}
 	onreload={() => pwa.applyUpdate()}
 />

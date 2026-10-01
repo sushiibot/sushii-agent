@@ -21,7 +21,7 @@ const FLUSH_WHY: Record<FlushReason, string> = {
 export function flushPrompt(reason: FlushReason): string {
   return (
     `${FLUSH_MARKER} ${FLUSH_WHY[reason]} Write anything durable from this session to MEMORY.md / USER.md / ` +
-    "today's memory/ log per AGENTS.md. Reply NO_REPLY."
+    "today's memory/ log per AGENTS.md. Never save exact coordinates from request_current_location: they are one-time task context, not durable memory. Reply NO_REPLY."
   );
 }
 

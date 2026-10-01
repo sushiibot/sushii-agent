@@ -21,6 +21,8 @@ import {
   type SurfaceRegistry,
 } from "./surface.ts";
 
+import { BrowserLocationRequests, LOCATION_TOOL, locationManifest } from "./location.ts";
+
 const log = getLogger("orchestration/workspace/tools");
 
 export const TOOL_EXEC_TIMEOUT_MS = 120_000;
@@ -196,13 +198,19 @@ export class WorkspaceTools {
     return out;
   }
 
+  private location?: BrowserLocationRequests;
+
+  setLocationRequests(location: BrowserLocationRequests): void { this.location = location; }
+
   manifest(): ToolManifestEntry[] {
-    return [...this.entries().values()].map(({ entry, schema }) => ({
+    const tools = [...this.entries().values()].map(({ entry, schema }) => ({
       name: entry.name,
       description: entry.definition.description,
       inputSchema: schema,
       approval: PROXIED_TOOLS[entry.name]!.approval,
     }));
+    if (this.location) tools.push(locationManifest);
+    return tools;
   }
 
   async handleCall(conn: ConnectionInfo, raw: unknown): Promise<ToolCallResult> {
@@ -238,6 +246,11 @@ export class WorkspaceTools {
 
   private async dispatch(conn: ConnectionInfo, p: ToolCallParams): Promise<ToolCallResult> {
     if (p.principalId !== this.opts.principalId || conn.principalId !== this.opts.principalId) return { ok: false, error: "principal mismatch" };
+    if (p.name === LOCATION_TOOL) {
+      if (!this.location || this.closed.has(conn)) return { ok: false, error: "browser location is unavailable" };
+      if (hasInvisible(p.args)) return { ok: false, error: INVISIBLE_ERROR };
+      return this.location.request(conn, p);
+    }
     const resolved = this.entries().get(p.name);
     if (!resolved) return { ok: false, error: `unknown tool: ${p.name}` };
     const { entry, schema } = resolved;
@@ -439,6 +452,11 @@ export class WorkspaceTools {
    *  when it is no longer pending (settled, or posted by an earlier process). */
   decide(nonce: string, decision: "approve" | "deny", actor: SurfaceActor): DecideResult {
     if (!this.isOwner(actor)) return "forbidden";
+    if (this.location?.has(nonce)) {
+      if (decision !== "deny") return "forbidden"; // Plain approval must never manufacture coordinates.
+      const result = this.location.deny(nonce, actor);
+      return result === "invalid" ? "forbidden" : result;
+    }
     const pending = this.pending.get(nonce);
     if (!pending) return "expired";
     if (pending.surface !== actor.surface) return "forbidden";
@@ -461,6 +479,7 @@ export class WorkspaceTools {
     if (!parsed.success) throw new Error(`invalid tool/cancel params: ${parsed.error.issues[0]?.message ?? "malformed"}`);
     const { principalId, callId } = parsed.data;
     if (principalId !== this.opts.principalId || conn.principalId !== this.opts.principalId) throw new Error("principal mismatch");
+    if (this.location?.cancel(conn, callId)) return { cancelled: true };
     for (const [nonce, p] of this.pending) {
       if (p.callId !== callId || p.conn !== conn) continue;
       log.info({ principalId, callId }, "workspace tool/call cancelled");
@@ -472,6 +491,7 @@ export class WorkspaceTools {
   /** The socket a pending approval arrived on closed: its reply can't be delivered, so expire it. */
   onSocketClosed(conn: ConnectionInfo): void {
     this.closed.add(conn);
+    this.location?.cancel(conn);
     for (const [nonce, p] of [...this.pending]) if (p.conn === conn) this.settle(nonce, "expired");
   }
 }

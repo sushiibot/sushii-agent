@@ -1,3 +1,5 @@
+import { BrowserLocationRequests } from "../../orchestration/workspace/location.ts";
+import type { ConnectionInfo } from "../../orchestration/transport/server.ts";
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -83,7 +85,9 @@ function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; 
       return isVerifiedWebActor(actor) ? ("decided" as const) : ("forbidden" as const);
     },
   };
+  const location = new BrowserLocationRequests({ isOwner: (a) => link.isOwner(a), prompt: (v, n) => adapter.approvalPrompt(null, v, n), resolved: (h, v, n, d) => adapter.resolveApproval({ id: h.id ?? n }, v, n, d) });
   const routes = createChatRoutes({
+    location,
     log,
     inbound,
     adapter,
@@ -98,7 +102,7 @@ function setup(opts: { db?: Database; link?: FakeLink; uploads?: WebUploadPort; 
   });
   const config = webConfig();
   const handler = createWebHandler({ config, peers: createPeerMatcher(config.trustedPeers), chat: routes });
-  return { db, log, inbound, adapter, link, routes, handler, decisions };
+  return { db, log, inbound, adapter, link, routes, handler, decisions, location };
 }
 
 function call(handler: WebHandler, path: string, init: { method?: string; body?: unknown; raw?: string; site?: string | null; headers?: Record<string, string> } = {}) {
@@ -865,4 +869,26 @@ describe("row states and discard", () => {
     expect(res.status).toBe(409);
     expect(h.inbound.get(CLIENT)!.state).toBe("pending");
   });
+});
+
+
+test("location replies require gateway identity, same-origin, strict bounded input and live nonce", async () => {
+  const h = setup();
+  const conn = { principalId: "owner" } as ConnectionInfo;
+  const pending = h.location.request(conn, { principalId: "owner", callId: "location1", name: "request_current_location", agentId: "main", agentName: "main", args: { reason: "nearby" } });
+  await Promise.resolve();
+  const event = h.log.list(["approval"]).at(-1)!;
+  const nonce = (event.data as { nonce: string }).nonce;
+  const path = `/api/chat/location/${nonce}`;
+  const body = { status: "shared", latitude: 42.123456, longitude: 8.123456, accuracy: 9, timestamp: Date.now() };
+  expect((await call(h.handler, path, { body, headers: { "Tailscale-User-Login": "other@example.com" } })).status).toBe(403);
+  expect((await call(h.handler, path, { body, site: "cross-site" })).status).toBe(403);
+  expect((await post(h.handler, path, { ...body, longitude: 181 })).status).toBe(400);
+  expect((await post(h.handler, path, { ...body, conversationId: "other" })).status).toBe(400);
+  expect((await post(h.handler, path, { ...body, junk: "x".repeat(2048) })).status).toBe(413);
+  expect(await (await post(h.handler, path, body)).json()).toEqual({ status: "decided" });
+  expect((await pending).ok).toBe(true);
+  expect(await (await post(h.handler, path, body)).json()).toEqual({ status: "expired" });
+  expect(JSON.stringify(h.log.list(["approval", "approval_resolved"]))).not.toContain("42.123456");
+  h.db.close();
 });

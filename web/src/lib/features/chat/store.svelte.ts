@@ -1,3 +1,4 @@
+import { locationOutcome, type LocationReply } from './location';
 import type { ChatMessage, PendingApproval, PhotoDraft } from './types';
 import { HttpError } from '$lib/core/http';
 import { httpChatApi, uploadMissingIds, type ChatApi } from './api';
@@ -871,11 +872,14 @@ export class ChatStore {
 		this.#commit();
 	}
 
-	async decide(nonce: string, decision: 'approve' | 'deny') {
+	async decide(nonce: string, decision: 'approve' | 'deny', location?: LocationReply) {
 		this.#s.mine.add(`p:${nonce}`);
 		this.trayPhase = 'submitting';
 		try {
-			const r = await this.#api.decide(nonce, { decision });
+			const r = location
+				? await (this.#api.location ?? httpChatApi.location!)(nonce, location)
+				: await this.#api.decide(nonce, { decision });
+			if (location) this.showToast(locationOutcome(location));
 			if (r.status === 'expired') {
 				dropApproval(this.#s, nonce, 'timeout');
 				this.showToast('That approval had already expired.');

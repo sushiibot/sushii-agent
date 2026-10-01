@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { LocationReply } from '$lib/features/chat';
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -57,7 +58,7 @@
 		onopen?: (id: string) => void;
 		onclose?: () => void;
 		onretry?: () => void;
-		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
+		ondecide?: (nonce: string, decision: 'approve' | 'deny', location?: LocationReply) => void;
 		onanswer?: (askId: string, answer: string, index?: number) => void;
 		ondismiss?: (id: string) => void;
 		/** Marks an inbox item done. */

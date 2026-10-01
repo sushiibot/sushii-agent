@@ -105,7 +105,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 			if (opts.askStatus !== 200) return json({ error: 'no' }, opts.askStatus);
 			return json({ status: 'answered' });
 		}
-		if (path.startsWith('/api/chat/approvals/')) {
+		if (path.startsWith('/api/chat/approvals/') || path.startsWith('/api/chat/location/')) {
 			if (opts.approvalStatus !== 200) return json({ error: 'no' }, opts.approvalStatus);
 			return json({ status: 'decided' });
 		}
@@ -1730,4 +1730,71 @@ test('a job alert shows once in the chat, live or reloaded, with its error as pl
 	await page.getByRole('link', { name: 'Details' }).click();
 	await expect(page).toHaveURL(/\/inbox$/);
 	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
+});
+
+test('location only reads the user browser after explicit share and sends one correlated fix', async ({
+	page,
+	context
+}) => {
+	const { posts } = await chatServer(context);
+	await page.addInitScript(() => {
+		(window as unknown as { locationCalls: number }).locationCalls = 0;
+		Object.defineProperty(navigator, 'geolocation', {
+			value: {
+				getCurrentPosition(
+					success: PositionCallback,
+					_error: PositionErrorCallback,
+					options: PositionOptions
+				) {
+					(window as unknown as { locationCalls: number }).locationCalls++;
+					if (!options.enableHighAccuracy || options.maximumAge !== 0 || options.timeout !== 15000)
+						throw new Error('bad options');
+					success({
+						coords: { latitude: 34.123456, longitude: -118.654321, accuracy: 15 },
+						timestamp: Date.now()
+					} as GeolocationPosition);
+				}
+			}
+		});
+	});
+	await open(page);
+	await push(page, 'approval', approval('location-nonce', 'request_current_location'), 1);
+	await expect(page.getByText('stored in tool history', { exact: false })).toBeVisible();
+	expect(
+		await page.evaluate(() => (window as unknown as { locationCalls: number }).locationCalls)
+	).toBe(0);
+	await page.getByRole('button', { name: 'Share current location' }).click();
+	await expect
+		.poll(() => posts('/api/chat/location/location-nonce').at(0)?.body)
+		.toMatchObject({ status: 'shared', latitude: 34.123456, longitude: -118.654321, accuracy: 15 });
+	expect(
+		await page.evaluate(() => (window as unknown as { locationCalls: number }).locationCalls)
+	).toBe(1);
+});
+
+test('location cancellation ignores a late browser fix', async ({ page, context }) => {
+	const { posts } = await chatServer(context);
+	await page.addInitScript(() => {
+		Object.defineProperty(navigator, 'geolocation', {
+			value: {
+				getCurrentPosition(success: PositionCallback) {
+					(window as unknown as { lateLocation: () => void }).lateLocation = () =>
+						success({
+							coords: { latitude: 1, longitude: 2, accuracy: 3 },
+							timestamp: Date.now()
+						} as GeolocationPosition);
+				}
+			}
+		});
+	});
+	await open(page);
+	await push(page, 'approval', approval('location-cancel', 'request_current_location'), 1);
+	await page.getByRole('button', { name: 'Share current location' }).click();
+	await expect(page.getByText('Waiting for browser location permission…')).toBeVisible();
+	await page.getByRole('button', { name: 'Cancel location request' }).click();
+	await expect
+		.poll(() => posts('/api/chat/approvals/location-cancel').at(0)?.body)
+		.toEqual({ decision: 'deny' });
+	await page.evaluate(() => (window as unknown as { lateLocation: () => void }).lateLocation());
+	expect(posts('/api/chat/location/location-cancel')).toHaveLength(0);
 });

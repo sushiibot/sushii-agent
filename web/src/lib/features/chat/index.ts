@@ -13,6 +13,8 @@ export {
 	type ModelsResponse,
 	type ModelsStore
 } from './models.svelte';
+export { httpChatApi } from './api';
+export { locationOutcome } from './location';
 export type { ChatApi } from './api';
 export type { ChatStore, ChatStoreDeps } from './store.svelte';
 export type {
@@ -27,3 +29,5 @@ export type {
 	ThreadReport,
 	Turn
 } from './types';
+
+export type { LocationReply } from './location';

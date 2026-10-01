@@ -19,6 +19,7 @@ export const KNOWN_PROXIED_TOOLS: readonly string[] = [
   "list_triaged_issues",
   "file_linear_issue",
   "team_config",
+  "request_current_location",
 ];
 
 /** Above the bot's 30 min approval wait plus its 120 s execution cap. */

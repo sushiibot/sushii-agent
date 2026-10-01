@@ -1,3 +1,5 @@
+import { BrowserLocationRequests, LOCATION_TOOL } from "../../orchestration/workspace/location.ts";
+import { isVerifiedWebActor, mintWebActor } from "../web/actor.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { MessageCreateOptions, MessageEditOptions } from "discord.js";
 import type { ToolContext, ToolEntry, ToolHosts, ToolRegistry } from "../../core/contracts.ts";
@@ -826,4 +828,22 @@ describe("closed schemas fail closed", () => {
     const { tools } = setup({ registry: createToolRegistry(undefined, () => ALL_ON) });
     expect(tools.manifest().map((t) => t.name).sort()).toEqual(Object.keys(PROXIED_TOOLS).sort());
   });
+});
+
+
+test("location dispatch binds principal, owner, connection and nonce; plain approve never fulfills", async () => {
+  const { tools, log } = setup({ isOwner: (a) => isVerifiedWebActor(a) && a.userId === "owner@example.com" });
+  let nonce = "";
+  tools.setLocationRequests(new BrowserLocationRequests({ isOwner: (a) => tools.isOwner(a), prompt: async (_v, n) => { nonce = n; return { id: n }; }, resolved: async () => {} }));
+  const conn = { principalId: P } as ConnectionInfo;
+  expect(tools.manifest().some((t) => t.name === LOCATION_TOOL)).toBe(true);
+  expect(await tools.handleCall({ principalId: "other" } as ConnectionInfo, call(LOCATION_TOOL, { reason: "nearby" }))).toMatchObject({ ok: false, error: "principal mismatch" });
+  expect(await tools.handleCall(conn, call(LOCATION_TOOL, { reason: "nearby" }, { principalId: "other" }))).toMatchObject({ ok: false, error: "principal mismatch" });
+  const pending = tools.handleCall(conn, call(LOCATION_TOOL, { reason: "nearby" }));
+  expect(tools.decide(nonce, "approve", mintWebActor("owner@example.com"))).toBe("forbidden");
+  expect(tools.decide(nonce, "deny", mintWebActor("other@example.com"))).toBe("forbidden");
+  expect(tools.handleCancel({ ...conn }, { principalId: P, callId: `call-${LOCATION_TOOL}` })).toEqual({ cancelled: false });
+  tools.onSocketClosed(conn);
+  expect(await pending).toMatchObject({ ok: false, error: "location request cancelled" });
+  expect(JSON.stringify(log.lines)).not.toContain("latitude");
 });

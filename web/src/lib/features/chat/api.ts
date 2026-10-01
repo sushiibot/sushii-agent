@@ -1,3 +1,4 @@
+import type { LocationReply } from './location';
 import { HttpError, json, send } from '$lib/core/http';
 import type {
 	HistoryResponse,
@@ -22,6 +23,7 @@ export interface ChatApi {
 	command(command: 'new' | 'compact'): Promise<void>;
 	answerAsk(askId: string, body: PostAskBody): Promise<PostAskResponse>;
 	decide(nonce: string, body: PostApprovalBody): Promise<PostApprovalResponse>;
+	location?(nonce: string, reply: LocationReply): Promise<PostApprovalResponse>;
 	seen(seq: number): Promise<void>;
 	upload(
 		blob: Blob,
@@ -73,6 +75,9 @@ export const httpChatApi: ChatApi = {
 	},
 	async decide(nonce, body) {
 		return json(await send('POST', `/chat/approvals/${encodeURIComponent(nonce)}`, body));
+	},
+	async location(nonce, reply) {
+		return json(await send('POST', `/chat/location/${encodeURIComponent(nonce)}`, reply));
 	},
 	async seen(seq) {
 		await send('POST', '/chat/seen', { seq });

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { LocationReply } from '$lib/features/chat';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import { ApprovalTray, AskCard } from '$lib/features/chat';
@@ -24,7 +25,7 @@
 		peek: HomePeek;
 		now: number;
 		onclose?: () => void;
-		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
+		ondecide?: (nonce: string, decision: 'approve' | 'deny', location?: LocationReply) => void;
 		onanswer?: (askId: string, answer: string, index?: number) => void;
 		ondismiss?: (id: string) => void;
 		ondone?: (id: string) => void;
@@ -48,7 +49,7 @@
 			<ApprovalTray
 				items={[peek.item.approval]}
 				state={peek.submitting ? 'submitting' : 'ready'}
-				onapprove={(nonce) => ondecide?.(nonce, 'approve')}
+				onapprove={(nonce, location) => ondecide?.(nonce, 'approve', location)}
 				ondeny={(nonce) => ondecide?.(nonce, 'deny')}
 			/>
 		</div>
