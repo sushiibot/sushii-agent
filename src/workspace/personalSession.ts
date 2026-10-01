@@ -8,6 +8,7 @@ import {
   RPC_METHODS,
   chatAbortParams,
   chatDeliverParams,
+  deliverJob,
   chatAckParams,
   chatMessageParams,
   chatNewParams,
@@ -1359,7 +1360,7 @@ export class PersonalSession {
   };
 
   /** A message outside any turn (a login prompt or result, a notice): outboxed like a reply, never added to the session. */
-  deliverOutOfBand(d: Pick<ChatDeliverParams, "kind" | "text" | "origin" | "auth" | "authResult" | "loginId">): void {
+  deliverOutOfBand(d: Pick<ChatDeliverParams, "kind" | "text" | "origin" | "auth" | "authResult" | "loginId" | "job">): void {
     const entry: ChatDeliverParams = {
       ...(d.origin ? { origin: d.origin } : {}),
       outboxId: this.newId(),
@@ -1369,6 +1370,8 @@ export class PersonalSession {
       ...(d.auth ? { auth: d.auth } : {}),
       ...(d.authResult ? { authResult: d.authResult } : {}),
       ...(d.loginId ? { loginId: d.loginId } : {}),
+      // A job name the contract refuses would be resent forever; without it the message goes to the chat.
+      ...(d.job && deliverJob.safeParse(d.job).success ? { job: d.job } : {}),
     };
     this.outbox.append(entry);
     this.markDelivery(entry, false);

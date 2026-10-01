@@ -2786,6 +2786,15 @@ describe("history markers", () => {
     expect(markers(sessions[0]!).length).toBe(1);
   });
 
+  test("a job message carries its job, unless the name is outside the contract", async () => {
+    const { host, transport } = setup();
+    await host.start();
+    host.deliverOutOfBand({ kind: "proactive", text: "brief", job: { name: "heartbeat" } });
+    host.deliverOutOfBand({ kind: "proactive", text: "long", job: { name: "a".repeat(65) } });
+    await sleep(10);
+    expect(transport.delivered().map((d) => d.job)).toEqual([{ name: "heartbeat" }, undefined]);
+  });
+
   test("text that isn't the turn's own assistant text goes into the marker; an auth link doesn't", async () => {
     const { host, sessions } = setup();
     await host.start();

@@ -293,6 +293,8 @@ export interface ChatEventMap {
 	/** `key` is the workspace outbox id. `text` is the alert as plain text, for a client that can't show it. */
 	alert: { key: string; alert: JobAlert; text: string };
 	alert_cleared: { id: string; reason: 'recovered' | 'dismissed' };
+	/** A scheduled job's message reached Home's inbox; `key` is its outbox key. */
+	inbox: { key: string };
 	/** A background run started or ended; refetch what shows it. */
 	run: {
 		runId: string;
@@ -323,7 +325,7 @@ export const DURABLE_EVENTS = [
 	'alert_cleared'
 ] as const;
 /** Fanned out to open streams only, never stored. */
-export const EPHEMERAL_EVENTS = ['snapshot', 'delta', 'tool', 'workspace', 'run'] as const;
+export const EPHEMERAL_EVENTS = ['snapshot', 'delta', 'tool', 'workspace', 'run', 'inbox'] as const;
 
 export type FirstFrameEventType = (typeof FIRST_FRAME_EVENTS)[number];
 export type DurableEventType = (typeof DURABLE_EVENTS)[number];
@@ -498,6 +500,8 @@ export interface HomeResponse {
 	openTurns: TurnView[];
 	/** Open, undismissed job alerts, newest first. */
 	failed: HomeAlert[];
+	/** Scheduled-job messages not yet marked done, newest first. */
+	inbox: HomeMessage[];
 	workspace:
 		| {
 				state: 'online';
@@ -505,21 +509,42 @@ export interface HomeResponse {
 				running: RunSummary[];
 				/** `subagent` and `agent` runs that ended `failed` or `timeout` within HOME_RECENT_HOURS, not dismissed. */
 				failedRuns: RunSummary[];
-				/** `job`, `subagent` and `agent` runs that ended `done` within HOME_RECENT_HOURS and were never opened. */
-				review: RunSummary[];
+				/** `agent` runs that ended `done` within HOME_RECENT_HOURS, not marked done. */
+				review: ReviewRun[];
 		  }
 		/** `bad_response`: the workspace answered outside the contract. */
 		| { state: 'offline' | 'unsupported' | 'timeout' | 'bad_response' };
 }
 
-/** POST /api/home/dismiss → 204. A `job:` id hides the alert until its next failure; `run:` hides a failed run. */
+/** A scheduled job's message, kept on Home until marked done. */
+export interface HomeMessage {
+	/** The workspace outbox id; the Home item id is `msg:<key>`. */
+	key: string;
+	job: string;
+	runId?: string;
+	text: string;
+	at: string;
+	read: boolean;
+}
+
+export type ReviewRun = RunSummary & { read: boolean };
+
+/**
+ * POST /api/home/dismiss → 204. A `job:` id hides the alert until its next failure; `run:` and `msg:` mark a
+ * run or a message done, on every device.
+ */
 export interface HomeDismissBody {
 	id: string;
 }
 
+/** POST /api/home/restore → 204. Undoes a dismiss of a `run:` or `msg:` id. */
+export interface HomeRestoreBody {
+	id: string;
+}
+
 /**
- * POST /api/home/opened → 204. Takes a run off "Ready for review" on every device. Only `run:<runId>`;
- * the bot keeps the opened set 30 days, longer than HOME_RECENT_HOURS.
+ * POST /api/home/opened → 204. Marks a `run:` or `msg:` item read on every device; it stays until marked done.
+ * The bot keeps the opened set 30 days, longer than HOME_RECENT_HOURS.
  */
 export interface HomeOpenedBody {
 	id: string;

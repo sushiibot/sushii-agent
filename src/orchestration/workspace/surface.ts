@@ -1,4 +1,4 @@
-import type { ChatOrigin, ChatUsage, DeliverFile, JobAlertWire, ToolCallResult } from "../contracts.ts";
+import type { ChatOrigin, ChatUsage, DeliverFile, DeliverJob, JobAlertWire, ToolCallResult } from "../contracts.ts";
 
 /** What a chat surface can render. The core consults these instead of assuming Discord's feature set. */
 export interface SurfaceCapabilities {
@@ -54,6 +54,8 @@ export interface ReplyView {
   replyTo?: string;
   /** Files to attach; only sent to a surface with `fileUploads`. */
   files?: DeliverFile[];
+  /** On a proactive message: the scheduled job that sent it. */
+  job?: DeliverJob;
 }
 
 export interface AskView {

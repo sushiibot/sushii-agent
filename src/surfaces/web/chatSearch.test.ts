@@ -116,7 +116,8 @@ describe("chat index sync", () => {
       cpSync(real, scratch, { recursive: true });
       const journalPath = join(scratch, "meta", "_journal.json");
       const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { tag: string }[] };
-      journal.entries = journal.entries.filter((e) => e.tag !== "0019_web_chat_search");
+      // Everything from 0019 on: drizzle applies only migrations newer than the last one applied.
+      journal.entries = journal.entries.slice(0, journal.entries.findIndex((e) => e.tag === "0019_web_chat_search"));
       writeFileSync(journalPath, JSON.stringify(journal));
       const db = new Database(":memory:");
       migrate(drizzle({ client: db, schema }), { migrationsFolder: scratch });

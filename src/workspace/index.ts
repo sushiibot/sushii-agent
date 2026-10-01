@@ -183,7 +183,7 @@ async function main(): Promise<void> {
     runs,
     selector,
     toolStubs,
-    deliver: (text) => personal.deliverOutOfBand({ kind: "proactive", text }),
+    deliver: (text, job) => personal.deliverOutOfBand({ kind: "proactive", text, job }),
     note: async (name, text) => {
       await personal.handleMessage({
         origin: { surface: "workspace", conversationId: "schedule" },

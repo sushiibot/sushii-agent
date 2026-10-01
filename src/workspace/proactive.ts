@@ -1,6 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getLogger } from "../logger.ts";
+import type { DeliverJob } from "../orchestration/contracts.ts";
 import type { WorkspaceConfig } from "./config.ts";
 import { isNoReply, NO_REPLY } from "./events.ts";
 import { readJson, writeFileAtomic } from "./files.ts";
@@ -146,8 +147,8 @@ export interface PromptJobDeps {
   selector: BackendSelector;
   toolStubs?: ToolStubs;
   limiter: ProactiveLimiter;
-  /** Sends `text` to drk as a proactive message. */
-  deliver: (text: string) => void;
+  /** Sends `text` to drk as a proactive message from `job`. */
+  deliver: (text: string, job: DeliverJob) => void;
   /** Appends a one-line note to the main chat session. */
   note: (name: string, text: string) => Promise<void>;
   /** Test seam. */
@@ -193,7 +194,7 @@ export function createPromptJob(spec: PromptJobSpec, deps: PromptJobDeps): Sched
         return { status: "rate_limited", summary: verdict, ...ran };
       }
       deps.limiter.record(spec.name, now);
-      deps.deliver(text);
+      deps.deliver(text, { name: spec.name, ...ran });
       try {
         await deps.note(spec.name, `[scheduled job ${spec.name}] You sent drk this proactive message: ${oneLine(text, CONTEXT_NOTE_MAX)}`);
       } catch (err) {
@@ -236,7 +237,7 @@ export interface ProactiveWiring {
   runs: RunRecorder;
   selector: BackendSelector;
   toolStubs?: ToolStubs;
-  deliver: (text: string) => void;
+  deliver: (text: string, job: DeliverJob) => void;
   note: (name: string, text: string) => Promise<void>;
   /** After schedule.md is found changed, e.g. to commit it. */
   onScheduleChange?: () => void;

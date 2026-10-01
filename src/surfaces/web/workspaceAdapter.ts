@@ -1,4 +1,4 @@
-import { ID_MAX, jobAlert, webChatOrigin, type ChatOrigin, type DeliverFile, type JobAlertWire, type ToolCallResult } from "../../orchestration/contracts.ts";
+import { ID_MAX, jobAlert, webChatOrigin, type ChatOrigin, type DeliverFile, type DeliverJob, type JobAlertWire, type ToolCallResult } from "../../orchestration/contracts.ts";
 import { MAX_OPEN_TURNS } from "../../orchestration/workspace/link.ts";
 import { realTimers, type Timers } from "../../orchestration/workspace/progress.ts";
 import {
@@ -73,9 +73,9 @@ export interface WebAdapterDeps {
   breakGlass?: (nonce: string) => Promise<boolean>;
   /** Without it the surface takes no files, so the workspace's send_file refuses. */
   uploads?: WebUploadPort;
-  /** Job-alert streaks for Home; without it alerts only show in the chat. */
-  home?: Pick<WebHomeStore, "applyAlert">;
-  /** WEB_FEATURES; `alerts` turns on the job-alert push. Default none. */
+  /** Job-alert streaks and job messages for Home; without it both show in the chat. */
+  home?: Pick<WebHomeStore, "applyAlert" | "addMessage" | "hasMessage">;
+  /** WEB_FEATURES; `alerts` turns on the job-alert push, `home` files job messages on Home. Default none. */
   features?: readonly WebFeature[];
   now?: () => number;
   timers?: Timers;
@@ -152,7 +152,9 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   async sendReply(origin: ChatOrigin | null, reply: ReplyView, attempt: SendAttempt): Promise<void> {
     checkOrigin(origin);
     const key = outboxKey(attempt);
-    if (this.deps.log.find(reply.kind, key)) return;
+    // The last plain try goes to the chat, so a failing inbox never keeps a message unseen.
+    if (reply.kind === "proactive" && reply.job && this.deps.home && this.deps.features?.includes("home") && !attempt.plain) return this.fileMessage(key, reply.text, reply.job);
+    if (this.deps.log.find(reply.kind, key) || (reply.job && this.deps.home?.hasMessage(key))) return;
     this.spend();
     const { files, dropped } = await this.storeFiles(reply.files ?? [], key);
     const body = capText(reply.text, REPLY_TEXT_MAX);
@@ -162,6 +164,18 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const anchor = turnId ? this.deps.log.turnAnchor(turnId) : null;
     const { seq, created } = this.deps.log.appendResult(reply.kind, data, key, anchor ?? undefined);
     if (created) void this.notify(seq, { kind: reply.kind, text });
+  }
+
+  /** A job's message goes to Home's inbox instead of the chat; the agent's own session still has a note of it. */
+  private async fileMessage(key: string, text: string, job: DeliverJob): Promise<void> {
+    const home = this.deps.home!;
+    // A resend of one filed before Home was turned on stays where it went.
+    if (home.hasMessage(key) || this.deps.log.find("proactive", key)) return;
+    this.spend();
+    const shown = capText(text, REPLY_TEXT_MAX);
+    if (!home.addMessage({ key, job: job.name, ...(job.runId ? { runId: job.runId } : {}), text: shown })) return;
+    this.deps.log.publish({ type: "inbox", data: { key } });
+    void this.notify(this.deps.log.head() + 1, { kind: "inbox", key, text: shown });
   }
 
   /** An askId is unique among stored asks, since the answer route finds the ask by it. A reused or

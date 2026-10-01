@@ -368,3 +368,19 @@ export const webOpenedRuns = sqliteTable("web_opened_runs", {
   runId: text("run_id").primaryKey(),
   at: integer("at").notNull(),
 });
+
+/** Scheduled-job messages shown on Home instead of in the chat, kept until the owner marks them done. */
+export const webInbox = sqliteTable(
+  "web_inbox",
+  {
+    // The delivery's outbox key, so a resent delivery stores nothing new.
+    key: text("key").primaryKey(),
+    job: text("job").notNull(),
+    runId: text("run_id"),
+    text: text("text").notNull(),
+    at: integer("at").notNull(),
+    readAt: integer("read_at"),
+    doneAt: integer("done_at"),
+  },
+  (table) => [index("idx_web_inbox_done").on(table.doneAt, table.at)],
+);

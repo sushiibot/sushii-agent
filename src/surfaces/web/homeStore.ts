@@ -1,12 +1,16 @@
 import type { Database, Statement } from "bun:sqlite";
-import type { HomeAlert, JobAlert } from "./events.ts";
+import type { HomeAlert, HomeMessage, JobAlert } from "./events.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Longer than HOME_RECENT_HOURS, so a run stays opened for as long as Home could list it. */
 export const OPENED_RUNS_RETENTION_MS = 30 * DAY_MS;
 export const DISMISSED_RUNS_RETENTION_MS = 7 * DAY_MS;
 export const CLEARED_ALERTS_RETENTION_MS = 30 * DAY_MS;
+export const DONE_MESSAGES_RETENTION_MS = 30 * DAY_MS;
+/** Undone messages Home lists; older ones wait behind them. */
+export const HOME_MESSAGES_MAX = 50;
 
+type MessageRow = { key: string; job: string; run_id: string | null; text: string; at: number; read_at: number | null };
 type AlertRow = { job: string; state: "open" | "cleared"; alert: string; first_at: string; seq: number; key: string; dismissed_at: number | null; updated_at: number };
 
 const startedMs = (a: { startedAt: string }) => Date.parse(a.startedAt);
@@ -14,7 +18,7 @@ const startedMs = (a: { startedAt: string }) => Date.parse(a.startedAt);
 /** What a delivered alert did to its job's row. */
 export type AlertChange = "opened" | "cleared" | "stale" | "noop";
 
-/** Home's own state: job-alert streaks (`web_alerts`), dismissed failed runs and opened runs. */
+/** Home's own state: job-alert streaks (`web_alerts`), job messages (`web_inbox`), dismissed and opened runs. */
 export class WebHomeStore {
   private readonly now: () => number;
   private readonly q: {
@@ -101,8 +105,58 @@ export class WebHomeStore {
     return row.seq;
   }
 
+  /** Files a job's message; false when its key is already filed. */
+  addMessage(m: { key: string; job: string; runId?: string; text: string }): boolean {
+    const res = this.db.run("INSERT INTO web_inbox (key, job, run_id, text, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO NOTHING", [
+      m.key,
+      m.job,
+      m.runId ?? null,
+      m.text,
+      this.now(),
+    ]);
+    return res.changes > 0;
+  }
+
+  hasMessage(key: string): boolean {
+    return this.db.query("SELECT 1 FROM web_inbox WHERE key = ?").get(key) !== null;
+  }
+
+  /** Messages not marked done, newest first. */
+  messages(): HomeMessage[] {
+    const rows = this.db
+      .query("SELECT key, job, run_id, text, at, read_at FROM web_inbox WHERE done_at IS NULL ORDER BY at DESC, rowid DESC LIMIT ?")
+      .all(HOME_MESSAGES_MAX) as MessageRow[];
+    return rows.map((r) => ({
+      key: r.key,
+      job: r.job,
+      ...(r.run_id ? { runId: r.run_id } : {}),
+      text: r.text,
+      at: new Date(r.at).toISOString(),
+      read: r.read_at !== null,
+    }));
+  }
+
+  /** False when there is no such message. */
+  readMessage(key: string): boolean {
+    return this.db.run("UPDATE web_inbox SET read_at = COALESCE(read_at, ?) WHERE key = ?", [this.now(), key]).changes > 0;
+  }
+
+  /** Leaves `read` as it was, so Undo brings it back unchanged. False when there is no such message. */
+  doneMessage(key: string): boolean {
+    return this.db.run("UPDATE web_inbox SET done_at = COALESCE(done_at, ?) WHERE key = ?", [this.now(), key]).changes > 0;
+  }
+
+  /** False when there is no such message. */
+  restoreMessage(key: string): boolean {
+    return this.db.run("UPDATE web_inbox SET done_at = NULL WHERE key = ?", [key]).changes > 0;
+  }
+
   dismissRun(runId: string): void {
     this.db.run("INSERT INTO web_dismissed_runs (run_id, at) VALUES (?, ?) ON CONFLICT(run_id) DO NOTHING", [runId, this.now()]);
+  }
+
+  restoreRun(runId: string): void {
+    this.db.run("DELETE FROM web_dismissed_runs WHERE run_id = ?", [runId]);
   }
 
   openRun(runId: string): void {
@@ -124,6 +178,7 @@ export class WebHomeStore {
       this.db.run("DELETE FROM web_opened_runs WHERE at < ?", [now - OPENED_RUNS_RETENTION_MS]);
       this.db.run("DELETE FROM web_dismissed_runs WHERE at < ?", [now - DISMISSED_RUNS_RETENTION_MS]);
       this.db.run("DELETE FROM web_alerts WHERE state = 'cleared' AND updated_at < ?", [now - CLEARED_ALERTS_RETENTION_MS]);
+      this.db.run("DELETE FROM web_inbox WHERE done_at < ?", [now - DONE_MESSAGES_RETENTION_MS]);
     })();
   }
 

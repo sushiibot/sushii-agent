@@ -8,7 +8,8 @@ import { MAX_OPEN_TURNS, WorkspaceLink, type WorkspaceRpc } from "../../orchestr
 import type { Timers } from "../../orchestration/workspace/progress.ts";
 import { SurfaceRegistry, type ApprovalView, type InboundMessage } from "../../orchestration/workspace/surface.ts";
 import { SqliteChatLog } from "./chatLog.ts";
-import type { ChatEnvelope, UploadRef } from "./events.ts";
+import type { ChatEnvelope, UploadRef, WebFeature } from "./events.ts";
+import { WebHomeStore } from "./homeStore.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { SEEN_WAIT_MS, createPresence } from "./presence.ts";
 import type { PushPayload } from "./push.ts";
@@ -75,7 +76,7 @@ function clockTimers() {
   };
 }
 
-function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number }; presenceTimers?: Timers } = {}) {
+function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; appendBudget?: { burst: number; perSec: number }; presenceTimers?: Timers; features?: WebFeature[] } = {}) {
   const db = opts.db ?? new Database(":memory:");
   if (!opts.db) applySchema(db);
   const log = new SqliteChatLog(db);
@@ -83,7 +84,10 @@ function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; ap
   const presence = opts.presenceTimers ? createPresence({ head: () => log.head(), timers: opts.presenceTimers }) : createPresence({ head: () => log.head(), timers: t.timers, waitMs: 10 });
   const pushes: PushPayload[] = [];
   const breakGlass: string[] = [];
+  const home = new WebHomeStore(db);
   const adapter = new WebWorkspaceAdapter({
+    home,
+    ...(opts.features ? { features: opts.features } : {}),
     log,
     inbound: new WebInboundStore(db),
     presence,
@@ -101,12 +105,42 @@ function setup(opts: { sent?: number; uploads?: WebUploadPort; db?: Database; ap
   log.subscribe(null, (ev) => events.push(ev));
   const event = (turnId: string, ev: ChatEventPayload) =>
     rpc.handler!.onNotification!(CONN, RPC_METHODS.chatEvent, { origin: WEB, principalId: P, turnId, agentId: "main", ev });
-  return { db, log, adapter, link, rpc, events, pushes, breakGlass, presence, timers: t, event };
+  return { db, log, home, adapter, link, rpc, events, pushes, breakGlass, presence, timers: t, event };
 }
 
 const deliver = (o: Partial<ChatDeliverParams> = {}): ChatDeliverParams => ({ outboxId: "o1", principalId: P, kind: "reply", text: "hello", origin: WEB, ...o });
 
 describe("web adapter deliveries", () => {
+  test("with Home on, a job's message goes to the inbox, not the chat, once per outbox id", async () => {
+    const h = setup({ features: ["home"] });
+    const job = { name: "heartbeat", runId: "01J0000000000000000000000A" };
+    const msg = deliver({ origin: undefined, kind: "proactive", text: "Passport due Friday.", job });
+    await h.link.deliver(msg);
+    await h.link.deliver(msg);
+    expect(h.log.find("proactive", "o1")).toBeNull();
+    expect(h.home.messages()).toMatchObject([{ key: "o1", job: "heartbeat", runId: job.runId, text: "Passport due Friday.", read: false }]);
+    expect(h.events.filter((e) => e.type === "inbox").map((e) => e.data)).toEqual([{ key: "o1" }]);
+    await tick();
+    expect(h.pushes).toEqual([{ title: "sushii-agent", body: "Passport due Friday.", url: "/?item=msg%3Ao1", tag: "msg:o1" }]);
+  });
+
+  test("the last plain try of a job's message goes to the chat; a filed one isn't repeated there", async () => {
+    const h = setup({ features: ["home"] });
+    const plain = { ledger: { isSent: () => false, markSent: () => {} }, plain: true };
+    await h.adapter.sendReply(null, { kind: "proactive", text: "Heads up.", toolCount: null, job: { name: "heartbeat" } }, { ...plain, outboxId: "p1" });
+    expect(h.log.find("proactive", "p1")?.data.text).toBe("Heads up.");
+    h.home.addMessage({ key: "p2", job: "heartbeat", text: "Filed." });
+    await h.adapter.sendReply(null, { kind: "proactive", text: "Filed.", toolCount: null, job: { name: "heartbeat" } }, { ...plain, outboxId: "p2" });
+    expect(h.log.find("proactive", "p2")).toBeNull();
+  });
+
+  test("with Home off, a job's message is a chat message as before", async () => {
+    const h = setup({ features: [] });
+    await h.link.deliver(deliver({ origin: undefined, kind: "proactive", text: "Heads up.", job: { name: "heartbeat" } }));
+    expect(h.log.find("proactive", "o1")?.data.text).toBe("Heads up.");
+    expect(h.home.messages()).toEqual([]);
+  });
+
   test("a reply is committed before the outbox is acked", async () => {
     const h = setup();
     let committedAtAck: unknown = null;

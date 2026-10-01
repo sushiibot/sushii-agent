@@ -17,8 +17,9 @@ export const HOME_WORKSPACE_TIMEOUT_MS = 3_000;
 const HOME_RUN_KINDS = ["job", "subagent", "agent"] as const;
 /** Job failures reach Home as alerts, so only background runs are listed as failed. */
 const FAILED_RUN_KINDS = ["subagent", "agent"] as const;
-/** A subagent's result already went back to the agent that delegated it, which answered in chat. */
-const REVIEW_RUN_KINDS = ["job", "agent"] as const;
+/** A subagent's result already went back to the agent that delegated it, which answered in chat, and a job's
+ *  message is in Home's inbox. */
+const REVIEW_RUN_KINDS = ["agent"] as const;
 /** Generous for any background run (a job times out at 10 min), so one ending inside the window is listed. */
 const RUN_MAX_LENGTH_MS = 24 * 60 * 60 * 1000;
 const JSON_RPC_METHOD_NOT_FOUND = -32601;
@@ -84,13 +85,16 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       const recent = (runs: RunSummary[]) => runs.filter((r) => endedAt(r) >= cutoff).sort((a, b) => endedAt(b) - endedAt(a));
       const failedRuns = recent(failed.runs).filter((r) => isKind(r, FAILED_RUN_KINDS) && (r.status === "failed" || r.status === "timeout"));
       const doneRuns = recent(done.runs).filter((r) => isKind(r, REVIEW_RUN_KINDS) && r.status === "done" && hasOutput(r));
-      const dismissed = store.dismissedRuns(failedRuns.map((r) => r.runId));
+      const dismissed = store.dismissedRuns([...failedRuns, ...doneRuns].map((r) => r.runId));
       const opened = store.openedRuns(doneRuns.map((r) => r.runId));
       return {
         state: "online",
         running: running.runs.filter((r) => isKind(r, HOME_RUN_KINDS) && r.status === "running").slice(0, HOME_RUNS_MAX),
         failedRuns: failedRuns.filter((r) => !dismissed.has(r.runId)).slice(0, HOME_RUNS_MAX),
-        review: doneRuns.filter((r) => !opened.has(r.runId)).slice(0, HOME_RUNS_MAX),
+        review: doneRuns
+          .filter((r) => !dismissed.has(r.runId))
+          .slice(0, HOME_RUNS_MAX)
+          .map((r) => ({ ...r, read: opened.has(r.runId) })),
       };
     } catch (err) {
       if (err instanceof RpcErrorReply && err.code === JSON_RPC_METHOD_NOT_FOUND) return { state: "unsupported" };
@@ -114,6 +118,7 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       waiting: { approvals: pending.approvals, asks: pending.asks, auth: pendingAuth() },
       openTurns: deps.adapter.openTurns(),
       failed: deps.features.includes("alerts") ? store.openAlerts() : [],
+      inbox: store.messages(),
       workspace: await workspacePart(),
     };
     return json(body);
@@ -133,18 +138,28 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       });
       return dismissed ? new Response(null, { status: 204 }) : json({ error: "not found" }, 404);
     }
-    const runId = runIdOf(body.id);
-    if (runId === null) return json({ error: "invalid id" }, 400);
-    store.dismissRun(runId);
-    return new Response(null, { status: 204 });
+    return itemAction(body.id, (key) => store.doneMessage(key), (runId) => store.dismissRun(runId));
+  }
+
+  async function postRestore(req: Request): Promise<Response> {
+    const body = await parseBody(req);
+    if (body instanceof Response) return body;
+    return itemAction(body.id, (key) => store.restoreMessage(key), (runId) => store.restoreRun(runId));
   }
 
   async function postOpened(req: Request): Promise<Response> {
     const body = await parseBody(req);
     if (body instanceof Response) return body;
-    const runId = runIdOf(body.id);
+    return itemAction(body.id, (key) => store.readMessage(key), (runId) => store.openRun(runId));
+  }
+
+  /** Applies a `msg:` or `run:` action. A run id the workspace may not list yet is taken as is. */
+  function itemAction(id: string, onMessage: (key: string) => boolean, onRun: (runId: string) => void): Response {
+    const key = /^msg:(.+)$/.exec(id)?.[1];
+    if (key !== undefined) return onMessage(key) ? new Response(null, { status: 204 }) : json({ error: "not found" }, 404);
+    const runId = runIdOf(id);
     if (runId === null) return json({ error: "invalid id" }, 400);
-    store.openRun(runId);
+    onRun(runId);
     return new Response(null, { status: 204 });
   }
 
@@ -154,6 +169,7 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       if (path === "/api/home") return req.method === "GET" ? getHome() : methodNotAllowed();
       if (path === "/api/home/dismiss") return req.method === "POST" ? postDismiss(req) : methodNotAllowed();
       if (path === "/api/home/opened") return req.method === "POST" ? postOpened(req) : methodNotAllowed();
+      if (path === "/api/home/restore") return req.method === "POST" ? postRestore(req) : methodNotAllowed();
       return json({ error: "not found" }, 404);
     },
   };

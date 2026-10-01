@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { WorkspaceConfigError, loadWorkspaceConfig, type WorkspaceConfig } from "./config.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import type { ToolFreeJobInput, ToolFreeJobResult } from "./jobSession.ts";
+import type { DeliverJob } from "../orchestration/contracts.ts";
 import {
   DAILY_JOB_WINDOW_MS,
   HEARTBEAT_PROMPT,
@@ -21,7 +22,9 @@ import { Scheduler, readJobIndex, readSchedulerState, requestRun, type JobSchedu
 
 let root: string;
 let clock: Date;
+const RUN = "01K6B4D2F4H6K8M0P2R4T6V8X0";
 let delivered: string[];
+let deliveredJobs: DeliverJob[];
 let notes: Array<{ name: string; text: string }>;
 let runnerCalls: ToolFreeJobInput[];
 let reply: string;
@@ -43,7 +46,7 @@ function config(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
 
 async function fakeRunner(_config: WorkspaceConfig, input: ToolFreeJobInput): Promise<ToolFreeJobResult> {
   runnerCalls.push(input);
-  return { text: reply, model: "test/model", sessionFile: "/dev/null" };
+  return { text: reply, model: "test/model", sessionFile: "/dev/null", runId: RUN };
 }
 
 function deps(overrides: Partial<PromptJobDeps> = {}): PromptJobDeps {
@@ -53,7 +56,10 @@ function deps(overrides: Partial<PromptJobDeps> = {}): PromptJobDeps {
     runs: new RunLog(cfg.stateDir),
     selector: new BackendSelector({ primaryEnabled: false }),
     limiter: new ProactiveLimiter(cfg.stateDir, cfg.proactiveDailyCap),
-    deliver: (text) => delivered.push(text),
+    deliver: (text, job) => {
+      delivered.push(text);
+      deliveredJobs.push(job);
+    },
     note: async (name, text) => {
       notes.push({ name, text });
     },
@@ -70,6 +76,7 @@ beforeEach(() => {
   mkdirSync(join(root, "home", "memory"), { recursive: true });
   clock = new Date("2026-09-29T12:00:00Z");
   delivered = [];
+  deliveredJobs = [];
   notes = [];
   runnerCalls = [];
   reply = "NO_REPLY";
@@ -82,7 +89,7 @@ describe("heartbeat", () => {
     for (const r of ["NO_REPLY", "  NO_REPLY\n", "`NO_REPLY`", "NO_REPLY.", "**NO_REPLY**", "\"NO_REPLY\"", "_NO_REPLY_!", "Nothing needs attention. NO_REPLY", "NO_REPLY — all clear"]) {
       reply = r;
       const outcome = await createHeartbeatJob(HEARTBEAT, deps()).run(scheduled);
-      expect(outcome).toEqual({ status: "no_reply" });
+      expect(outcome).toEqual({ status: "no_reply", runId: RUN });
     }
     expect(delivered).toEqual([]);
     expect(notes).toEqual([]);
@@ -133,6 +140,7 @@ describe("heartbeat", () => {
     const outcome = await createHeartbeatJob(HEARTBEAT, deps()).run(scheduled);
     expect(outcome.status).toBe("sent");
     expect(delivered).toEqual([reply]);
+    expect(deliveredJobs).toEqual([{ name: "heartbeat", runId: RUN }]);
     expect(notes).toEqual([{ name: "heartbeat", text: `[scheduled job heartbeat] You sent drk this proactive message: ${reply}` }]);
   });
 

@@ -472,6 +472,9 @@ export const jobAlert = z.object({
 });
 export type JobAlertWire = z.infer<typeof jobAlert>;
 
+export const deliverJob = z.object({ name: z.string().min(1).max(JOB_NAME_MAX), runId: runId.optional() });
+export type DeliverJob = z.infer<typeof deliverJob>;
+
 export const CHAT_DELIVER_KINDS = ["reply", "proactive", "ask", "auth", "alert"] as const;
 export type ChatDeliverKind = (typeof CHAT_DELIVER_KINDS)[number];
 
@@ -515,8 +518,11 @@ export const chatDeliverParams = z
       .optional(),
     // kind "alert": the structured job alert; `text` is jobAlertText(alert), so any surface can show it as plain text.
     alert: jobAlert.optional(),
+    // kind "proactive": the scheduled job that sent it, so a surface with an inbox can file it there.
+    job: deliverJob.optional(),
   })
-  .refine((p) => (p.kind === "alert") === (p.alert !== undefined), { message: 'kind "alert" needs alert, and only it may carry one', path: ["alert"] });
+  .refine((p) => (p.kind === "alert") === (p.alert !== undefined), { message: 'kind "alert" needs alert, and only it may carry one', path: ["alert"] })
+  .refine((p) => p.job === undefined || p.kind === "proactive", { message: 'only kind "proactive" may carry job', path: ["job"] });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
 
 export const chatEventPayload = z.discriminatedUnion("type", [

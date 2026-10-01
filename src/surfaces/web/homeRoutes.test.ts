@@ -80,12 +80,14 @@ describe("GET /api/home", () => {
 
     const home = await h.get();
     // failedIn and doneJob started 80 h ago, before the window, and ended inside it.
-    expect(home.workspace).toEqual({ state: "online", running: [running], failedRuns: [timeoutIn, failedIn], review: [doneJob, doneAgent] });
+    // Job messages are Home's inbox, not runs to review.
+    expect(home.workspace).toEqual({ state: "online", running: [running], failedRuns: [timeoutIn, failedIn], review: [{ ...doneAgent, read: false }] });
+    expect(doneJob.status).toBe("done");
     const since = iso(cutoff - 24 * HOUR);
     expect(h.calls).toEqual([
       { kinds: ["job", "subagent", "agent"], statuses: ["running"], limit: 50 },
       { kinds: ["subagent", "agent"], statuses: ["failed", "timeout"], since, limit: 50 },
-      { kinds: ["job", "agent"], statuses: ["done"], since, limit: 50 },
+      { kinds: ["agent"], statuses: ["done"], since, limit: 50 },
     ]);
   });
 
@@ -96,14 +98,41 @@ describe("GET /api/home", () => {
     expect(await h.get()).toMatchObject({ workspace: { state: "online", failedRuns: [failed] } });
   });
 
-  test("opened runs leave review and dismissed runs leave failed, on the next load", async () => {
+  test("an opened run stays in review as read; done takes it off until restored", async () => {
     const failed = run({ kind: "subagent", status: "failed", endedAt: iso(NOW - HOUR) });
-    const done = run({ kind: "job", status: "done", endedAt: iso(NOW - HOUR) });
+    const done = run({ kind: "agent", status: "done", endedAt: iso(NOW - HOUR) });
     const h = setup({ runs: lists([], [failed, done]) });
     expect((await h.post("/api/home/dismiss", { id: `run:${failed.runId}` }))!.status).toBe(204);
     expect((await h.post("/api/home/opened", { id: `run:${done.runId}` }))!.status).toBe(204);
     expect((await h.post("/api/home/opened", { id: `run:${done.runId}` }))!.status).toBe(204);
-    expect(await h.get()).toMatchObject({ workspace: { state: "online", failedRuns: [], review: [] } });
+    expect(await h.get()).toMatchObject({ workspace: { state: "online", failedRuns: [], review: [{ ...done, read: true }] } });
+    expect((await h.post("/api/home/dismiss", { id: `run:${done.runId}` }))!.status).toBe(204);
+    expect(await h.get()).toMatchObject({ workspace: { review: [] } });
+    expect((await h.post("/api/home/restore", { id: `run:${done.runId}` }))!.status).toBe(204);
+    expect(await h.get()).toMatchObject({ workspace: { review: [{ ...done, read: true }] } });
+  });
+
+  test("job messages stay in the inbox, read once opened, until done; restore brings one back", async () => {
+    const h = setup({ connected: false });
+    h.store.addMessage({ key: "o1", job: "heartbeat", runId: "01J0000000000000000000000A", text: "Passport due Friday." });
+    h.store.addMessage({ key: "o2", job: "digest", text: "Two new invoices." });
+    expect(h.store.addMessage({ key: "o2", job: "digest", text: "again" })).toBe(false);
+    const inbox = (await h.get()).inbox;
+    expect(inbox.map((m) => [m.key, m.read])).toEqual([["o2", false], ["o1", false]]);
+    expect(inbox[1]).toEqual({ key: "o1", job: "heartbeat", runId: "01J0000000000000000000000A", text: "Passport due Friday.", at: iso(NOW), read: false });
+    expect((await h.post("/api/home/opened", { id: "msg:o1" }))!.status).toBe(204);
+    expect((await h.post("/api/home/dismiss", { id: "msg:o2" }))!.status).toBe(204);
+    expect((await h.get()).inbox.map((m) => [m.key, m.read])).toEqual([["o1", true]]);
+    expect((await h.post("/api/home/restore", { id: "msg:o2" }))!.status).toBe(204);
+    // Undo brings each back as it was: unread, or read when opened before.
+    expect((await h.get()).inbox.map((m) => [m.key, m.read])).toEqual([["o2", false], ["o1", true]]);
+    expect((await h.post("/api/home/dismiss", { id: "msg:o1" }))!.status).toBe(204);
+    expect((await h.post("/api/home/restore", { id: "msg:o1" }))!.status).toBe(204);
+    expect((await h.post("/api/home/restore", { id: "msg:o1" }))!.status).toBe(204);
+    expect((await h.get()).inbox.find((m) => m.key === "o1")?.read).toBe(true);
+    for (const path of ["/api/home/opened", "/api/home/dismiss", "/api/home/restore"]) {
+      expect((await h.post(path, { id: "msg:nope" }))!.status).toBe(404);
+    }
   });
 
   test("each list holds at most 20 runs", async () => {
@@ -112,7 +141,7 @@ describe("GET /api/home", () => {
     const home = await h.get();
     if (home.workspace.state !== "online") throw new Error("offline");
     expect(home.workspace.review).toHaveLength(20);
-    expect(home.workspace.review[0]).toEqual(many[0]);
+    expect(home.workspace.review[0]).toEqual({ ...many[0]!, read: false });
     expect(home.workspace.running).toHaveLength(20);
   });
 
