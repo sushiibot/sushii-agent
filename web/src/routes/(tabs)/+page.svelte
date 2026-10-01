@@ -53,6 +53,19 @@
 	});
 
 	const items = $derived(Object.values(home.groups).flat());
+
+	/** Whether Home's records could say for sure that this item is gone. */
+	function checked(id: string): boolean {
+		if (unreachable) return false;
+		// Approvals and asks come from the stream's pending list, which is complete once greeted.
+		if (id.startsWith('approval:') || id.startsWith('ask:')) return true;
+		// The last load failed, or none has finished: the item may still be there.
+		if (data.status === 'error' || data.data === undefined) return false;
+		// With Home off on the bot there is nothing more to wait for.
+		if (data.data === null) return true;
+		if (id.startsWith('run:')) return data.data?.workspace.state === 'online';
+		return true;
+	}
 	const peek = $derived.by((): HomePeek | undefined => {
 		const id = sheet.arg;
 		if (!sheet.open || !id) return undefined;
@@ -61,7 +74,7 @@
 		return {
 			id,
 			item,
-			missing: item ? undefined : unreachable ? 'offline' : 'handled',
+			missing: item ? undefined : checked(id) ? 'handled' : 'offline',
 			submitting: nonce ? home.submitting.includes(nonce) : false,
 			result: home.results[id]
 		};

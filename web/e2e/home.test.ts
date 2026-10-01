@@ -456,3 +456,21 @@ test('with Runs off on the bot, a failed job peek has no Open run', async ({ pag
 	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
 	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeHidden();
 });
+
+test("a cold link to a job when Home's server part fails says it can't check, not handled", async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { pending: busy(), fixtures: 'error' });
+	await page.goto('/home?item=job%3Anightly-sync');
+	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
+});
+
+test("a cold link to a run while the agent is unreachable says it can't check", async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { fixtures: 'offline' });
+	await page.goto('/?item=run%3A01K6B3A1C3E5G7J9M1P3R5T7V9');
+	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
+});
