@@ -115,7 +115,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
       if (res) return res;
     }
     if (dictation) {
-      const res = await dictation.handle(req, path);
+      const res = await dictation.handle(req, path, server);
       if (res) return res;
     }
 

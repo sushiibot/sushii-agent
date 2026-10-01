@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TranscribableAudio } from "../../agent/transcribe.ts";
+import { TranscriptionError } from "../../agent/transcribe.ts";
 import { DICTATION_MAX_BYTES, createDictationRoutes } from "./dictationRoutes.ts";
 
 function setup(result: string | null = "hello there") {
@@ -19,6 +20,16 @@ describe("POST /api/dictation", () => {
     expect(h.calls.map((c) => [c.mediaType, c.filename, c.data.byteLength])).toEqual([["audio/webm", "dictation.webm", 3]]);
     await h.post(new Uint8Array([1]), "audio/mp4");
     expect(h.calls[1]!.filename).toBe("dictation.m4a");
+  });
+
+  test("a failed transcription is a 502, not a 422, so the owner isn't told to speak up", async () => {
+    const routes = createDictationRoutes({
+      transcribe: async () => {
+        throw new TranscriptionError("transcription request failed: 402");
+      },
+    });
+    const res = await routes.handle(new Request("http://x/api/dictation", { method: "POST", body: new Uint8Array([1]), headers: { "Content-Type": "audio/webm" } }), "/api/dictation");
+    expect(res!.status).toBe(502);
   });
 
   test("no words is a 422; bad types, empty and oversized bodies never reach the transcriber", async () => {

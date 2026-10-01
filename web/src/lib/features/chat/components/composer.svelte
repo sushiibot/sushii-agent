@@ -79,7 +79,13 @@
 				? `Send is off until ${pending.length === 1 ? '1 photo finishes' : `${pending.length} photos finish`} uploading.`
 				: undefined
 	);
-	const canSend = $derived(!blocked && (!!value.trim() || photos.length > 0));
+	const dictating = $derived(
+		dictation?.state === 'starting' ||
+			dictation?.state === 'recording' ||
+			dictation?.state === 'transcribing'
+	);
+	// While dictating, the words aren't in the box yet: sending now would leave them behind.
+	const canSend = $derived(!blocked && !dictating && (!!value.trim() || photos.length > 0));
 	// Stop sits beside Send rather than in its place, so a second tap on Send can't stop the run it steered.
 	const showStop = $derived(running && stop);
 	const hint = $derived(

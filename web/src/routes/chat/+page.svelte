@@ -39,7 +39,8 @@
 		model: routedSheet('model')
 	};
 	const models = modelsStore();
-	// The transcript joins whatever is already in the box, like keyboard dictation.
+	// The transcript joins whatever is already in the box, like keyboard dictation. Kept on screen while
+	// it runs, so a feature flip can't hide the stop control of a recording in progress.
 	const dictation = new Dictation((text) => {
 		const draft = store.draft.trimEnd();
 		store.setDraft(draft ? `${draft} ${text}` : text);
@@ -158,7 +159,7 @@
 	models={models.remote.data ?? null}
 	modelPicking={models.picking}
 	modelError={models.error}
-	dictation={features.dictation
+	dictation={features.dictation || dictation.state !== 'idle'
 		? { state: dictation.state, seconds: dictation.seconds, error: dictation.error }
 		: null}
 	ondictate={() => dictation.toggle()}
