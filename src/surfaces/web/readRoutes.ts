@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Database } from "bun:sqlite";
 import { ID_MAX, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
 import { WorkspaceBadResponseError, type WorkspaceLink } from "../../orchestration/workspace/link.ts";
@@ -23,7 +24,7 @@ import {
   type WorkspaceUnavailableResponse,
 } from "./events.ts";
 import { HISTORY_RESPONSE_MAX } from "./chatRoutes.ts";
-import { NO_STORE, json } from "./http.ts";
+import { NO_STORE, isJson, json, readJson } from "./http.ts";
 import { runApprovals, runFiles } from "./runJoins.ts";
 
 const log = getLogger("web/readRoutes");
@@ -34,7 +35,7 @@ const JSON_RPC_METHOD_NOT_FOUND = -32601;
 /** The bot checks every param but the opaque cursors, so the workspace refusing params means a stale cursor. */
 const JSON_RPC_INVALID_PARAMS = -32602;
 
-export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch">;
+export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch" | "modelsGet" | "modelsSet">;
 
 export interface ReadRouteDeps {
   db: Database;
@@ -98,6 +99,7 @@ function intParam(raw: string | null, min: number, max: number): number | undefi
   return n >= min && n <= max ? n : null;
 }
 
+const modelsBody = z.object({ alias: z.string().min(1).max(ID_MAX) }).strict();
 const notFound = () => json({ error: "not found" }, 404);
 const badRequest = (error: string) => json({ error }, 400);
 
@@ -246,8 +248,21 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     return cappedJson({ query, hits: merged.slice(0, SEARCH_HITS_MAX), truncated, unavailable } satisfies SearchResponse);
   }
 
+  /** GET: the model choice. POST {alias}: switch from the next turn. */
+  async function models(req: Request): Promise<Response> {
+    if (req.method === "GET") return answer("models/get", async () => json(await fromWorkspace(() => link.modelsGet())));
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    if (!isJson(req)) return json({ error: "expected application/json" }, 415);
+    const raw = await readJson(req);
+    if (raw instanceof Response) return raw;
+    const body = modelsBody.safeParse(raw);
+    if (!body.success) return badRequest("invalid body");
+    return answer("models/set", async () => json(await fromWorkspace(() => link.modelsSet(body.data.alias))));
+  }
+
   return {
     async handle(req, path) {
+      if (path === "/api/models") return models(req);
       const runs = path === "/api/runs" || path.startsWith("/api/runs/");
       const history = path === "/api/history" || path.startsWith("/api/history/");
       const searchPath = path === "/api/search";

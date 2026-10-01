@@ -45,6 +45,10 @@ import {
   type ToolCallResult,
   type ToolCancelResult,
   type ToolManifestEntry,
+  modelsGetParams,
+  modelsResult,
+  modelsSetParams,
+  type ModelsResult,
 } from "../contracts.ts";
 import { MethodNotFoundError, mayHaveBeenAccepted, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
@@ -356,6 +360,15 @@ export class WorkspaceLink {
 
   async historySearch(q: Omit<z.input<typeof historySearchParams>, "principalId">): Promise<HistorySearchResult> {
     return this.read(RPC_METHODS.historySearch, historySearchParams, historySearchResult, q, HISTORY_SEARCH_TIMEOUT_MS);
+  }
+
+  async modelsGet(): Promise<ModelsResult> {
+    return this.read(RPC_METHODS.modelsGet, modelsGetParams, modelsResult, {}, CONTROL_TIMEOUT_MS);
+  }
+
+  /** Switches the owner's model from the next turn, as `!model <alias>` does. */
+  async modelsSet(alias: string): Promise<ModelsResult> {
+    return this.read(RPC_METHODS.modelsSet, modelsSetParams, modelsResult, { alias }, CONTROL_TIMEOUT_MS);
   }
 
   /** A read-only workspace request. Run and history content is agent-writable, so a result outside the

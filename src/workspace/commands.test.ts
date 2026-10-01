@@ -60,4 +60,19 @@ describe("workspace commands", () => {
     await expect(handler({ principalId: "mallory", command: "tasks" })).rejects.toThrow("principal mismatch");
     await expect(handler({ principalId: "drk", command: "rm -rf" })).rejects.toThrow();
   });
+
+  test("models/get lists the choice; models/set switches like !model and refuses an unknown alias", async () => {
+    const { d, config } = deps();
+    const h = commandHandlers(d);
+    const list = [
+      { alias: "sol", backend: "chatgpt", id: "gpt-6.1-sol" },
+      { alias: "luna", backend: "chatgpt", id: "gpt-6-luna" },
+      { alias: "or-luna", backend: "openrouter", id: "openai/gpt-6-luna" },
+    ];
+    expect(await h[RPC_METHODS.modelsGet]!({ principalId: "drk" })).toEqual({ current: "sol", models: list });
+    expect(await h[RPC_METHODS.modelsSet]!({ principalId: "drk", alias: "or-luna" })).toEqual({ current: "or-luna", models: list });
+    expect(config.provider).toBe("openrouter");
+    await expect(h[RPC_METHODS.modelsSet]!({ principalId: "drk", alias: "gpt-9" })).rejects.toThrow('unknown model "gpt-9"');
+    await expect(h[RPC_METHODS.modelsGet]!({ principalId: "mallory" })).rejects.toThrow("principal mismatch");
+  });
 });

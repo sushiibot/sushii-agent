@@ -2,7 +2,8 @@
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import Square from '@lucide/svelte/icons/square';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import ImagePlus from '@lucide/svelte/icons/image-plus';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -26,6 +27,9 @@
 		onattach,
 		onremovephoto,
 		onretryphoto,
+		model,
+		onmodel,
+		mic,
 		status
 	}: {
 		value?: string;
@@ -43,6 +47,11 @@
 		onattach?: (files: File[]) => void;
 		onremovephoto?: (id: string) => void;
 		onretryphoto?: (id: string) => void;
+		/** The model the next turn uses; the chip shows it and opens the picker. */
+		model?: string | null;
+		onmodel?: () => void;
+		/** A dictation button, placed before Send. */
+		mic?: Snippet;
 		/** A muted line under the box, such as the last reply's usage. */
 		status?: Snippet;
 	} = $props();
@@ -68,6 +77,15 @@
 				: undefined
 	);
 	const canSend = $derived(!blocked && (!!value.trim() || photos.length > 0));
+	// Stop takes Send's place while the box is empty; typing brings Send back, which steers the run.
+	const showStop = $derived(running && stop && !value.trim() && !photos.length);
+	const hint = $derived(
+		running && stop
+			? stopping
+				? 'Your next message starts a new turn.'
+				: 'The agent is working. A message now steers this run.'
+			: undefined
+	);
 
 	function submit(e: SubmitEvent) {
 		e.preventDefault();
@@ -80,7 +98,45 @@
 			onsend?.();
 		}
 	}
+
+	type Tone = 'muted' | 'strong' | 'primary';
+	function roundFace(tone: Tone) {
+		return cn(
+			'grid size-10 place-items-center rounded-full transition-colors group-focus-visible/round:ring-3 group-focus-visible/round:ring-ring/50 group-active/round:translate-y-px group-disabled/round:opacity-50',
+			tone === 'primary' && 'bg-primary text-primary-foreground group-hover/round:bg-primary/80',
+			tone === 'strong' && 'bg-foreground text-background group-hover/round:bg-foreground/80',
+			tone === 'muted' && 'bg-muted text-foreground group-hover/round:bg-muted/70'
+		);
+	}
 </script>
+
+{#snippet attachIcon()}<Plus class="size-5" aria-hidden="true" />{/snippet}
+{#snippet stopIcon()}
+	{#if stopping}
+		<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+	{:else}
+		<Square class="size-3.5 fill-current" aria-hidden="true" />
+	{/if}
+{/snippet}
+
+<!-- A 40px circle inside the 48px target. -->
+{#snippet round(b: {
+	label: string;
+	disabled?: boolean;
+	onclick: () => void;
+	icon: Snippet;
+	tone?: Tone;
+})}
+	<button
+		type="button"
+		aria-label={b.label}
+		disabled={b.disabled}
+		onclick={b.onclick}
+		class="group/round grid size-12 shrink-0 place-items-center rounded-full outline-none select-none disabled:pointer-events-none"
+	>
+		<span class={roundFace(b.tone ?? 'muted')}>{@render b.icon()}</span>
+	</button>
+{/snippet}
 
 <form class="mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pt-2.5 pb-2.5" onsubmit={submit}>
 	{#if failed.length}
@@ -104,26 +160,7 @@
 			{/each}
 		</ul>
 	{/if}
-	{#if running && stop}
-		<div class="flex items-center gap-3">
-			<Button
-				variant="outline"
-				class="shrink-0 gap-1.5 rounded-full border-foreground/30 px-4"
-				disabled={stopping}
-				onclick={onstop}
-			>
-				{#if stopping}<LoaderCircle
-						class="animate-spin motion-reduce:animate-none"
-						aria-hidden="true"
-					/>Stopping…{:else}<Square class="size-3.5 fill-current" aria-hidden="true" />Stop{/if}
-			</Button>
-			<p id="{uid}-steer" class="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
-				{stopping
-					? 'Your next message starts a new turn.'
-					: 'The agent is working. A message now steers this run.'}
-			</p>
-		</div>
-	{/if}
+	{#if hint}<p id="{uid}-steer" class="sr-only" aria-live="polite">{hint}</p>{/if}
 	{#if quotaFull}
 		<p class="flex items-start gap-2 rounded-lg bg-failed-soft px-3 py-2 text-sm text-failed">
 			<CircleAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -197,7 +234,7 @@
 			aria-describedby={blocked ? `${uid}-blocked` : undefined}
 			class="max-h-40 min-h-12 resize-none rounded-none border-0 bg-transparent px-4 pt-3 pb-1 text-base shadow-none focus-visible:ring-0 dark:bg-transparent"
 		/>
-		<div class="flex items-center px-1 pb-1">
+		<div class="flex items-center gap-0.5 px-1 pb-1">
 			{#if attach}
 				<input
 					bind:this={picker}
@@ -211,27 +248,53 @@
 						input.value = '';
 					}}
 				/>
-				<Button
-					variant="ghost"
-					class="size-12 shrink-0 rounded-full px-0"
-					aria-label="Attach photos"
-					disabled={quotaFull}
-					onclick={() => picker?.click()}><ImagePlus class="size-5" /></Button
-				>
+				{@render round({
+					label: 'Attach photos',
+					disabled: quotaFull,
+					onclick: () => picker?.click(),
+					icon: attachIcon
+				})}
 			{/if}
-			<!-- A 36px circle inside the 48px target. -->
-			<button
-				type="submit"
-				aria-label="Send message"
-				aria-describedby={running && stop ? `${uid}-steer` : undefined}
-				class="group/send ml-auto grid size-12 shrink-0 place-items-center rounded-full outline-none select-none disabled:pointer-events-none"
-				disabled={!canSend}
-			>
-				<span
-					class="grid size-9 place-items-center rounded-full bg-primary text-primary-foreground transition-colors group-hover/send:bg-primary/80 group-focus-visible/send:ring-3 group-focus-visible/send:ring-ring/50 group-active/send:translate-y-px group-disabled/send:opacity-50"
-					><ArrowUp class="size-4.5" aria-hidden="true" /></span
+			{#if model && onmodel}
+				<!-- A 36px pill inside the 48px target, like the round buttons. -->
+				<button
+					type="button"
+					aria-haspopup="dialog"
+					aria-label="Model: {model}. Change model"
+					onclick={onmodel}
+					class="group/chip flex h-12 min-w-0 items-center outline-none"
 				>
-			</button>
+					<span
+						class="flex h-9 min-w-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm text-foreground transition-colors group-hover/chip:bg-muted/70 group-focus-visible/chip:ring-3 group-focus-visible/chip:ring-ring/50"
+					>
+						<span class="truncate">{model}</span>
+						<ChevronDown class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+					</span>
+				</button>
+			{/if}
+			<div class="ml-auto flex shrink-0 items-center gap-0.5">
+				{@render mic?.()}
+				{#if showStop}
+					{@render round({
+						label: stopping ? 'Stopping…' : 'Stop',
+						disabled: stopping,
+						onclick: () => onstop?.(),
+						icon: stopIcon,
+						tone: 'strong'
+					})}
+				{:else}
+					<button
+						type="submit"
+						aria-label="Send message"
+						aria-describedby={hint ? `${uid}-steer` : undefined}
+						class="group/round grid size-12 shrink-0 place-items-center rounded-full outline-none select-none disabled:pointer-events-none"
+						disabled={!canSend}
+					>
+						<span class={roundFace('primary')}><ArrowUp class="size-4.5" aria-hidden="true" /></span
+						>
+					</button>
+				{/if}
+			</div>
 		</div>
 	</div>
 	{#if blocked}

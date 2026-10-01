@@ -57,7 +57,7 @@
 	}
 </script>
 
-<svelte:head><title>{detail?.summary.title ?? 'Thread'} · Agent</title></svelte:head>
+<svelte:head><title>{detail?.summary.title ?? 'Thread'} · sushii</title></svelte:head>
 
 <ThreadScreen
 	{remote}
@@ -87,7 +87,6 @@
 				toast: store.toast,
 				announce: store.announce,
 				viewer,
-				settingsHref: resolve('/settings'),
 				onopensheet: (s) => sheets[s].openWith(),
 				onclosesheet: closeSheet,
 				onopenfile: (f) => {

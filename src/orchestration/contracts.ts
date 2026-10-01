@@ -35,6 +35,9 @@ export const RPC_METHODS = {
   historySearch: "history/search",
   // Workspace → bot notification: a run started or ended. Ephemeral; an older bot drops it.
   runsChanged: "runs/changed",
+  // Bot → workspace requests: the owner's model choice, as `!model` reads and sets it.
+  modelsGet: "models/get",
+  modelsSet: "models/set",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -99,6 +102,16 @@ export type ChatUsage = z.infer<typeof chatUsage>;
 
 // Bound on workspace-chosen ids and names, so one can't bloat a log line or a Discord component.
 export const ID_MAX = 256;
+
+export const MODELS_MAX = 20;
+export const modelsGetParams = z.object({ principalId: z.string() });
+export const modelsSetParams = z.object({ principalId: z.string(), alias: z.string().min(1).max(ID_MAX) });
+export const modelsResult = z.object({
+  /** The chosen alias; null while on the configured default that no list entry matches. */
+  current: z.string().max(ID_MAX).nullable(),
+  models: z.array(z.object({ alias: z.string().min(1).max(ID_MAX), backend: z.enum(["chatgpt", "openrouter"]), id: z.string().max(ID_MAX) })).max(MODELS_MAX),
+});
+export type ModelsResult = z.infer<typeof modelsResult>;
 
 // Outbound files. Deliveries travel as one WebSocket frame (Bun's default cap is 16 MiB), and base64 costs
 // 4/3 of the raw bytes, so the per-delivery total stays well under that.

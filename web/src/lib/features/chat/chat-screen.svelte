@@ -5,10 +5,10 @@
 	import Download from '@lucide/svelte/icons/download';
 	import EllipsisVertical from '@lucide/svelte/icons/ellipsis-vertical';
 	import FoldVertical from '@lucide/svelte/icons/fold-vertical';
+	import Check from '@lucide/svelte/icons/check';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
 	import ServerOff from '@lucide/svelte/icons/server-off';
-	import Settings from '@lucide/svelte/icons/settings';
 	import Square from '@lucide/svelte/icons/square';
 	import Screen from '$lib/ui/screen/screen.svelte';
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
@@ -22,7 +22,7 @@
 	import Conversation from './components/conversation.svelte';
 	import { messagePlainText } from './render/plain-text';
 	import { formatCost, formatTokens, shortModel, usageLine } from './render/usage';
-	import type { ChatUsage } from '$lib/core/realtime/events';
+	import type { ChatUsage, ModelsResponse } from '$lib/core/realtime/events';
 	import type { ChatMessage, ChatSheet, ChatTray, FileRef, PhotoDraft } from './types';
 
 	let {
@@ -43,6 +43,10 @@
 		photos = [],
 		quotaFull = false,
 		usage = null,
+		models = null,
+		modelPicking = null,
+		modelError = null,
+		onpickmodel,
 		connection,
 		commandsOffline = false,
 		toast,
@@ -55,7 +59,6 @@
 		newMessages: initialNewMessages = false,
 		openTurn,
 		openStep,
-		settingsHref = '/settings',
 		back,
 		onopensheet,
 		onclosesheet,
@@ -103,6 +106,12 @@
 		quotaFull?: boolean;
 		/** The newest reply's usage, shown under the composer. */
 		usage?: ChatUsage | null;
+		/** The model choice; null hides the chip, as with an agent too old to say. */
+		models?: ModelsResponse | null;
+		/** The alias being switched to. */
+		modelPicking?: string | null;
+		modelError?: string | null;
+		onpickmodel?: (alias: string) => void;
 		connection?: ConnectionState | 'forbidden';
 		commandsOffline?: boolean;
 		toast?: string | null;
@@ -117,7 +126,6 @@
 		newMessages?: boolean;
 		openTurn?: string;
 		openStep?: string;
-		settingsHref?: string;
 		/** The way back to Home on a phone, where Chat hides the tab bar. */
 		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void; desktop?: boolean };
 		onopensheet?: (sheet: ChatSheet, messageId?: string) => void;
@@ -369,7 +377,8 @@
 		commands: 'Chat commands',
 		new: 'Start a new chat',
 		viewer: 'Image',
-		usage: 'Last reply usage'
+		usage: 'Last reply usage',
+		model: 'Model'
 	};
 </script>
 
@@ -436,6 +445,47 @@
 				<Button variant="ghost" class="flex-1" onclick={closeSheet}>Close</Button>
 			</div>
 		</div>
+	{:else if shownSheet === 'model' && models}
+		<div class="flex flex-col gap-3 px-3 pt-1 pb-3">
+			<div class="flex flex-col gap-1 px-2 pt-1">
+				<h2 class="text-lg font-semibold">Model</h2>
+				<p class="text-sm text-muted-foreground">A switch applies from the next reply.</p>
+			</div>
+			{#if modelError}
+				<p role="alert" class="mx-2 rounded-lg bg-failed-soft px-3 py-2 text-sm text-failed">
+					{modelError}
+				</p>
+			{/if}
+			<ul class="flex flex-col">
+				{#each models.models as m (m.alias)}
+					{@const current = m.alias === models.current}
+					<li>
+						<button
+							type="button"
+							aria-pressed={current}
+							disabled={!!modelPicking}
+							onclick={() => (current ? closeSheet() : onpickmodel?.(m.alias))}
+							class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-muted disabled:pointer-events-none"
+						>
+							<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+								<span class="text-body font-medium">{m.alias}</span>
+								<span class="truncate text-sm text-muted-foreground"
+									>{m.backend === 'chatgpt' ? 'ChatGPT' : 'OpenRouter'} · {m.id}</span
+								>
+							</span>
+							{#if modelPicking === m.alias}
+								<LoaderCircle
+									class="size-5 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+									aria-label="Switching"
+								/>
+							{:else if current}
+								<Check class="size-5 shrink-0" aria-label="Current" />
+							{/if}
+						</button>
+					</li>
+				{/each}
+			</ul>
+		</div>
 	{:else if shownSheet === 'usage' && usage}
 		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
 			<div class="flex flex-col gap-1">
@@ -471,13 +521,6 @@
 			onclick={() => onopensheet?.('commands')}><EllipsisVertical class="size-5" /></Button
 		>
 	{/if}
-	<a
-		href={settingsHref}
-		aria-label="Settings"
-		class="grid size-12 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-	>
-		<Settings class="size-5" aria-hidden="true" />
-	</a>
 {/snippet}
 
 {#snippet banner()}
@@ -529,7 +572,7 @@
 			{/if}
 			<Composer
 				bind:value={() => draft, (v) => ondraft?.(v)}
-				{placeholder}
+				placeholder={placeholder ?? (running && !stopping ? 'Steer the agent…' : undefined)}
 				{running}
 				{stopping}
 				stop={!shownTray || !!shownTray.collapsed}
@@ -540,6 +583,8 @@
 				onattach={(files) => onattach?.(files)}
 				onremovephoto={(id) => onremovephoto?.(id)}
 				onretryphoto={(id) => onretryphoto?.(id)}
+				model={models ? (models.current ?? 'Default') : null}
+				onmodel={() => onopensheet?.('model')}
 				status={usageStatus}
 			/>
 		</div>
@@ -561,21 +606,13 @@
 		<div class="mx-auto flex h-full max-w-2xl flex-col gap-6 px-4 py-6">
 			<InstallHint {canInstall} oninstall={install} />
 			<div class="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-				<span
-					class="grid size-14 place-items-center rounded-2xl bg-foreground text-background"
-					aria-hidden="true"
-				>
-					<svg viewBox="0 0 16 16" class="size-7"
-						><circle
-							cx="8"
-							cy="8"
-							r="5"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2"
-						/><circle cx="8" cy="8" r="1.6" fill="currentColor" /></svg
-					>
-				</span>
+				<img
+					src="/brand/mascot.png"
+					alt=""
+					width="160"
+					height="100"
+					class="h-25 w-40 shrink-0 object-contain"
+				/>
 				<p class="flex max-w-72 flex-col gap-1">
 					<span class="text-lg font-semibold text-balance">Say hi to your agent.</span>
 					<span class="text-sm text-muted-foreground"

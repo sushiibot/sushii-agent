@@ -550,6 +550,16 @@ export interface HomeOpenedBody {
 	id: string;
 }
 
+/**
+ * GET /api/models: the owner's model choice. POST /api/models {alias} switches it from the next turn and
+ * answers the same shape. 501/503/504/502 as WorkspaceUnavailableResponse.
+ */
+export interface ModelsResponse {
+	/** The chosen alias; null while on a configured default no list entry matches. */
+	current: string | null;
+	models: { alias: string; backend: 'chatgpt' | 'openrouter'; id: string }[];
+}
+
 /** GET /api/runs?before=&limit=&kind=&status= (`kind` and `status` are comma lists). */
 export interface RunsPage {
 	runs: RunSummary[];

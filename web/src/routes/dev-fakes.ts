@@ -7,7 +7,7 @@ import { configureBriefing } from '$lib/features/briefing';
 import { createFixtureBriefingApi } from '$lib/features/briefing/fake';
 import { configureBrowser } from '$lib/features/browser';
 import { createFixtureBrowserApi } from '$lib/features/browser/fake';
-import { configureChat } from '$lib/features/chat';
+import { configureChat, configureModels, createFixtureModelsApi } from '$lib/features/chat';
 import { createFakeBackend } from '$lib/features/chat/fake';
 import { configureConnectors } from '$lib/features/connectors';
 import { createFixtureConnectorsApi } from '$lib/features/connectors/fake';
@@ -30,6 +30,7 @@ export function installFakes() {
 	const fake = createFakeBackend();
 	hub.useTransport(fake.transport);
 	configureChat({ api: fake.api });
+	configureModels(createFixtureModelsApi());
 	configureHome({ api: fixtureHomeApi });
 	configureRuns(fixtureRunsApi);
 	configureHistory(fixtureHistoryApi);

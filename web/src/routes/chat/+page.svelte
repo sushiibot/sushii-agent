@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
@@ -11,6 +11,7 @@
 		ChatScreen,
 		ClearNotifications,
 		chatStore,
+		modelsStore,
 		type ChatSheet,
 		type ChatTray,
 		type ChatMessage,
@@ -33,8 +34,10 @@
 		commands: routedSheet('commands'),
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
-		usage: routedSheet('usage')
+		usage: routedSheet('usage'),
+		model: routedSheet('model')
 	};
+	const models = modelsStore();
 	const sheet = $derived((Object.keys(sheets) as ChatSheet[]).find((s) => sheets[s].open));
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 
@@ -60,6 +63,11 @@
 		if (store.approvals.length) return { items: store.approvals, state: store.trayPhase };
 		if (store.timedOut) return { items: [store.timedOut], armed: false, state: 'timeout' };
 		return undefined;
+	});
+
+	onMount(() => {
+		void models.remote.ensure();
+		return models.remote.watch();
 	});
 
 	$effect(() => {
@@ -115,7 +123,7 @@
 	}
 </script>
 
-<svelte:head><title>Chat · Agent</title></svelte:head>
+<svelte:head><title>Chat · sushii</title></svelte:head>
 
 <ChatScreen
 	messages={threads ? withReports(s.messages, threads.reports) : s.messages}
@@ -130,6 +138,10 @@
 	photos={s.photos}
 	quotaFull={s.quotaFull}
 	usage={s.usage}
+	models={models.remote.data ?? null}
+	modelPicking={models.picking}
+	modelError={models.error}
+	onpickmodel={(alias) => void models.pick(alias).then((ok) => ok && closeSheet())}
 	{connection}
 	commandsOffline={s.workspace === 'offline'}
 	toast={s.toast}
@@ -139,7 +151,6 @@
 	{focusAsk}
 	{sheet}
 	{viewer}
-	settingsHref={resolve('/settings')}
 	subtitle={threadsOn ? mainSubtitle : undefined}
 	onbranch={threadsOn ? openBranch : undefined}
 	onopensheet={openSheet}

@@ -62,6 +62,13 @@ class FakeLink implements ReadRouteLink {
     if (this.dayResult) return this.go("history/day", q, this.dayResult);
     return this.go("history/day", q, { found: true as const, date: q.date, sessions: [{ heading: "## x", markdown: "<b>y</b>" }], runs: [run()], truncated: false });
   }
+  models = { current: "sol", models: [{ alias: "sol", backend: "chatgpt" as const, id: "gpt-6.1-sol" }, { alias: "luna", backend: "chatgpt" as const, id: "gpt-6-luna" }] };
+  modelsGet() {
+    return this.go("models/get", {}, this.models);
+  }
+  modelsSet(alias: string) {
+    return this.go("models/set", { alias }, { ...this.models, current: alias });
+  }
   async historySearch(q: object) {
     this.calls.push({ method: "history/search", q });
     if (this.searchGate) await this.searchGate;
@@ -83,8 +90,30 @@ function setup(opts: { features?: WebFeature[]; workspaceEnabled?: boolean; now?
     const res = await handler(new Request(`http://apps.example.ts.net${path}`, { method, headers: { "Tailscale-User-Login": OWNER, ...headers } }), peer);
     return { status: res.status, body: res.headers.get("Content-Type")?.includes("json") ? ((await res.json()) as unknown) : await res.text() };
   };
-  return { db, log, link, get, at: (ms: number) => (t = ms) };
+  const post = async (path: string, body: unknown, type = "application/json") => {
+    const res = await handler(
+      new Request(`http://apps.example.ts.net${path}`, { method: "POST", body: JSON.stringify(body), headers: { "Tailscale-User-Login": OWNER, "Sec-Fetch-Site": "same-origin", "Content-Type": type } }),
+      GW,
+    );
+    return { status: res.status, body: res.headers.get("Content-Type")?.includes("json") ? ((await res.json()) as unknown) : await res.text() };
+  };
+  return { db, log, link, get, post, at: (ms: number) => (t = ms) };
 }
+
+describe("model routes", () => {
+  test("GET reads the choice and POST switches it, whatever slices are on; bad bodies never reach the workspace", async () => {
+    const h = setup({ features: [] });
+    expect(await h.get("/api/models")).toEqual({ status: 200, body: h.link.models });
+    expect(await h.post("/api/models", { alias: "luna" })).toEqual({ status: 200, body: { ...h.link.models, current: "luna" } });
+    expect((await h.post("/api/models", { alias: "luna", extra: 1 })).status).toBe(400);
+    expect((await h.post("/api/models", { alias: "" })).status).toBe(400);
+    expect((await h.post("/api/models", { alias: "luna" }, "text/plain")).status).toBe(415);
+    expect((await h.get("/api/models", undefined, "DELETE")).status).toBe(405);
+    expect(h.link.calls.map((c) => c.method)).toEqual(["models/get", "models/set"]);
+    h.link.connected = false;
+    expect(await h.get("/api/models")).toEqual({ status: 503, body: { offline: true } });
+  });
+});
 
 const PATHS = ["/api/runs", `/api/runs/${RUN}`, "/api/history/days", "/api/history/days/2026-09-30", "/api/search?q=hello"];
 
