@@ -2,6 +2,7 @@ import type { ChatMessage, FileRef, MessagePart, Turn } from './types';
 import {
 	fileUrl,
 	isHttpsUrl,
+	JOB_NAME_RE,
 	UPLOAD_ID_RE,
 	type ToolLine,
 	type UploadRef
@@ -149,6 +150,26 @@ export function toMessages(
 					parts: [{ type: 'data-line', data: { text: item.text } }]
 				});
 				break;
+			case 'alert': {
+				const a = item.alert;
+				const open = a.kind !== 'recovered' && JOB_NAME_RE.test(a.job);
+				out.push({
+					id: item.id,
+					role: 'assistant',
+					parts: [
+						{
+							type: 'data-alert',
+							data: {
+								job: a.job,
+								kind: a.kind,
+								...(a.error && a.kind !== 'recovered' ? { error: a.error } : {}),
+								...(open ? { href: `/?item=${encodeURIComponent(`job:${a.job}`)}` } : {})
+							}
+						}
+					]
+				});
+				break;
+			}
 			case 'auth':
 				out.push({
 					id: item.id,

@@ -643,3 +643,65 @@ test('a stale history cursor keeps the asks the first frame seeded', () => {
 	run(s, [{ type: 'ask', seq: 6, data: { key: 'o-k1', askId: 'k1', question: 'q', choices: [] } }]);
 	expect(s.items.filter((i) => i.kind === 'ask')).toHaveLength(1);
 });
+
+test('a job alert shows once as a system line, live or from history, and alert_cleared adds nothing', () => {
+	const alert = {
+		source: 'job' as const,
+		job: 'nightly-sync',
+		kind: 'failed' as const,
+		trigger: 'daily' as const,
+		startedAt: '2026-09-30T02:00:00.000Z',
+		error: 'exit 1: <b>boom</b>',
+		schedule: 'daily 02:00'
+	};
+	const s = createState();
+	run(s, [
+		{ type: 'alert', seq: 1, data: { key: 'o1', alert, text: 'nightly-sync failed' } },
+		{ type: 'alert_cleared', seq: 2, data: { id: 'job:nightly-sync', reason: 'dismissed' } }
+	]);
+	mergeHistory(s, [
+		{ type: 'alert', id: '7', at: 'x', outboxId: 'o1', alert, text: 'nightly-sync failed' },
+		{
+			type: 'alert',
+			id: '9',
+			at: 'y',
+			outboxId: 'o2',
+			alert: { ...alert, kind: 'recovered', error: undefined },
+			text: 'nightly-sync recovered'
+		}
+	]);
+	run(s, [
+		{
+			type: 'alert',
+			seq: 3,
+			data: { key: 'o2', alert: { ...alert, kind: 'recovered' }, text: 'nightly-sync recovered' }
+		}
+	]);
+	const lines = toMessages(s.items).flatMap((m) =>
+		m.parts.flatMap((p) => (p.type === 'data-alert' ? [p.data] : []))
+	);
+	expect(lines).toEqual([
+		{ job: 'nightly-sync', kind: 'recovered' },
+		{
+			job: 'nightly-sync',
+			kind: 'failed',
+			error: 'exit 1: <b>boom</b>',
+			href: '/?item=job%3Anightly-sync'
+		}
+	]);
+});
+
+test("an alert's Details link is left out unless the job name is a plain job name", () => {
+	const s = createState();
+	const alert = {
+		source: 'job' as const,
+		job: 'x/../../f',
+		kind: 'stuck' as const,
+		trigger: 'manual' as const,
+		startedAt: '2026-09-30T02:00:00.000Z',
+		schedule: 'manual'
+	};
+	run(s, [{ type: 'alert', seq: 1, data: { key: 'o9', alert, text: 't' } }]);
+	const [line] = toMessages(s.items).flatMap((m) => m.parts);
+	expect(line).toEqual({ type: 'data-alert', data: { job: 'x/../../f', kind: 'stuck' } });
+});

@@ -9,6 +9,7 @@
 	import Clock from '@lucide/svelte/icons/clock';
 	import Check from '@lucide/svelte/icons/check';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
+	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -243,6 +244,31 @@
 					{:else if part.type === 'data-line'}
 						<p class="text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-muted-foreground">
 							{part.data.text}
+						</p>
+					{:else if part.type === 'data-alert'}
+						{@const a = part.data}
+						<p
+							class="flex items-start gap-2 text-sm [overflow-wrap:anywhere] text-muted-foreground"
+						>
+							<CalendarClock
+								class={cn('mt-0.5 size-4 shrink-0', a.kind !== 'recovered' && 'text-failed')}
+								aria-hidden="true"
+							/>
+							<span class="min-w-0">
+								<span class="font-medium text-foreground"
+									>Scheduled job {a.job}
+									{a.kind === 'failed'
+										? 'failed'
+										: a.kind === 'stuck'
+											? 'is stuck'
+											: 'is working again'}</span
+								>{#if a.error}: {a.error}{/if}
+								{#if a.href}
+									<a href={a.href} class="font-medium text-foreground underline underline-offset-4"
+										>Details</a
+									>
+								{/if}
+							</span>
 						</p>
 					{:else if part.type === 'data-notice'}
 						<a

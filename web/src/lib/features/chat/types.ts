@@ -24,6 +24,7 @@ export type MessagePart =
 	| { type: 'data-divider'; data: { kind: 'new' | 'rotated' | 'compacted'; summary?: string } }
 	| { type: 'data-history-gap' }
 	| { type: 'data-line'; data: { text: string } }
+	| { type: 'data-alert'; data: AlertLine }
 	| {
 			type: `tool-${string}`;
 			toolCallId: string;
@@ -32,6 +33,15 @@ export type MessagePart =
 			output?: Record<string, string>;
 			approval?: { id: string; approved?: boolean };
 	  };
+
+/** A scheduled job's alert as a system line. Agent-controlled text: render it as plain text. */
+export interface AlertLine {
+	job: string;
+	kind: 'failed' | 'stuck' | 'recovered';
+	error?: string;
+	/** Home's item for an open failure; only for a job name that passed JOB_NAME_RE. */
+	href?: string;
+}
 
 export interface ChatMessage {
 	id: string;

@@ -100,3 +100,82 @@ test('a store created after the hub said hello still shows the approvals waiting
 	expect(store.approvals.map((a) => a.nonce)).toEqual(['n1']);
 	store.destroy();
 });
+
+/** A stream that greets at head 5, then sends a job alert at seq 6 when told to. */
+function alertStream() {
+	let push: (ev: ChatEnvelope) => void = () => {};
+	const transport: ChatTransport = {
+		connect(_after, on, onState) {
+			push = on;
+			setTimeout(() => {
+				onState('open');
+				on({
+					type: 'hello',
+					data: {
+						headSeq: 5,
+						workspace: 'online',
+						openTurns: [],
+						pending: { approvals: [], asks: [] }
+					}
+				});
+			}, 0);
+			return () => {};
+		}
+	};
+	const alert = () =>
+		push({
+			type: 'alert',
+			seq: 6,
+			data: {
+				key: 'o6',
+				text: 'nightly-sync failed',
+				alert: {
+					source: 'job',
+					job: 'nightly-sync',
+					kind: 'failed',
+					trigger: 'daily',
+					startedAt: '2026-09-30T02:00:00.000Z',
+					schedule: 'daily 02:00'
+				}
+			}
+		});
+	return { transport, alert };
+}
+
+async function alertStore(viewing: boolean) {
+	const { transport, alert } = alertStream();
+	const seen: number[] = [];
+	const api = {
+		history: async () => ({ ok: true as const, page: { items: [], before: null } }),
+		seen: async (seq: number) => {
+			seen.push(seq);
+		}
+	} as unknown as ChatApi;
+	const store = new ChatStore('main', {
+		hub: createHub({ transport }),
+		api,
+		outbox: memory(),
+		drafts: memory()
+	});
+	await store.start();
+	store.setViewing(viewing);
+	alert();
+	await Bun.sleep(1300);
+	return { store, seen };
+}
+
+// A seen receipt suppresses the alert's push, so it may only cover an alert the chat drew on screen.
+test('an alert that arrives while the chat is on screen is drawn before it counts as seen', async () => {
+	const { store, seen } = await alertStore(true);
+	expect(store.items.filter((i) => i.kind === 'alert')).toHaveLength(1);
+	expect(store.messages.some((m) => m.parts.some((p) => p.type === 'data-alert'))).toBe(true);
+	expect(seen).toEqual([6]);
+	store.destroy();
+});
+
+test('an alert that arrives while the chat is off screen is never reported seen', async () => {
+	const { store, seen } = await alertStore(false);
+	expect(store.items.filter((i) => i.kind === 'alert')).toHaveLength(1);
+	expect(seen).toEqual([]);
+	store.destroy();
+});
