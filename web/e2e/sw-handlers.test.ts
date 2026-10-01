@@ -22,7 +22,7 @@ test.describe('push', () => {
 	test('shows the payload fields', () => {
 		expect(
 			notificationFor(
-				message('{"title":"Run failed","body":"b","url":"/settings?x=1","tag":"r1"}'),
+				message('{"title":"Run failed","body":"b","url":"/home?item=job%3Anightly","tag":"r1"}'),
 				ORIGIN
 			)
 		).toEqual({
@@ -32,7 +32,7 @@ test.describe('push', () => {
 				tag: 'r1',
 				icon: '/icons/icon-192.png',
 				badge: '/icons/badge-96.png',
-				data: { url: '/settings?x=1' }
+				data: { url: '/home?item=job%3Anightly' }
 			}
 		});
 	});
@@ -84,13 +84,34 @@ test.describe('push', () => {
 });
 
 test.describe('safeTarget', () => {
+	const RUN = '01J9ZX3K8Q2W4E6R8T0Y2V4A6B';
+
 	test('keeps same-origin app routes with their query', () => {
-		expect(safeTarget('/?ask=a%201', ORIGIN)).toBe('/?ask=a%201');
-		expect(safeTarget('/?approve=n1', ORIGIN)).toBe('/?approve=n1');
-		expect(safeTarget(`${ORIGIN}/settings`, ORIGIN)).toBe('/settings');
+		for (const path of [
+			'/?ask=a%201',
+			'/?approve=n1',
+			'/settings',
+			'/settings#notifications',
+			'/chat',
+			'/more',
+			'/home',
+			'/home?item=job%3Anightly-sync',
+			`/home?item=run%3A${RUN}`,
+			'/home?item=approval%3An1',
+			'/home?item=auth',
+			'/runs',
+			`/runs/${RUN}`,
+			'/history',
+			'/history/2026-09-29',
+			'/history/search?q=invoice',
+			'/history/search'
+		]) {
+			expect(safeTarget(path, ORIGIN), path).toBe(path);
+			expect(safeTarget(`${ORIGIN}${path}`, ORIGIN), path).toBe(path);
+		}
 	});
 
-	test('sends anything else to Main', () => {
+	test('sends anything else to Home', () => {
 		for (const raw of [
 			'https://evil.example/',
 			'//evil.example/x',
@@ -100,12 +121,29 @@ test.describe('safeTarget', () => {
 			'/api/chat/stream',
 			'/f/abcdefghijklmnopqrstuv',
 			'/runs/1',
+			`/runs/${RUN}/x`,
+			`/runs/${RUN.toLowerCase()}`,
+			'/history/2026-02-30',
+			'/history/26-09-29',
+			'/history/search?q=' + 'x'.repeat(201),
+			'/?approve=a%2Fb',
+			'/?ask=a%0Ab',
+			'/?approve=n1&ask=a',
+			'/?next=/api/x',
+			'/settings?x=1',
+			'/home?item=job%3ANightly',
+			'/home?item=elsewhere',
+			'/chats',
 			'',
 			42,
 			null
 		]) {
 			expect(safeTarget(raw, ORIGIN), String(raw)).toBe('/');
 		}
+	});
+
+	test('drops a hash that is not a plain section name', () => {
+		expect(safeTarget('/settings#x%22y', ORIGIN)).toBe('/settings');
 	});
 });
 

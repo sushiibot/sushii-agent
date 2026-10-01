@@ -1,33 +1,36 @@
 import Activity from '@lucide/svelte/icons/activity';
-import BookMarked from '@lucide/svelte/icons/book-marked';
-import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 import Ellipsis from '@lucide/svelte/icons/ellipsis';
 import History from '@lucide/svelte/icons/history';
 import House from '@lucide/svelte/icons/house';
-import MessagesSquare from '@lucide/svelte/icons/messages-square';
-import Plug from '@lucide/svelte/icons/plug';
-import Sunrise from '@lucide/svelte/icons/sunrise';
+import MessageSquare from '@lucide/svelte/icons/message-square';
 import type { NavItem } from '$lib/ui/shell/types';
-
-/** The desktop sidebar, top to bottom. */
-export const nav: NavItem[] = [
-	{ id: 'home', href: '/', label: 'Home', icon: House },
-	{ id: 'chats', href: '/chats', label: 'Chats', icon: MessagesSquare },
-	{ id: 'brief', href: '/brief', label: 'Briefing', icon: Sunrise },
-	{ id: 'runs', href: '/runs', label: 'Runs', icon: Activity },
-	{ id: 'memory', href: '/memory', label: 'Memory & skills', icon: BookMarked },
-	{ id: 'schedules', href: '/schedules', label: 'Schedules', icon: CalendarClock },
-	{ id: 'connectors', href: '/connectors', label: 'Connectors', icon: Plug },
-	{ id: 'history', href: '/history', label: 'History', icon: History }
-];
 
 /** The phone tab bar, left to right. */
 export const tabs: NavItem[] = [
-	...nav.filter((n) => ['home', 'chats', 'brief'].includes(n.id)),
+	{ id: 'home', href: '/', label: 'Home', icon: House },
+	{ id: 'chat', href: '/chat', label: 'Chat', icon: MessageSquare },
 	{ id: 'more', href: '/more', label: 'More', icon: Ellipsis }
 ];
 
-/** The nav entry a route belongs to. */
-export function activeTab(routeId: string | null): string {
-	return routeId === '/' ? 'home' : 'more';
+/** The desktop sidebar, top to bottom: the tabs, with More's main entries under it. */
+export const nav: NavItem[] = [
+	...tabs,
+	{ id: 'runs', href: '/runs', label: 'Runs', icon: Activity, sub: true },
+	{ id: 'history', href: '/history', label: 'History', icon: History, sub: true }
+];
+
+/** The nav entry a route belongs to; the tab bar lights its tab, the sidebar its row. */
+export function activeTab(routeId: string | null): string | undefined {
+	if (!routeId) return undefined;
+	const path = routeId.replace(/\/\([^)]+\)/g, '') || '/';
+	if (path === '/') return 'home';
+	if (path === '/chat') return 'chat';
+	if (path.startsWith('/runs')) return 'runs';
+	if (path.startsWith('/history')) return 'history';
+	return 'more';
+}
+
+/** Routes in the `(tabs)` group show the tab bar; Chat and detail screens hide it. */
+export function showsTabBar(routeId: string | null): boolean {
+	return !!routeId?.startsWith('/(tabs)');
 }

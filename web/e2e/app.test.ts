@@ -212,7 +212,7 @@ test('the app resends an existing subscription on every start, not only on setti
 	await context.grantPermissions(['notifications']);
 	const { subscribes } = await mockApi(context);
 	await stubPush(page);
-	await page.goto('/');
+	await page.goto('/chat');
 	await page.evaluate(() => navigator.serviceWorker.ready);
 	await seedSubscription(page, KEY_BYTES);
 	const before = subscribes().length;
@@ -330,7 +330,7 @@ test('a failed account load says so and offers a retry', async ({ page, context 
 
 test('going offline shows the banner', async ({ page, context }) => {
 	await mockApi(context);
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await context.setOffline(true);
 	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
@@ -340,7 +340,7 @@ test('going offline shows the banner', async ({ page, context }) => {
 
 test('the reflow check catches content wider than the screen', async ({ page, context }) => {
 	await mockApi(context);
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.setViewportSize({ width: 320, height: 800 });
 	expect(await horizontalOverflow(page)).toEqual([]);
@@ -363,7 +363,7 @@ test('the reflow check catches content wider than the screen', async ({ page, co
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {
-	for (const path of ['/', '/settings']) {
+	for (const path of ['/chat', '/settings']) {
 		test(`${path} passes axe, 48px targets and reflow in ${colorScheme}`, async ({
 			page,
 			context
@@ -548,7 +548,10 @@ test('a push honours its flags and never keeps a cross-origin url', async ({ pag
 		]);
 });
 
-test('opening Main closes the chat notification and leaves others', async ({ page, context }) => {
+test('opening the chat closes the chat notification and leaves others', async ({
+	page,
+	context
+}) => {
 	await context.grantPermissions(['notifications']);
 	await mockApi(context);
 	await page.goto('/settings');
@@ -557,7 +560,7 @@ test('opening Main closes the chat notification and leaves others', async ({ pag
 	await push({ title: 'sushii-agent', body: 'done', url: '/', tag: 'chat' });
 	await push({ title: 'Other', body: 'x', url: '/', tag: 'other' });
 	await expect.poll(async () => (await shownNotifications(page)).length).toBe(2);
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect
 		.poll(async () => (await shownNotifications(page)).map((n) => n.tag))
 		.toEqual(['other']);
@@ -566,11 +569,11 @@ test('opening Main closes the chat notification and leaves others', async ({ pag
 test('the settings back chevron returns without stacking history', async ({ page, context }) => {
 	await mockApi(context);
 	await stubPush(page);
-	await page.goto('/');
+	await page.goto('/chat');
 	await page.getByRole('link', { name: 'Settings' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
-	await page.getByRole('link', { name: 'Back to Main' }).click();
-	await expect(page).toHaveURL(/\/$/);
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.goBack();
 	await expect(page).not.toHaveURL(/\/settings$/);
@@ -582,7 +585,10 @@ test('opening settings directly throws nothing', async ({ page, context }) => {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
 	await page.goto('/settings');
-	await expect(page.getByRole('link', { name: 'Back to Main' })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Back', exact: true })).toHaveAttribute(
+		'href',
+		'/more'
+	);
 	expect(errors).toEqual([]);
 });
 
@@ -592,7 +598,7 @@ test('the app runs under enforced Trusted Types with only its own policies', asy
 }) => {
 	await mockApi(context);
 	await stubPush(page);
-	const res = await page.goto('/');
+	const res = await page.goto('/chat');
 	expect(res?.headers()['content-security-policy']).toContain("require-trusted-types-for 'script'");
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.evaluate(() => navigator.serviceWorker.ready);

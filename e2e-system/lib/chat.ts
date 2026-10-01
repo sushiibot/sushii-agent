@@ -8,7 +8,7 @@ export const textbox = (page: Page) => page.getByRole("textbox", { name: "Messag
 export const bubble = (page: Page, text: string) => page.locator("[data-message-id]").filter({ hasText: text });
 
 export async function openChat(page: Page) {
-  const res = await page.goto("/");
+  const res = await page.goto("/chat");
   await expect(textbox(page)).toBeVisible();
   return res;
 }

@@ -2,6 +2,7 @@
 	import { tick, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import { backTo } from '$lib/core/nav/back';
 	import { routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
@@ -16,6 +17,7 @@
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 
 	const store = chatStore();
+	const goBack = backTo(resolve('/'));
 	const s = store;
 	let viewer = $state<FileRef | undefined>();
 	let now = $state(Date.now());
@@ -86,7 +88,7 @@
 	}
 </script>
 
-<svelte:head><title>Agent</title></svelte:head>
+<svelte:head><title>Chat · Agent</title></svelte:head>
 
 <ChatScreen
 	messages={s.messages}
@@ -111,6 +113,7 @@
 	{sheet}
 	{viewer}
 	settingsHref={resolve('/settings')}
+	back={{ href: resolve('/'), label: 'Back to Home', onclick: goBack }}
 	onopensheet={openSheet}
 	onclosesheet={closeSheet}
 	onopenfile={(f) => {

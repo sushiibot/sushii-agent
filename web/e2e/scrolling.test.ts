@@ -36,7 +36,7 @@ async function open(page: Page) {
 		}
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByText('History message 39')).toBeVisible();
 	return page.locator('main');
 }

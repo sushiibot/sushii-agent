@@ -26,8 +26,40 @@ export type NotificationSpec = {
 	};
 };
 
-/** App routes a notification may open; anything else, including /api/ and /f/, opens Main. */
-const ROUTES = ['/', '/settings'];
+const RUN_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const NONCE = /^[A-Za-z0-9_-]{1,128}$/;
+// Printable ASCII up to the bot's id cap.
+const ASK_ID = /^[\x20-\x7e]{1,256}$/;
+const HOME_ITEM =
+	/^(?:job:[a-z0-9-]{1,64}|run:[0-9A-HJKMNP-TV-Z]{26}|approval:[A-Za-z0-9_-]{1,128}|(?:ask|turn):[\x20-\x7e]{1,256}|auth)$/;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+type Route = {
+	path: (p: string) => boolean;
+	/** Allowed query keys and their check; a route takes at most one of them. */
+	query?: Record<string, (v: string) => boolean>;
+};
+const at = (exact: string) => (p: string) => p === exact;
+
+/** App routes a notification may open; anything else, including /api/ and /f/, opens Home. */
+const ROUTES: Route[] = [
+	{ path: at('/'), query: { approve: (v) => NONCE.test(v), ask: (v) => ASK_ID.test(v) } },
+	{ path: at('/home'), query: { item: (v) => HOME_ITEM.test(v) } },
+	{ path: at('/chat') },
+	{ path: at('/more') },
+	{ path: at('/settings') },
+	{ path: at('/runs') },
+	{ path: (p) => p.startsWith('/runs/') && RUN_ID.test(p.slice(6)) },
+	{ path: at('/history') },
+	{ path: (p) => p.startsWith('/history/') && realDate(p.slice(9)) },
+	{ path: at('/history/search'), query: { q: (v) => v.length <= 200 } }
+];
+
+function realDate(s: string): boolean {
+	if (!DATE.test(s)) return false;
+	const d = new Date(`${s}T00:00:00Z`);
+	return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(s);
+}
 
 /** The same-origin app path for a notification's url, or '/' for anything else. */
 export function safeTarget(raw: unknown, origin: string): string {
@@ -38,8 +70,18 @@ export function safeTarget(raw: unknown, origin: string): string {
 	} catch {
 		return '/';
 	}
-	if (url.origin !== origin || !ROUTES.includes(url.pathname)) return '/';
-	return url.pathname + url.search + url.hash;
+	if (url.origin !== origin) return '/';
+	const route = ROUTES.find((r) => r.path(url.pathname));
+	if (!route) return '/';
+	const keys = [...url.searchParams.keys()];
+	if (keys.length > 1) return '/';
+	for (const key of keys) {
+		const check = route.query?.[key];
+		const value = url.searchParams.get(key) ?? '';
+		if (!check?.(value)) return '/';
+	}
+	const hash = /^#[a-z-]{1,32}$/.test(url.hash) ? url.hash : '';
+	return url.pathname + url.search + hash;
 }
 
 export function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> {

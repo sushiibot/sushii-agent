@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import favicon from '$lib/assets/favicon.svg';
-	import { activeTab, nav, tabs } from '$lib/core/nav/tabs';
+	import { activeTab, nav, showsTabBar, tabs } from '$lib/core/nav/tabs';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { markBooted } from '$lib/core/pwa/boot-recovery';
 	import { hub } from '$lib/core/realtime/hub.svelte';
@@ -18,6 +18,8 @@
 		hub.useTransport(fake.transport);
 		configureChat({ api: fake.api });
 	}
+	// Before any route renders, so a cold deep link to any screen has live data.
+	hub.start();
 
 	onMount(() => {
 		markBooted();
@@ -28,5 +30,7 @@
 <svelte:head><link rel="icon" href={favicon} type="image/svg+xml" /></svelte:head>
 
 <div class="h-dvh">
-	<Shell {nav} {tabs} active={activeTab(page.route.id)} tabBar={false}>{@render children()}</Shell>
+	<Shell {nav} {tabs} active={activeTab(page.route.id)} tabBar={showsTabBar(page.route.id)}
+		>{@render children()}</Shell
+	>
 </div>

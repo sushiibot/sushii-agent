@@ -6,7 +6,7 @@
 	import { SettingsScreen, settingsStore } from '$lib/features/settings';
 
 	const settings = settingsStore();
-	const goBack = backTo(resolve('/'));
+	const goBack = backTo(resolve('/more'));
 
 	onMount(() => settings.open());
 </script>
@@ -14,7 +14,7 @@
 <svelte:head><title>Settings · Agent</title></svelte:head>
 
 <SettingsScreen
-	back={{ href: resolve('/'), label: 'Back to Main', onclick: goBack }}
+	back={{ href: resolve('/more'), label: 'Back', onclick: goBack }}
 	me={settings.me}
 	push={settings.push}
 	pushBusy={settings.pushBusy}

@@ -36,7 +36,7 @@ async function chatServer(context: BrowserContext, history: unknown[]) {
 }
 
 async function open(page: Page) {
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 }
 

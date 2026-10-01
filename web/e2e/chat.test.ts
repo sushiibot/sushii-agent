@@ -115,7 +115,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 }
 
 async function open(page: Page) {
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 }
 
@@ -572,7 +572,7 @@ test('seen goes out only while Main is on screen', async ({ page, context }) => 
 	await push(page, 'approval', approval('n1'), 2);
 	await page.waitForTimeout(1500);
 	expect(posts('/api/chat/seen').length).toBe(1);
-	await page.getByRole('link', { name: 'Back to Main' }).click();
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
 	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 2 });
 });
 
@@ -763,7 +763,7 @@ test('Escape and Close in the same frame close the sheet once and stay on the pa
 	});
 	await expect(dialog).toHaveCount(0);
 	await page.waitForTimeout(300);
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
@@ -788,7 +788,7 @@ test('the new-chat and image sheets each close on one back', async ({ page, cont
 	await expect(page.getByRole('dialog', { name: 'Start a new chat' })).toBeVisible();
 	await page.goBack();
 	await expect(page.getByRole('dialog')).toHaveCount(0);
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/chat$/);
 
 	await page.getByRole('button', { name: 'Open image chart.png' }).click();
 	await expect(page.getByRole('dialog', { name: 'Image' })).toBeVisible();
@@ -804,7 +804,7 @@ test('the commands sheet closes on back and leaves Main in place', async ({ page
 	await expect(page.getByRole('dialog', { name: 'Chat commands' })).toBeVisible();
 	await page.goBack();
 	await expect(page.getByRole('dialog')).toHaveCount(0);
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/chat$/);
 	await page.getByRole('button', { name: 'Chat commands' }).click();
 	await page.getByRole('button', { name: /New chat/ }).click();
 	await page.getByRole('button', { name: 'Start new chat' }).click();
@@ -820,7 +820,7 @@ test('a forbidden stream says the device is not the owner', async ({ page, conte
 	await context.addInitScript(() => {
 		(window as unknown as { __sse: { status: number } }).__sse.status = 403;
 	});
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(
 		page.getByText("This device isn't signed in as the owner.", { exact: false })
 	).toBeVisible();

@@ -61,7 +61,7 @@
 	<div class="flex h-full flex-col @3xl:flex-row">
 		<nav
 			aria-label="Main"
-			class="hidden w-56 shrink-0 flex-col gap-0.5 border-r bg-sidebar p-3 @3xl:flex"
+			class="hidden w-52 shrink-0 flex-col gap-0.5 border-r bg-sidebar p-3 @3xl:flex"
 		>
 			<div class="mb-4 flex items-center gap-2 px-2 pt-1">
 				<span class="grid size-7 place-items-center rounded-md bg-foreground text-background">
@@ -81,13 +81,13 @@
 					<span class="size-1.5 rounded-full bg-review"></span>online
 				</span>
 			</div>
-			{#each nav as item, i (item.id)}
-				{#if i === 3}<span class="mx-2 my-2 border-t" aria-hidden="true"></span>{/if}
+			{#each nav as item (item.id)}
 				<a
 					href={item.href}
 					aria-current={active === item.id ? 'page' : undefined}
 					class={cn(
-						'flex h-9 items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground',
+						'flex h-12 items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground',
+						item.sub && 'pl-8',
 						active === item.id && 'bg-sidebar-accent font-medium text-foreground'
 					)}
 				>
@@ -103,13 +103,16 @@
 			{#if tabBar}
 				<nav
 					aria-label="Main"
-					class="grid shrink-0 grid-cols-4 border-t bg-background pb-(--safe-bottom) select-none [-webkit-touch-callout:none] @3xl:hidden kb:hidden"
+					class="grid shrink-0 border-t bg-background pb-(--safe-bottom) select-none [-webkit-touch-callout:none] @3xl:hidden kb:hidden"
+					style:grid-template-columns="repeat({tabs.length}, minmax(0, 1fr))"
 				>
 					{#each tabs as item (item.id)}
 						{@const current = active === item.id}
+						<!-- From any tab but the first, switching replaces the entry, so back always lands on Home. -->
 						<a
 							href={item.href}
 							aria-current={current ? 'page' : undefined}
+							data-sveltekit-replacestate={active && active !== tabs[0]?.id ? '' : undefined}
 							class={cn(
 								'relative flex h-14 flex-col items-center justify-center gap-1 text-tab text-muted-foreground',
 								current && 'font-semibold text-foreground'
