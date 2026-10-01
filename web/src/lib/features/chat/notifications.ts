@@ -10,7 +10,7 @@ export function tagsShownBy(
 	items: readonly ChatItem[],
 	approvals: readonly { nonce: string }[]
 ): Set<string> {
-	const tags = new Set([REPLY_TAG[conversation]]);
+	const tags = new Set([REPLY_TAG[conversation] ?? `chat:${conversation}`]);
 	for (const a of approvals) tags.add(`approval:${a.nonce}`);
 	for (const i of items) {
 		if (i.kind === 'approval') tags.add(`approval:${i.nonce}`);

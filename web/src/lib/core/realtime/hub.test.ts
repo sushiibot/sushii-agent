@@ -19,6 +19,17 @@ function setup() {
 	return { fake, hub, connects: () => connects };
 }
 
+const approval = (nonce: string) => ({
+	nonce,
+	view: { tool: 't', agentId: 'main', agentName: 'Main', fields: [] }
+});
+const hello = (approvals: ReturnType<typeof approval>[], turns: string[] = []) => ({
+	headSeq: 10,
+	workspace: 'online' as const,
+	openTurns: turns.map((turnId) => ({ turnId }) as never),
+	pending: { approvals: approvals.map((a, i) => ({ ...a, seq: i + 1, at: 'x' })), asks: [] }
+});
+
 const types = (batches: (readonly ChatEnvelope[])[]) => batches.map((b) => b.map((e) => e.type));
 
 describe('hub', () => {
@@ -63,19 +74,81 @@ describe('hub', () => {
 		expect(hub.workspace).toBe('offline');
 	});
 
-	test('approvals are global, so a conversation subscriber still gets them', async () => {
+	test('approvals reach only subscribers that opt in, hello.pending included', async () => {
 		const { fake, hub } = setup();
 		const main: (readonly ChatEnvelope[])[] = [];
-		hub.subscribe({ conversation: 'main' }, (b) => main.push(b));
+		const other: (readonly ChatEnvelope[])[] = [];
+		hub.subscribe({ conversation: 'main', globals: ['approval', 'approval_resolved'] }, (b) =>
+			main.push(b)
+		);
+		hub.subscribe({ conversation: 'main' }, (b) => other.push(b));
 		hub.start();
 		await tick();
-		const view = { tool: 't', agentId: 'main', agentName: 'Main', fields: [] };
-		fake.emit('approval', { nonce: 'n', view });
+		fake.emit('hello', hello([approval('p1')]), false);
+		fake.emit('approval', approval('n'));
 		fake.emit('approval_resolved', { nonce: 'n', decision: 'approve' });
+		fake.emit('reply', { key: 'r', text: 'ok', files: [] });
 		await tick();
-		expect(types(main).at(-1)).toEqual(['approval', 'approval_resolved']);
-		expect(conversationOf(main.at(-1)![0])).toBeNull();
+		expect(types(main).at(-1)).toEqual(['hello', 'approval', 'approval_resolved', 'reply']);
+		expect(types(other).at(-1)).toEqual(['hello', 'reply']);
+		const pending = (b: (readonly ChatEnvelope[])[]) =>
+			b.flat().findLast((e) => e.type === 'hello')!.data as { pending: { approvals: unknown[] } };
+		expect(pending(main).pending.approvals).toHaveLength(1);
+		expect(pending(other).pending.approvals).toEqual([]);
+		expect(conversationOf(main.at(-1)![1])).toBeNull();
 		expect(conversationOf({ type: 'reply', data: { key: 'r', text: '', files: [] } })).toBe('main');
+	});
+
+	test('a subscriber that joins after hello gets it replayed with what changed since', async () => {
+		const { fake, hub } = setup();
+		hub.start();
+		await tick();
+		fake.emit('hello', hello([approval('p1'), approval('p2')], ['t1']), false);
+		fake.emit('approval_resolved', { nonce: 'p1', decision: 'deny' });
+		fake.emit('approval', approval('n1'));
+		fake.emit('approval', approval('gone'));
+		fake.emit('approval_resolved', { nonce: 'gone', decision: 'approve' });
+		fake.emit('workspace', { state: 'offline' }, false);
+		fake.emit('workspace', { state: 'online' }, false);
+		fake.emit('reply', { key: 'r', text: 'missed', files: [] });
+		fake.emit('turn_final', { turnId: 't1', outcome: 'done', summary: null });
+		await tick();
+
+		const late: (readonly ChatEnvelope[])[] = [];
+		hub.subscribe({ conversation: 'main', globals: ['approval', 'approval_resolved'] }, (b) =>
+			late.push(b)
+		);
+		await Promise.resolve();
+		expect(types(late)).toEqual([
+			['hello', 'approval_resolved', 'approval', 'workspace', 'turn_final']
+		]);
+		expect(late[0][2].data).toMatchObject({ nonce: 'n1' });
+		expect(late[0][3].data).toEqual({ state: 'online' });
+
+		const plain: (readonly ChatEnvelope[])[] = [];
+		hub.subscribe({ conversation: 'main' }, (b) => plain.push(b));
+		await Promise.resolve();
+		expect(types(plain)).toEqual([['hello', 'workspace', 'turn_final']]);
+		expect((plain[0][0].data as { pending: { approvals: unknown[] } }).pending.approvals).toEqual(
+			[]
+		);
+	});
+
+	test('stop forgets the connection, so nothing stale replays or reports', async () => {
+		const { hub } = setup();
+		hub.start();
+		await tick();
+		hub.stop();
+		expect(hub.connection).toBe('connecting');
+		expect(hub.headSeq).toBeNull();
+		expect(hub.workspace).toBeNull();
+		const heard: string[] = [];
+		hub.onState((s) => heard.push(s));
+		const batches: (readonly ChatEnvelope[])[] = [];
+		hub.subscribe({}, (b) => batches.push(b));
+		await tick();
+		expect(heard).toEqual([]);
+		expect(batches).toEqual([]);
 	});
 
 	test('flush delivers what is queued at once', async () => {
@@ -117,8 +190,8 @@ describe('hub', () => {
 		fake.emit('session', { kind: 'new' });
 		await tick();
 		expect(batches).toHaveLength(1);
-		hub.subscribe({}, (b) => batches.push(b));
 		hub.stop();
+		hub.subscribe({}, (b) => batches.push(b));
 		fake.emit('session', { kind: 'compacted' });
 		await tick();
 		expect(batches).toHaveLength(1);

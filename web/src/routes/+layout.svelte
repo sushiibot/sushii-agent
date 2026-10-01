@@ -6,9 +6,18 @@
 	import { activeTab, nav, tabs } from '$lib/core/nav/tabs';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { markBooted } from '$lib/core/pwa/boot-recovery';
+	import { hub } from '$lib/core/realtime/hub.svelte';
+	import { configureChat, createFakeBackend } from '$lib/features/chat';
 	import Shell from '$lib/ui/shell/shell.svelte';
 
 	let { children } = $props();
+
+	// `bun dev` with ?fake drives the whole app from an in-memory bot over the one hub.
+	if (import.meta.env.DEV && new URLSearchParams(location.search).has('fake')) {
+		const fake = createFakeBackend();
+		hub.useTransport(fake.transport);
+		configureChat({ api: fake.api });
+	}
 
 	onMount(() => {
 		markBooted();

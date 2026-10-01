@@ -4,22 +4,21 @@
 	import { resolve } from '$app/paths';
 	import { routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
+	import { hub } from '$lib/core/realtime/hub.svelte';
 	import {
 		ChatScreen,
 		ClearNotifications,
 		chatStore,
 		type ChatSheet,
-		type ChatStore,
 		type ChatTray,
 		type FileRef
 	} from '$lib/features/chat';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 
-	let store = $state.raw<ChatStore | null>(null);
+	const store = chatStore();
+	const s = store;
 	let viewer = $state<FileRef | undefined>();
 	let now = $state(Date.now());
-
-	void chatStore().then((s) => (store = s));
 
 	const sheet = $derived(page.state.sheet);
 	const sheets: Record<ChatSheet, ReturnType<typeof routedSheet>> = {
@@ -32,10 +31,9 @@
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
 		if (!pwa.online) return { kind: 'offline' };
-		if (!store) return undefined;
-		if (store.connection === 'forbidden') return 'forbidden';
-		if (store.connection === 'reconnecting' && store.reconnectingSince !== null) {
-			const secs = Math.floor((now - store.reconnectingSince) / 1000);
+		if (hub.connection === 'forbidden') return 'forbidden';
+		if (hub.connection === 'reconnecting' && hub.reconnectingSince !== null) {
+			const secs = Math.floor((now - hub.reconnectingSince) / 1000);
 			return { kind: 'reconnecting', elapsed: secs >= 5 ? `${secs}s` : undefined };
 		}
 		if (store.workspace === 'offline') return { kind: 'agent-offline' };
@@ -44,34 +42,30 @@
 	});
 
 	$effect(() => {
-		if (store?.connection !== 'reconnecting') return;
+		if (hub.connection !== 'reconnecting') return;
 		const t = setInterval(() => (now = Date.now()), 1000);
 		return () => clearInterval(t);
 	});
 
 	const tray = $derived.by((): ChatTray | undefined => {
-		if (!store) return undefined;
 		if (store.approvals.length) return { items: store.approvals, state: store.trayPhase };
 		if (store.timedOut) return { items: [store.timedOut], armed: false, state: 'timeout' };
 		return undefined;
 	});
 
 	$effect(() => {
-		const s = store;
-		if (!s) return;
-		untrack(() => s.setViewing(true));
-		return () => s.setViewing(false);
+		untrack(() => store.setViewing(true));
+		return () => store.setViewing(false);
 	});
 
 	// A push for a question opens /?ask=<id>; its card scrolls into view once history has it.
 	$effect(() => {
-		const s = store;
 		const askId = untrack(() => focusAsk);
-		if (!s || !askId) return;
+		if (!askId) return;
 		let done = false;
 		return $effect.root(() => {
 			$effect(() => {
-				const item = s.items.find((i) => i.kind === 'ask' && i.askId === askId);
+				const item = store.items.find((i) => i.kind === 'ask' && i.askId === askId);
 				if (!item || done) return;
 				done = true;
 				void tick().then(() =>
@@ -94,52 +88,49 @@
 
 <svelte:head><title>Agent</title></svelte:head>
 
-{#if store}
-	{@const s = store}
-	<ChatScreen
-		messages={s.messages}
-		history={s.history}
-		hasOlder={s.hasOlder}
-		olderLoading={s.olderLoading}
-		olderError={s.olderError}
-		running={s.running}
-		stopping={s.stopping}
-		{tray}
-		draft={s.draft}
-		photos={s.photos}
-		quotaFull={s.quotaFull}
-		usage={s.usage}
-		{connection}
-		commandsOffline={s.workspace === 'offline'}
-		toast={s.toast}
-		updateReady={!!pwa.waiting}
-		canInstall={pwa.canInstall}
-		announce={s.announce}
-		{focusAsk}
-		{sheet}
-		{viewer}
-		settingsHref={resolve('/settings')}
-		onopensheet={openSheet}
-		onclosesheet={closeSheet}
-		onopenfile={(f) => {
-			viewer = f;
-			openSheet('viewer');
-		}}
-		ondraft={(v) => s.setDraft(v)}
-		onsend={() => void s.send(s.draft)}
-		onstop={() => s.stopTurn()}
-		oncommand={(c) => s.command(c)}
-		onattach={(files) => void s.attach(files)}
-		onremovephoto={(id) => s.removePhoto(id)}
-		onretryphoto={(id) => s.retryPhoto(id)}
-		onloadolder={() => s.loadOlder()}
-		onretryhistory={() => s.retryHistory()}
-		onretrysend={(id) => s.retry(id)}
-		ondeletesend={(id) => void s.discard(id)}
-		onanswer={(askId, answer) => s.answer(askId, answer)}
-		ondecide={(nonce, decision) => s.decide(nonce, decision)}
-		oninstall={() => pwa.install()}
-		onreload={() => pwa.applyUpdate()}
-	/>
-	<ClearNotifications store={s} />
-{/if}
+<ChatScreen
+	messages={s.messages}
+	history={s.history}
+	hasOlder={s.hasOlder}
+	olderLoading={s.olderLoading}
+	olderError={s.olderError}
+	running={s.running}
+	stopping={s.stopping}
+	{tray}
+	draft={s.draft}
+	photos={s.photos}
+	quotaFull={s.quotaFull}
+	usage={s.usage}
+	{connection}
+	commandsOffline={s.workspace === 'offline'}
+	toast={s.toast}
+	updateReady={!!pwa.waiting}
+	canInstall={pwa.canInstall}
+	announce={s.announce}
+	{focusAsk}
+	{sheet}
+	{viewer}
+	settingsHref={resolve('/settings')}
+	onopensheet={openSheet}
+	onclosesheet={closeSheet}
+	onopenfile={(f) => {
+		viewer = f;
+		openSheet('viewer');
+	}}
+	ondraft={(v) => s.setDraft(v)}
+	onsend={() => void s.send(s.draft)}
+	onstop={() => s.stopTurn()}
+	oncommand={(c) => s.command(c)}
+	onattach={(files) => void s.attach(files)}
+	onremovephoto={(id) => s.removePhoto(id)}
+	onretryphoto={(id) => s.retryPhoto(id)}
+	onloadolder={() => s.loadOlder()}
+	onretryhistory={() => s.retryHistory()}
+	onretrysend={(id) => s.retry(id)}
+	ondeletesend={(id) => void s.discard(id)}
+	onanswer={(askId, answer) => s.answer(askId, answer)}
+	ondecide={(nonce, decision) => s.decide(nonce, decision)}
+	oninstall={() => pwa.install()}
+	onreload={() => pwa.applyUpdate()}
+/>
+<ClearNotifications store={s} />

@@ -34,12 +34,7 @@ import {
 	type ChatState,
 	type Effect
 } from './reduce';
-import {
-	createHub,
-	hub as appHub,
-	type ConversationId,
-	type Hub
-} from '$lib/core/realtime/hub.svelte';
+import { hub as appHub, type ConversationId, type Hub } from '$lib/core/realtime/hub.svelte';
 import type { TransportState } from '$lib/core/realtime/transport';
 import { ulid } from '$lib/core/storage/ulid';
 
@@ -97,8 +92,6 @@ export class ChatStore {
 	workspace = $state<WorkspaceState | null>(null);
 	/** The newest reply's usage; it changes only when a reply lands, never mid-stream. */
 	usage = $state.raw<ChatUsage | null>(null);
-	connection = $state<TransportState | 'connecting'>('connecting');
-	reconnectingSince = $state<number | null>(null);
 	/** Set after a `reset` reload, until the reader has seen the banner for a while. */
 	reset = $state(false);
 	history = $state<'loading' | 'ready' | 'error'>('loading');
@@ -165,7 +158,14 @@ export class ChatStore {
 		this.#started = true;
 		requestPersistence();
 		this.#cleanup.push(
-			this.#hub.subscribe({ conversation: this.conversationId }, (batch) => this.#onBatch(batch)),
+			this.#hub.subscribe(
+				{
+					conversation: this.conversationId,
+					// The approval tray lives in Main until a Home screen owns it.
+					globals: this.conversationId === 'main' ? ['approval', 'approval_resolved'] : []
+				},
+				(batch) => this.#onBatch(batch)
+			),
 			this.#hub.onState((state) => this.#onTransport(state))
 		);
 		this.#hub.start();
@@ -330,9 +330,6 @@ export class ChatStore {
 	#onTransport(state: TransportState) {
 		// Any first outcome (hello, a failed open, forbidden, hidden) ends start()'s wait.
 		this.#greet();
-		if (state === 'reconnecting') this.reconnectingSince ??= Date.now();
-		else this.reconnectingSince = null;
-		this.connection = state;
 		if (state === 'open') this.#flushOutbox(false);
 	}
 
@@ -932,23 +929,21 @@ export class ChatStore {
 	}
 }
 
-const stores = new Map<ConversationId, Promise<ChatStore>>();
+const stores = new Map<ConversationId, ChatStore>();
+let configured: ChatStoreDeps = {};
+
+/** Swaps in other dependencies, such as dev mode's fake backend; call before the first store. */
+export function configureChat(deps: ChatStoreDeps) {
+	configured = deps;
+}
 
 /** A conversation's store, created and started on first use and kept for the app's life. */
-export function chatStore(id: ConversationId = 'main'): Promise<ChatStore> {
+export function chatStore(id: ConversationId = 'main'): ChatStore {
 	let store = stores.get(id);
 	if (!store) {
-		store = (async () => {
-			let deps: ChatStoreDeps = {};
-			if (import.meta.env.DEV && new URLSearchParams(location.search).has('fake')) {
-				const fake = (await import('./fake')).createFakeBackend();
-				deps = { api: fake.api, hub: createHub({ transport: fake.transport }) };
-			}
-			const s = new ChatStore(id, deps);
-			void s.start();
-			return s;
-		})();
+		store = new ChatStore(id, configured);
 		stores.set(id, store);
+		void store.start();
 	}
 	return store;
 }
