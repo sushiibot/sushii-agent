@@ -238,6 +238,7 @@ async function main(): Promise<void> {
         compact: () => personal.compactNow(),
         choice,
         currentModel: () => (personal.chatSession ? sessionModelLabel(personal.chatSession) : null),
+        fallbackUntil: () => selector.coolingDownUntil,
         tasks: (arg) => renderTasksCommand(config.home, taskRulesOf(config), new Date(), arg),
       }),
     },

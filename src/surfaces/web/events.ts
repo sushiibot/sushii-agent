@@ -557,9 +557,27 @@ export interface HomeOpenedBody {
  * answers the same shape. 501/503/504/502 as WorkspaceUnavailableResponse.
  */
 export interface ModelsResponse {
-	/** The chosen alias; null while on a configured default no list entry matches. */
+	/** The chosen alias, or an OpenRouter id picked outside the list; null on a default no entry matches. */
 	current: string | null;
-	models: { alias: string; backend: 'chatgpt' | 'openrouter'; id: string }[];
+	models: ({ alias: string; backend: 'chatgpt' | 'openrouter'; id: string } & ModelFacts)[];
+	/** The OpenRouter model a ChatGPT choice falls back to; absent from an older agent. */
+	fallback?: string;
+	/** While set, ChatGPT is cooling down and the fallback answers. */
+	fallbackUntil?: string | null;
+}
+
+/** From OpenRouter's catalog when it could be read; prices are USD per million tokens. */
+export interface ModelFacts {
+	contextWindow?: number;
+	priceIn?: number | null;
+	priceOut?: number | null;
+	image?: boolean;
+}
+
+/** GET /api/models/search?q=: tool-capable OpenRouter models, cheapest first. POST /api/models takes
+ *  {alias, role?: 'main' | 'fallback'}, where alias may be any id from here. */
+export interface ModelsSearchResponse {
+	models: ({ id: string; name: string } & ModelFacts)[];
 }
 
 /** GET /api/runs?before=&limit=&kind=&status= (`kind` and `status` are comma lists). */

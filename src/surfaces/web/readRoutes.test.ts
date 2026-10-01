@@ -66,7 +66,11 @@ class FakeLink implements ReadRouteLink {
   modelsGet() {
     return this.go("models/get", {}, this.models);
   }
-  modelsSet(alias: string) {
+  modelsSearch(query: string) {
+    return this.go("models/search", { query }, { models: [{ id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", priceIn: 0.21 }] });
+  }
+  modelsSet(alias: string, role?: string) {
+    if (role) this.calls.push({ method: "models/set:role", q: { alias, role } });
     if (!this.models.models.some((m) => m.alias === alias)) {
       this.calls.push({ method: "models/set", q: { alias } });
       return Promise.reject(new RpcErrorReply(`unknown model "${alias}"`, UNKNOWN_MODEL_CODE));
@@ -114,7 +118,11 @@ describe("model routes", () => {
     expect((await h.post("/api/models", { alias: "luna" }, "text/plain")).status).toBe(415);
     expect((await h.get("/api/models", undefined, "DELETE")).status).toBe(405);
     expect(await h.post("/api/models", { alias: "gone" })).toEqual({ status: 409, body: { error: "unknown_model" } });
-    expect(h.link.calls.map((c) => c.method)).toEqual(["models/get", "models/set", "models/set"]);
+    expect((await h.post("/api/models", { alias: "luna", role: "fallback" })).status).toBe(200);
+    expect((await h.post("/api/models", { alias: "luna", role: "boss" })).status).toBe(400);
+    expect(await h.get("/api/models/search?q=deep")).toEqual({ status: 200, body: { models: [{ id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", priceIn: 0.21 }] } });
+    expect((await h.get(`/api/models/search?q=${"x".repeat(101)}`)).status).toBe(400);
+    expect(h.link.calls.map((c) => c.method)).toEqual(["models/get", "models/set", "models/set", "models/set:role", "models/set", "models/search"]);
     h.link.connected = false;
     expect(await h.get("/api/models")).toEqual({ status: 503, body: { offline: true } });
   });

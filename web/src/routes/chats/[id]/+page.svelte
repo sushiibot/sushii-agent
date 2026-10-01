@@ -39,7 +39,7 @@
 	});
 
 	type AnySheet = ChatSheet | Exclude<ThreadSheet, 'branch'>;
-	const ids: AnySheet[] = ['commands', 'new', 'viewer', 'usage', 'thread-memory', 'thread-close'];
+	const ids: AnySheet[] = ['commands', 'new', 'viewer', 'model', 'thread-memory', 'thread-close'];
 	const sheets = Object.fromEntries(ids.map((s) => [s, routedSheet(s)])) as Record<
 		AnySheet,
 		ReturnType<typeof routedSheet>

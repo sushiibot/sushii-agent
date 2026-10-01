@@ -19,9 +19,10 @@
 	import { Button } from '$lib/ui/button';
 	import ApprovalTray from './components/approval-tray.svelte';
 	import Composer from './components/composer.svelte';
+	import ModelSheet from './components/model-sheet.svelte';
 	import Conversation from './components/conversation.svelte';
 	import { messagePlainText } from './render/plain-text';
-	import { formatCost, formatTokens, shortModel, usageLine } from './render/usage';
+	import { modelName } from './render/usage';
 	import type { ChatUsage, ModelsResponse } from '$lib/core/realtime/events';
 	import type { ChatMessage, ChatSheet, ChatTray, FileRef, PhotoDraft } from './types';
 
@@ -46,7 +47,14 @@
 		models = null,
 		modelPicking = null,
 		modelError = null,
+		modelRole = 'main',
+		modelQuery = '',
+		modelResults = null,
+		modelSearching = false,
+		modelSearchError = null,
 		onpickmodel,
+		onmodelrole,
+		onmodelquery,
 		dictation = null,
 		ondictate,
 		connection,
@@ -113,7 +121,15 @@
 		/** The alias being switched to. */
 		modelPicking?: string | null;
 		modelError?: string | null;
-		onpickmodel?: (alias: string) => void;
+		onpickmodel?: (alias: string, role: 'main' | 'fallback') => void;
+		/** Whether the picker sets the model or the ChatGPT fallback. */
+		modelRole?: 'main' | 'fallback';
+		modelQuery?: string;
+		modelResults?: ComponentProps<typeof ModelSheet>['results'];
+		modelSearching?: boolean;
+		modelSearchError?: string | null;
+		onmodelrole?: (role: 'main' | 'fallback') => void;
+		onmodelquery?: (query: string) => void;
 		/** Speech to text in the composer; null hides the mic. */
 		dictation?: ComponentProps<typeof Composer>['dictation'];
 		ondictate?: () => void;
@@ -356,34 +372,23 @@
 			disabled: commandsOffline
 		}
 	]);
-	function usageLabel(u: ChatUsage): string {
-		const parts = [`model ${shortModel(u.model)}`];
-		if (u.contextPct !== undefined) parts.push(`context ${Math.round(u.contextPct)}%`);
-		if (u.costUsd !== undefined) parts.push(`cost ${formatCost(u.costUsd)}`);
-		return `Last reply: ${parts.join(', ')}`;
-	}
-
-	function usageRows(u: ChatUsage): [string, string][] {
-		const rows: [string, string][] = [['Model', u.model]];
-		if (u.contextPct !== undefined) rows.push(['Context used', `${Math.round(u.contextPct)}%`]);
-		rows.push(
-			['Tokens in', formatTokens(u.inputTokens)],
-			['Tokens out', formatTokens(u.outputTokens)]
-		);
-		if (u.cacheRead !== undefined) rows.push(['Cache read', formatTokens(u.cacheRead)]);
-		if (u.cacheWrite !== undefined) rows.push(['Cache write', formatTokens(u.cacheWrite)]);
-		if (u.costUsd !== undefined) rows.push(['Cost', formatCost(u.costUsd)]);
-		return rows;
-	}
 
 	const install = () => oninstall?.() ?? Promise.resolve('failed' as const);
+
+	// While ChatGPT cools down, a ChatGPT choice is answered by the fallback; the chip says which.
+	const answeringFallback = $derived.by(() => {
+		const until = models?.fallbackUntil ? Date.parse(models.fallbackUntil) : 0;
+		const cur = models?.models.find((m) => m.alias === models.current);
+		return until > Date.now() && cur?.backend === 'chatgpt' && models?.fallback
+			? modelName(models.fallback)
+			: null;
+	});
 
 	const sheetLabels: Record<ChatSheet, string> = {
 		commands: 'Chat commands',
 		new: 'Start a new chat',
 		viewer: 'Image',
-		usage: 'Last reply usage',
-		model: 'Model'
+		model: 'Model and context'
 	};
 </script>
 
@@ -450,72 +455,25 @@
 				<Button variant="ghost" class="flex-1" onclick={closeSheet}>Close</Button>
 			</div>
 		</div>
-	{:else if shownSheet === 'model' && !models}
-		<div class="flex flex-col gap-3 px-5 pt-2 pb-5">
-			<h2 class="text-lg font-semibold">Model</h2>
-			<p role="status" class="text-sm text-muted-foreground">
-				The agent can't say which models it has right now. Try again once it's back.
-			</p>
-			<Button size="lg" variant="ghost" onclick={closeSheet}>Close</Button>
-		</div>
-	{:else if shownSheet === 'model' && models}
-		<div class="flex flex-col gap-3 px-3 pt-1 pb-3">
-			<div class="flex flex-col gap-1 px-2 pt-1">
-				<h2 class="text-lg font-semibold">Model</h2>
-				<p class="text-sm text-muted-foreground">A switch applies from the next reply.</p>
-			</div>
-			{#if modelError}
-				<p role="alert" class="mx-2 rounded-lg bg-failed-soft px-3 py-2 text-sm text-failed">
-					{modelError}
-				</p>
-			{/if}
-			<ul class="flex flex-col">
-				{#each models.models as m (m.alias)}
-					{@const current = m.alias === models.current}
-					<li>
-						<button
-							type="button"
-							aria-pressed={current}
-							aria-disabled={!!modelPicking}
-							onclick={() =>
-								modelPicking ? undefined : current ? closeSheet() : onpickmodel?.(m.alias)}
-							class="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-muted aria-disabled:cursor-progress"
-						>
-							<span class="flex min-w-0 flex-1 flex-col gap-0.5">
-								<span class="text-body font-medium">{m.alias}</span>
-								<span class="truncate text-sm text-muted-foreground"
-									>{m.backend === 'chatgpt' ? 'ChatGPT' : 'OpenRouter'} · {m.id}</span
-								>
-							</span>
-							{#if modelPicking === m.alias}
-								<LoaderCircle
-									class="size-5 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
-									aria-label="Switching"
-								/>
-							{:else if current}
-								<Check class="size-5 shrink-0" aria-label="Current" />
-							{/if}
-						</button>
-					</li>
-				{/each}
-			</ul>
-		</div>
-	{:else if shownSheet === 'usage' && usage}
-		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
-			<div class="flex flex-col gap-1">
-				<h2 class="text-lg font-semibold">Last reply</h2>
-				<p class="text-sm text-muted-foreground">What the last reply used, not a running total.</p>
-			</div>
-			<dl class="flex flex-col divide-y rounded-xl border bg-card text-sm">
-				{#each usageRows(usage) as [label, value] (label)}
-					<div class="flex min-h-12 items-center justify-between gap-4 px-4 py-2.5">
-						<dt class="text-muted-foreground">{label}</dt>
-						<dd class="text-right [overflow-wrap:anywhere] tabular-nums">{value}</dd>
-					</div>
-				{/each}
-			</dl>
-			<Button size="lg" variant="ghost" onclick={closeSheet}>Close</Button>
-		</div>
+	{:else if shownSheet === 'model'}
+		<ModelSheet
+			{models}
+			{usage}
+			now={Date.now()}
+			role={modelRole}
+			query={modelQuery}
+			results={modelResults}
+			searching={modelSearching}
+			searchError={modelSearchError}
+			picking={modelPicking}
+			error={modelError}
+			compactDisabled={commandsOffline || running}
+			onrole={(r) => onmodelrole?.(r)}
+			onquery={(q) => onmodelquery?.(q)}
+			onpick={(alias, role) => onpickmodel?.(alias, role)}
+			oncompact={() => runCommand('compact')}
+			onclose={closeSheet}
+		/>
 	{/if}
 {/snippet}
 
@@ -543,24 +501,6 @@
 
 {#snippet toastBody()}
 	{#if toast}{toast}{:else}<UpdateToast onreload={() => onreload?.()} />{/if}
-{/snippet}
-
-{#snippet usageStatus()}
-	<!-- Its height is held from the first frame, so the composer never moves when usage arrives. -->
-	<div class="-mt-2 -mb-2.5 flex h-12 min-w-0">
-		{#if usage}
-			<!-- Muted and plain: it opens a details sheet and nothing else. -->
-			<button
-				type="button"
-				aria-haspopup="dialog"
-				aria-label={usageLabel(usage)}
-				onclick={() => onopensheet?.('usage')}
-				class="flex w-full min-w-0 items-center justify-center text-meta text-muted-foreground hover:text-foreground"
-			>
-				<span class="truncate">{usageLine(usage)}</span>
-			</button>
-		{/if}
-	</div>
 {/snippet}
 
 {#snippet footer()}
@@ -597,11 +537,12 @@
 				onattach={(files) => onattach?.(files)}
 				onremovephoto={(id) => onremovephoto?.(id)}
 				onretryphoto={(id) => onretryphoto?.(id)}
-				model={models ? (models.current ?? 'Default') : null}
+				model={models ? modelName(models.current ?? 'Default') : null}
+				context={usage?.contextPct ?? null}
+				fallback={answeringFallback}
 				onmodel={() => onopensheet?.('model')}
 				{dictation}
 				{ondictate}
-				status={usageStatus}
 			/>
 		</div>
 	{/if}

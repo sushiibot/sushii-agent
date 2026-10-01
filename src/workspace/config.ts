@@ -73,7 +73,17 @@ export interface ModelEntry {
   id: string;
 }
 
-export const DEFAULT_MODELS_SPEC = "sol=chatgpt:gpt-6.1-sol,luna=chatgpt:gpt-6-luna";
+/** The ChatGPT plan models, then cheap tool-capable OpenRouter ones (picked on price and context, 2026-10). */
+export const DEFAULT_MODELS_SPEC = [
+  "sol=chatgpt:gpt-6.1-sol",
+  "luna=chatgpt:gpt-6-luna",
+  "deepseek-pro=openrouter:deepseek/deepseek-v4-pro",
+  "deepseek-flash=openrouter:deepseek/deepseek-v4-flash",
+  "qwen-plus=openrouter:qwen/qwen3.7-plus",
+  "mimo-pro=openrouter:xiaomi/mimo-v2.6-pro",
+  "glm-flash=openrouter:z-ai/glm-5.3-flash",
+  "luna-api=openrouter:openai/gpt-6-luna",
+].join(",");
 
 export interface TaskRules {
   staleDaysQuick: number;

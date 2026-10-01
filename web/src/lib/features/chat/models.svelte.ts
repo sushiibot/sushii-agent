@@ -1,14 +1,17 @@
 import { HttpError, request } from '$lib/core/http';
-import type { ModelsResponse } from '$lib/core/realtime/events';
+import type { ModelsResponse, ModelsSearchResponse } from '$lib/core/realtime/events';
 import { Remote } from '$lib/core/remote.svelte';
 import { workspaceReadError } from '$lib/core/workspace-error';
 
-export type { ModelsResponse };
+export type { ModelsResponse, ModelsSearchResponse };
+export type ModelRole = 'main' | 'fallback';
 
 export interface ModelsApi {
 	/** null: the agent is too old to say, so the composer shows no model. */
 	get(): Promise<ModelsResponse | null>;
-	set(alias: string): Promise<ModelsResponse>;
+	set(alias: string, role?: ModelRole): Promise<ModelsResponse>;
+	/** Tool-capable OpenRouter models matching `query`, cheapest first. */
+	search(query: string): Promise<ModelsSearchResponse>;
 }
 
 export const httpModelsApi: ModelsApi = {
@@ -20,17 +23,32 @@ export const httpModelsApi: ModelsApi = {
 			throw err;
 		}
 	},
-	async set(alias) {
+	async set(alias, role = 'main') {
 		try {
-			return await request<ModelsResponse>('POST', '/models', { alias });
+			return await request<ModelsResponse>('POST', '/models', {
+				alias,
+				...(role === 'fallback' ? { role } : {})
+			});
 		} catch (err) {
 			if (err instanceof HttpError && err.status === 409) {
 				throw new Error('That model is no longer on the list. Pick from the updated one.');
 			}
 			throw workspaceReadError(err, "This agent can't switch models from the app yet.");
 		}
+	},
+	async search(query) {
+		try {
+			return await request<ModelsSearchResponse>(
+				'GET',
+				`/models/search?q=${encodeURIComponent(query)}`
+			);
+		} catch (err) {
+			throw workspaceReadError(err, "This agent can't search models yet.");
+		}
 	}
 };
+
+const SEARCH_DEBOUNCE_MS = 250;
 
 /** The owner's model choice, as `!model` reads and sets it; a switch applies from the next turn. */
 export class ModelsStore {
@@ -38,8 +56,15 @@ export class ModelsStore {
 	/** The alias being switched to. */
 	picking = $state<string | null>(null);
 	error = $state<string | null>(null);
+	query = $state('');
+	/** Matches for `query`; null before a search has answered. */
+	results = $state.raw<ModelsSearchResponse['models'] | null>(null);
+	searching = $state(false);
+	searchError = $state<string | null>(null);
 
 	#api: ModelsApi;
+	#searchTimer: ReturnType<typeof setTimeout> | null = null;
+	#searchRun = 0;
 
 	constructor(api: ModelsApi) {
 		this.#api = api;
@@ -52,12 +77,39 @@ export class ModelsStore {
 		void this.remote.refetch();
 	}
 
-	async pick(alias: string): Promise<boolean> {
+	/** Searches OpenRouter as the owner types; an empty query clears the results. */
+	setQuery(query: string) {
+		this.query = query;
+		if (this.#searchTimer) clearTimeout(this.#searchTimer);
+		const run = ++this.#searchRun;
+		if (!query.trim()) {
+			this.results = null;
+			this.searching = false;
+			this.searchError = null;
+			return;
+		}
+		this.searching = true;
+		this.#searchTimer = setTimeout(async () => {
+			try {
+				const res = await this.#api.search(query.trim());
+				if (run === this.#searchRun) this.results = res.models;
+				if (run === this.#searchRun) this.searchError = null;
+			} catch (err) {
+				if (run === this.#searchRun) {
+					this.searchError = err instanceof Error ? err.message : 'Something went wrong.';
+				}
+			} finally {
+				if (run === this.#searchRun) this.searching = false;
+			}
+		}, SEARCH_DEBOUNCE_MS);
+	}
+
+	async pick(alias: string, role: ModelRole = 'main'): Promise<boolean> {
 		if (this.picking) return false;
 		this.picking = alias;
 		this.error = null;
 		try {
-			this.remote.data = await this.#api.set(alias);
+			this.remote.data = await this.#api.set(alias, role);
 			return true;
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : 'Something went wrong.';
@@ -86,19 +138,60 @@ export function modelsStore(): ModelsStore {
 /** Serves a fixed list for dev mode and the e2e fixtures. */
 export function createFixtureModelsApi(): ModelsApi {
 	let current = 'sol';
+	let fallback = 'openai/gpt-6-luna';
 	const list = (): ModelsResponse => ({
 		current,
+		fallback,
+		fallbackUntil: null,
 		models: [
-			{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' },
-			{ alias: 'luna', backend: 'chatgpt', id: 'gpt-6-luna' },
-			{ alias: 'or-luna', backend: 'openrouter', id: 'openai/gpt-6-luna' }
+			{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol', contextWindow: 1_050_000 },
+			{ alias: 'luna', backend: 'chatgpt', id: 'gpt-6-luna', contextWindow: 1_050_000 },
+			{
+				alias: 'deepseek-pro',
+				backend: 'openrouter',
+				id: 'deepseek/deepseek-v4-pro',
+				contextWindow: 1_048_576,
+				priceIn: 0.21,
+				priceOut: 0.42
+			},
+			{
+				alias: 'luna-api',
+				backend: 'openrouter',
+				id: 'openai/gpt-6-luna',
+				contextWindow: 1_050_000,
+				priceIn: 0.1,
+				priceOut: 0.5,
+				image: true
+			}
 		]
 	});
 	return {
 		get: async () => list(),
-		set: async (alias) => {
-			current = alias;
+		set: async (alias, role) => {
+			if (role === 'fallback') fallback = alias;
+			else current = alias;
 			return list();
-		}
+		},
+		search: async (query) => ({
+			models: [
+				{
+					id: 'deepseek/deepseek-v4-flash',
+					name: 'DeepSeek V4 Flash',
+					priceIn: 0.04,
+					priceOut: 0.08,
+					contextWindow: 1_048_576
+				},
+				{
+					id: 'qwen/qwen3.7-plus',
+					name: 'Qwen3.7 Plus',
+					priceIn: 0.32,
+					priceOut: 1.28,
+					contextWindow: 1_000_000
+				}
+			].filter(
+				(m) =>
+					m.id.includes(query.toLowerCase()) || m.name.toLowerCase().includes(query.toLowerCase())
+			)
+		})
 	};
 }

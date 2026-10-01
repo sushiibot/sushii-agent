@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MODELS_SPEC, WorkspaceConfigError, loadWorkspaceConfig, parseModelList, type WorkspaceConfig } from "./config.ts";
 import { ANCHORED_SECTIONS, CLEARED_PREFIX, anchoredInstruction, createHygieneExtension, planHygiene, reserveTokensFor, type HygieneState } from "./contextEconomy.ts";
-import { ModelChoice } from "./modelChoice.ts";
+import { ModelChoice, isChatModelId } from "./modelChoice.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 
 const dirs: string[] = [];
@@ -131,10 +131,12 @@ describe("model list and choice", () => {
     ({ provider: "chatgpt", chatgptModel: "gpt-6.1-sol", model: "openai/gpt-6-luna", models: parseModelList("sol=chatgpt:gpt-6.1-sol,luna=chatgpt:gpt-6-luna,or-mini=openrouter:test/mini"), stateDir }) as WorkspaceConfig;
 
   test("parses the list; rejects malformed and duplicate entries", () => {
-    expect(parseModelList(DEFAULT_MODELS_SPEC)).toEqual([
+    const defaults = parseModelList(DEFAULT_MODELS_SPEC);
+    expect(defaults.slice(0, 2)).toEqual([
       { alias: "sol", backend: "chatgpt", id: "gpt-6.1-sol" },
       { alias: "luna", backend: "chatgpt", id: "gpt-6-luna" },
     ]);
+    expect(defaults.slice(2).every((m) => m.backend === "openrouter" && isChatModelId(m.id))).toBe(true);
     expect(() => parseModelList("sol=gpt")).toThrow(WorkspaceConfigError);
     expect(() => parseModelList("a=chatgpt:x,a=openrouter:y")).toThrow(WorkspaceConfigError);
   });
@@ -143,7 +145,7 @@ describe("model list and choice", () => {
     const env = { ORCH_SECRET: "s", OPENAI_API_KEY: "k", HOME: "/h" };
     const cfg = loadWorkspaceConfig(env);
     expect(cfg.economy).toEqual({ hygieneTokens: 150_000, compactTokens: 200_000, keepRecentTokens: 40_000, idleRotateMin: 25, idleRotateTokens: 100_000 });
-    expect(cfg.models!.map((m) => m.alias)).toEqual(["sol", "luna"]);
+    expect(cfg.models!.map((m) => m.alias)).toEqual(parseModelList(DEFAULT_MODELS_SPEC).map((m) => m.alias));
     expect(cfg.tasks).toEqual({ staleDaysQuick: 2, autodropDaysQuick: 5, staleDaysProject: 7, autodropDaysProject: 21, maxOpen: 15 });
     const over = loadWorkspaceConfig({ ...env, WORKSPACE_HYGIENE_TOKENS: "90000", WORKSPACE_IDLE_ROTATE_MIN: "30", WORKSPACE_MODELS: "x=openrouter:a/b", WORKSPACE_TASK_MAX_OPEN: "20" });
     expect(over.economy!.hygieneTokens).toBe(90_000);
@@ -171,10 +173,40 @@ describe("model list and choice", () => {
     expect(new ModelChoice(restarted, stateDir).current()?.alias).toBe("or-mini");
     expect(restarted).toMatchObject({ provider: "openrouter", model: "test/mini" });
 
-    expect(choice.select("gpt-7")).toEqual({ ok: false, error: 'unknown model "gpt-7"; choose one of sol, luna, or-mini' });
+    expect(choice.select("gpt-7")).toMatchObject({ ok: false, error: expect.stringContaining('unknown model "gpt-7"; choose one of sol, luna, or-mini') });
     expect(choice.select("sol")).toMatchObject({ ok: true });
     expect(cfg).toMatchObject({ provider: "chatgpt", chatgptModel: "gpt-6.1-sol", model: "openai/gpt-6-luna" });
     expect(choice.describe()).toContain("▸ `sol`");
+  });
+
+  test("any OpenRouter id can be picked and the fallback chosen; both persist; batch variants are refused", async () => {
+    const stateDir = tempDir();
+    writeWorkspaceState(stateDir, { chatSessionFile: "/s/chat.jsonl" });
+    const cfg = base(stateDir);
+    const choice = new ModelChoice(cfg, stateDir);
+    const changes: string[] = [];
+    const off = choice.onChange(async () => void changes.push(cfg.model));
+
+    expect(choice.select("deepseek/deepseek-v4-pro")).toMatchObject({ ok: true, changed: true });
+    expect(cfg).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4-pro" });
+    expect(choice.openrouterIds()).toContain("deepseek/deepseek-v4-pro");
+    expect(choice.selectFallback("qwen/qwen3.7-plus")).toEqual({ ok: true });
+    // An OpenRouter choice keeps its own model; the fallback only matters for a ChatGPT one.
+    expect(cfg.model).toBe("deepseek/deepseek-v4-pro");
+    choice.select("sol");
+    expect(cfg).toMatchObject({ provider: "chatgpt", model: "qwen/qwen3.7-plus" });
+    await choice.settled();
+    expect(changes).toEqual(["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro", "qwen/qwen3.7-plus"]);
+
+    choice.select("deepseek/deepseek-v4-pro");
+    const restarted = base(stateDir);
+    const again = new ModelChoice(restarted, stateDir);
+    expect(again.current()).toEqual({ alias: "deepseek/deepseek-v4-pro", backend: "openrouter", id: "deepseek/deepseek-v4-pro" });
+    expect(again.currentFallback()).toBe("qwen/qwen3.7-plus");
+
+    expect(choice.select("deepseek/deepseek-v4-pro:batch")).toMatchObject({ ok: false });
+    expect(choice.selectFallback("openai/gpt-6-luna:batch")).toMatchObject({ ok: false });
+    off();
   });
 
   test("state writes merge: a later session swap keeps the model choice", () => {

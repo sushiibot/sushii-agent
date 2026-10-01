@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { resolveModelInfo } from "./piShared.ts";
+import { clearOpenRouterCatalog, openRouterCatalog, resolveModelInfo } from "./piShared.ts";
 
 const catalog = {
   data: [
@@ -13,6 +13,7 @@ let spy: ReturnType<typeof spyOn> | null = null;
 afterEach(() => {
   spy?.mockRestore();
   spy = null;
+  clearOpenRouterCatalog();
 });
 
 function serve(response: () => Promise<Response>) {
@@ -31,10 +32,38 @@ describe("resolveModelInfo", () => {
     serve(async () => Response.json(catalog));
     expect(await resolveModelInfo("vendor/missing", 42)).toEqual({ contextWindow: 42, image: false });
     spy!.mockRestore();
+    clearOpenRouterCatalog();
     serve(async () => new Response("down", { status: 503 }));
     expect(await resolveModelInfo("vendor/vision", 42)).toEqual({ contextWindow: 42, image: false });
     spy!.mockRestore();
+    clearOpenRouterCatalog();
     serve(async () => Promise.reject(new Error("offline")));
     expect(await resolveModelInfo("vendor/vision", 42)).toEqual({ contextWindow: 42, image: false });
+  });
+});
+
+describe("openRouterCatalog", () => {
+  test("reads tools support and per-million prices, and is fetched once per ten minutes", async () => {
+    let calls = 0;
+    serve(async () => {
+      calls++;
+      return Response.json({
+        data: [
+          { id: "vendor/agent", name: "Agent", context_length: 1_000_000, supported_parameters: ["tools", "temperature"], pricing: { prompt: "0.00000021", completion: "0.00000042" } },
+          { id: "vendor/chat", context_length: 8_000, pricing: { prompt: "x" } },
+          { id: "vendor/broken" },
+        ],
+      });
+    });
+    const t = Date.parse("2026-10-01T00:00:00Z");
+    const models = await openRouterCatalog(t);
+    expect(models).toEqual([
+      { id: "vendor/agent", name: "Agent", contextWindow: 1_000_000, image: false, tools: true, priceIn: 0.21, priceOut: 0.42 },
+      { id: "vendor/chat", name: "vendor/chat", contextWindow: 8_000, image: false, tools: false, priceIn: null, priceOut: null },
+    ]);
+    await openRouterCatalog(t + 9 * 60_000);
+    expect(calls).toBe(1);
+    await openRouterCatalog(t + 11 * 60_000);
+    expect(calls).toBe(2);
   });
 });

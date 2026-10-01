@@ -9,23 +9,75 @@ const log = getLogger("agentRuntime.pi");
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const MODEL_METADATA_TIMEOUT_MS = 5000;
 
+/** One model in OpenRouter's catalog, as far as the agent needs it. */
+export interface CatalogModel {
+  id: string;
+  name: string;
+  contextWindow: number;
+  image: boolean;
+  /** It takes tool definitions; the agent can't work without them. */
+  tools: boolean;
+  /** USD per million tokens; null when the catalog leaves it out. */
+  priceIn: number | null;
+  priceOut: number | null;
+}
+
+type RawCatalogEntry = {
+  id: string;
+  name?: string;
+  context_length?: number;
+  architecture?: { input_modalities?: string[] };
+  supported_parameters?: string[];
+  pricing?: { prompt?: string; completion?: string };
+};
+
+const CATALOG_TTL_MS = 10 * 60_000;
+let catalogCache: { at: number; models: CatalogModel[] } | null = null;
+
+const perMillion = (raw: string | undefined) => {
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 1e6 * 1000) / 1000 : null;
+};
+
+/** OpenRouter's model catalog, cached for ten minutes; throws when it can't be read. */
+export async function openRouterCatalog(now = Date.now()): Promise<CatalogModel[]> {
+  if (catalogCache && now - catalogCache.at < CATALOG_TTL_MS) return catalogCache.models;
+  const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
+  const payload = (await res.json()) as { data?: RawCatalogEntry[] };
+  const models = (payload.data ?? [])
+    .filter((m) => typeof m.id === "string" && (m.context_length ?? 0) > 0)
+    .map((m) => ({
+      id: m.id,
+      name: m.name ?? m.id,
+      contextWindow: m.context_length!,
+      image: m.architecture?.input_modalities?.includes("image") === true,
+      tools: m.supported_parameters?.includes("tools") === true,
+      priceIn: perMillion(m.pricing?.prompt),
+      priceOut: perMillion(m.pricing?.completion),
+    }));
+  catalogCache = { at: now, models };
+  return models;
+}
+
+/** Test seam: forget the cached catalog. */
+export function clearOpenRouterCatalog(): void {
+  catalogCache = null;
+}
+
 /**
  * Resolve the model's real context window from OpenRouter's catalog so max_tokens is capped under
- * the true ceiling. Ported verbatim from wiki-sync's piSession — setting max_tokens to the full
- * context window (what OpenRouter reports as max_completion_tokens) makes every prompt overflow and
- * get silently rejected. Falls back to a safe buffer on any fetch/parse failure. Image input is declared
- * only when the catalog lists it, so an unknown model stays text-only.
+ * the true ceiling: setting max_tokens to the full context window (what OpenRouter reports as
+ * max_completion_tokens) makes every prompt overflow and get silently rejected. Falls back to a safe
+ * buffer on any fetch/parse failure. Image input is declared only when the catalog lists it, so an
+ * unknown model stays text-only.
  */
 export async function resolveModelInfo(modelId: string, fallback: number): Promise<{ contextWindow: number; image: boolean }> {
   try {
-    const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
-    const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number; architecture?: { input_modalities?: string[] } }> };
-    const entry = payload.data?.find((m) => m.id === modelId);
-    if (!entry?.context_length || entry.context_length <= 0) throw new Error(`model ${modelId} missing context_length`);
-    const image = entry.architecture?.input_modalities?.includes("image") === true;
-    log.info({ modelId, contextWindow: entry.context_length, image }, "resolved model metadata from OpenRouter");
-    return { contextWindow: entry.context_length, image };
+    const entry = (await openRouterCatalog()).find((m) => m.id === modelId);
+    if (!entry) throw new Error(`model ${modelId} missing from the catalog`);
+    log.info({ modelId, contextWindow: entry.contextWindow, image: entry.image }, "resolved model metadata from OpenRouter");
+    return { contextWindow: entry.contextWindow, image: entry.image };
   } catch (err) {
     log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using fallback");
     return { contextWindow: fallback, image: false };
@@ -74,36 +126,57 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   if (!existsSync(authPath)) writeFileSync(authPath, "{}");
   if (!existsSync(modelsPath)) writeFileSync(modelsPath, "{}");
   const modelRuntime: ModelRuntime = await ModelRuntime.create({ authPath, modelsPath });
-  const ids = [options.model, ...(options.extraModels ?? []).filter((id) => id !== options.model)];
-  const infos = await Promise.all(ids.map((id) => resolveModelInfo(id, options.fallbackContextWindow ?? 800_000)));
-  const limits = ids.map((id, i) => ({
-    id,
-    contextWindow: infos[i]!.contextWindow,
-    maxTokens: Math.min(options.maxOutputTokens ?? 65_536, infos[i]!.contextWindow),
-    input: infos[i]!.image ? (["text", "image"] as ("text" | "image")[]) : (["text"] as ("text" | "image")[]),
-  }));
-  modelRuntime.registerProvider(options.providerId, {
-    name: options.providerName,
-    baseUrl: options.baseUrl,
-    apiKey: options.apiKey,
-    api: "openai-completions",
-    models: limits.map(({ id, contextWindow, maxTokens, input }) => ({
-      id,
-      name: id,
-      reasoning: false,
-      input,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow,
-      maxTokens,
-      samplingParams: { provider: { data_collection: "deny" } },
-      compat: { sendSessionAffinityHeaders: true },
-    })),
-  });
-  const models = new Map(ids.map((id) => [id, modelRuntime.getModel(options.providerId, id)] as const));
-  const model = models.get(options.model);
-  if (!model || [...models.values()].some((m) => !m)) throw new Error(`pi models ${options.providerId}/${ids.join(",")} failed to register`);
-  const { contextWindow, maxTokens } = limits[0]!;
-  return { modelRuntime, model, contextWindow, maxTokens, models: models as Map<string, NonNullable<typeof model>> };
+  type Limit = { id: string; contextWindow: number; maxTokens: number; input: ("text" | "image")[] };
+  const limits = new Map<string, Limit>();
+  const resolve = async (ids: string[]) => {
+    const fresh = ids.filter((id) => !limits.has(id));
+    const infos = await Promise.all(fresh.map((id) => resolveModelInfo(id, options.fallbackContextWindow ?? 800_000)));
+    fresh.forEach((id, i) =>
+      limits.set(id, {
+        id,
+        contextWindow: infos[i]!.contextWindow,
+        maxTokens: Math.min(options.maxOutputTokens ?? 65_536, infos[i]!.contextWindow),
+        input: infos[i]!.image ? ["text", "image"] : ["text"],
+      }),
+    );
+  };
+  const models = new Map<string, NonNullable<ReturnType<ModelRuntime["getModel"]>>>();
+  // Re-registering the provider replaces its model list, so every call registers all ids seen so far.
+  const registerAll = () => {
+    modelRuntime.registerProvider(options.providerId, {
+      name: options.providerName,
+      baseUrl: options.baseUrl,
+      apiKey: options.apiKey,
+      api: "openai-completions",
+      models: [...limits.values()].map(({ id, contextWindow, maxTokens, input }) => ({
+        id,
+        name: id,
+        reasoning: false,
+        input,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow,
+        maxTokens,
+        samplingParams: { provider: { data_collection: "deny" } },
+        compat: { sendSessionAffinityHeaders: true },
+      })),
+    });
+    for (const id of limits.keys()) {
+      const m = modelRuntime.getModel(options.providerId, id);
+      if (!m) throw new Error(`pi model ${options.providerId}/${id} failed to register`);
+      models.set(id, m);
+    }
+  };
+  await resolve([options.model, ...(options.extraModels ?? [])]);
+  registerAll();
+  const model = models.get(options.model)!;
+  const { contextWindow, maxTokens } = limits.get(options.model)!;
+  /** Adds OpenRouter models to this runtime after it was made, e.g. one just picked in the app. */
+  const register = async (ids: string[]) => {
+    if (ids.every((id) => limits.has(id))) return;
+    await resolve(ids);
+    registerAll();
+  };
+  return { modelRuntime, model, contextWindow, maxTokens, models, register };
 }
 
 export interface AgentBashToolOptions extends AgentEnvOptions {

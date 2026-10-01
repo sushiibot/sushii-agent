@@ -38,6 +38,8 @@ export const RPC_METHODS = {
   // Bot → workspace requests: the owner's model choice, as `!model` reads and sets it.
   modelsGet: "models/get",
   modelsSet: "models/set",
+  // Bot → workspace request: OpenRouter's tool-capable models matching a query, for the app's picker.
+  modelsSearch: "models/search",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -106,14 +108,34 @@ export const ID_MAX = 256;
 export const MODELS_MAX = 20;
 /** models/set's JSON-RPC error code for an alias the workspace's list doesn't have. */
 export const UNKNOWN_MODEL_CODE = -32011;
+export const MODELS_SEARCH_MAX = 25;
 export const modelsGetParams = z.object({ principalId: z.string() });
-export const modelsSetParams = z.object({ principalId: z.string(), alias: z.string().min(1).max(ID_MAX) });
+/** `alias` is a list alias or an OpenRouter id; `role: "fallback"` sets what a ChatGPT choice falls back to. */
+export const modelsSetParams = z.object({ principalId: z.string(), alias: z.string().min(1).max(ID_MAX), role: z.enum(["main", "fallback"]).optional() });
+export const modelsSearchParams = z.object({ principalId: z.string(), query: z.string().max(100) });
+/** Catalog facts, when OpenRouter's catalog could be read; USD per million tokens. */
+const modelFacts = {
+  contextWindow: z.number().int().positive().optional(),
+  priceIn: z.number().nonnegative().nullable().optional(),
+  priceOut: z.number().nonnegative().nullable().optional(),
+  image: z.boolean().optional(),
+};
 export const modelsResult = z.object({
-  /** The chosen alias; null while on the configured default that no list entry matches. */
+  /** The chosen alias, or an OpenRouter id picked outside the list; null while on a default no entry matches. */
   current: z.string().max(ID_MAX).nullable(),
-  models: z.array(z.object({ alias: z.string().min(1).max(ID_MAX), backend: z.enum(["chatgpt", "openrouter"]), id: z.string().max(ID_MAX) })).max(MODELS_MAX),
+  models: z
+    .array(z.object({ alias: z.string().min(1).max(ID_MAX), backend: z.enum(["chatgpt", "openrouter"]), id: z.string().max(ID_MAX), ...modelFacts }))
+    .max(MODELS_MAX + 1),
+  /** The OpenRouter model a ChatGPT choice falls back to. */
+  fallback: z.string().max(ID_MAX).optional(),
+  /** While set, ChatGPT is cooling down after a limit or sign-in failure and the fallback answers. */
+  fallbackUntil: z.string().max(40).nullable().optional(),
 });
 export type ModelsResult = z.infer<typeof modelsResult>;
+export const modelsSearchResult = z.object({
+  models: z.array(z.object({ id: z.string().min(1).max(ID_MAX), name: z.string().max(ID_MAX), ...modelFacts })).max(MODELS_SEARCH_MAX),
+});
+export type ModelsSearchResult = z.infer<typeof modelsSearchResult>;
 
 // Outbound files. Deliveries travel as one WebSocket frame (Bun's default cap is 16 MiB), and base64 costs
 // 4/3 of the raw bytes, so the per-delivery total stays well under that.

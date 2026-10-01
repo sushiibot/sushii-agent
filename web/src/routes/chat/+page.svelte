@@ -35,10 +35,10 @@
 		commands: routedSheet('commands'),
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
-		usage: routedSheet('usage'),
 		model: routedSheet('model')
 	};
 	const models = modelsStore();
+	let modelRole = $state<'main' | 'fallback'>('main');
 	// The transcript joins whatever is already in the box, like keyboard dictation. Kept on screen while
 	// it runs, so a feature flip can't hide the stop control of a recording in progress.
 	const dictation = new Dictation((text) => {
@@ -112,7 +112,10 @@
 	});
 
 	function openSheet(next: ChatSheet) {
-		if (next === 'model') models.refresh();
+		if (next === 'model') {
+			models.refresh();
+			modelRole = 'main';
+		}
 		sheets[next].openWith();
 	}
 
@@ -159,11 +162,18 @@
 	models={models.remote.data ?? null}
 	modelPicking={models.picking}
 	modelError={models.error}
+	{modelRole}
+	modelQuery={models.query}
+	modelResults={models.results}
+	modelSearching={models.searching}
+	modelSearchError={models.searchError}
+	onmodelrole={(r) => (modelRole = r)}
+	onmodelquery={(q) => models.setQuery(q)}
 	dictation={features.dictation || dictation.state !== 'idle'
 		? { state: dictation.state, seconds: dictation.seconds, error: dictation.error }
 		: null}
 	ondictate={() => dictation.toggle()}
-	onpickmodel={(alias) => void models.pick(alias).then((ok) => ok && closeSheet())}
+	onpickmodel={(alias, role) => void models.pick(alias, role).then((ok) => ok && closeSheet())}
 	{connection}
 	commandsOffline={s.workspace === 'offline'}
 	toast={s.toast}

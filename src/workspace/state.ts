@@ -17,6 +17,10 @@ export interface WorkspaceState {
   chatSessionFile: string;
   /** The owner's `!model` choice; absent means the configured default. */
   modelAlias?: string;
+  /** An OpenRouter model id picked outside the `!model` list; it wins over modelAlias. */
+  customModel?: string;
+  /** The OpenRouter model a ChatGPT choice falls back to; absent means the configured one. */
+  fallbackModel?: string;
   recap?: StashedRecap;
   /** Per surface, whether the bot last said it can upload the files a reply carries. */
   fileSurfaces?: Record<string, boolean>;

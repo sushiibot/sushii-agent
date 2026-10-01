@@ -29,6 +29,8 @@
 		onremovephoto,
 		onretryphoto,
 		model,
+		context = null,
+		fallback = null,
 		onmodel,
 		dictation = null,
 		ondictate,
@@ -51,6 +53,10 @@
 		onretryphoto?: (id: string) => void;
 		/** The model the next turn uses; the chip shows it and opens the picker. */
 		model?: string | null;
+		/** Context used by the last reply, 0–100; the chip's ring fills with it. */
+		context?: number | null;
+		/** The model answering in its place while ChatGPT is cooling down; the chip shows it, with a dot. */
+		fallback?: string | null;
 		onmodel?: () => void;
 		/** Speech to text: shown when set; the transcript lands in the box. */
 		dictation?: { state: DictationState; seconds: number; error: string | null } | null;
@@ -109,6 +115,8 @@
 	}
 
 	const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+	const RING = 2 * Math.PI * 6;
 
 	type Tone = 'muted' | 'strong' | 'primary';
 	function roundFace(tone: Tone) {
@@ -281,14 +289,57 @@
 				<button
 					type="button"
 					aria-haspopup="dialog"
-					aria-label="Model: {model}. Change model"
+					aria-label={[
+						fallback
+							? `Model: ${fallback}, standing in for ${model} while ChatGPT is unavailable`
+							: `Model: ${model}`,
+						context === null || context === undefined
+							? null
+							: `context ${Math.round(context)}% used`
+					]
+						.filter(Boolean)
+						.join(', ') + '. Change model'}
 					onclick={onmodel}
 					class="group/chip flex h-12 min-w-0 items-center outline-none"
 				>
 					<span
-						class="flex h-9 min-w-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm text-foreground transition-colors group-hover/chip:bg-muted/70 group-focus-visible/chip:ring-3 group-focus-visible/chip:ring-ring/50"
+						class="flex h-9 min-w-0 items-center gap-1.5 rounded-full bg-muted pr-3.5 pl-2.5 text-sm text-foreground transition-colors group-hover/chip:bg-muted/70 group-focus-visible/chip:ring-3 group-focus-visible/chip:ring-ring/50"
 					>
-						<span class="truncate">{model}</span>
+						{#if context !== null && context !== undefined}
+							{@const pct = Math.max(0, Math.min(100, context))}
+							<svg
+								viewBox="0 0 16 16"
+								class={cn(
+									'size-4 shrink-0 -rotate-90',
+									pct >= 95 ? 'text-failed' : pct >= 80 ? 'text-waiting' : 'text-foreground/70'
+								)}
+								aria-hidden="true"
+							>
+								<circle
+									cx="8"
+									cy="8"
+									r="6"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									class="opacity-25"
+								/>
+								<circle
+									cx="8"
+									cy="8"
+									r="6"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-dasharray="{(pct / 100) * RING} {RING}"
+								/>
+							</svg>
+						{/if}
+						<span class="truncate">{fallback ?? model}</span>
+						{#if fallback}
+							<span class="size-1.5 shrink-0 rounded-full bg-waiting" aria-hidden="true"></span>
+						{/if}
 						<ChevronDown class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
 					</span>
 				</button>

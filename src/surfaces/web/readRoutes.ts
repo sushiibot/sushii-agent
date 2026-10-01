@@ -35,7 +35,7 @@ const JSON_RPC_METHOD_NOT_FOUND = -32601;
 /** The bot checks every param but the opaque cursors, so the workspace refusing params means a stale cursor. */
 const JSON_RPC_INVALID_PARAMS = -32602;
 
-export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch" | "modelsGet" | "modelsSet">;
+export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch" | "modelsGet" | "modelsSet" | "modelsSearch">;
 
 export interface ReadRouteDeps {
   db: Database;
@@ -99,7 +99,7 @@ function intParam(raw: string | null, min: number, max: number): number | undefi
   return n >= min && n <= max ? n : null;
 }
 
-const modelsBody = z.object({ alias: z.string().min(1).max(ID_MAX) }).strict();
+const modelsBody = z.object({ alias: z.string().min(1).max(ID_MAX), role: z.enum(["main", "fallback"]).optional() }).strict();
 const notFound = () => json({ error: "not found" }, 404);
 const badRequest = (error: string) => json({ error }, 400);
 
@@ -258,7 +258,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     const body = modelsBody.safeParse(raw);
     if (!body.success) return badRequest("invalid body");
     try {
-      return json(await fromWorkspace(() => link.modelsSet(body.data.alias)));
+      return json(await fromWorkspace(() => link.modelsSet(body.data.alias, body.data.role)));
     } catch (err) {
       // The list changed since the app loaded it: say so, rather than blame the workspace's answer.
       if (err instanceof RpcErrorReply && err.code === UNKNOWN_MODEL_CODE) return json({ error: "unknown_model" }, 409);
@@ -269,6 +269,12 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
   return {
     async handle(req, path) {
       if (path === "/api/models") return models(req);
+      if (path === "/api/models/search") {
+        if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+        const q = new URL(req.url).searchParams.get("q") ?? "";
+        if (q.length > 100) return badRequest("query too long");
+        return answer("models/search", async () => json(await fromWorkspace(() => link.modelsSearch(q))));
+      }
       const runs = path === "/api/runs" || path.startsWith("/api/runs/");
       const history = path === "/api/history" || path.startsWith("/api/history/");
       const searchPath = path === "/api/search";

@@ -34,7 +34,7 @@ test('the model chip shows the current model, and picking another switches it', 
 	await chip.click();
 	const sheet = page.getByRole('dialog', { name: 'Model' });
 	await expect(sheet.getByRole('button', { name: /^sol/ })).toHaveAttribute('aria-pressed', 'true');
-	await expect(sheet).toContainText('OpenRouter · openai/gpt-6-luna');
+	await expect(sheet).toContainText('openai/gpt-6-luna');
 	await sheet.getByRole('button', { name: /^or-luna/ }).click();
 	await expect(sheet).toBeHidden();
 	await expect(page.getByRole('button', { name: 'Model: or-luna. Change model' })).toBeVisible();
@@ -106,4 +106,79 @@ test('a model the list no longer has says so and reloads the list', async ({ pag
 	await sheet.getByRole('button', { name: /^or-luna/ }).click();
 	await expect(sheet.getByRole('alert')).toContainText('no longer on the list');
 	await expect(sheet.getByRole('button', { name: /^or-luna/ })).toHaveCount(0);
+});
+
+test('search finds any tool-capable OpenRouter model, and picking it as the fallback shows on the chip while ChatGPT cools down', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context, { override: '' });
+	let fallback = 'openai/gpt-6-luna';
+	const until = new Date(Date.now() + 60 * 60_000).toISOString();
+	const sets: unknown[] = [];
+	const searches: string[] = [];
+	await context.route('**/api/models**', async (route) => {
+		const req = route.request();
+		const url = new URL(req.url());
+		if (url.pathname === '/api/models/search') {
+			searches.push(url.searchParams.get('q') ?? '');
+			return route.fulfill({
+				json: {
+					models: [
+						{
+							id: 'deepseek/deepseek-v4-flash',
+							name: 'DeepSeek V4 Flash',
+							priceIn: 0.04,
+							priceOut: 0.08,
+							contextWindow: 1_048_576
+						}
+					]
+				}
+			});
+		}
+		if (req.method() === 'POST') {
+			const body = req.postDataJSON() as { alias: string; role?: string };
+			sets.push(body);
+			if (body.role === 'fallback') fallback = body.alias;
+		}
+		return route.fulfill({
+			json: {
+				current: 'sol',
+				fallback,
+				fallbackUntil: until,
+				models: [
+					{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol', contextWindow: 1_050_000 },
+					{
+						alias: 'luna-api',
+						backend: 'openrouter',
+						id: 'openai/gpt-6-luna',
+						priceIn: 0.1,
+						priceOut: 0.5
+					}
+				]
+			}
+		});
+	});
+	await page.goto('/chat');
+	await page
+		.getByRole('button', {
+			name: 'Model: gpt-6-luna, standing in for sol while ChatGPT is unavailable. Change model'
+		})
+		.click();
+	const sheet = page.getByRole('dialog', { name: 'Model and context' });
+	await expect(sheet.getByRole('status').first()).toContainText('ChatGPT is unavailable until');
+	await sheet.getByRole('radio', { name: 'Fallback' }).click();
+	await expect(sheet.getByRole('button', { name: /^sol/ })).toHaveCount(0);
+	await sheet.getByRole('searchbox', { name: 'Search OpenRouter models' }).fill('deepseek');
+	const hit = sheet.getByRole('button', { name: /^DeepSeek V4 Flash/ });
+	await expect(hit).toContainText('$0.04 / $0.08 per 1M · 1M context');
+	await hit.click();
+	await expect(sheet).toBeHidden();
+	expect(sets).toEqual([{ alias: 'deepseek/deepseek-v4-flash', role: 'fallback' }]);
+	expect(searches.at(-1)).toBe('deepseek');
+	await expect(
+		page.getByRole('button', {
+			name: 'Model: deepseek-v4-flash, standing in for sol while ChatGPT is unavailable. Change model'
+		})
+	).toBeVisible();
 });

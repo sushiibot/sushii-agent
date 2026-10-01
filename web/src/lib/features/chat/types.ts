@@ -156,7 +156,7 @@ export interface ThreadReport {
 	line: string;
 }
 
-export type ChatSheet = 'commands' | 'new' | 'viewer' | 'usage' | 'model';
+export type ChatSheet = 'commands' | 'new' | 'viewer' | 'model';
 
 export interface ChatTray {
 	items: PendingApproval[];

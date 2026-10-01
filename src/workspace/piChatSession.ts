@@ -166,6 +166,7 @@ export function createPiChatSessionFactory(
       model: openrouterModel,
       maxTokens,
       models: openrouterModels,
+      register: registerOpenRouter,
     } = await createOpenRouterModel({
       agentDir: config.agentDir,
       providerId: PROVIDER_ID,
@@ -283,6 +284,15 @@ export function createPiChatSessionFactory(
       },
     };
     settingsManager.applyOverrides(overrides);
+    // A model picked in the app after this session started is registered (with its compaction trigger)
+    // before the pick is answered, so the next turn can use it.
+    const unsubscribeChoice = opts.choice?.onChange(async () => {
+      await registerOpenRouter(opts.choice!.openrouterIds());
+      for (const m of openrouterModels.values()) {
+        modelOverrides[`${m.provider}/${m.id}`] ??= { reserveTokens: reserveTokensFor(m.contextWindow, economy.compactTokens) };
+      }
+      settingsManager.applyOverrides(overrides);
+    });
     // Warm requests would spend the ChatGPT subscription. Pi reads the mode only from the shared global
     // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
     settingsManager.getCacheWarmingMode = () => "off";
@@ -313,18 +323,18 @@ export function createPiChatSessionFactory(
     } catch (err) {
       sessionRef.current?.dispose();
       stubs?.release();
+      unsubscribeChoice?.();
       throw err;
     }
-    if (stubs) {
-      const dispose = session.dispose.bind(session);
-      session.dispose = () => {
-        try {
-          return dispose();
-        } finally {
-          stubs.release();
-        }
-      };
-    }
+    const dispose = session.dispose.bind(session);
+    session.dispose = () => {
+      try {
+        return dispose();
+      } finally {
+        stubs?.release();
+        unsubscribeChoice?.();
+      }
+    };
     if (model.provider === CHATGPT_PROVIDER) restoreChatGptThinking(session);
 
     const file = sessionManager.getSessionFile();

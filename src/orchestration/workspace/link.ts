@@ -47,8 +47,11 @@ import {
   type ToolManifestEntry,
   modelsGetParams,
   modelsResult,
+  modelsSearchParams,
+  modelsSearchResult,
   modelsSetParams,
   type ModelsResult,
+  type ModelsSearchResult,
 } from "../contracts.ts";
 import { MethodNotFoundError, mayHaveBeenAccepted, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
 import type { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
@@ -366,9 +369,13 @@ export class WorkspaceLink {
     return this.read(RPC_METHODS.modelsGet, modelsGetParams, modelsResult, {}, CONTROL_TIMEOUT_MS);
   }
 
-  /** Switches the owner's model from the next turn, as `!model <alias>` does. */
-  async modelsSet(alias: string): Promise<ModelsResult> {
-    return this.read(RPC_METHODS.modelsSet, modelsSetParams, modelsResult, { alias }, CONTROL_TIMEOUT_MS);
+  /** Switches the owner's model, or the ChatGPT fallback, from the next turn, as `!model <alias>` does. */
+  async modelsSet(alias: string, role: "main" | "fallback" = "main"): Promise<ModelsResult> {
+    return this.read(RPC_METHODS.modelsSet, modelsSetParams, modelsResult, { alias, ...(role === "fallback" ? { role } : {}) }, CONTROL_TIMEOUT_MS);
+  }
+
+  async modelsSearch(query: string): Promise<ModelsSearchResult> {
+    return this.read(RPC_METHODS.modelsSearch, modelsSearchParams, modelsSearchResult, { query }, RUNS_TIMEOUT_MS);
   }
 
   /** A read-only workspace request. Run and history content is agent-writable, so a result outside the
