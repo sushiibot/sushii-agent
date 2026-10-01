@@ -517,6 +517,11 @@ export class PersonalSession {
 
   // Chained so a steer can't slip into Pi's queue between clearQueue() and abort(). Queued steers are dropped:
   // otherwise Pi continues on them after the abort and abort() waits out that whole run.
+  /** The turn the Main run in progress answers; none for a hidden run (memory flush) or between runs. */
+  currentTurnId(): string | undefined {
+    return this.run && !this.run.hidden ? this.run.turnId : undefined;
+  }
+
   handleAbort(turnId?: string): Promise<ChatAbortResult> {
     // A flush holds the chain for minutes; /stop cuts it instead of waiting out the bot's 30s timeout behind it.
     this.flushCut?.cut();

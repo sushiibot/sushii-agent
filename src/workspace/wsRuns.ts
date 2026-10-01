@@ -1,11 +1,12 @@
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
-import { latestRuns, runLogPath, tailLines, type RunRecord } from "./runLog.ts";
-import { resolveStateDir, sessionRoots } from "./sessionPaths.ts";
+import { runLogPath, tailLines, type RunRecord } from "./runLog.ts";
+import { resolveStateDir } from "./sessionPaths.ts";
 import { redact } from "./secretPatterns.ts";
 import { publicAuthError } from "./chatgptFallback.ts";
+import { confineSessionFile, headLines, parseEntry, realRoots, scanRunIndexSync, textOf, type Entry } from "./runReader.ts";
 
-export { redact };
+export { redact, confineSessionFile, parseEntry, realRoots, textOf, type Entry };
 
 // The sanctioned way for the agent to read its own session files, which live under the secret-guarded
 // agent dir. The session roots come from pinned agent dirs; every path in runs.jsonl is agent-writable,
@@ -26,66 +27,6 @@ export interface WsRunsIo {
   agentDirs: string[];
   out: (line: string) => void;
   err: (line: string) => void;
-}
-
-// --- confined session file access --------------------------------------------------------------
-
-const inside = (p: string, dir: string) => p === dir || p.startsWith(`${dir}/`);
-
-// A root that is itself a symlink could point anywhere, e.g. `<agentDir>/chat -> <agentDir>`.
-export function realRoots(agentDirs: string[]): string[] {
-  const roots: string[] = [];
-  for (const r of agentDirs.flatMap(sessionRoots)) {
-    try {
-      const st = lstatSync(r);
-      if (st.isDirectory() && !st.isSymbolicLink()) roots.push(realpathSync(r));
-    } catch {}
-  }
-  return [...new Set(roots)];
-}
-
-/** Lines from the start of a file, read in chunks. */
-function* headLines(path: string): Generator<string> {
-  const fd = openSync(path, "r");
-  try {
-    const buf = Buffer.alloc(64 * 1024);
-    let carry = "";
-    let pos = 0;
-    for (;;) {
-      const n = readSync(fd, buf, 0, buf.length, pos);
-      if (n === 0) break;
-      pos += n;
-      const parts = (carry + buf.subarray(0, n).toString("utf8")).split("\n");
-      carry = parts.pop() ?? "";
-      for (const p of parts) if (p) yield p;
-    }
-    if (carry) yield carry;
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/** The real path of `file` when it is a Pi session file under the session roots, else null. */
-export function confineSessionFile(file: string, roots: string[]): string | null {
-  let real: string;
-  try {
-    real = realpathSync(file);
-  } catch {
-    return null;
-  }
-  if (!real.endsWith(".jsonl")) return null;
-  if (!roots.some((r) => inside(real, r))) return null;
-  try {
-    const st = statSync(real);
-    if (!st.isFile() || st.nlink > 1) return null;
-    for (const line of headLines(real)) {
-      const header = JSON.parse(line) as { type?: unknown };
-      return header?.type === "session" ? real : null;
-    }
-  } catch {
-    return null;
-  }
-  return null;
 }
 
 function listSessionFiles(roots: string[]): string[] {
@@ -109,34 +50,8 @@ function listSessionFiles(roots: string[]): string[] {
 
 // --- transcript rendering ----------------------------------------------------------------------
 
-export interface Entry {
-  type?: string;
-  timestamp?: string;
-  message?: {
-    role?: string;
-    content?: unknown;
-    toolName?: string;
-    toolCallId?: string;
-    isError?: boolean;
-    stopReason?: string;
-    errorMessage?: string;
-  };
-  summary?: string;
-  customType?: string;
-  content?: unknown;
-}
-
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
 const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, max)}… [${s.length - max} more chars]`);
-
-export function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((c): c is { type: "text"; text: string } => c?.type === "text" && typeof c.text === "string")
-    .map((c) => c.text)
-    .join("");
-}
 
 const WS_RUNS_CMD = /(?:^|[;&|(]\s*)ws-runs(?:\s|$)/;
 
@@ -208,15 +123,6 @@ function renderRaw(entry: Entry, full: boolean, hide?: Hide): string[] {
   return [];
 }
 
-export function parseEntry(line: string): Entry | null {
-  try {
-    const e = JSON.parse(line) as Entry;
-    return e && typeof e === "object" ? e : null;
-  } catch {
-    return null;
-  }
-}
-
 // --- commands ----------------------------------------------------------------------------------
 
 interface Ctx {
@@ -278,11 +184,11 @@ function cmdList(ctx: Ctx, flags: Flags): number {
   if (since && Number.isNaN(since.getTime())) return fail(ctx.io, `--since: not a date: ${sinceRaw}`);
   const rows: string[][] = [["RUN", "STARTED (UTC)", "STATUS", "AGENT", "PARENT", "DUR", "TOK IN/OUT", "TASK"]];
   let n = 0;
-  for (const r of latestRuns(runLogPath(ctx.stateDir))) {
+  for (const r of scanRunIndexSync(runLogPath(ctx.stateDir)).runs.values()) {
     if (agent !== undefined && r.agentName !== agent) continue;
     if (parent !== undefined && r.parentRunId !== parent) continue;
     if (since && Date.parse(r.startedAt) < since.getTime()) continue;
-    rows.push([r.runId, fmtTime(r.startedAt), r.status, r.agentName, r.parentRunId ?? "-", fmtDuration(r), fmtTokens(r), clip(oneLine(redact(r.task)), 60)]);
+    rows.push([r.runId, fmtTime(r.startedAt), r.status, r.agentName, r.parentRunId ?? "-", fmtDuration(r), fmtTokens(r), clip(oneLine(redact(String(r.task ?? ""))), 60)].map(String));
     if (++n >= limit) break;
   }
   if (ctx.currentRunId) ctx.io.out(redact(`current run: ${ctx.currentRunId}`));
@@ -295,8 +201,7 @@ function cmdList(ctx: Ctx, flags: Flags): number {
 }
 
 function findRun(stateDir: string, runId: string): RunRecord | null {
-  for (const r of latestRuns(runLogPath(stateDir))) if (r.runId === runId) return r;
-  return null;
+  return scanRunIndexSync(runLogPath(stateDir)).runs.get(runId) ?? null;
 }
 
 function cmdShow(ctx: Ctx, arg: string | undefined, flags: Flags): number {
@@ -351,7 +256,7 @@ function cmdSearch(ctx: Ctx, query: string | undefined, flags: Flags): number {
   const needle = query.toLowerCase();
 
   const runsByFile = new Map<string, RunRecord[]>();
-  for (const r of latestRuns(runLogPath(ctx.stateDir))) {
+  for (const r of scanRunIndexSync(runLogPath(ctx.stateDir)).runs.values()) {
     let key = r.sessionFile;
     try {
       key = realpathSync(r.sessionFile);

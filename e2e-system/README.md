@@ -78,6 +78,10 @@ test("my flow", async ({ page, watch }) => {
 - `stack.restartBot({ waitReady })` sends the bot SIGTERM and starts it again on the same data.
 - `stack.wsHome` is the workspace `$HOME`, and `stack.wsState` its state dir (a scheduler request is `requests/<job>.request` there). `stack.config` holds the ports and addresses.
 - `stack.pushes()` returns every Web Push request the bot sent. The bot's net guard answers a push service host with 201 and records the encrypted body, so a flow that registered its own subscription keys can decrypt it (`flows/job-alerts.e2e.ts`).
+- `stack.linkRequest(method, params)` sends a bot → workspace RPC over the real link, through `stack/link-probe.preload.ts` in the bot process. It returns the result and the pinned contract schema's verdict on it. Use it for workspace RPCs the bot has no HTTP route for yet.
+- `stack.wsHome` is the workspace `$HOME`. `stack.config` holds the ports and addresses.
+
+The workspace starts with seeded runs, a job transcript and `~/history` files, plus links planted into `~/history` that must never be read (`stack/seed-runs.ts`). Flows assert on the seeded ids and date, never on counts, since other flows add runs too.
 
 `lib/chat.ts` has `openChat`, `send`, `textbox` and `bubble`. When the app's routes change (e.g. Home moves to `/`), update `openChat` there, not in each flow.
 

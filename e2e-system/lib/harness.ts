@@ -55,11 +55,27 @@ export const stack = {
   async query<T = Record<string, unknown>>(sql: string, ...params: (string | number | null)[]): Promise<T[]> {
     return (await call("/db/query", { method: "POST", body: JSON.stringify({ sql, params }) })).json() as Promise<T[]>;
   },
+  /**
+   * Sends a bot → workspace RPC over the real orchestration link (through the bot process) and returns the
+   * result plus the contract schema's verdict on it, so flows can exercise workspace RPCs the bot doesn't route yet.
+   */
+  async linkRequest<T = unknown>(method: string, params: Record<string, unknown>): Promise<LinkResult<T>> {
+    const body = JSON.stringify({ principalId: "owner", method, params: { principalId: "owner", ...params } });
+    return (await call("/link/request", { method: "POST", body })).json() as Promise<LinkResult<T>>;
+  },
   /** SIGTERMs the bot and starts it again on the same data. `waitReady` also waits for the workspace to re-register. */
   async restartBot(opts: { waitReady?: boolean } = {}): Promise<void> {
     await call(`/bot/restart${opts.waitReady ? "?wait=ready" : ""}`, { method: "POST" });
   },
 };
+
+export interface LinkResult<T> {
+  result?: T;
+  /** The pinned schema's error message when the result doesn't parse; null when it does. */
+  schemaError?: string | null;
+  bytes?: number;
+  error?: string;
+}
 
 /** A short random tag. Put `#<nonce>` in a message and the fake model starts each reply with `re-<nonce>`. */
 export const nonce = () => Math.random().toString(36).slice(2, 10).padEnd(8, "0");

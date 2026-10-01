@@ -68,7 +68,12 @@ export function bashChangedRepo(command: string): string | null {
   if (!repo) return null;
   // Removing a whole repo leaves nothing to check.
   if (REPO_REMOVAL.test(command)) return null;
-  return GIT_MUTATE.test(command) || FILE_MUTATE.test(command) || hasRedirect(command) ? repo : null;
+  return bashMutates(command) ? repo : null;
+}
+
+/** Whether a bash command looks like it changes files (best-effort text match). */
+export function bashMutates(command: string): boolean {
+  return GIT_MUTATE.test(command) || FILE_MUTATE.test(command) || hasRedirect(command);
 }
 
 /** The repo under projects/ that `path` belongs to, or null. */
