@@ -21,7 +21,7 @@
 	import Composer from './components/composer.svelte';
 	import Conversation from './components/conversation.svelte';
 	import { messagePlainText } from './render/plain-text';
-	import { formatCost, formatTokens, usageLine } from './render/usage';
+	import { formatCost, formatTokens, shortModel, usageLine } from './render/usage';
 	import type { ChatUsage } from '$lib/core/realtime/events';
 	import type { ChatMessage, ChatSheet, ChatTray, FileRef, PhotoDraft } from './types';
 
@@ -317,6 +317,13 @@
 			disabled: commandsOffline
 		}
 	]);
+	function usageLabel(u: ChatUsage): string {
+		const parts = [`model ${shortModel(u.model)}`];
+		if (u.contextPct !== undefined) parts.push(`context ${Math.round(u.contextPct)}%`);
+		if (u.costUsd !== undefined) parts.push(`cost ${formatCost(u.costUsd)}`);
+		return `Last reply: ${parts.join(', ')}`;
+	}
+
 	function usageRows(u: ChatUsage): [string, string][] {
 		const rows: [string, string][] = [['Model', u.model]];
 		if (u.contextPct !== undefined) rows.push(['Context used', `${Math.round(u.contextPct)}%`]);
@@ -453,17 +460,21 @@
 {/snippet}
 
 {#snippet usageStatus()}
-	{#if usage}
-		<!-- Muted and plain: it opens a details sheet and nothing else. -->
-		<button
-			type="button"
-			aria-haspopup="dialog"
-			onclick={() => onopensheet?.('usage')}
-			class="-mt-2 -mb-2.5 flex h-12 w-full min-w-0 items-center justify-center text-meta text-muted-foreground hover:text-foreground"
-		>
-			<span class="truncate">{usageLine(usage)}</span>
-		</button>
-	{/if}
+	<!-- Its height is held from the first frame, so the composer never moves when usage arrives. -->
+	<div class="-mt-2 -mb-2.5 flex h-12 min-w-0">
+		{#if usage}
+			<!-- Muted and plain: it opens a details sheet and nothing else. -->
+			<button
+				type="button"
+				aria-haspopup="dialog"
+				aria-label={usageLabel(usage)}
+				onclick={() => onopensheet?.('usage')}
+				class="flex w-full min-w-0 items-center justify-center text-meta text-muted-foreground hover:text-foreground"
+			>
+				<span class="truncate">{usageLine(usage)}</span>
+			</button>
+		{/if}
+	</div>
 {/snippet}
 
 {#snippet footer()}
@@ -496,7 +507,7 @@
 			onattach={(files) => onattach?.(files)}
 			onremovephoto={(id) => onremovephoto?.(id)}
 			onretryphoto={(id) => onretryphoto?.(id)}
-			status={usage ? usageStatus : undefined}
+			status={usageStatus}
 		/>
 	</div>
 {/snippet}

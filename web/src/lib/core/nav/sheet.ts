@@ -1,6 +1,20 @@
 import { pushState, replaceState } from '$app/navigation';
 import { page } from '$app/state';
 
+// page.state changes only once the browser has popped the entry, so two closes in one frame
+// (Escape and a Close tap) would otherwise go back twice and leave the page.
+let closing = false;
+let listening = false;
+function closeOnce() {
+	if (closing) return;
+	closing = true;
+	if (!listening) {
+		listening = true;
+		addEventListener('popstate', () => (closing = false));
+	}
+	history.back();
+}
+
 export interface RoutedSheet {
 	/** This sheet is the one open. */
 	readonly open: boolean;
@@ -28,7 +42,7 @@ export function routedSheet(id: App.SheetId): RoutedSheet {
 			else pushState('', state);
 		},
 		close() {
-			if (page.state.sheet === id) history.back();
+			if (page.state.sheet === id) closeOnce();
 		}
 	};
 }

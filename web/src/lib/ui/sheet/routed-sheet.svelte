@@ -8,14 +8,15 @@
 		open,
 		label,
 		onclose,
-		desktop = false,
+		desktop = true,
 		children
 	}: {
 		open: boolean;
 		label: string;
 		/** Escape, a tap on the scrim, or a close inside; the caller owns the history entry. */
 		onclose?: () => void;
-		/** Also show at desktop widths, for sheets with no desktop equivalent. */
+		/** Show at desktop widths too, as a centred dialog. Off only for a sheet whose content has
+		 *  a desktop home of its own; such a sheet closes itself there. */
 		desktop?: boolean;
 		children: Snippet;
 	} = $props();
@@ -24,6 +25,10 @@
 	let probe = $state<HTMLElement | null>(null);
 	let wide = $state(false);
 	const shown = $derived(open && (desktop || !wide));
+	// A sheet that can't show must not keep its history entry, or Back is spent on nothing.
+	$effect(() => {
+		if (open && !shown) onclose?.();
+	});
 
 	// Desktop is the shell's width, not the window's, so a phone frame on the prototype board
 	// still gets phone sheets. Matches the shell's @3xl breakpoint.

@@ -649,7 +649,10 @@ test("the last reply's usage sits under the composer, holds still while streamin
 		]
 	});
 	await open(page);
-	const line = page.getByRole('button', { name: 'deepseek-v4.1-flash · ctx 12% · $0.0020' });
+	const line = page.getByRole('button', {
+		name: 'Last reply: model deepseek-v4.1-flash, context 12%, cost $0.0020'
+	});
+	await expect(line).toHaveText('deepseek-v4.1-flash · ctx 12% · $0.0020');
 	await expect(line).toBeVisible();
 	const top = await line.evaluate((e) => e.getBoundingClientRect().top);
 
@@ -672,7 +675,9 @@ test("the last reply's usage sits under the composer, holds still while streamin
 		{ key: 'r2', turnId: 't2', text: 'Streaming a new answer', usage, files: [] },
 		1
 	);
-	const next = page.getByRole('button', { name: 'claude-sonnet-5 · ctx 40% · $0.031' });
+	const next = page.getByRole('button', {
+		name: 'Last reply: model claude-sonnet-5, context 40%, cost $0.031'
+	});
 	await expect(next).toBeVisible();
 
 	await next.click();
@@ -686,11 +691,80 @@ test("the last reply's usage sits under the composer, holds still while streamin
 	await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('no usage line before any reply has usage', async ({ page, context }) => {
+test('no usage line before any reply has usage, and its arrival moves nothing', async ({
+	page,
+	context
+}) => {
 	await chatServer(context);
 	await open(page);
-	await expect(page.getByRole('button', { name: /ctx \d+%/ })).toHaveCount(0);
-	await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
+	const line = page.getByRole('button', { name: /^Last reply:/ });
+	await expect(line).toHaveCount(0);
+	const send = page.getByRole('button', { name: 'Send message' });
+	const before = (await send.boundingBox())!.y;
+	const usage = { model: 'm', inputTokens: 1, outputTokens: 1, contextPct: 3 };
+	await push(page, 'reply', { key: 'r1', text: 'Hi', usage, files: [] }, 1);
+	await expect(line).toBeVisible();
+	expect((await send.boundingBox())!.y).toBe(before);
+});
+
+const withUsage = {
+	type: 'assistant',
+	id: 'u1',
+	at: 'x',
+	text: 'Earlier answer',
+	tools: [],
+	files: [],
+	usage: { model: 'm', inputTokens: 1200, outputTokens: 80, contextPct: 12, costUsd: 0.002 }
+};
+
+test('at desktop width the usage and commands sheets show, and Escape takes their history entry', async ({
+	browser
+}) => {
+	const context = await browser.newContext({
+		viewport: { width: 1280, height: 800 },
+		isMobile: false,
+		hasTouch: false
+	});
+	await chatServer(context, { history: [withUsage] });
+	const page = await context.newPage();
+	await open(page);
+	const sheetState = () => page.evaluate(() => JSON.stringify(history.state ?? {}));
+	for (const [button, dialog] of [
+		[/^Last reply:/, 'Last reply usage'],
+		['Chat commands', 'Chat commands']
+	] as const) {
+		await page.getByRole('button', { name: button }).click();
+		await expect(page.getByRole('dialog', { name: dialog })).toBeVisible();
+		expect(await sheetState()).toContain('"sheet"');
+		await page.keyboard.press('Escape');
+		await expect(page.getByRole('dialog')).toHaveCount(0);
+		await expect.poll(sheetState).not.toContain('"sheet"');
+	}
+	await context.close();
+});
+
+test('Escape and Close in the same frame close the sheet once and stay on the page', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { history: [withUsage] });
+	await page.goto('/settings');
+	await open(page);
+	await page.getByRole('button', { name: /^Last reply:/ }).click();
+	const dialog = page.getByRole('dialog', { name: 'Last reply usage' });
+	await expect(dialog).toBeVisible();
+	await page.evaluate(() => {
+		const sheet = document.querySelector<HTMLElement>('[role=dialog]')!;
+		const close = [...sheet.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Close'
+		)!;
+		sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		close.click();
+	});
+	await expect(dialog).toHaveCount(0);
+	await page.waitForTimeout(300);
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
 test('the new-chat and image sheets each close on one back', async ({ page, context }) => {
