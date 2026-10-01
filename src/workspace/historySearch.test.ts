@@ -45,6 +45,17 @@ describe("buildSnippet", () => {
     expect(buildSnippet("needle NEEDLE", "NEEDLE")!.ranges).toEqual([[7, 13]]);
   });
 
+  test("a secret cut by the window's right edge leaves no fragment, even when redaction pulls the edge into the snippet", () => {
+    // Five long tokens that redact to 10 chars each, then a secret starting 18 chars before the 1000-char window edge.
+    const tok = (n: number) => `ghp_${"A1b2C3d4".repeat(Math.ceil(n / 8)).slice(0, n)}`;
+    const tokens = [tok(200), tok(200), tok(200), tok(200), tok(150)].join(" ");
+    const line = `needle ${tokens} ghp_Q9w8E7r6T5y4U3i2O1p0Z9x8C7v6B5n4M3`;
+    expect(7 + tokens.length + 1).toBe(982);
+    const s = buildSnippet(line, "needle")!;
+    expect(s.snippet).not.toContain("ghp_");
+    expect(s.snippet).not.toContain("Q9w8");
+  });
+
   test("a match that redaction removed is dropped", () => {
     expect(buildSnippet(`token ${GH_TOKEN}`, "A1b2C3")).toBeNull();
     expect(buildSnippet(`token ${GH_TOKEN} and token`, "token")!.snippet).not.toContain(GH_TOKEN);
@@ -132,7 +143,7 @@ describe("history/search", () => {
     expect(r.hits.map((h) => h.date)).not.toContain("2026-09-17");
     expect(r.hits.map((h) => h.date)).not.toContain("2026-09-16");
     const deep = r.hits.find((h) => h.date === "2026-09-20")!;
-    expect(deep.snippet).toBe("…needle [REDACTED]…");
+    expect(deep.snippet).toBe("…needle…");
   });
 
   itIfRg("odd queries: a leading dash, a newline, NUL, regex characters", async () => {

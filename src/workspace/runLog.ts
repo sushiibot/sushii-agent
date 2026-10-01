@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ulid } from "./ulid.ts";
 import type { RotationRecord } from "./personalSession.ts";
@@ -94,11 +94,24 @@ function parseRecord(line: string): RunRecord | null {
   }
 }
 
-/** Lines of `path` from last to first, read in fixed-size chunks so a large file never loads whole. */
+// The state dir is agent-writable: a FIFO, symlink or hardlink planted at runs.jsonl must never block or
+// redirect the host. O_NONBLOCK keeps a FIFO open from waiting for a writer.
+const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+// Read-write, not write-only: append checks the last byte for a torn line first.
+const APPEND_FLAGS = constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+const isPlainFile = (st: { isFile(): boolean; nlink: number }) => st.isFile() && st.nlink === 1;
+
+/** Lines of `path` from last to first, read in fixed-size chunks so a large file never loads whole. Anything but a regular, singly linked file reads as empty. */
 export function* tailLines(path: string, chunkSize = CHUNK): Generator<string> {
-  if (!existsSync(path)) return;
-  const fd = openSync(path, "r");
+  let fd: number;
   try {
+    fd = openSync(path, READ_FLAGS);
+  } catch {
+    return;
+  }
+  try {
+    if (!isPlainFile(fstatSync(fd))) return;
     let pos = fstatSync(fd).size;
     let carry: Buffer = Buffer.alloc(0);
     while (pos > 0) {
@@ -140,17 +153,34 @@ export class RunLog implements RunRecorder {
   private readonly newId: () => string;
   private readonly now: () => Date;
 
-  constructor(stateDir: string, opts: { newId?: () => string; now?: () => Date } = {}) {
+  private readonly warn: (obj: object, msg: string) => void;
+
+  constructor(stateDir: string, opts: { newId?: () => string; now?: () => Date; warn?: (obj: object, msg: string) => void } = {}) {
     this.path = runLogPath(stateDir);
     this.newId = opts.newId ?? ulid;
     this.now = opts.now ?? (() => new Date());
+    this.warn = opts.warn ?? (() => {});
+    this.quarantine();
+  }
+
+  /** Moves anything but a regular, singly linked file at the log path aside, so the host starts a fresh log. */
+  private quarantine(): void {
+    try {
+      const st = lstatSync(this.path);
+      if (st.isFile() && !st.isSymbolicLink() && st.nlink === 1) return;
+      const aside = `${this.path}.unsafe-${Date.now()}`;
+      renameSync(this.path, aside);
+      this.warn({ path: this.path, aside }, "runs.jsonl was not a plain file; moved it aside and started a fresh run log");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") this.warn({ err, path: this.path }, "could not check runs.jsonl");
+    }
   }
 
   startRun(input: StartRunInput): string {
     const record: RunRecord = {
       runId: this.newId(),
       ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
-      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.turnId && TURN_ID_RE.test(input.turnId) ? { turnId: input.turnId } : {}),
       agentName: input.agentName,
       task: clip(input.task, TASK_MAX),
       sessionFile: input.sessionFile,
@@ -219,10 +249,25 @@ export class RunLog implements RunRecorder {
     return orphans.length;
   }
 
+  private openForAppend(): number {
+    for (let attempt = 0; ; attempt++) {
+      this.quarantine();
+      let fd: number | null = null;
+      try {
+        fd = openSync(this.path, APPEND_FLAGS, 0o644);
+        if (isPlainFile(fstatSync(fd))) return fd;
+      } catch (err) {
+        if (attempt > 0) throw err;
+      }
+      if (fd !== null) closeSync(fd);
+      if (attempt > 0) throw new Error("runs.jsonl is not a plain file");
+    }
+  }
+
   // One write per record; a torn tail left by a crash gets a newline first so this record stays parseable.
   private append(record: RunRecord): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    const fd = openSync(this.path, "a+");
+    const fd = this.openForAppend();
     try {
       const size = fstatSync(fd).size;
       let prefix = "";
@@ -237,6 +282,9 @@ export class RunLog implements RunRecorder {
     }
   }
 }
+
+/** The host's turn ids are ULIDs (PersonalSession's newId); anything else in a record is not one it wrote. */
+export const TURN_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 /** An idle rotation as a finished `main:rotate` run: tokens before/after, on the retired session's file. */
 export function recordRotation(runs: RunRecorder, r: RotationRecord): string {

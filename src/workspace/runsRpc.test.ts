@@ -58,14 +58,14 @@ describe("runs/list", () => {
     const b = id(2);
     record({ runId: a, status: "running", task: `[web:owner 2026-09-29 10:00 UTC]\ndeploy with ${GH_TOKEN}\nplease` });
     record({ runId: b, agentName: "job:nightly", task: "nightly job", status: "running" });
-    record({ runId: a, status: "done", task: "[web:owner 2026-09-29 10:00 UTC]\ndeploy", endedAt: iso(5), usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01, model: "m" }, resultSummary: `ok ${GH_TOKEN}`, turnId: "turn-1" });
+    record({ runId: a, status: "done", task: "[web:owner 2026-09-29 10:00 UTC]\ndeploy", endedAt: iso(5), usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01, model: "m" }, resultSummary: `ok ${GH_TOKEN}`, turnId: "01K6B0000000000000000TRNX1" });
     const r = runsListResult.parse(await list());
     expect(r.runs.map((x) => [x.runId, x.kind, x.status])).toEqual([
       [b, "job", "running"],
       [a, "chat", "done"],
     ]);
     expect(r.runs[0]).toMatchObject({ jobName: "nightly", title: "nightly job" });
-    expect(r.runs[1]).toMatchObject({ title: "deploy", turnId: "turn-1", usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01, model: "m" } });
+    expect(r.runs[1]).toMatchObject({ title: "deploy", turnId: "01K6B0000000000000000TRNX1", usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01, model: "m" } });
     expect(r.runs[1]!.resultSummary).not.toContain(GH_TOKEN);
     expect(r).toMatchObject({ before: null, truncated: false });
   });
@@ -179,7 +179,7 @@ describe("runs/get", () => {
       msg("e13", 10, { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" }),
       msg("e14", 200, { role: "user", content: "a later run" }),
     ]);
-    record({ runId, sessionFile: chat(), startedAt: iso(0), endedAt: iso(11), turnId: "turn-9", ...extra });
+    record({ runId, sessionFile: chat(), startedAt: iso(0), endedAt: iso(11), turnId: "01K6B0000000000000000TRNX9", ...extra });
   }
 
   test("the run's window of its session as typed steps, redacted, with tool results paired", async () => {
@@ -187,7 +187,7 @@ describe("runs/get", () => {
     mainRun(runId);
     const r = await get(runId);
     expect(r.session).toBe("ok");
-    expect(r.run.turnId).toBe("turn-9");
+    expect(r.run.turnId).toBe("01K6B0000000000000000TRNX9");
     expect(r.steps.map((s) => `${s.type}:${s.id}`)).toEqual([
       "user:e1",
       "assistant:e2",
@@ -417,6 +417,55 @@ describe("runs/get and the event loop", () => {
     }
     expect(gap).toBeLessThan(200);
   });
+});
+
+describe("runs/get on windows with very many entries or calls", () => {
+  async function timed<T>(fn: () => Promise<T>): Promise<{ out: T; gap: number }> {
+    let last = performance.now();
+    let gap = 0;
+    const timer = setInterval(() => {
+      const now = performance.now();
+      gap = Math.max(gap, now - last);
+      last = now;
+    }, 5);
+    try {
+      return { out: await fn(), gap };
+    } finally {
+      clearInterval(timer);
+    }
+  }
+
+  test("100k tiny entries: the newest 20k are kept, the start is marked, the loop keeps turning", async () => {
+    const runId = id(0);
+    const file = join(agentDir, "chat", "tiny.jsonl");
+    const lines = [JSON.stringify({ type: "session", version: 3, id: "s", timestamp: iso(-1), cwd: home })];
+    for (let i = 0; i < 100_000; i++) lines.push(`{"type":"message","timestamp":"${iso(1)}","message":{"role":"user","content":"x"}}`);
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    record({ runId, sessionFile: file, endedAt: iso(2) });
+    const { out, gap } = await timed(() => get(runId, { limit: 10 }));
+    expect(out.steps[0]).toMatchObject({ id: "#head", type: "note" });
+    expect(gap).toBeLessThan(200);
+  });
+
+  test("messages forging thousands of tool calls: calls per message and steps are capped", async () => {
+    const runId = id(0);
+    const file = join(agentDir, "chat", "calls.jsonl");
+    const calls = Array.from({ length: 1_000 }, (_, k) => ({ type: "toolCall", id: `c${k}`, name: "bash", arguments: { command: "ls" } }));
+    const lines = [JSON.stringify({ type: "session", version: 3, id: "s", timestamp: iso(-1), cwd: home })];
+    for (let i = 0; i < 400; i++) lines.push(JSON.stringify(msg(`a${i}`, 1, { role: "assistant", content: calls, stopReason: "toolUse" })));
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    record({ runId, sessionFile: file, endedAt: iso(2) });
+    const { out, gap } = await timed(() => get(runId, { limit: 200 }));
+    expect(out.steps.filter((s) => s.id.startsWith("a0/")).length).toBe(64);
+    expect(gap).toBeLessThan(200);
+    let after: string | null = out.after;
+    let last = out;
+    while (after) {
+      last = await get(runId, { limit: 200, after });
+      after = last.after;
+    }
+    expect(last.steps.at(-1)).toMatchObject({ id: "#tail", type: "note" });
+  }, 60_000);
 });
 
 describe("runs/changed", () => {

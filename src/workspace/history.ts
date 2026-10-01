@@ -1,11 +1,11 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative } from "node:path";
-import { tailLines, type EndRunInput, type ListRunsQuery, type RunRecord, type RunRecorder, type RunStatus, type StartRunInput } from "./runLog.ts";
+import { type EndRunInput, type ListRunsQuery, type RunRecord, type RunRecorder, type RunStatus, type StartRunInput } from "./runLog.ts";
 import { publicAuthError } from "./chatgptFallback.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { redact } from "./secretPatterns.ts";
-import { confineSessionFile, parseEntry, realRoots, textOf, type Entry } from "./runReader.ts";
+import { SESSION_READ_MAX_BYTES, openConfinedSessionSync, parseEntry, realRoots, tailLinesOfSync, textOf, type Entry } from "./runReader.ts";
 
 // Plain-markdown history under $HOME/history, for the agent to read with rg/cat. Written by the host
 // after every run and at the end of every chat session; never versioned (the home .gitignore is an allowlist).
@@ -146,10 +146,10 @@ interface ToolResult {
   text: string;
 }
 
-/** The entries of `file` stamped within [from, to], oldest first; reads from the tail and stops at `from`. */
-function entriesInWindow(file: string, from: number, to: number): Entry[] {
+/** The entries of the open session stamped within [from, to], oldest first; reads from the tail and stops at `from`. */
+function entriesInWindow(session: { fd: number; size: number }, from: number, to: number): Entry[] {
   const out: Entry[] = [];
-  for (const line of tailLines(file)) {
+  for (const line of tailLinesOfSync(session.fd, session.size, { maxBytes: SESSION_READ_MAX_BYTES, maxLine: 16 * 1024 * 1024 }, { truncated: false })) {
     const entry = parseEntry(line);
     if (!entry?.timestamp || entry.type === "session") continue;
     const t = Date.parse(entry.timestamp);
@@ -245,8 +245,16 @@ export class HistoryWriter {
     const tz = this.opts.tz;
     const rel = runFileRel(run.runId, run.startedAt, tz);
     const file = join(this.dir, rel);
-    const sessionFile = confineSessionFile(run.sessionFile, realRoots([this.opts.agentDir]));
-    const transcript = sessionFile ? renderTranscript(entriesInWindow(sessionFile, (run.windowFrom ?? run.startedAt).getTime(), run.endedAt.getTime()), tz) : null;
+    // Read through the fd that passed the checks: a path re-opened later could have been swapped for a FIFO.
+    const session = openConfinedSessionSync(run.sessionFile, realRoots([this.opts.agentDir]));
+    let transcript: Transcript | null = null;
+    if (session) {
+      try {
+        transcript = renderTranscript(entriesInWindow(session, (run.windowFrom ?? run.startedAt).getTime(), run.endedAt.getTime()), tz);
+      } finally {
+        closeSync(session.fd);
+      }
+    }
     const start = localTime(run.startedAt, tz);
     const end = localTime(run.endedAt, tz);
     const origin = transcript?.firstUserText ? headerOrigin(transcript.firstUserText) : null;

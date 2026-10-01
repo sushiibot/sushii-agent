@@ -6,6 +6,7 @@ import {
   RPC_METHODS,
   RUN_CHILDREN_MAX,
   RUN_ID_RE,
+  RUN_STATUSES,
   RUN_STEP_LIMITS,
   runStep,
   runsChangedParams,
@@ -42,6 +43,8 @@ const COMMAND_SCAN_MAX = 500;
 /** A whole runs/get result, serialized, stays under this: the bot rejects anything over 2 MB. */
 export const RUNS_GET_BUDGET = 1_400_000;
 const CHECKS_MAX = 20;
+/** Records summarised between yields to the event loop. */
+const LIST_SLICE = 200;
 const REPOS_MAX = 20;
 const MEMORY_WRITES_MAX = 50;
 const FILES_SENT_MAX = DELIVER_FILES_MAX * 5;
@@ -72,6 +75,8 @@ export async function runsList(opts: RunsRpcOptions, p: unknown): Promise<RunsLi
   const candidates = [...index.runs.values()]
     .filter((r) => {
       if (!RUN_ID_RE.test(r.runId) || (params.before && r.runId >= params.before)) return false;
+      // The fields toRunSummary rejects on, so a page of bad records can't push every candidate through redaction.
+      if (!isStamp(r.startedAt) || !str(r.agentName) || !(RUN_STATUSES as readonly string[]).includes(r.status)) return false;
       if (params.statuses && !(params.statuses as string[]).includes(r.status)) return false;
       if (params.kinds && !params.kinds.includes(runKindOf(r))) return false;
       const t = Date.parse(r.startedAt);
@@ -83,6 +88,7 @@ export async function runsList(opts: RunsRpcOptions, p: unknown): Promise<RunsLi
   const runs: RunSummary[] = [];
   let i = 0;
   for (; i < candidates.length && runs.length < params.limit; i++) {
+    if (i > 0 && i % LIST_SLICE === 0) await new Promise<void>((r) => setImmediate(r));
     const s = toRunSummary(candidates[i]!);
     if (s) runs.push(s);
   }
@@ -126,6 +132,12 @@ const isStamp = (v: unknown): v is string => str(v) && v.length <= STAMP_MAX && 
 /** Long enough that `safeText` still knows the text was cut. */
 const head = (s: string, max: number) => (s.length > max + SLICE_SLACK ? s.slice(0, max + SLICE_SLACK + 1) : s);
 const PATH_MAX = 4_096;
+/** Pi turns carry a handful of parallel calls; a message forging thousands is cut. */
+const CALLS_PER_MESSAGE_MAX = 64;
+/** Steps built per window, from its start; the rest is past the cap like bytes past the read cap. */
+const STEPS_MAX = 20_000;
+/** Entries handled between yields to the event loop. */
+const BUILD_SLICE = 1_000;
 
 function slimCall(c: ToolCallItem): SlimCall {
   const args = c.arguments && typeof c.arguments === "object" && !Array.isArray(c.arguments) ? (c.arguments as Record<string, unknown>) : {};
@@ -150,7 +162,7 @@ export function slimEntry(e: Entry): SlimEntry | null {
   const m = e.message;
   if (e.type === "message" && m?.role === "user") return { ...base, type: "user", text: head(textOf(m.content), RUN_STEP_LIMITS.user) };
   if (e.type === "message" && m?.role === "assistant") {
-    const calls = Array.isArray(m.content) ? (m.content as ToolCallItem[]).filter((c) => c?.type === "toolCall" && str(c.name)).map(slimCall) : [];
+    const calls = Array.isArray(m.content) ? (m.content as ToolCallItem[]).filter((c) => c?.type === "toolCall" && str(c.name)).slice(0, CALLS_PER_MESSAGE_MAX).map(slimCall) : [];
     const stop = m.stopReason === "error" || m.stopReason === "aborted" ? { reason: m.stopReason as "error" | "aborted", message: str(m.errorMessage) ? m.errorMessage.slice(0, 4_000) : "" } : undefined;
     return { ...base, type: "assistant", text: head(textOf(m.content).trim(), RUN_STEP_LIMITS.assistant), calls, ...(stop ? { stop } : {}) };
   }
@@ -189,10 +201,12 @@ export interface BuiltSteps {
   steps: PendingStep[];
   uses: ToolUse[];
   verifyNudged: boolean;
+  /** The step cap was hit: later steps of the window aren't shown. */
+  capped: boolean;
 }
 
 /** The steps of a run's window, in file order. Ids are stable while the run appends: positional ones count from the window start. */
-export function buildSteps(entries: SlimEntry[]): BuiltSteps {
+export async function buildSteps(entries: SlimEntry[]): Promise<BuiltSteps> {
   const results = new Map<string, SlimEntry>();
   for (const e of entries) if (e.type === "toolResult" && e.toolCallId && !results.has(e.toolCallId)) results.set(e.toolCallId, e);
   const used = new Set<string>();
@@ -200,8 +214,10 @@ export function buildSteps(entries: SlimEntry[]): BuiltSteps {
   const uses: ToolUse[] = [];
   let verifyNudged = false;
   const add = (id: string, render: () => RunStep) => steps.push({ id, render });
-  entries.forEach((e, i) => {
-    if (e.type === "toolResult") return;
+  for (let i = 0; i < entries.length && steps.length < STEPS_MAX; i++) {
+    if (i > 0 && i % BUILD_SLICE === 0) await new Promise<void>((r) => setImmediate(r));
+    const e = entries[i]!;
+    if (e.type === "toolResult") continue;
     const at = e.at;
     const id = e.id && ENTRY_ID.test(e.id) && !used.has(e.id) ? e.id : `#${i}`;
     used.add(id);
@@ -246,8 +262,8 @@ export function buildSteps(entries: SlimEntry[]): BuiltSteps {
       const label = e.customType && !verify ? `[${e.customType}] ` : "";
       add(id, () => ({ type: "note", id, at, kind: verify ? "verify" : "custom", text: safeText(label + e.text, RUN_STEP_LIMITS.note) }));
     }
-  });
-  return { steps, uses, verifyNudged };
+  }
+  return { steps, uses, verifyNudged, capped: steps.length >= STEPS_MAX };
 }
 
 // --- evidence --------------------------------------------------------------------------------------
@@ -390,16 +406,20 @@ export async function runsGet(opts: RunsRpcOptions, p: unknown): Promise<RunsGet
   const parent = parentRec ? toRunSummary(parentRec) : null;
 
   const session = await openSession(rec.sessionFile, realRoots(opts.agentDirs));
-  let built: BuiltSteps = { steps: [], uses: [], verifyNudged: false };
+  let built: BuiltSteps = { steps: [], uses: [], verifyNudged: false, capped: false };
   if (session.state === "ok") {
     try {
       const from = Date.parse(run.startedAt);
       const to = run.endedAt ? Date.parse(run.endedAt) : (opts.now?.() ?? new Date()).getTime();
       const read = await entriesInWindow(session, from, Number.isNaN(to) ? Number.POSITIVE_INFINITY : to, slimEntry);
-      built = buildSteps(read.entries);
+      built = await buildSteps(read.entries);
       if (read.truncated) {
         const note: RunStep = { type: "note", id: "#head", at: run.startedAt, kind: "custom", text: "The start of this run is past the transcript read limit and isn't shown." };
         built.steps.unshift({ id: note.id, render: () => note });
+      }
+      if (built.capped) {
+        const note: RunStep = { type: "note", id: "#tail", at: built.steps.at(-1)!.render().at, kind: "custom", text: "This run has more steps than can be shown; the rest aren't listed." };
+        built.steps.push({ id: note.id, render: () => note });
       }
     } finally {
       await session.fh.close();

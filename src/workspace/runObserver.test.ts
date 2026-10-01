@@ -165,17 +165,17 @@ describe("observeRuns robustness and current run", () => {
 describe("observeRuns turnId", () => {
   test("a main run carries the turn it answers on both its start and end records", () => {
     const s = new FakeSession();
-    let turn: string | undefined = "turn-1";
+    let turn: string | undefined = "01K6B0000000000000000TRNX1";
     observeRuns(s, { recorder: log, sessionFile: "/agent/chat/t.jsonl", agentName: "main", turnId: () => turn });
     s.emit({ type: "agent_start" });
     s.user("hello");
-    turn = "turn-2";
+    turn = "01K6B0000000000000000TRNX2";
     s.assistant("hi", "stop");
     s.emit({ type: "agent_settled" });
     const lines = readFileSync(join(dir, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.filter((l) => l.sessionFile === "/agent/chat/t.jsonl").map((l) => [l.status, l.turnId])).toEqual([
-      ["running", "turn-1"],
-      ["done", "turn-1"],
+      ["running", "01K6B0000000000000000TRNX1"],
+      ["done", "01K6B0000000000000000TRNX1"],
     ]);
   });
 

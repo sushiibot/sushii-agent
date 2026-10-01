@@ -4,7 +4,7 @@ import { JOB_NAME_RE, RUN_ID_RE, RUN_RESULT_SUMMARY_MAX, RUN_STATUSES, RUN_TITLE
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { REDACTED, redact } from "./secretPatterns.ts";
 import { sessionRoots } from "./sessionPaths.ts";
-import type { RunRecord } from "./runLog.ts";
+import { TURN_ID_RE, type RunRecord } from "./runLog.ts";
 
 // The one reader of the run index and session transcripts, shared by the ws-runs CLI and the host's
 // runs/* handlers. Everything here is agent-writable: paths are confined, reads are bounded, and every
@@ -125,7 +125,7 @@ export async function* tailLinesOf(fh: FileHandle, size: number, b: TailBounds, 
   for (const line of split.finish()) yield line;
 }
 
-function* tailLinesOfSync(fd: number, size: number, b: TailBounds, state: { truncated: boolean }): Generator<string> {
+export function* tailLinesOfSync(fd: number, size: number, b: TailBounds, state: { truncated: boolean }): Generator<string> {
   const chunkSize = b.chunk ?? 64 * 1024;
   const split = new TailSplitter(b.maxLine);
   let pos = size;
@@ -287,7 +287,7 @@ export function toRunSummary(rec: RunRecord): RunSummary | null {
   const summary: RunSummary = {
     runId: rec.runId,
     ...(parentRunId ? { parentRunId } : {}),
-    ...(str(rec.turnId) && rec.turnId && rec.turnId.length <= ID_MAX ? { turnId: rec.turnId } : {}),
+    ...(str(rec.turnId) && TURN_ID_RE.test(rec.turnId) ? { turnId: rec.turnId } : {}),
     kind,
     agentName: safeText(rec.agentName, ID_MAX, { oneLine: true }),
     ...(jobName && JOB_NAME_RE.test(jobName) ? { jobName } : {}),
@@ -365,30 +365,46 @@ export function* headLines(path: string): Generator<string> {
   }
 }
 
-/** The real path of `file` when it is a Pi session file under the session roots, else null. */
-export function confineSessionFile(file: string, roots: string[]): string | null {
-  if (!str(file) || !file) return null;
+/**
+ * Opens `file` when it is a regular, singly linked Pi session file under the session roots, checking the
+ * open fd itself (type, links, real path, header), so callers read exactly the file that was checked.
+ */
+export function openConfinedSessionSync(file: string, roots: string[]): { fd: number; real: string; size: number } | null {
+  if (!str(file) || !file || file.includes("\0")) return null;
   let real: string;
   try {
     real = realpathSync(file);
   } catch {
     return null;
   }
-  if (!real.endsWith(".jsonl")) return null;
-  if (!roots.some((r) => inside(real, r))) return null;
-  let fd: number | null = null;
+  if (!real.endsWith(".jsonl") || !roots.some((r) => inside(real, r))) return null;
+  let fd: number;
   try {
-    const st = statSync(real);
-    if (!st.isFile() || st.nlink > 1) return null;
     fd = openSync(real, SAFE_OPEN);
-    const buf = Buffer.alloc(Math.min(HEADER_MAX, st.size));
-    const n = readSync(fd, buf, 0, buf.length, 0);
-    return isSessionHeader(buf.subarray(0, n)) ? real : null;
   } catch {
     return null;
-  } finally {
-    if (fd !== null) closeSync(fd);
   }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) throw new Error("refused");
+    const now = fdPath(fd);
+    if (now !== null && now !== real) throw new Error("refused");
+    const buf = Buffer.alloc(Math.min(HEADER_MAX, st.size));
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    if (!isSessionHeader(buf.subarray(0, n))) throw new Error("refused");
+    return { fd, real, size: st.size };
+  } catch {
+    closeSync(fd);
+    return null;
+  }
+}
+
+/** The real path of `file` when it is a Pi session file under the session roots, else null. */
+export function confineSessionFile(file: string, roots: string[]): string | null {
+  const opened = openConfinedSessionSync(file, roots);
+  if (!opened) return null;
+  closeSync(opened.fd);
+  return opened.real;
 }
 
 export type SessionState = "ok" | "missing" | "outside" | "not-session";
@@ -482,6 +498,8 @@ export function textOf(content: unknown): string {
 }
 
 export const SESSION_READ_MAX_BYTES = 64 * 1024 * 1024;
+/** Entries kept from one window, newest first; a window of many tiny entries stops here. */
+export const WINDOW_ENTRIES_MAX = 20_000;
 /** A line with inline images can run to several MiB; one past this is skipped rather than parsed. */
 const SESSION_LINE_MAX = 16 * 1024 * 1024;
 
@@ -490,7 +508,7 @@ const SESSION_LINE_MAX = 16 * 1024 * 1024;
  * window never holds whole image or file payloads. Reads from the tail and stops at the first entry before
  * `from` or after `SESSION_READ_MAX_BYTES`.
  */
-export async function entriesInWindow<T>(s: OpenedSession, from: number, to: number, slim: (e: Entry) => T | null): Promise<{ entries: T[]; truncated: boolean }> {
+export async function entriesInWindow<T>(s: OpenedSession, from: number, to: number, slim: (e: Entry) => T | null, maxEntries = WINDOW_ENTRIES_MAX): Promise<{ entries: T[]; truncated: boolean }> {
   const out: T[] = [];
   const state = { truncated: false };
   for await (const line of tailLinesOf(s.fh, s.size, { maxBytes: SESSION_READ_MAX_BYTES, maxLine: SESSION_LINE_MAX }, state)) {
@@ -501,7 +519,12 @@ export async function entriesInWindow<T>(s: OpenedSession, from: number, to: num
     if (t < from) break;
     if (t > to) continue;
     const slimmed = slim(entry);
-    if (slimmed !== null) out.push(slimmed);
+    if (slimmed === null) continue;
+    if (out.length >= maxEntries) {
+      state.truncated = true;
+      break;
+    }
+    out.push(slimmed);
   }
   return { entries: out.reverse(), truncated: state.truncated };
 }

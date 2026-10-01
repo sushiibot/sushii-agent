@@ -26,6 +26,7 @@ export const SEARCH_READ_BUDGET = 32 * 1024 * 1024;
 /** `-M` has no effect under `--json`, so lines are clipped here, around the match, before a snippet is built. */
 const LINE_WINDOW = 2_000;
 const LEADING_TOKEN = /^[A-Za-z0-9_.+/=~-]+/;
+const TRAILING_TOKEN = /[A-Za-z0-9_.+/=~-]+$/;
 const HIT_FILE_MAX = 1024 * 1024;
 const PER_FILE_MAX = 5;
 const SNIPPET_LEAD = 60;
@@ -191,6 +192,7 @@ export function buildSnippet(rawLine: string, query: string): { snippet: string;
   const to = Math.min(rawLine.length, first + LINE_WINDOW / 2);
   let window = rawLine.slice(from, to);
   if (from > 0) window = window.replace(LEADING_TOKEN, "");
+  if (to < rawLine.length) window = window.replace(TRAILING_TOKEN, "");
   const cutBefore = from > 0;
   const cutAfter = to < rawLine.length;
   const line = safeText(window, LINE_WINDOW, { oneLine: true });
