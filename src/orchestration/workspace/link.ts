@@ -195,7 +195,8 @@ export function deliveryView(p: ChatDeliverParams, toolCount: number | null = nu
   return {
     type: "reply",
     view: {
-      kind: p.kind === "proactive" ? "proactive" : "reply",
+      // Until a surface handles structured alerts, an alert shows as its plain-text proactive message.
+      kind: p.kind === "proactive" || p.kind === "alert" ? "proactive" : "reply",
       text: p.text,
       toolCount,
       ...(p.usage ? { usage: p.usage } : {}),

@@ -1,7 +1,10 @@
 import { mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeFileAtomic } from "./files.ts";
+import { ALERT_ERROR_MAX } from "../orchestration/contracts.ts";
 import { redact } from "./secretPatterns.ts";
+
+export { ALERT_ERROR_MAX };
 
 // No logger import: the ws-consolidate CLI uses this module and pino would write JSON onto its stdout.
 
@@ -104,7 +107,6 @@ export const MAX_EVERY_MINUTES = 24 * 60;
 export const DEFAULT_MAX_RUN_MS = 30 * 60_000;
 /** setTimeout fires at once for a delay above a signed 32-bit int. */
 export const MAX_TIMER_MS = 2 ** 31 - 1;
-export const ALERT_ERROR_MAX = 200;
 /** Only these end a failure streak. */
 export const SUCCESS_STATUSES: readonly string[] = ["applied", "sent", "no_reply", "ok", "done"];
 /** Outcome statuses that count as a failed run; "error" is what a thrown run records. */

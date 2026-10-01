@@ -27,6 +27,14 @@ export const RPC_METHODS = {
   chatExport: "chat/export",
   // Workspace → bot request: the bytes of an owner photo a chat/message referenced.
   uploadRead: "upload/read",
+  // Bot → workspace requests: read-only views of the workspace's run index, transcripts and ~/history.
+  runsList: "runs/list",
+  runsGet: "runs/get",
+  historyDays: "history/days",
+  historyDay: "history/day",
+  historySearch: "history/search",
+  // Workspace → bot notification: a run started or ended. Ephemeral; an older bot drops it.
+  runsChanged: "runs/changed",
 } as const;
 
 // ── Chat protocol (workspace ↔ bot). ──
@@ -192,6 +200,273 @@ export type UploadReadResult = z.infer<typeof uploadReadResult>;
 /** upload/read's error when the bot already has its budget of reads in flight; the caller retries. */
 export const UPLOAD_READ_BUSY = "busy";
 
+// ── Runs and history (bot → workspace, read-only). ──
+// Errors follow chat/export: MethodNotFound = an older workspace. The bot re-parses every result with these
+// schemas and rejects the whole response on failure, since run and history content is agent-writable.
+export const RUNS_TIMEOUT_MS = 10_000;
+/** rg's own wall clock in the workspace is 5 s. */
+export const HISTORY_SEARCH_TIMEOUT_MS = 8_000;
+
+/** Same alphabet as src/workspace/ulid.ts. Used as a lookup key only, never in a path on the bot. */
+export const RUN_ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+export const runId = z.string().regex(RUN_ID_RE, "invalid run id");
+export const RUN_KINDS = ["chat", "flush", "job", "subagent", "agent", "rotate"] as const;
+export type RunKind = (typeof RUN_KINDS)[number];
+export const RUN_STATUSES = ["running", "done", "failed", "aborted", "timeout"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export const JOB_NAME_RE = /^[a-z0-9-]{1,64}$/;
+export const JOB_NAME_MAX = 64;
+export const RUN_TITLE_MAX = 200;
+export const RUN_RESULT_SUMMARY_MAX = 400;
+export const RUNS_PAGE_MAX = 50;
+export const RUNS_PAGE_DEFAULT = 30;
+export const RUN_STEPS_PAGE_MAX = 200;
+export const RUN_STEPS_PAGE_DEFAULT = 100;
+export const RUN_CHILDREN_MAX = 50;
+/** ISO timestamps as the host writes them; a cap, not a format check, since old records may vary. */
+const timestamp = z.string().max(40);
+
+export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** A real calendar date: "2026-02-30" passes the regex but names no file. */
+export function isCalendarDate(s: string): boolean {
+  if (!DATE_RE.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+export const historyDate = z.string().refine(isCalendarDate, "must be a calendar date YYYY-MM-DD");
+
+/** UTC ISO with `Z` (what toISOString() writes); zod's datetime() rejects offsets by default. */
+const isoInstant = z.string().datetime();
+
+export const runsListParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  /** Absent = newest. Runs are ordered by runId descending (= start time). */
+  before: runId.optional(),
+  limit: z.number().int().min(1).max(RUNS_PAGE_MAX).default(RUNS_PAGE_DEFAULT),
+  kinds: z.array(z.enum(RUN_KINDS)).max(RUN_KINDS.length).optional(),
+  statuses: z.array(z.enum(RUN_STATUSES)).max(RUN_STATUSES.length).optional(),
+  /** startedAt ≥ since. */
+  since: isoInstant.optional(),
+  /** startedAt < until. */
+  until: isoInstant.optional(),
+});
+export type RunsListParams = z.infer<typeof runsListParams>;
+
+export const runUsage = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative().optional(),
+  model: z.string().max(ID_MAX).optional(),
+});
+export const runSummary = z.object({
+  runId,
+  parentRunId: runId.optional(),
+  turnId: z.string().max(ID_MAX).optional(),
+  kind: z.enum(RUN_KINDS),
+  agentName: z.string().max(ID_MAX),
+  jobName: z.string().max(JOB_NAME_MAX).optional(),
+  /** Redacted, one line: the first user text (header stripped) or the task. */
+  title: z.string().max(RUN_TITLE_MAX),
+  status: z.enum(RUN_STATUSES),
+  startedAt: timestamp,
+  endedAt: timestamp.optional(),
+  usage: runUsage.optional(),
+  /** Redacted, one line. */
+  resultSummary: z.string().max(RUN_RESULT_SUMMARY_MAX).optional(),
+});
+export type RunSummary = z.infer<typeof runSummary>;
+
+export const runsListResult = z.object({
+  runs: z.array(runSummary).max(RUNS_PAGE_MAX),
+  /** null = no older runs. */
+  before: runId.nullable(),
+  /** The scan bound was hit: older runs exist but this call can't reach them. */
+  truncated: z.boolean(),
+});
+export type RunsListResult = z.infer<typeof runsListResult>;
+
+export const runsGetParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  runId,
+  /** Absent = the run's first step. */
+  after: z.string().max(ID_MAX).optional(),
+  limit: z.number().int().min(1).max(RUN_STEPS_PAGE_MAX).default(RUN_STEPS_PAGE_DEFAULT),
+});
+export type RunsGetParams = z.infer<typeof runsGetParams>;
+
+export const RUN_STEP_LIMITS = { user: 4_000, assistant: 8_000, toolArgs: 300, toolResult: 600, note: 600 } as const;
+export const RUN_NOTE_KINDS = ["compaction", "verify", "error", "aborted", "custom"] as const;
+const stepId = z.string().min(1).max(ID_MAX);
+export const runStep = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("user"), id: stepId, at: timestamp, text: z.string().max(RUN_STEP_LIMITS.user) }),
+  z.object({ type: z.literal("assistant"), id: stepId, at: timestamp, text: z.string().max(RUN_STEP_LIMITS.assistant) }),
+  z.object({
+    type: z.literal("tool"),
+    id: stepId,
+    at: timestamp,
+    name: z.string().max(ID_MAX),
+    args: z.string().max(RUN_STEP_LIMITS.toolArgs),
+    /** null: no result inside the run's window. */
+    ok: z.boolean().nullable(),
+    result: z.string().max(RUN_STEP_LIMITS.toolResult),
+    durationMs: z.number().int().nonnegative().optional(),
+    /** A child run's steps are not inlined; see `children`. */
+    agentId: z.string().max(ID_MAX).optional(),
+  }),
+  z.object({ type: z.literal("note"), id: stepId, at: timestamp, kind: z.enum(RUN_NOTE_KINDS), text: z.string().max(RUN_STEP_LIMITS.note) }),
+]);
+export type RunStep = z.infer<typeof runStep>;
+
+export const runEvidence = z.object({
+  checks: z.array(z.object({ command: z.string().max(200), ok: z.boolean().nullable(), at: timestamp })).max(20),
+  changedRepos: z.array(z.string().max(100)).max(20),
+  /** null: nothing under projects/ changed. */
+  checkAfterLastChange: z.boolean().nullable(),
+  /** A sushii-verify-gate entry is in the window. */
+  verifyNudged: z.boolean(),
+  filesSent: z.array(z.object({ name: z.string().max(ID_MAX), at: timestamp })).max(DELIVER_FILES_MAX * 5),
+  memoryWrites: z.array(z.object({ path: z.string().max(300), tool: z.enum(["write", "edit", "bash"]), at: timestamp })).max(50),
+});
+export type RunEvidence = z.infer<typeof runEvidence>;
+
+export const RUN_SESSION_STATES = ["ok", "missing", "outside", "not-session"] as const;
+export const runsGetResult = z.discriminatedUnion("found", [
+  z.object({ found: z.literal(false) }),
+  z.object({
+    found: z.literal(true),
+    run: runSummary,
+    parent: runSummary.optional(),
+    children: z.array(runSummary).max(RUN_CHILDREN_MAX),
+    /** Why steps may be empty. */
+    session: z.enum(RUN_SESSION_STATES),
+    steps: z.array(runStep).max(RUN_STEPS_PAGE_MAX),
+    /** null = the last step is in this page. */
+    after: z.string().max(ID_MAX).nullable(),
+    /** First page only. */
+    evidence: runEvidence.optional(),
+    /** "YYYY-MM/DD-<runId>.md", for the History link. */
+    historyFile: z.string().max(100).optional(),
+  }),
+]);
+export type RunsGetResult = z.infer<typeof runsGetResult>;
+
+export const HISTORY_DAYS_PAGE_MAX = 60;
+export const HISTORY_DAYS_PAGE_DEFAULT = 30;
+export const HISTORY_DAY_SESSIONS_MAX = 50;
+export const HISTORY_DAY_RUNS_MAX = 200;
+export const HISTORY_RECAP_MAX = 32_000;
+
+export const historyDaysParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  before: historyDate.optional(),
+  limit: z.number().int().min(1).max(HISTORY_DAYS_PAGE_MAX).default(HISTORY_DAYS_PAGE_DEFAULT),
+});
+export type HistoryDaysParams = z.infer<typeof historyDaysParams>;
+export const historyDaysResult = z.object({
+  days: z
+    .array(z.object({ date: historyDate, runs: z.number().int().nonnegative(), sessions: z.number().int().nonnegative() }))
+    .max(HISTORY_DAYS_PAGE_MAX),
+  before: historyDate.nullable(),
+});
+export type HistoryDaysResult = z.infer<typeof historyDaysResult>;
+
+/** The workspace builds the file name from a validated date; the string never joins a path unchecked. */
+export const historyDayParams = z.object({ principalId: z.string().max(ID_MAX), date: historyDate });
+export type HistoryDayParams = z.infer<typeof historyDayParams>;
+export const historyDayResult = z.discriminatedUnion("found", [
+  z.object({ found: z.literal(false) }),
+  z.object({
+    found: z.literal(true),
+    date: historyDate,
+    sessions: z.array(z.object({ heading: z.string().max(300), markdown: z.string().max(HISTORY_RECAP_MAX) })).max(HISTORY_DAY_SESSIONS_MAX),
+    /** Runs whose run file is under YYYY-MM/DD-*, i.e. that started that local day. */
+    runs: z.array(runSummary).max(HISTORY_DAY_RUNS_MAX),
+    /** The day's file was larger than the read cap. */
+    truncated: z.boolean(),
+  }),
+]);
+export type HistoryDayResult = z.infer<typeof historyDayResult>;
+
+export const HISTORY_QUERY_MIN = 2;
+export const HISTORY_QUERY_MAX = 200;
+export const HISTORY_SEARCH_PAGE_MAX = 50;
+export const HISTORY_SEARCH_PAGE_DEFAULT = 20;
+export const SEARCH_SNIPPET_MAX = 240;
+export const SEARCH_RANGES_MAX = 5;
+export const historySearchParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  /** A literal (rg -F), smart-case. */
+  query: z.string().trim().min(HISTORY_QUERY_MIN).max(HISTORY_QUERY_MAX),
+  scope: z.enum(["all", "daily", "runs"]).default("all"),
+  before: z.string().max(ID_MAX).optional(),
+  limit: z.number().int().min(1).max(HISTORY_SEARCH_PAGE_MAX).default(HISTORY_SEARCH_PAGE_DEFAULT),
+});
+export type HistorySearchParams = z.infer<typeof historySearchParams>;
+/** [start, end) in code points of the snippet. */
+export const searchRange = z
+  .tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
+  .refine(([s, e]) => s < e, "a range must be non-empty");
+export const searchHit = z.object({
+  /** "<relPath>:<line>", also the cursor. */
+  id: z.string().max(ID_MAX),
+  kind: z.enum(["daily", "run"]),
+  date: historyDate,
+  runId: runId.optional(),
+  line: z.number().int().positive(),
+  /** The nearest preceding "## " or "### " line. */
+  heading: z.string().max(200).optional(),
+  /** One line, redacted. */
+  snippet: z.string().max(SEARCH_SNIPPET_MAX),
+  ranges: z.array(searchRange).max(SEARCH_RANGES_MAX),
+});
+export type SearchHit = z.infer<typeof searchHit>;
+export const historySearchResult = z.object({
+  hits: z.array(searchHit).max(HISTORY_SEARCH_PAGE_MAX),
+  before: z.string().max(ID_MAX).nullable(),
+  /** A time, byte or file-count cap was hit. */
+  truncated: z.boolean(),
+});
+export type HistorySearchResult = z.infer<typeof historySearchResult>;
+
+/** Workspace → bot notification (no response). */
+export const runsChangedParams = z.object({
+  principalId: z.string().max(ID_MAX),
+  runId,
+  kind: z.enum(RUN_KINDS),
+  status: z.enum(RUN_STATUSES),
+  parentRunId: runId.optional(),
+  jobName: z.string().max(JOB_NAME_MAX).optional(),
+});
+export type RunsChangedParams = z.infer<typeof runsChangedParams>;
+
+// ── Structured job alerts (chat/deliver kind "alert"). ──
+export const ALERT_ERROR_MAX = 200;
+export const ALERT_SCHEDULE_MAX = 120;
+export const JOB_ALERT_KINDS = ["failed", "stuck", "recovered"] as const;
+export const JOB_TRIGGERS = ["daily", "interval", "catchup", "manual"] as const;
+export const jobAlert = z.object({
+  source: z.literal("job"),
+  job: z.string().regex(JOB_NAME_RE, "invalid job name"),
+  kind: z.enum(JOB_ALERT_KINDS),
+  trigger: z.enum(JOB_TRIGGERS),
+  startedAt: isoInstant,
+  /** Already redacted by alertErrorText; the bot caps it again before storage and push. */
+  error: z.string().max(ALERT_ERROR_MAX).optional(),
+  schedule: z.string().max(ALERT_SCHEDULE_MAX),
+  disabled: z.boolean().optional(),
+  runId: runId.optional(),
+});
+export type JobAlertWire = z.infer<typeof jobAlert>;
+
+export const CHAT_DELIVER_KINDS = ["reply", "proactive", "ask", "auth", "alert"] as const;
+export type ChatDeliverKind = (typeof CHAT_DELIVER_KINDS)[number];
+
+/** Delivery kinds a bot may advertise in its register result. The workspace sends `alert` only when listed;
+ *  otherwise it rewrites queued alerts to `proactive` (dropping `alert`, which the refine below rejects). */
+export const WORKSPACE_FEATURES = ["alert"] as const;
+export type WorkspaceFeature = (typeof WORKSPACE_FEATURES)[number];
+
 export const deliverFile = z.object({
   name: z.string().min(1).max(ID_MAX),
   contentType: z.string().min(1).max(ID_MAX),
@@ -202,29 +477,33 @@ export const deliverFile = z.object({
 });
 export type DeliverFile = z.infer<typeof deliverFile>;
 
-export const chatDeliverParams = z.object({
-  origin: chatOrigin.optional(),
-  outboxId: z.string(),
-  principalId: z.string(),
-  kind: z.enum(["reply", "proactive", "ask", "auth"]),
-  text: z.string(),
-  replyTo: z.string().optional(),
-  turnId: z.string().optional(),
-  usage: chatUsage.optional(),
-  ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
-  // kind "auth": a sign-in link to open. https only: zod's url() alone accepts javascript: and data:.
-  auth: z.object({ url: z.string().max(4096).refine(isHttpsUrl, "must be an https: URL"), instructions: z.string() }).optional(),
-  // Set on the reply that ends a surface login, so the bot stops treating pastes as its callback.
-  authResult: z.enum(["ok", "failed", "cancelled", "timeout"]).optional(),
-  // kind "auth" and authResult: the login they belong to, so a resent result can't end a newer login.
-  loginId: z.string().max(ID_MAX).optional(),
-  // kind "reply": files the turn sent with send_file, attached to the reply.
-  files: z
-    .array(deliverFile)
-    .max(DELIVER_FILES_MAX)
-    .refine((fs) => fs.reduce((n, f) => n + base64Bytes(f.dataBase64), 0) <= DELIVER_FILES_TOTAL_MAX_BYTES, "files exceed the per-delivery size cap")
-    .optional(),
-});
+export const chatDeliverParams = z
+  .object({
+    origin: chatOrigin.optional(),
+    outboxId: z.string(),
+    principalId: z.string(),
+    kind: z.enum(CHAT_DELIVER_KINDS),
+    text: z.string(),
+    replyTo: z.string().optional(),
+    turnId: z.string().optional(),
+    usage: chatUsage.optional(),
+    ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
+    // kind "auth": a sign-in link to open. https only: zod's url() alone accepts javascript: and data:.
+    auth: z.object({ url: z.string().max(4096).refine(isHttpsUrl, "must be an https: URL"), instructions: z.string() }).optional(),
+    // Set on the reply that ends a surface login, so the bot stops treating pastes as its callback.
+    authResult: z.enum(["ok", "failed", "cancelled", "timeout"]).optional(),
+    // kind "auth" and authResult: the login they belong to, so a resent result can't end a newer login.
+    loginId: z.string().max(ID_MAX).optional(),
+    // kind "reply": files the turn sent with send_file, attached to the reply.
+    files: z
+      .array(deliverFile)
+      .max(DELIVER_FILES_MAX)
+      .refine((fs) => fs.reduce((n, f) => n + base64Bytes(f.dataBase64), 0) <= DELIVER_FILES_TOTAL_MAX_BYTES, "files exceed the per-delivery size cap")
+      .optional(),
+    // kind "alert": the structured job alert; `text` is jobAlertText(alert), so any surface can show it as plain text.
+    alert: jobAlert.optional(),
+  })
+  .refine((p) => (p.kind === "alert") === (p.alert !== undefined), { message: 'kind "alert" needs alert, and only it may carry one', path: ["alert"] });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
 
 export const chatEventPayload = z.discriminatedUnion("type", [
@@ -291,7 +570,12 @@ export const toolManifestEntry = z.object({
 export type ToolManifestEntry = z.infer<typeof toolManifestEntry>;
 
 /** The register result a `role: "workspace"` connection receives. */
-export const workspaceRegisterResult = z.object({ ok: z.literal(true), tools: z.array(toolManifestEntry) });
+export const workspaceRegisterResult = z.object({
+  ok: z.literal(true),
+  tools: z.array(toolManifestEntry),
+  /** Unknown entries are kept as strings so a newer bot's list still parses; an older bot omits the field. */
+  features: z.array(z.string().max(32)).max(16).optional(),
+});
 export type WorkspaceRegisterResult = z.infer<typeof workspaceRegisterResult>;
 
 export const toolCallParams = z.object({

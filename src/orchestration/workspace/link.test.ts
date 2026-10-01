@@ -5,7 +5,7 @@ import { WorkspaceLinkStore } from "../../db/workspaceLink.ts";
 import type { ToolEntry, ToolHosts } from "../../core/contracts.ts";
 import { AUTH_METHODS, LOGIN_ALREADY_PENDING, RPC_METHODS, chatDeliverParams, chatEventParams, chatMessageParams, type ChatDeliverParams, type ChatEventPayload, type ChatMessageParams, type ChatOrigin } from "../contracts.ts";
 import { RpcTimeoutError, type ConnectionInfo, type WorkspaceHandler } from "../transport/server.ts";
-import { LOGIN_PENDING_MS, MAX_OPEN_TURNS, WorkspaceLink, type WorkspaceRpc } from "./link.ts";
+import { LOGIN_PENDING_MS, MAX_OPEN_TURNS, WorkspaceLink, deliveryView, type WorkspaceRpc } from "./link.ts";
 import type { Timers } from "./progress.ts";
 import { detectLoginCallback, handleOwnerMessage } from "./router.ts";
 import {
@@ -174,6 +174,14 @@ describe("chat protocol origin", () => {
     const ev = { principalId: P, turnId: "t", agentId: "main", ev: { type: "turn_start" } };
     expect(chatEventParams.safeParse(ev).success).toBe(true);
     expect(chatEventParams.parse({ ...ev, origin: DISCORD }).origin).toEqual(DISCORD);
+  });
+});
+
+describe("alert deliveries", () => {
+  test("show as their proactive text until a surface handles alerts", () => {
+    const alert = { source: "job", job: "nightly-sync", kind: "failed", trigger: "daily", startedAt: "2026-09-30T04:00:00.000Z", schedule: "daily 04:00" } as const;
+    const p = chatDeliverParams.parse(deliverParams({ kind: "alert", text: "job failed", alert }));
+    expect(deliveryView(p)).toEqual({ type: "reply", view: { kind: "proactive", text: "job failed", toolCount: null } });
   });
 });
 
