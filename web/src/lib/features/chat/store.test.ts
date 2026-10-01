@@ -1,5 +1,5 @@
 /// <reference types="bun" />
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import type { ChatEnvelope } from '$lib/core/realtime/events';
 import { createHub } from '$lib/core/realtime/hub.svelte';
 import type { ChatTransport } from '$lib/core/realtime/transport';
@@ -8,7 +8,13 @@ import type { ChatApi } from './api';
 import { ChatStore } from './store.svelte';
 
 const g = globalThis as unknown as { document?: unknown };
-g.document ??= { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+// Removed after this file: a leftover document makes later files' UI libraries assume window exists.
+const stubbedDocument = g.document === undefined;
+if (stubbedDocument)
+	g.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} };
+afterAll(() => {
+	if (stubbedDocument) delete g.document;
+});
 
 function memory<T>(): KeyValue<T> {
 	return { all: async () => [], put: async () => {}, delete: async () => {} };
