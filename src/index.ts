@@ -153,7 +153,11 @@ async function main() {
     breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
     uploads,
   });
-  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, uploads });
+  const webServer = await startWebGateway(process.env, db, {
+    chat: webChat.routes,
+    uploads,
+    reads: { db, link: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
+  });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) workspace.registry.register(webChat.adapter);
   listenWorkspace(workspace, config.orchPort);
