@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { clearOpenRouterCatalog, openRouterCatalog, resolveModelInfo } from "./piShared.ts";
 
 const catalog = {
@@ -10,6 +10,8 @@ const catalog = {
 };
 
 let spy: ReturnType<typeof spyOn> | null = null;
+// The catalog is cached per process, and other test files may have filled it (or remembered a failure).
+beforeEach(() => clearOpenRouterCatalog());
 afterEach(() => {
   spy?.mockRestore();
   spy = null;
