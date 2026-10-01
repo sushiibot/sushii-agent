@@ -16,11 +16,12 @@ test("search finds live and imported chat through the app API", async ({ page, w
   expect((await send(page, `E2E-ECHO searchable #${tag}`)).status).toBe(202);
   await expect(bubble(page, `re-${tag}`)).toContainText("Echo searchable.");
 
-  await expect.poll(async () => (await search(page, tag)).body.hits.map((h) => `${h.source}:${h.role}`).sort(), { timeout: 15_000 }).toEqual(["chat:agent", "chat:user"]);
+  await expect.poll(async () => (await search(page, tag)).body.hits.filter((h) => h.source === "chat").map((h) => h.role).sort(), { timeout: 15_000 }).toEqual(["agent", "user"]);
+  // The run's history notes mention the tag too, once the workspace has written them.
+  await expect.poll(async () => (await search(page, tag)).body.hits.some((h) => h.source === "notes"), { timeout: 15_000 }).toBe(true);
   const live = await search(page, tag);
   expect(live.status).toBe(200);
-  // Notes come from the workspace, which may not answer history/search yet.
-  expect(live.body.unavailable.filter((s) => s !== "notes")).toEqual([]);
+  expect(live.body.unavailable).toEqual([]);
   for (const h of live.body.hits) {
     const cps = [...h.snippet];
     expect(h.ranges.length).toBeGreaterThan(0);
@@ -35,8 +36,7 @@ test("search finds live and imported chat through the app API", async ({ page, w
   expect(operators.body.hits.filter((h) => h.source === "chat")).toEqual([]);
 
   expect((await search(page, "x")).status).toBe(400);
-  // Until the workspace answers runs/list the bot says so with 501, never a 5xx of its own.
   const runs = await page.evaluate(async () => (await fetch("/api/runs")).status);
-  expect([200, 501]).toContain(runs);
+  expect(runs).toBe(200);
   expect(await watch.violations()).toEqual([]);
 });
