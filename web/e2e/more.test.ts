@@ -1,14 +1,15 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
+import { fakeBackend } from './fake-backend';
 import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
 
 async function server(context: BrowserContext) {
 	await stubStream(context);
 	await context.route('**/api/**', (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path === '/api/me') return route.fulfill({ json: { login: 'drk@example.com' } });
 		if (path === '/api/chat/history') return route.fulfill({ json: { items: [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
+	await fakeBackend(context);
 }
 
 const tabBar = (page: import('@playwright/test').Page) =>
