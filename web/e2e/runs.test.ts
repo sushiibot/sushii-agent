@@ -20,7 +20,10 @@ async function server(context: BrowserContext, fixtures?: string) {
 	}, fixtures ?? '');
 	await context.route('**/api/**', (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path === '/api/me') return route.fulfill({ json: { login: 'drk@example.com' } });
+		if (path === '/api/me')
+			return route.fulfill({
+				json: { login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] }
+			});
 		if (path === '/api/chat/history') return route.fulfill({ json: { items: [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});

@@ -66,7 +66,8 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 		calls.push({ method: req.method(), path: path + url.search, body, headers: req.headers() });
 		const json = (data: unknown, status = 200) =>
 			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
-		if (path === '/api/me') return json({ login: 'drk@example.com' });
+		if (path === '/api/me')
+			return json({ login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] });
 		if (path === '/api/push/key') return route.fulfill({ status: 404, body: 'no' });
 		if (path === '/api/chat/history' && url.searchParams.has('before')) {
 			const o = opts.older[url.searchParams.get('before')!] ?? { status: 200 };

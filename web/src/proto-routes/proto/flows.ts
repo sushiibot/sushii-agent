@@ -1,4 +1,5 @@
 import type { Component } from 'svelte';
+import type { FeatureCheck } from '$lib/core/nav/tabs';
 import type { Session } from './screens/types';
 import NeedsYou from './screens/needs-you.svelte';
 import ThreadChat from './screens/thread-chat.svelte';
@@ -47,6 +48,8 @@ export interface Frame {
 	tab?: string;
 	tabBar?: boolean;
 	badges?: Record<string, number>;
+	/** Which slices the Shell's nav shows; every one by default. */
+	features?: FeatureCheck;
 	/** Start a top-anchored screen scrolled down this many px. */
 	scrollTo?: number;
 }

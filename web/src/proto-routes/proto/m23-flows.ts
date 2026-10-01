@@ -1,6 +1,6 @@
 // M2/M3 flows: the real Home, More, Runs and History screens on their feature fixtures, in every
 // state a route can put them in.
-import { more } from '$lib/core/nav/tabs';
+import { allOn, moreFor } from '$lib/core/nav/tabs';
 import {
 	HistoryDayScreen,
 	HistoryScreen,
@@ -21,6 +21,9 @@ const NOW = new Date(2026, 8, 30, 16, 41).getTime();
 const TODAY = toDate(NOW);
 const YESTERDAY = toDate(NOW - 86_400_000);
 
+const more = moreFor(allOn);
+/** Production before any fixture slice ships: only what the bot lists in /api/me. */
+const liveOnly = (f?: string) => !f || ['runs', 'history', 'home', 'alerts'].includes(f);
 const ready = { status: 'ready' } as const;
 const slow = { status: 'loading', slow: true } as const;
 const failed = (error: string) => ({ status: 'error', error }) as const;
@@ -294,8 +297,19 @@ const moreFrames: Frame[] = [
 		branch: 'Phone offline'
 	},
 	{
+		id: 'mo-3',
+		label: 'Only what is live',
+		screen: MoreScreen,
+		props: { entries: moreFor(liveOnly) },
+		shell: true,
+		tabBar: true,
+		tab: 'more',
+		features: liveOnly,
+		branch: 'Production, before the fixture screens get a backend: one Chat, no Chats list'
+	},
+	{
 		id: 'mo-d',
-		label: 'Desktop: Runs and History sit under More',
+		label: 'Desktop: every section sits under More',
 		screen: MoreScreen,
 		props: { entries: more },
 		shell: true,
@@ -628,7 +642,8 @@ export const m23Flows: Flow[] = [
 		id: 'more',
 		code: 'MO',
 		title: 'More',
-		intro: 'Three tabs: Home, Chat, More. More holds Runs, History and Settings.',
+		intro:
+			'Three tabs: Home, Chat (Chats once threads exist) and More. More lists every section that is on; the desktop sidebar has the same entries. A section shows only when its feature is on, so production shows what is live and the board shows everything.',
 		frames: moreFrames
 	},
 	{

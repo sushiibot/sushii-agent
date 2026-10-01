@@ -56,7 +56,8 @@ async function homeServer(
 		calls.push({ method: req.method(), path: url.pathname, body: raw ? JSON.parse(raw) : null });
 		const json = (data: unknown, status = 200) =>
 			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
-		if (url.pathname === '/api/me') return json({ login: 'drk@example.com' });
+		if (url.pathname === '/api/me')
+			return json({ login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] });
 		if (url.pathname === '/api/chat/history') return json({ items: [], before: null });
 		if (url.pathname.startsWith('/api/chat/approvals/')) {
 			if (opts.decide && opts.decide !== 200) return json({ error: 'x' }, opts.decide);
