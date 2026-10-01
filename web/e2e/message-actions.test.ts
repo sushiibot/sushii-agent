@@ -177,12 +177,14 @@ test('right-click, middle-click and a touch hold are left to the browser', async
 	const p = await mouse.newPage();
 	await open(p);
 	await p.evaluate(() => {
-		const w = window as unknown as { __prevented: string[] };
-		w.__prevented = [];
+		const w = window as unknown as { __seen: Record<string, string[]> };
+		w.__seen = {};
 		for (const type of ['contextmenu', 'pointerdown', 'mousedown', 'auxclick']) {
-			// Bubble phase on window, after every app handler has run.
+			// Bubble phase on window, after every app handler: a handler that stops propagation
+			// leaves its type unseen here, and one that prevents the default shows up as such.
 			window.addEventListener(type, (e) => {
-				if (e.defaultPrevented) w.__prevented.push(type);
+				const button = (e as MouseEvent).button;
+				(w.__seen[type] ??= []).push(`${button}:${e.defaultPrevented ? 'prevented' : 'ok'}`);
 			});
 		}
 	});
@@ -195,9 +197,19 @@ test('right-click, middle-click and a touch hold are left to the browser', async
 	await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 	await p.mouse.down({ button: 'middle' });
 	await p.mouse.up({ button: 'middle' });
-	expect(
-		await p.evaluate(() => (window as unknown as { __prevented: string[] }).__prevented)
-	).toEqual([]);
+	const seen = await p.evaluate(
+		() => (window as unknown as { __seen: Record<string, string[]> }).__seen
+	);
+	expect(seen.contextmenu).toEqual(['2:ok']);
+	expect(seen.auxclick).toEqual(expect.arrayContaining(['1:ok', '2:ok']));
+	for (const type of ['pointerdown', 'mousedown']) {
+		expect(seen[type], type).toEqual(expect.arrayContaining(['1:ok', '2:ok']));
+		expect(
+			seen[type].filter((x) => x.endsWith('prevented')),
+			type
+		).toEqual([]);
+	}
+	expect(seen.auxclick.filter((x) => x.endsWith('prevented'))).toEqual([]);
 	await expect(p.getByRole('dialog')).toHaveCount(0);
 	await mouse.close();
 });

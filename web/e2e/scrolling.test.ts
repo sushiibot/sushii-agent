@@ -68,7 +68,8 @@ test('dragging the scrollbar scrolls the chat', async ({ page }) => {
 	const list = await open(page);
 	const box = (await list.boundingBox())!;
 	const gutter = await list.evaluate((el) => el.offsetWidth - el.clientWidth);
-	test.skip(gutter === 0, 'overlay scrollbars have no track to drag');
+	// The config turns real scrollbars on, so no gutter means the track itself went missing.
+	expect(gutter).toBeGreaterThan(0);
 	const x = box.x + box.width - gutter / 2;
 	await page.mouse.move(x, box.y + box.height - 20);
 	await page.mouse.down();
