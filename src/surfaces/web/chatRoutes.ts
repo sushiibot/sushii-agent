@@ -34,7 +34,7 @@ const log = getLogger("web/chatRoutes");
 export const MESSAGE_BODY_MAX = 64 * 1024;
 export const HISTORY_RESPONSE_MAX = 2 * 1024 * 1024;
 const HISTORY_DEFAULT_LIMIT = 40;
-const PENDING_ASKS_MAX = 10;
+export const PENDING_ASKS_MAX = 10;
 const SHUTDOWN_IDLE_MS = 2_000;
 /** How long a delete waits for a route already in flight to settle before calling the message delivered. */
 const DISCARD_WAIT_MS = 20_000;

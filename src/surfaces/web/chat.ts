@@ -5,6 +5,9 @@ import { getLogger } from "../../logger.ts";
 import { createPiChatImporter } from "./chatImport.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import { createChatRoutes, type ChatRoutes } from "./chatRoutes.ts";
+import type { WebFeature } from "./events.ts";
+import { createHomeRoutes, type HomeRoutes } from "./homeRoutes.ts";
+import { WebHomeStore } from "./homeStore.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { createPresence } from "./presence.ts";
 import { sendPush } from "./push.ts";
@@ -22,11 +25,14 @@ export interface WebChatDeps {
   /** Wakes the owner on Discord when an approval push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
   uploads?: WebUploadPort;
+  /** WEB_FEATURES. */
+  features?: readonly WebFeature[];
 }
 
 export interface WebChat {
   adapter: WebWorkspaceAdapter;
   routes: ChatRoutes;
+  home: HomeRoutes;
   log: SqliteChatLog;
   /** Starts pruning and workspace-state fan-out; call once the gateway is serving. Returns a stop. */
   start(): () => void;
@@ -37,11 +43,15 @@ export function createWebChat(deps: WebChatDeps): WebChat {
   const chatLog = new SqliteChatLog(deps.db);
   const inbound = new WebInboundStore(deps.db);
   const presence = createPresence({ head: () => chatLog.head() });
+  const homeStore = new WebHomeStore(deps.db);
+  const features = deps.features ?? [];
   const adapter = new WebWorkspaceAdapter({
     log: chatLog,
     inbound,
     presence,
     push: { send: sendPush },
+    home: homeStore,
+    features,
     ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}),
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
@@ -59,6 +69,8 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
 
+  const home = createHomeRoutes({ log: chatLog, adapter, store: homeStore, link: deps.link, workspaceEnabled: deps.workspaceEnabled, features });
+
   const importer = createPiChatImporter({ db: deps.db, log: chatLog, source: deps.link });
 
   function prune(): void {
@@ -66,6 +78,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
       const now = Date.now();
       chatLog.prune(now);
       inbound.prune(now);
+      homeStore.prune(now);
     } catch (err) {
       log.warn({ err }, "web chat prune failed");
     }
@@ -74,6 +87,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
   return {
     adapter,
     routes,
+    home,
     log: chatLog,
     start() {
       prune();
@@ -86,10 +100,18 @@ export function createWebChat(deps: WebChatDeps): WebChat {
           if (deps.workspaceEnabled) void importer.run();
         }
       });
+      // Ephemeral: Home and the Runs list refetch on it, and a missed one only delays that until the next load.
+      const offRuns = deps.link.onRunsChanged((r) =>
+        chatLog.publish({
+          type: "run",
+          data: { runId: r.runId, kind: r.kind, status: r.status, ...(r.parentRunId ? { parentRunId: r.parentRunId } : {}), ...(r.jobName ? { jobName: r.jobName } : {}) },
+        }),
+      );
       if (deps.workspaceEnabled && deps.link.isConnected()) void importer.run();
       return () => {
         clearInterval(timer);
         off();
+        offRuns();
         routes.closeStreams();
         adapter.close();
       };

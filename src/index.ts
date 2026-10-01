@@ -2,7 +2,7 @@ import type { Client } from "discord.js";
 import { otelSDK } from "./telemetry.ts";
 import { initDb, closeDb, getDb } from "./db/index.ts";
 import { client } from "./discordClient.ts";
-import { config } from "./config.ts";
+import { config, parseWebFeatures } from "./config.ts";
 import { buildMcpHttpApp } from "./mcp/server/http.ts";
 import logger from "./logger.ts";
 import { openaiProvider } from "./agent/client.ts";
@@ -152,8 +152,10 @@ async function main() {
     workspaceEnabled: config.dmWorkspaceEnabled,
     breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
     uploads,
+    // The gateway parses WEB_FEATURES again and warns about unknown entries there.
+    features: parseWebFeatures(process.env["WEB_FEATURES"], () => {}),
   });
-  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, uploads });
+  const webServer = await startWebGateway(process.env, db, { chat: webChat.routes, home: webChat.home, uploads });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) workspace.registry.register(webChat.adapter);
   listenWorkspace(workspace, config.orchPort);

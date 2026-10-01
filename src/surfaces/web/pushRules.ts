@@ -1,3 +1,4 @@
+import type { JobAlert } from "./events.ts";
 import type { PushPayload } from "./push.ts";
 
 export const PUSH_BODY_MAX = 140;
@@ -9,6 +10,7 @@ export type PushEvent =
   | { kind: "ask"; askId: string; question: string }
   | { kind: "auth" }
   | { kind: "reply" | "proactive"; text: string }
+  | { kind: "alert"; alert: Pick<JobAlert, "job" | "error"> & { kind: "failed" | "stuck" } }
   | { kind: "interrupted" }
   | { kind: "quota"; usedBytes: number; capBytes: number };
 
@@ -26,6 +28,12 @@ export function pushFor(event: PushEvent): PushPayload {
       return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/", tag: "chat", renotify: false };
     case "proactive":
       return { title: TITLE, body: plainPushBody(event.text) || "Sent a file", url: "/", tag: "chat" };
+    case "alert": {
+      const { job, error } = event.alert;
+      const body = error ? plainPushBody(`${job}: ${error}`) : job;
+      // The job name already matched JOB_NAME_RE, so it needs no escaping in the URL.
+      return { title: event.alert.kind === "stuck" ? "Scheduled job stuck" : "Scheduled job failed", body, url: `/home?item=job:${job}`, tag: `job:${job}` };
+    }
     case "interrupted":
       return { title: TITLE, body: "Turn interrupted", url: "/", tag: "chat" };
     case "quota":

@@ -1,4 +1,4 @@
-import { ID_MAX, webChatOrigin, type ChatOrigin, type DeliverFile, type ToolCallResult } from "../../orchestration/contracts.ts";
+import { ID_MAX, jobAlert, webChatOrigin, type ChatOrigin, type DeliverFile, type JobAlertWire, type ToolCallResult } from "../../orchestration/contracts.ts";
 import { MAX_OPEN_TURNS } from "../../orchestration/workspace/link.ts";
 import { realTimers, type Timers } from "../../orchestration/workspace/progress.ts";
 import {
@@ -23,7 +23,8 @@ import {
 import { getLogger } from "../../logger.ts";
 import { WEB_SURFACE } from "./actor.ts";
 import type { SqliteChatLog } from "./chatLog.ts";
-import { isHttpsUrl, MESSAGE_TEXT_MAX, type ApprovalDecision as WireDecision, type TurnView, type UploadRef } from "./events.ts";
+import { isHttpsUrl, MESSAGE_TEXT_MAX, type ApprovalDecision as WireDecision, type TurnView, type UploadRef, type WebFeature } from "./events.ts";
+import type { WebHomeStore } from "./homeStore.ts";
 import type { WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
 import type { PushPayload } from "./push.ts";
@@ -38,6 +39,7 @@ export const SNAPSHOT_GAP_MS = 2_000;
 export const REPLY_TEXT_MAX = 100_000;
 const ASK_CHOICES_MAX = 25;
 const AUTH_INSTRUCTIONS_MAX = 4_000;
+const ALERT_TEXT_MAX = 4_000;
 export const TOOL_SUMMARY_MAX = 200;
 /** Live text past this stops streaming; the reply still carries the whole answer. */
 export const TURN_TEXT_MAX = 50_000;
@@ -71,6 +73,10 @@ export interface WebAdapterDeps {
   breakGlass?: (nonce: string) => Promise<boolean>;
   /** Without it the surface takes no files, so the workspace's send_file refuses. */
   uploads?: WebUploadPort;
+  /** Job-alert streaks for Home; without it alerts only show in the chat. */
+  home?: Pick<WebHomeStore, "applyAlert">;
+  /** WEB_FEATURES; `alerts` turns on the job-alert push. Default none. */
+  features?: readonly WebFeature[];
   now?: () => number;
   timers?: Timers;
   appendBudget?: { burst: number; perSec: number };
@@ -192,6 +198,30 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     }
     const { seq, created } = this.deps.log.appendResult("auth", { key, url: view.url, instructions }, key);
     if (created) void this.notify(seq, { kind: "auth" });
+  }
+
+  /** The alert event, its web_alerts row and any alert_cleared commit together, before the link acks. */
+  async alertPrompt(origin: ChatOrigin | null, wire: JobAlertWire, text: string, attempt: SendAttempt): Promise<void> {
+    checkOrigin(origin);
+    const key = outboxKey(attempt);
+    if (this.deps.log.find("alert", key)) return;
+    // The link parsed it already; parsed again here so every field is within its cap before storage and push.
+    const parsed = jobAlert.safeParse(wire);
+    if (!parsed.success) throw new DeliveryRejectedError("a job alert outside the contract");
+    const alert = parsed.data;
+    this.spend();
+    const shown = capText(text, ALERT_TEXT_MAX);
+    const { seq, created } = this.deps.log.transaction(() => {
+      const res = this.deps.log.appendResult("alert", { key, alert, text: shown }, key);
+      if (res.created && this.deps.home?.applyAlert(alert, res.seq, key)) {
+        this.deps.log.append("alert_cleared", { id: `job:${alert.job}`, reason: "recovered" }, `recovered:${key}`);
+      }
+      return res;
+    });
+    if (!created) return;
+    // With the flag off a job alert still pushes, as the chat message it was before structured alerts.
+    if (!this.deps.features?.includes("alerts")) void this.notify(seq, { kind: "proactive", text: shown });
+    else if (alert.kind !== "recovered") void this.notify(seq, { kind: "alert", alert: { job: alert.job, kind: alert.kind, ...(alert.error ? { error: alert.error } : {}) } });
   }
 
   progressEditGap(): number {
