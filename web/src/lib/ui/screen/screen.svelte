@@ -56,7 +56,7 @@
 <main
 	bind:this={scroller}
 	class={cn(
-		'@container min-h-0 flex-1 overflow-y-auto overscroll-contain',
+		'@container min-h-0 flex-1 overflow-x-clip overflow-y-auto overscroll-contain',
 		stickToBottom && 'flex flex-col-reverse'
 	)}
 >
@@ -69,7 +69,7 @@
 	{#if toast}
 		<div
 			role="status"
-			class="absolute inset-x-3 bottom-full mb-3 flex items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm text-background shadow-lg @3xl:right-auto @3xl:left-6 @3xl:w-96"
+			class="absolute inset-x-3 bottom-full mb-3 flex items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm [overflow-wrap:anywhere] text-background shadow-lg @3xl:right-auto @3xl:left-6 @3xl:w-96"
 		>
 			{@render toast()}
 		</div>
