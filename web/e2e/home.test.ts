@@ -304,6 +304,7 @@ test('a cold link with the stream refused says it cannot check, without spinning
 }) => {
 	await homeServer(context, { streamStatus: 403 });
 	await page.goto('/?ask=a1');
+	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
 	await expect(sheet(page).getByText("can't be checked right now")).toBeVisible();
 });
 

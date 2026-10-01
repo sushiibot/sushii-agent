@@ -49,10 +49,7 @@
 						{step.durationMs !== undefined ? duration(step.durationMs) : at}
 					</span>
 				</span>
-				<span
-					class="line-clamp-1 font-mono text-meta [overflow-wrap:anywhere] text-muted-foreground"
-					>{step.args}</span
-				>
+				<span class="truncate font-mono text-meta text-muted-foreground">{step.args}</span>
 			</span>
 			<ChevronDown
 				class={cn(

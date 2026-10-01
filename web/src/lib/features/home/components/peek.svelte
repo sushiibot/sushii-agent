@@ -60,7 +60,8 @@
 	{:else if !peek.result}
 		<p role="status" class="px-1 text-sm">
 			{#if peek.missing === 'offline'}
-				You're offline, so this can't be checked right now. It stays on Home until it's handled.
+				The app can't reach the agent, so this can't be checked right now. If it's still waiting, it
+				shows on Home once the app reconnects.
 			{:else}
 				This isn't waiting any more. It was handled here or on another device.
 			{/if}

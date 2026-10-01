@@ -3,7 +3,10 @@ import type { HomePeek } from './types';
 /** The peek sheet's heading, also its accessible name. */
 export function peekTitle(peek: HomePeek): string {
 	const item = peek.item;
-	if (!item) return peek.result ? 'Done' : 'Already handled';
+	if (!item) {
+		if (peek.result) return 'Done';
+		return peek.missing === 'offline' ? "Can't check this now" : 'Already handled';
+	}
 	switch (item.kind) {
 		case 'approval':
 			return 'Approval needed';

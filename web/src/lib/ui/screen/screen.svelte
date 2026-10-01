@@ -17,7 +17,8 @@
 	}: {
 		title: string;
 		subtitle?: Snippet;
-		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		/** `desktop: false` hides it where the sidebar already leads there. */
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void; desktop?: boolean };
 		actions?: Snippet;
 		/** Under the header, outside the scroll. */
 		banner?: Snippet;
@@ -37,7 +38,10 @@
 		<a
 			href={back.href}
 			onclick={back.onclick}
-			class="-ml-0.5 flex h-12 min-w-12 shrink-0 items-center rounded-md pr-1.5 pl-0.5 text-sm text-muted-foreground hover:text-foreground"
+			class={cn(
+				'-ml-0.5 flex h-12 min-w-12 shrink-0 items-center rounded-md pr-1.5 pl-0.5 text-sm text-muted-foreground hover:text-foreground',
+				back.desktop === false && '@3xl:hidden'
+			)}
 		>
 			<ChevronLeft class="size-5" aria-hidden="true" /><span class="sr-only @3xl:not-sr-only"
 				>{back.label}</span

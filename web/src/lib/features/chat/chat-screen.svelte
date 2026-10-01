@@ -101,7 +101,7 @@
 		openStep?: string;
 		settingsHref?: string;
 		/** The way back to Home on a phone, where Chat hides the tab bar. */
-		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		back?: { href: string; label: string; onclick?: (e: MouseEvent) => void; desktop?: boolean };
 		onopensheet?: (sheet: ChatSheet, messageId?: string) => void;
 		/** Closes the open sheet; called once per close. */
 		onclosesheet?: () => void;

@@ -113,7 +113,7 @@
 	{sheet}
 	{viewer}
 	settingsHref={resolve('/settings')}
-	back={{ href: resolve('/'), label: 'Back to Home', onclick: goBack }}
+	back={{ href: resolve('/'), label: 'Back to Home', onclick: goBack, desktop: false }}
 	onopensheet={openSheet}
 	onclosesheet={closeSheet}
 	onopenfile={(f) => {
