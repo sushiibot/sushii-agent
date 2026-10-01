@@ -60,13 +60,20 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
     const cutoff = t - HOME_RECENT_HOURS * 60 * 60 * 1000;
     // runs/list's `since` bounds startedAt, so finished runs are filtered on endedAt here.
     const kinds = [...HOME_RUN_KINDS];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Enforced here too: the link's own timeout is only a hint it may not take.
+    const budget = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new RpcTimeoutError("Home's workspace budget ran out")), timeoutMs)));
     try {
-      const [running, finished] = await Promise.all([
-        link.runsList({ kinds, statuses: ["running"], limit: 50 }, timeoutMs),
-        link.runsList({ kinds, statuses: ["done", "failed", "timeout"], since: new Date(cutoff).toISOString(), limit: 50 }, timeoutMs),
+      const [running, finished] = await Promise.race([
+        Promise.all([
+          link.runsList({ kinds, statuses: ["running"], limit: 50 }, timeoutMs),
+          link.runsList({ kinds, statuses: ["done", "failed", "timeout"], since: new Date(cutoff).toISOString(), limit: 50 }, timeoutMs),
+        ]),
+        budget,
       ]);
+      // The groups are the bot's to define, so kinds are checked again rather than trusted to the filter.
       const recent = finished.runs
-        .filter((r) => endedAt(r) >= cutoff)
+        .filter((r) => isHomeKind(r) && endedAt(r) >= cutoff)
         .sort((a, b) => endedAt(b) - endedAt(a));
       const failed = recent.filter((r) => (r.kind === "subagent" || r.kind === "agent") && (r.status === "failed" || r.status === "timeout"));
       const done = recent.filter((r) => r.status === "done");
@@ -74,7 +81,7 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       const opened = store.openedRuns(done.map((r) => r.runId));
       return {
         state: "online",
-        running: running.runs.filter((r) => r.status === "running").slice(0, HOME_RUNS_MAX),
+        running: running.runs.filter((r) => isHomeKind(r) && r.status === "running").slice(0, HOME_RUNS_MAX),
         failedRuns: failed.filter((r) => !dismissed.has(r.runId)).slice(0, HOME_RUNS_MAX),
         review: done.filter((r) => !opened.has(r.runId)).slice(0, HOME_RUNS_MAX),
       };
@@ -84,6 +91,8 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       // Not connected any more, or an answer outside the contract: either way there is nothing to show.
       log.warn({ err }, "Home could not read the workspace's runs");
       return { state: "offline" };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -138,6 +147,10 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       return json({ error: "not found" }, 404);
     },
   };
+}
+
+function isHomeKind(r: RunSummary): boolean {
+  return (HOME_RUN_KINDS as readonly string[]).includes(r.kind);
 }
 
 /** -Infinity for a run with no usable endedAt, so it never counts as recent. */

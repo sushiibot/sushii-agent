@@ -65,7 +65,10 @@ describe("GET /api/home", () => {
     const doneOld = run({ kind: "subagent", status: "done", endedAt: iso(cutoff - 1) });
     const noEnd = run({ kind: "subagent", status: "done" });
     const badEnd = run({ kind: "subagent", status: "failed", endedAt: "yesterday" });
-    const h = setup({ runs: lists([running], [failedIn, timeoutIn, failedOut, jobFailed, doneJob, doneAgent, doneOld, noEnd, badEnd]) });
+    // Kinds the request excluded, in case the workspace ignores the filter.
+    const chatDone = run({ kind: "chat", status: "done", endedAt: iso(NOW - HOUR) });
+    const chatRunning = run({ kind: "chat", status: "running" });
+    const h = setup({ runs: lists([running, chatRunning], [failedIn, timeoutIn, failedOut, jobFailed, doneJob, doneAgent, doneOld, noEnd, badEnd, chatDone]) });
 
     const home = await h.get();
     expect(home.workspace).toEqual({ state: "online", running: [running], failedRuns: [timeoutIn, failedIn], review: [doneJob, doneAgent] });
@@ -104,6 +107,10 @@ describe("GET /api/home", () => {
     expect((await offline.get()).workspace).toEqual({ state: "offline" });
     expect(offline.calls).toEqual([]);
     expect((await setup({ enabled: false }).get()).workspace).toEqual({ state: "offline" });
+    const hung = setup({ runs: () => new Promise(() => {}) });
+    const slow = createHomeRoutes({ log: hung.log, adapter: { openTurns: () => [] }, store: hung.store, link: { isConnected: () => true, isLoginPending: () => false, runsList: () => new Promise(() => {}) }, workspaceEnabled: true, features: [], now: () => NOW, workspaceTimeoutMs: 20 });
+    const res = await slow.handle(new Request("http://x/api/home"), "/api/home");
+    expect(((await res!.json()) as HomeResponse).workspace).toEqual({ state: "timeout" });
   });
 
   test("open job alerts show only with the alerts feature", async () => {
