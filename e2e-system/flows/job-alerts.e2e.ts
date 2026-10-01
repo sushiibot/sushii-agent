@@ -46,7 +46,7 @@ async function home(request: APIRequestContext) {
   return (await res.json()) as { failed: Array<{ id: string; kind: string; error?: string; runId?: string; seq: number }> };
 }
 
-test("a failing scheduled job shows on Home and pushes; its recovery clears it and quiets the notification", async ({ request }) => {
+test("a failing scheduled job shows on Home and pushes; its recovery clears it and quiets the notification", async ({ page, request, watch }) => {
   test.setTimeout(240_000);
   // No chat page is open, so no seen receipt can suppress the push.
   const ua = createECDH("prime256v1");
@@ -80,12 +80,24 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
       renotify: true,
     });
 
+    // The push's link, cold: Home loads, finds the job and opens it in its sheet.
+    await page.goto("/");
+    const row = page.getByRole("button", { name: new RegExp(`${JOB} failed`) });
+    await expect(row).toBeVisible();
+    await page.goto(`/home?item=job:${JOB}`);
+    const sheet = page.getByRole("dialog");
+    await expect(sheet.getByText("E2E-JOBFAIL").first()).toBeVisible();
+    await expect(page).toHaveURL(/\/$/);
+
     schedule("E2E-NOREPLY check something");
     requestRun();
     await expect
       .poll(async () => stack.query("select data from web_events where type = 'alert_cleared' and json_extract(data, '$.id') = ?", `job:${JOB}`), { timeout: 90_000, intervals: [1000] })
       .toHaveLength(1);
     expect((await home(request)).failed.map((a) => a.id)).not.toContain(`job:${JOB}`);
+    // Home was open the whole time: the cleared event takes the job off and its sheet says so.
+    await expect(sheet.getByRole("heading", { name: "Already handled" })).toBeVisible();
+    await expect(row).toBeHidden();
     const kinds = await stack.query<{ k: string }>("select json_extract(data, '$.alert.kind') k from web_events where type = 'alert' and json_extract(data, '$.alert.job') = ? order by seq", JOB);
     expect(kinds.map((r) => r.k)).toEqual(["failed", "recovered"]);
     const history = await request.get("/api/chat/history?limit=100", { headers: SAME_ORIGIN });
@@ -96,6 +108,14 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
     expect(decrypt((await ours())[1]!, ua, auth)).toMatchObject({ title: "Scheduled job working again", tag: `job:${JOB}`, silent: true });
     await new Promise((r) => setTimeout(r, 2000));
     expect(await ours()).toHaveLength(2);
+
+    // Both alerts are in the chat once each, from history, as system lines.
+    await page.goto("/chat");
+    await expect(page.getByText(`Scheduled job ${JOB} failed`)).toHaveCount(1);
+    await expect(page.getByText(`Scheduled job ${JOB} is working again`)).toHaveCount(1);
+    await page.goto(`/home?item=job:${JOB}`);
+    await expect(page.getByRole("dialog").getByRole("heading", { name: "Already handled" })).toBeVisible();
+    expect(await watch.violations()).toEqual([]);
   } finally {
     writeFileSync(join(stack.wsHome, "schedule.md"), "# Schedule\n");
     await request.delete("/api/push/subscribe", { headers: SAME_ORIGIN, data: { endpoint } });
