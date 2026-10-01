@@ -28,6 +28,7 @@ const FILES = new Set([
 	'src/lib/features/chat/render/plain-text.ts',
 	'src/lib/features/home/index.ts',
 	'src/lib/features/home/store.svelte.ts',
+	'src/lib/features/home/fake.ts',
 	'src/proto-routes/proto/flows.ts'
 ]);
 const exists = (path: string) => FILES.has(path);
@@ -197,6 +198,15 @@ describe('the layer rules', () => {
 		expect(rules(file, imp('$lib/features/chat/components/composer.svelte'))).toEqual([
 			'import chat through its index.ts'
 		]);
+	});
+
+	test("only the dev-only ?fake setup reaches a feature's fake", () => {
+		const fake = "import { fixtureHomeApi } from '$lib/features/home/fake';";
+		expect(rules('src/routes/dev-fakes.ts', ts(fake))).toEqual([]);
+		expect(rules('src/routes/+layout.ts', ts(fake))).toEqual(['import home through its index.ts']);
+		expect(
+			rules('src/routes/dev-fakes.ts', ts("import { x } from '$lib/features/home/store.svelte';"))
+		).toEqual(['import home through its index.ts']);
 	});
 
 	test('the prototype sees index.ts, fixtures, ui and the nav table, nothing else from core', () => {

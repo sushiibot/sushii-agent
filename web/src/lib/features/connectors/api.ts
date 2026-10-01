@@ -1,3 +1,4 @@
+import { enc, featureHttp } from '$lib/core/feature-http';
 import type { McpServer, McpServerSummary } from './types';
 
 export interface ConnectorsApi {
@@ -11,3 +12,13 @@ export interface ConnectorsApi {
 	/** Finishes sign-in with the address the browser landed on. */
 	finish(url: string, redirect: string): Promise<McpServer>;
 }
+
+const http = featureHttp("Connectors aren't available yet.");
+
+export const httpConnectorsApi: ConnectorsApi = {
+	list: () => http.get('/connectors'),
+	get: (id) => http.find(`/connectors/${enc(id)}`),
+	acceptTools: (id) => http.post(`/connectors/${enc(id)}/accept`),
+	begin: (url) => http.post('/connectors/begin', { url }),
+	finish: (url, redirect) => http.post('/connectors/finish', { url, redirect })
+};

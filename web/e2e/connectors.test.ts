@@ -52,10 +52,10 @@ test('an http address is refused with a reason', async ({ page, context }) => {
 });
 
 test('no servers and a failure say so', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { connectors: 'empty' } });
+	const app = await fixtureApp(context, { fixtures: { connectors: 'empty' } });
 	await page.goto('/connectors');
 	await expect(page.getByText('No servers yet')).toBeVisible();
-	await page.evaluate(() => localStorage.setItem('fixtures:connectors', 'error'));
+	app.set('connectors', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't load connectors.");
 });

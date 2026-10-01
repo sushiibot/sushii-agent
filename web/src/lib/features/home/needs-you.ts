@@ -91,7 +91,7 @@ const newestFirst = (a: HomeItem, b: HomeItem) => b.at.localeCompare(a.at);
 /** Home's four groups: what is waiting on you, what failed, what is running, what is new. */
 export function homeItems(
 	live: LiveState,
-	data: HomeData | undefined,
+	data: HomeData | null | undefined,
 	local: LocalState
 ): HomeGroups {
 	const waiting: HomeItem[] = [

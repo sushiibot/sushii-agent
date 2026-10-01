@@ -1,5 +1,5 @@
 // Serves the Skills fixtures until the bot reads the workspace's skills. Changes last until reload.
-import { fixtureDelay, fixtureScenario } from '$lib/core/fixtures';
+import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
 import type { SkillsApi } from './api';
 import { skillDetails } from './fixtures';
 import type { SkillDetail } from './types';
@@ -11,11 +11,13 @@ function failure(scenario: string): Error | null {
 	return null;
 }
 
-export function createFixtureSkillsApi(): SkillsApi {
+export function createFixtureSkillsApi(
+	pick: () => FixtureScenario = () => fixtureScenario('skills')
+): SkillsApi {
 	const changed = new Map<string, SkillDetail>();
 	const all = () => skillDetails(Date.now()).map((s) => changed.get(s.name) ?? s);
 	async function gate() {
-		const scenario = fixtureScenario('skills');
+		const scenario = pick();
 		await fixtureDelay(scenario);
 		const err = failure(scenario);
 		if (err) throw err;

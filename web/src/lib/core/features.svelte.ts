@@ -2,8 +2,8 @@ import { api } from './api';
 import { WEB_FEATURES, type WebFeature } from './realtime/events';
 
 /**
- * Screens that run on fixtures until their backend ships. The bot never lists them in
- * /api/me, so they show only through the override; a backend adds its id to WEB_FEATURES.
+ * Screens that have no backend yet. The bot never lists them in /api/me, so they show only
+ * through the device override; a backend adds its id to WEB_FEATURES when it ships.
  */
 export const CLIENT_FEATURES = [
 	'threads',
@@ -18,92 +18,127 @@ export type ClientFeature = (typeof CLIENT_FEATURES)[number];
 export type AppFeature = WebFeature | ClientFeature;
 export const ALL_FEATURES: readonly AppFeature[] = [...WEB_FEATURES, ...CLIENT_FEATURES];
 
-const KNOWN = new Set<string>(ALL_FEATURES);
-const LIVE_KEY = 'features:live';
-/** `all`, or a comma list of feature ids, turned on whatever the bot says. */
+const KEY = 'web-features';
+/** `all`, or a comma list of feature ids, turned on on this device whatever the bot says. */
 export const OVERRIDE_KEY = 'features:override';
 
-function read(key: string): string | null {
+const isWeb = (f: string): f is WebFeature => (WEB_FEATURES as readonly string[]).includes(f);
+
+function cached(): WebFeature[] | null {
 	try {
-		return localStorage.getItem(key);
+		const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? 'null');
+		return Array.isArray(raw) ? raw.filter((f): f is WebFeature => isWeb(f)) : null;
 	} catch {
 		return null;
 	}
 }
 
-function write(key: string, value: string | null) {
+function remember(list: readonly WebFeature[]) {
 	try {
-		if (value === null) localStorage.removeItem(key);
-		else localStorage.setItem(key, value);
+		localStorage.setItem(KEY, JSON.stringify(list));
 	} catch {
-		// Private mode: the setting lasts for this page view.
+		// Only a faster first paint next time.
 	}
 }
 
-export function parseFeatures(raw: unknown): AppFeature[] {
-	if (!Array.isArray(raw)) return [];
-	return raw.filter((f): f is AppFeature => typeof f === 'string' && KNOWN.has(f));
-}
-
-function parseOverride(raw: string | null): ReadonlySet<AppFeature> {
-	if (!raw) return new Set();
+export function parseOverride(raw: string | null): ReadonlySet<AppFeature> {
+	if (!raw?.trim()) return new Set();
 	if (raw.trim() === 'all') return new Set(ALL_FEATURES);
-	return new Set(parseFeatures(raw.split(',').map((s) => s.trim())));
+	const known = new Set<string>(ALL_FEATURES);
+	return new Set(
+		raw
+			.split(',')
+			.map((s) => s.trim())
+			.filter((f): f is AppFeature => known.has(f))
+	);
 }
 
-function readLive(): AppFeature[] | null {
-	const raw = read(LIVE_KEY);
-	if (raw === null) return null;
+function storedOverride(): ReadonlySet<AppFeature> {
 	try {
-		return parseFeatures(JSON.parse(raw));
+		return parseOverride(localStorage.getItem(OVERRIDE_KEY));
 	} catch {
-		return null;
+		return new Set();
 	}
 }
 
-/** Which slices of the app are on: what /api/me lists, plus the fixture override. */
+/** The slices that are on: what the bot lists in `GET /api/me`, plus this device's override. */
 export class Features {
-	/** The bot's list, from /api/me or the copy saved last time; null until either is had. */
-	live = $state.raw<AppFeature[] | null>(readLive());
-	override = $state.raw<ReadonlySet<AppFeature>>(parseOverride(read(OVERRIDE_KEY)));
+	/** null until known; an earlier visit's answer stands in until this visit's arrives. */
+	list = $state.raw<readonly WebFeature[] | null>(null);
+	/** This visit's /api/me has answered. */
+	fresh = $state(false);
+	/** Turned on here for fixture screens, whatever the bot says. */
+	override = $state.raw<ReadonlySet<AppFeature>>(new Set());
 
-	/** Enough is known to hide a screen and send its route Home. */
-	readonly known = $derived(this.live !== null || this.override.size === ALL_FEATURES.length);
-	readonly enabled = $derived(new Set<AppFeature>([...(this.live ?? []), ...this.override]));
+	#load: () => Promise<{ features?: WebFeature[] }>;
+	#inflight: Promise<void> | null = null;
 
-	has = (f: AppFeature | undefined): boolean => !f || this.enabled.has(f);
+	constructor(
+		load: () => Promise<{ features?: WebFeature[] }> = api.me,
+		initial = cached(),
+		override = storedOverride()
+	) {
+		this.#load = load;
+		this.list = initial;
+		this.override = override;
+	}
 
-	#loading: Promise<void> | null = null;
+	/** Shown in the nav: on as far as anything says. */
+	has = (f: AppFeature | undefined): boolean =>
+		!f || this.override.has(f) || (isWeb(f) && (this.list?.includes(f) ?? false));
 
-	load(): Promise<void> {
-		this.#loading ??= api
-			.me()
-			.then((me) => {
-				this.live = parseFeatures(me.features);
-				write(LIVE_KEY, JSON.stringify(this.live));
-			})
-			.catch(() => {
-				// Offline or not the owner: keep the saved list, and try again on the next focus.
-			})
-			.finally(() => (this.#loading = null));
-		return this.#loading;
+	/**
+	 * Known to be off right now, so its screens send you Home. Unknown is never off: a bot
+	 * feature counts as off only once this visit's /api/me has answered. A client feature has no
+	 * bot answer to wait for, so without the override it is off.
+	 */
+	off(f: AppFeature): boolean {
+		if (this.has(f)) return false;
+		return isWeb(f) ? this.fresh : true;
 	}
 
 	/** Turns fixture screens on for this device; `null` clears it. */
 	setOverride(value: 'all' | AppFeature[] | null) {
 		const raw = value === null ? null : value === 'all' ? 'all' : value.join(',');
-		write(OVERRIDE_KEY, raw);
+		try {
+			if (raw === null) localStorage.removeItem(OVERRIDE_KEY);
+			else localStorage.setItem(OVERRIDE_KEY, raw);
+		} catch {
+			// Private mode: on for this page view only.
+		}
 		this.override = parseOverride(raw);
 	}
 
-	/** Refetches on focus, so turning a slice on at the bot shows up without a reload. */
+	/** Asks the bot once per visit; a failure is retried on the next call. */
+	load(): Promise<void> {
+		if (this.fresh) return Promise.resolve();
+		return (this.#inflight ??= this.#load()
+			.then((me) => {
+				const list = WEB_FEATURES.filter((f) => me.features?.includes(f));
+				this.list = list;
+				this.fresh = true;
+				remember(list);
+			})
+			.catch(() => {
+				// Keep what we had; offline or not signed in yet.
+			})
+			.finally(() => {
+				this.#inflight = null;
+			}));
+	}
+
+	/** Loads now and again whenever the app comes back online or into view, until it has an answer. */
 	start(): () => void {
 		void this.load();
-		const onVisible = () => {
+		const retry = () => {
 			if (document.visibilityState === 'visible') void this.load();
 		};
-		document.addEventListener('visibilitychange', onVisible);
-		return () => document.removeEventListener('visibilitychange', onVisible);
+		addEventListener('online', retry);
+		document.addEventListener('visibilitychange', retry);
+		return () => {
+			removeEventListener('online', retry);
+			document.removeEventListener('visibilitychange', retry);
+		};
 	}
 }
 

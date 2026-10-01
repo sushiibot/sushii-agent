@@ -29,13 +29,13 @@ test('a draft can be put to use from a button at the bottom', async ({ page, con
 });
 
 test('no skills, a failure and an unknown skill all say so', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { skills: 'empty' } });
+	const app = await fixtureApp(context, { fixtures: { skills: 'empty' } });
 	await page.goto('/skills');
 	await expect(page.getByText('No skills yet')).toBeVisible();
-	await page.evaluate(() => localStorage.setItem('fixtures:skills', 'error'));
+	app.set('skills', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't load skills.");
-	await page.evaluate(() => localStorage.removeItem('fixtures:skills'));
+	app.set('skills', 'normal');
 	await page.goto('/skills/nope');
 	await expect(page.getByText('No such skill')).toBeVisible();
 });

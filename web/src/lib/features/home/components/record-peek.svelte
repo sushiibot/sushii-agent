@@ -70,8 +70,8 @@
 			<p class="text-sm">The scheduler turned this job off. It won't run again until it's fixed.</p>
 		{/if}
 		<div class="flex flex-col gap-2">
-			{#if a.runId}
-				<Button onclick={() => onopenrun?.(a.runId!)}>Open run<ArrowUpRight /></Button>
+			{#if a.runId && onopenrun}
+				<Button onclick={() => onopenrun(a.runId!)}>Open run<ArrowUpRight /></Button>
 			{/if}
 			<div class="flex gap-2">
 				<Button variant="outline" class="flex-1" onclick={() => onaskagent?.(item)}
@@ -101,7 +101,9 @@
 				: ['Running for', duration(now - Date.parse(r.startedAt))]
 		])}
 		<div class="flex gap-2">
-			<Button class="flex-1" onclick={() => onopenrun?.(r.runId)}>Open run<ArrowUpRight /></Button>
+			{#if onopenrun}
+				<Button class="flex-1" onclick={() => onopenrun(r.runId)}>Open run<ArrowUpRight /></Button>
+			{/if}
 			{#if item.group === 'failed'}
 				<Button variant="ghost" class="px-4" onclick={() => ondismiss?.(item.id)}
 					><X />Dismiss</Button

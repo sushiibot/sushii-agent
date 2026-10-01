@@ -1,5 +1,5 @@
 // Serves the Schedules fixtures until the bot exposes its jobs. Changes last until reload.
-import { fixtureDelay, fixtureScenario } from '$lib/core/fixtures';
+import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
 import type { SchedulesApi } from './api';
 import { jobDetails } from './fixtures';
 import type { JobDetail } from './types';
@@ -13,11 +13,13 @@ function failure(scenario: string): Error | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function createFixtureSchedulesApi(): SchedulesApi {
+export function createFixtureSchedulesApi(
+	pick: () => FixtureScenario = () => fixtureScenario('schedules')
+): SchedulesApi {
 	const changed = new Map<string, JobDetail>();
 	const all = () => jobDetails(Date.now()).map((j) => changed.get(j.id) ?? j);
 	async function gate() {
-		const scenario = fixtureScenario('schedules');
+		const scenario = pick();
 		await fixtureDelay(scenario);
 		const err = failure(scenario);
 		if (err) throw err;

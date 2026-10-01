@@ -21,11 +21,14 @@ import { AuthLogin, ReauthNotifier, piChatGptLogin } from "./authLogin.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { SubagentHost } from "./subagents/host.ts";
 import { MainTurnTracker } from "./subagents/turnTracker.ts";
-import { Scheduler, jobAlertText } from "./scheduler.ts";
+import { Scheduler, jobAlertText, jobAlertWire } from "./scheduler.ts";
 import { wireProactiveJobs } from "./proactive.ts";
 import { ulid } from "./ulid.ts";
 import { ChatExportReader, chatExportHandlers } from "./chatExport.ts";
 import { UPLOADS_DIR } from "./inboundImages.ts";
+import { notifyRunChanges, runsHandlers } from "./runsRpc.ts";
+import { historyHandlers } from "./historyFiles.ts";
+import { HistorySearch, historySearchHandlers } from "./historySearch.ts";
 
 const log = getLogger("workspace");
 
@@ -48,13 +51,13 @@ async function main(): Promise<void> {
   delete process.env.OPENAI_API_KEY;
   await scaffoldHome(config.home);
   // One instance for the whole process: later subagent and job runners record through it too.
-  const runLog = new RunLog(config.stateDir);
+  const runLog = new RunLog(config.stateDir, { warn: (obj, msg) => log.warn(obj, msg) });
   const orphans = runLog.reconcileOrphans();
   if (orphans) log.warn({ orphans }, "closed runs left open by a previous process");
   const historyLog = getLogger("workspace.history");
   const history = new HistoryWriter({ home: config.home, agentDir: config.agentDir, tz: config.tz });
-  const runs = recordHistory(runLog, history, historyLog);
   let client: OrchestrationClient | null = null;
+  const runs = notifyRunChanges(recordHistory(runLog, history, historyLog), (method, params) => client?.notify(method, params), config.principalId, log);
   const toolStubs = new ToolStubs({
     principalId: config.principalId,
     request: (method, params, timeoutMs) => (client ? client.request(method, params, { timeoutMs }) : Promise.reject(new NotConnectedError())),
@@ -86,6 +89,8 @@ async function main(): Promise<void> {
   // session or runner reads the config: a saved `!model` choice rewrites its model fields.
   const choice = new ModelChoice(config, config.stateDir);
   const turns = new MainTurnTracker();
+  // Late-bound: main runs start only after the session exists.
+  let personalTurn: PersonalSession | null = null;
   const notify = (method: string, params: unknown) => {
     turns.observe(method, params);
     client?.notify(method, params);
@@ -109,7 +114,7 @@ async function main(): Promise<void> {
     stateDir: config.stateDir,
     tz: config.tz,
     uploads: { dir: join(config.home, UPLOADS_DIR) },
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, mainTurnId: () => personalTurn?.currentTurnId() }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -150,6 +155,7 @@ async function main(): Promise<void> {
       isConnected: () => client?.connected ?? false,
     },
   });
+  personalTurn = personal;
   const authLogin = new AuthLogin({
     principalId: config.principalId,
     login: piChatGptLogin({ agentDir: config.agentDir, cwd: config.home }),
@@ -166,7 +172,7 @@ async function main(): Promise<void> {
     at: config.consolidateAt,
     tz: config.tz,
     log: getLogger("workspace.scheduler"),
-    onJobAlert: (alert) => personal.deliverOutOfBand({ kind: "proactive", text: jobAlertText(alert) }),
+    onJobAlert: (alert) => personal.deliverAlert(jobAlertWire(alert), jobAlertText(alert)),
   });
   const consolidation = createConsolidationJob(config, { runs, selector, live: personal });
   // Its memory and task writes are main-side: the subagents' protected watch must not undo them.
@@ -222,6 +228,10 @@ async function main(): Promise<void> {
     handlers: {
       ...personal.handlers(),
       ...chatExportHandlers({ principalId: config.principalId, reader: new ChatExportReader({ agentDir: config.agentDir }) }),
+      // Session roots come from the host's own agent dir (process env set by the deploy), never from a run record.
+      ...runsHandlers({ principalId: config.principalId, stateDir: config.stateDir, home: config.home, tz: config.tz, agentDirs: [config.agentDir] }),
+      ...historyHandlers({ principalId: config.principalId, home: config.home, stateDir: config.stateDir }),
+      ...historySearchHandlers(new HistorySearch({ principalId: config.principalId, home: config.home })),
       ...authLogin.handlers(),
       ...commandHandlers({
         principalId: config.principalId,
@@ -233,7 +243,7 @@ async function main(): Promise<void> {
     },
     onRegistered: (result) => {
       toolStubs.update(result?.tools ?? []);
-      personal.onRegistered();
+      personal.onRegistered(result?.features ?? []);
     },
   });
 

@@ -25,10 +25,10 @@ test('each briefing item has its source and plain buttons to rate or dismiss it'
 });
 
 test('no briefing yet and a failure say so', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { briefing: 'empty' } });
+	const app = await fixtureApp(context, { fixtures: { briefing: 'empty' } });
 	await page.goto('/briefing');
 	await expect(page.getByText('No briefing yet today')).toBeVisible();
-	await page.evaluate(() => localStorage.setItem('fixtures:briefing', 'error'));
+	app.set('briefing', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't load the briefing.");
 });

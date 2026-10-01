@@ -1,5 +1,5 @@
 // Typed fixtures for the briefing. Made up.
-import { toDate } from '$lib/ui/format/time';
+import { toDate } from '../../ui/format/time';
 import type { Briefing } from './types';
 
 export function briefing(now: number): Briefing {

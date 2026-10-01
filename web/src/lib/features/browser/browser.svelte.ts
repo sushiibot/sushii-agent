@@ -1,14 +1,14 @@
 import { Remote } from '$lib/core/remote.svelte';
-import { createFixtureBrowserApi, type BrowserApi } from './fake';
-import type { BrowserPending } from './types';
+import { httpBrowserApi, type BrowserApi } from './api';
+import type { BrowserPending, BrowserStatus } from './types';
 
 export class BrowserStore {
-	status: Remote<import('./types').BrowserStatus>;
+	status: Remote<BrowserStatus>;
 	pending = $state<BrowserPending>(null);
 	error = $state<string | null>(null);
 	#api: BrowserApi;
 
-	constructor(api: BrowserApi = createFixtureBrowserApi()) {
+	constructor(api: BrowserApi = httpBrowserApi) {
 		this.#api = api;
 		this.status = new Remote(() => api.status(), { refetchOnFocus: true });
 	}
@@ -30,7 +30,12 @@ export class BrowserStore {
 }
 
 let store: BrowserStore | null = null;
+let configured: BrowserApi | undefined;
+
+export function configureBrowser(api: BrowserApi) {
+	configured = api;
+}
 
 export function browserStore(): BrowserStore {
-	return (store ??= new BrowserStore());
+	return (store ??= new BrowserStore(configured));
 }

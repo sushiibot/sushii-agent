@@ -1,6 +1,5 @@
 import { Remote } from '$lib/core/remote.svelte';
-import type { MemoryApi } from './api';
-import { createFixtureMemoryApi } from './fake';
+import { httpMemoryApi, type MemoryApi } from './api';
 import type { MemoryFileDetail, MemoryOverview, MemoryWriteRecord } from './types';
 
 export class MemoryStore {
@@ -15,7 +14,7 @@ export class MemoryStore {
 	#files = new Map<string, Remote<MemoryFileDetail | null>>();
 	#writes = new Map<string, Remote<MemoryWriteRecord | null>>();
 
-	constructor(api: MemoryApi = createFixtureMemoryApi()) {
+	constructor(api: MemoryApi = httpMemoryApi) {
 		this.#api = api;
 		this.overview = new Remote(() => api.overview(), { refetchOnFocus: true });
 	}

@@ -1,3 +1,4 @@
+import { enc, featureHttp } from '$lib/core/feature-http';
 import type { ChatsData, ThreadDetail, ThreadReport, ThreadSummary } from './types';
 
 export interface ThreadsApi {
@@ -11,3 +12,13 @@ export interface ThreadsApi {
 	close(id: string): Promise<ThreadReport>;
 	reopen(id: string): Promise<ThreadSummary>;
 }
+
+const http = featureHttp("Threads aren't available yet.");
+
+export const httpThreadsApi: ThreadsApi = {
+	list: () => http.get('/chats'),
+	get: (id) => http.find(`/threads/${enc(id)}`),
+	branch: (from) => http.post('/threads', from),
+	close: (id) => http.post(`/threads/${enc(id)}/close`),
+	reopen: (id) => http.post(`/threads/${enc(id)}/reopen`)
+};

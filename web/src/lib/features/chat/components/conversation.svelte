@@ -9,6 +9,7 @@
 	import Clock from '@lucide/svelte/icons/clock';
 	import Check from '@lucide/svelte/icons/check';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
+	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -151,7 +152,7 @@
 	};
 </script>
 
-<ol class="flex flex-col gap-4 px-4 py-4">
+<ol class="flex min-w-0 flex-col gap-4 overflow-x-clip px-4 py-4 [overflow-wrap:anywhere]">
 	{#each messages as message (message.id)}
 		{@const owner = message.role === 'user'}
 		{@const firstTool = message.parts.findIndex(isTool)}
@@ -159,7 +160,7 @@
 		{@const queued = message.delivery === 'queued' || message.delivery === 'queued-agent'}
 		{@const unsent = owner && (failed || queued)}
 		{@const actions = hasText(message) ? actionsFor(message) : []}
-		<li data-message-id={message.id}>
+		<li data-message-id={message.id} class="min-w-0">
 			<div
 				class={cn(
 					'group/msg relative',
@@ -178,10 +179,10 @@
 						<p
 							data-message-text
 							class={cn(
-								'whitespace-pre-wrap',
+								'[overflow-wrap:anywhere] whitespace-pre-wrap',
 								owner
 									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-body leading-snug text-primary-foreground [@media(hover:hover)]:max-w-full'
-									: 'text-body leading-relaxed [overflow-wrap:anywhere]',
+									: 'text-body leading-relaxed',
 								message.streaming &&
 									"min-h-[4.5lh] after:ml-0.5 after:inline-block after:h-[1.1em] after:w-0.5 after:translate-y-[3px] after:animate-pulse after:bg-foreground after:content-[''] motion-reduce:after:animate-none"
 							)}
@@ -203,7 +204,7 @@
 					{:else if part.type === 'data-approval'}
 						<p data-approval class="flex items-center gap-2 text-sm text-muted-foreground">
 							<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
-							<span
+							<span class="min-w-0 [overflow-wrap:anywhere]"
 								>{outcome[part.data.outcome]}{part.data.outcome === 'pending' ? ':' : ' ·'}
 								<code class="font-mono text-code text-foreground">{part.data.tool}</code></span
 							>
@@ -259,11 +260,38 @@
 							>
 						</p>
 					{:else if part.type === 'data-line'}
-						<p class="text-sm text-muted-foreground">{part.data.text}</p>
+						<p class="text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-muted-foreground">
+							{part.data.text}
+						</p>
+					{:else if part.type === 'data-alert'}
+						{@const a = part.data}
+						<p
+							class="flex items-start gap-2 text-sm [overflow-wrap:anywhere] text-muted-foreground"
+						>
+							<CalendarClock
+								class={cn('mt-0.5 size-4 shrink-0', a.kind !== 'recovered' && 'text-failed')}
+								aria-hidden="true"
+							/>
+							<span class="min-w-0">
+								<span class="font-medium text-foreground"
+									>Scheduled job {a.job}
+									{a.kind === 'failed'
+										? 'failed'
+										: a.kind === 'stuck'
+											? 'is stuck'
+											: 'is working again'}</span
+								>{#if a.error}: {a.error}{/if}
+								{#if a.href}
+									<a href={a.href} class="font-medium text-foreground underline underline-offset-4"
+										>Details</a
+									>
+								{/if}
+							</span>
+						</p>
 					{:else if part.type === 'data-notice'}
 						<a
 							href={part.data.href}
-							class="flex items-start gap-2.5 rounded-lg border border-dashed px-3 py-2.5 text-sm hover:bg-muted/50"
+							class="flex min-w-0 items-start gap-2.5 rounded-lg border border-dashed px-3 py-2.5 text-sm [overflow-wrap:anywhere] hover:bg-muted/50"
 						>
 							<Bell class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 							<span class="flex min-w-0 flex-col gap-0.5">

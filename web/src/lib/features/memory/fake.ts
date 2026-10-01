@@ -1,5 +1,5 @@
 // Serves the Memory fixtures until the bot reads the workspace's memory. Reverts last until reload.
-import { fixtureDelay, fixtureScenario } from '$lib/core/fixtures';
+import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
 import type { MemoryApi } from './api';
 import { memoryFiles, memoryWrites } from './fixtures';
 import type { MemoryWriteRecord } from './types';
@@ -11,11 +11,13 @@ function failure(scenario: string): Error | null {
 	return null;
 }
 
-export function createFixtureMemoryApi(): MemoryApi {
+export function createFixtureMemoryApi(
+	pick: () => FixtureScenario = () => fixtureScenario('memory')
+): MemoryApi {
 	const changed = new Map<string, MemoryWriteRecord>();
 
 	async function gate() {
-		const scenario = fixtureScenario('memory');
+		const scenario = pick();
 		await fixtureDelay(scenario);
 		const err = failure(scenario);
 		if (err) throw err;

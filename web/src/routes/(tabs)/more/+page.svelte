@@ -4,7 +4,7 @@
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { MoreScreen } from '$lib/features/more';
 
-	const entries = $derived(moreFor((f) => features.has(f)));
+	const entries = $derived(moreFor(features.has));
 </script>
 
 <svelte:head><title>More · Agent</title></svelte:head>

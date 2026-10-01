@@ -1,6 +1,5 @@
 import { Remote } from '$lib/core/remote.svelte';
-import type { ConnectorsApi } from './api';
-import { createFixtureConnectorsApi } from './fake';
+import { httpConnectorsApi, type ConnectorsApi } from './api';
 import type { AddState, McpServer, McpServerSummary } from './types';
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : 'Something went wrong.');
@@ -17,7 +16,7 @@ export class ConnectorsStore {
 	#api: ConnectorsApi;
 	#servers = new Map<string, Remote<McpServer | null>>();
 
-	constructor(api: ConnectorsApi = createFixtureConnectorsApi()) {
+	constructor(api: ConnectorsApi = httpConnectorsApi) {
 		this.#api = api;
 		this.list = new Remote(() => api.list(), { refetchOnFocus: true });
 	}
@@ -52,8 +51,12 @@ export class ConnectorsStore {
 	}
 
 	async begin() {
-		this.add.busy = true;
 		this.add.error = null;
+		if (!/^https:\/\/[^/\s]+/i.test(this.add.url.trim())) {
+			this.add.error = 'That isn’t an https:// address.';
+			return;
+		}
+		this.add.busy = true;
 		try {
 			const { name, authUrl } = await this.#api.begin(this.add.url.trim());
 			this.add = { ...this.add, name, authUrl, stage: 'oauth' };

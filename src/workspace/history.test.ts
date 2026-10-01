@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import { HistoryWriter, recordHistory, renderTranscript, summaryTopic } from "./history.ts";
+import { openConfinedSessionSync, realRoots, tailLinesOfSync } from "./runReader.ts";
 import { scaffoldHome } from "./home.ts";
 import { flushPrompt } from "./memoryFlush.ts";
 import { RunLog } from "./runLog.ts";
@@ -266,6 +267,34 @@ describe("hostile or unusual input", () => {
     expect(Date.now() - started).toBeLessThan(2000);
     expect(lstatSync(daily).isFile()).toBe(true);
     expect(readFileSync(daily, "utf8")).toContain("deploy the thing please");
+  });
+
+  test("a session swapped for a FIFO doesn't block the host; the run file says there's no session", () => {
+    mainSession();
+    const { runs } = setup();
+    const runId = runs.startRun({ agentName: "main", task: "deploy", sessionFile: chatFile() });
+    rmSync(chatFile());
+    expect(spawnSync("mkfifo", [chatFile()]).status).toBe(0);
+    const started = Date.now();
+    runs.endRun(runId, { status: "done" });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(readFileSync(join(home, "history", "2026-09", `29-${runId}.md`), "utf8")).toContain("no session file for this run");
+  });
+
+  test("the checked fd is what gets read: swapping the path for a FIFO after the check changes nothing", () => {
+    mainSession();
+    const opened = openConfinedSessionSync(chatFile(), realRoots([agentDir]))!;
+    expect(opened).not.toBeNull();
+    try {
+      rmSync(chatFile());
+      expect(spawnSync("mkfifo", [chatFile()]).status).toBe(0);
+      const lines = [...tailLinesOfSync(opened.fd, opened.size, { maxBytes: 1 << 20, maxLine: 1 << 20 }, { truncated: false })];
+      expect(lines.at(-1)).toContain('"type":"session"');
+      expect(lines.join("\n")).toContain("deploy the thing please");
+    } finally {
+      closeSync(opened.fd);
+    }
+    expect(openConfinedSessionSync(chatFile(), realRoots([agentDir]))).toBeNull();
   });
 
   test("a read error other than a missing file leaves the daily index alone and is logged", () => {

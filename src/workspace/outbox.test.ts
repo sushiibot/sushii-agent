@@ -124,3 +124,18 @@ test("files that would push the delivery past one WebSocket frame are left out a
   expect(wire.files).toBeUndefined();
   expect(wire.text.endsWith("(couldn't attach: a.bin)")).toBe(true);
 });
+
+describe("outbox replace", () => {
+  test("replaces a pending entry in place, across a reload, and refuses an acked or unknown one", () => {
+    const state = temp();
+    const outbox = new Outbox(state);
+    outbox.append(entry("o1"));
+    outbox.append(entry("o2"));
+    expect(outbox.replace({ ...entry("o1"), kind: "proactive", text: "rewritten" })).toBe(true);
+    outbox.ack("o2");
+    expect(outbox.replace(entry("o2"))).toBe(false);
+    expect(outbox.replace(entry("o3"))).toBe(false);
+    const reloaded = new Outbox(state);
+    expect(reloaded.unacked()).toEqual([{ ...entry("o1"), kind: "proactive", text: "rewritten" }]);
+  });
+});

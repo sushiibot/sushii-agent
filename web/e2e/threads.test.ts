@@ -38,10 +38,7 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	await page.getByRole('link', { name: /October trip/ }).click();
 	await expect(page.getByRole('heading', { name: 'October trip', level: 1 })).toBeVisible();
 	await expect(page.getByText('Brief from Main')).toBeVisible();
-	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveAttribute(
-		'placeholder',
-		'Message in October trip'
-	);
+	await expect(page.getByText('Picking up the trip here.')).toBeVisible();
 	await page.getByRole('button', { name: /Shares memory with Main · 2 writes/ }).click();
 	const sheet = page.getByRole('dialog', { name: 'Memory shared with Main' });
 	await expect(sheet).toContainText('2 writes from this thread');
@@ -74,25 +71,25 @@ test('a reply in Main starts a thread from a visible button', async ({ page, con
 	await sheet.getByRole('button', { name: 'Start thread' }).click();
 	await expect(page).toHaveURL(/\/chats\/hotel-choice$/);
 	await expect(page.getByRole('heading', { name: 'Hotel choice', level: 1 })).toBeVisible();
-	await page.getByRole('textbox', { name: 'Message' }).fill('What next?');
-	await page.getByRole('button', { name: 'Send' }).click();
-	await expect(page.getByText('Noted. I kept this in the thread')).toBeVisible({ timeout: 10_000 });
+	// Until the agent runs threads, a thread can't take messages, so nothing can reach Main.
+	await expect(page.getByText("the agent can't take messages in threads yet")).toBeVisible();
+	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveCount(0);
 });
 
 test('an idle thread archived by itself is read only until reopened', async ({ page, context }) => {
 	await fixtureApp(context);
 	await page.goto('/chats/couch');
 	await expect(page.getByText(/after a week with nothing new\. Read only\./)).toBeVisible();
-	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveCount(0);
 	await page.getByRole('button', { name: 'Reopen' }).click();
-	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+	await expect(page.getByText(/after a week with nothing new/)).toHaveCount(0);
+	await expect(page.getByText("the agent can't take messages in threads yet")).toBeVisible();
 });
 
 test('a list that fails to load says so and retries', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { threads: 'error' } });
+	const app = await fixtureApp(context, { fixtures: { threads: 'error' } });
 	await page.goto('/chats');
 	await expect(page.getByRole('alert')).toContainText("Couldn't load your chats.");
-	await page.evaluate(() => localStorage.removeItem('fixtures:threads'));
+	app.set('threads', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
 });
@@ -101,8 +98,7 @@ test('with threads off, Chat is one conversation that goes back Home', async ({
 	page,
 	context
 }) => {
-	await fixtureApp(context);
-	await context.addInitScript(() => localStorage.setItem('features:override', ''));
+	await fixtureApp(context, { override: '' });
 	await page.goto('/chat');
 	await expect(page.getByRole('link', { name: 'Back to Home' })).toBeAttached();
 	await page.goto('/chats');

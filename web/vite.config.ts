@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import pkg from './package.json' with { type: 'json' };
+import { noFixturesInBundle } from './scripts/bundle-guard.ts';
 
 // Mirrors TRUSTED_TYPE_POLICIES in src/surfaces/web/static.ts; a root test keeps the two in step.
 const TRUSTED_TYPE_POLICIES = 'svelte-trusted-html sushii-sw-url';
@@ -88,6 +89,7 @@ export default defineConfig(() => {
 
 		plugins: [
 			enforceTrustedTypesInPreview(),
+			...(proto ? [] : [noFixturesInBundle()]),
 			tailwindcss(),
 			sveltekit(
 				proto

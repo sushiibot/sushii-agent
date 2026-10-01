@@ -1,5 +1,8 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import type { FixtureScenario } from '../src/lib/core/fixtures';
+import { fakeBackend } from './fake-backend';
+import { fixtureRoutes, type FixtureFeature, type FixtureRoutes } from './fixture-routes';
 
 export async function smallTargets(page: Page) {
 	return page.$$eval(
@@ -144,31 +147,31 @@ export const streamRequests = (page: Page) =>
 	page.evaluate(() => (window as unknown as SseWindow).__sse.requests);
 
 /**
- * The app with every fixture screen on. `fixtures` maps a feature to the state its fake serves
- * (`fixtures:<feature>`), set once per test so a reload can clear it.
+ * The app with every slice turned on through the device override, the M2/M3 routes from the shared
+ * fake backend and the fixture screens' routes from their fixture APIs. `fixtures` picks the state
+ * a fixture feature serves; the returned handle changes it mid-test.
  */
 export async function fixtureApp(
 	context: BrowserContext,
-	opts: { fixtures?: Record<string, string>; history?: unknown[] } = {}
-) {
+	opts: {
+		fixtures?: Partial<Record<FixtureFeature, FixtureScenario>>;
+		history?: unknown[];
+		override?: string;
+	} = {}
+): Promise<FixtureRoutes> {
 	await stubStream(context);
-	await context.addInitScript((f) => {
-		localStorage.setItem('features:override', 'all');
+	await context.addInitScript((override) => {
+		localStorage.setItem('features:override', override);
 		localStorage.setItem('install-hint-dismissed', '1');
-		if (sessionStorage.getItem('fixtures-set')) return;
-		sessionStorage.setItem('fixtures-set', '1');
-		for (const [k, v] of Object.entries(f)) localStorage.setItem(`fixtures:${k}`, v);
-	}, opts.fixtures ?? {});
+	}, opts.override ?? 'all');
 	await context.route('**/api/**', (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path === '/api/me')
-			return route.fulfill({
-				json: { login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] }
-			});
 		if (path === '/api/chat/history')
 			return route.fulfill({ json: { items: opts.history ?? [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
+	await fakeBackend(context);
+	return fixtureRoutes(context, opts.fixtures);
 }
 
 /** axe, 48px targets and reflow at 412 and 320, in the page's current state. */

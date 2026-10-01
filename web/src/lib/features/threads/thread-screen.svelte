@@ -25,6 +25,7 @@
 		sheet,
 		busy = false,
 		error = null,
+		sendable = true,
 		writeHref = (id) => `/memory/writes/${id}`,
 		memoryHref = '/memory/writes',
 		onopensheet,
@@ -46,6 +47,8 @@
 		sheet?: ThreadSheet | ChatProps['sheet'];
 		busy?: boolean;
 		error?: string | null;
+		/** Messages can be sent here; false until the agent runs threads. */
+		sendable?: boolean;
 		writeHref?: (id: string) => string;
 		memoryHref?: string;
 		onopensheet?: (sheet: ThreadSheet) => void;
@@ -119,7 +122,12 @@
 {/snippet}
 
 {#snippet readOnly()}
-	{#if thread?.archived}
+	{#if !archived && !sendable}
+		<p class="flex items-center gap-3 px-4 py-3 text-sm text-muted-foreground">
+			<Archive class="size-4 shrink-0" aria-hidden="true" />
+			Read only for now: the agent can't take messages in threads yet.
+		</p>
+	{:else if thread?.archived}
 		<div class="flex flex-wrap items-center gap-3 px-4 py-3 text-sm text-muted-foreground">
 			<Archive class="size-4 shrink-0" aria-hidden="true" />
 			<span class="min-w-0 flex-1 basis-48">
@@ -157,7 +165,7 @@
 		placeholder="Message in {thread.title}"
 		{subtitle}
 		{headerActions}
-		readOnly={archived ? readOnly : undefined}
+		readOnly={archived || !sendable ? readOnly : undefined}
 		back={{ ...back, desktop: true }}
 	/>
 {:else}

@@ -2,7 +2,7 @@
 // Everything here is made up: no real people, places or bookings.
 import type { WebHistoryItem } from '$lib/core/realtime/events';
 import type { ChatMessage } from '$lib/features/chat';
-import { ago } from '$lib/ui/format/time';
+import { ago } from '../../ui/format/time';
 import type { ChatsData, MainSummary, ThreadDetail, ThreadReport, ThreadSummary } from './types';
 
 const MIN = 60_000;

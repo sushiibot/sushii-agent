@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { stackConfig } from "./stack/config.ts";
+import { seedRunsAndHistory } from "./stack/seed-runs.ts";
 
 const HERE = import.meta.dir;
 const REPO = resolve(HERE, "..");
@@ -45,6 +46,9 @@ const P = {
 };
 for (const d of Object.values(P)) mkdirSync(d, { recursive: true });
 const DB_PATH = join(P.botData, "sushii-agent.db");
+const PUSH_CAPTURE = join(TMP, "push.jsonl");
+// The bot's link probe (stack/link-probe.preload.ts) listens here; the control server forwards to it.
+const LINK_SOCKET = join(TMP, "link.sock");
 
 /** A Main session from before the web app, which the bot imports once from the workspace (flows/history-import). */
 function seedPreWebSession(): void {
@@ -58,6 +62,7 @@ function seedPreWebSession(): void {
   writeFileSync(join(P.piAgent, "chat", "2025-01-01T12-00-00-000Z_e2e-pre-web.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
 }
 seedPreWebSession();
+seedRunsAndHistory({ wsState: P.wsState, wsHome: P.wsHome, piAgent: P.piAgent, outside: join(TMP, "ws-data", "outside") });
 
 async function vapidPair() {
   const kp = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
@@ -204,6 +209,13 @@ function controlServer(bot: Proc, llmURL: string) {
           db.close();
         }
       }
+      if (req.method === "GET" && url.pathname === "/push/log") {
+        const lines = existsSync(PUSH_CAPTURE) ? readFileSync(PUSH_CAPTURE, "utf8").split("\n").filter(Boolean) : [];
+        return Response.json(lines.map((l) => JSON.parse(l)));
+      }
+      if (req.method === "POST" && url.pathname === "/link/request") {
+        return fetch("http://link/request", { method: "POST", body: await req.text(), unix: LINK_SOCKET } as RequestInit);
+      }
       if (req.method === "POST" && url.pathname === "/bot/restart") {
         await stop(bot);
         if (tornDown) return new Response("tearing down", { status: 503 });
@@ -310,7 +322,7 @@ async function main(): Promise<number> {
   const bot: Proc = {
     name: "bot",
     // cwd is the repo: the drizzle migrations folder resolves from it.
-    cmd: [BUN, "--no-env-file", "--preload", join(HERE, "stack", "discord-stub.preload.ts"), "--preload", guard, "src/index.ts"],
+    cmd: [BUN, "--no-env-file", "--preload", join(HERE, "stack", "discord-stub.preload.ts"), "--preload", join(HERE, "stack", "link-probe.preload.ts"), "--preload", guard, "src/index.ts"],
     cwd: REPO,
     env: {
       ...common,
@@ -342,10 +354,12 @@ async function main(): Promise<number> {
       WEB_TRUSTED_PEERS: addrs.trustedPeer,
       WEB_OWNER_LOGIN: cfg.ownerLogin,
       WEB_DIST_DIR: distDir,
-      WEB_FEATURES: "runs,history",
       VAPID_PUBLIC_KEY: vapid.publicKey,
       VAPID_PRIVATE_KEY: vapid.privateKey,
       VAPID_SUBJECT: "mailto:e2e@example.invalid",
+      WEB_FEATURES: "runs,history,home,alerts",
+      E2E_PUSH_CAPTURE: PUSH_CAPTURE,
+      E2E_LINK_SOCKET: LINK_SOCKET,
     },
   };
   const ws: Proc = {
@@ -384,7 +398,7 @@ async function main(): Promise<number> {
   control = controlServer(bot, llmURL);
   console.log("[e2e] stack ready; running flows");
 
-  return runToExit([join(HERE, "node_modules", ".bin", "playwright"), "test", ...process.argv.slice(2)], HERE, callerEnv({ E2E_TMP: TMP, E2E_WS_HOME: P.wsHome, E2E_PW_OUT: P.pwOut }));
+  return runToExit([join(HERE, "node_modules", ".bin", "playwright"), "test", ...process.argv.slice(2)], HERE, callerEnv({ E2E_TMP: TMP, E2E_WS_HOME: P.wsHome, E2E_WS_STATE: P.wsState, E2E_PW_OUT: P.pwOut }));
 }
 
 function finish(code: number): never {

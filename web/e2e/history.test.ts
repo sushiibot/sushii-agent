@@ -1,23 +1,16 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { fakeBackend } from './fake-backend';
 import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
 
-/** The app on fixtures; `fixtures` picks what the History fakes serve until they are cleared. */
-async function server(context: BrowserContext, fixtures: Record<string, string> = {}) {
+/** The app on fixtures; `opts` picks what the fake backend's History and search routes answer. */
+async function server(context: BrowserContext, opts: Parameters<typeof fakeBackend>[1] = {}) {
 	await stubStream(context);
-	await context.addInitScript((f) => {
-		if (sessionStorage.getItem('fixtures-set')) return;
-		for (const [k, v] of Object.entries(f)) localStorage.setItem(`fixtures:${k}`, v);
-		sessionStorage.setItem('fixtures-set', '1');
-	}, fixtures);
 	await context.route('**/api/**', (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path === '/api/me')
-			return route.fulfill({
-				json: { login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] }
-			});
 		if (path === '/api/chat/history') return route.fulfill({ json: { items: [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
+	return fakeBackend(context, opts);
 }
 
 const today = (page: Page) =>
@@ -91,14 +84,16 @@ test('a slow day list shows a labelled skeleton; an error offers Retry', async (
 	page,
 	context
 }) => {
-	await server(context, { history: 'slow' });
+	const backend = await server(context, { history: 'slow' });
 	await page.goto('/history');
 	await expect(page.getByRole('status').filter({ hasText: 'Loading history…' })).toBeAttached();
 	await expect(rows(page).first()).toBeVisible({ timeout: 6000 });
-	await page.evaluate(() => localStorage.setItem('fixtures:history', 'error'));
+	backend.set('history', 'offline');
 	await page.goto('/history/2019-01-02');
-	await expect(page.getByRole('alert')).toContainText("Couldn't load this day.");
-	await page.evaluate(() => localStorage.removeItem('fixtures:history'));
+	await expect(page.getByRole('alert')).toContainText(
+		"Couldn't load this day. Can't reach the agent right now."
+	);
+	backend.set('history', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByText('No notes for this day')).toBeVisible();
 });
@@ -127,6 +122,21 @@ test('search finds chat and notes, labels each source and highlights the match',
 	await expect(rows(page)).toHaveCount(6);
 });
 
+test('typing searches once it pauses, and never below two characters', async ({
+	page,
+	context
+}) => {
+	const backend = await server(context);
+	await page.goto('/history/search');
+	const searches = () => backend.calls.filter((c) => c.path === '/api/search');
+	await field(page).pressSequentially('e', { delay: 30 });
+	await page.waitForTimeout(600);
+	expect(searches()).toEqual([]);
+	await field(page).pressSequentially('astside', { delay: 40 });
+	await expect(rows(page)).toHaveCount(6);
+	expect(searches().map((c) => c.search)).toEqual(['?q=eastside']);
+});
+
 test('a search with no matches says so', async ({ page, context }) => {
 	await server(context);
 	await page.goto('/history/search?q=zebra%20crossing');
@@ -150,12 +160,27 @@ test('a source that could not be searched is named', async ({ page, context }) =
 });
 
 test('a search that fails offers Retry', async ({ page, context }) => {
-	await server(context, { search: 'error' });
+	const backend = await server(context, { search: 'error' });
 	await page.goto('/history/search?q=eastside');
 	await expect(page.getByRole('alert')).toContainText("Couldn't search.");
-	await page.evaluate(() => localStorage.removeItem('fixtures:search'));
+	backend.set('search', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(rows(page)).toHaveCount(6);
+});
+
+test('with History turned off on the bot, its screens and search send you Home', async ({
+	page,
+	context
+}) => {
+	await server(context, { features: ['runs', 'home', 'alerts'] });
+	for (const path of ['/history', '/history/search?q=eastside']) {
+		await page.goto(path);
+		await expect(page).toHaveURL(/\/$/);
+		await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+	}
+	await page.goto('/more');
+	await expect(page.getByRole('link', { name: /Runs/ })).toBeVisible();
+	await expect(page.getByRole('link', { name: /History/ })).toBeHidden();
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {

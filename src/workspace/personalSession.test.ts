@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
-import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, type SessionSummaryRecord, STOP_NOTE } from "./personalSession.ts";
+import { PersonalSession, formatUserText, isContractRefusal, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, type SessionSummaryRecord, STOP_NOTE } from "./personalSession.ts";
 import { HistoryWriter } from "./history.ts";
+import { RpcErrorResponse } from "../orchestration/transport/client.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 import type { ImageFetchOptions } from "./inboundImages.ts";
@@ -2837,5 +2838,118 @@ describe("history markers", () => {
     await host.handleNew();
     expect(markers(sessions[1]!, "sushii.session")).toEqual([{ reason: "new" }]);
     expect(markers(sessions[0]!, "sushii.session")).toEqual([]);
+  });
+});
+
+describe("job alerts and the bot's alert feature", () => {
+  const ALERT = { source: "job" as const, job: "nightly", kind: "failed" as const, trigger: "daily" as const, startedAt: "2026-09-29T04:00:00.000Z", error: "boom", schedule: "daily 04:00" };
+  const TEXT = "⚠️ scheduled job `nightly` failed (daily): boom.";
+
+  test("a bot that lists alert gets the structured alert", async () => {
+    const { host, transport } = setup();
+    await host.start();
+    host.onRegistered(["alert"]);
+    host.deliverAlert(ALERT, TEXT);
+    await tick();
+    expect(transport.delivered().at(-1)).toMatchObject({ kind: "alert", text: TEXT, alert: ALERT });
+    await host.dispose();
+  });
+
+  test("a bot without alert gets the text as a proactive message, with no alert field", async () => {
+    const { host, transport } = setup();
+    await host.start();
+    host.onRegistered([]);
+    host.deliverAlert(ALERT, TEXT);
+    await tick();
+    const sent = transport.delivered().at(-1)!;
+    expect(sent).toMatchObject({ kind: "proactive", text: TEXT });
+    expect("alert" in sent).toBe(false);
+    await host.dispose();
+  });
+
+  test("an alert outside the contract goes out as text even to a bot that lists alert", async () => {
+    const { host, transport } = setup();
+    await host.start();
+    host.onRegistered(["alert"]);
+    host.deliverAlert({ ...ALERT, job: "j".repeat(65) }, TEXT);
+    await tick();
+    expect(transport.delivered().at(-1)).toMatchObject({ kind: "proactive", text: TEXT });
+    await host.dispose();
+  });
+
+  test("a queued alert waits for the first register, then is rewritten for a bot without alert, and the rewrite survives a restart", async () => {
+    const stateDir = tempDir();
+    const first = setup({ stateDir });
+    await first.host.start();
+    first.host.deliverAlert(ALERT, TEXT);
+    await tick();
+    expect(first.transport.delivered()).toEqual([]);
+    first.host.onRegistered([]);
+    await tick();
+    const [sent] = first.transport.delivered();
+    expect(sent).toMatchObject({ kind: "proactive", text: TEXT });
+    expect("alert" in sent!).toBe(false);
+    await first.host.dispose();
+
+    const again = setup({ stateDir });
+    await again.host.start();
+    again.host.onRegistered(["alert"]);
+    await tick();
+    const [resent] = again.transport.delivered();
+    expect(resent).toMatchObject({ outboxId: sent!.outboxId, kind: "proactive" });
+    expect("alert" in resent!).toBe(false);
+    await again.host.dispose();
+  });
+
+  test("an alert queued for a new bot is rewritten when an old bot registers (a rollback)", async () => {
+    const { host, transport } = setup();
+    await host.start();
+    host.onRegistered(["alert"]);
+    // Accepted but never acked: the new bot went away before its surface confirmed it.
+    host.deliverAlert(ALERT, TEXT);
+    await tick();
+    host.onRegistered([]);
+    await tick();
+    const [first, resent] = transport.delivered();
+    expect([first!.kind, resent!.kind]).toEqual(["alert", "proactive"]);
+    expect(resent!.outboxId).toBe(first!.outboxId);
+    expect("alert" in resent!).toBe(false);
+    await host.dispose();
+  });
+
+  test("a bot that refuses an alert gets it as text on the resend instead of the same refusal forever", async () => {
+    const { host, transport } = setup({ resendIntervalMs: 10 });
+    await host.start();
+    host.onRegistered(["alert"]);
+    // What a bot from before `alert` answers: its zod parse failure as a generic -32000.
+    const zodIssues = JSON.stringify([{ code: "invalid_enum_value", path: ["kind"], message: "Invalid enum value" }], null, 2);
+    transport.respond = (_m, params) => ((params as ChatDeliverParams).kind === "alert" ? Promise.reject(new RpcErrorResponse(zodIssues, -32000)) : Promise.resolve({}));
+    host.deliverAlert(ALERT, TEXT);
+    await sleep(60);
+    const kinds = transport.delivered().map((d) => d.kind);
+    expect(kinds[0]).toBe("alert");
+    expect(kinds.slice(1).every((k) => k === "proactive")).toBe(true);
+    expect(kinds.length).toBeGreaterThan(1);
+    await host.dispose();
+  });
+
+  test("any other error from the bot leaves the alert structured for the next resend", async () => {
+    const { host, transport } = setup({ resendIntervalMs: 10 });
+    await host.start();
+    host.onRegistered(["alert"]);
+    transport.respond = () => Promise.reject(new RpcErrorResponse("principal mismatch", -32000));
+    host.deliverAlert(ALERT, TEXT);
+    await sleep(40);
+    expect(new Set(transport.delivered().map((d) => d.kind))).toEqual(new Set(["alert"]));
+    await host.dispose();
+  });
+
+  test("isContractRefusal: method or params refused, or a zod issue list; nothing else", () => {
+    expect(isContractRefusal(new RpcErrorResponse("x", -32602))).toBe(true);
+    expect(isContractRefusal(new RpcErrorResponse("method not found", -32601))).toBe(true);
+    expect(isContractRefusal(new RpcErrorResponse('[{"code":"custom","path":["alert"],"message":"m"}]', -32000))).toBe(true);
+    expect(isContractRefusal(new RpcErrorResponse("[]", -32000))).toBe(false);
+    expect(isContractRefusal(new RpcErrorResponse("busy", -32000))).toBe(false);
+    expect(isContractRefusal(new Error("[{\"code\":\"x\",\"path\":[]}]"))).toBe(false);
   });
 });

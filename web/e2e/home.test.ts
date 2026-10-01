@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { fakeBackend, type Scenario } from './fake-backend';
 import { axe, horizontalOverflow, push, smallTargets, stubStream } from './helpers';
 
 type Call = { method: string; path: string; body: unknown };
@@ -23,31 +24,28 @@ const ask = (askId: string) => ({
 	choices: ['Friday', 'Saturday']
 });
 
-/** The app on fixtures: Home's server part from its fake, the stream and chat routes mocked here. */
+/** The app on fixtures: Home's server part from the fake backend, the stream and chat mocked here. */
 async function homeServer(
 	context: BrowserContext,
 	opts: {
 		pending?: { approvals: unknown[]; asks: unknown[] };
-		fixtures?: string;
+		fixtures?: Scenario;
 		streamStatus?: number;
 		decide?: number;
+		features?: Parameters<typeof fakeBackend>[1]['features'];
 	} = {}
 ) {
 	const calls: Call[] = [];
 	await stubStream(context);
 	await context.addInitScript(
-		({ pending, fixtures, streamStatus }) => {
+		({ pending, streamStatus }) => {
 			const w = window as unknown as {
 				__sse: { hello: { pending: unknown }; status: number };
 			};
 			if (pending) w.__sse.hello.pending = pending;
 			if (streamStatus) w.__sse.status = streamStatus;
-			if (fixtures && !sessionStorage.getItem('fixtures-set')) {
-				localStorage.setItem('fixtures:home', fixtures);
-				sessionStorage.setItem('fixtures-set', '1');
-			}
 		},
-		{ pending: opts.pending, fixtures: opts.fixtures, streamStatus: opts.streamStatus }
+		{ pending: opts.pending, streamStatus: opts.streamStatus }
 	);
 	await context.route('**/api/**', async (route) => {
 		const req = route.request();
@@ -56,8 +54,6 @@ async function homeServer(
 		calls.push({ method: req.method(), path: url.pathname, body: raw ? JSON.parse(raw) : null });
 		const json = (data: unknown, status = 200) =>
 			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
-		if (url.pathname === '/api/me')
-			return json({ login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] });
 		if (url.pathname === '/api/chat/history') return json({ items: [], before: null });
 		if (url.pathname.startsWith('/api/chat/approvals/')) {
 			if (opts.decide && opts.decide !== 200) return json({ error: 'x' }, opts.decide);
@@ -67,9 +63,10 @@ async function homeServer(
 		if (url.pathname === '/api/chat/seen') return route.fulfill({ status: 204 });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
+	const backend = await fakeBackend(context, { home: opts.fixtures, features: opts.features });
 	const posts = (prefix: string) =>
-		calls.filter((c) => c.method === 'POST' && c.path.startsWith(prefix));
-	return { calls, posts };
+		[...calls, ...backend.calls].filter((c) => c.method === 'POST' && c.path.startsWith(prefix));
+	return { calls, posts, backend };
 }
 
 const busy = () => ({ approvals: [approval('n1')], asks: [ask('a1')] });
@@ -132,24 +129,24 @@ test('a slow server part keeps the waiting items and says what is still loading'
 });
 
 test('a failed server part keeps approvals on screen and retries', async ({ page, context }) => {
-	await homeServer(context, { pending: busy(), fixtures: 'error' });
+	const { backend } = await homeServer(context, { pending: busy(), fixtures: 'error' });
 	await page.goto('/');
 	await expect(page.getByText('Approve send_email')).toBeVisible();
 	const alert = page
 		.getByRole('alert')
 		.filter({ hasText: "Couldn't load failed and running work" });
 	await expect(alert).toBeVisible();
-	await page.evaluate(() => localStorage.removeItem('fixtures:home'));
+	backend.set('home', 'normal');
 	await alert.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
 	await expect(alert).toBeHidden();
 });
 
 test('a server error with nothing loaded shows an error and Retry', async ({ page, context }) => {
-	await homeServer(context, { fixtures: 'error', streamStatus: 503 });
+	const { backend } = await homeServer(context, { fixtures: 'error', streamStatus: 503 });
 	await page.goto('/');
 	await expect(page.getByText("Couldn't load Home.")).toBeVisible();
-	await page.evaluate(() => localStorage.removeItem('fixtures:home'));
+	backend.set('home', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
 });
@@ -343,3 +340,137 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		}
 	});
 }
+
+test('an alert or run event refetches Home, so a new failure shows without a reload', async ({
+	page,
+	context
+}) => {
+	const { backend } = await homeServer(context, { fixtures: 'empty' });
+	await page.goto('/');
+	await expect(page.getByText('Nothing needs you')).toBeVisible();
+	const loads = () => backend.calls.filter((c) => c.method === 'GET' && c.path === '/api/home');
+	const before = loads().length;
+	backend.set('home', 'normal');
+	await push(
+		page,
+		'alert',
+		{
+			key: 'o1',
+			text: 'nightly-sync failed',
+			alert: {
+				source: 'job',
+				job: 'nightly-sync',
+				kind: 'failed',
+				trigger: 'daily',
+				startedAt: new Date().toISOString(),
+				schedule: 'daily 02:00'
+			}
+		},
+		9
+	);
+	await push(page, 'run', {
+		runId: '01K6B4D2F4H6K8M0P2R4T6V8X0',
+		kind: 'subagent',
+		status: 'running'
+	});
+	await expect(page.getByText('nightly-sync failed')).toBeVisible();
+	expect(loads().length).toBe(before + 1);
+	await push(page, 'alert_cleared', { id: 'job:nightly-sync', reason: 'recovered' }, 10);
+	await expect(page.getByText('nightly-sync failed')).toBeHidden();
+});
+
+test("an agent answer outside the contract says Home's running work couldn't be read", async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { pending: busy(), fixtures: 'bad' });
+	await page.goto('/');
+	await expect(
+		page.getByText("The agent's list of running and failed work couldn't be read")
+	).toBeVisible();
+	await expect(page.getByText('Approve send_email')).toBeVisible();
+});
+
+test('with Home off on the bot, Home still shows what waits on you from the stream', async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { pending: busy(), features: ['runs', 'history'] });
+	await page.goto('/home?item=job%3Anightly-sync');
+	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
+	await sheet(page).getByRole('button', { name: 'Close' }).click();
+	await expect(page.getByText('Approve send_email')).toBeVisible();
+	await expect(page.getByText("Couldn't load failed and running work")).toBeHidden();
+	await expect(page.getByText('nightly-sync failed')).toBeHidden();
+});
+
+test('a cold link to a job alert that has cleared says Already handled', async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { fixtures: 'empty' });
+	await page.goto('/home?item=job%3Anightly-sync');
+	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
+	await expect(page).toHaveURL(/\/$/);
+});
+
+test('opening a run tells the bot, so it leaves Ready for review on every device', async ({
+	page,
+	context
+}) => {
+	const { backend } = await homeServer(context);
+	await page.goto('/');
+	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
+	await sheet(page).getByRole('button', { name: 'Open run' }).click();
+	await expect(page).toHaveURL(/\/runs\//);
+	await expect
+		.poll(() => backend.calls.filter((c) => c.path === '/api/home/opened').map((c) => c.body))
+		.toEqual([{ id: 'run:01K6B3A1C3E5G7J9M1P3R5T7V9' }]);
+	await page.reload();
+	await page.goto('/');
+	await expect(page.getByText('Check dependencies for updates')).toBeVisible();
+	await expect(page.getByText('Draft the quarterly expenses summary')).toBeHidden();
+});
+
+test('a dismissed job is posted once and stays off Home after a reload', async ({
+	page,
+	context
+}) => {
+	const { backend } = await homeServer(context);
+	await page.goto('/');
+	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
+	await sheet(page).getByRole('button', { name: 'Dismiss' }).click();
+	await expect(page.getByText('nightly-sync failed')).toBeHidden();
+	expect(backend.calls.filter((c) => c.path === '/api/home/dismiss').map((c) => c.body)).toEqual([
+		{ id: 'job:nightly-sync' }
+	]);
+	await page.reload();
+	await expect(page.getByText('Check dependencies for updates')).toBeVisible();
+	await expect(page.getByText('nightly-sync failed')).toBeHidden();
+});
+
+test('with Runs off on the bot, a failed job peek has no Open run', async ({ page, context }) => {
+	await homeServer(context, { features: ['home', 'alerts', 'history'] });
+	await page.goto('/');
+	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
+	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
+	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeHidden();
+});
+
+test("a cold link to a job when Home's server part fails says it can't check, not handled", async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { pending: busy(), fixtures: 'error' });
+	await page.goto('/home?item=job%3Anightly-sync');
+	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
+});
+
+test("a cold link to a run while the agent is unreachable says it can't check", async ({
+	page,
+	context
+}) => {
+	await homeServer(context, { fixtures: 'offline' });
+	await page.goto('/?item=run%3A01K6B3A1C3E5G7J9M1P3R5T7V9');
+	await expect(sheet(page).getByRole('heading', { name: "Can't check this now" })).toBeVisible();
+});

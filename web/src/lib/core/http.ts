@@ -24,15 +24,21 @@ export function messageFor(status: number): string {
 const TIMEOUT_MS = 15_000;
 
 /** Sends a same-origin /api request; any non-2xx answer throws an HttpError. */
-export async function send(method: string, path: string, body?: unknown): Promise<Response> {
+export async function send(
+	method: string,
+	path: string,
+	body?: unknown,
+	opts: { signal?: AbortSignal } = {}
+): Promise<Response> {
 	let res: Response;
+	const timeout = AbortSignal.timeout(TIMEOUT_MS);
 	try {
 		res = await fetch(`/api${path}`, {
 			method,
 			credentials: 'same-origin',
 			headers: body === undefined ? undefined : { 'content-type': 'application/json' },
 			body: body === undefined ? undefined : JSON.stringify(body),
-			signal: AbortSignal.timeout(TIMEOUT_MS)
+			signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
 		});
 	} catch (err) {
 		if (err instanceof DOMException && err.name === 'TimeoutError') {
@@ -56,6 +62,11 @@ export async function json<T>(res: Response): Promise<T> {
 	}
 }
 
-export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-	return json<T>(await send(method, path, body));
+export async function request<T>(
+	method: string,
+	path: string,
+	body?: unknown,
+	opts: { signal?: AbortSignal } = {}
+): Promise<T> {
+	return json<T>(await send(method, path, body, opts));
 }

@@ -1,12 +1,7 @@
 // Plays the takeover state flow on fixtures; nothing is streamed and nothing is locked.
-import { fixtureDelay, fixtureScenario } from '$lib/core/fixtures';
+import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
+import type { BrowserApi } from './api';
 import type { BrowserStatus } from './types';
-
-export interface BrowserApi {
-	status(): Promise<BrowserStatus>;
-	takeOver(): Promise<BrowserStatus>;
-	handBack(): Promise<BrowserStatus>;
-}
 
 export function browserFixture(
 	now: number,
@@ -21,10 +16,12 @@ export function browserFixture(
 	};
 }
 
-export function createFixtureBrowserApi(): BrowserApi {
+export function createFixtureBrowserApi(
+	pick: () => FixtureScenario = () => fixtureScenario('browser')
+): BrowserApi {
 	let holder: BrowserStatus['holder'] = 'agent';
 	async function gate() {
-		const scenario = fixtureScenario('browser');
+		const scenario = pick();
 		await fixtureDelay(scenario);
 		if (scenario === 'error') throw new Error("The agent's server didn't answer.");
 		if (scenario === 'offline') throw new Error("Can't reach the agent right now.");

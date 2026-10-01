@@ -6,22 +6,26 @@ const MAIN_SESSION_KINDS: ReadonlySet<RunSummary["kind"]> = new Set(["chat", "fl
 export const RUN_APPROVALS_MAX = 100;
 export const RUN_FILES_MAX = 100;
 
+/** Matches `idx_web_events_turn` term for term, so the lookup uses it. */
+export const RUN_FILES_SQL = `SELECT key, data, created_at FROM web_events WHERE type IN ('reply','proactive') AND json_extract(data, '$.turnId') = ? ORDER BY seq`;
+
 type Row = { key: string | null; data: string; created_at: number };
 
 /**
  * Approvals from the bot's log that belong to `run`. Approval rows carry no turnId, so a subagent's are
- * matched by its runId, a job's by its agent name, and Main's by time inside the run's window.
+ * matched by its runId, a job's by its agent name, and Main's by time inside the run's window
+ * [startedAt, endedAt). Only a running run's window ends now; a finished one without endedAt gets no window.
  */
 export function runApprovals(db: Database, run: RunSummary, now: number): RunApprovalRecord[] {
   const start = Date.parse(run.startedAt);
-  const end = run.endedAt !== undefined ? Date.parse(run.endedAt) : now;
-  const windowed = Number.isFinite(start) && Number.isFinite(end);
+  const end = run.endedAt !== undefined ? Date.parse(run.endedAt) : run.status === "running" ? now : NaN;
+  const windowed = Number.isFinite(start) && Number.isFinite(end) && start < end;
   const windowAgent = MAIN_SESSION_KINDS.has(run.kind) ? "main" : run.kind === "job" ? run.agentName : null;
   const rows = db
     .query(
       `SELECT key, data, created_at FROM web_events WHERE type = 'approval' AND (
          json_extract(data, '$.view.agentId') = ?
-         OR (? IS NOT NULL AND json_extract(data, '$.view.agentId') = ? AND created_at BETWEEN ? AND ?)
+         OR (? IS NOT NULL AND json_extract(data, '$.view.agentId') = ? AND created_at >= ? AND created_at < ?)
        ) ORDER BY seq LIMIT ?`,
     )
     .all(run.runId, windowed ? windowAgent : null, windowAgent, windowed ? start : 0, windowed ? end : 0, RUN_APPROVALS_MAX) as Row[];
@@ -49,7 +53,7 @@ export function runApprovals(db: Database, run: RunSummary, now: number): RunApp
 export function runFiles(db: Database, run: RunSummary): UploadRef[] {
   if (!run.turnId) return [];
   const rows = db
-    .query(`SELECT key, data, created_at FROM web_events WHERE type IN ('reply','proactive') AND json_extract(data, '$.turnId') = ? ORDER BY seq`)
+    .query(RUN_FILES_SQL)
     .all(run.turnId) as Row[];
   const out: UploadRef[] = [];
   const seen = new Set<string>();

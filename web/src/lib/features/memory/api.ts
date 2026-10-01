@@ -1,3 +1,4 @@
+import { enc, featureHttp } from '$lib/core/feature-http';
 import type { MemoryFileDetail, MemoryOverview, MemoryWriteRecord } from './types';
 
 export interface MemoryApi {
@@ -11,3 +12,13 @@ export interface MemoryApi {
 	/** Re-applies a reverted write. */
 	restore(id: string): Promise<MemoryWriteRecord>;
 }
+
+const http = featureHttp("Memory isn't available yet.");
+
+export const httpMemoryApi: MemoryApi = {
+	overview: () => http.get('/memory'),
+	file: (id) => http.find(`/memory/files/${enc(id)}`),
+	write: (id) => http.find(`/memory/writes/${enc(id)}`),
+	revert: (id) => http.post(`/memory/writes/${enc(id)}/revert`),
+	restore: (id) => http.post(`/memory/writes/${enc(id)}/restore`)
+};

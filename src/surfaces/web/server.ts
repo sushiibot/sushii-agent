@@ -9,6 +9,7 @@ import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { mintWebActor, normalizeLogin } from "./actor.ts";
 import type { ChatRoutes } from "./chatRoutes.ts";
 import type { MeResponse } from "./events.ts";
+import type { HomeRoutes } from "./homeRoutes.ts";
 import { createReadRoutes, type ReadRouteDeps, type ReadRoutes } from "./readRoutes.ts";
 import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
@@ -43,6 +44,8 @@ export interface WebHandlerDeps {
   uploads?: DiskUploadStore;
   /** The /api/chat routes; absent when the chat surface is not wired. */
   chat?: ChatRoutes;
+  /** The /api/home routes; they answer 404 unless WEB_FEATURES has `home`. */
+  home?: HomeRoutes;
   /** /api/runs, /api/history and /api/search; absent: they answer 404. */
   reads?: ReadRoutes;
 }
@@ -85,7 +88,7 @@ export function decodeEncodedWords(value: string): string {
 const unsubscribeSchema = z.object({ endpoint: z.string().min(1).max(2048) });
 
 export function createWebHandler(deps: WebHandlerDeps): WebHandler {
-  const { config, peers, pushStore, pushSender, uploads, chat, reads } = deps;
+  const { config, peers, pushStore, pushSender, uploads, chat, home, reads } = deps;
   const owner = normalizeLogin(config.ownerLogin);
   // Also enforced at parse time; repeated here because a WebConfig can be built without the parser.
   const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
@@ -107,6 +110,11 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     if (reads) {
       const res = await reads.handle(req, path);
       if (res) return res;
+    }
+
+    if (path === "/api/home" || path.startsWith("/api/home/")) {
+      if (!home || !config.features?.includes("home")) return json({ error: "not found" }, 404);
+      return (await home.handle(req, path)) ?? json({ error: "not found" }, 404);
     }
 
     if (path === "/api/me") {
@@ -196,6 +204,7 @@ export function internalErrorResponse(err: unknown): Response {
 export interface WebServerOptions {
   uploads?: DiskUploadStore;
   chat?: ChatRoutes;
+  home?: HomeRoutes;
   /** Sources for the read-only routes; the gateway gates them on its WEB_FEATURES. */
   reads?: Omit<ReadRouteDeps, "features">;
 }
@@ -224,6 +233,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     pushSender,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.chat ? { chat: opts.chat } : {}),
+    ...(opts.home ? { home: opts.home } : {}),
     ...(opts.reads ? { reads: createReadRoutes({ ...opts.reads, features: config.features ?? [] }) } : {}),
   });
   if (config.devLogin && isLoopback(config.bindAddr)) {

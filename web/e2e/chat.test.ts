@@ -1683,3 +1683,39 @@ test('Delete while a resend re-uploads its photo stops the send before it posts'
 	expect(posts('/api/chat/messages')).toHaveLength(1);
 	expect(await outboxSize(page)).toBe(0);
 });
+
+test('a job alert shows once in the chat, live or reloaded, with its error as plain text', async ({
+	page,
+	context
+}) => {
+	const alert = {
+		source: 'job',
+		job: 'nightly-sync',
+		kind: 'failed',
+		trigger: 'daily',
+		startedAt: '2026-09-30T02:00:00.000Z',
+		error: 'rsync <b>timed out</b>',
+		schedule: 'daily 02:00'
+	};
+	await chatServer(context, {
+		history: [
+			{ type: 'alert', id: '4', at: '2026-09-30T02:00:05.000Z', outboxId: 'o1', alert, text: 't' }
+		]
+	});
+	await open(page);
+	const line = page.getByText('Scheduled job nightly-sync failed');
+	await expect(line).toHaveCount(1);
+	await expect(page.getByText(': rsync <b>timed out</b>')).toBeVisible();
+	await push(page, 'alert', { key: 'o1', alert, text: 't' }, 5);
+	await push(
+		page,
+		'alert',
+		{ key: 'o2', alert: { ...alert, kind: 'recovered', error: undefined }, text: 't' },
+		6
+	);
+	await expect(page.getByText('Scheduled job nightly-sync is working again')).toBeVisible();
+	await expect(line).toHaveCount(1);
+	await page.getByRole('link', { name: 'Details' }).click();
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+});

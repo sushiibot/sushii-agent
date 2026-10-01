@@ -1,5 +1,5 @@
 // Serves the connector fixtures until the bot runs MCP servers. Changes last until reload.
-import { fixtureDelay, fixtureScenario } from '$lib/core/fixtures';
+import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
 import type { ConnectorsApi } from './api';
 import { newServer, servers } from './fixtures';
 import type { McpServer } from './types';
@@ -13,12 +13,14 @@ function failure(scenario: string): Error | null {
 
 const summary = ({ snapshotAt, toolList, history, usedBy, ...s }: McpServer) => s;
 
-export function createFixtureConnectorsApi(): ConnectorsApi {
+export function createFixtureConnectorsApi(
+	pick: () => FixtureScenario = () => fixtureScenario('connectors')
+): ConnectorsApi {
 	const added: McpServer[] = [];
 	const changed = new Map<string, McpServer>();
 	const all = () => [...servers(Date.now()), ...added].map((s) => changed.get(s.id) ?? s);
 	async function gate() {
-		const scenario = fixtureScenario('connectors');
+		const scenario = pick();
 		await fixtureDelay(scenario);
 		const err = failure(scenario);
 		if (err) throw err;

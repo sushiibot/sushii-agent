@@ -49,6 +49,16 @@ export class RpcHandlerError extends Error {
   }
 }
 
+/** The peer answered a request with a JSON-RPC error. */
+export class RpcErrorResponse extends Error {
+  constructor(
+    message: string,
+    readonly code: number,
+  ) {
+    super(message);
+  }
+}
+
 export interface OrchestrationClientOptions {
   url: string;
   runnerId: string;
@@ -121,10 +131,14 @@ export class OrchestrationClient {
   private registerResult(raw: unknown): WorkspaceRegisterResult {
     const parsed = workspaceRegisterResult.safeParse(raw);
     if (parsed.success) return parsed.data;
+    // A bad tool list must not also hide the bot's features: alerts would then go out as plain text.
+    const rawFeatures = (raw as { features?: unknown } | null)?.features;
+    const features = workspaceRegisterResult.shape.features.safeParse(rawFeatures);
+    const withFeatures = features.success && features.data ? { features: features.data } : {};
     const listed = (raw as { tools?: unknown } | null)?.tools;
     if (!Array.isArray(listed)) {
       logger.warn({ runnerId: this.options.runnerId, error: parsed.error.issues[0]?.message }, "malformed workspace register result; no tools offered");
-      return { ok: true, tools: [] };
+      return { ok: true, tools: [], ...withFeatures };
     }
     // One entry this workspace can't read (say, a newer approval kind) drops only that tool.
     const tools: ToolManifestEntry[] = [];
@@ -133,7 +147,7 @@ export class OrchestrationClient {
       if (entry.success) tools.push(entry.data);
       else logger.warn({ runnerId: this.options.runnerId, tool: (t as { name?: unknown } | null)?.name, error: entry.error.issues[0]?.message }, "skipping a malformed tool manifest entry");
     }
-    return { ok: true, tools };
+    return { ok: true, tools, ...withFeatures };
   }
 
   private async awaitSocketClosed(timeoutMs: number): Promise<void> {
@@ -336,7 +350,7 @@ export class OrchestrationClient {
     const call = this.pending.get(res.data.id);
     if (!call) return;
     this.pending.delete(res.data.id);
-    if (res.data.error) call.reject(new Error(res.data.error.message));
+    if (res.data.error) call.reject(new RpcErrorResponse(res.data.error.message, res.data.error.code));
     else call.resolve(res.data.result);
   }
 }

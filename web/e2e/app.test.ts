@@ -359,7 +359,11 @@ test('the reflow check catches content wider than the screen', async ({ page, co
 	).toBeLessThanOrEqual(0);
 	const offenders = await horizontalOverflow(page);
 	expect(offenders.some((o) => o.startsWith('div#too-wide'))).toBe(true);
-	expect(offenders.some((o) => o.startsWith('main') && o.includes('scrolls'))).toBe(true);
+	// The scroller clips sideways, so a missed wrap is cut off instead of scrolling the whole chat.
+	expect(offenders.some((o) => o.startsWith('main') && o.includes('scrolls'))).toBe(false);
+	expect(
+		await page.evaluate(() => getComputedStyle(document.querySelector('main')!).overflowX)
+	).toBe('hidden');
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {

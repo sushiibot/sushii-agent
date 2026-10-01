@@ -1,5 +1,5 @@
 // Serves the Chats fixtures until the bot runs threads. Changes last until the page reloads.
-import { fixtureDelay, fixtureScenario } from '$lib/core/fixtures';
+import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
 import type { ThreadsApi } from './api';
 import { chatsData, emptyChatsData, threadDetail } from './fixtures';
 import type { ChatsData, ThreadDetail, ThreadSummary } from './types';
@@ -18,12 +18,14 @@ const slug = (title: string) =>
 		.replace(/^-|-$/g, '')
 		.slice(0, 32) || 'thread';
 
-export function createFixtureThreadsApi(): ThreadsApi {
+export function createFixtureThreadsApi(
+	pick: () => FixtureScenario = () => fixtureScenario('threads')
+): ThreadsApi {
 	let data: ChatsData | null = null;
 	const details = new Map<string, ThreadDetail>();
 
 	async function ready(): Promise<ChatsData> {
-		const scenario = fixtureScenario('threads');
+		const scenario = pick();
 		await fixtureDelay(scenario);
 		const err = failure(scenario);
 		if (err) throw err;

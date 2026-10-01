@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { ID_MAX, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
 import { WorkspaceBadResponseError, type WorkspaceLink } from "../../orchestration/workspace/link.ts";
-import { MethodNotFoundError, RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/server.ts";
+import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
 import { searchChat } from "./chatSearch.ts";
 import {
@@ -22,7 +22,8 @@ import {
   type WebFeature,
   type WorkspaceUnavailableResponse,
 } from "./events.ts";
-import { json } from "./http.ts";
+import { HISTORY_RESPONSE_MAX } from "./chatRoutes.ts";
+import { NO_STORE, json } from "./http.ts";
 import { runApprovals, runFiles } from "./runJoins.ts";
 
 const log = getLogger("web/readRoutes");
@@ -30,6 +31,8 @@ const log = getLogger("web/readRoutes");
 /** Notes searches the bot keeps in flight at once; one more marks notes unavailable instead of queueing. */
 export const NOTES_SEARCHES_MAX = 2;
 const JSON_RPC_METHOD_NOT_FOUND = -32601;
+/** The bot checks every param but the opaque cursors, so the workspace refusing params means a stale cursor. */
+const JSON_RPC_INVALID_PARAMS = -32602;
 
 export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch">;
 
@@ -51,14 +54,31 @@ class Unavailable extends Error {
   }
 }
 
-/** Maps a failed workspace read to the WorkspaceUnavailableResponse it answers with. */
-export function unavailableFor(err: unknown): { status: number; body: WorkspaceUnavailableResponse } {
+/** Over the cap: the bot answers 502 rather than ship a multi-megabyte body to a phone. */
+class TooLarge extends Error {
+  constructor(readonly bytes: number) {
+    super("response over the size cap");
+  }
+}
+
+/** Maps a failed workspace read to the WorkspaceUnavailableResponse it answers with; null: a bug, not the workspace. */
+export function unavailableFor(err: unknown): { status: number; body: WorkspaceUnavailableResponse } | null {
   if (err instanceof Unavailable) return { status: 503, body: err.body };
+  if (err instanceof WorkspaceNotConnectedError || err instanceof RpcConnectionClosedError) return { status: 503, body: { offline: true } };
   if (err instanceof RpcTimeoutError) return { status: 504, body: { timeout: true } };
-  if (err instanceof MethodNotFoundError || (err instanceof RpcErrorReply && err.code === JSON_RPC_METHOD_NOT_FOUND)) return { status: 501, body: { unsupported: true } };
-  if (err instanceof WorkspaceBadResponseError || err instanceof RpcErrorReply) return { status: 502, body: { bad_response: true } };
-  // Not connected, or the socket closed before an answer.
-  return { status: 503, body: { offline: true } };
+  if (err instanceof RpcErrorReply && err.code === JSON_RPC_METHOD_NOT_FOUND) return { status: 501, body: { unsupported: true } };
+  if (err instanceof WorkspaceBadResponseError || err instanceof RpcErrorReply || err instanceof TooLarge) return { status: 502, body: { bad_response: true } };
+  return null;
+}
+
+/** JSON within `cap` UTF-8 bytes. UTF-8 is at most 3 bytes per UTF-16 unit, so short bodies skip the count. */
+export function cappedJson(body: unknown, cap = HISTORY_RESPONSE_MAX): Response {
+  const s = JSON.stringify(body);
+  if (s.length > cap / 3) {
+    const bytes = Buffer.byteLength(s);
+    if (bytes > cap) throw new TooLarge(bytes);
+  }
+  return new Response(s, { headers: { "Content-Type": "application/json;charset=utf-8", "Cache-Control": NO_STORE } });
 }
 
 function csv<T extends string>(raw: string | null, allowed: readonly T[]): T[] | undefined | null {
@@ -96,7 +116,13 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     try {
       return await build();
     } catch (err) {
-      const { status, body } = unavailableFor(err);
+      if (err instanceof RpcErrorReply && err.code === JSON_RPC_INVALID_PARAMS) return badRequest("invalid cursor");
+      const mapped = unavailableFor(err);
+      if (!mapped) {
+        log.error({ err, method }, "workspace read route failed");
+        return json({ error: "internal" }, 500);
+      }
+      const { status, body } = mapped;
       if (status === 502) log.warn({ err, method }, "workspace read answered outside the contract");
       else if (status !== 503) log.info({ method, status }, "workspace read unavailable");
       return json(body, status);
@@ -120,7 +146,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
           ...(statuses ? { statuses } : {}),
         }),
       );
-      return json({ runs: res.runs, before: res.before, truncated: res.truncated } satisfies RunsPage);
+      return cappedJson({ runs: res.runs, before: res.before, truncated: res.truncated } satisfies RunsPage);
     });
   }
 
@@ -146,7 +172,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
         approvals: runApprovals(db, res.run, now()),
         files: runFiles(db, res.run),
       };
-      return json(body);
+      return cappedJson(body);
     });
   }
 
@@ -157,7 +183,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     if (limit === null) return Promise.resolve(badRequest("invalid limit"));
     return answer("history/days", async () => {
       const res = await fromWorkspace(() => link.historyDays({ ...(before !== null ? { before } : {}), ...(limit !== undefined ? { limit } : {}) }));
-      return json({ days: res.days, before: res.before } satisfies HistoryDaysPage);
+      return cappedJson({ days: res.days, before: res.before } satisfies HistoryDaysPage);
     });
   }
 
@@ -167,7 +193,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
       const res = await fromWorkspace(() => link.historyDay({ date }));
       if (!res.found) return json({ found: false } satisfies HistoryDayResponse);
       if (res.date !== date) throw new WorkspaceBadResponseError("history/day", undefined);
-      return json({ found: true, date: res.date, sessions: res.sessions, runs: res.runs, truncated: res.truncated } satisfies HistoryDayResponse);
+      return cappedJson({ found: true, date: res.date, sessions: res.sessions, runs: res.runs, truncated: res.truncated } satisfies HistoryDayResponse);
     });
   }
 
@@ -180,19 +206,24 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     try {
       return await fromWorkspace(() => link.historySearch({ query: params.data.query, limit: SEARCH_HITS_MAX }));
     } catch (err) {
-      const { status } = unavailableFor(err);
-      if (status === 502) log.warn({ err }, "history/search answered outside the contract");
+      const mapped = unavailableFor(err);
+      if (!mapped) throw err;
+      if (mapped.status === 502) log.warn({ err }, "history/search answered outside the contract");
       return null;
     } finally {
       notesInFlight--;
     }
   }
 
-  async function search(params: URLSearchParams): Promise<Response> {
+  function search(params: URLSearchParams): Promise<Response> {
     const raw = params.get("q");
     const query = (raw ?? "").trim();
     const points = [...query].length;
-    if (points < SEARCH_QUERY_MIN || points > SEARCH_QUERY_MAX || query.includes("\0")) return badRequest("invalid query");
+    if (points < SEARCH_QUERY_MIN || points > SEARCH_QUERY_MAX || query.includes("\0")) return Promise.resolve(badRequest("invalid query"));
+    return answer("search", () => searchBoth(query));
+  }
+
+  async function searchBoth(query: string): Promise<Response> {
     const notesCall = searchNotes(query);
     const unavailable: SearchResponse["unavailable"] = [];
     let chat: ChatHit[] = [];
@@ -212,7 +243,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
     };
     const merged = [...chat, ...notesHits].sort((a, b) => sortKey(b) - sortKey(a));
     const truncated = chatMore || merged.length > SEARCH_HITS_MAX || (notes !== null && (notes.truncated || notes.before !== null));
-    return json({ query, hits: merged.slice(0, SEARCH_HITS_MAX), truncated, unavailable } satisfies SearchResponse);
+    return cappedJson({ query, hits: merged.slice(0, SEARCH_HITS_MAX), truncated, unavailable } satisfies SearchResponse);
   }
 
   return {

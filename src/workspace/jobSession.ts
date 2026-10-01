@@ -15,6 +15,7 @@ import {
 } from "./chatgptFallback.ts";
 import type { RunRecorder } from "./runLog.ts";
 import { observeRuns } from "./runObserver.ts";
+import { withRunId } from "./scheduler.ts";
 import { jobSessionDir } from "./sessionPaths.ts";
 import { USER_MD_CAP, capContent } from "./home.ts";
 import { createMemoryGuardExtension } from "./memoryGuard.ts";
@@ -53,6 +54,8 @@ export interface ToolFreeJobResult {
   /** chat/deliver-style label: `chatgpt/<id>` or the OpenRouter id. */
   model: string;
   sessionFile: string;
+  /** The run index's id for this job's run. */
+  runId?: string;
 }
 
 /** Test seam: the pieces of an AgentSession the job reads. */
@@ -189,11 +192,14 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
     stubs?.release();
     throw new Error(`${input.agentName}: job session has no persisted file`);
   }
-  observeRuns(session, { recorder: input.runs, sessionFile, agentName: input.agentName, defaultModel: config.model });
+  const observer = observeRuns(session, { recorder: input.runs, sessionFile, agentName: input.agentName, defaultModel: config.model });
   try {
     const text = await promptToSettle(session, input.prompt, input.timeoutMs ?? JOB_TIMEOUT_MS);
     const last = lastAssistant(session);
-    return { text, model: modelLabel(last?.provider ?? model.provider, last?.model ?? model.id), sessionFile };
+    const runId = observer.lastRunId();
+    return { text, model: modelLabel(last?.provider ?? model.provider, last?.model ?? model.id), sessionFile, ...(runId ? { runId } : {}) };
+  } catch (err) {
+    throw withRunId(err, observer.lastRunId());
   } finally {
     session.dispose();
     stubs?.release();

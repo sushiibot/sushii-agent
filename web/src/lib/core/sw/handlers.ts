@@ -52,8 +52,19 @@ const ROUTES: Route[] = [
 	{ path: (p) => p.startsWith('/runs/') && RUN_ID.test(p.slice(6)) },
 	{ path: at('/history') },
 	{ path: (p) => p.startsWith('/history/') && realDate(p.slice(9)) },
-	{ path: at('/history/search'), query: { q: (v) => v.length <= 200 } }
+	{ path: at('/history/search'), query: { q: (v) => v.length <= 200 } },
+	// Screens on fixtures until their backends ship; one id segment at most, from a fixed charset.
+	...['/chats', '/memory', '/memory/writes', '/skills', '/schedules', '/connectors'].map(
+		(base): Route => ({ path: (p) => p === base || oneSegment(p, `${base}/`) })
+	),
+	{ path: (p) => oneSegment(p, '/memory/files/') },
+	{ path: at('/briefing') },
+	{ path: at('/browser') }
 ];
+
+const SEGMENT = /^[A-Za-z0-9_-]{1,64}$/;
+const oneSegment = (p: string, prefix: string) =>
+	p.startsWith(prefix) && SEGMENT.test(p.slice(prefix.length));
 
 function realDate(s: string): boolean {
 	if (!DATE.test(s)) return false;

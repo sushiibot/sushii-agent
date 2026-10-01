@@ -25,7 +25,9 @@ test('a test run reports progress, then its result, with nothing sent', async ({
 	await fixtureApp(context);
 	await page.goto('/schedules/briefing');
 	await page.getByRole('button', { name: 'Test run' }).click();
-	await expect(page.getByRole('status').filter({ hasText: /step|Starting/ })).toBeVisible();
+	await expect(
+		page.getByRole('status').filter({ hasText: /Running the job|step|Starting/ })
+	).toBeVisible();
 	await expect(page.getByText('Would have sent a message. Nothing was sent.')).toBeVisible({
 		timeout: 6000
 	});
@@ -40,10 +42,10 @@ test('pausing a job removes its next run', async ({ page, context }) => {
 });
 
 test('empty and failing schedules say so', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { schedules: 'empty' } });
+	const app = await fixtureApp(context, { fixtures: { schedules: 'empty' } });
 	await page.goto('/schedules');
 	await expect(page.getByText('No scheduled jobs')).toBeVisible();
-	await page.evaluate(() => localStorage.setItem('fixtures:schedules', 'error'));
+	app.set('schedules', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't load schedules.");
 });

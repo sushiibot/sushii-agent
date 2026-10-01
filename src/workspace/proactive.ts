@@ -175,7 +175,7 @@ export function createPromptJob(spec: PromptJobSpec, deps: PromptJobDeps): Sched
 
       const notes = recentDailyNotes(deps.config.home);
       const prompt = notes ? `${spec.prompt}\n\n${notes}` : spec.prompt;
-      const { text } = await (deps.runner ?? runToolFreeJob)(deps.config, {
+      const { text, runId } = await (deps.runner ?? runToolFreeJob)(deps.config, {
         agentName,
         systemPrompt: jobPreamble(spec.name, now, deps.config.tz),
         prompt,
@@ -184,12 +184,13 @@ export function createPromptJob(spec: PromptJobSpec, deps: PromptJobDeps): Sched
         contextFiles: ["AGENTS.md", "USER.md"],
         readOnlyTools: deps.toolStubs ? { toolStubs: deps.toolStubs } : {},
       });
-      if (isNoReply(text)) return { status: "no_reply" };
+      const ran = runId ? { runId } : {};
+      if (isNoReply(text)) return { status: "no_reply", ...ran };
 
       const verdict = deps.limiter.check(spec.name, windowMs, now, ctx.force);
       if (verdict !== "ok") {
         log.warn({ job: spec.name, verdict }, "proactive message dropped by the rate limit");
-        return { status: "rate_limited", summary: verdict };
+        return { status: "rate_limited", summary: verdict, ...ran };
       }
       deps.limiter.record(spec.name, now);
       deps.deliver(text);
@@ -198,7 +199,7 @@ export function createPromptJob(spec: PromptJobSpec, deps: PromptJobDeps): Sched
       } catch (err) {
         log.warn({ err, job: spec.name }, "failed to note a proactive message in the chat");
       }
-      return { status: "sent", summary: oneLine(text, 200) };
+      return { status: "sent", summary: oneLine(text, 200), ...ran };
     },
   };
 }

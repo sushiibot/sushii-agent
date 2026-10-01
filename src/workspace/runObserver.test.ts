@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
@@ -159,5 +159,31 @@ describe("observeRuns robustness and current run", () => {
     s.user("hi");
     expect(() => s.dispose()).not.toThrow();
     expect(s.disposed).toBe(true);
+  });
+});
+
+describe("observeRuns turnId", () => {
+  test("a main run carries the turn it answers on both its start and end records", () => {
+    const s = new FakeSession();
+    let turn: string | undefined = "01K6B0000000000000000TRNX1";
+    observeRuns(s, { recorder: log, sessionFile: "/agent/chat/t.jsonl", agentName: "main", turnId: () => turn });
+    s.emit({ type: "agent_start" });
+    s.user("hello");
+    turn = "01K6B0000000000000000TRNX2";
+    s.assistant("hi", "stop");
+    s.emit({ type: "agent_settled" });
+    const lines = readFileSync(join(dir, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.filter((l) => l.sessionFile === "/agent/chat/t.jsonl").map((l) => [l.status, l.turnId])).toEqual([
+      ["running", "01K6B0000000000000000TRNX1"],
+      ["done", "01K6B0000000000000000TRNX1"],
+    ]);
+  });
+
+  test("no turn (a hidden flush) leaves turnId off", () => {
+    const s = new FakeSession();
+    observeRuns(s, { recorder: log, sessionFile: "/agent/chat/u.jsonl", agentName: "main", turnId: () => undefined });
+    s.emit({ type: "agent_start" });
+    s.user("flush");
+    expect(log.listRuns().find((r) => r.sessionFile === "/agent/chat/u.jsonl")).not.toHaveProperty("turnId");
   });
 });

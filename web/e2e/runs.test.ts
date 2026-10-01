@@ -1,5 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
+import { fakeBackend, type Scenario } from './fake-backend';
+import { axe, horizontalOverflow, push, smallTargets, stubStream } from './helpers';
 
 const RUN = {
 	triage: '01K6B4D2F4H6K8M0P2R4T6V8X0',
@@ -9,27 +10,20 @@ const RUN = {
 	flush: '01K6AZQ7S9V1X3Z5B7D9F1H3K5'
 };
 
-/** The app on fixtures; `fixtures` picks the state the Runs fake serves until it is cleared. */
-async function server(context: BrowserContext, fixtures?: string) {
+/** The app on fixtures; `runs` picks what the fake backend's Runs routes answer. */
+async function server(
+	context: BrowserContext,
+	runs?: Scenario,
+	opts: { features?: Parameters<typeof fakeBackend>[1]['features'] } = {}
+) {
 	await stubStream(context);
-	await context.addInitScript((f) => {
-		if (f && !sessionStorage.getItem('fixtures-set')) {
-			localStorage.setItem('fixtures:runs', f);
-			sessionStorage.setItem('fixtures-set', '1');
-		}
-	}, fixtures ?? '');
 	await context.route('**/api/**', (route) => {
 		const path = new URL(route.request().url()).pathname;
-		if (path === '/api/me')
-			return route.fulfill({
-				json: { login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] }
-			});
 		if (path === '/api/chat/history') return route.fulfill({ json: { items: [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
+	return fakeBackend(context, { runs, features: opts.features });
 }
-
-const clearFixtures = (page: Page) => page.evaluate(() => localStorage.removeItem('fixtures:runs'));
 const rows = (page: Page) => page.getByRole('main').getByRole('listitem');
 
 test('the list groups runs by day, each with its status and what started it', async ({
@@ -79,14 +73,74 @@ test('a slow list shows a labelled skeleton', async ({ page, context }) => {
 });
 
 test('a list that fails to load says so and retries', async ({ page, context }) => {
-	await server(context, 'unsupported');
+	const backend = await server(context, 'unsupported');
 	await page.goto('/runs');
 	await expect(page.getByRole('alert')).toContainText(
 		"Couldn't load runs. Runs aren't available yet."
 	);
-	await clearFixtures(page);
+	backend.set('runs', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(rows(page).first()).toBeVisible();
+});
+
+for (const [scenario, text] of [
+	['offline', "Can't reach the agent right now."],
+	['timeout', 'The agent took too long to answer. Try again.'],
+	['bad', "The agent's answer couldn't be read. Try again later."]
+] as const) {
+	test(`the list says why the agent's answer is missing (${scenario})`, async ({
+		page,
+		context
+	}) => {
+		await server(context, scenario);
+		await page.goto('/runs');
+		await expect(page.getByRole('alert')).toContainText(text);
+		await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+	});
+}
+
+test('an out-of-date page cursor asks for a reload instead of showing nothing', async ({
+	page,
+	context
+}) => {
+	const backend = await server(context);
+	await page.goto('/runs');
+	await expect(rows(page)).toHaveCount(10);
+	backend.set('runs', 'stale');
+	await page.getByRole('button', { name: 'Show older runs' }).click();
+	await expect(page.getByText('The list changed since it loaded.')).toBeVisible();
+	await expect(rows(page)).toHaveCount(10);
+	expect(backend.calls.filter((c) => c.path === '/api/runs').at(-1)?.search).toMatch(
+		/^\?before=[0-9A-Z]{26}$/
+	);
+});
+
+test("a run event changes the run's status on screen without a reload", async ({
+	page,
+	context
+}) => {
+	const backend = await server(context);
+	await page.goto(`/runs/${RUN.triage}`);
+	await expect(page.getByText('Still running.')).toBeVisible();
+	backend.setRunStatus(RUN.triage, 'failed');
+	await push(page, 'run', { runId: RUN.triage, kind: 'subagent', status: 'failed' });
+	await expect(page.getByText('Failed. The host recorded an error')).toBeVisible();
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	const triage = rows(page).filter({ hasText: 'Sort new mail' });
+	await expect(triage).toContainText('Failed');
+	backend.setRunStatus(RUN.triage, 'done');
+	await push(page, 'run', { runId: RUN.triage, kind: 'subagent', status: 'done' });
+	await expect(triage).toContainText('Done');
+});
+
+test('with Runs turned off on the bot, its screens send you Home', async ({ page, context }) => {
+	await server(context, undefined, { features: ['history', 'home', 'alerts'] });
+	await page.goto(`/runs/${RUN.triage}`);
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+	await page.goto('/more');
+	await expect(page.getByRole('link', { name: /History/ })).toBeVisible();
+	await expect(page.getByRole('link', { name: /Runs/ })).toBeHidden();
 });
 
 test('offline, the list keeps what it had and shows the banner', async ({ page, context }) => {
@@ -153,10 +207,10 @@ test('a running run says it is still going', async ({ page, context }) => {
 test('a long run pages its steps', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.refactor}`);
-	await expect(page.getByText('100+ steps')).toBeVisible();
+	await expect(page.getByText('100+ steps', { exact: true })).toBeVisible();
 	await expect(page.getByText('No check ran after the last change.')).toBeVisible();
 	await page.getByRole('button', { name: 'Show more steps' }).click();
-	await expect(page.getByText('162 steps')).toBeVisible();
+	await expect(page.getByText('162 steps', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Show more steps' })).toBeHidden();
 });
 

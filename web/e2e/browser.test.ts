@@ -23,10 +23,10 @@ test('taking over the browser locks the agent out until you hand back', async ({
 });
 
 test('an idle browser and a failure say so', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { browser: 'empty' } });
+	const app = await fixtureApp(context, { fixtures: { browser: 'empty' } });
 	await page.goto('/browser');
 	await expect(page.getByText('The agent isn’t using the browser')).toBeVisible();
-	await page.evaluate(() => localStorage.setItem('fixtures:browser', 'error'));
+	app.set('browser', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't reach the browser.");
 });

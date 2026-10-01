@@ -1,6 +1,5 @@
 import { Remote } from '$lib/core/remote.svelte';
-import type { SchedulesApi } from './api';
-import { createFixtureSchedulesApi } from './fake';
+import { httpSchedulesApi, type SchedulesApi } from './api';
 import type { Job, JobDetail, TestRun } from './types';
 
 export class SchedulesStore {
@@ -13,7 +12,7 @@ export class SchedulesStore {
 	#api: SchedulesApi;
 	#jobs = new Map<string, Remote<JobDetail | null>>();
 
-	constructor(api: SchedulesApi = createFixtureSchedulesApi()) {
+	constructor(api: SchedulesApi = httpSchedulesApi) {
 		this.#api = api;
 		this.list = new Remote(() => api.list(), { refetchOnFocus: true });
 	}

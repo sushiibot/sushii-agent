@@ -4,7 +4,7 @@ End-to-end tests against the real processes. The runner builds `web/` and starts
 
 | Production piece | Here |
 |---|---|
-| bot (`src/index.ts`, `NODE_ENV=production`) | a bot process bound to `E2E_BOT_ADDR` (127.0.0.2), with `WEB_TRUSTED_PEERS` set to the proxy's peer address. The Discord login is stubbed (`stack/discord-stub.preload.ts`). |
+| bot (`src/index.ts`, `NODE_ENV=production`) | a bot process bound to `E2E_BOT_ADDR` (127.0.0.2), with `WEB_TRUSTED_PEERS` set to the proxy's peer address and `WEB_FEATURES=runs,history,home,alerts`. The Discord login is stubbed (`stack/discord-stub.preload.ts`). |
 | workspace (`src/workspace/index.ts`) | a workspace process running the real Pi session, connected to the bot over the real orchestration WebSocket |
 | OpenRouter | `stack/fake-llm.ts`, which returns scripted streaming chat completions |
 | Traefik + Tailscale whois shim | `stack/proxy.ts`. It strips client `Tailscale-*` headers, sets the owner login, and dials the bot from `E2E_PEER_ADDR` (127.0.0.3). |
@@ -76,7 +76,12 @@ test("my flow", async ({ page, watch }) => {
 - `stack.llmLog()` and `stack.waitForLlm(match)` return what the fake model received.
 - `stack.query(sql, ...params)` runs a read-only query on the bot DB. It uses `bun:sqlite` in the runner, because flows run in node.
 - `stack.restartBot({ waitReady })` sends the bot SIGTERM and starts it again on the same data.
+- `stack.wsHome` is the workspace `$HOME`, and `stack.wsState` its state dir (a scheduler request is `requests/<job>.request` there). `stack.config` holds the ports and addresses.
+- `stack.pushes()` returns every Web Push request the bot sent. The bot's net guard answers a push service host with 201 and records the encrypted body, so a flow that registered its own subscription keys can decrypt it (`flows/job-alerts.e2e.ts`).
+- `stack.linkRequest(method, params)` sends a bot → workspace RPC over the real link, through `stack/link-probe.preload.ts` in the bot process. It returns the result and the pinned contract schema's verdict on it. Use it for workspace RPCs the bot has no HTTP route for yet.
 - `stack.wsHome` is the workspace `$HOME`. `stack.config` holds the ports and addresses.
+
+The workspace starts with seeded runs, a job transcript and `~/history` files, plus links planted into `~/history` that must never be read (`stack/seed-runs.ts`). Flows assert on the seeded ids and date, never on counts, since other flows add runs too.
 
 `lib/chat.ts` has `openChat`, `send`, `textbox` and `bubble`. When the app's routes change (e.g. Home moves to `/`), update `openChat` there, not in each flow.
 
@@ -93,6 +98,8 @@ New stack capabilities go in `run.ts`'s control server, not in the flows:
 | `E2E-PHOTO` | `I received N image part(s) in this turn …` |
 | `E2E-SLOW` | 30 pieces `slow0 … slow29`, 500 ms apart |
 | `E2E-FILL-<n>` | `Filler reply <n>.` |
+| `E2E-JOBFAIL` | an HTTP 400 error, which Pi doesn't retry, so a scheduled job's run fails |
+| `E2E-NOREPLY` | `NO_REPLY` |
 | a tool result | `Tool finished. Result: …` |
 | anything else | markdown: bold, a two-item list, a `ts` code block, `Done.` |
 

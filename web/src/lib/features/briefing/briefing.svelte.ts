@@ -1,6 +1,5 @@
 import { Remote } from '$lib/core/remote.svelte';
-import type { BriefingApi } from './api';
-import { createFixtureBriefingApi } from './fake';
+import { httpBriefingApi, type BriefingApi } from './api';
 import type { BriefItem, BriefVote, Briefing } from './types';
 
 export class BriefingStore {
@@ -9,7 +8,7 @@ export class BriefingStore {
 	error = $state<string | null>(null);
 	#api: BriefingApi;
 
-	constructor(api: BriefingApi = createFixtureBriefingApi()) {
+	constructor(api: BriefingApi = httpBriefingApi) {
 		this.#api = api;
 		this.today = new Remote(() => api.today(), { refetchOnFocus: true });
 	}

@@ -6,6 +6,7 @@ import type {
 	ChatEnvelope,
 	ChatEventMap,
 	ChatUsage,
+	JobAlert,
 	PendingState,
 	RouterNotice,
 	ToolLine,
@@ -84,7 +85,9 @@ export type ChatItem =
 	  }
 	| { kind: 'divider'; id: string; divider: 'new' | 'rotated' | 'compacted'; summary?: string }
 	| { kind: 'line'; id: string; text: string }
-	| { kind: 'auth'; id: string; url: string; instructions: string };
+	| { kind: 'auth'; id: string; url: string; instructions: string }
+	/** A scheduled job's alert, shown as a system line. */
+	| { kind: 'alert'; id: string; alert: JobAlert; at: string };
 
 export interface TrayItem {
 	nonce: string;
@@ -564,6 +567,22 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		case 'workspace':
 			setWorkspace(s, ev.data.state, fx);
 			break;
+		case 'alert': {
+			// Same key as the history copy (its outboxId), so the alert shows once.
+			const key = `l:${ev.data.key}`;
+			if (s.keys.has(key)) break;
+			s.keys.add(key);
+			s.items.push({
+				kind: 'alert',
+				id: uid(s, 'alert'),
+				alert: ev.data.alert,
+				at: new Date(now).toISOString()
+			});
+			break;
+		}
+		case 'alert_cleared':
+			// Home's state only: a recovery arrives as its own `alert`, a dismissal changes no chat line.
+			break;
 	}
 	return fx;
 }
@@ -631,6 +650,10 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 			};
 		case 'divider':
 			return { kind: 'divider', id: `h:${h.id}`, divider: h.kind, summary: h.summary };
+		case 'alert':
+			if (s.keys.has(`l:${h.outboxId}`)) return null;
+			s.keys.add(`l:${h.outboxId}`);
+			return { kind: 'alert', id: `h:${h.id}`, alert: h.alert, at: h.at };
 		case 'approval':
 			if (s.keys.has(`p:${h.nonce}`)) return null;
 			s.keys.add(`p:${h.nonce}`);

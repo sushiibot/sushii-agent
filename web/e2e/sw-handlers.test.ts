@@ -104,7 +104,17 @@ test.describe('safeTarget', () => {
 			'/history',
 			'/history/2026-09-29',
 			'/history/search?q=invoice',
-			'/history/search'
+			'/history/search',
+			'/chats',
+			'/chats/oct-trip',
+			'/memory',
+			'/memory/writes/w-vendor',
+			'/memory/files/memory-md',
+			'/skills/deploy-relay-bot',
+			'/schedules/nightly-sync',
+			'/connectors/code-host',
+			'/briefing',
+			'/browser'
 		]) {
 			expect(safeTarget(path, ORIGIN), path).toBe(path);
 			expect(safeTarget(`${ORIGIN}${path}`, ORIGIN), path).toBe(path);
@@ -133,7 +143,10 @@ test.describe('safeTarget', () => {
 			'/settings?x=1',
 			'/home?item=job%3ANightly',
 			'/home?item=elsewhere',
-			'/chats',
+			'/chats/a/b',
+			'/chats/a%2Fb',
+			'/memory/files/x/y',
+			'/browser/x',
 			'',
 			42,
 			null

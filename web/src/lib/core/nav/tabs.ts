@@ -136,15 +136,6 @@ export function activeTab(routeId: string | null): string | undefined {
 	return moreEntries.find((e) => e.href === section && e.id !== 'settings')?.id ?? 'more';
 }
 
-/** The feature a route needs, if any; with it off, the route sends you Home. */
-export function featureOf(routeId: string | null): AppFeature | undefined {
-	if (!routeId) return undefined;
-	const path = pathOf(routeId);
-	if (path.startsWith('/chats')) return 'threads';
-	const section = sectionOf(path);
-	return moreEntries.find((e) => e.href === section)?.feature;
-}
-
 /** Routes in the `(tabs)` group show the tab bar; Chat and detail screens hide it. */
 export function showsTabBar(routeId: string | null): boolean {
 	return !!routeId?.startsWith('/(tabs)');

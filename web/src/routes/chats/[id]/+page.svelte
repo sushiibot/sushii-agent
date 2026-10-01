@@ -68,6 +68,7 @@
 	{sheet}
 	busy={threads.busy}
 	error={threads.error}
+	sendable={threads.canSend}
 	back={{ href: resolve('/chats'), label: 'Back to Chats', onclick: goBack }}
 	writeHref={(w) => resolve('/memory/writes/[id]', { id: w })}
 	memoryHref={resolve('/memory/writes')}

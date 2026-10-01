@@ -40,13 +40,13 @@ test('a change shows its diff and who wrote it, and Revert offers Restore', asyn
 });
 
 test('empty, failing and unknown memory screens say so', async ({ page, context }) => {
-	await fixtureApp(context, { fixtures: { memory: 'empty' } });
+	const app = await fixtureApp(context, { fixtures: { memory: 'empty' } });
 	await page.goto('/memory');
 	await expect(page.getByText('Nothing remembered yet')).toBeVisible();
-	await page.evaluate(() => localStorage.setItem('fixtures:memory', 'error'));
+	app.set('memory', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't load memory.");
-	await page.evaluate(() => localStorage.removeItem('fixtures:memory'));
+	app.set('memory', 'normal');
 	await page.goto('/memory/writes/nope');
 	await expect(page.getByText('No such change')).toBeVisible();
 });

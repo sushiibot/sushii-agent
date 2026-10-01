@@ -1,9 +1,7 @@
 import { Remote } from '$lib/core/remote.svelte';
-import { createHub } from '$lib/core/realtime/hub.svelte';
-import { memoryKeyValue, type Draft, type OutboxEntry } from '$lib/core/storage/outbox';
-import { chatStore, createFakeBackend, type ChatStore } from '$lib/features/chat';
-import type { ThreadsApi } from './api';
-import { createFixtureThreadsApi } from './fake';
+import { chatStore, type ChatStore } from '$lib/features/chat';
+import { httpThreadsApi, type ThreadsApi } from './api';
+import { readOnlyThreadChat, type ThreadChatDeps } from './thread-chat';
 import type { ChatsData, ThreadDetail, ThreadReport } from './types';
 
 const errorText = (err: unknown) =>
@@ -17,10 +15,15 @@ export class ThreadsStore {
 	error = $state<string | null>(null);
 
 	#api: ThreadsApi;
+	#chatDeps: ThreadChatDeps;
 	#threads = new Map<string, Remote<ThreadDetail | null>>();
+	/** Messages can be sent in threads; false until the stream carries thread ids. */
+	readonly canSend: boolean;
 
-	constructor(api: ThreadsApi = createFixtureThreadsApi()) {
+	constructor(api: ThreadsApi = httpThreadsApi, chatDeps: ThreadChatDeps = readOnlyThreadChat) {
 		this.#api = api;
+		this.#chatDeps = chatDeps;
+		this.canSend = chatDeps !== readOnlyThreadChat;
 		this.list = new Remote(() => api.list(), { refetchOnFocus: true });
 	}
 
@@ -34,21 +37,9 @@ export class ThreadsStore {
 		return remote;
 	}
 
-	/**
-	 * The thread's conversation. Until the stream carries thread ids, each thread runs on its own
-	 * in-memory bot seeded with the fixture history, and never touches Main's outbox or drafts.
-	 */
+	/** The thread's conversation, on its own store so it never touches Main's. */
 	chat(detail: ThreadDetail): ChatStore {
-		const fake = createFakeBackend({
-			history: detail.history,
-			reply: 'Noted. I kept this in the thread, and saved anything worth remembering.'
-		});
-		return chatStore(`thread:${detail.summary.id}`, {
-			hub: createHub({ transport: fake.transport, carries: `thread:${detail.summary.id}` }),
-			api: fake.api,
-			outbox: memoryKeyValue<OutboxEntry>((e) => e.clientId),
-			drafts: memoryKeyValue<Draft>((d) => d.id)
-		});
+		return chatStore(`thread:${detail.summary.id}`, this.#chatDeps(detail));
 	}
 
 	async #act<T>(fn: () => Promise<T>): Promise<T | null> {
@@ -93,13 +84,13 @@ export class ThreadsStore {
 }
 
 let store: ThreadsStore | null = null;
-let configured: ThreadsApi | undefined;
+let configured: { api?: ThreadsApi; chat?: ThreadChatDeps } = {};
 
-/** Swaps in another API, for tests; call before the first store. */
-export function configureThreads(api: ThreadsApi) {
-	configured = api;
+/** Swaps in another API and thread chat, for dev mode and tests; call before the first store. */
+export function configureThreads(deps: { api?: ThreadsApi; chat?: ThreadChatDeps }) {
+	configured = deps;
 }
 
 export function threadsStore(): ThreadsStore {
-	return (store ??= new ThreadsStore(configured));
+	return (store ??= new ThreadsStore(configured.api, configured.chat));
 }
