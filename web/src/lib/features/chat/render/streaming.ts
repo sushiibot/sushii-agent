@@ -13,11 +13,21 @@ import {
 // the text after the last blank line, so they can never reach a block that has been kept.
 
 /** A link or footnote definition changes how earlier text renders, so its reply is re-parsed whole.
- *  The class excludes newlines, so a long line backtracks at most once. */
-const DEFINITION_RE = /^ {0,3}\[[^\]\n]+\]:/m;
+ *  Each alternative starts on a different character and the label class excludes newlines, so
+ *  nothing backtracks past one line. Definitions nested in quotes and list items count too. */
+const DEFINITION_RE = /^(?:[ \t>]|[-*+][ \t]|\d{1,9}[.)][ \t])*\[[^\]\n]+\]:/m;
+/** A definition still being typed shows as text that vanishes once it completes. Applied per line,
+ *  so it also finds one after a heading, rule or fence, or inside a quote or list item. */
+const DEFINITION_LINE_RE = /^(?:[ \t>]|[-*+][ \t]|\d{1,9}[.)][ \t])*\[[^\]\n]+\]:/;
+/** Unclosed emphasis past this many openers is left raw rather than closed for display. */
+const CLOSERS_MAX = 8;
 
 /** One tail parse slower than this drops the rest of the stream to plain text until it ends. */
 export const STREAM_PARSE_BUDGET_MS = 50;
+/** Rendered updates (parse, DOM and layout) slower than this, two frames, several times in a row
+ *  also drop to plain text; one sample alone is too noisy to act on. */
+export const STREAM_FRAME_BUDGET_MS = 32;
+const SLOW_FRAMES_MAX = 3;
 /** After a parse, wait this many times its cost before the next one, so slow input can't hog frames. */
 export const STREAM_BACKOFF = 4;
 
@@ -34,6 +44,8 @@ export class MarkdownStream {
 	#final = false;
 	#tree: MdBlockNode[] = [];
 	#overBudget = false;
+	#noReuse = false;
+	#slowFrames = 0;
 	readonly #view: (tail: string) => string;
 	/** `performance.now()` before which a new parse isn't worth starting. */
 	nextAt = 0;
@@ -55,25 +67,41 @@ export class MarkdownStream {
 		this.#source = '';
 		this.#stable = [];
 		this.#overBudget = false;
+		this.#noReuse = false;
+		this.#slowFrames = 0;
 	}
 
 	/** The render tree for a reply still streaming. Same input, same array. */
 	update(text: string, ctx: RenderContext, key = ''): MdBlockNode[] {
 		if (!this.#final && this.#text === text && this.#key === key) return this.#tree;
-		if (key !== this.#key || !text.startsWith(this.#source)) this.#reset(key);
+		// Streaming only appends; anything else is a different reply and starts over.
+		if (key !== this.#key || !text.startsWith(this.#text ?? '')) this.#reset(key);
 		this.#final = false;
 		this.#text = text;
 		if (this.#overBudget || exceedsParseLimits(text)) return (this.#tree = [plainOf(text)]);
 
 		const t0 = performance.now();
-		const reuse = !DEFINITION_RE.test(text);
-		if (!reuse) {
+		if (DEFINITION_RE.test(text)) this.#noReuse = true;
+		if (this.#noReuse) {
 			this.#source = '';
 			this.#stable = [];
 		}
-		const tail = text.slice(this.#source.length);
-		const shown = this.#view(tail);
-		let nodes = parseTopLevel(shown, ctx);
+		let tail = text.slice(this.#source.length);
+		let shown = this.#view(tail);
+		// Display edits add closers, so the shown text needs its own check against the limits.
+		let nodes = exceedsParseLimits(shown) ? null : parseTopLevel(shown, ctx);
+		// A definition the pattern missed (multi-line label): kept blocks may reference it.
+		if (nodes?.some((n) => n.definition) && !this.#noReuse) {
+			this.#noReuse = true;
+			if (this.#source) {
+				this.#source = '';
+				this.#stable = [];
+				tail = text;
+				shown = this.#view(tail);
+				nodes = exceedsParseLimits(shown) ? null : parseTopLevel(shown, ctx);
+			}
+		}
+		const reuse = !this.#noReuse;
 		if (!nodes) {
 			this.#tree = [...this.#stable, plainOf(tail)];
 		} else {
@@ -92,6 +120,15 @@ export class MarkdownStream {
 		this.nextAt = t0 + this.lastMs * (1 + STREAM_BACKOFF);
 		if (this.lastMs > STREAM_PARSE_BUDGET_MS) this.#overBudget = true;
 		return this.#tree;
+	}
+
+	/** Reports what the last update cost once rendered (parse, DOM and layout up to the next frame),
+	 *  so a tail that is cheap to parse but slow to draw backs off and falls back too. */
+	rendered(ms: number, now = performance.now()) {
+		if (this.#final) return;
+		this.nextAt = Math.max(this.nextAt, now + ms * STREAM_BACKOFF);
+		this.#slowFrames = ms > STREAM_FRAME_BUDGET_MS ? this.#slowFrames + 1 : 0;
+		if (ms > STREAM_PARSE_BUDGET_MS || this.#slowFrames >= SLOW_FRAMES_MAX) this.#overBudget = true;
 	}
 
 	/** The finished render: exactly `parseMarkdown(text)`, reusing every block the stream already
@@ -178,7 +215,8 @@ function lastBlankLineEnd(text: string): number {
 
 /** What a still-growing reply shows: unfinished syntax at its end is completed or held back, so it
  *  never flashes raw and then snaps, and a half-typed URL never becomes a link. Display only. */
-export function streamingView(text: string): string {
+export function streamingView(raw: string): string {
+	const text = defuseReferenceLabels(raw);
 	const fence = openFence(text);
 	if (fence) {
 		// A closing fence being typed would otherwise show up as code for a frame.
@@ -187,9 +225,11 @@ export function streamingView(text: string): string {
 		return last && [...last].every((c) => c === fence) ? text.slice(0, nl + 1) : text;
 	}
 	const start = lastBlankLineEnd(text);
-	let seg = holdBackLines(text.slice(start));
+	let seg = holdBackDefinition(text.slice(start));
+	seg = holdBackLines(seg);
 	seg = completeLinks(seg);
-	seg = holdBackUrl(seg);
+	// Holding back the last word can reopen a label it closed, so links are checked again after.
+	seg = completeLinks(holdBackUrl(seg));
 	seg = completeInline(seg);
 	return text.slice(0, start) + seg;
 }
@@ -197,11 +237,21 @@ export function streamingView(text: string): string {
 /** The fence character when `text` ends inside an open fenced code block. Fences nested in quotes
  *  or list items count too; being approximate only costs display. */
 export function openFence(text: string): string | null {
+	return scanFences(text);
+}
+
+/** Walks the lines of `text`, telling `onLine` which belong to a fenced code block (fences
+ *  included), and returns the fence character when the text ends inside one. */
+function scanFences(
+	text: string,
+	onLine?: (start: number, end: number, fenced: boolean) => void
+): string | null {
 	let open: { ch: number; len: number } | null = null;
 	let i = 0;
 	while (i < text.length) {
 		let nl = text.indexOf('\n', i);
 		if (nl < 0) nl = text.length;
+		let fenced = open !== null;
 		let j = i;
 		for (;;) {
 			const c = text.charCodeAt(j);
@@ -226,15 +276,84 @@ export function openFence(text: string): string | null {
 				if (!open) {
 					let tickInInfo = false;
 					if (c === 96) for (let t = k; t < nl && !tickInInfo; t++) tickInInfo = text[t] === '`';
-					if (!tickInInfo) open = { ch: c, len: run };
+					if (!tickInInfo) {
+						open = { ch: c, len: run };
+						fenced = true;
+					}
 				} else if (c === open.ch && run >= open.len && !text.slice(k, nl).trim()) {
 					open = null;
 				}
 			}
 		}
+		onLine?.(i, nl, fenced);
 		i = nl + 1;
 	}
 	return open ? String.fromCharCode(open.ch) : null;
+}
+
+/** `[label][ref]` may get its definition later. Until then GFM autolinks a URL in the label to an
+ *  address the finished reply won't link, so a word joiner (invisible) splits the URL. A backslash
+ *  escape would not do: mdast-util-gfm finds autolinks in the decoded text. */
+export function defuseReferenceLabels(text: string): string {
+	if (!text.includes('][')) return text;
+	const at = new Set<number>();
+	const opens: number[] = [];
+	let code = 0;
+	scanFences(text, (start, end, fenced) => {
+		if (fenced) {
+			opens.length = 0;
+			code = 0;
+			return;
+		}
+		for (let i = start; i < end; i++) {
+			const c = text.charCodeAt(i);
+			if (c === 92 && !code) {
+				i++;
+				continue;
+			}
+			if (c === 96) {
+				let k = i;
+				while (text.charCodeAt(k) === 96) k++;
+				if (!code) code = k - i;
+				else if (code === k - i) code = 0;
+				i = k - 1;
+				continue;
+			}
+			if (code) continue;
+			if (c === 91) opens.push(i);
+			else if (c === 93 && opens.length) {
+				const open = opens.pop()!;
+				if (text.charCodeAt(i + 1) !== 91) continue;
+				const label = text.slice(open + 1, i);
+				// Code spans keep every character, so such labels are left alone.
+				if (label.includes('`')) continue;
+				for (const m of label.matchAll(URLISH_GLOBAL_RE)) {
+					const w = m[0].toLowerCase();
+					const offset = w === '@' ? 0 : w === 'www.' ? 3 : w.indexOf(':');
+					at.add(open + 1 + m.index + offset);
+				}
+			}
+		}
+	});
+	if (!at.size) return text;
+	let out = '';
+	let from = 0;
+	for (const i of [...at].sort((a, b) => a - b)) {
+		out += text.slice(from, i) + '\u2060';
+		from = i;
+	}
+	return out + text.slice(from);
+}
+
+/** Cuts the block at the first line that opens a definition; it reappears at the next blank line. */
+function holdBackDefinition(seg: string): string {
+	for (let i = 0; i < seg.length;) {
+		let nl = seg.indexOf('\n', i);
+		if (nl < 0) nl = seg.length;
+		if (DEFINITION_LINE_RE.test(seg.slice(i, nl))) return seg.slice(0, i);
+		i = nl + 1;
+	}
+	return seg;
 }
 
 const MARKERS = new Set(' \t-+*=_#>~`|:.)[]0123456789');
@@ -254,6 +373,9 @@ function holdBackLines(seg: string): string {
 	return above !== null && pipeRow(above) ? seg : seg.slice(0, at);
 }
 
+const URLISH_RE = /https?:\/\/|www\.|mailto:|@/i;
+const URLISH_GLOBAL_RE = /https?:\/\/|www\.|mailto:|@/gi;
+
 /** Shows an unfinished link as its text and drops an unfinished image. Never adds `]` or `)`, so
  *  nothing becomes a link before its destination is complete. */
 function completeLinks(s: string): string {
@@ -264,7 +386,8 @@ function completeLinks(s: string): string {
 	let code = 0;
 	for (let i = 0; i < s.length; i++) {
 		const c = s.charCodeAt(i);
-		if (c === 92 /* \ */) {
+		// Code spans have no escapes, so a backslash there must not hide the closing backtick.
+		if (c === 92 /* \ */ && !code) {
 			i++;
 			continue;
 		}
@@ -281,6 +404,13 @@ function completeLinks(s: string): string {
 		else if (c === 93 /* ] */ && opens.length) {
 			const open = opens.pop()!;
 			lastClose = { open, close: i };
+			// `[label][ref]`: its definition may arrive later, and until then a URL in the label
+			// autolinks to an address the finished reply won't link.
+			if (s.charCodeAt(i + 1) === 91 /* [ */ && URLISH_RE.test(s.slice(open + 1, i))) {
+				cutAt = s.charCodeAt(open - 1) === 33 ? open - 1 : open;
+				lastClose = null;
+				break;
+			}
 			if (s.charCodeAt(i + 1) !== 40 /* ( */) continue;
 			let depth = 1;
 			let k = i + 2;
@@ -291,7 +421,9 @@ function completeLinks(s: string): string {
 				else if (d === 41) depth--;
 			}
 			if (depth > 0) {
+				// A URL in the label would autolink on its own once the brackets are gone.
 				if (s.charCodeAt(open - 1) === 33 /* ! */) cutAt = open - 1;
+				else if (URLISH_RE.test(s.slice(open + 1, i))) cutAt = open;
 				else {
 					drop.add(open);
 					cutAt = i;
@@ -303,6 +435,11 @@ function completeLinks(s: string): string {
 			i = k - 1;
 		}
 	}
+	// An unclosed label with a URL after it would show that URL as a link the final may not have.
+	let lastUrl = -1;
+	for (const m of s.slice(0, cutAt).matchAll(URLISH_GLOBAL_RE)) lastUrl = m.index;
+	const labelled = opens.find((open) => open < lastUrl);
+	if (labelled !== undefined) cutAt = s.charCodeAt(labelled - 1) === 33 ? labelled - 1 : labelled;
 	for (const open of opens) {
 		if (open >= cutAt) continue;
 		drop.add(open);
@@ -311,6 +448,7 @@ function completeLinks(s: string): string {
 	// `[text]` at the very end is most likely a link about to get its `(`.
 	if (lastClose && lastClose.close === s.length - 1 && lastClose.close - lastClose.open > 2) {
 		if (s.charCodeAt(lastClose.open - 1) === 33) cutAt = lastClose.open - 1;
+		else if (URLISH_RE.test(s.slice(lastClose.open + 1, lastClose.close))) cutAt = lastClose.open;
 		else {
 			drop.add(lastClose.open);
 			cutAt = lastClose.close;
@@ -326,8 +464,6 @@ function completeLinks(s: string): string {
 	}
 	return out + s.slice(from, cutAt);
 }
-
-const URLISH_RE = /https?:\/\/|www\.|mailto:|@/i;
 
 /** GFM links bare URLs and emails as they are typed, so the last word waits for its end. */
 function holdBackUrl(s: string): string {
@@ -346,7 +482,7 @@ function completeInline(s: string): string {
 	let cut = s.length;
 	for (let i = 0; i < s.length; i++) {
 		const c = s.charCodeAt(i);
-		if (c === 92) {
+		if (c === 92 && !code) {
 			i++;
 			continue;
 		}
@@ -386,6 +522,7 @@ function completeInline(s: string): string {
 		if (canOpen) for (const tok of toks) stack.push({ tok, at: k - run });
 		else if (k === s.length) cut = k - run;
 	}
+	if (stack.length > CLOSERS_MAX) return s.slice(0, cut);
 	let end = cut;
 	const contentBefore = (limit: number) => {
 		while (end > 0 && isSpace(s.charCodeAt(end - 1))) end--;

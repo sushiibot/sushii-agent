@@ -148,6 +148,17 @@ describe('markdown', () => {
 		expect(carets.map((c) => c.attrs['aria-hidden'])).toEqual(['true']);
 	});
 
+	test('Copy stays disabled on a code block that is still streaming', async () => {
+		const open = await dom(Markdown, { text: 'Run:\n\n```sh\nrm -rf ~/tm', streaming: true });
+		expect(open.els.filter((e) => e.tag === 'button').map((b) => 'disabled' in b.attrs)).toEqual([
+			true
+		]);
+		const done = await dom(Markdown, { text: 'Run:\n\n```sh\nrm -rf ~/tmp\n```' });
+		expect(done.els.filter((e) => e.tag === 'button').map((b) => 'disabled' in b.attrs)).toEqual([
+			false
+		]);
+	});
+
 	test('the caret is gone once the reply is finished', async () => {
 		const { els } = await dom(Markdown, { text: '**bold**', streaming: false });
 		expect(els.some((e) => 'data-caret' in e.attrs)).toBe(false);

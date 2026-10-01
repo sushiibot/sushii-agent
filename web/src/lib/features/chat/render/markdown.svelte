@@ -41,14 +41,24 @@
 	// once a frame, and slower when parsing is slow.
 	let frameText = $state<string | null>(null);
 	let frame = 0;
+	let measure = 0;
+	const FRAME_MS = 1000 / 60;
 
 	function nextFrame() {
 		frame = 0;
-		if (performance.now() < stream.nextAt) {
+		// Until the first frame lands, `tree` parses on every delta, so waiting out `nextAt` there would
+		// keep it doing so for good.
+		if (frameText !== null && performance.now() < stream.nextAt) {
 			frame = requestAnimationFrame(nextFrame);
 			return;
 		}
+		const start = performance.now();
 		frameText = text ?? '';
+		// The next frame starts after the parse, the DOM update and layout, so its delay is their cost.
+		cancelAnimationFrame(measure);
+		measure = requestAnimationFrame(() =>
+			stream.rendered(Math.max(0, performance.now() - start - FRAME_MS))
+		);
 	}
 
 	$effect(() => {
@@ -56,7 +66,10 @@
 			frame = requestAnimationFrame(nextFrame);
 		}
 	});
-	$effect(() => () => cancelAnimationFrame(frame));
+	$effect(() => () => {
+		cancelAnimationFrame(frame);
+		cancelAnimationFrame(measure);
+	});
 
 	const tree = $derived.by((): MdBlockNode[] => {
 		const ctx = {
@@ -147,7 +160,8 @@
 					data-lang={node.lang}><code
 						>{node.text}{#if node === caretAt}{@render caret()}{/if}</code
 					></pre>
-				<CodeCopyButton text={node.text} />
+				<!-- Code still streaming would copy a truncated command. -->
+				<CodeCopyButton text={node.text} disabled={streaming && node === caretAt} />
 			</div>
 		{:else if node.kind === 'quote'}
 			<blockquote class="flex flex-col gap-2 border-l-2 pl-3 text-muted-foreground">

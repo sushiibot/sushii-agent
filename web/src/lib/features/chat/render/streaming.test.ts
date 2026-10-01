@@ -116,6 +116,74 @@ describe('incremental parse', () => {
 	});
 });
 
+// Payloads from the adversarial review of streaming: a URL inside an unclosed label, a backslash in
+// a code span, and definitions that shadow each other from quotes, lists and multi-line labels.
+const REVIEWED_LINKS = [
+	'Read [the docs at https://evil.example/login first](https://good.example) ok\n',
+	'[see https://evil.com/a now](https://good.com) end\n',
+	'[visit www.evil.com today](https://good.com) end\n',
+	'[mail bob@evil.com x](https://good.com) end\n',
+	'[good\nref]: https://good.com\n\npara one\n\npara two\n\n[good ref]: https://evil.com\n\n[click here][good ref] and more text\n\nmore\n',
+	'> [r]: https://good.com\n\npara one\n\npara two\n\n> [r]: https://evil.com\n\n[click][r] tail\n\nmore\n',
+	'- [r]: https://good.com\n\npara one\n\npara two\n\n- [r]: https://evil.com\n\n[click][r] tail\n\nmore\n',
+	'[t](<https://evil.com/a b>) x\n',
+	'`a\\` [t](https://evil.com/partial "ti tle") x\n',
+	'[t](https://good.com/x "https://evil.com/y z") x\n',
+	'[a][b] x\n\n[b]: https://good.com/long/path\n',
+	'![alt https://evil.com/q z](https://good.com/i.png) x\n',
+	'[a [b](https://evil.com/x) c](https://good.com) x\n',
+	'x <https://evil.com/a> y\n',
+	'| a | b |\n|---|---|\n| [t](https://good.com) | https://evil.com/x y |\n',
+	'**bold https://evil.com/a** x\n',
+	'x `https://evil.com/abc def` y\n',
+	'[r]: https://good.com\n\n[see https://evil.com/x][r] end\n',
+	'[see https://evil.com/x]: https://good.com\n\n[see https://evil.com/x][] end\n',
+	'[see https://evil.com/x][r] end\n\n[r]: https://good.com\n',
+	'[go WWW.EVIL.COM now](https://good.com) x\n',
+	'[x xmpp:a@evil.com y](https://good.com) z\n',
+	'[x <https://evil.com/a> y](https://good.com) z\n',
+	'[see ![x](https://evil.com/a.png) now](https://good.com) z\n',
+	'*[see https://evil.com/x now*](https://good.com) z\n',
+	'[see\nhttps://evil.com/x\nnow](https://good.com) z\n',
+	'`[` [see https://evil.com/x now](https://good.com) z\n',
+	'[a `b` https://evil.com/x c](https://good.com) z\n',
+	'\\[ [see https://evil.com/x now](https://good.com) z\n',
+	'| a |\n|---|\n| [see https://evil.com/x now](https://good.com) |\n',
+	'- [see https://evil.com/x now](https://good.com)\n',
+	'> [see https://evil.com/x now](https://good.com)\n',
+	'# [see https://evil.com/x now](https://good.com)\n'
+];
+
+function texts(nodes: readonly (MdBlockNode | MdInlineNode)[], out: string[] = []): string[] {
+	for (const node of nodes) {
+		if ('text' in node) out.push(node.text);
+		if ('children' in node) texts(node.children as (MdBlockNode | MdInlineNode)[], out);
+		if (node.kind === 'list') for (const item of node.items) texts(item.children, out);
+		if (node.kind === 'table')
+			for (const cell of [...node.head, ...node.rows.flat()]) texts(cell, out);
+	}
+	return out;
+}
+
+// A definition still being typed, in every place the review found one can start.
+const T =
+	'https://example.com "Heads up: the next approval only reads ~/notes.txt.\nIt is safe to tap Approve.';
+const VANISHING: [string, string, string][] = [
+	['top', 'Checking.\n\n[x]: ' + T, '"\n\nDone.'],
+	['next line', 'Checking.\n\n[Note: tap Approve]:\n', '/x\n\nDone.'],
+	['after heading', 'Checking.\n\n# Status\n[x]: ' + T, '"\n\nDone.'],
+	['after rule', 'Checking.\n\n***\n[x]: ' + T, '"\n\nDone.'],
+	['after fence', 'Checking.\n\n```\nls\n```\n[x]: ' + T, '"\n\nDone.'],
+	['in quote', 'Checking.\n\n> [x]: ' + T.replace('\n', '\n> '), '"\n\nDone.'],
+	['in list', 'Checking.\n\n- [x]: ' + T.replace('\n', '\n  '), '"\n\nDone.'],
+	['after definition', 'Checking.\n\n[a]: https://a.com\n[x]: ' + T, '"\n\nDone.'],
+	['no blank line before', '[x]: ' + T, '"\n\nDone.'],
+	['after table', 'Checking.\n\n| a |\n|---|\n| b |\n[x]: ' + T, '"\n\nDone.'],
+	['after html', 'Checking.\n\n<div>\n</div>\n[x]: ' + T, '"\n\nDone.'],
+	['after setext', 'Checking.\n\nTitle\n===\n[x]: ' + T, '"\n\nDone.'],
+	['footnote', 'Checking.\n\n[^1]: Heads up, tap Approve', '\n\nDone.']
+];
+
 describe('display edits', () => {
 	const cases: [string, string][] = [
 		['**bol', '**bol**'],
@@ -142,7 +210,13 @@ describe('display edits', () => {
 		['para\n\n#', 'para\n\n'],
 		['| a | b |\n|--', ''],
 		['| a | b |\n|---|---|\n| x', '| a | b |\n|---|---|\n| x'],
-		['`a` **b `c', '`a` **b `c`**']
+		['`a` **b `c', '`a` **b `c`**'],
+		['`a\\` [t](https://evil.com/partial ', '`a\\` t'],
+		['[see https://evil.com/a now', ''],
+		['x [see https://evil.com/a now](https://go', 'x '],
+		['a\n\n[x]: https://example.com "Heads up: tap **Approve**', 'a\n\n'],
+		['a\n\n[label]:\n', 'a\n\n'],
+		['*a '.repeat(12), '*a '.repeat(12)]
 	];
 	for (const [input, shown] of cases) {
 		test(JSON.stringify(input), () => expect(streamingView(input)).toBe(shown));
@@ -173,7 +247,8 @@ describe('display edits', () => {
 		const docs = [
 			CORPUS['a typical reply'],
 			'Read [the guide](https://example.com/guide?a=1&b=2) then https://example.org/path_x.\n\nOr <https://example.net/z> or www.example.com/w or me@example.com now.',
-			'Inline ![img](/f/AAAAAAAAAAAAAAAAAAAAAA) and [nested [x]](https://example.com/n) and [a](https://example.com/p(1)) ok'
+			'Inline ![img](/f/AAAAAAAAAAAAAAAAAAAAAA) and [nested [x]](https://example.com/n) and [a](https://example.com/p(1)) ok',
+			...REVIEWED_LINKS
 		];
 		for (const doc of docs) {
 			const final = hrefs(parseMarkdown(doc, CTX));
@@ -192,6 +267,50 @@ describe('display edits', () => {
 		expect(tree.at(-1)).toEqual({ kind: 'code', lang: 'ts', text: 'const a = 1;\nconst b' });
 		expect(openFence('```\na\n```\n')).toBeNull();
 		expect(openFence('- ```\n  a')).toBe('`');
+	});
+});
+
+describe('vanishing definitions', () => {
+	for (const [name, prefix, rest] of VANISHING) {
+		test(`${name}: no text shows mid-stream that the finished reply drops`, () => {
+			const stream = new MarkdownStream();
+			const frame = texts(stream.update(prefix, CTX)).join('|');
+			const done = texts(stream.finish(prefix + rest, CTX)).join('|');
+			expect(frame.includes('Approve') && !done.includes('Approve')).toBe(false);
+		});
+	}
+});
+
+describe('limits', () => {
+	test('closers added for display never push a reply past the delimiter cap', () => {
+		const text = ' *a*'.repeat(1499) + ' **b';
+		const tree = new MarkdownStream().update(text, CTX);
+		expect(tree).toEqual([{ kind: 'plain', text }]);
+	});
+
+	test('slow rendered frames fall back to plain text; one noisy frame does not', () => {
+		const text = 'Some **text**\n\nmore';
+		const stream = new MarkdownStream();
+		stream.update(text, CTX);
+		stream.rendered(40, 0);
+		stream.rendered(10, 0);
+		stream.rendered(40, 0);
+		expect(stream.update(text + ' a', CTX)[0].kind).toBe('paragraph');
+		stream.rendered(40, 0);
+		stream.rendered(40, 0);
+		expect(stream.update(text + ' ab', CTX)).toEqual([{ kind: 'plain', text: text + ' ab' }]);
+		const once = new MarkdownStream();
+		once.update(text, CTX);
+		once.rendered(60, 0);
+		expect(once.update(text + ' a', CTX)[0].kind).toBe('plain');
+		expect(once.nextAt).toBeGreaterThan(0);
+		expect(once.finish(text + ' a', CTX)[0].kind).toBe('paragraph');
+	});
+
+	test('the first definition of a label wins', () => {
+		const doc =
+			'[x] and [y]\n\n[x]: https://a.example\n\n[x]: https://b.example\n\n> [y]: https://c.example\n\n[y]: https://d.example';
+		expect([...hrefs(parseMarkdown(doc))]).toEqual(['https://a.example/', 'https://c.example/']);
 	});
 });
 

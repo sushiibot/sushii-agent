@@ -25,6 +25,17 @@ type Win = {
 			step: number
 		): { ok: boolean; err?: string; ms: number[]; finishMs: number };
 		streamInto(text: string, step: number): Promise<{ frames: number[] }>;
+		lateMount(
+			text: string,
+			at: number,
+			step: number,
+			everyMs: number
+		): Promise<{ updates: number; rendered: number; deltas: number }>;
+		streamTimed(
+			text: string,
+			step: number,
+			everyMs: number
+		): Promise<{ gaps: number[]; sawPlain: boolean }>;
 		step(fn: () => void): void;
 	};
 	ready?: boolean;
@@ -226,6 +237,84 @@ test.describe('streaming markdown in V8', () => {
 		}, DEEP[0][1]);
 		expect(mounted).toBeGreaterThan(0);
 		expect(await page.evaluate(() => (window as unknown as Win).h.errors)).toEqual([]);
+		expect(violations).toEqual([]);
+	});
+
+	test('a reply that arrives whole, as on a reload mid-turn, parses within the limits', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const payloads = [
+			'*a '.repeat(3000),
+			'_a '.repeat(3000),
+			'*a _a '.repeat(1500),
+			'**a '.repeat(1500)
+		];
+		for (const text of payloads) {
+			const r = await page.evaluate(
+				(t) => (window as unknown as Win).h.streamCost(t, 20_000),
+				text
+			);
+			expect(r.ok, r.err).toBe(true);
+			expect(r.ms[0], `${text.slice(0, 6)} first update`).toBeLessThan(100);
+			const mount = await page.evaluate((t) => {
+				const start = performance.now();
+				const res = (window as unknown as Win).h.render(t, { streaming: true });
+				return { ...res, ms: performance.now() - start };
+			}, text);
+			expect(mount.ok, mount.err).toBe(true);
+			expect(mount.ms, `${text.slice(0, 6)} mount`).toBeLessThan(150);
+		}
+		expect(violations).toEqual([]);
+	});
+
+	test('a tail that is cheap to parse but slow to draw falls back instead of janking', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const cols = 40;
+		const table = (
+			'|' +
+			'h|'.repeat(cols) +
+			'\n|' +
+			'-|'.repeat(cols) +
+			'\n' +
+			('|' + 'ab|'.repeat(cols) + '\n').repeat(200)
+		).slice(0, 15_990);
+		const headings = '# h\n'.repeat(3_997);
+		for (const [name, text] of [
+			['table', table],
+			['headings', headings]
+		]) {
+			const { gaps } = await page.evaluate(
+				(t) => (window as unknown as Win).h.streamTimed(t, 20, 4),
+				text
+			);
+			// Without the fallback these frames stay slow for the whole reply; with it, a few are.
+			const long = gaps.filter((g) => g > 45).length;
+			const sorted = [...gaps].sort((a, b) => b - a);
+			console.log(
+				`${name}: ${gaps.length} frames, ${long} over 45ms, p95 ${sorted[Math.floor(gaps.length * 0.05)].toFixed(1)}ms, max ${sorted[0].toFixed(1)}ms`
+			);
+			expect(long, `${name} frames over 45ms`).toBeLessThanOrEqual(10);
+			expect(sorted[0], `${name} longest frame`).toBeLessThan(120);
+		}
+
+		expect(violations).toEqual([]);
+	});
+
+	test('a reply mounted mid-stream, as after a reload, is throttled from its first frame', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const list = '- item with **bold** text and more words\n'.repeat(400).slice(0, 16_000);
+		const c = await page.evaluate(
+			(t) => (window as unknown as Win).h.lateMount(t, 6_000, 20, 20),
+			list
+		);
+		console.log(`late mount: ${c.deltas} deltas, ${c.updates} updates, ${c.rendered} rendered`);
+		expect(c.rendered).toBeGreaterThan(0);
+		expect(c.updates).toBeLessThan(c.deltas / 2);
 		expect(violations).toEqual([]);
 	});
 

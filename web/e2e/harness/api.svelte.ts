@@ -19,6 +19,7 @@ class Api {
 	steps = $state<TurnStep[]>([]);
 	chat = $state<ChatMessage[]>([]);
 	stream = $state({ text: '', streaming: false });
+	late = $state({ text: '', streaming: true });
 
 	push(text: string, files?: unknown) {
 		this.messages.push({ text, files });
