@@ -14,7 +14,7 @@ const WORD = /[\p{L}\p{N}]+/gu;
  *  owner types can reach FTS5 as syntax. */
 export function queryTokens(query: string): string[] {
   const seen = new Set<string>();
-  for (const m of query.matchAll(WORD)) {
+  for (const m of query.normalize("NFC").matchAll(WORD)) {
     seen.add(m[0].toLowerCase());
     if (seen.size >= QUERY_TOKENS_MAX) break;
   }

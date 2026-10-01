@@ -35,5 +35,8 @@ test("search finds live and imported chat through the app API", async ({ page, w
   expect(operators.body.hits.filter((h) => h.source === "chat")).toEqual([]);
 
   expect((await search(page, "x")).status).toBe(400);
+  // Until the workspace answers runs/list the bot says so with 501, never a 5xx of its own.
+  const runs = await page.evaluate(async () => (await fetch("/api/runs")).status);
+  expect([200, 501]).toContain(runs);
   expect(await watch.violations()).toEqual([]);
 });

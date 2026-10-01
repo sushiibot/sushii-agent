@@ -157,6 +157,13 @@ describe("chat search queries", () => {
     expect(ftsQuery(["ab", "c"])).toBe('"ab"* "c"*');
   });
 
+  test("a decomposed query finds composed text, accents folded", () => {
+    const { db, log } = setup();
+    const seq = log.append("user", user("u", "Crème brûlée"), "u");
+    expect(ids(db, "cre\u0300me")).toEqual([String(seq)]);
+    expect(ids(db, "brulee")).toEqual([String(seq)]);
+  });
+
   test("a user hit carries its message time; an agent hit its stored time", () => {
     const { db, log } = setup();
     log.append("user", user("u", "ibis"), "u");
