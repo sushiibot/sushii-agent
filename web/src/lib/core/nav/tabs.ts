@@ -4,6 +4,7 @@ import History from '@lucide/svelte/icons/history';
 import House from '@lucide/svelte/icons/house';
 import MessageSquare from '@lucide/svelte/icons/message-square';
 import Settings from '@lucide/svelte/icons/settings';
+import type { WebFeature } from '$lib/core/realtime/events';
 import type { NavItem } from '$lib/ui/shell/types';
 
 /** The phone tab bar, left to right. */
@@ -43,6 +44,17 @@ export const nav: NavItem[] = [
 	...tabs,
 	...more.filter((m) => m.id !== 'settings').map((m) => ({ ...m, sub: true }))
 ];
+
+/** Entries the bot turns on and off with `WEB_FEATURES`; the rest always show. */
+const FEATURE_OF: Readonly<Record<string, WebFeature>> = { runs: 'runs', history: 'history' };
+
+/** `items` without the entries whose feature is off. */
+export function enabled(items: readonly NavItem[], has: (f: WebFeature) => boolean): NavItem[] {
+	return items.filter((i) => {
+		const f = FEATURE_OF[i.id];
+		return !f || has(f);
+	});
+}
 
 /** The nav entry a route belongs to; the tab bar lights its tab, the sidebar its row. */
 export function activeTab(routeId: string | null): string | undefined {

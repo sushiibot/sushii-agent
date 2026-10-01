@@ -1,9 +1,9 @@
 import { HttpError } from '$lib/core/http';
+import type { ChatEnvelope } from '$lib/core/realtime/events';
 import { hub as appHub, type Hub } from '$lib/core/realtime/hub.svelte';
 import { Remote } from '$lib/core/remote.svelte';
 import { chatApi, type ChatApi } from '$lib/features/chat';
-import type { HomeApi } from './api';
-import { fixtureHomeApi } from './fake';
+import { httpHomeApi, type HomeApi } from './api';
 import { applyLive, emptyLive, homeItems, type LiveState, type LocalState } from './needs-you';
 import type { HomeData, HomeGroups } from './types';
 
@@ -15,6 +15,10 @@ export interface HomeDeps {
 
 type Result = { ok: boolean; text: string };
 
+/** Live events that change Home's server part; a burst of them refetches once. */
+const REFETCH_ON = new Set(['run', 'alert', 'alert_cleared']);
+const REFETCH_DEBOUNCE_MS = 1000;
+
 function failureText(err: unknown, what: 'decision' | 'answer'): string {
 	const status = err instanceof HttpError ? err.status : 0;
 	if (status === 403) return "This device isn't signed in as the owner.";
@@ -25,7 +29,8 @@ function failureText(err: unknown, what: 'decision' | 'answer'): string {
 /** Home: what is waiting on you, what failed, what is running and what is ready to look at. */
 export class NeedsYouStore {
 	live = $state.raw<LiveState>(emptyLive());
-	data: Remote<HomeData>;
+	/** null: the bot has Home turned off, so only the stream's part shows. */
+	data: Remote<HomeData | null>;
 	local = $state.raw<LocalState>({ dismissed: [], opened: [], asks: {} });
 	/** Approvals with a decision in flight from Home. */
 	submitting = $state.raw<readonly string[]>([]);
@@ -39,12 +44,74 @@ export class NeedsYouStore {
 	#api: HomeApi;
 	#chat: () => ChatApi;
 	#stop: (() => void) | null = null;
+	#greeted = false;
+	#refetchTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Loads started so far; the server part of a load reflects every change acked before it began. */
+	#loads = 0;
+	/** Local hides (dismissed, opened, cleared) by item id, with the load count when the bot had them. */
+	#acked = new Map<string, number>();
 
 	constructor(deps: HomeDeps = {}) {
 		this.#hub = deps.hub ?? appHub;
-		this.#api = deps.api ?? fixtureHomeApi;
+		this.#api = deps.api ?? httpHomeApi;
 		this.#chat = deps.chat ?? chatApi;
-		this.data = new Remote(() => this.#api.load(), { refetchOnFocus: true });
+		this.data = new Remote(() => this.#load(), { refetchOnFocus: true });
+	}
+
+	async #load(): Promise<HomeData | null> {
+		const load = ++this.#loads;
+		const data = await this.#api.load();
+		this.#settle(load);
+		return data;
+	}
+
+	/** Drops local hides the bot's answer to a load that began after them already reflects. */
+	#settle(load: number) {
+		const done = [...this.#acked].filter(([, at]) => at < load).map(([id]) => id);
+		if (!done.length) return;
+		for (const id of done) this.#acked.delete(id);
+		const keep = (id: string) => !done.includes(id);
+		this.local = {
+			...this.local,
+			dismissed: this.local.dismissed.filter(keep),
+			opened: this.local.opened.filter(keep)
+		};
+	}
+
+	#hide(id: string, list: 'dismissed' | 'opened') {
+		if (this.local[list].includes(id)) return;
+		this.local = { ...this.local, [list]: [...this.local[list], id] };
+	}
+
+	#unhide(id: string) {
+		this.#acked.delete(id);
+		this.local = { ...this.local, dismissed: this.local.dismissed.filter((d) => d !== id) };
+	}
+
+	/** Refetches the server part soon, once per burst of events, if it was ever loaded. */
+	#scheduleRefetch() {
+		if (this.#refetchTimer) clearTimeout(this.#refetchTimer);
+		this.#refetchTimer = setTimeout(() => {
+			this.#refetchTimer = null;
+			if (this.data.status !== 'idle') void this.data.refetch();
+		}, REFETCH_DEBOUNCE_MS);
+	}
+
+	#onEvent(ev: ChatEnvelope) {
+		if (ev.type === 'hello' || ev.type === 'reset') {
+			// The first greeting comes with the first load; a later one means the stream was down.
+			if (this.#greeted) this.#scheduleRefetch();
+			this.#greeted = true;
+			return;
+		}
+		if (ev.type === 'alert_cleared') {
+			this.#hide(ev.data.id, 'dismissed');
+			this.#acked.set(ev.data.id, this.#loads);
+		} else if (ev.type === 'alert' && ev.data.alert.kind !== 'recovered') {
+			// A new failure reopens a job dismissed or cleared here before.
+			this.#unhide(`job:${ev.data.alert.job}`);
+		}
+		if (REFETCH_ON.has(ev.type)) this.#scheduleRefetch();
 	}
 
 	/** Listens to the stream for the app's life; the tab badge needs it on every screen. */
@@ -53,22 +120,35 @@ export class NeedsYouStore {
 		this.#stop = this.#hub.subscribe(
 			{
 				conversation: 'main',
-				types: ['ask', 'ask_resolved', 'snapshot', 'tool', 'turn_final'],
+				types: [
+					'ask',
+					'ask_resolved',
+					'snapshot',
+					'tool',
+					'turn_final',
+					'alert',
+					'alert_cleared',
+					'run'
+				],
 				globals: ['approval', 'approval_resolved']
 			},
 			(batch) => {
 				let next = this.live;
-				for (const ev of batch) next = applyLive(next, ev);
+				for (const ev of batch) {
+					next = applyLive(next, ev);
+					this.#onEvent(ev);
+				}
 				if (next !== this.live) this.live = next;
 			}
 		);
 		this.#hub.start();
 	}
 
-	/** Loads the server part once; the stream part is already live. */
+	/** Loads the server part, or refreshes it when Home comes back on screen. */
 	open() {
 		this.start();
-		void this.data.ensure();
+		if (this.data.status === 'ready' || this.data.status === 'error') void this.data.refetch();
+		else void this.data.ensure();
 	}
 
 	#result(id: string, result: Result | null) {
@@ -143,23 +223,29 @@ export class NeedsYouStore {
 	}
 
 	async dismiss(id: string) {
-		this.local = { ...this.local, dismissed: [...this.local.dismissed, id] };
+		this.#acked.delete(id);
+		this.#hide(id, 'dismissed');
 		try {
 			await this.#api.dismiss(id);
+			this.#acked.set(id, this.#loads);
 		} catch {
-			this.local = { ...this.local, dismissed: this.local.dismissed.filter((d) => d !== id) };
+			this.#unhide(id);
 			this.#result(id, { ok: false, text: "Couldn't dismiss it. Try again." });
 		}
 	}
 
 	/** Opening a finished run takes it off "Ready for review". */
 	markOpened(runId: string) {
+		// With Home off on the bot there is no list to take it off.
+		if (this.data.status === 'ready' && this.data.data === null) return;
 		const id = `run:${runId}`;
-		if (!this.local.opened.includes(id)) {
-			this.local = { ...this.local, opened: [...this.local.opened, id] };
-			// The local mark already hides it here; a lost POST only means another device still lists it.
-			this.#api.opened(id).catch(() => {});
-		}
+		if (this.local.opened.includes(id)) return;
+		this.#hide(id, 'opened');
+		// The local mark already hides it here; a lost POST only means another device still lists it.
+		this.#api.opened(id).then(
+			() => this.#acked.set(id, this.#loads),
+			() => {}
+		);
 	}
 
 	clearResult(id: string) {

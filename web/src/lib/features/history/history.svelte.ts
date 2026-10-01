@@ -1,6 +1,5 @@
 import { Remote } from '$lib/core/remote.svelte';
-import type { HistoryApi } from './api';
-import { fixtureHistoryApi } from './fake';
+import { httpHistoryApi, type HistoryApi } from './api';
 import {
 	QUERY_MAX,
 	QUERY_MIN,
@@ -93,7 +92,7 @@ export class HistoryStore {
 	#api: HistoryApi;
 	#days = new Map<string, Remote<HistoryDayDetail>>();
 
-	constructor(api: HistoryApi = fixtureHistoryApi) {
+	constructor(api: HistoryApi = httpHistoryApi) {
 		this.#api = api;
 		this.search = new HistorySearch(api);
 		this.days = new Remote(

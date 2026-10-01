@@ -3,6 +3,7 @@
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { features } from '$lib/core/features.svelte';
 	import { routedSheet } from '$lib/core/nav/sheet';
 	import { closeShownNotifications } from '$lib/core/pwa/notifications';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
@@ -148,7 +149,7 @@
 		void home.dismiss(id);
 		sheet.close();
 	}}
-	onopenrun={(id) => void leaveTo(resolve('/runs/[id]', { id }))}
+	onopenrun={features.has('runs') ? (id) => void leaveTo(resolve('/runs/[id]', { id })) : undefined}
 	onopenchat={openChat}
 	onaskagent={askAgent}
 	onreload={() => pwa.applyUpdate()}

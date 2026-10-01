@@ -1,7 +1,7 @@
 // Typed fixtures for History, shared by the fake API, the prototype board and tests. Dates and
 // times are relative to `now`; run ids match the Runs fixtures, so a day's runs open there.
 import type { RunSummary } from '$lib/features/runs';
-import { toDate } from '$lib/ui/format/time';
+import { toDate } from '../../ui/format/time';
 import { findRanges } from './highlight';
 import type { ChatHit, HistoryDay, HistoryDayDetail, NotesHit, SearchResult } from './types';
 

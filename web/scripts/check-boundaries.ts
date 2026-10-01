@@ -68,6 +68,7 @@ export function resolveSpecifier(
 const LIB = 'src/lib/';
 const PROTO = 'src/proto-routes/';
 const PROTO_SCREENS = 'src/proto-routes/proto/screens/';
+const DEV_FAKES = 'src/routes/dev-fakes.ts';
 
 function feature(path: string): { name: string; rest: string } | null {
 	const m = path.match(/^src\/lib\/features\/([^/]+)\/(.+)$/);
@@ -160,6 +161,8 @@ export function checkImport(from: string, target: string | null): string | null 
 	}
 
 	// Routes, hooks and the service worker.
+	// The dev-only ?fake setup; the build's bundle guard keeps it out of production.
+	if (from === DEV_FAKES && toFeature?.rest === 'fake.ts') return null;
 	if (toFeature && !isPublic(toFeature.rest))
 		return `import ${toFeature.name} through its index.ts`;
 	return null;
