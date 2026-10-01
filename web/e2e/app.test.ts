@@ -402,6 +402,12 @@ test('the theme choices move with the arrow keys', async ({ page, context }) => 
 	await page.keyboard.press('ArrowLeft');
 	await page.keyboard.press('ArrowLeft');
 	await expect(group.getByRole('radio', { name: 'Dark' })).toBeFocused();
+	await page.keyboard.press('ArrowDown');
+	await expect(system).toBeFocused();
+	await expect(system).toHaveAttribute('aria-checked', 'true');
+	await page.keyboard.press('ArrowUp');
+	await expect(group.getByRole('radio', { name: 'Dark' })).toBeFocused();
+	await expect(group.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
 });
 
 test('the precached shell opens while offline', async ({ page, context }) => {
@@ -411,7 +417,7 @@ test('the precached shell opens while offline', async ({ page, context }) => {
 	await context.setOffline(true);
 	await page.goto('/settings');
 	await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
+	await expect(page.getByText(/You're offline/)).toBeVisible();
 });
 
 test('a 502 from the proxy during a restart still opens the cached shell', async ({

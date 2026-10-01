@@ -77,6 +77,18 @@
 	const pushToggleDisabled = $derived(
 		pushBusy || push === 'checking' || push === 'unsupported' || push === 'blocked'
 	);
+	// The group runs left to right; Up and Down move it too, as in the WAI-ARIA radio pattern.
+	// Caught on capture, because the items handle and swallow arrow keys themselves.
+	function themeKeydown(e: KeyboardEvent) {
+		const step = ({ ArrowDown: 1, ArrowUp: -1 } as Record<string, number>)[e.key];
+		if (!step) return;
+		e.preventDefault();
+		const i = themes.findIndex((t) => t.id === theme);
+		const next = (i + step + themes.length) % themes.length;
+		onchoosetheme?.(themes[next].id);
+		(e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus();
+	}
+
 	const themes: { id: ThemeChoice; label: string }[] = [
 		{ id: 'system', label: 'System' },
 		{ id: 'light', label: 'Light' },
@@ -85,7 +97,7 @@
 </script>
 
 {#snippet banner()}
-	{#if !online}<ConnectionBanner state={{ kind: 'offline' }} />{/if}
+	{#if !online}<ConnectionBanner state={{ kind: 'app-offline' }} />{/if}
 {/snippet}
 {#snippet toast()}<UpdateToast onreload={() => onreload?.()} />{/snippet}
 
@@ -194,6 +206,7 @@
 			<RadioGroup.Root
 				aria-labelledby="appearance"
 				orientation="horizontal"
+				onkeydowncapture={themeKeydown}
 				class="grid-cols-3"
 				bind:value={() => theme, (v) => onchoosetheme?.(v as ThemeChoice)}
 			>

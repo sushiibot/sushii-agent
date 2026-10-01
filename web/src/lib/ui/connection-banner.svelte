@@ -1,6 +1,8 @@
 <script lang="ts" module>
 	export type ConnectionState =
 		| { kind: 'offline' }
+		/** Offline on a screen that sends nothing, so there's no queue to mention. */
+		| { kind: 'app-offline' }
 		| { kind: 'reconnecting'; elapsed?: string }
 		| { kind: 'agent-offline' }
 		| { kind: 'reset' };
@@ -34,6 +36,9 @@
 	{:else if state.kind === 'offline'}
 		<WifiOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
 		<span>Offline. Messages send when you reconnect.</span>
+	{:else if state.kind === 'app-offline'}
+		<WifiOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+		<span>You're offline. The app reconnects on its own when the network is back.</span>
 	{:else if state.kind === 'reconnecting'}
 		<LoaderCircle
 			class="mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none"
