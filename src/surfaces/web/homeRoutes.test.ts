@@ -63,6 +63,8 @@ describe("GET /api/home", () => {
     const jobFailed = run({ kind: "job", status: "failed", endedAt: iso(NOW - HOUR) });
     const doneJob = run({ kind: "job", status: "done", endedAt: iso(NOW - 2 * HOUR) });
     const doneAgent = run({ kind: "agent", status: "done", endedAt: iso(NOW - 3 * HOUR) });
+    // Its result already reached the chat through the agent that delegated it.
+    const doneSubagent = run({ kind: "subagent", status: "done", endedAt: iso(NOW - HOUR) });
     const doneOld = run({ kind: "subagent", status: "done", endedAt: iso(cutoff - 1) });
     const noEnd = run({ kind: "subagent", status: "done" });
     const badEnd = run({ kind: "subagent", status: "failed", endedAt: "yesterday" });
@@ -73,7 +75,7 @@ describe("GET /api/home", () => {
     const quietHeartbeat = run({ kind: "job", status: "done", endedAt: iso(NOW - HOUR), resultSummary: "NO_REPLY" });
     const silent = run({ kind: "subagent", status: "done", endedAt: iso(NOW - HOUR), resultSummary: undefined });
     const h = setup({
-      runs: lists([running, chatRunning], [failedIn, timeoutIn, failedOut, jobFailed, doneJob, doneAgent, doneOld, noEnd, badEnd, chatDone, quietHeartbeat, silent]),
+      runs: lists([running, chatRunning], [failedIn, timeoutIn, failedOut, jobFailed, doneJob, doneAgent, doneSubagent, doneOld, noEnd, badEnd, chatDone, quietHeartbeat, silent]),
     });
 
     const home = await h.get();
@@ -83,7 +85,7 @@ describe("GET /api/home", () => {
     expect(h.calls).toEqual([
       { kinds: ["job", "subagent", "agent"], statuses: ["running"], limit: 50 },
       { kinds: ["subagent", "agent"], statuses: ["failed", "timeout"], since, limit: 50 },
-      { kinds: ["job", "subagent", "agent"], statuses: ["done"], since, limit: 50 },
+      { kinds: ["job", "agent"], statuses: ["done"], since, limit: 50 },
     ]);
   });
 

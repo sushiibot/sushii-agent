@@ -17,6 +17,8 @@ export const HOME_WORKSPACE_TIMEOUT_MS = 3_000;
 const HOME_RUN_KINDS = ["job", "subagent", "agent"] as const;
 /** Job failures reach Home as alerts, so only background runs are listed as failed. */
 const FAILED_RUN_KINDS = ["subagent", "agent"] as const;
+/** A subagent's result already went back to the agent that delegated it, which answered in chat. */
+const REVIEW_RUN_KINDS = ["job", "agent"] as const;
 /** Generous for any background run (a job times out at 10 min), so one ending inside the window is listed. */
 const RUN_MAX_LENGTH_MS = 24 * 60 * 60 * 1000;
 const JSON_RPC_METHOD_NOT_FOUND = -32601;
@@ -74,14 +76,14 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
         Promise.all([
           link.runsList({ kinds: [...HOME_RUN_KINDS], statuses: ["running"], limit: 50 }, timeoutMs),
           link.runsList({ kinds: [...FAILED_RUN_KINDS], statuses: ["failed", "timeout"], since, limit: 50 }, timeoutMs),
-          link.runsList({ kinds: [...HOME_RUN_KINDS], statuses: ["done"], since, limit: 50 }, timeoutMs),
+          link.runsList({ kinds: [...REVIEW_RUN_KINDS], statuses: ["done"], since, limit: 50 }, timeoutMs),
         ]),
         budget,
       ]);
       // The groups are the bot's to define, so kinds and statuses are checked again rather than trusted to the filter.
       const recent = (runs: RunSummary[]) => runs.filter((r) => endedAt(r) >= cutoff).sort((a, b) => endedAt(b) - endedAt(a));
       const failedRuns = recent(failed.runs).filter((r) => isKind(r, FAILED_RUN_KINDS) && (r.status === "failed" || r.status === "timeout"));
-      const doneRuns = recent(done.runs).filter((r) => isKind(r, HOME_RUN_KINDS) && r.status === "done" && hasOutput(r));
+      const doneRuns = recent(done.runs).filter((r) => isKind(r, REVIEW_RUN_KINDS) && r.status === "done" && hasOutput(r));
       const dismissed = store.dismissedRuns(failedRuns.map((r) => r.runId));
       const opened = store.openedRuns(doneRuns.map((r) => r.runId));
       return {

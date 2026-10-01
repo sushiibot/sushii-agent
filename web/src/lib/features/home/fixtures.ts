@@ -73,7 +73,7 @@ export function triageRun(now: number): RunSummary {
 export function expensesRun(now: number): RunSummary {
 	return {
 		runId: RUN_IDS.expenses,
-		kind: 'subagent',
+		kind: 'agent',
 		agentName: 'writer',
 		title: 'Draft the quarterly expenses summary',
 		status: 'done',
