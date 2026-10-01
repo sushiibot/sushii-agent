@@ -1,3 +1,3 @@
-import { installBootRecovery } from '$lib/app/boot-recovery';
+import { installBootRecovery } from '$lib/core/pwa/boot-recovery';
 
 installBootRecovery();

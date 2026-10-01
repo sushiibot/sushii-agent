@@ -16,7 +16,7 @@ describe("SPA CSP", () => {
 
   test("the web app creates its policy under the allowlisted name", () => {
     expect(TRUSTED_TYPE_POLICIES).toContain("sushii-sw-url");
-    expect(web("src/lib/app/trusted-types.ts")).toContain("'sushii-sw-url'");
+    expect(web("src/lib/core/pwa/trusted-types.ts")).toContain("'sushii-sw-url'");
   });
 
   test("vite preview and the render harness enforce the same allowlist the bot serves", () => {

@@ -11,7 +11,6 @@ type ApiOptions = {
 	meStatus?: number;
 	keyStatus?: number;
 	subscribeStatus?: number;
-	quietStatus?: number;
 };
 
 // Context-level, so requests from the service worker are mocked as well as the page's.
@@ -20,10 +19,8 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 		meStatus: 200,
 		keyStatus: 200,
 		subscribeStatus: 200,
-		quietStatus: 200,
 		...initial
 	};
-	let quiet = { enabled: false, start: '22:00', end: '08:00' };
 	const calls: Call[] = [];
 	await stubStream(context);
 	await context.route('**/api/**', async (route) => {
@@ -52,12 +49,6 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 			return json({ ok: true });
 		}
 		if (path === '/api/push/test') return json({ sent: 1, pruned: 0 });
-		if (path === '/api/settings/quiet-hours') {
-			if (opts.quietStatus !== 200)
-				return route.fulfill({ status: opts.quietStatus, body: 'Broken' });
-			if (req.method() === 'PUT') quiet = JSON.parse(req.postData() ?? '{}');
-			return json({ ...quiet, timeZone: 'Europe/Berlin' });
-		}
 		if (path === '/api/chat/history') return json({ items: [], before: null });
 		if (path === '/api/chat/seen') return route.fulfill({ status: 204 });
 		return route.fulfill({ status: 404, body: 'Not found' });
@@ -153,49 +144,6 @@ test('settings shows the signed-in login', async ({ page, context }) => {
 	await expect(page.getByTestId('login')).toHaveText('drk@example.com');
 });
 
-test('quiet hours turn on, take a time range, and show the zone they run in', async ({
-	page,
-	context
-}) => {
-	const { calls } = await mockApi(context);
-	await stubPush(page);
-	await page.goto('/settings');
-	const quiet = page.getByRole('switch', { name: /silence replies at night/i });
-	await expect(quiet).toHaveAttribute('aria-checked', 'false');
-	await quiet.click();
-	await expect(quiet).toHaveAttribute('aria-checked', 'true');
-	await expect(page.getByTestId('quiet-zone')).toHaveText('Times are in Europe/Berlin.');
-	await page.getByLabel('From').fill('23:15');
-	await page.getByLabel('From').blur();
-	await expect
-		.poll(() =>
-			calls
-				.filter((c) => c.method === 'PUT' && c.path === '/api/settings/quiet-hours')
-				.map((c) => JSON.parse(c.body ?? '{}'))
-		)
-		.toEqual([
-			{ enabled: true, start: '22:00', end: '08:00' },
-			{ enabled: true, start: '23:15', end: '08:00' }
-		]);
-	expect(await axe(page)).toEqual([]);
-	expect(await smallTargets(page)).toEqual([]);
-});
-
-test('a quiet hours save that fails puts the switch back and says so', async ({
-	page,
-	context
-}) => {
-	const { opts } = await mockApi(context);
-	await stubPush(page);
-	await page.goto('/settings');
-	const quiet = page.getByRole('switch', { name: /silence replies at night/i });
-	await expect(quiet).toBeEnabled();
-	opts.quietStatus = 500;
-	await quiet.click();
-	await expect(page.getByRole('alert')).toContainText("Couldn't save quiet hours.");
-	await expect(quiet).toHaveAttribute('aria-checked', 'false');
-});
-
 test('turning notifications on subscribes with the server key, and the test button sends', async ({
 	page,
 	context
@@ -264,7 +212,7 @@ test('the app resends an existing subscription on every start, not only on setti
 	await context.grantPermissions(['notifications']);
 	const { subscribes } = await mockApi(context);
 	await stubPush(page);
-	await page.goto('/');
+	await page.goto('/chat');
 	await page.evaluate(() => navigator.serviceWorker.ready);
 	await seedSubscription(page, KEY_BYTES);
 	const before = subscribes().length;
@@ -382,7 +330,7 @@ test('a failed account load says so and offers a retry', async ({ page, context 
 
 test('going offline shows the banner', async ({ page, context }) => {
 	await mockApi(context);
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await context.setOffline(true);
 	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
@@ -392,7 +340,7 @@ test('going offline shows the banner', async ({ page, context }) => {
 
 test('the reflow check catches content wider than the screen', async ({ page, context }) => {
 	await mockApi(context);
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.setViewportSize({ width: 320, height: 800 });
 	expect(await horizontalOverflow(page)).toEqual([]);
@@ -415,7 +363,7 @@ test('the reflow check catches content wider than the screen', async ({ page, co
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {
-	for (const path of ['/', '/settings']) {
+	for (const path of ['/chat', '/settings']) {
 		test(`${path} passes axe, 48px targets and reflow in ${colorScheme}`, async ({
 			page,
 			context
@@ -454,6 +402,12 @@ test('the theme choices move with the arrow keys', async ({ page, context }) => 
 	await page.keyboard.press('ArrowLeft');
 	await page.keyboard.press('ArrowLeft');
 	await expect(group.getByRole('radio', { name: 'Dark' })).toBeFocused();
+	await page.keyboard.press('ArrowDown');
+	await expect(system).toBeFocused();
+	await expect(system).toHaveAttribute('aria-checked', 'true');
+	await page.keyboard.press('ArrowUp');
+	await expect(group.getByRole('radio', { name: 'Dark' })).toBeFocused();
+	await expect(group.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
 });
 
 test('the precached shell opens while offline', async ({ page, context }) => {
@@ -594,7 +548,10 @@ test('a push honours its flags and never keeps a cross-origin url', async ({ pag
 		]);
 });
 
-test('opening Main closes the chat notification and leaves others', async ({ page, context }) => {
+test('opening the chat closes the chat notification and leaves others', async ({
+	page,
+	context
+}) => {
 	await context.grantPermissions(['notifications']);
 	await mockApi(context);
 	await page.goto('/settings');
@@ -603,7 +560,44 @@ test('opening Main closes the chat notification and leaves others', async ({ pag
 	await push({ title: 'sushii-agent', body: 'done', url: '/', tag: 'chat' });
 	await push({ title: 'Other', body: 'x', url: '/', tag: 'other' });
 	await expect.poll(async () => (await shownNotifications(page)).length).toBe(2);
-	await page.goto('/');
+	await page.goto('/chat');
+	await expect
+		.poll(async () => (await shownNotifications(page)).map((n) => n.tag))
+		.toEqual(['other']);
+});
+
+test('opening a pushed approval on Home closes its notification and leaves others', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['notifications']);
+	await mockApi(context);
+	await context.addInitScript(() => {
+		(window as unknown as { __sse: { hello: { pending: unknown } } }).__sse.hello.pending = {
+			approvals: [
+				{
+					seq: 3,
+					at: new Date().toISOString(),
+					nonce: 'n1',
+					view: { tool: 'send_email', agentId: 'main', agentName: 'sushii-agent', fields: [] }
+				}
+			],
+			asks: []
+		};
+	});
+	await page.goto('/settings');
+	await controlled(page);
+	const push = await pushChannel(page, context);
+	await push({
+		title: 'Approval needed',
+		body: 'send_email',
+		url: '/?approve=n1',
+		tag: 'approval:n1'
+	});
+	await push({ title: 'Other', body: 'x', url: '/', tag: 'other' });
+	await expect.poll(async () => (await shownNotifications(page)).length).toBe(2);
+	await page.goto('/?approve=n1');
+	await expect(page.getByRole('dialog', { name: 'Approval needed' })).toBeVisible();
 	await expect
 		.poll(async () => (await shownNotifications(page)).map((n) => n.tag))
 		.toEqual(['other']);
@@ -612,11 +606,11 @@ test('opening Main closes the chat notification and leaves others', async ({ pag
 test('the settings back chevron returns without stacking history', async ({ page, context }) => {
 	await mockApi(context);
 	await stubPush(page);
-	await page.goto('/');
+	await page.goto('/chat');
 	await page.getByRole('link', { name: 'Settings' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
-	await page.getByRole('link', { name: 'Back to Main' }).click();
-	await expect(page).toHaveURL(/\/$/);
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.goBack();
 	await expect(page).not.toHaveURL(/\/settings$/);
@@ -628,7 +622,10 @@ test('opening settings directly throws nothing', async ({ page, context }) => {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
 	await page.goto('/settings');
-	await expect(page.getByRole('link', { name: 'Back to Main' })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Back', exact: true })).toHaveAttribute(
+		'href',
+		'/more'
+	);
 	expect(errors).toEqual([]);
 });
 
@@ -638,7 +635,7 @@ test('the app runs under enforced Trusted Types with only its own policies', asy
 }) => {
 	await mockApi(context);
 	await stubPush(page);
-	const res = await page.goto('/');
+	const res = await page.goto('/chat');
 	expect(res?.headers()['content-security-policy']).toContain("require-trusted-types-for 'script'");
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await page.evaluate(() => navigator.serviceWorker.ready);

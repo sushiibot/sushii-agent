@@ -22,8 +22,9 @@ export const RPC_METHODS = {
   toolCancel: "tool/cancel",
   // Workspace → bot request: a short-lived GitHub App installation token for one repo.
   githubToken: "github/token",
-  // Bot → workspace request: one page of the Main transcript, newest first.
-  chatHistory: "chat/history",
+  // Bot → workspace request: one page of the Main transcript's owner messages and final replies, for the
+  // bot's one-time import of the conversation from before the web app.
+  chatExport: "chat/export",
   // Workspace → bot request: the bytes of an owner photo a chat/message referenced.
   uploadRead: "upload/read",
 } as const;
@@ -140,66 +141,38 @@ export function parseUploadUrl(url: string): string | null {
 }
 export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 
-export const CHAT_HISTORY_TIMEOUT_MS = 15_000;
-export const CHAT_HISTORY_LIMIT_MAX = 100;
-/** chat/history's JSON-RPC error when `before` names no entry it still has (a rotated or reset session). */
-export const CHAT_HISTORY_UNKNOWN_CURSOR = "unknown history cursor";
-export const CHAT_HISTORY_UNKNOWN_CURSOR_CODE = -32010;
+export const CHAT_EXPORT_TIMEOUT_MS = 30_000;
+export const CHAT_EXPORT_LIMIT_MAX = 100;
 
-export const chatHistoryParams = z.object({
+export const chatExportParams = z.object({
   principalId: z.string(),
-  // Opaque "<sessionFileBase>:<entryId>" cursor from a previous page; absent = newest.
+  // The id of the oldest item of the previous page; absent = newest.
   before: z.string().max(ID_MAX).optional(),
-  limit: z.number().int().min(1).max(CHAT_HISTORY_LIMIT_MAX).default(40),
+  limit: z.number().int().min(1).max(CHAT_EXPORT_LIMIT_MAX).default(CHAT_EXPORT_LIMIT_MAX),
 });
-export type ChatHistoryParams = z.infer<typeof chatHistoryParams>;
+export type ChatExportParams = z.infer<typeof chatExportParams>;
 
-const historyId = z.string().min(1).max(ID_MAX);
-const historyAt = z.string().max(ID_MAX);
-export const historyItem = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("user"),
-    id: historyId,
-    clientId: historyId.optional(),
-    at: historyAt,
-    text: z.string(),
-    attachments: z.array(z.object({ uploadId: uploadId.optional(), name: z.string().max(ID_MAX), contentType: z.string().max(ID_MAX) })),
-  }),
-  z.object({
-    type: z.literal("assistant"),
-    id: historyId,
-    at: historyAt,
-    text: z.string(),
-    outboxId: historyId.optional(),
-    turnId: historyId.optional(),
-    tools: z.array(z.object({ name: z.string().max(ID_MAX), summary: z.string(), ok: z.boolean() })),
-    usage: chatUsage.optional(),
-  }),
-  z.object({
-    type: z.literal("ask"),
-    id: historyId,
-    at: historyAt,
-    outboxId: historyId,
-    askId: historyId,
-    question: z.string(),
-    choices: z.array(z.string()),
-  }),
-  z.object({
-    type: z.literal("divider"),
-    id: historyId,
-    at: historyAt,
-    kind: z.enum(["new", "rotated", "compacted"]),
-    summary: z.string().optional(),
-  }),
-]);
-export type HistoryItem = z.infer<typeof historyItem>;
+const exportId = z.string().min(1).max(ID_MAX);
+export const chatExportItem = z.object({
+  /** `<sessionFileBase>:<entryId>`: stable across exports, so it keys the import. */
+  id: exportId,
+  role: z.enum(["user", "assistant"]),
+  at: z.string().max(ID_MAX),
+  text: z.string(),
+  /** A web message's clientId, from its `[web:<id> …]` header. */
+  clientId: exportId.optional(),
+  /** The outbox id the host delivered this reply under. */
+  outboxId: exportId.optional(),
+});
+export type ChatExportItem = z.infer<typeof chatExportItem>;
 
-export const chatHistoryResult = z.object({
-  items: z.array(historyItem).max(CHAT_HISTORY_LIMIT_MAX),
+export const chatExportResult = z.object({
+  /** Oldest first. */
+  items: z.array(chatExportItem).max(CHAT_EXPORT_LIMIT_MAX),
   // null = the start of the transcript.
   before: z.string().max(ID_MAX).nullable(),
 });
-export type ChatHistoryResult = z.infer<typeof chatHistoryResult>;
+export type ChatExportResult = z.infer<typeof chatExportResult>;
 
 export const uploadReadParams = z.object({ principalId: z.string().max(ID_MAX), uploadId });
 export type UploadReadParams = z.infer<typeof uploadReadParams>;

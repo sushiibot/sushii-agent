@@ -8,6 +8,8 @@
 	import SafariBar from './safari-bar.svelte';
 	import PushAlert from './push-alert.svelte';
 	import Notification from './notification.svelte';
+	import { nav, tabs } from '$lib/core/nav/tabs';
+	import Shell from '$lib/ui/shell/shell.svelte';
 
 	let { frame, width }: { frame: Frame; width: number } = $props();
 	const go = getContext<(id: string) => void>('proto-go');
@@ -20,6 +22,7 @@
 	$effect(() => {
 		const main = screen?.querySelector('main');
 		if (main && frame.scrollUp) main.scrollTop = -frame.scrollUp;
+		if (main && frame.scrollTo) main.scrollTop = frame.scrollTo;
 	});
 	const h = $derived(frame.desktop ? 800 : 844);
 	const chrome = $derived(frame.desktop ? 'none' : (frame.chrome ?? 'standalone'));
@@ -68,8 +71,19 @@
 		{onclickcapture}
 	>
 		{#if chrome === 'safari'}<div class="h-[47px] shrink-0 bg-background"></div>{/if}
-		<div class="relative min-h-0 flex-1" bind:this={screen}>
-			<frame.screen {...frame.props} />
+		<!-- The transform makes this the box for the fixed-position sheets the shell portals in. -->
+		<div class="relative min-h-0 flex-1 transform-gpu" bind:this={screen}>
+			{#if frame.shell}
+				<Shell
+					{nav}
+					{tabs}
+					active={frame.tab ?? 'chat'}
+					tabBar={frame.tabBar ?? false}
+					badges={frame.badges}><frame.screen {...frame.props} /></Shell
+				>
+			{:else}
+				<frame.screen {...frame.props} />
+			{/if}
 		</div>
 		{#if chrome === 'safari'}<SafariBar />{/if}
 		{#if frame.keyboard}<Keyboard height={KB} suggestions={frame.keyboard} />{/if}

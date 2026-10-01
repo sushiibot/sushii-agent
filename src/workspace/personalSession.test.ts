@@ -102,6 +102,12 @@ class FakeSession {
     void this.settle();
   }
 
+  /** One assistant message of a run that goes on; steers queued meanwhile are drained after it, as Pi's loop does. */
+  answerThenDrain(text: string, stopReason = "stop", errorMessage?: string): void {
+    this.endMessage(text, stopReason, errorMessage);
+    this.drain();
+  }
+
   /** A steer queued after the loop's last drain: the run settles with it still pending. */
   settleStranded(text: string): void {
     this.endMessage(text, "stop");
@@ -758,6 +764,130 @@ describe("PersonalSession stranded steers", () => {
       ["answer to first", "m1"],
       ["answer to second", "m2"],
     ]);
+  });
+});
+
+describe("PersonalSession steer after an answer", () => {
+  test("the answer before a steer is its own reply and turn; the steer's answer starts the next turn", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    expect((await host.handleMessage(msg("m2", "second"))).mode).toBe("steer");
+    const s = sessions[0];
+
+    s.answerThenDrain("answer to first");
+    expect(transport.delivered().map((d) => [d.text, d.replyTo, d.turnId])).toEqual([["answer to first", "m1", "id-1"]]);
+    s.finish("answer to second");
+    await tick();
+
+    const delivered = transport.delivered();
+    expect(delivered.map((d) => [d.text, d.replyTo, d.turnId])).toEqual([
+      ["answer to first", "m1", "id-1"],
+      ["answer to second", "m2", delivered[1].turnId],
+    ]);
+    expect(delivered[1].turnId).not.toBe("id-1");
+    expect(new Set(delivered.map((d) => d.outboxId)).size).toBe(2);
+    expect(delivered.map((d) => d.usage?.inputTokens)).toEqual([100, 100]);
+    const turns = transport.notifications
+      .filter((n) => n.method === "chat/event")
+      .map((n) => n.params as ChatEventParams)
+      .filter((p) => p.ev.type === "turn_start" || p.ev.type === "turn_end")
+      .map((p) => [p.ev.type, p.turnId, p.ev.type === "turn_end" ? p.ev.aborted : undefined]);
+    expect(turns).toEqual([
+      ["turn_start", "id-1", undefined],
+      ["turn_end", "id-1", false],
+      ["turn_start", delivered[1].turnId, undefined],
+      ["turn_end", delivered[1].turnId, false],
+    ]);
+    expect(s.entries.filter((e) => e.customType === "sushii.delivery").map((e) => (e.data as { turnId?: string }).turnId)).toEqual(["id-1", delivered[1].turnId]);
+  });
+
+  test("a steer drained before any answer stays in the same turn", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    await host.handleMessage(msg("m2", "second"));
+    sessions[0].finish("one answer to both");
+    await tick();
+    expect(transport.delivered().map((d) => [d.text, d.replyTo, d.turnId])).toEqual([["one answer to both", "m2", "id-1"]]);
+    expect(transport.events().filter((e) => e.type === "turn_start")).toHaveLength(1);
+  });
+
+  test("a steer drained into Pi's retry of an errored message does not end the turn on the error", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    await host.handleMessage(msg("m2", "second"));
+    const s = sessions[0];
+    s.answerThenDrain("", "error", "overloaded");
+    s.finish("retried answer");
+    await tick();
+    expect(transport.delivered().map((d) => [d.text, d.turnId])).toEqual([["retried answer", "id-1"]]);
+  });
+
+  for (const narration of ["Let me look that up.", ""]) {
+    test(`a steer drained after a tool round${narration ? " with narration" : ""} stays in the same turn`, async () => {
+      const { host, sessions, transport } = setup();
+      await host.start();
+      await host.handleMessage(msg("m1", "check X"));
+      await host.handleMessage(msg("m2", "also Y"));
+      const s = sessions[0];
+      s.answerThenDrain(narration, "toolUse");
+      expect(transport.delivered()).toEqual([]);
+      s.finish("X and Y");
+      await tick();
+      expect(transport.delivered().map((d) => [d.text, d.replyTo, d.turnId])).toEqual([["X and Y", "m2", "id-1"]]);
+      expect(transport.events().filter((e) => e.type === "turn_start")).toHaveLength(1);
+    });
+  }
+
+  test("the turn after a split answers on the steer's surface, threaded to the steer", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    const web = { surface: "web", conversationId: "main" };
+    await host.handleMessage(msg("m1", "first", { origin: web }));
+    await host.handleMessage(msg("m2", "second"));
+    const s = sessions[0];
+    s.answerThenDrain("answer to first");
+    s.finish("answer to second");
+    await tick();
+    expect(transport.delivered().map((d) => [d.text, d.origin?.surface, d.replyTo])).toEqual([
+      ["answer to first", "web", "m1"],
+      ["answer to second", "discord", "m2"],
+    ]);
+    const starts = transport.notifications.map((n) => n.params as ChatEventParams).filter((p) => p.ev?.type === "turn_start");
+    expect(starts.map((p) => p.origin?.surface)).toEqual(["web", "discord"]);
+  });
+
+  test("a steer Pi drains while a Stop is in flight does not deliver the answer as a split reply", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    const s = sessions[0];
+    s.answerThenDrain("answer to first");
+    const aborting = gate();
+    s.abortGate = aborting.promise;
+    const stop = host.handleAbort();
+    await sleep(5);
+    s.emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: "a steer Pi already held" }] } });
+    aborting.open();
+    await stop;
+    await tick();
+    expect(transport.delivered()).toEqual([]);
+  });
+
+  test("after a split, Stop ends the new turn with no second reply", async () => {
+    const { host, sessions, transport } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "first"));
+    const s = sessions[0];
+    await host.handleMessage(msg("m2", "second"));
+    s.answerThenDrain("answer to first");
+    expect(transport.delivered()).toHaveLength(1);
+    await host.handleMessage(msg("m3", "third"));
+    await host.handleAbort();
+    await tick();
+    expect(transport.delivered().map((d) => d.text)).toEqual(["answer to first"]);
   });
 });
 

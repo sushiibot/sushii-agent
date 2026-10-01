@@ -1,22 +1,21 @@
 import type { Component } from 'svelte';
-import type { Session } from '$lib/agent/types';
-import NeedsYou from '$lib/agent/screens/needs-you.svelte';
-import Chat from '$lib/agent/screens/chat.svelte';
-import RunDetail from '$lib/agent/screens/run-detail.svelte';
-import Memory from '$lib/agent/screens/memory.svelte';
-import Skills from '$lib/agent/screens/skills.svelte';
-import Schedules from '$lib/agent/screens/schedules.svelte';
-import Connectors from '$lib/agent/screens/connectors.svelte';
-import McpServer from '$lib/agent/screens/mcp-server.svelte';
-import Briefing from '$lib/agent/screens/briefing.svelte';
-import History from '$lib/agent/screens/history.svelte';
-import RunFile from '$lib/agent/screens/run-file.svelte';
-import Chats from '$lib/agent/screens/chats.svelte';
-import More from '$lib/agent/screens/more.svelte';
-import Workbench from '$lib/agent/screens/workbench.svelte';
+import type { Session } from './screens/types';
+import NeedsYou from './screens/needs-you.svelte';
+import ThreadChat from './screens/thread-chat.svelte';
+import { ChatScreen } from '$lib/features/chat';
+import Memory from './screens/memory.svelte';
+import Skills from './screens/skills.svelte';
+import Schedules from './screens/schedules.svelte';
+import Connectors from './screens/connectors.svelte';
+import McpServer from './screens/mcp-server.svelte';
+import Briefing from './screens/briefing.svelte';
+import Chats from './screens/chats.svelte';
+import Workbench from './screens/workbench.svelte';
 import HomeScreen from './components/home-screen.svelte';
 import DiscordDm from './components/discord-dm.svelte';
 import * as f from './fixtures';
+import * as c from '$lib/features/chat/fixtures';
+import { m23Flows, m23Routes } from './m23-flows';
 
 export interface Frame {
 	id: string;
@@ -42,6 +41,14 @@ export interface Frame {
 	width?: number;
 	/** Start the chat scrolled this many px up from the newest message. */
 	scrollUp?: number;
+	/** Render inside the app's Shell, as routes do; the legacy prototype screens bring their own. */
+	shell?: boolean;
+	/** The Shell's lit nav entry, tab bar and badges, as the route's layout sets them. */
+	tab?: string;
+	tabBar?: boolean;
+	badges?: Record<string, number>;
+	/** Start a top-anchored screen scrolled down this many px. */
+	scrollTo?: number;
 }
 
 export interface Flow {
@@ -161,38 +168,7 @@ export const flows: Flow[] = [
 			}
 		]
 	},
-	{
-		id: 'needs-you',
-		code: 'NY',
-		title: 'Home: needs you',
-		intro:
-			'Grouped by what blocks progress, not by time. Approvals (shield) and questions (the agent’s voice) list first and count in the tab badge. Tapping one opens it in the chat and never answers it. Failed and running items still peek in a sheet.',
-		deviations: [1],
-		frames: [
-			{
-				id: 'ny-1',
-				label: 'Home: 2 approvals, 1 question',
-				screen: NeedsYou,
-				props: { items: f.inbox },
-				next: 'Tap an approval',
-				hits: { 'weekly dependency': 'ny-2' }
-			},
-			{
-				id: 'ny-2',
-				label: 'A failed run peeks in a sheet',
-				screen: NeedsYou,
-				props: { items: f.inbox, peek: 'in-deploy-fail' },
-				branch: 'Tap a failed run'
-			},
-			{
-				id: 'ny-d',
-				label: 'Desktop: list and peek side by side',
-				screen: NeedsYou,
-				props: { items: f.inbox, peek: 'in-deploy-fail' },
-				desktop: true
-			}
-		]
-	},
+	...m23Flows,
 	{
 		id: 'chats',
 		code: 'CS',
@@ -229,23 +205,6 @@ export const flows: Flow[] = [
 		]
 	},
 	{
-		id: 'more',
-		code: 'NV',
-		title: 'Tabs and More',
-		intro:
-			'Four tabs: Home, Chats, Briefing, More. The tab bar shows only on those four screens. More holds this device’s notification settings: status, a test send, and quiet hours.',
-		frames: [
-			{ id: 'nv-1', label: 'More, notifications off', screen: More, props: {} },
-			{
-				id: 'nv-2',
-				label: 'Notifications on, test sent',
-				screen: More,
-				props: { push: 'granted', quietHours: true, testSent: true },
-				branch: 'After enabling'
-			}
-		]
-	},
-	{
 		id: 'thread',
 		code: 'TH',
 		title: 'Main suggests a thread',
@@ -255,7 +214,7 @@ export const flows: Flow[] = [
 			{
 				id: 'th-1',
 				label: 'Main offers a thread',
-				screen: Chat,
+				screen: ThreadChat,
 				props: { session: f.mainSession, messages: f.tripMain },
 				next: 'Start thread',
 				hits: { 'start thread': 'th-2' }
@@ -263,14 +222,14 @@ export const flows: Flow[] = [
 			{
 				id: 'th-2',
 				label: 'Thread opens with a brief',
-				screen: Chat,
+				screen: ThreadChat,
 				props: { session: f.tripSession, messages: f.tripThreadNew },
 				next: 'Chat in the thread'
 			},
 			{
 				id: 'th-3',
 				label: 'Working in the thread',
-				screen: Chat,
+				screen: ThreadChat,
 				props: { session: f.tripSession, messages: f.tripThread, writes: f.tripWrites },
 				next: 'Tap “shares memory”',
 				hits: { 'shares memory': 'th-4', close: 'cl-1' }
@@ -278,7 +237,7 @@ export const flows: Flow[] = [
 			{
 				id: 'th-4',
 				label: 'Writes from this thread',
-				screen: Chat,
+				screen: ThreadChat,
 				props: {
 					session: f.tripSession,
 					messages: f.tripThread,
@@ -289,7 +248,7 @@ export const flows: Flow[] = [
 			{
 				id: 'th-5',
 				label: 'Typing in a thread',
-				screen: Chat,
+				screen: ThreadChat,
 				props: {
 					session: f.tripSession,
 					messages: f.tripThread,
@@ -302,7 +261,7 @@ export const flows: Flow[] = [
 			{
 				id: 'th-6',
 				label: 'Long-press any message',
-				screen: Chat,
+				screen: ThreadChat,
 				props: { session: f.mainSession, messages: f.tripMain, sheet: 'actions', pressed: 't2' },
 				branch: 'Or branch from a message',
 				hits: { 'branch into a thread': 'th-2', 'ask on the side': 'th-7' }
@@ -310,7 +269,7 @@ export const flows: Flow[] = [
 			{
 				id: 'th-7',
 				label: 'Ask on the side',
-				screen: Chat,
+				screen: ThreadChat,
 				props: { session: f.mainSession, messages: f.tripMain, sheet: 'aside', aside: f.tripAside },
 				branch: 'A quick question that stays out of the chat',
 				hits: { done: 'th-1' }
@@ -327,7 +286,7 @@ export const flows: Flow[] = [
 			{
 				id: 'cl-1',
 				label: 'Summary before closing',
-				screen: Chat,
+				screen: ThreadChat,
 				props: {
 					session: f.tripSession,
 					messages: f.tripThread,
@@ -341,14 +300,14 @@ export const flows: Flow[] = [
 			{
 				id: 'cl-2',
 				label: 'Main gets a one-line report',
-				screen: Chat,
+				screen: ThreadChat,
 				props: { session: f.mainSession, messages: f.tripMainReported },
 				next: 'Open the report'
 			},
 			{
 				id: 'cl-3',
 				label: 'Archived thread',
-				screen: Chat,
+				screen: ThreadChat,
 				props: {
 					session: archivedTrip,
 					messages: f.tripThread,
@@ -369,33 +328,29 @@ export const flows: Flow[] = [
 			{
 				id: 'ch-1',
 				label: 'Working: Send steers, Stop sits apart',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.hvacWorking, running: true },
+				screen: ChatScreen,
+				props: { messages: c.hvacWorking, running: true },
 				next: 'Asks to send'
 			},
 			{
 				id: 'ch-2',
 				label: 'Tray appears, Approve held for 1s',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacPending,
+					messages: c.hvacPending,
 					running: true,
-					tray: { items: [f.hvacApproval], armed: false },
-					waiting: 3
+					tray: { items: [c.hvacApproval], armed: false }
 				},
 				next: 'After 1s'
 			},
 			{
 				id: 'ch-3',
 				label: 'Ready to decide',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacPending,
+					messages: c.hvacPending,
 					running: true,
-					tray: { items: [f.hvacApproval] },
-					waiting: 3
+					tray: { items: [c.hvacApproval] }
 				},
 				next: 'Approve',
 				hits: { approve: 'ch-4', deny: 'ch-6', 'show details': 'ch-11' }
@@ -403,57 +358,52 @@ export const flows: Flow[] = [
 			{
 				id: 'ch-4',
 				label: 'Submitting',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacPending,
+					messages: c.hvacPending,
 					running: true,
-					tray: { items: [f.hvacApproval], state: 'submitting' },
-					waiting: 3
+					tray: { items: [c.hvacApproval], state: 'submitting' }
 				},
 				next: 'Bot confirms'
 			},
 			{
 				id: 'ch-5',
 				label: 'Approved, sent with evidence',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.hvacApproved, openTurn: 'h2' }
+				screen: ChatScreen,
+				props: { messages: c.hvacApproved, openTurn: 'h2' }
 			},
 			{
 				id: 'ch-6',
 				label: 'Denied',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.hvacDenied },
+				screen: ChatScreen,
+				props: { messages: c.hvacDenied },
 				branch: 'Deny from CH-3'
 			},
 			{
 				id: 'ch-7',
 				label: 'Two approvals stacked, and a question',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.twoApprovalsAndAsk,
+					messages: c.twoApprovalsAndAsk,
 					running: true,
-					tray: { items: [f.hvacApproval, f.prApproval] },
-					waiting: 3
+					tray: { items: [c.hvacApproval, c.prApproval] }
 				},
 				branch: 'Several pending: the tray says 1 of 2; the question stays in the chat'
 			},
 			{
 				id: 'ch-8',
 				label: 'Decided on another device',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.hvacElsewhere },
+				screen: ChatScreen,
+				props: { messages: c.hvacElsewhere },
 				branch: 'Approved on the laptop: the tray closes, the marker says where'
 			},
 			{
 				id: 'ch-9',
 				label: 'Timed out, denied',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacTimedOut,
-					tray: { items: [f.hvacApproval], state: 'timeout' }
+					messages: c.hvacTimedOut,
+					tray: { items: [c.hvacApproval], state: 'timeout' }
 				},
 				branch: 'Nobody decided in 30 min: the bot denies, the tray says so',
 				next: 'After about 3s'
@@ -461,24 +411,21 @@ export const flows: Flow[] = [
 			{
 				id: 'ch-12',
 				label: 'Folded into the chat marker',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacTimedOut,
-					tray: { items: [f.hvacApproval], state: 'timeout', collapsed: true }
+					messages: c.hvacTimedOut,
+					tray: { items: [c.hvacApproval], state: 'timeout', collapsed: true }
 				},
 				branch: 'The tray folds away; the marker keeps the outcome'
 			},
 			{
 				id: 'ch-10',
 				label: 'A reply that imitates an approval',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.spoofReply,
+					messages: c.spoofReply,
 					running: true,
-					tray: { items: [f.hvacApproval] },
-					waiting: 3
+					tray: { items: [c.hvacApproval] }
 				},
 				branch:
 					'Spoof: markdown with a heading, bold “Approve” and a link; no buttons, next to the real tray'
@@ -486,13 +433,11 @@ export const flows: Flow[] = [
 			{
 				id: 'ch-11',
 				label: 'Show details: the exact input',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacPending,
+					messages: c.hvacPending,
 					running: true,
-					tray: { items: [f.hvacApproval], details: true },
-					waiting: 3
+					tray: { items: [c.hvacApproval], details: true }
 				},
 				hits: { approve: 'ch-4', deny: 'ch-6', 'hide details': 'ch-3' },
 				branch: 'Show details from CH-3: every field, scrolling inside the tray'
@@ -509,48 +454,44 @@ export const flows: Flow[] = [
 			{
 				id: 'as-1',
 				label: 'Question, opened from Home or a push',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.askThread(f.seatAsk), focusAsk: 'seat-107' },
+				screen: ChatScreen,
+				props: { messages: c.askThread(c.seatAsk), focusAsk: 'seat-107' },
 				next: 'Tap Aisle 24C',
 				hits: { 'aisle 24c': 'as-2' }
 			},
 			{
 				id: 'as-2',
 				label: 'Sending the answer',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.askThread({ ...f.seatAsk, state: 'answering', answer: 'Aisle 24C' })
+					messages: c.askThread({ ...c.seatAsk, state: 'answering', answer: 'Aisle 24C' })
 				},
 				next: 'Delivered'
 			},
 			{
 				id: 'as-3',
 				label: 'Answered',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.askThread({ ...f.seatAsk, state: 'answered', answer: 'Aisle 24C' }),
+					messages: c.askThread({ ...c.seatAsk, state: 'answered', answer: 'Aisle 24C' }),
 					running: true
 				}
 			},
 			{
 				id: 'as-4',
 				label: 'Answered on another device',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.askThread({ ...f.seatAsk, state: 'elsewhere', answer: 'Window 31K' })
+					messages: c.askThread({ ...c.seatAsk, state: 'elsewhere', answer: 'Window 31K' })
 				},
 				branch: 'Answered on the laptop first'
 			},
 			{
 				id: 'as-5',
 				label: 'In history: inert',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.askThread({ ...f.seatAsk, state: 'history', answer: 'Aisle 24C' })
+					messages: c.askThread({ ...c.seatAsk, state: 'history', answer: 'Aisle 24C' })
 				},
 				branch: 'Reloaded from the transcript: no chips'
 			}
@@ -566,31 +507,30 @@ export const flows: Flow[] = [
 			{
 				id: 'tu-1',
 				label: 'Within 300 ms of Send',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnStarted, running: true },
+				screen: ChatScreen,
+				props: { messages: c.turnStarted, running: true },
 				next: 'No token for 2s'
 			},
 			{
 				id: 'tu-2',
 				label: 'Thinking, never a bare spinner',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnThinking, running: true },
+				screen: ChatScreen,
+				props: { messages: c.turnThinking, running: true },
 				next: 'Tools run'
 			},
 			{
 				id: 'tu-3',
 				label: 'Current step, count, one failed',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnFailedStep, running: true },
+				screen: ChatScreen,
+				props: { messages: c.turnFailedStep, running: true },
 				next: 'Tap the row'
 			},
 			{
 				id: 'tu-4',
 				label: 'Expanded: steps, then exact input and output',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.turnFailedStep,
+					messages: c.turnFailedStep,
 					running: true,
 					openTurn: 'v-a',
 					openStep: 'v3'
@@ -600,23 +540,31 @@ export const flows: Flow[] = [
 			{
 				id: 'tu-5',
 				label: 'Streaming into a reserved bubble',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnStreaming, running: true },
+				screen: ChatScreen,
+				props: { messages: c.turnStreaming, running: true },
 				next: 'Turn ends'
 			},
 			{
 				id: 'tu-6',
 				label: 'Final reply; screen reader hears “Agent replied” once',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnDone, announce: 'Agent replied' }
+				screen: ChatScreen,
+				props: { messages: c.turnDone, announce: 'Agent replied', usage: c.lastUsage },
+				hits: { deepseek: 'tu-12' }
+			},
+			{
+				id: 'tu-12',
+				label: 'Last reply usage',
+				screen: ChatScreen,
+				props: { messages: c.turnDone, usage: c.lastUsage, sheet: 'usage' },
+				hits: { close: 'tu-6' },
+				branch: 'Tap the line under the composer'
 			},
 			{
 				id: 'tu-7',
 				label: 'Scrolled up: New messages pill',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.turnStreamingLong,
+					messages: c.turnStreamingLong,
 					running: true,
 					newMessages: true
 				},
@@ -626,25 +574,24 @@ export const flows: Flow[] = [
 			{
 				id: 'tu-8',
 				label: 'Stopping…',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnStopping, running: true, stopping: true },
+				screen: ChatScreen,
+				props: { messages: c.turnStopping, running: true, stopping: true },
 				branch: 'Tap Stop mid-stream',
 				next: 'Stopped'
 			},
 			{
 				id: 'tu-9',
 				label: 'Stopped by you, partial text kept',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnStopped },
+				screen: ChatScreen,
+				props: { messages: c.turnStopped },
 				branch: 'The turn ends where it was'
 			},
 			{
 				id: 'tu-10',
 				label: 'Nothing to stop',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.nothingToStop,
+					messages: c.nothingToStop,
 					connection: { kind: 'agent-offline' },
 					toast: 'Nothing to stop. The agent is offline.'
 				},
@@ -653,12 +600,11 @@ export const flows: Flow[] = [
 			{
 				id: 'tu-11',
 				label: 'Typing mid-run: Send steers it',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.turnFailedStep,
+					messages: c.turnFailedStep,
 					running: true,
-					typing: 'Only the 2024 invoices, skip the rest'
+					draft: 'Only the 2024 invoices, skip the rest'
 				},
 				keyboard: ['rest', 'rest of', 'others'],
 				branch: 'Send stays on while it works; the message steers this run'
@@ -675,16 +621,15 @@ export const flows: Flow[] = [
 			{
 				id: 'dl-1',
 				label: 'Sent, failed with Retry, sending',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.deliveryStates }
+				screen: ChatScreen,
+				props: { messages: c.deliveryStates }
 			},
 			{
 				id: 'dl-2',
 				label: 'Offline: queued',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.offlineQueued,
+					messages: c.offlineQueued,
 					connection: { kind: 'offline' }
 				},
 				branch: 'The phone lost its connection'
@@ -692,10 +637,9 @@ export const flows: Flow[] = [
 			{
 				id: 'dl-3',
 				label: 'Reconnecting, with elapsed time',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.turnStreaming,
+					messages: c.turnStreaming,
 					running: true,
 					connection: { kind: 'reconnecting', elapsed: '12s' }
 				},
@@ -704,10 +648,9 @@ export const flows: Flow[] = [
 			{
 				id: 'dl-4',
 				label: 'The agent is offline',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.agentOfflineQueued,
+					messages: c.agentOfflineQueued,
 					connection: { kind: 'agent-offline' }
 				},
 				branch: 'The phone is online, the workspace is not; no fallback agent answers'
@@ -715,15 +658,15 @@ export const flows: Flow[] = [
 			{
 				id: 'dl-5',
 				label: 'Reloaded after a long absence',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.resetReloaded, connection: { kind: 'reset' } },
+				screen: ChatScreen,
+				props: { messages: c.resetReloaded, connection: { kind: 'reset' } },
 				branch: 'Away longer than the live buffer'
 			},
 			{
 				id: 'dl-6',
 				label: 'History: dividers, unverified, unavailable',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.historyItems },
+				screen: ChatScreen,
+				props: { messages: c.historyItems },
 				scrollUp: 2000,
 				branch: 'Scrolled to the top of what loaded'
 			}
@@ -739,33 +682,32 @@ export const flows: Flow[] = [
 			{
 				id: 'ph-1',
 				label: 'Preparing and uploading',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.turnDone,
-					photos: f.photoDrafts,
-					typing: 'Which of these fits the hallway?'
+					messages: c.turnDone,
+					photos: c.photoDrafts,
+					draft: 'Which of these fits the hallway?'
 				},
 				next: 'Some fail'
 			},
 			{
 				id: 'ph-2',
 				label: 'Failed, unsupported, too large',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnDone, photos: f.photoFailures },
+				screen: ChatScreen,
+				props: { messages: c.turnDone, photos: c.photoFailures },
 				next: 'Retry and send'
 			},
 			{
 				id: 'ph-3',
 				label: 'Sent inline; a deleted photo says so',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.photosSent }
+				screen: ChatScreen,
+				props: { messages: c.photosSent }
 			},
 			{
 				id: 'ph-4',
 				label: 'Photo storage full',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnDone, quotaFull: true },
+				screen: ChatScreen,
+				props: { messages: c.turnDone, quotaFull: true },
 				branch: 'The server answers 507'
 			}
 		]
@@ -780,54 +722,53 @@ export const flows: Flow[] = [
 			{
 				id: 'cm-1',
 				label: 'Command sheet',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnDone, sheet: 'commands' },
+				screen: ChatScreen,
+				props: { messages: c.turnDone, sheet: 'commands' },
 				next: 'New chat',
 				hits: { 'new chat': 'cm-2', compact: 'cm-5' }
 			},
 			{
 				id: 'cm-2',
 				label: 'Confirm a new chat',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.turnDone, sheet: 'new' },
+				screen: ChatScreen,
+				props: { messages: c.turnDone, sheet: 'new' },
 				next: 'Start new chat',
 				hits: { 'start new chat': 'cm-3', cancel: 'cm-1' }
 			},
 			{
 				id: 'cm-3',
 				label: 'Starting a new chat',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.newChatStarting, running: true },
+				screen: ChatScreen,
+				props: { messages: c.newChatStarting, running: true },
 				next: 'Ready'
 			},
 			{
 				id: 'cm-4',
 				label: 'New chat divider',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.newChatStarted }
+				screen: ChatScreen,
+				props: { messages: c.newChatStarted }
 			},
 			{
 				id: 'cm-5',
 				label: 'Compacting',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.compacting, running: true },
+				screen: ChatScreen,
+				props: { messages: c.compacting, running: true },
 				branch: 'Compact from the sheet',
 				next: 'Done'
 			},
 			{
 				id: 'cm-6',
 				label: 'Compacted, summary expanded',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.compacted, openTurn: 'c2' },
+				screen: ChatScreen,
+				props: { messages: c.compacted, openTurn: 'c2' },
 				branch: 'The divider opens to the summary'
 			},
 			{
 				id: 'cm-7',
 				label: 'Commands while the agent is offline',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.agentOfflineQueued,
+					messages: c.agentOfflineQueued,
 					sheet: 'commands',
 					commandsOffline: true,
 					connection: { kind: 'agent-offline' }
@@ -839,46 +780,31 @@ export const flows: Flow[] = [
 	{
 		id: 'message-menu',
 		code: 'MM',
-		title: 'Hold a message for its actions',
+		title: 'Actions under each message',
 		intro:
-			'Holding a message, or right-clicking it on desktop, opens its actions in a sheet that Back closes. The ⋯ button under each message opens the same sheet. Copy takes the text as rendered, without markdown. Retry and Delete appear only on your own unsent messages, and nothing here can approve anything.',
+			"Small icon buttons sit under each message: Copy, and Share where the phone can share. The newest reply always shows them; older messages show them on touch screens, and on hover or focus with a mouse. Copy takes the text as rendered, without markdown. Holding and right-clicking are the browser's own, so a hold selects text. Retry and Delete stay inline on your own unsent messages, and nothing here can approve anything.",
 		frames: [
 			{
 				id: 'mm-1',
-				label: 'Hold an agent reply',
-				screen: Chat,
-				props: {
-					session: f.mainSession,
-					messages: f.deliveryStates,
-					sheet: 'message',
-					pressed: 'd1r'
-				},
-				next: 'Your failed message'
-			},
-			{
-				id: 'mm-2',
-				label: 'Hold your failed message',
-				screen: Chat,
-				props: {
-					session: f.mainSession,
-					messages: f.deliveryStates,
-					sheet: 'message',
-					pressed: 'd2'
-				},
-				branch: 'Retry and Delete join the list'
+				label: 'Copy and Share under the reply',
+				screen: ChatScreen,
+				props: { messages: c.deliveryStates },
+				next: 'Narrow phone'
 			},
 			{
 				id: 'mm-3',
 				label: 'At 320 wide',
-				screen: Chat,
-				props: {
-					session: f.mainSession,
-					messages: f.deliveryStates,
-					sheet: 'message',
-					pressed: 'd1r'
-				},
+				screen: ChatScreen,
+				props: { messages: c.deliveryStates },
 				width: 320,
 				branch: 'Narrow phone'
+			},
+			{
+				id: 'mm-d',
+				label: 'Desktop: older rows appear on hover',
+				screen: ChatScreen,
+				props: { messages: c.deliveryStates },
+				desktop: true
 			}
 		]
 	},
@@ -892,28 +818,27 @@ export const flows: Flow[] = [
 			{
 				id: 'fo-1',
 				label: 'Inline chart, download tiles, quota note',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.filesReply },
+				screen: ChatScreen,
+				props: { messages: c.filesReply },
 				next: 'Tap the chart',
 				hits: { 'open image': 'fo-2' }
 			},
 			{
 				id: 'fo-2',
 				label: 'Image viewer sheet',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.filesReply,
+					messages: c.filesReply,
 					sheet: 'viewer',
-					viewer: f.chartPng
+					viewer: c.chartPng
 				},
 				hits: { close: 'fo-1' }
 			},
 			{
 				id: 'fo-3',
 				label: 'At 320: a 60-character filename wraps',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.filesReply },
+				screen: ChatScreen,
+				props: { messages: c.filesReply },
 				width: 320,
 				branch: 'Narrow phone'
 			}
@@ -936,8 +861,8 @@ export const flows: Flow[] = [
 					title: 'Approval needed',
 					body: 'sushii-agent needs your approval to run send_email'
 				},
-				next: 'Tap',
-				hits: { agent: 'ch-2' }
+				next: 'Tap: Home opens its peek',
+				hits: { agent: 'hm-2' }
 			},
 			{
 				id: 'pu-2',
@@ -946,8 +871,8 @@ export const flows: Flow[] = [
 				props: {},
 				chrome: 'bare',
 				notification: { title: 'The agent asks', body: 'Aisle 24C or window 31K?' },
-				branch: 'Lands on AS-1, card in view and focused',
-				hits: { agent: 'as-1' }
+				branch: 'Lands on HM-5, the question in its peek',
+				hits: { agent: 'hm-5' }
 			},
 			{
 				id: 'pu-3',
@@ -975,8 +900,8 @@ export const flows: Flow[] = [
 			{
 				id: 'pu-5',
 				label: 'The interrupted turn',
-				screen: Chat,
-				props: { session: f.mainSession, messages: f.pushFailed, openTurn: 'v-a' },
+				screen: ChatScreen,
+				props: { messages: c.pushFailed, openTurn: 'v-a' },
 				branch: 'Landing for PU-4'
 			}
 		]
@@ -1017,43 +942,12 @@ export const flows: Flow[] = [
 			{
 				id: 'dm-3',
 				label: 'The app: the pending tray',
-				screen: Chat,
+				screen: ChatScreen,
 				props: {
-					session: f.mainSession,
-					messages: f.hvacPending,
+					messages: c.hvacPending,
 					running: true,
-					tray: { items: [f.hvacApproval] },
-					waiting: 3
+					tray: { items: [c.hvacApproval] }
 				}
-			}
-		]
-	},
-	{
-		id: 'runs',
-		code: 'RD',
-		title: 'Run detail',
-		intro:
-			'One line per tool call, with the evidence the agent collected. A run that finished without proof is marked unverified, not green.',
-		frames: [
-			{
-				id: 'rd-1',
-				label: 'Verified run',
-				screen: RunDetail,
-				props: { run: f.runs['run-hvac'], open: ['s4'] },
-				next: 'Compare'
-			},
-			{
-				id: 'rd-2',
-				label: 'Finished but unverified',
-				screen: RunDetail,
-				props: { run: f.runs['run-deps'], open: ['d3'] }
-			},
-			{
-				id: 'rd-d',
-				label: 'Desktop: timeline with outcome rail',
-				screen: RunDetail,
-				props: { run: f.runs['run-hvac'], open: ['s1'] },
-				desktop: true
 			}
 		]
 	},
@@ -1242,50 +1136,18 @@ export const flows: Flow[] = [
 				props: { items: f.brief, dismissed: ['b5'], votes: { b2: 'up', b3: 'up', b4: 'down' } }
 			}
 		]
-	},
-	{
-		id: 'history',
-		code: 'HS',
-		title: 'History search',
-		intro:
-			'Search across chats and runs. Each day has a summary, its sessions and its runs, and every run has a plain file.',
-		frames: [
-			{
-				id: 'hs-1',
-				label: 'Recent days',
-				screen: History,
-				props: { days: f.days },
-				next: 'Search'
-			},
-			{
-				id: 'hs-2',
-				label: 'Search results',
-				screen: History,
-				props: { days: f.days, query: 'maple' },
-				next: 'Open a run'
-			},
-			{
-				id: 'hs-3',
-				label: 'Run file',
-				screen: RunFile,
-				props: { path: f.runs['run-hvac'].file, content: f.runFile, runId: 'run-hvac' }
-			}
-		]
 	}
 ];
 
 // First match wins; a trailing * matches by prefix.
 export const routes: [string, string][] = [
-	['/', 'ny-1'],
+	...m23Routes,
 	['/chats/main?approve=*', 'ch-2'],
 	['/chats/main?ask=*', 'as-1'],
 	['/chats/main', 'cl-2'],
 	['/chats/oct-trip-archived', 'cl-3'],
 	['/chats/oct-trip', 'th-3'],
 	['/chats', 'cs-1'],
-	['/more', 'nv-1'],
-	['/runs/run-deps', 'rd-2'],
-	['/runs*', 'rd-1'],
 	['/memory/skills', 'ms-4'],
 	['/memory/skills/deploy-relay-bot', 'ms-5'],
 	['/memory/skills/*', 'ms-6'],
@@ -1300,9 +1162,7 @@ export const routes: [string, string][] = [
 	['/connectors/linear', 'mc-5'],
 	['/connectors/*', 'mc-6'],
 	['/connectors', 'mc-1'],
-	['/brief', 'br-1'],
-	['/history/*', 'hs-3'],
-	['/history', 'hs-1']
+	['/brief', 'br-1']
 ];
 
 export function frameFor(path: string): string | undefined {
@@ -1310,3 +1170,6 @@ export function frameFor(path: string): string | undefined {
 		p.endsWith('*') ? path.startsWith(p.slice(0, -1)) : path === p
 	)?.[1];
 }
+
+for (const flow of flows)
+	for (const frame of flow.frames) frame.shell ??= frame.screen === ChatScreen;

@@ -33,7 +33,7 @@ import {
   uploadFileName,
   type ImageFetchOptions,
 } from "./inboundImages.ts";
-import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker } from "./chatHistory.ts";
+import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker } from "./chatExport.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { dailyFileRel } from "./history.ts";
 import { RecentIds } from "./recentIds.ts";
@@ -1061,10 +1061,10 @@ export class PersonalSession {
     }
   }
 
-  private consumeInbound(text: string): void {
+  private consumeInbound(text: string): PendingInbound | undefined {
     // Pi appends image notes (a resize, a conversion) after a blank line.
     const i = this.unconsumed.findIndex((p) => p.text === text || (p.images !== undefined && text.startsWith(`${p.text}\n\n`)));
-    if (i === -1) return;
+    if (i === -1) return undefined;
     // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
     const entry = this.unconsumed[i];
     this.unconsumed.splice(0, i + 1);
@@ -1079,10 +1079,11 @@ export class PersonalSession {
       } catch (err) {
         log.warn({ err, wakeId: entry.wakeId }, "marking a wake consumed failed");
       }
-      return;
+      return entry;
     }
     this.lastInboundId = entry.messageId || this.lastInboundId;
     this.lastOrigin = entry.origin ?? this.lastOrigin;
+    return entry;
   }
 
   // Mid-run, sendCustomMessage(triggerTurn:false) would mutate the live message list; wait for settle.
@@ -1178,7 +1179,11 @@ export class PersonalSession {
       return;
     }
     if (event.type === "message_start" && event.message.role === "user") {
-      this.consumeInbound(userText(event.message));
+      // Finished before consumeInbound: the reply to the earlier message must not thread to the steer.
+      const split = this.run && steerEndsTurn(this.run) ? this.run : null;
+      if (split) this.finishRun(session, split);
+      const steer = this.consumeInbound(userText(event.message));
+      if (split) this.startSteeredTurn(split, steer);
     }
     if (event.type === "agent_start" && !this.run) {
       const hidden = this.hiddenNext;
@@ -1232,6 +1237,22 @@ export class PersonalSession {
     if (run && !run.hidden) this.afterTurn(session, run.turnId);
     if (this.reloadDue) this.scheduleReload();
     this.retryWakes();
+  }
+
+  /**
+   * A steer drained after a final answer (not a tool round) starts a new turn in the same run. The answer so far is
+   * delivered as that turn's reply, the way Pi's transcript records it, so the text streamed for it stays.
+   */
+  private startSteeredTurn(run: OpenRun, steer: PendingInbound | undefined): void {
+    run.turnId = this.newId();
+    run.acc = newRunAccumulator();
+    run.files = [];
+    // The new turn answers the steer, so it replies where the steer came from.
+    if (steer && !steer.wakeId) {
+      run.origin = steer.origin ?? run.origin;
+      run.promptMessageId = steer.messageId || undefined;
+    }
+    this.emitFor(run, { type: "turn_start" });
   }
 
   // turn_end.aborted means "no reply follows for this turn", so a reply suppressed by chat/new counts as aborted.
@@ -1511,6 +1532,15 @@ export class PersonalSession {
 }
 
 const DUPLICATE: ChatMessageResult = { accepted: true, mode: "duplicate" };
+
+/**
+ * Only after a final answer: after a tool round the turn's answer is still to come, and after an error Pi
+ * may be retrying. finishRun never delivers for a hidden run, and chat/new sets suppressReply only with abortRequested.
+ */
+function steerEndsTurn(run: OpenRun): boolean {
+  const stop = run.acc.lastStopReason;
+  return (stop === "stop" || stop === "length") && !run.abortRequested;
+}
 
 function recapMessage(recap: string, dailyFile: string): string {
   return [

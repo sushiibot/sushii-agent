@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { BACKOFF_CAP_MS, defaultBackoff, fetchSse } from '../src/lib/chat/transport';
+import { BACKOFF_CAP_MS, defaultBackoff, fetchSse } from '../src/lib/core/realtime/transport';
 
 function sse(frames: string[]): Response {
 	const body = new ReadableStream<Uint8Array>({

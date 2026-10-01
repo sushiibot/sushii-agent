@@ -1,7 +1,8 @@
 import './harness.css';
 import { flushSync, mount, unmount } from 'svelte';
-import { parseMarkdown } from '$lib/agent/render/markdown';
-import Markdown from '$lib/agent/markdown.svelte';
+import { parseMarkdown } from '$lib/features/chat/render/markdown';
+import { MarkdownStream } from '$lib/features/chat/render/streaming';
+import Markdown from '$lib/features/chat/render/markdown.svelte';
 import Harness from './Harness.svelte';
 import { api } from './api.svelte';
 
@@ -25,6 +26,40 @@ Object.assign(window, {
 			} catch (e) {
 				return { ok: false, err: String(e), ms: performance.now() - t };
 			}
+		},
+		/** Feeds `text` to a stream in `step`-char deltas, parsing after every one (no frame skipping),
+		 *  and reports the parse cost of each. */
+		streamCost(text: string, step: number) {
+			const stream = new MarkdownStream();
+			const ms: number[] = [];
+			try {
+				for (let n = step; n < text.length + step; n += step) {
+					const t = performance.now();
+					stream.update(text.slice(0, n), {});
+					ms.push(performance.now() - t);
+				}
+				const t = performance.now();
+				stream.finish(text, {});
+				return { ok: true, ms, finishMs: performance.now() - t };
+			} catch (e) {
+				return { ok: false, err: String(e), ms, finishMs: 0 };
+			}
+		},
+		/** Streams `text` into the mounted streaming reply, one delta per animation frame. */
+		async streamInto(text: string, step: number) {
+			api.stream = { text: '', streaming: true };
+			const frames: number[] = [];
+			let last = performance.now();
+			for (let n = step; n < text.length + step; n += step) {
+				api.stream.text = text.slice(0, n);
+				await new Promise(requestAnimationFrame);
+				const now = performance.now();
+				frames.push(now - last);
+				last = now;
+			}
+			api.stream.streaming = false;
+			flushSync();
+			return { frames };
 		},
 		/** Mounts one reply on its own and reports whether mounting threw. */
 		render(text: string, props: Record<string, unknown> = {}) {

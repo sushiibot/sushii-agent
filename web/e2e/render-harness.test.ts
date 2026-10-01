@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 // Drives the render components in Chromium, under the gateway's Trusted Types policy. The depth
 // payloads live here rather than only in bun tests because JSC overflows on them only sometimes.
-const HARNESS = 'http://localhost:4174/';
+const HARNESS = `http://localhost:${process.env.PW_HARNESS_PORT ?? 4174}/`;
 
 type Win = {
 	h: {
@@ -12,6 +12,7 @@ type Win = {
 			approved: string[];
 			steps: { id: string; tool: string; label: string; state: string; input: string }[];
 			chat: unknown[];
+			stream: { text: string; streaming: boolean };
 			push(text: string, files?: unknown): void;
 			setTray(nonces: string[] | null): void;
 		};
@@ -19,6 +20,11 @@ type Win = {
 		flushSync(): void;
 		parse(text: string): { ok: boolean; kinds?: string[]; err?: string; ms: number };
 		render(text: string, props?: Record<string, unknown>): { ok: boolean; err?: string };
+		streamCost(
+			text: string,
+			step: number
+		): { ok: boolean; err?: string; ms: number[]; finishMs: number };
+		streamInto(text: string, step: number): Promise<{ frames: number[] }>;
 		step(fn: () => void): void;
 	};
 	ready?: boolean;
@@ -154,6 +160,101 @@ test.describe('markdown in V8', () => {
 		});
 		await page.getByRole('button', { name: 'Copy code' }).click();
 		await expect(page.locator('#solo [aria-live="polite"]')).toHaveText("Couldn't copy");
+	});
+});
+
+// A 16k reply in the shapes that keep the unparsed tail long: one long fence and one long
+// unbroken paragraph, plus the usual paragraphs, lists, quotes and a table.
+function longReply(): string {
+	const parts: string[] = [];
+	for (let i = 0; parts.join('\n\n').length < 4_000; i++) {
+		parts.push(
+			`### Step ${i}\n\nThis is **step ${i}**, with _emphasis_, \`code\` and a [link](https://example.com/${i}).`
+		);
+		parts.push(`- item one of ${i}\n- item **two**\n  - nested ${i}`);
+	}
+	parts.push(
+		'```ts\n' +
+			Array.from({ length: 120 }, (_, i) => `const v${i} = compute(${i}); // line`).join('\n') +
+			'\n```'
+	);
+	parts.push(Array.from({ length: 60 }, (_, i) => `Sentence ${i} keeps **going** on.`).join(' '));
+	parts.push(
+		'| a | b | c |\n|---|---|---|\n' +
+			Array.from({ length: 40 }, (_, i) => `| ${i} | **x** | y |`).join('\n')
+	);
+	parts.push('> quoted\n>\n> ' + 'more words here '.repeat(40));
+	let text = parts.join('\n\n');
+	while (text.length < 16_000) text += '\n\nTrailing paragraph with *some* words in it and more.';
+	return text.slice(0, 16_000);
+}
+
+test.describe('streaming markdown in V8', () => {
+	test('a 16k reply in 20-char deltas averages under 8ms of parsing per delta', async ({
+		page
+	}) => {
+		const violations = await open(page);
+		const text = longReply();
+		expect(text.length).toBe(16_000);
+		const r = await page.evaluate((t) => (window as unknown as Win).h.streamCost(t, 20), text);
+		expect(r.ok, r.err).toBe(true);
+		const avg = r.ms.reduce((a, b) => a + b, 0) / r.ms.length;
+		console.log(
+			`stream parse: ${r.ms.length} deltas, avg ${avg.toFixed(2)}ms, max ${Math.max(...r.ms).toFixed(1)}ms, finish ${r.finishMs.toFixed(1)}ms`
+		);
+		expect(avg).toBeLessThan(8);
+		expect(violations).toEqual([]);
+	});
+
+	test('hostile replies streamed in deltas never throw and stay bounded', async ({ page }) => {
+		const violations = await open(page);
+		for (const [name, text] of DEEP) {
+			const r = await page.evaluate((t) => (window as unknown as Win).h.streamCost(t, 200), text);
+			expect(r.ok, `${name}: ${r.err}`).toBe(true);
+			// The budget drops a slow stream to plain text, so only a few parses can be slow.
+			const slow = r.ms.filter((ms) => ms > 50).length;
+			expect(slow, `${name} slow parses`).toBeLessThanOrEqual(1);
+			expect(
+				r.ms.reduce((a, b) => a + b, 0),
+				`${name} total`
+			).toBeLessThan(3_000);
+		}
+		const mounted = await page.evaluate(async (t) => {
+			const h = (window as unknown as Win).h;
+			await h.streamInto(t, 400);
+			return document.querySelector('#streamed')!.textContent!.length;
+		}, DEEP[0][1]);
+		expect(mounted).toBeGreaterThan(0);
+		expect(await page.evaluate(() => (window as unknown as Win).h.errors)).toEqual([]);
+		expect(violations).toEqual([]);
+	});
+
+	test('finishing a streamed reply moves none of its blocks', async ({ page }) => {
+		const violations = await open(page);
+		const text = longReply().slice(0, 3_000) + '\n\nEnds with **bold';
+		const rects = await page.evaluate(async (t) => {
+			const h = (window as unknown as Win).h;
+			const root = document.querySelector('#streamed > div')!;
+			const measure = (els: Element[]) =>
+				els.map((e) => {
+					const r = e.getBoundingClientRect();
+					return [e.isConnected, r.top, r.left, r.width, r.height];
+				});
+			await h.streamInto(t, 20);
+			h.api.stream.streaming = true;
+			h.flushSync();
+			await new Promise(requestAnimationFrame);
+			await new Promise(requestAnimationFrame);
+			const els = [...root.children].slice(0, 8);
+			const before = measure(els);
+			h.api.stream.streaming = false;
+			h.flushSync();
+			return { before, after: measure(els), caret: !!root.querySelector('[data-caret]') };
+		}, text);
+		expect(rects.before.length).toBe(8);
+		expect(rects.after).toEqual(rects.before);
+		expect(rects.caret).toBe(false);
+		expect(violations).toEqual([]);
 	});
 });
 

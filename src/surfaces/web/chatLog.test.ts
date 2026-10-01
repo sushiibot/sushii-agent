@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { applySchema } from "../../db/index.ts";
-import { INBOUND_RETENTION_MS, SqliteChatLog } from "./chatLog.ts";
+import { INBOUND_RETENTION_MS, PERMANENT_EVENTS, SqliteChatLog, pageQuery } from "./chatLog.ts";
 import { WebInboundStore } from "./inbound.ts";
 import type { ChatEnvelope } from "./events.ts";
 
@@ -117,19 +117,100 @@ describe("SqliteChatLog", () => {
     expect(log.subscribers).toBe(1);
   });
 
-  test("the row cap never evicts the owner's messages or an undecided approval", () => {
-    const { log } = setup({ maxRows: 100 });
+  test("chat rows are permanent: neither age nor the row cap removes them, even when they outnumber the cap", () => {
+    const { log, advance, now } = setup({ maxRows: 5 });
     const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
-    log.append("approval", { nonce: "decided", view }, "decided");
-    log.append("approval_resolved", { nonce: "decided", decision: "deny" }, "decided");
-    log.append("approval", { nonce: "waiting", view }, "waiting");
-    log.append("user", { key: "u1", text: "owner", uploadIds: [], at: "t" }, "u1");
-    for (let i = 0; i < 200; i++) log.append("turn_final", { turnId: `t${i}`, outcome: "stopped", summary: null }, `t${i}:stopped`);
+    const files = [{ id: "F".repeat(22), contentType: "image/png", bytes: 1, name: "f.png", inline: true }];
+    for (let i = 0; i < 4; i++) {
+      log.append("user", { key: `u${i}`, text: "owner", uploadIds: [], at: "t" }, `u${i}`);
+      log.append("reply", { key: `r${i}`, text: "reply", files }, `r${i}`);
+      log.append("proactive", { key: `p${i}`, text: "ping", files: [] }, `p${i}`);
+      log.append("approval", { nonce: `n${i}`, view }, `n${i}`);
+      log.append("approval_resolved", { nonce: `n${i}`, decision: "deny" }, `n${i}`);
+      log.append("ask", { key: `a${i}`, askId: `k${i}`, question: "q", choices: [] }, `a${i}`);
+      log.append("ask_resolved", { askId: `k${i}`, answer: "x" }, `k${i}`);
+      log.append("session", { kind: "new" });
+    }
+    const permanent = log.list(["user", "reply", "proactive", "approval", "approval_resolved", "ask", "ask_resolved", "session"]).length;
+    expect(permanent).toBe(32);
+    for (let i = 0; i < 20; i++) {
+      log.append("status", { clientId: `c${i}`, state: "accepted" });
+      log.append("notice", notice(String(i)));
+      log.append("turn_final", { turnId: `t${i}`, outcome: "done", summary: null }, `t${i}:done`);
+      log.append("auth", { key: `l${i}`, url: "https://x", instructions: "" }, `l${i}`);
+    }
     log.prune(0);
-    expect(log.find("approval", "waiting")).not.toBeNull();
-    expect(log.find("user", "u1")).not.toBeNull();
-    expect(log.find("approval", "decided")).toBeNull();
-    expect(log.list(["turn_final"])).toHaveLength(100);
+    expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(5);
+    advance(365 * 24 * 60 * 60 * 1000);
+    log.prune(now());
+    expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(0);
+    expect(log.list(["user", "reply", "proactive", "approval", "approval_resolved", "ask", "ask_resolved", "session"])).toHaveLength(permanent);
+    expect(log.find("reply", "r0")!.data.files).toEqual(files);
+  });
+
+  test("the database trigger protects exactly the permanent types", () => {
+    const { db } = setup();
+    const sql = (db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'web_events_keep_chat'").get() as { sql: string }).sql;
+    const listed = /old\.type IN \(([^)]*)\)/.exec(sql)![1]!.split(",").map((t) => t.trim().replace(/'/g, ""));
+    expect([...listed].sort()).toEqual([...PERMANENT_EVENTS].sort());
+  });
+
+  test("the pre-retention prune, as rolled-back code would run it, deletes no chat and keeps pruned_through on real deletes", () => {
+    const { db, log, advance, now } = setup();
+    const view = { tool: "t", agentId: "main", agentName: "Main", fields: [] };
+    log.prepend([{ type: "user", key: "pi:1", data: { key: "pi:1", text: "imported", uploadIds: [], at: "t" }, createdAt: 1 }]);
+    log.append("user", { key: "u1", text: "owner", uploadIds: [], at: "t" }, "u1");
+    log.append("reply", { key: "r1", text: "reply", files: [] }, "r1");
+    log.append("approval", { nonce: "n1", view }, "n1");
+    log.append("approval_resolved", { nonce: "n1", decision: "approve" }, "n1");
+    log.append("ask", { key: "a1", askId: "k1", question: "q", choices: [] }, "a1");
+    log.append("ask_resolved", { askId: "k1", answer: "x" }, "k1");
+    log.append("session", { kind: "new" });
+    const noticeSeq = log.append("notice", notice("old"));
+    const chat = () => db.query("SELECT count(*) AS n FROM web_events WHERE type != 'notice'").get() as { n: number };
+    const before = chat().n;
+    advance(60 * 24 * 60 * 60 * 1000);
+    // The prune from before chat was permanent: untyped by age, then a cap exempting only owner messages and undecided approvals.
+    const aged = db.query("DELETE FROM web_events WHERE created_at < ? RETURNING seq").all(now() - 30 * 24 * 60 * 60 * 1000) as { seq: number }[];
+    const capExempt = `e.type = 'user' OR (e.type = 'approval' AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key))`;
+    const evicted = db.query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events e WHERE NOT (${capExempt}) ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`).all(0) as { seq: number }[];
+    expect(chat().n).toBe(before);
+    expect([...aged, ...evicted].map((r) => r.seq)).toEqual([noticeSeq]);
+    expect(Math.max(...aged.map((r) => r.seq), ...evicted.map((r) => r.seq))).toBe(noticeSeq);
+    expect(log.find("user", "pi:1")).not.toBeNull();
+  });
+
+  test("prepend stores rows below every seq, newest first, skips ones it has, and fans nothing out", () => {
+    const { log } = setup();
+    const got: ChatEnvelope[] = [];
+    const live = log.append("user", { key: "live", text: "live", uploadIds: [], at: "t" }, "live");
+    log.subscribe(null, (ev) => got.push(ev));
+    const row = (k: string, at: number) => ({ type: "reply" as const, key: k, data: { key: k, text: k, files: [] }, createdAt: at });
+    expect(log.prepend([row("pi:3", 3), row("pi:2", 2)])).toBe(2);
+    expect(log.prepend([row("pi:2", 2), row("pi:1", 1)])).toBe(1);
+    expect(got).toHaveLength(0);
+    expect(log.page(["user", "reply"], { limit: 10 }).map((e) => [e.seq, e.key])).toEqual([
+      [live, "live"],
+      [0, "pi:3"],
+      [-1, "pi:2"],
+      [-2, "pi:1"],
+    ]);
+    // Imported rows don't move the stream's head or count as live rows.
+    expect(log.head()).toBe(live);
+    expect(log.firstLiveAt()).toBe(log.find("user", "live")!.createdAt);
+    expect(log.subscribe(0, () => {}).reset).toBe(false);
+    expect(log.append("notice", notice("next"))).toBe(live + 1);
+  });
+
+  test("with only imported rows, a fresh stream neither resets nor replays them", () => {
+    const { log } = setup();
+    log.prepend([{ type: "user", key: "pi:1", data: { key: "pi:1", text: "old", uploadIds: [], at: "t" }, createdAt: 1 }]);
+    expect(log.head()).toBe(0);
+    expect(log.firstLiveAt()).toBeNull();
+    const replayed: ChatEnvelope[] = [];
+    expect(log.subscribe(0, (ev) => replayed.push(ev)).reset).toBe(false);
+    expect(replayed).toEqual([]);
+    expect(log.append("notice", notice("first"))).toBe(1);
   });
 
   test("a cursor inside a gap the cap left above an exempt row still resets", () => {
@@ -201,5 +282,18 @@ describe("web_inbound retention", () => {
     const left = (db.query("SELECT client_id FROM web_inbound ORDER BY client_id").all() as { client_id: string }[]).map((r) => r.client_id);
     expect(left).toEqual(["routed-late", "unrouted-young"]);
     expect(inbound.unrouted(now - INBOUND_RETENTION_MS).map((r) => r.clientId)).toEqual(["unrouted-young"]);
+  });
+});
+
+describe("history page query plan", () => {
+  test("walks the order index with no sort, and a cursor seeks into it", () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    for (const before of [undefined, { order: 50, seq: 60 }]) {
+      const { sql, params } = pageQuery(["user", "reply"], { limit: 41, ...(before ? { before } : {}) });
+      const plan = (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((r) => r.detail).join("\n");
+      expect(plan).toContain(before ? "SEARCH web_events USING INDEX idx_web_events_order" : "SCAN web_events USING INDEX idx_web_events_order");
+      expect(plan).not.toContain("TEMP B-TREE");
+    }
   });
 });

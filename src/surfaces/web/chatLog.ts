@@ -8,8 +8,12 @@ export const EVENTS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const EVENTS_MAX_ROWS = 50_000;
 export const INBOUND_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PRUNED_THROUGH_KEY = "web_events:pruned_through";
-// The row cap never evicts these: the owner's own messages and approvals still waiting for a decision.
-const CAP_EXEMPT = `e.type = 'user' OR (e.type = 'approval' AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key))`;
+/** The chat itself, kept forever: neither the age prune nor the row cap ever deletes these. */
+export const PERMANENT_EVENTS = ["user", "reply", "proactive", "ask", "ask_resolved", "approval", "approval_resolved", "session"] as const satisfies readonly DurableEventType[];
+const PRUNABLE = `type NOT IN (${PERMANENT_EVENTS.map((t) => `'${t}'`).join(",")})`;
+
+/** A row for `prepend`, its data typed by its event type. */
+export type PrependRow = { [T in DurableEventType]: { type: T; key: string; data: ChatEventMap[T]; createdAt: number } }[DurableEventType];
 
 export type EphemeralEnvelope = Extract<ChatEnvelope, { type: EphemeralEventType }>;
 export type ChatSink = (ev: ChatEnvelope) => void;
@@ -40,6 +44,12 @@ export interface StoredEvent<T extends DurableEventType = DurableEventType> {
   createdAt: number;
 }
 
+/** A row's place in history: its sort seq (its own seq unless set), then its seq. */
+export interface HistoryPosition {
+  order: number;
+  seq: number;
+}
+
 type Row = { seq: number; type: string; key: string | null; data: string; created_at: number };
 
 function toStored(row: Row): StoredEvent {
@@ -50,6 +60,20 @@ function toEnvelope(ev: StoredEvent): ChatEnvelope {
   return { seq: ev.seq, type: ev.type, data: ev.data } as ChatEnvelope;
 }
 
+export function pageQuery(types: readonly string[], opts: { before?: HistoryPosition; limit: number }): { sql: string; params: (string | number)[] } {
+  const params: (string | number)[] = [...types];
+  // Without statistics the planner picks the (type, key) index and sorts every chat row; this walks the order.
+  let sql = `SELECT seq, type, key, data, created_at, coalesce(sort_seq, seq) AS ord FROM web_events INDEXED BY idx_web_events_order WHERE type IN (${types.map(() => "?").join(",")})`;
+  if (opts.before !== undefined) {
+    // The plain bound is what lets the index seek; the planner can't range-scan the row value alone.
+    sql += " AND coalesce(sort_seq, seq) <= ? AND (coalesce(sort_seq, seq), seq) < (?, ?)";
+    params.push(opts.before.order, opts.before.order, opts.before.seq);
+  }
+  sql += " ORDER BY coalesce(sort_seq, seq) DESC, seq DESC LIMIT ?";
+  params.push(opts.limit);
+  return { sql, params };
+}
+
 export class SqliteChatLog implements ChatLog {
   private readonly sinks = new Set<ChatSink>();
   private batch: ChatEnvelope[] | null = null;
@@ -58,11 +82,13 @@ export class SqliteChatLog implements ChatLog {
   private readonly retentionMs: number;
   private readonly q: {
     byKey: Statement<Row, [string, string]>;
-    insert: Statement<{ seq: number }, [string, string | null, string, number]>;
+    insert: Statement<{ seq: number }, [string, string | null, string, number, number | null]>;
     after: Statement<Row, [number]>;
     min: Statement<{ m: number | null }, []>;
     head: Statement<{ seq: number }, []>;
     prunedThrough: Statement<{ value: string }, [string]>;
+    anchor: Statement<unknown, [string, number, number]>;
+    anchorOf: Statement<{ a: number }, [string]>;
   };
 
   constructor(
@@ -74,11 +100,14 @@ export class SqliteChatLog implements ChatLog {
     this.retentionMs = opts.retentionMs ?? EVENTS_RETENTION_MS;
     this.q = {
       byKey: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = ? AND key = ?"),
-      insert: db.query("INSERT INTO web_events (type, key, data, created_at) VALUES (?, ?, ?, ?) RETURNING seq"),
+      insert: db.query("INSERT INTO web_events (type, key, data, created_at, sort_seq) VALUES (?, ?, ?, ?, ?) RETURNING seq"),
       after: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE seq > ? ORDER BY seq"),
-      min: db.query("SELECT min(seq) AS m FROM web_events"),
+      // Imported rows sit at seq <= 0, below anything a stream can resume from.
+      min: db.query("SELECT min(seq) AS m FROM web_events WHERE seq > 0"),
       head: db.query("SELECT seq FROM sqlite_sequence WHERE name = 'web_events'"),
       prunedThrough: db.query("SELECT value FROM kv WHERE key = ?"),
+      anchor: db.query("INSERT OR IGNORE INTO web_turn_anchors (turn_id, anchor_seq, created_at) VALUES (?, ?, ?)"),
+      anchorOf: db.query("SELECT anchor_seq AS a FROM web_turn_anchors WHERE turn_id = ?"),
     };
   }
 
@@ -86,7 +115,8 @@ export class SqliteChatLog implements ChatLog {
     return this.appendResult(type, data, key).seq;
   }
 
-  appendResult<T extends DurableEventType>(type: T, data: ChatEventMap[T], key?: string): { seq: number; created: boolean } {
+  /** `sortSeq` places the row in history as if it came right after that seq; SSE replay still follows seq. */
+  appendResult<T extends DurableEventType>(type: T, data: ChatEventMap[T], key?: string, sortSeq?: number): { seq: number; created: boolean } {
     const json = JSON.stringify(data);
     const res = this.db.transaction(() => {
       if (key !== undefined) {
@@ -96,7 +126,7 @@ export class SqliteChatLog implements ChatLog {
           return { seq: existing.seq, created: false };
         }
       }
-      return { seq: this.q.insert.get(type, key ?? null, json, this.now())!.seq, created: true };
+      return { seq: this.q.insert.get(type, key ?? null, json, this.now(), sortSeq ?? null)!.seq, created: true };
     })();
     if (res.created) this.fanOut({ seq: res.seq, type, data } as ChatEnvelope);
     return res;
@@ -194,6 +224,21 @@ export class SqliteChatLog implements ChatLog {
     return row ? (toStored(row) as StoredEvent<"ask">) : null;
   }
 
+  /** Records the chat head as `turnId`'s start, once; a reply for the turn sorts there. */
+  anchorTurn(turnId: string): void {
+    this.q.anchor.run(turnId, this.head(), this.now());
+  }
+
+  turnAnchor(turnId: string): number | null {
+    return this.q.anchorOf.get(turnId)?.a ?? null;
+  }
+
+  /** The newest `limit` events of `types` in history order below the `before` position, newest first. */
+  page<T extends DurableEventType>(types: readonly T[], opts: { before?: HistoryPosition; limit: number }): (StoredEvent<T> & { order: number })[] {
+    const { sql, params } = pageQuery(types, opts);
+    return (this.db.query(sql).all(...params) as (Row & { ord: number })[]).map((r) => ({ ...(toStored(r) as StoredEvent<T>), order: r.ord }));
+  }
+
   list<T extends DurableEventType>(types: readonly T[], opts: { keys?: readonly string[]; since?: number } = {}): StoredEvent<T>[] {
     if (!types.length || (opts.keys && !opts.keys.length)) return [];
     const params: (string | number)[] = [...types];
@@ -210,12 +255,33 @@ export class SqliteChatLog implements ChatLog {
     return (this.db.query(sql).all(...params) as Row[]).map((r) => toStored(r) as StoredEvent<T>);
   }
 
+  /** The oldest live row's time, or null when there is none. Imported rows don't count. */
+  firstLiveAt(): number | null {
+    return (this.db.query("SELECT min(created_at) AS m FROM web_events WHERE seq > 0").get() as { m: number | null }).m;
+  }
+
+  /** Stores rows below every seq already held, in the order given (newest first), without fanning them out.
+   *  A (type, key) already stored is skipped. Returns how many were stored. */
+  prepend(rows: readonly PrependRow[]): number {
+    return this.db.transaction(() => {
+      let next = Math.min((this.db.query("SELECT min(seq) AS m FROM web_events").get() as { m: number | null }).m ?? 1, 1) - 1;
+      let stored = 0;
+      for (const r of rows) {
+        if (this.q.byKey.get(r.type, r.key)) continue;
+        this.db.run("INSERT INTO web_events (seq, type, key, data, created_at) VALUES (?, ?, ?, ?, ?)", [next--, r.type, r.key, JSON.stringify(r.data), r.createdAt]);
+        stored++;
+      }
+      return stored;
+    })();
+  }
+
   prune(now: number): void {
     this.db.transaction(() => {
-      const aged = this.db.query("DELETE FROM web_events WHERE created_at < ? RETURNING seq").all(now - this.retentionMs) as { seq: number }[];
+      const aged = this.db.query(`DELETE FROM web_events WHERE created_at < ? AND ${PRUNABLE} RETURNING seq`).all(now - this.retentionMs) as { seq: number }[];
       const evicted = this.db
-        .query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events e WHERE NOT (${CAP_EXEMPT}) ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
+        .query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events WHERE ${PRUNABLE} ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
         .all(this.maxRows) as { seq: number }[];
+      this.db.run("DELETE FROM web_turn_anchors WHERE created_at < ?", [now - this.retentionMs]);
       const through = Math.max(this.prunedThrough(), ...aged.map((r) => r.seq), ...evicted.map((r) => r.seq));
       if (through > this.prunedThrough()) {
         this.db.run("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [PRUNED_THROUGH_KEY, String(through)]);

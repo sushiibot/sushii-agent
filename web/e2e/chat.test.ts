@@ -38,10 +38,7 @@ type OlderPage = {
 	onServe?: () => void;
 };
 
-const errorBody = (status: number) =>
-	({ 409: { reset: true }, 501: { unsupported: true }, 503: { offline: true } })[status] ?? {
-		error: 'x'
-	};
+const errorBody = () => ({ error: 'x' });
 
 async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) {
 	const opts: Opts = {
@@ -75,12 +72,11 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 			const o = opts.older[url.searchParams.get('before')!] ?? { status: 200 };
 			await o.gate;
 			o.onServe?.();
-			if (o.status !== 200) return json(errorBody(o.status), o.status);
+			if (o.status !== 200) return json(errorBody(), o.status);
 			return json({ items: o.items ?? [], before: o.before ?? null });
 		}
 		if (path === '/api/chat/history') {
-			if (opts.historyStatus !== 200)
-				return json(errorBody(opts.historyStatus), opts.historyStatus);
+			if (opts.historyStatus !== 200) return json(errorBody(), opts.historyStatus);
 			return json({ items: opts.history, before: opts.before });
 		}
 		if (path.startsWith('/api/chat/messages/') && req.method() === 'DELETE') {
@@ -119,7 +115,7 @@ async function chatServer(context: BrowserContext, initial: Partial<Opts> = {}) 
 }
 
 async function open(page: Page) {
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 }
 
@@ -282,8 +278,7 @@ test('a reset reloads history and says so', async ({ page, context }) => {
 			at: 'x',
 			text: 'From the reloaded history',
 			tools: [],
-			files: [],
-			verified: true
+			files: []
 		}
 	];
 	await push(page, 'reset', {
@@ -302,59 +297,71 @@ test('history that is unavailable offers a retry', async ({ page, context }) => 
 	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
 	opts.historyStatus = 200;
 	opts.history = [
-		{ type: 'user', id: 'u1', at: 'x', text: 'Old owner message', attachments: [], verified: true },
+		{ type: 'user', id: 'u1', at: 'x', text: 'Old owner message', attachments: [] },
 		{
 			type: 'user',
 			id: 'u2',
 			at: 'x',
 			text: 'Only in the transcript',
-			attachments: [],
-			verified: false
+			attachments: []
 		}
 	];
 	await page.getByRole('button', { name: 'Retry' }).click();
 	await expect(page.getByText('Old owner message')).toBeVisible();
-	await expect(page.getByText('from workspace history (unverified)')).toBeVisible();
+	await expect(page.getByText('Only in the transcript')).toBeVisible();
 	await expect(page.getByText('Earlier messages unavailable right now')).toBeHidden();
 });
 
-test('older pages load above with the server cursor, and a stale cursor reloads from the head', async ({
+test('a history-only message looks like a live one but offers only the read actions', async ({
 	page,
 	context
 }) => {
-	let release!: () => void;
-	const { calls, opts } = await chatServer(context, {
+	await chatServer(context, {
 		history: [
-			{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [], verified: true }
+			{
+				type: 'user',
+				id: 'u1',
+				at: 'x',
+				text: 'From the transcript',
+				attachments: []
+			}
 		],
-		before: 'sess:u5',
+		messageStatus: 400
+	});
+	await open(page);
+	await type(page, 'Sent just now');
+	await expect(bubble(page, 'Sent just now')).toContainText('Failed');
+	const classes = (text: string) =>
+		bubble(page, text).locator('[data-message-text]').getAttribute('class');
+	expect(await classes('From the transcript')).toBe(await classes('Sent just now'));
+	await expect(page.getByText(/workspace history/)).toHaveCount(0);
+
+	const transcript = bubble(page, 'From the transcript');
+	await expect(transcript.getByRole('button', { name: 'Copy' })).toBeVisible();
+	await expect(transcript.getByRole('button', { name: /Retry|Delete|Approve|Deny/ })).toHaveCount(
+		0
+	);
+});
+
+test('older pages load above with the server cursor', async ({ page, context }) => {
+	const { calls } = await chatServer(context, {
+		history: [{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [] }],
+		before: '5',
 		older: {
-			// A stale cursor, after which the reloaded transcript has nothing older.
-			'sess:u1': {
-				status: 409,
-				gate: new Promise<void>((r) => (release = r)),
-				onServe: () => (opts.before = null)
-			},
-			'sess:u5': {
+			'5': {
 				status: 200,
-				items: [
-					{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [], verified: true }
-				],
-				before: 'sess:u1'
+				items: [{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [] }],
+				before: null
 			}
 		}
 	});
 	await open(page);
 	await expect(page.getByText('Older page')).toBeVisible();
-	expect(calls.some((c) => c.path.includes('before=sess%3Au5'))).toBe(true);
+	expect(calls.some((c) => c.path.includes('before=5'))).toBe(true);
 	const order = await page.locator('[data-message-id]').allTextContents();
 	expect(order.findIndex((t) => t.includes('Older page'))).toBeLessThan(
 		order.findIndex((t) => t.includes('Newest page'))
 	);
-	release();
-	await expect(page.getByText('Reloaded the conversation.', { exact: false })).toBeVisible();
-	await expect(page.getByText('Older page')).toBeHidden();
-	await expect(page.getByText('Newest page')).toBeVisible();
 });
 
 const approval = (nonce: string, tool = 'send_email') => ({
@@ -565,7 +572,7 @@ test('seen goes out only while Main is on screen', async ({ page, context }) => 
 	await push(page, 'approval', approval('n1'), 2);
 	await page.waitForTimeout(1500);
 	expect(posts('/api/chat/seen').length).toBe(1);
-	await page.getByRole('link', { name: 'Back to Main' }).click();
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
 	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 2 });
 });
 
@@ -577,8 +584,7 @@ function longHistory(n: number) {
 		text: `History message ${i} with enough words to wrap onto a second line on a phone screen.`,
 		attachments: [],
 		tools: [],
-		files: [],
-		verified: true
+		files: []
 	}));
 }
 
@@ -619,6 +625,178 @@ test('streaming while scrolled up moves nothing and shows the New messages pill'
 	await expect(pill).toBeHidden();
 });
 
+test("the last reply's usage sits under the composer, holds still while streaming, and opens its details", async ({
+	page,
+	context
+}) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'u1',
+				at: 'x',
+				text: 'Earlier answer',
+				tools: [],
+				files: [],
+				usage: {
+					model: 'openrouter/deepseek/deepseek-v4.1-flash',
+					inputTokens: 1200,
+					outputTokens: 80,
+					contextPct: 12.4,
+					costUsd: 0.002
+				}
+			}
+		]
+	});
+	await open(page);
+	const line = page.getByRole('button', {
+		name: 'Last reply: model deepseek-v4.1-flash, context 12%, cost $0.0020'
+	});
+	await expect(line).toHaveText('deepseek-v4.1-flash · ctx 12% · $0.0020');
+	await expect(line).toBeVisible();
+	const top = await line.evaluate((e) => e.getBoundingClientRect().top);
+
+	await push(page, 'delta', { turnId: 't2', offset: 0, text: 'Streaming a new answer' });
+	await expect(page.getByText('Streaming a new answer')).toBeVisible();
+	await expect(line).toBeVisible();
+	expect(await line.evaluate((e) => e.getBoundingClientRect().top)).toBe(top);
+
+	const usage = {
+		model: 'anthropic/claude-sonnet-5',
+		inputTokens: 5000,
+		outputTokens: 321,
+		cacheRead: 4096,
+		contextPct: 40,
+		costUsd: 0.0312
+	};
+	await push(
+		page,
+		'reply',
+		{ key: 'r2', turnId: 't2', text: 'Streaming a new answer', usage, files: [] },
+		1
+	);
+	const next = page.getByRole('button', {
+		name: 'Last reply: model claude-sonnet-5, context 40%, cost $0.031'
+	});
+	await expect(next).toBeVisible();
+
+	await next.click();
+	const sheet = page.getByRole('dialog', { name: 'Last reply usage' });
+	await expect(sheet).toContainText('not a running total');
+	await expect(sheet).toContainText('anthropic/claude-sonnet-5');
+	await expect(sheet).toContainText('5,000');
+	await expect(sheet).toContainText('4,096');
+	await expect(sheet).not.toContainText('Cache write');
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('no usage line before any reply has usage, and its arrival moves nothing', async ({
+	page,
+	context
+}) => {
+	await chatServer(context);
+	await open(page);
+	const line = page.getByRole('button', { name: /^Last reply:/ });
+	await expect(line).toHaveCount(0);
+	const send = page.getByRole('button', { name: 'Send message' });
+	const before = (await send.boundingBox())!.y;
+	const usage = { model: 'm', inputTokens: 1, outputTokens: 1, contextPct: 3 };
+	await push(page, 'reply', { key: 'r1', text: 'Hi', usage, files: [] }, 1);
+	await expect(line).toBeVisible();
+	expect((await send.boundingBox())!.y).toBe(before);
+});
+
+const withUsage = {
+	type: 'assistant',
+	id: 'u1',
+	at: 'x',
+	text: 'Earlier answer',
+	tools: [],
+	files: [],
+	usage: { model: 'm', inputTokens: 1200, outputTokens: 80, contextPct: 12, costUsd: 0.002 }
+};
+
+test('at desktop width the usage and commands sheets show, and Escape takes their history entry', async ({
+	browser
+}) => {
+	const context = await browser.newContext({
+		viewport: { width: 1280, height: 800 },
+		isMobile: false,
+		hasTouch: false
+	});
+	await chatServer(context, { history: [withUsage] });
+	const page = await context.newPage();
+	await open(page);
+	const sheetState = () => page.evaluate(() => JSON.stringify(history.state ?? {}));
+	for (const [button, dialog] of [
+		[/^Last reply:/, 'Last reply usage'],
+		['Chat commands', 'Chat commands']
+	] as const) {
+		await page.getByRole('button', { name: button }).click();
+		await expect(page.getByRole('dialog', { name: dialog })).toBeVisible();
+		expect(await sheetState()).toContain('"sheet"');
+		await page.keyboard.press('Escape');
+		await expect(page.getByRole('dialog')).toHaveCount(0);
+		await expect.poll(sheetState).not.toContain('"sheet"');
+	}
+	await context.close();
+});
+
+test('Escape and Close in the same frame close the sheet once and stay on the page', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { history: [withUsage] });
+	await page.goto('/settings');
+	await open(page);
+	await page.getByRole('button', { name: /^Last reply:/ }).click();
+	const dialog = page.getByRole('dialog', { name: 'Last reply usage' });
+	await expect(dialog).toBeVisible();
+	await page.evaluate(() => {
+		const sheet = document.querySelector<HTMLElement>('[role=dialog]')!;
+		const close = [...sheet.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Close'
+		)!;
+		sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		close.click();
+	});
+	await expect(dialog).toHaveCount(0);
+	await page.waitForTimeout(300);
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+});
+
+test('the new-chat and image sheets each close on one back', async ({ page, context }) => {
+	await chatServer(context, {
+		history: [
+			{
+				type: 'assistant',
+				id: 'img1',
+				at: 'x',
+				text: 'Here is the chart.',
+				tools: [],
+				files: [
+					{ id: UPLOAD_ID, contentType: 'image/png', bytes: 10, name: 'chart.png', inline: true }
+				]
+			}
+		]
+	});
+	await open(page);
+	await page.getByRole('button', { name: 'Chat commands' }).click();
+	await page.getByRole('button', { name: /New chat/ }).click();
+	await expect(page.getByRole('dialog', { name: 'Start a new chat' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page).toHaveURL(/\/chat$/);
+
+	await page.getByRole('button', { name: 'Open image chart.png' }).click();
+	await expect(page.getByRole('dialog', { name: 'Image' })).toBeVisible();
+	await page.goBack();
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+});
+
 test('the commands sheet closes on back and leaves Main in place', async ({ page, context }) => {
 	const { posts } = await chatServer(context);
 	await open(page);
@@ -626,7 +804,7 @@ test('the commands sheet closes on back and leaves Main in place', async ({ page
 	await expect(page.getByRole('dialog', { name: 'Chat commands' })).toBeVisible();
 	await page.goBack();
 	await expect(page.getByRole('dialog')).toHaveCount(0);
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/chat$/);
 	await page.getByRole('button', { name: 'Chat commands' }).click();
 	await page.getByRole('button', { name: /New chat/ }).click();
 	await page.getByRole('button', { name: 'Start new chat' }).click();
@@ -642,7 +820,7 @@ test('a forbidden stream says the device is not the owner', async ({ page, conte
 	await context.addInitScript(() => {
 		(window as unknown as { __sse: { status: number } }).__sse.status = 403;
 	});
-	await page.goto('/');
+	await page.goto('/chat');
 	await expect(
 		page.getByText("This device isn't signed in as the owner.", { exact: false })
 	).toBeVisible();
@@ -671,8 +849,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 							name: 'a-very-long-invoice-file-name-from-eastside-auto-2026.pdf',
 							inline: false
 						}
-					],
-					verified: true
+					]
 				}
 			]
 		});
@@ -742,10 +919,9 @@ test('a held send that history already has settles in place and leaves the outbo
 			clientId,
 			at: 'x',
 			text: 'Did this arrive?',
-			attachments: [],
-			verified: true
+			attachments: []
 		},
-		{ type: 'assistant', id: 'a1', at: 'x', text: 'It did.', tools: [], files: [], verified: true }
+		{ type: 'assistant', id: 'a1', at: 'x', text: 'It did.', tools: [], files: [] }
 	];
 	await page.reload();
 	await expect(page.getByText('It did.')).toBeVisible();
@@ -916,9 +1092,7 @@ test('an older page that fails offers Retry inline instead of a toast', async ({
 	context
 }) => {
 	const { opts } = await chatServer(context, {
-		history: [
-			{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [], verified: true }
-		],
+		history: [{ type: 'user', id: 'u5', at: 'x', text: 'Newest page', attachments: [] }],
 		before: 'sess:u5',
 		older: { 'sess:u5': { status: 503 } }
 	});
@@ -928,9 +1102,7 @@ test('an older page that fails offers Retry inline instead of a toast', async ({
 	await expect(page.getByText("Couldn't load earlier messages")).toHaveCount(0);
 	opts.older['sess:u5'] = {
 		status: 200,
-		items: [
-			{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [], verified: true }
-		],
+		items: [{ type: 'user', id: 'u1', at: 'x', text: 'Older page', attachments: [] }],
 		before: null
 	};
 	await page.getByRole('button', { name: 'Retry' }).click();
@@ -950,9 +1122,7 @@ test('history that failed while the agent was offline reloads when it comes back
 	await open(page);
 	await expect(page.getByText('Earlier messages unavailable right now')).toBeVisible();
 	opts.historyStatus = 200;
-	opts.history = [
-		{ type: 'user', id: 'u1', at: 'x', text: 'Back again', attachments: [], verified: true }
-	];
+	opts.history = [{ type: 'user', id: 'u1', at: 'x', text: 'Back again', attachments: [] }];
 	await push(page, 'workspace', { state: 'online' });
 	await expect(page.getByText('Back again')).toBeVisible();
 });
@@ -962,8 +1132,7 @@ const short = (id: string, text: string) => ({
 	id,
 	at: 'x',
 	text,
-	attachments: [],
-	verified: true
+	attachments: []
 });
 
 test('older pages keep loading while the top of the list stays on screen', async ({
@@ -971,9 +1140,7 @@ test('older pages keep loading while the top of the list stays on screen', async
 	context
 }) => {
 	const { calls } = await chatServer(context, {
-		history: [
-			{ type: 'user', id: 'u9', at: 'x', text: 'Newest page', attachments: [], verified: true }
-		],
+		history: [{ type: 'user', id: 'u9', at: 'x', text: 'Newest page', attachments: [] }],
 		before: 'p1',
 		older: {
 			p1: { status: 200, items: [short('u1', 'Page one')], before: 'p2' },
@@ -1074,7 +1241,7 @@ test('an approval and an ask waiting in the bot log show from the first frame', 
 	await expect(page.getByRole('button', { name: 'Tue' })).toBeVisible();
 });
 
-test('agent text stays unparsed while it streams and renders as markdown once the turn ends', async ({
+test('agent text renders as markdown while it streams, and finishing moves and re-mounts nothing', async ({
 	page,
 	context
 }) => {
@@ -1084,13 +1251,46 @@ test('agent text stays unparsed while it streams and renders as markdown once th
 		turnId: 't1',
 		view: { turnId: 't1', startedAt: Date.now(), lines: [], toolCount: 0, text: '' }
 	});
-	await push(page, 'delta', { turnId: 't1', offset: 0, text: 'Use **bold** here' });
-	const reply = page.locator('[data-message-id]').filter({ hasText: 'Use' });
-	await expect(reply).toContainText('Use **bold** here');
-	await expect(reply.locator('strong')).toHaveCount(0);
-	await push(page, 'turn_final', { turnId: 't1', outcome: 'done', summary: null }, 1);
-	await expect(reply.locator('strong')).toHaveText('bold');
+	const text = 'Intro with **bold** text.\n\n- one\n- two\n\n```sh\nls -la\n```\n\nMore **bo';
+	let offset = 0;
+	for (let i = 0; i < text.length; i += 9) {
+		await push(page, 'delta', { turnId: 't1', offset, text: text.slice(i, i + 9) });
+		offset += Math.min(9, text.length - i);
+	}
+	const reply = page.locator('[data-message-id]').filter({ hasText: 'Intro' });
+	await expect(reply.locator('pre')).toHaveText('ls -la');
+	await expect(reply.locator('strong')).toHaveText(['bold', 'bo']);
+	await expect(reply.locator('[data-message-text] li')).toHaveText(['one', 'two']);
 	await expect(reply).not.toContainText('**');
+	await expect(reply.locator('[data-caret]')).toHaveCount(1);
+
+	const measure = () =>
+		reply.evaluate((li) => {
+			const base = li.getBoundingClientRect();
+			const w = window as unknown as { __kept?: Element[] };
+			const blocks = [
+				...li.querySelectorAll('[data-message-text] > div > :not(:last-child)'),
+				li.querySelector('[role="group"]')!
+			];
+			w.__kept ??= blocks;
+			return {
+				connected: w.__kept.map((e) => e.isConnected && blocks.includes(e)),
+				rects: w.__kept.map((e) => {
+					const r = e.getBoundingClientRect();
+					return [r.top - base.top, r.left - base.left, r.width, r.height];
+				})
+			};
+		});
+	const before = await measure();
+	expect(before.rects.length).toBeGreaterThanOrEqual(4);
+	await push(page, 'delta', { turnId: 't1', offset, text: 'ld** end.' });
+	await expect(reply.locator('strong')).toHaveText(['bold', 'bold']);
+	await push(page, 'turn_final', { turnId: 't1', outcome: 'done', summary: null }, 1);
+	await expect(reply.locator('[data-caret]')).toHaveCount(0);
+	await expect(reply.getByRole('button', { name: 'Copy reply' })).toBeVisible();
+	const after = await measure();
+	expect(after.connected.every(Boolean)).toBe(true);
+	expect(after.rects).toEqual(before.rects);
 });
 
 const XSS_TEXT = [
@@ -1203,8 +1403,7 @@ test('only the bot approval log draws the shield line; agent text that claims on
 				at: 'x',
 				text: '🛡️ Approved · `send_email`',
 				tools: [],
-				files: [],
-				verified: false
+				files: []
 			},
 			{
 				type: 'approval',
@@ -1297,13 +1496,9 @@ test('a message the connected agent refused fails with Retry and no offline bann
 	expect((posts('/api/chat/messages')[1].body as { clientId: string }).clientId).toBe(clientId);
 });
 
-/** A queued message has no inline Delete; it is in the message actions sheet. */
-async function deleteFromSheet(page: Page, text: string) {
-	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
-	await page
-		.getByRole('dialog', { name: 'Message actions' })
-		.getByRole('button', { name: 'Delete' })
-		.click();
+/** An unsent message, queued or failed, has Delete under it. */
+async function deleteInline(page: Page, text: string) {
+	await bubble(page, text).getByRole('button', { name: 'Delete' }).click();
 }
 
 async function heldForAgent(
@@ -1328,7 +1523,7 @@ test('deleting a message the bot holds withdraws it there first, then removes it
 	context
 }) => {
 	const { calls, clientId } = await heldForAgent(page, context, 'Never mind this');
-	await deleteFromSheet(page, 'Never mind this');
+	await deleteInline(page, 'Never mind this');
 	await expect(bubble(page, 'Never mind this')).toHaveCount(0);
 	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
 		`/api/chat/messages/${clientId}`
@@ -1341,7 +1536,7 @@ test('deleting a message that already reached the agent keeps it, marked sent', 
 	context
 }) => {
 	await heldForAgent(page, context, 'Too late', 409);
-	await deleteFromSheet(page, 'Too late');
+	await deleteInline(page, 'Too late');
 	await expect(page.getByText('Already delivered')).toBeVisible();
 	await expect(bubble(page, 'Too late')).toContainText('Sent');
 	await expect.poll(() => outboxSize(page)).toBe(0);
@@ -1349,14 +1544,14 @@ test('deleting a message that already reached the agent keeps it, marked sent', 
 
 test('a delete the bot never heard of removes the message locally', async ({ page, context }) => {
 	await heldForAgent(page, context, 'Unknown to the bot', 404);
-	await deleteFromSheet(page, 'Unknown to the bot');
+	await deleteInline(page, 'Unknown to the bot');
 	await expect(bubble(page, 'Unknown to the bot')).toHaveCount(0);
 	await expect.poll(() => outboxSize(page)).toBe(0);
 });
 
 test('a delete that fails keeps the message and says so', async ({ page, context }) => {
 	await heldForAgent(page, context, 'Keep me for now', 500);
-	await deleteFromSheet(page, 'Keep me for now');
+	await deleteInline(page, 'Keep me for now');
 	await expect(page.getByText("Couldn't delete the message. Try again.")).toBeVisible();
 	await expect(bubble(page, 'Keep me for now')).toBeVisible();
 	expect(await outboxSize(page)).toBe(1);
@@ -1373,7 +1568,7 @@ test('a message whose 202 was lost is withdrawn from the bot on Delete and never
 	await expect.poll(() => posts('/api/chat/messages').length).toBe(1);
 	const { clientId } = posts('/api/chat/messages')[0].body as { clientId: string };
 	await expect(bubble(page, 'Lost answer')).toContainText('Queued');
-	await deleteFromSheet(page, 'Lost answer');
+	await deleteInline(page, 'Lost answer');
 	await expect(bubble(page, 'Lost answer')).toHaveCount(0);
 	expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([
 		`/api/chat/messages/${clientId}`
@@ -1428,19 +1623,20 @@ test('a refused message stays failed across a reload and goes again only on Retr
 	await expect.poll(async () => (await outboxEntries(page))[0]?.failed).toBe(false);
 });
 
-/** Opens the actions sheet on a queued bubble, then starts its resend and taps Delete in one task: the
- *  one window the UI leaves, since the sheet drops Delete once the bubble shows Sending. */
+/** Starts a queued bubble's resend and taps its Delete in one task: the one window the UI leaves,
+ *  since Delete goes away once the bubble shows Sending. */
 async function deleteAsResendStarts(page: Page, text: string) {
-	await bubble(page, text).locator('[data-message-text]').click({ button: 'right' });
-	const dialog = page.getByRole('dialog', { name: 'Message actions' });
-	await expect(dialog.getByRole('button', { name: 'Delete message' })).toBeVisible();
-	await page.evaluate(() => {
-		const button = [...document.querySelectorAll('[role=dialog] button')].find((b) =>
-			b.textContent?.includes('Delete message')
+	await expect(bubble(page, text).getByRole('button', { name: 'Delete' })).toBeVisible();
+	await page.evaluate((text) => {
+		const message = [...document.querySelectorAll('[data-message-id]')].find((m) =>
+			m.textContent?.includes(text)
+		)!;
+		const button = [...message.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Delete'
 		) as HTMLButtonElement;
 		dispatchEvent(new Event('online'));
 		button.click();
-	});
+	}, text);
 }
 
 test('Delete in the same frame a resend starts stops it before it posts', async ({

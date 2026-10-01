@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE, type WorkspaceRegisterResult } from "../contracts.ts";
+import type { WorkspaceRegisterResult } from "../contracts.ts";
 import { ConnectionClosedError, NotConnectedError, OrchestrationClient, RequestTimeoutError, RpcHandlerError } from "./client.ts";
 
 // A bare WS peer standing in for the bot: acks register, then lets the test drive raw frames.
@@ -49,8 +49,8 @@ describe("OrchestrationClient extra handlers", () => {
       heartbeatMs: 0,
       handlers: {
         "chat/abort": async () => ({ aborted: true }),
-        "chat/history": async () => {
-          throw new RpcHandlerError(CHAT_HISTORY_UNKNOWN_CURSOR, CHAT_HISTORY_UNKNOWN_CURSOR_CODE);
+        "chat/export": async () => {
+          throw new RpcHandlerError("custom refusal", -32010);
         },
         "chat/new": async () => {
           throw new Error("plain");
@@ -66,12 +66,12 @@ describe("OrchestrationClient extra handlers", () => {
 
       orch.send({ jsonrpc: "2.0", id: 10, method: "chat/abort", params: { principalId: "drk" } });
       orch.send({ jsonrpc: "2.0", id: 11, method: "chat/unknown", params: {} });
-      orch.send({ jsonrpc: "2.0", id: 12, method: "chat/history", params: {} });
+      orch.send({ jsonrpc: "2.0", id: 12, method: "chat/export", params: {} });
       orch.send({ jsonrpc: "2.0", id: 13, method: "chat/new", params: {} });
       await waitFor(() => orch.received.length >= 5);
       expect(orch.received.find((m) => m.id === 10)).toMatchObject({ result: { aborted: true } });
       expect(orch.received.find((m) => m.id === 11)).toMatchObject({ error: { code: -32601 } });
-      expect(orch.received.find((m) => m.id === 12)).toMatchObject({ error: { code: CHAT_HISTORY_UNKNOWN_CURSOR_CODE, message: CHAT_HISTORY_UNKNOWN_CURSOR } });
+      expect(orch.received.find((m) => m.id === 12)).toMatchObject({ error: { code: -32010, message: "custom refusal" } });
       expect(orch.received.find((m) => m.id === 13)).toMatchObject({ error: { code: -32000, message: "plain" } });
 
       const reply = client.request("chat/deliver", { outboxId: "o1" });

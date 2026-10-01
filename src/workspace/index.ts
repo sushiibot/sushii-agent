@@ -24,7 +24,7 @@ import { MainTurnTracker } from "./subagents/turnTracker.ts";
 import { Scheduler, jobAlertText } from "./scheduler.ts";
 import { wireProactiveJobs } from "./proactive.ts";
 import { ulid } from "./ulid.ts";
-import { ChatHistoryReader, chatHistoryHandlers } from "./chatHistory.ts";
+import { ChatExportReader, chatExportHandlers } from "./chatExport.ts";
 import { UPLOADS_DIR } from "./inboundImages.ts";
 
 const log = getLogger("workspace");
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     state: () => personal.state,
     handlers: {
       ...personal.handlers(),
-      ...chatHistoryHandlers({ principalId: config.principalId, reader: new ChatHistoryReader({ agentDir: config.agentDir }) }),
+      ...chatExportHandlers({ principalId: config.principalId, reader: new ChatExportReader({ agentDir: config.agentDir }) }),
       ...authLogin.handlers(),
       ...commandHandlers({
         principalId: config.principalId,

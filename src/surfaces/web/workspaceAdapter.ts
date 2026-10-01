@@ -69,8 +69,6 @@ export interface WebAdapterDeps {
   push?: { send(p: PushPayload): Promise<{ sent: number }> };
   /** Called with an approval's nonce when its push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
-  /** True during the owner's quiet hours; absent means never quiet. */
-  quietHours?: () => boolean;
   /** Without it the surface takes no files, so the workspace's send_file refuses. */
   uploads?: WebUploadPort;
   now?: () => number;
@@ -155,7 +153,8 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const text = dropped.length ? `${body}\n\n${dropped.map((d) => `[file dropped: ${d}]`).join("\n")}` : body;
     const turnId = reply.turnId && reply.turnId.length <= ID_MAX ? reply.turnId : undefined;
     const data = { key, text, files, ...(turnId ? { turnId } : {}), ...(reply.usage ? { usage: reply.usage } : {}) };
-    const { seq, created } = this.deps.log.appendResult(reply.kind, data, key);
+    const anchor = turnId ? this.deps.log.turnAnchor(turnId) : null;
+    const { seq, created } = this.deps.log.appendResult(reply.kind, data, key, anchor ?? undefined);
     if (created) void this.notify(seq, { kind: reply.kind, text });
   }
 
@@ -205,6 +204,11 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     this.applyLines(turn, view);
     this.snapshot(turn);
     return { id: view.turnId };
+  }
+
+  /** The working bubble and Stop show at once, and the turn's reply sorts from here in history. */
+  turnStarted(origin: ChatOrigin | null, view: ProgressView): Promise<WebHandle> {
+    return this.progressCreate(origin, view);
   }
 
   async progressUpdate(handle: WebHandle, view: ProgressView): Promise<void> {
@@ -280,6 +284,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   /** Adds a live turn; past the cap the oldest is finalized as interrupted, so `hello` stays bounded. */
   private track(turn: LiveTurn): LiveTurn {
     this.turns.delete(turn.turnId);
+    this.deps.log.anchorTurn(turn.turnId);
     while (this.turns.size >= MAX_OPEN_TURNS) {
       const oldest = this.turns.values().next().value!;
       this.finalize(oldest.turnId, { outcome: "interrupted", summary: null });
@@ -342,8 +347,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     try {
       if (!(await this.deps.presence.shouldPush(seq))) return null;
       if (!this.deps.push) return 0;
-      const quiet = this.deps.quietHours?.() ?? false;
-      return (await this.deps.push.send(pushFor(event, { quiet }))).sent;
+      return (await this.deps.push.send(pushFor(event))).sent;
     } catch (err) {
       log.warn({ err }, "web push failed");
       return 0;

@@ -32,14 +32,39 @@ const SINKS: [RegExp, string][] = [
 const COMPUTED_KEY = /(?:[\w)\]]|\?\.)\s*\[([^\]]*['"`][^\]]*)\]/g;
 const SINK_FRAGMENT = /html|inner|outer|adjacent|srcdoc|['"`]doc['"`]/i;
 
-// Components that render agent- or workspace-supplied data.
-const RENDER_DIR = 'src/lib/agent/';
+// Any component may end up rendering agent- or workspace-supplied data, so none may pick its
+// element tag at runtime unless listed here with the reason.
+export const DYNAMIC_TAG_EXEMPT = new Set<string>([]);
 
 // Agent text renders here, so it may never emit a control, handler or the approval surface.
-const MARKDOWN = 'src/lib/agent/markdown.svelte';
+export const MARKDOWN = 'src/lib/features/chat/render/markdown.svelte';
 // Markdown's one control: an icon button that copies its own code block.
-const COPY_BUTTON = 'src/lib/agent/code-copy-button.svelte';
-const MARKDOWN_IMPORTS = new Set(['./types', './render/markdown', './code-copy-button.svelte']);
+export const COPY_BUTTON = 'src/lib/features/chat/render/code-copy-button.svelte';
+// The row under every message, agent replies included, sits next to agent text.
+export const MESSAGE_ACTIONS = 'src/lib/features/chat/components/message-actions.svelte';
+const LOOKALIKE = new Set([MARKDOWN, COPY_BUTTON, MESSAGE_ACTIONS]);
+const MARKDOWN_IMPORTS = new Set([
+	'../types',
+	'./markdown',
+	'./streaming',
+	'./code-copy-button.svelte'
+]);
+
+// Runs, history and Home's alert and run peeks show the agent's own records. They render agent text
+// and may never borrow the approval look, so nothing in a record can pass for a decision card.
+export const AGENT_RECORD_DIRS = ['src/lib/features/runs/', 'src/lib/features/history/'];
+export const AGENT_RECORD_FILES = new Set(['src/lib/features/home/components/record-peek.svelte']);
+const isAgentRecord = (file: string) =>
+	AGENT_RECORD_FILES.has(file) || AGENT_RECORD_DIRS.some((d) => file.startsWith(d));
+const RECORD_BANNED: [RegExp, string][] = [
+	[
+		/\b(?:bg|text|border|ring|fill|stroke|outline|from|to|via)-approval\b|approval-surface/,
+		'record: approval token'
+	],
+	[/data-surface/, 'record: data-surface'],
+	[/\bShield\w*|icons\/shield/, 'record: shield icon'],
+	[/\bApprovalTray\b|approval-tray/, 'record: approval tray']
+];
 
 const APPROVAL_LOOKALIKE: [RegExp, string][] = [
 	[/approval|data-surface/i, 'markdown: approval surface token'],
@@ -78,20 +103,27 @@ function visit(node: unknown, fn: (n: AstNode & { start: number }) => void): voi
 	}
 }
 
+type TagNode = { type?: string; consequent?: TagNode; alternate?: TagNode };
+
+/** A literal tag, or a choice between literal tags (`href ? 'a' : 'span'`). */
+function fixedTag(tag: unknown): boolean {
+	if (typeof tag !== 'object' || tag === null) return true;
+	const t = tag as TagNode;
+	if (t.type === 'Literal') return true;
+	return t.type === 'ConditionalExpression' && fixedTag(t.consequent) && fixedTag(t.alternate);
+}
+
 function templateRules(file: string, source: string): Violation[] {
 	const out: Violation[] = [];
 	const at = (start: number, rule: string) => out.push({ file, line: lineOf(source, start), rule });
 	const markdown = file === MARKDOWN;
-	const lookalike = markdown || file === COPY_BUTTON;
+	const lookalike = LOOKALIKE.has(file);
 	const ast = parse(source, { filename: file, modern: true });
 	visit(ast.fragment, (n) => {
 		if (n.type === 'HtmlTag') at(n.start, '{@html}');
-		if (n.type === 'SvelteElement' && file.startsWith(RENDER_DIR)) {
-			const tag = n.tag as { type?: string } | string | undefined;
+		if (n.type === 'SvelteElement' && !DYNAMIC_TAG_EXEMPT.has(file)) {
 			if (markdown) at(n.start, 'markdown: svelte:element');
-			else if (typeof tag === 'object' && tag?.type !== 'Literal') {
-				at(n.start, 'render: dynamic svelte:element');
-			}
+			else if (!fixedTag(n.tag)) at(n.start, 'render: dynamic svelte:element');
 		}
 		if (lookalike && n.type === 'SpreadAttribute') at(n.start, 'markdown: spread attributes');
 		if (markdown && n.type === 'OnDirective') at(n.start, 'markdown: event handler');
@@ -109,7 +141,7 @@ function templateRules(file: string, source: string): Violation[] {
 
 export function checkSource(file: string, source: string): Violation[] {
 	const out: Violation[] = file.endsWith('.svelte') ? templateRules(file, source) : [];
-	const lookalike = file === MARKDOWN || file === COPY_BUTTON;
+	const lookalike = LOOKALIKE.has(file);
 	source.split('\n').forEach((text, i) => {
 		const add = (rule: string) => out.push({ file, line: i + 1, rule });
 		for (const [re, rule] of SINKS) if (re.test(text)) add(rule);
@@ -118,6 +150,7 @@ export function checkSource(file: string, source: string): Violation[] {
 		}
 		if (lookalike) for (const [re, rule] of APPROVAL_LOOKALIKE) if (re.test(text)) add(rule);
 		if (file === MARKDOWN) for (const [re, rule] of MARKDOWN_BANNED) if (re.test(text)) add(rule);
+		if (isAgentRecord(file)) for (const [re, rule] of RECORD_BANNED) if (re.test(text)) add(rule);
 	});
 	return out;
 }

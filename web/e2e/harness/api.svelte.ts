@@ -1,4 +1,4 @@
-import type { ChatMessage, PendingApproval, TurnStep } from '$lib/agent/types';
+import type { ChatMessage, PendingApproval, TurnStep } from '$lib/features/chat/types';
 
 export const pending = (nonce: string, tool = 'bash'): PendingApproval =>
 	({
@@ -18,6 +18,7 @@ class Api {
 	approved: string[] = [];
 	steps = $state<TurnStep[]>([]);
 	chat = $state<ChatMessage[]>([]);
+	stream = $state({ text: '', streaming: false });
 
 	push(text: string, files?: unknown) {
 		this.messages.push({ text, files });

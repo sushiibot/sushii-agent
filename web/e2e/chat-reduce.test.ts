@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { CLIENT_ID_RE, type ChatEnvelope } from '../src/lib/chat/events';
-import { fileRef, toMessages } from '../src/lib/chat/project';
+import { CLIENT_ID_RE, type ChatEnvelope } from '../src/lib/core/realtime/events';
+import { fileRef, toMessages } from '../src/lib/features/chat/project';
 import {
 	addLocalSend,
 	applyEvent,
@@ -11,10 +11,10 @@ import {
 	PENDING_TURN_ID,
 	restartHistory,
 	type ChatState
-} from '../src/lib/chat/reduce';
-import { SseParser, toEnvelope } from '../src/lib/chat/sse';
-import { ulid } from '../src/lib/chat/ulid';
-import { fitWithin } from '../src/lib/chat/photo';
+} from '../src/lib/features/chat/reduce';
+import { SseParser, toEnvelope } from '../src/lib/core/realtime/sse';
+import { ulid } from '../src/lib/core/storage/ulid';
+import { fitWithin } from '../src/lib/features/chat/photo';
 
 const NONE = { approvals: [], asks: [] };
 const run = (s: ChatState, evs: ChatEnvelope[]) => evs.flatMap((e) => applyEvent(s, e, 1000));
@@ -73,6 +73,21 @@ test('a reply with a turn id replaces the streamed text, and late deltas are dro
 		}
 	]);
 	expect(openTurns(s)).toHaveLength(0);
+});
+
+test('after a steer splits the turn, the new turn is working from its empty snapshot, before any output', () => {
+	const s = createState();
+	const view = (turnId: string) => ({ turnId, startedAt: 0, lines: [], toolCount: 0, text: '' });
+	run(s, [
+		{ type: 'snapshot', data: { turnId: 't1', view: view('t1') } },
+		{ type: 'delta', data: { turnId: 't1', offset: 0, text: 'first answer' } },
+		{ type: 'turn_final', seq: 1, data: { turnId: 't1', outcome: 'done', summary: null } },
+		{ type: 'reply', seq: 2, data: { key: 'o1', turnId: 't1', text: 'first answer', files: [] } }
+	]);
+	expect(openTurns(s)).toHaveLength(0);
+	run(s, [{ type: 'snapshot', data: { turnId: 't2', view: view('t2') } }]);
+	expect(openTurns(s).map((t) => t.turnId)).toEqual(['t2']);
+	expect(texts(s)).toEqual(['first answer']);
 });
 
 test('a snapshot resyncs text after a gap, and tool events pair start with finish', () => {
@@ -208,7 +223,7 @@ test('a restored send that history already holds settles in its history position
 	const s = createState();
 	addLocalSend(s, { clientId: 'C', text: 'hi', attachments: [], at: 'z', delivery: 'sending' });
 	const fx = mergeHistory(s, [
-		{ type: 'user', id: '1', clientId: 'C', at: 'z', text: 'hi', attachments: [], verified: true },
+		{ type: 'user', id: '1', clientId: 'C', at: 'z', text: 'hi', attachments: [] },
 		{
 			type: 'assistant',
 			id: '2',
@@ -216,8 +231,7 @@ test('a restored send that history already holds settles in its history position
 			at: 'z',
 			text: 'reply',
 			tools: [],
-			files: [],
-			verified: true
+			files: []
 		}
 	]);
 	expect(fx).toEqual([{ type: 'delivered', clientId: 'C' }]);
@@ -267,8 +281,7 @@ test('history merges before local items and dedupes live events by key', () => {
 			clientId: 'C',
 			at: 'z',
 			text: 'queued',
-			attachments: [],
-			verified: true
+			attachments: []
 		},
 		{
 			type: 'assistant',
@@ -277,8 +290,7 @@ test('history merges before local items and dedupes live events by key', () => {
 			at: 'y',
 			text: 'answer',
 			tools: [],
-			files: [],
-			verified: true
+			files: []
 		},
 		{
 			type: 'approval',
@@ -296,7 +308,7 @@ test('history merges before local items and dedupes live events by key', () => {
 			askId: 'k',
 			question: 'q?',
 			choices: ['a'],
-			verified: false
+			answer: 'a'
 		}
 	]);
 	run(s, [
@@ -406,8 +418,7 @@ test('an ask resolved with no answer, live or from history, is no longer answera
 			askId: 'k2',
 			question: 'Where?',
 			choices: ['Home'],
-			answer: null,
-			verified: true
+			answer: null
 		}
 	]);
 	expect(h.items[0]).toMatchObject({ kind: 'ask', state: 'history', answer: undefined });
@@ -505,7 +516,7 @@ test('hello seeds the tray and ask cards from the bot log, and history does not 
 	expect(s.items).toMatchObject([{ kind: 'ask', askId: 'k1', state: 'pending' }]);
 
 	mergeHistory(s, [
-		{ type: 'user', id: 'u1', at: 'x', text: 'first', attachments: [], verified: true },
+		{ type: 'user', id: 'u1', at: 'x', text: 'first', attachments: [] },
 		{
 			type: 'ask',
 			id: 'q1',
@@ -513,8 +524,7 @@ test('hello seeds the tray and ask cards from the bot log, and history does not 
 			outboxId: 'o-k1',
 			askId: 'k1',
 			question: 'Which k1?',
-			choices: ['A', 'B'],
-			verified: true
+			choices: ['A', 'B']
 		},
 		{
 			type: 'approval',
@@ -524,7 +534,7 @@ test('hello seeds the tray and ask cards from the bot log, and history does not 
 			view: view('send_email'),
 			decision: null
 		},
-		{ type: 'user', id: 'u2', at: 'x', text: 'later', attachments: [], verified: true }
+		{ type: 'user', id: 'u2', at: 'x', text: 'later', attachments: [] }
 	]);
 	expect(s.items.map((i) => i.kind)).toEqual(['user', 'ask', 'approval', 'user']);
 	expect(s.approvals).toHaveLength(1);
@@ -632,51 +642,4 @@ test('a stale history cursor keeps the asks the first frame seeded', () => {
 	mergeHistory(s, []);
 	run(s, [{ type: 'ask', seq: 6, data: { key: 'o-k1', askId: 'k1', question: 'q', choices: [] } }]);
 	expect(s.items.filter((i) => i.kind === 'ask')).toHaveLength(1);
-});
-
-test('the newest page leaves out its copy of a turn still running, so the live card is the only one', () => {
-	const s = createState();
-	const view = { turnId: 't1', startedAt: 0, lines: [], toolCount: 1, text: '' };
-	run(s, [
-		{
-			type: 'hello',
-			data: {
-				headSeq: 0,
-				workspace: 'online',
-				openTurns: [
-					{ ...view, lines: [{ name: 'file_linear_issue', summary: 'T', state: 'run' }] }
-				],
-				pending: NONE
-			}
-		}
-	]);
-	const page = [
-		{
-			type: 'user' as const,
-			id: 'u',
-			at: 'x',
-			text: 'file it',
-			attachments: [],
-			verified: false
-		},
-		{
-			type: 'assistant' as const,
-			id: 'a',
-			at: 'x',
-			text: '',
-			tools: [{ name: 'read', summary: 'x', ok: true }],
-			files: [],
-			verified: false
-		}
-	];
-	mergeHistory(s, page, { newest: true });
-	expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
-	expect(openTurns(s)).toHaveLength(1);
-	expect(s.items[1]).toMatchObject({ turnId: 't1' });
-
-	// With nothing running, or on an older page, the same items all show.
-	const idle = createState();
-	mergeHistory(idle, page, { newest: true });
-	expect(idle.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
-	expect(idle.items[1]).toMatchObject({ id: 'h:a' });
 });
