@@ -225,18 +225,11 @@ describe('the layer rules', () => {
 		]);
 	});
 
-	test("future screens may borrow chat's components until they graduate", () => {
-		const file = 'src/proto-routes/proto/screens/thread-chat.svelte';
-		expect(rules(file, imp('$lib/features/chat/components/composer.svelte'))).toEqual([]);
-		expect(
-			rules(
-				file,
-				svelte("import { messagePlainText } from '$lib/features/chat/render/plain-text';")
-			)
-		).toEqual([]);
-		expect(rules(file, svelte("import { toMessages } from '$lib/features/chat/project';"))).toEqual(
-			['import chat through its index.ts or fixtures.ts']
-		);
+	test("the prototype's screens are the features' own, so none reaches into a feature", () => {
+		const file = 'src/proto-routes/proto/screens/anything.svelte';
+		expect(rules(file, imp('$lib/features/chat/components/composer.svelte'))).toEqual([
+			'import chat through its index.ts or fixtures.ts'
+		]);
 	});
 
 	test('nothing outside the prototype imports it', () => {

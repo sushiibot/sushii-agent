@@ -50,12 +50,21 @@ const MARKDOWN_IMPORTS = new Set([
 	'./code-copy-button.svelte'
 ]);
 
-// Runs, history and Home's alert and run peeks show the agent's own records. They render agent text
-// and may never borrow the approval look, so nothing in a record can pass for a decision card.
-export const AGENT_RECORD_DIRS = ['src/lib/features/runs/', 'src/lib/features/history/'];
-export const AGENT_RECORD_FILES = new Set(['src/lib/features/home/components/record-peek.svelte']);
-const isAgentRecord = (file: string) =>
-	AGENT_RECORD_FILES.has(file) || AGENT_RECORD_DIRS.some((d) => file.startsWith(d));
+// Every feature shows agent- or server-supplied text somewhere, so none may borrow the approval
+// look, unless listed here as the approval surface itself or the code that hosts it. A new
+// feature folder is covered without being added anywhere.
+export const FEATURES_DIR = 'src/lib/features/';
+export const APPROVAL_SURFACE_FILES = new Set([
+	'src/lib/features/chat/index.ts',
+	'src/lib/features/chat/chat-screen.svelte',
+	'src/lib/features/chat/components/approval-tray.svelte',
+	'src/lib/features/chat/components/ask-card.svelte',
+	'src/lib/features/chat/components/conversation.svelte',
+	'src/lib/features/home/components/home-row.svelte',
+	'src/lib/features/home/components/peek.svelte'
+]);
+export const isAgentRecord = (file: string) =>
+	file.startsWith(FEATURES_DIR) && !APPROVAL_SURFACE_FILES.has(file);
 const RECORD_BANNED: [RegExp, string][] = [
 	[
 		/\b(?:bg|text|border|ring|fill|stroke|outline|from|to|via)-approval\b|approval-surface/,

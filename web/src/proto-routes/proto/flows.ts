@@ -1,10 +1,9 @@
 import type { Component } from 'svelte';
 import type { FeatureCheck } from '$lib/core/nav/tabs';
-import NeedsYou from './screens/needs-you.svelte';
 import { ChatScreen } from '$lib/features/chat';
+import { SettingsScreen } from '$lib/features/settings';
 import HomeScreen from './components/home-screen.svelte';
 import DiscordDm from './components/discord-dm.svelte';
-import * as f from './fixtures';
 import * as c from '$lib/features/chat/fixtures';
 import { m23Flows, m23Routes } from './m23-flows';
 import { m4Flows, m4Routes } from './m4-flows';
@@ -88,21 +87,31 @@ export const deviations = [
 	}
 ];
 
+const settings = (push: string, props: Record<string, unknown> = {}) => ({
+	back: { href: '/more', label: 'Back' },
+	me: { status: 'ready', data: { login: 'owner@example.com' } },
+	push,
+	theme: 'system',
+	version: '2026.09.30',
+	standalone: true,
+	...props
+});
+
 export const flows: Flow[] = [
 	{
 		id: 'install',
 		code: 'IN',
 		title: 'Install and first launch',
 		intro:
-			'iOS has no install prompt, so a Safari tab shows a quiet hint. The installed app opens full screen. Notifications are asked for only after you tap "Enable notifications", which says what will ring.',
+			'Chrome offers to install; the app shows a quiet hint until you do or dismiss it. The installed app opens full screen. Notifications are asked for only after you turn them on in Settings, which says what will ring. iOS install is out of scope for now.',
 		frames: [
 			{
 				id: 'in-1',
-				label: 'In a Safari tab',
-				screen: NeedsYou,
-				props: { items: f.inbox, hint: 'install' },
-				chrome: 'safari',
-				next: 'Share → Add to Home Screen'
+				label: 'In a Chrome tab: the install hint',
+				screen: ChatScreen,
+				props: { messages: [], canInstall: true },
+				shell: true,
+				next: 'Install'
 			},
 			{
 				id: 'in-2',
@@ -115,50 +124,49 @@ export const flows: Flow[] = [
 			},
 			{
 				id: 'in-3',
-				label: 'First launch: notifications not asked',
-				screen: NeedsYou,
-				props: { items: f.inbox, hint: 'push' },
-				next: 'Tap Enable notifications',
-				hits: { 'enable notifications': 'in-4' }
+				label: 'Settings: notifications not asked yet',
+				screen: SettingsScreen,
+				props: settings('off'),
+				shell: true,
+				tab: 'more',
+				next: 'Turn on',
+				hits: { 'notify this device': 'in-4' }
 			},
 			{
 				id: 'in-4',
 				label: 'System ask, after the tap',
-				screen: NeedsYou,
-				props: { items: f.inbox, hint: 'push' },
+				screen: SettingsScreen,
+				props: settings('off', { pushBusy: true }),
+				shell: true,
+				tab: 'more',
 				alert: 'push',
 				next: 'Allow'
 			},
 			{
 				id: 'in-5',
 				label: 'Notifications on',
-				screen: NeedsYou,
-				props: {
-					items: f.inbox,
-					toast: 'Notifications on. Approvals, questions, failures, and replies while you are away.'
-				}
+				screen: SettingsScreen,
+				props: settings('on'),
+				shell: true,
+				tab: 'more'
 			},
 			{
 				id: 'in-6',
-				label: 'Blocked in settings, with steps',
-				screen: NeedsYou,
-				props: { items: f.inbox, hint: 'push', push: 'denied' },
+				label: 'Blocked, with steps to undo it',
+				screen: SettingsScreen,
+				props: settings('blocked'),
+				shell: true,
+				tab: 'more',
 				branch: 'Don’t allow, or blocked earlier'
 			},
 			{
 				id: 'in-7',
 				label: 'Unsupported browser',
-				screen: NeedsYou,
-				props: { items: f.inbox, hint: 'push', push: 'unsupported' },
-				chrome: 'safari',
+				screen: SettingsScreen,
+				props: settings('unsupported'),
+				shell: true,
+				tab: 'more',
 				branch: 'No Push API in this browser'
-			},
-			{
-				id: 'in-8',
-				label: 'Persistent hint while notifications are off',
-				screen: NeedsYou,
-				props: { items: f.inbox, hint: 'push-off' },
-				branch: 'Hint dismissed but still off'
 			}
 		]
 	},

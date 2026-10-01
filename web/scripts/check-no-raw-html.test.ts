@@ -1,9 +1,9 @@
 /// <reference types="bun" />
 import { describe, expect, test } from 'bun:test';
 import {
-	AGENT_RECORD_DIRS,
-	AGENT_RECORD_FILES,
+	APPROVAL_SURFACE_FILES,
 	checkSource,
+	FEATURES_DIR,
 	COPY_BUTTON,
 	MARKDOWN,
 	MESSAGE_ACTIONS
@@ -46,15 +46,17 @@ describe('check-no-raw-html', () => {
 	test("the agent's records may not borrow the approval look", async () => {
 		const { readdirSync, readFileSync } = await import('node:fs');
 		const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
-		const files = [
-			...AGENT_RECORD_FILES,
-			...AGENT_RECORD_DIRS.flatMap((dir) =>
-				(readdirSync(new URL(`../${dir}`, import.meta.url), { recursive: true }) as string[])
-					.filter((f) => /\.(svelte|ts)$/.test(f) && !f.endsWith('.test.ts'))
-					.map((f) => `${dir}${f.replace(/\\/g, '/')}`)
-			)
-		];
-		expect(files.filter((f) => f.endsWith('.svelte')).length).toBeGreaterThan(0);
+		const files = (
+			readdirSync(new URL(`../${FEATURES_DIR}`, import.meta.url), { recursive: true }) as string[]
+		)
+			.filter((f) => /\.(svelte|ts)$/.test(f) && !f.endsWith('.test.ts'))
+			.map((f) => `${FEATURES_DIR}${f.replace(/\\/g, '/')}`)
+			.filter((f) => !APPROVAL_SURFACE_FILES.has(f));
+		for (const dir of ['runs', 'history', 'memory', 'skills', 'connectors', 'briefing', 'threads'])
+			expect(
+				files.some((f) => f.startsWith(`${FEATURES_DIR}${dir}/`)),
+				dir
+			).toBe(true);
 		for (const file of files) {
 			expect(rules(file, read(file)), file).toEqual([]);
 			const planted =
@@ -69,6 +71,9 @@ describe('check-no-raw-html', () => {
 			);
 		}
 		expect(rules('src/lib/features/home/components/peek.svelte', '<ApprovalTray />')).toEqual([]);
+		expect(
+			rules('src/lib/features/some-new-feature/new-screen.svelte', '<ShieldCheck />')
+		).toContain('record: shield icon');
 		expect(
 			rules('src/lib/features/runs/run-detail-screen.svelte', '<p>{run.approvals.length}</p>')
 		).toEqual([]);

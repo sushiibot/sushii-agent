@@ -11,6 +11,14 @@ const RUN = {
 	syncOld: '01K6AT9F1H3K5N7Q9S1V3X5Z7B'
 };
 
+/** The next local clock time h:m after `now`. */
+function nextAt(now: number, h: number, m: number): string {
+	const d = new Date(now);
+	d.setHours(h, m, 0, 0);
+	if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+	return d.toISOString();
+}
+
 export function jobDetails(now: number): JobDetail[] {
 	const H = 60;
 	const D = 24 * H;
@@ -19,7 +27,7 @@ export function jobDetails(now: number): JobDetail[] {
 			id: 'nightly-sync',
 			name: 'Back up projects',
 			schedule: 'Nightly 02:00',
-			nextRun: at(now, 9 * H),
+			nextRun: nextAt(now, 2, 0),
 			enabled: true,
 			prompt: 'Back up the projects folder to the home server and say if anything failed.',
 			last: {
@@ -67,7 +75,7 @@ export function jobDetails(now: number): JobDetail[] {
 			id: 'briefing',
 			name: 'Morning briefing',
 			schedule: 'Daily 07:30',
-			nextRun: at(now, 15 * H),
+			nextRun: nextAt(now, 7, 30),
 			enabled: true,
 			prompt: 'Write my morning briefing with sources.',
 			last: { at: at(now, -9 * H), result: 'sent', note: '5 items', runId: RUN.brief },

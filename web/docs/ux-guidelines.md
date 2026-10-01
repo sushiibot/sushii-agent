@@ -4,7 +4,7 @@ Rules for every screen in the personal agent web app. The bar: better than the D
 
 Every rule has a one-line why and a check. A rule without a check is a wish, so review goes rule by rule and asks "did the check pass?"
 
-The clickable prototype (`src/proto-routes/proto`, with the shipped chat components in `src/lib/features/chat`) sets the design direction. Where the prototype breaks a rule below, the rule wins; see [Known gaps](#known-gaps-in-the-prototype).
+The clickable prototype (`src/proto-routes/proto`, which renders the shipped feature screens from `src/lib/features` on their fixtures) sets the design direction. Where the prototype breaks a rule below, the rule wins; see [Known gaps](#known-gaps-in-the-prototype).
 
 ## Check key
 
@@ -61,7 +61,7 @@ expect(small).toEqual([]);
   Why: since Chrome 108 the keyboard resizes only the visual viewport by default; `resizes-content` restores resizing the layout, so a flex column keeps the composer above the keyboard with no script ([Chrome: viewport resize behavior](https://developer.chrome.com/blog/viewport-resize-behavior)). `viewport-fit=cover` opts into edge-to-edge drawing so the app, not Chrome, owns the gesture-bar area ([Chrome edge-to-edge guide](https://developer.chrome.com/docs/css-ui/edge-to-edge)). Check: `review` of `app.html`.
 
 - **The keyboard never covers the composer or the focused field.** Why: the most common "this app is broken" moment on phones; also WCAG 2.4.11 Focus Not Obscured. Check: `phone`: open a chat, tap the composer, type three lines; the composer and its send button stay fully visible.
-- **Keep the `--kb` visualViewport fallback for iOS, where `interactive-widget` has not shipped.** Why: iOS overlays the keyboard; the layout does not resize. Check: `review` (the fallback is already in `app-shell.svelte`).
+- **Keep the `--kb` visualViewport fallback for iOS, where `interactive-widget` has not shipped.** Why: iOS overlays the keyboard; the layout does not resize. Check: `review` (the shell and sheets read `--kb`, defined in `app.css`).
 - **The app root uses `100dvh` or `inset: 0`, never `100vh`.** Why: `100vh` ignores the dynamic browser UI and the keyboard. Check: `rg -n -g '!src/proto-routes/**' '100vh|h-screen' src` returns nothing (`h-screen`, `min-h-screen` and `max-h-screen` compile to `100vh`).
 - **Anything pinned to the top or bottom pads with `env(safe-area-inset-*)`: the header adds `--safe-top`, the tab bar and composer add `--safe-bottom`.** Why: edge-to-edge content otherwise sits under the status bar and the gesture bar. Check: `phone` with gesture navigation on; nothing tappable overlaps the gesture pill.
 - **The bottom tab bar hides while the keyboard is open.** Why: it eats a quarter of the space left above the keyboard. Check: `phone`.
@@ -358,11 +358,7 @@ Seen in open-source agent UIs and chat apps. Don't ship any of these.
 
 ## Known gaps in the prototype
 
-The prototype currently breaks these rules. Fix each when its screen is ported out of `/proto`:
-
-- The app-shell sheet is a `div role="dialog"`, so the Android back gesture does not close it.
-- Tool calls render as one `<details>` per call instead of one collapsed "Working" row per turn.
-- The chat has no "New messages" pill, no delivery states, and no offline or reconnecting banner.
+Every frame on the board is a shipped feature screen, so the board breaks no rule the app keeps. Screens whose backend doesn't exist yet run on fixtures behind their feature flag; their gaps are in what the fixtures can show, not in the screens.
 
 ## Sources
 

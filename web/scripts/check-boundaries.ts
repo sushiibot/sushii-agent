@@ -67,7 +67,6 @@ export function resolveSpecifier(
 
 const LIB = 'src/lib/';
 const PROTO = 'src/proto-routes/';
-const PROTO_SCREENS = 'src/proto-routes/proto/screens/';
 
 function feature(path: string): { name: string; rest: string } | null {
 	const m = path.match(/^src\/lib\/features\/([^/]+)\/(.+)$/);
@@ -149,12 +148,7 @@ export function checkImport(from: string, target: string | null): string | null 
 			return 'the prototype takes only the nav table from core';
 		}
 		if (toFeature && !isPublic(toFeature.rest) && toFeature.rest !== 'fixtures.ts') {
-			// Until M4 ships threads and the workbench, their mock screens borrow chat's parts.
-			const exempt =
-				from.startsWith(PROTO_SCREENS) &&
-				toFeature.name === 'chat' &&
-				/^(components|render)\//.test(toFeature.rest);
-			if (!exempt) return `import ${toFeature.name} through its index.ts or fixtures.ts`;
+			return `import ${toFeature.name} through its index.ts or fixtures.ts`;
 		}
 		return null;
 	}
