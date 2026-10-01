@@ -40,11 +40,15 @@ export const DYNAMIC_TAG_EXEMPT = new Set<string>([]);
 export const MARKDOWN = 'src/lib/features/chat/render/markdown.svelte';
 // Markdown's one control: an icon button that copies its own code block.
 export const COPY_BUTTON = 'src/lib/features/chat/render/code-copy-button.svelte';
-// The row of buttons under each message: it sits next to agent text, so it may never look like
-// the approval surface either.
+// The row under every message, agent replies included, sits next to agent text.
 export const MESSAGE_ACTIONS = 'src/lib/features/chat/components/message-actions.svelte';
-const NOT_APPROVAL = new Set([COPY_BUTTON, MESSAGE_ACTIONS]);
-const MARKDOWN_IMPORTS = new Set(['../types', './markdown', './code-copy-button.svelte']);
+const LOOKALIKE = new Set([MARKDOWN, COPY_BUTTON, MESSAGE_ACTIONS]);
+const MARKDOWN_IMPORTS = new Set([
+	'../types',
+	'./markdown',
+	'./streaming',
+	'./code-copy-button.svelte'
+]);
 
 const APPROVAL_LOOKALIKE: [RegExp, string][] = [
 	[/approval|data-surface/i, 'markdown: approval surface token'],
@@ -97,7 +101,7 @@ function templateRules(file: string, source: string): Violation[] {
 	const out: Violation[] = [];
 	const at = (start: number, rule: string) => out.push({ file, line: lineOf(source, start), rule });
 	const markdown = file === MARKDOWN;
-	const lookalike = markdown || NOT_APPROVAL.has(file);
+	const lookalike = LOOKALIKE.has(file);
 	const ast = parse(source, { filename: file, modern: true });
 	visit(ast.fragment, (n) => {
 		if (n.type === 'HtmlTag') at(n.start, '{@html}');
@@ -121,7 +125,7 @@ function templateRules(file: string, source: string): Violation[] {
 
 export function checkSource(file: string, source: string): Violation[] {
 	const out: Violation[] = file.endsWith('.svelte') ? templateRules(file, source) : [];
-	const lookalike = file === MARKDOWN || NOT_APPROVAL.has(file);
+	const lookalike = LOOKALIKE.has(file);
 	source.split('\n').forEach((text, i) => {
 		const add = (rule: string) => out.push({ file, line: i + 1, rule });
 		for (const [re, rule] of SINKS) if (re.test(text)) add(rule);

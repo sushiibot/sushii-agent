@@ -95,7 +95,8 @@ describe('check-no-raw-html', () => {
 					[
 						"import type { MdBlock } from '../types';",
 						"import CodeCopyButton from './code-copy-button.svelte';",
-						"import { parseMarkdown } from './markdown';"
+						"import { parseMarkdown } from './markdown';",
+						"import { caretHost, MarkdownStream } from './streaming';"
 					].join('\n')
 				)
 			)
@@ -115,6 +116,9 @@ describe('check-no-raw-html', () => {
 			'markdown: import $lib/ui/button'
 		);
 		expect(rules(md, script("const m = import('./x');"))).toContain('markdown: dynamic import');
+		expect(rules(md, script("import { mount } from 'svelte';"))).toContain(
+			'markdown: import svelte'
+		);
 	});
 
 	test('the Copy button may be a button but never looks like an approval', () => {
@@ -127,11 +131,22 @@ describe('check-no-raw-html', () => {
 		expect(rules(copy, '<button {...rest}>x</button>')).toContain('markdown: spread attributes');
 	});
 
+	test('the message action row may hold buttons but never looks like an approval', () => {
+		const row = MESSAGE_ACTIONS;
+		expect(rules(row, '<button type="button" onclick={a.onclick}>x</button>')).toEqual([]);
+		expect(rules(row, '<div class="border-approval">x</div>')).toContain(
+			'markdown: approval surface token'
+		);
+		expect(rules(row, '<ShieldAlert />')).toContain('markdown: shield icon');
+		expect(rules(row, '<button {...rest}>x</button>')).toContain('markdown: spread attributes');
+	});
+
 	test('the real source tree is clean', async () => {
 		const { readFileSync } = await import('node:fs');
 		for (const file of [
 			MARKDOWN,
 			COPY_BUTTON,
+			MESSAGE_ACTIONS,
 			'src/lib/features/chat/components/approval-tray.svelte'
 		]) {
 			expect(

@@ -16,7 +16,7 @@ const REPLY =
 const REPLY_PLAIN = 'Booked Eastside Auto for Saturday 09:00.\n\nConfirmation BK-5520\nDirections';
 
 async function chatServer(context: BrowserContext, history: unknown[]) {
-	const opts = { messageStatus: 202 };
+	const opts: { messageStatus: number | 'abort' } = { messageStatus: 202 };
 	await stubStream(context);
 	await context.route('**/api/**', async (route) => {
 		const req = route.request();
@@ -25,6 +25,7 @@ async function chatServer(context: BrowserContext, history: unknown[]) {
 			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
 		if (path === '/api/chat/history') return json({ items: history, before: null });
 		if (path === '/api/chat/messages') {
+			if (opts.messageStatus === 'abort') return route.abort();
 			if (opts.messageStatus !== 202) return json({ error: 'bad' }, opts.messageStatus);
 			return json({ seq: 1 }, 202);
 		}
@@ -42,7 +43,7 @@ async function open(page: Page) {
 const bubble = (page: Page, text: string) =>
 	page.locator('[data-message-id]').filter({ hasText: text });
 const row = (page: Page, text: string) =>
-	bubble(page, text).getByRole('group', { name: 'Message actions' });
+	bubble(page, text).getByRole('group', { name: /^Actions for/ });
 const opacity = (page: Page, text: string) =>
 	row(page, text).evaluate((e) => getComputedStyle(e).opacity);
 
@@ -72,13 +73,15 @@ test('Copy and Share sit under the reply; Copy takes the rendered text and says 
 
 	const reply = row(page, 'Booked Eastside');
 	await expect(reply.getByRole('button')).toHaveText(['', '']);
-	await expect(reply.getByRole('button', { name: 'Copy' })).toBeVisible();
-	await expect(reply.getByRole('button', { name: 'Share' })).toBeVisible();
+	await expect(reply).toHaveAccessibleName('Actions for the reply');
+	await expect(reply.getByRole('button', { name: 'Copy reply' })).toBeVisible();
+	await expect(reply.getByRole('button', { name: 'Share reply' })).toBeVisible();
 	await expect(reply.getByRole('button', { name: /approve|allow|run|deny/i })).toHaveCount(0);
 	await expect(row(page, 'Book the car service').getByRole('button')).toHaveCount(1);
 	await expect(
-		row(page, 'Book the car service').getByRole('button', { name: 'Copy' })
+		row(page, 'Book the car service').getByRole('button', { name: 'Copy your message' })
 	).toBeVisible();
+	await expect(row(page, 'Book the car service')).toHaveAccessibleName('Actions for your message');
 
 	const copy = reply.getByRole('button', { name: 'Copy' });
 	const icon = await copy.innerHTML();
@@ -139,26 +142,60 @@ test('on a touch screen every row shows; with a mouse, older rows wait for hover
 
 	await row(p, 'Book the car').getByRole('button', { name: 'Copy' }).focus();
 	await expect.poll(() => opacity(p, 'Book the car')).toBe('1');
+
+	// With a mouse, your own message's row sits beside the bubble and adds no height.
+	const own = await bubble(p, 'And the tyres').evaluate((li) => {
+		const text = li.querySelector('[data-message-text]')!.getBoundingClientRect();
+		const group = li.querySelector('[role="group"]')!.getBoundingClientRect();
+		return {
+			li: li.getBoundingClientRect().height,
+			text: text.height,
+			groupRight: group.right,
+			textLeft: text.left,
+			groupBottom: group.bottom,
+			textBottom: text.bottom
+		};
+	});
+	expect(own.li).toBe(own.text);
+	expect(own.groupRight).toBeLessThanOrEqual(own.textLeft);
+	expect(own.groupBottom).toBe(own.textBottom);
+	await bubble(p, 'And the tyres').locator('[data-message-text]').hover();
+	await expect.poll(() => opacity(p, 'And the tyres')).toBe('1');
+	expect(await bubble(p, 'And the tyres').evaluate((li) => li.getBoundingClientRect().height)).toBe(
+		own.li
+	);
 	await mouse.close();
 });
 
-test('failed and queued messages keep Retry and Delete inline instead of a Copy row', async ({
+test('failed and queued messages keep Copy, Retry and Delete inline instead of a row', async ({
 	page,
 	context
 }) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 	const opts = await chatServer(context, [item('assistant', 'r1', REPLY)]);
 	await open(page);
 	opts.messageStatus = 400;
 	await page.getByRole('textbox', { name: 'Message' }).fill('This one fails');
 	await page.getByRole('button', { name: 'Send message' }).click();
 	await expect(bubble(page, 'This one fails')).toContainText('Failed');
-	await expect(
-		bubble(page, 'This one fails').getByRole('button', { name: 'Retry send' })
-	).toBeVisible();
-	await expect(
-		bubble(page, 'This one fails').getByRole('button', { name: 'Delete' })
-	).toBeVisible();
-	await expect(row(page, 'This one fails')).toHaveCount(0);
+
+	opts.messageStatus = 'abort';
+	await context.setOffline(true);
+	await page.getByRole('textbox', { name: 'Message' }).fill('This one waits');
+	await page.getByRole('button', { name: 'Send message' }).click();
+	await expect(bubble(page, 'This one waits')).toContainText(
+		"Queued, sends when you're back online"
+	);
+
+	for (const text of ['This one fails', 'This one waits']) {
+		const b = bubble(page, text);
+		await expect(b.getByRole('button', { name: 'Retry send' })).toBeVisible();
+		await expect(b.getByRole('button', { name: 'Delete' })).toBeVisible();
+		await expect(row(page, text)).toHaveCount(0);
+		await b.getByRole('button', { name: 'Copy your message' }).click();
+		expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(text);
+	}
+	await context.setOffline(false);
 });
 
 test('right-click, middle-click and a touch hold are left to the browser', async ({

@@ -9,6 +9,9 @@
 </script>
 
 <div id="solo"></div>
+<div id="streamed">
+	<Markdown text={api.stream.text} streaming={api.stream.streaming} />
+</div>
 <p id="counter">{api.counter}</p>
 <div id="list">
 	{#each api.messages as m, i (i)}

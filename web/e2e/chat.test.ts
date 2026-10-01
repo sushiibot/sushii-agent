@@ -1241,7 +1241,7 @@ test('an approval and an ask waiting in the bot log show from the first frame', 
 	await expect(page.getByRole('button', { name: 'Tue' })).toBeVisible();
 });
 
-test('agent text stays unparsed while it streams and renders as markdown once the turn ends', async ({
+test('agent text renders as markdown while it streams, and finishing moves and re-mounts nothing', async ({
 	page,
 	context
 }) => {
@@ -1251,13 +1251,46 @@ test('agent text stays unparsed while it streams and renders as markdown once th
 		turnId: 't1',
 		view: { turnId: 't1', startedAt: Date.now(), lines: [], toolCount: 0, text: '' }
 	});
-	await push(page, 'delta', { turnId: 't1', offset: 0, text: 'Use **bold** here' });
-	const reply = page.locator('[data-message-id]').filter({ hasText: 'Use' });
-	await expect(reply).toContainText('Use **bold** here');
-	await expect(reply.locator('strong')).toHaveCount(0);
-	await push(page, 'turn_final', { turnId: 't1', outcome: 'done', summary: null }, 1);
-	await expect(reply.locator('strong')).toHaveText('bold');
+	const text = 'Intro with **bold** text.\n\n- one\n- two\n\n```sh\nls -la\n```\n\nMore **bo';
+	let offset = 0;
+	for (let i = 0; i < text.length; i += 9) {
+		await push(page, 'delta', { turnId: 't1', offset, text: text.slice(i, i + 9) });
+		offset += Math.min(9, text.length - i);
+	}
+	const reply = page.locator('[data-message-id]').filter({ hasText: 'Intro' });
+	await expect(reply.locator('pre')).toHaveText('ls -la');
+	await expect(reply.locator('strong')).toHaveText(['bold', 'bo']);
+	await expect(reply.locator('[data-message-text] li')).toHaveText(['one', 'two']);
 	await expect(reply).not.toContainText('**');
+	await expect(reply.locator('[data-caret]')).toHaveCount(1);
+
+	const measure = () =>
+		reply.evaluate((li) => {
+			const base = li.getBoundingClientRect();
+			const w = window as unknown as { __kept?: Element[] };
+			const blocks = [
+				...li.querySelectorAll('[data-message-text] > div > :not(:last-child)'),
+				li.querySelector('[role="group"]')!
+			];
+			w.__kept ??= blocks;
+			return {
+				connected: w.__kept.map((e) => e.isConnected && blocks.includes(e)),
+				rects: w.__kept.map((e) => {
+					const r = e.getBoundingClientRect();
+					return [r.top - base.top, r.left - base.left, r.width, r.height];
+				})
+			};
+		});
+	const before = await measure();
+	expect(before.rects.length).toBeGreaterThanOrEqual(4);
+	await push(page, 'delta', { turnId: 't1', offset, text: 'ld** end.' });
+	await expect(reply.locator('strong')).toHaveText(['bold', 'bold']);
+	await push(page, 'turn_final', { turnId: 't1', outcome: 'done', summary: null }, 1);
+	await expect(reply.locator('[data-caret]')).toHaveCount(0);
+	await expect(reply.getByRole('button', { name: 'Copy reply' })).toBeVisible();
+	const after = await measure();
+	expect(after.connected.every(Boolean)).toBe(true);
+	expect(after.rects).toEqual(before.rects);
 });
 
 const XSS_TEXT = [

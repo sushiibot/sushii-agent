@@ -320,22 +320,51 @@ export function emphasisDelimiters(text: string): number {
 	return n;
 }
 
+/** True when `text` must render unparsed: too long, too deeply nested, or too many delimiters. */
+export function exceedsParseLimits(text: string): boolean {
+	return (
+		text.length > MARKDOWN_PARSE_MAX ||
+		containerDepthExceeds(text) ||
+		emphasisDelimiters(text) > EMPHASIS_DELIMITER_MAX
+	);
+}
+
+const parseRoot = (text: string) =>
+	fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+
 /** Parses agent markdown (CommonMark + GFM) to a render tree. Raw HTML is kept as literal text.
  *  Never throws: input the parser can't handle safely comes back as one plain-text block. */
 export function parseMarkdown(text: string, ctx: RenderContext = {}): MdBlockNode[] {
 	const plain: MdBlockNode[] = [{ kind: 'plain', text }];
-	if (
-		text.length > MARKDOWN_PARSE_MAX ||
-		containerDepthExceeds(text) ||
-		emphasisDelimiters(text) > EMPHASIS_DELIMITER_MAX
-	) {
-		return plain;
-	}
+	if (exceedsParseLimits(text)) return plain;
 	try {
-		const root = fromMarkdown(text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+		const root = parseRoot(text);
 		return new Renderer(root, ctx).blocks(root.children, 0);
 	} catch {
 		return plain;
+	}
+}
+
+/** One top-level markdown node: its source span and its render blocks. */
+export interface TopLevelBlock {
+	start: number;
+	end: number;
+	blocks: MdBlockNode[];
+}
+
+/** Each top-level node of `text` with its source offsets, or null when the parser throws.
+ *  Skips the limit checks: the caller runs them on the whole message. */
+export function parseTopLevel(text: string, ctx: RenderContext = {}): TopLevelBlock[] | null {
+	try {
+		const root = parseRoot(text);
+		const renderer = new Renderer(root, ctx);
+		return root.children.map((node) => ({
+			start: node.position?.start.offset ?? 0,
+			end: node.position?.end.offset ?? text.length,
+			blocks: renderer.blocks([node], 0)
+		}));
+	} catch {
+		return null;
 	}
 }
 
