@@ -2,6 +2,7 @@
 // for information about these interfaces
 import type { ChatSheet } from '$lib/features/chat';
 import type { HomeSheet } from '$lib/features/home';
+import type { ThreadSheet } from '$lib/features/threads';
 
 declare global {
 	namespace App {
@@ -9,7 +10,7 @@ declare global {
 		// interface Locals {}
 		// interface PageData {}
 		/** Every sheet a route can open; each feature adds its own union. */
-		type SheetId = ChatSheet | HomeSheet;
+		type SheetId = ChatSheet | HomeSheet | ThreadSheet;
 		interface PageState {
 			sheet?: SheetId;
 			/** What the sheet is about, such as a message id. */

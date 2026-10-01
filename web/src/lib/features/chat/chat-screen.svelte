@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, type Snippet } from 'svelte';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronUp from '@lucide/svelte/icons/chevron-up';
 	import Download from '@lucide/svelte/icons/download';
@@ -27,6 +27,11 @@
 
 	let {
 		messages,
+		title = 'Main',
+		placeholder,
+		subtitle: subtitleOverride,
+		headerActions,
+		readOnly,
 		history = 'ready',
 		hasOlder = false,
 		olderLoading = false,
@@ -69,9 +74,22 @@
 		onanswer,
 		ondecide,
 		oninstall,
-		onreload
+		onreload,
+		onbranch,
+		onstartthread,
+		onkeephere
 	}: {
 		messages: ChatMessage[];
+		/** The conversation's name in the header. */
+		title?: string;
+		/** The composer's hint, naming where the message goes. */
+		placeholder?: string;
+		/** Replaces the line under the title. */
+		subtitle?: Snippet;
+		/** Header buttons before the command menu. */
+		headerActions?: Snippet;
+		/** Shown instead of the composer, for a conversation that can't take messages. */
+		readOnly?: Snippet;
 		history?: 'loading' | 'ready' | 'error';
 		hasOlder?: boolean;
 		olderLoading?: boolean;
@@ -121,6 +139,11 @@
 		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
 		oninstall?: () => Promise<'accepted' | 'dismissed' | 'failed'>;
 		onreload?: () => void;
+		/** Starts a thread from a reply; without it replies have no Start-a-thread button. */
+		onbranch?: (message: ChatMessage) => void;
+		/** Accepts or declines the agent's offer to move a topic into a thread. */
+		onstartthread?: (messageId: string) => void;
+		onkeephere?: (messageId: string) => void;
 	} = $props();
 
 	const ARM_MS = 1000;
@@ -432,19 +455,22 @@
 	{/if}
 {/snippet}
 
-{#snippet subtitle()}
+{#snippet defaultSubtitle()}
 	<span class="text-xs text-muted-foreground">
 		{#if running}The agent is working{:else}Your agent{/if}
 	</span>
 {/snippet}
 
 {#snippet actions()}
-	<Button
-		variant="ghost"
-		class="size-12 px-0"
-		aria-label="Chat commands"
-		onclick={() => onopensheet?.('commands')}><EllipsisVertical class="size-5" /></Button
-	>
+	{@render headerActions?.()}
+	{#if !readOnly}
+		<Button
+			variant="ghost"
+			class="size-12 px-0"
+			aria-label="Chat commands"
+			onclick={() => onopensheet?.('commands')}><EllipsisVertical class="size-5" /></Button
+		>
+	{/if}
 	<a
 		href={settingsHref}
 		aria-label="Settings"
@@ -490,35 +516,40 @@
 			>
 		</div>
 	{/if}
-	<div class="border-t">
-		{#if shownTray}
-			<ApprovalTray
-				{...shownTray}
-				onapprove={(nonce) => ondecide?.(nonce, 'approve')}
-				ondeny={(nonce) => ondecide?.(nonce, 'deny')}
+	{#if readOnly}
+		<div class="border-t">{@render readOnly()}</div>
+	{:else}
+		<div class="border-t">
+			{#if shownTray}
+				<ApprovalTray
+					{...shownTray}
+					onapprove={(nonce) => ondecide?.(nonce, 'approve')}
+					ondeny={(nonce) => ondecide?.(nonce, 'deny')}
+				/>
+			{/if}
+			<Composer
+				bind:value={() => draft, (v) => ondraft?.(v)}
+				{placeholder}
+				{running}
+				{stopping}
+				stop={!shownTray || !!shownTray.collapsed}
+				{photos}
+				{quotaFull}
+				onsend={send}
+				onstop={() => void onstop?.()}
+				onattach={(files) => onattach?.(files)}
+				onremovephoto={(id) => onremovephoto?.(id)}
+				onretryphoto={(id) => onretryphoto?.(id)}
+				status={usageStatus}
 			/>
-		{/if}
-		<Composer
-			bind:value={() => draft, (v) => ondraft?.(v)}
-			{running}
-			{stopping}
-			stop={!shownTray || !!shownTray.collapsed}
-			{photos}
-			{quotaFull}
-			onsend={send}
-			onstop={() => void onstop?.()}
-			onattach={(files) => onattach?.(files)}
-			onremovephoto={(id) => onremovephoto?.(id)}
-			onretryphoto={(id) => onretryphoto?.(id)}
-			status={usageStatus}
-		/>
-	</div>
+		</div>
+	{/if}
 {/snippet}
 
 <Screen
-	title="Main"
+	{title}
 	{back}
-	{subtitle}
+	subtitle={subtitleOverride ?? defaultSubtitle}
 	{actions}
 	{banner}
 	{footer}
@@ -592,6 +623,9 @@
 				onanswer={(askId, answer) => onanswer?.(askId, answer)}
 				onretryhistory={() => onretryhistory?.()}
 				oncopy={copyMessage}
+				{onbranch}
+				{onstartthread}
+				{onkeephere}
 				onshare={canShare ? shareMessage : undefined}
 				{copied}
 			/>

@@ -39,6 +39,16 @@ export interface KeyValue<T> {
 	delete(key: string): Promise<void>;
 }
 
+/** Rows kept in memory only, for conversations that must not touch the device's real outbox. */
+export function memoryKeyValue<T>(keyOf: (v: T) => string): KeyValue<T> {
+	const rows = new Map<string, T>();
+	return {
+		all: async () => [...rows.values()],
+		put: async (v) => void rows.set(keyOf(v), v),
+		delete: async (key) => void rows.delete(key)
+	};
+}
+
 const DB = 'agent-chat';
 const VERSION = 1;
 

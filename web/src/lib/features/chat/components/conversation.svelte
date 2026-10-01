@@ -16,7 +16,6 @@
 	import Copy from '@lucide/svelte/icons/copy';
 	import Share2 from '@lucide/svelte/icons/share-2';
 	import { Button } from '$lib/ui/button';
-	import { Switch } from '$lib/ui/switch';
 	import { cn } from '$lib/utils';
 	import AskCard from './ask-card.svelte';
 	import FilesBlock from './files-block.svelte';
@@ -46,6 +45,9 @@
 		onretryhistory,
 		oncopy,
 		onshare,
+		onbranch,
+		onstartthread,
+		onkeephere,
 		copied
 	}: {
 		messages: ChatMessage[];
@@ -63,6 +65,10 @@
 		oncopy?: (message: ChatMessage) => void;
 		/** Share, where the browser can. */
 		onshare?: (message: ChatMessage) => void;
+		/** Starts a thread from a reply, where threads exist. */
+		onbranch?: (message: ChatMessage) => void;
+		onstartthread?: (messageId: string) => void;
+		onkeephere?: (messageId: string) => void;
 		/** The message just copied, whose Copy shows a check for a moment. */
 		copied?: string;
 	} = $props();
@@ -80,11 +86,23 @@
 			icon: copied === message.id ? Check : Copy,
 			onclick: () => oncopy(message)
 		};
-		if (message.role === 'user' || !onshare) return [copy];
-		return [
-			copy,
-			{ id: 'share', label: 'Share reply', icon: Share2, onclick: () => onshare(message) }
-		];
+		if (message.role === 'user') return [copy];
+		const out = [copy];
+		if (onshare)
+			out.push({
+				id: 'share',
+				label: 'Share reply',
+				icon: Share2,
+				onclick: () => onshare(message)
+			});
+		if (onbranch)
+			out.push({
+				id: 'branch',
+				label: 'Start a thread from here',
+				icon: Split,
+				onclick: () => onbranch(message)
+			});
+		return out;
 	}
 
 	const uid = $props.id();
@@ -271,10 +289,14 @@
 									class="inline-flex items-center gap-1 self-start text-sm font-medium text-brand hover:underline"
 									>Moved to the thread<ArrowUpRight class="size-3.5" aria-hidden="true" /></a
 								>
-							{:else}
+							{:else if onstartthread}
 								<div class="flex flex-wrap gap-2">
-									<Button size="lg"><Split />Start thread</Button>
-									<Button size="lg" variant="ghost">Keep it here</Button>
+									<Button size="lg" onclick={() => onstartthread(message.id)}
+										><Split />Start thread</Button
+									>
+									<Button size="lg" variant="ghost" onclick={() => onkeephere?.(message.id)}
+										>Keep it here</Button
+									>
 								</div>
 							{/if}
 						</section>
@@ -283,11 +305,8 @@
 							aria-labelledby="{uid}-brief-{message.id}"
 							class="flex flex-col gap-3 rounded-xl border bg-muted/40 p-3.5 text-sm"
 						>
-							<h2
-								id="{uid}-brief-{message.id}"
-								class="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
-							>
-								From Main
+							<h2 id="{uid}-brief-{message.id}" class="text-xs font-semibold text-muted-foreground">
+								Brief from Main
 							</h2>
 							<div class="flex flex-col gap-1">
 								<h3 class="font-medium">What's known</h3>
@@ -297,23 +316,21 @@
 									{#each part.data.known as line, j (j)}<li>{line}</li>{/each}
 								</ul>
 							</div>
-							<div class="flex flex-col gap-1">
-								<h3 class="font-medium">Open questions</h3>
-								<ul
-									class="flex list-disc flex-col gap-1 pl-5 text-muted-foreground marker:text-border"
-								>
-									{#each part.data.open as line, j (j)}<li>{line}</li>{/each}
-								</ul>
-							</div>
-							<label class="flex items-center justify-between gap-3 border-t pt-3">
-								<span class="flex flex-col">
-									<span>Include the last {part.data.recentFromMain} messages</span>
-									<span class="text-xs text-muted-foreground"
-										>Off: the thread starts from this brief only</span
+							{#if part.data.open.length}
+								<div class="flex flex-col gap-1">
+									<h3 class="font-medium">Open questions</h3>
+									<ul
+										class="flex list-disc flex-col gap-1 pl-5 text-muted-foreground marker:text-border"
 									>
-								</span>
-								<Switch />
-							</label>
+										{#each part.data.open as line, j (j)}<li>{line}</li>{/each}
+									</ul>
+								</div>
+							{/if}
+							<p class="border-t pt-3 text-xs text-muted-foreground">
+								{part.data.recentFromMain
+									? `The thread also got the last ${part.data.recentFromMain} messages from Main.`
+									: 'The thread starts from this brief only, not from Main’s history.'}
+							</p>
 						</section>
 					{:else if part.type === 'data-thread-report'}
 						<a

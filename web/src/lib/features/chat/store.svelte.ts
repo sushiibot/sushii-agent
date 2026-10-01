@@ -937,11 +937,16 @@ export function configureChat(deps: ChatStoreDeps) {
 	configured = deps;
 }
 
-/** A conversation's store, created and started on first use and kept for the app's life. */
-export function chatStore(id: ConversationId = 'main'): ChatStore {
+/**
+ * A conversation's store, created and started on first use and kept for the app's life. Any
+ * conversation but Main needs its own dependencies: the app's stream and API carry only Main, so a
+ * thread on them would show and post to Main.
+ */
+export function chatStore(id: ConversationId = 'main', deps?: ChatStoreDeps): ChatStore {
 	let store = stores.get(id);
 	if (!store) {
-		store = new ChatStore(id, configured);
+		if (id !== 'main' && !deps) throw new Error(`No backend for ${id} yet.`);
+		store = new ChatStore(id, deps ?? configured);
 		stores.set(id, store);
 		void store.start();
 	}

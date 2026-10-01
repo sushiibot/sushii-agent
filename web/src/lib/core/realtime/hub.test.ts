@@ -99,6 +99,21 @@ describe('hub', () => {
 		expect(conversationOf({ type: 'reply', data: { key: 'r', text: '', files: [] } })).toBe('main');
 	});
 
+	test("a thread's own stream carries that thread, never Main", async () => {
+		const fake = fakeTransport({ seq: 1 });
+		const hub = createHub({ transport: fake.transport, carries: 'thread:trip' });
+		const thread: (readonly ChatEnvelope[])[] = [];
+		const main: (readonly ChatEnvelope[])[] = [];
+		hub.subscribe({ conversation: 'thread:trip' }, (b) => thread.push(b));
+		hub.subscribe({ conversation: 'main' }, (b) => main.push(b));
+		hub.start();
+		await tick();
+		fake.emit('reply', { key: 'r', text: 'ok', files: [] });
+		await tick();
+		expect(types(thread).flat()).toEqual(['hello', 'reply']);
+		expect(types(main).flat()).toEqual(['hello']);
+	});
+
 	test('a subscriber that joins after hello gets it replayed with what changed since', async () => {
 		const { fake, hub } = setup();
 		hub.start();

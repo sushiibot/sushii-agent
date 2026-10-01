@@ -1,8 +1,11 @@
 import type { ChatEnvelope, ChatEventType, WorkspaceState } from './events';
 import { fetchSse, type ChatTransport, type TransportState } from './transport';
 
-/** Widens when conversations other than Main reach the wire. */
-export type ConversationId = 'main';
+/**
+ * Main, or a thread. Only Main is on the wire so far: every conversation event is Main's, and a
+ * thread's store runs on its own hub until the envelope carries a conversation id.
+ */
+export type ConversationId = 'main' | `thread:${string}`;
 
 export type GlobalEventType = 'approval' | 'approval_resolved';
 
@@ -47,15 +50,18 @@ const LIFECYCLE = new Set<ChatEventType>(['hello', 'reset', 'workspace']);
 const GLOBALS = new Set<ChatEventType>(['approval', 'approval_resolved']);
 
 /** The conversation an event belongs to, or null for connection-wide events. */
-export function conversationOf(ev: ChatEnvelope): ConversationId | null {
-	return LIFECYCLE.has(ev.type) || GLOBALS.has(ev.type) ? null : 'main';
+export function conversationOf(
+	ev: ChatEnvelope,
+	carries: ConversationId = 'main'
+): ConversationId | null {
+	return LIFECYCLE.has(ev.type) || GLOBALS.has(ev.type) ? null : carries;
 }
 
-function matches(filter: HubFilter, ev: ChatEnvelope): boolean {
+function matches(filter: HubFilter, ev: ChatEnvelope, carries: ConversationId): boolean {
 	if (LIFECYCLE.has(ev.type)) return true;
 	if (GLOBALS.has(ev.type)) return !!filter.globals?.includes(ev.type as GlobalEventType);
 	if (filter.types && !filter.types.includes(ev.type)) return false;
-	return !filter.conversation || conversationOf(ev) === filter.conversation;
+	return !filter.conversation || conversationOf(ev, carries) === filter.conversation;
 }
 
 /** `hello`/`reset` as a subscriber sees it: pending approvals only for those that opted in. */
@@ -87,8 +93,11 @@ class RealtimeHub implements Hub {
 	/** The last `hello`/`reset` and what has changed since, for subscribers that join later. */
 	#snapshot: ChatEnvelope[] = [];
 
-	constructor(makeTransport: () => ChatTransport) {
+	#carries: ConversationId;
+
+	constructor(makeTransport: () => ChatTransport, carries: ConversationId) {
 		this.#makeTransport = makeTransport;
+		this.#carries = carries;
 	}
 
 	useTransport(transport: ChatTransport) {
@@ -124,7 +133,7 @@ class RealtimeHub implements Hub {
 		const sub: Sub = { filter, onBatch };
 		this.#subs.add(sub);
 		const replay = this.#snapshot
-			.filter((ev) => matches(filter, ev))
+			.filter((ev) => matches(filter, ev, this.#carries))
 			.map((ev) => forSubscriber(filter, ev));
 		if (replay.length) {
 			// Before the next frame, so the replay always lands ahead of anything live.
@@ -148,7 +157,7 @@ class RealtimeHub implements Hub {
 		if (!queue.length) return;
 		for (const sub of [...this.#subs]) {
 			const batch = queue
-				.filter((ev) => matches(sub.filter, ev))
+				.filter((ev) => matches(sub.filter, ev, this.#carries))
 				.map((ev) => forSubscriber(sub.filter, ev));
 			if (batch.length) sub.onBatch(batch);
 		}
@@ -223,8 +232,9 @@ class RealtimeHub implements Hub {
 	}
 }
 
-export function createHub(deps: { transport?: ChatTransport } = {}): Hub {
-	return new RealtimeHub(() => deps.transport ?? fetchSse());
+/** `carries`: the conversation every conversation event on this stream belongs to. */
+export function createHub(deps: { transport?: ChatTransport; carries?: ConversationId } = {}): Hub {
+	return new RealtimeHub(() => deps.transport ?? fetchSse(), deps.carries ?? 'main');
 }
 
 /** The app's one stream. */

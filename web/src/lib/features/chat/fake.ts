@@ -50,10 +50,18 @@ function history(): WebHistoryItem[] {
 	return items;
 }
 
-export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } {
+export function createFakeBackend(
+	opts: {
+		/** The conversation so far; a long scripted Main by default. */
+		history?: WebHistoryItem[];
+		/** What every turn answers. */
+		reply?: string;
+	} = {}
+): { transport: ChatTransport; api: ChatApi } {
 	const stream = fakeTransport({ seq: 100, helloDelayMs: 200 });
 	const emit = stream.emit;
-	const all = history();
+	const all = opts.history ?? history();
+	const reply = opts.reply ?? REPLY;
 	let turn: { id: string; stopped: boolean } | null = null;
 	const asks = new Map<string, string[]>();
 
@@ -105,7 +113,7 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			emit('ask', { key: rid(), askId, question: 'When should I pay the invoice?', choices });
 		}
 		let offset = 0;
-		for (const word of REPLY.split(/(?<= )/)) {
+		for (const word of reply.split(/(?<= )/)) {
 			if (!alive()) break;
 			emit('delta', { turnId: id, offset, text: word }, false);
 			offset += word.length;
@@ -117,7 +125,7 @@ export function createFakeBackend(): { transport: ChatTransport; api: ChatApi } 
 			emit('reply', {
 				key: rid(),
 				turnId: id,
-				text: REPLY,
+				text: reply,
 				files: text.includes('file')
 					? [
 							{

@@ -1,8 +1,6 @@
 import type { Component } from 'svelte';
 import type { FeatureCheck } from '$lib/core/nav/tabs';
-import type { Session } from './screens/types';
 import NeedsYou from './screens/needs-you.svelte';
-import ThreadChat from './screens/thread-chat.svelte';
 import { ChatScreen } from '$lib/features/chat';
 import Memory from './screens/memory.svelte';
 import Skills from './screens/skills.svelte';
@@ -10,13 +8,12 @@ import Schedules from './screens/schedules.svelte';
 import Connectors from './screens/connectors.svelte';
 import McpServer from './screens/mcp-server.svelte';
 import Briefing from './screens/briefing.svelte';
-import Chats from './screens/chats.svelte';
-import Workbench from './screens/workbench.svelte';
 import HomeScreen from './components/home-screen.svelte';
 import DiscordDm from './components/discord-dm.svelte';
 import * as f from './fixtures';
 import * as c from '$lib/features/chat/fixtures';
 import { m23Flows, m23Routes } from './m23-flows';
+import { m4Flows, m4Routes } from './m4-flows';
 
 export interface Frame {
 	id: string;
@@ -95,8 +92,6 @@ export const deviations = [
 	}
 ];
 
-const archivedTrip: Session = { ...f.tripSession, state: 'archived' };
-
 export const flows: Flow[] = [
 	{
 		id: 'install',
@@ -172,154 +167,7 @@ export const flows: Flow[] = [
 		]
 	},
 	...m23Flows,
-	{
-		id: 'chats',
-		code: 'CS',
-		title: 'Chats: Main and threads',
-		intro:
-			'One agent, one memory, separate conversations. Main is pinned and is where threads report back. Threads are grouped by what they need from you, and idle ones archive themselves.',
-		frames: [
-			{
-				id: 'cs-1',
-				label: 'Chats',
-				screen: Chats,
-				props: { sessions: f.sessions, archivedOpen: true },
-				next: 'Search'
-			},
-			{
-				id: 'cs-2',
-				label: 'Typing: the tab bar hides',
-				screen: Chats,
-				props: { sessions: f.sessions, query: 'trip' },
-				keyboard: ['trip', 'trips', 'trip’s']
-			},
-			{
-				id: 'cs-d',
-				label: 'Desktop: Main and a thread side by side',
-				screen: Workbench,
-				props: {
-					panes: [
-						{ session: f.mainSession, messages: f.tripMainAccepted },
-						{ session: f.tripSession, messages: f.tripThread }
-					]
-				},
-				desktop: true
-			}
-		]
-	},
-	{
-		id: 'thread',
-		code: 'TH',
-		title: 'Main suggests a thread',
-		intro:
-			'When a topic keeps coming back, Main offers to move it. The thread starts from a brief, not the whole history, and shares memory with Main.',
-		frames: [
-			{
-				id: 'th-1',
-				label: 'Main offers a thread',
-				screen: ThreadChat,
-				props: { session: f.mainSession, messages: f.tripMain },
-				next: 'Start thread',
-				hits: { 'start thread': 'th-2' }
-			},
-			{
-				id: 'th-2',
-				label: 'Thread opens with a brief',
-				screen: ThreadChat,
-				props: { session: f.tripSession, messages: f.tripThreadNew },
-				next: 'Chat in the thread'
-			},
-			{
-				id: 'th-3',
-				label: 'Working in the thread',
-				screen: ThreadChat,
-				props: { session: f.tripSession, messages: f.tripThread, writes: f.tripWrites },
-				next: 'Tap “shares memory”',
-				hits: { 'shares memory': 'th-4', close: 'cl-1' }
-			},
-			{
-				id: 'th-4',
-				label: 'Writes from this thread',
-				screen: ThreadChat,
-				props: {
-					session: f.tripSession,
-					messages: f.tripThread,
-					writes: f.tripWrites,
-					sheet: 'memory'
-				}
-			},
-			{
-				id: 'th-5',
-				label: 'Typing in a thread',
-				screen: ThreadChat,
-				props: {
-					session: f.tripSession,
-					messages: f.tripThread,
-					writes: f.tripWrites,
-					typing: 'Is breakfast included at Kawabune?'
-				},
-				keyboard: ['Kawabune', 'Kawabune?', 'Kawa'],
-				branch: 'Keyboard up'
-			},
-			{
-				id: 'th-6',
-				label: 'Long-press any message',
-				screen: ThreadChat,
-				props: { session: f.mainSession, messages: f.tripMain, sheet: 'actions', pressed: 't2' },
-				branch: 'Or branch from a message',
-				hits: { 'branch into a thread': 'th-2', 'ask on the side': 'th-7' }
-			},
-			{
-				id: 'th-7',
-				label: 'Ask on the side',
-				screen: ThreadChat,
-				props: { session: f.mainSession, messages: f.tripMain, sheet: 'aside', aside: f.tripAside },
-				branch: 'A quick question that stays out of the chat',
-				hits: { done: 'th-1' }
-			}
-		]
-	},
-	{
-		id: 'close',
-		code: 'CL',
-		title: 'Close a thread',
-		intro:
-			'Closing shows what gets kept in memory and the one line Main will get. The thread is archived, not deleted.',
-		frames: [
-			{
-				id: 'cl-1',
-				label: 'Summary before closing',
-				screen: ThreadChat,
-				props: {
-					session: f.tripSession,
-					messages: f.tripThread,
-					writes: f.tripWrites,
-					sheet: 'close',
-					closing: f.tripClose
-				},
-				next: 'Close thread',
-				hits: { 'close thread': 'cl-2', 'keep open': 'th-3' }
-			},
-			{
-				id: 'cl-2',
-				label: 'Main gets a one-line report',
-				screen: ThreadChat,
-				props: { session: f.mainSession, messages: f.tripMainReported },
-				next: 'Open the report'
-			},
-			{
-				id: 'cl-3',
-				label: 'Archived thread',
-				screen: ThreadChat,
-				props: {
-					session: archivedTrip,
-					messages: f.tripThread,
-					writes: f.tripWrites,
-					archived: 'Oct 1'
-				}
-			}
-		]
-	},
+	...m4Flows,
 	{
 		id: 'chat',
 		code: 'CH',
@@ -1145,12 +993,7 @@ export const flows: Flow[] = [
 // First match wins; a trailing * matches by prefix.
 export const routes: [string, string][] = [
 	...m23Routes,
-	['/chats/main?approve=*', 'ch-2'],
-	['/chats/main?ask=*', 'as-1'],
-	['/chats/main', 'cl-2'],
-	['/chats/oct-trip-archived', 'cl-3'],
-	['/chats/oct-trip', 'th-3'],
-	['/chats', 'cs-1'],
+	...m4Routes,
 	['/memory/skills', 'ms-4'],
 	['/memory/skills/deploy-relay-bot', 'ms-5'],
 	['/memory/skills/*', 'ms-6'],

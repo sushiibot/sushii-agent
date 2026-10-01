@@ -142,3 +142,44 @@ export async function endStreams(page: Page) {
 
 export const streamRequests = (page: Page) =>
 	page.evaluate(() => (window as unknown as SseWindow).__sse.requests);
+
+/**
+ * The app with every fixture screen on. `fixtures` maps a feature to the state its fake serves
+ * (`fixtures:<feature>`), set once per test so a reload can clear it.
+ */
+export async function fixtureApp(
+	context: BrowserContext,
+	opts: { fixtures?: Record<string, string>; history?: unknown[] } = {}
+) {
+	await stubStream(context);
+	await context.addInitScript((f) => {
+		localStorage.setItem('features:override', 'all');
+		localStorage.setItem('install-hint-dismissed', '1');
+		if (sessionStorage.getItem('fixtures-set')) return;
+		sessionStorage.setItem('fixtures-set', '1');
+		for (const [k, v] of Object.entries(f)) localStorage.setItem(`fixtures:${k}`, v);
+	}, opts.fixtures ?? {});
+	await context.route('**/api/**', (route) => {
+		const path = new URL(route.request().url()).pathname;
+		if (path === '/api/me')
+			return route.fulfill({
+				json: { login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] }
+			});
+		if (path === '/api/chat/history')
+			return route.fulfill({ json: { items: opts.history ?? [], before: null } });
+		return route.fulfill({ status: 404, body: 'Not found' });
+	});
+}
+
+/** axe, 48px targets and reflow at 412 and 320, in the page's current state. */
+export async function checkScreen(page: Page) {
+	expect(await axe(page)).toEqual([]);
+	expect(await smallTargets(page)).toEqual([]);
+	for (const width of [412, 320]) {
+		await page.setViewportSize({ width, height: 800 });
+		// Code scrolls inside its own box on purpose.
+		const overflow = (await horizontalOverflow(page)).filter((o) => !o.startsWith('pre.'));
+		expect(overflow, `overflow at ${width}px`).toEqual([]);
+	}
+	await page.setViewportSize({ width: 412, height: 915 });
+}

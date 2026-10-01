@@ -1,5 +1,3 @@
-import type { MemoryWrite, ThreadReport } from '$lib/features/chat';
-
 export type RunState = 'waiting' | 'running' | 'review' | 'failed' | 'done';
 export type Outcome = 'verified' | 'unverified';
 
@@ -127,22 +125,3 @@ export interface DaySummary {
 }
 
 export type PushState = 'default' | 'granted' | 'denied' | 'unsupported';
-
-// `project` (repo-scoped coding sessions) is reserved for later.
-export type SessionKind = 'main' | 'thread' | 'project';
-export type SessionState = 'needs-you' | 'running' | 'idle' | 'archived';
-
-export interface Session {
-	id: string;
-	kind: SessionKind;
-	title: string;
-	state: SessionState;
-	lastActivity: string;
-	preview: string;
-	unread?: number;
-}
-
-export interface ThreadClose {
-	writes: MemoryWrite[];
-	report: ThreadReport;
-}

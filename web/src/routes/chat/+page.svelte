@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
+	import { features } from '$lib/core/features.svelte';
 	import { backTo } from '$lib/core/nav/back';
 	import { routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
@@ -12,12 +14,22 @@
 		chatStore,
 		type ChatSheet,
 		type ChatTray,
+		type ChatMessage,
 		type FileRef
 	} from '$lib/features/chat';
+	import { BranchSheet, threadsStore, withReports } from '$lib/features/threads';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 
 	const store = chatStore();
-	const goBack = backTo(resolve('/'));
+	// With threads, Main sits under the Chats list; without, Chat is a tab that goes back Home.
+	const threadsOn = $derived(features.has('threads'));
+	const parent = $derived(threadsOn ? resolve('/chats') : resolve('/'));
+	const goBackHome = backTo(resolve('/'));
+	const goBackChats = backTo(resolve('/chats'));
+	const threads = $derived(threadsOn ? threadsStore() : null);
+	const branch = routedSheet('branch');
+	let branchFrom = $state<{ id: string; quote: string } | null>(null);
+	let threadTitle = $state('');
 	const s = store;
 	let viewer = $state<FileRef | undefined>();
 	let now = $state(Date.now());
@@ -86,12 +98,34 @@
 	function closeSheet() {
 		if (sheet) sheets[sheet].close();
 	}
+
+	const plain = (m: ChatMessage) =>
+		m.parts
+			.flatMap((p) => (p.type === 'text' ? [p.text] : []))
+			.join(' ')
+			.slice(0, 280);
+
+	function openBranch(m: ChatMessage) {
+		branchFrom = { id: m.id, quote: plain(m) };
+		threadTitle = '';
+		threads?.clearError();
+		branch.openWith();
+	}
+
+	async function startThread(name: string) {
+		const id = await threads?.branch(branchFrom?.id ?? '', name);
+		if (!id) return;
+		const popped = new Promise((r) => addEventListener('popstate', r, { once: true }));
+		branch.close();
+		await popped;
+		await goto(resolve('/chats/[id]', { id }));
+	}
 </script>
 
 <svelte:head><title>Chat · Agent</title></svelte:head>
 
 <ChatScreen
-	messages={s.messages}
+	messages={threads ? withReports(s.messages, threads.reports) : s.messages}
 	history={s.history}
 	hasOlder={s.hasOlder}
 	olderLoading={s.olderLoading}
@@ -113,7 +147,14 @@
 	{sheet}
 	{viewer}
 	settingsHref={resolve('/settings')}
-	back={{ href: resolve('/'), label: 'Back to Home', onclick: goBack, desktop: false }}
+	back={{
+		href: parent,
+		label: threadsOn ? 'Back to Chats' : 'Back to Home',
+		onclick: threadsOn ? goBackChats : goBackHome,
+		desktop: false
+	}}
+	subtitle={threadsOn ? mainSubtitle : undefined}
+	onbranch={threadsOn ? openBranch : undefined}
 	onopensheet={openSheet}
 	onclosesheet={closeSheet}
 	onopenfile={(f) => {
@@ -137,3 +178,21 @@
 	onreload={() => pwa.applyUpdate()}
 />
 <ClearNotifications store={s} />
+
+{#snippet mainSubtitle()}
+	<span class="text-xs text-muted-foreground">
+		{#if s.running}The agent is working{:else}Threads report back here{/if}
+	</span>
+{/snippet}
+
+{#if threads}
+	<BranchSheet
+		open={branch.open}
+		quote={branchFrom?.quote}
+		bind:title={threadTitle}
+		busy={threads.busy}
+		error={threads.error}
+		onstart={(name) => void startThread(name)}
+		onclose={() => branch.close()}
+	/>
+{/if}
