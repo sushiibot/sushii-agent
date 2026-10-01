@@ -52,7 +52,17 @@ describe('check-no-raw-html', () => {
 			.filter((f) => /\.(svelte|ts)$/.test(f) && !f.endsWith('.test.ts'))
 			.map((f) => `${FEATURES_DIR}${f.replace(/\\/g, '/')}`)
 			.filter((f) => !APPROVAL_SURFACE_FILES.has(f));
-		for (const dir of ['runs', 'history', 'memory', 'skills', 'connectors', 'briefing', 'threads'])
+		for (const dir of [
+			'runs',
+			'history',
+			'memory',
+			'skills',
+			'schedules',
+			'browser',
+			'connectors',
+			'briefing',
+			'threads'
+		])
 			expect(
 				files.some((f) => f.startsWith(`${FEATURES_DIR}${dir}/`)),
 				dir

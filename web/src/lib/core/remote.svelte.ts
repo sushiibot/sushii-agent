@@ -15,17 +15,30 @@ export class Remote<T> {
 
 	#load: () => Promise<T>;
 	#run = 0;
-	#stopFocus: (() => void) | null = null;
+	#focus: boolean;
+	#watchers = 0;
+	#onVisible = () => {
+		if (document.visibilityState === 'visible' && this.status !== 'idle') void this.refetch();
+	};
 
 	constructor(load: () => Promise<T>, opts: { refetchOnFocus?: boolean } = {}) {
 		this.#load = load;
-		if (opts.refetchOnFocus && typeof document !== 'undefined') {
-			const onVisible = () => {
-				if (document.visibilityState === 'visible' && this.status !== 'idle') void this.refetch();
-			};
-			document.addEventListener('visibilitychange', onVisible);
-			this.#stopFocus = () => document.removeEventListener('visibilitychange', onVisible);
-		}
+		this.#focus = !!opts.refetchOnFocus;
+	}
+
+	/**
+	 * Refetches on returning to the app while some screen shows this data; call from the screen and
+	 * run the returned stop when it goes, so a store's data never listens after its screens are gone.
+	 */
+	watch(): () => void {
+		if (!this.#focus || typeof document === 'undefined') return () => {};
+		if (this.#watchers++ === 0) document.addEventListener('visibilitychange', this.#onVisible);
+		let stopped = false;
+		return () => {
+			if (stopped) return;
+			stopped = true;
+			if (--this.#watchers === 0) document.removeEventListener('visibilitychange', this.#onVisible);
+		};
 	}
 
 	/** Loads once; later calls reuse what is there. */
@@ -57,6 +70,7 @@ export class Remote<T> {
 	}
 
 	destroy() {
-		this.#stopFocus?.();
+		if (this.#watchers > 0) document.removeEventListener('visibilitychange', this.#onVisible);
+		this.#watchers = 0;
 	}
 }

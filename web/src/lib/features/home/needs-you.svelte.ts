@@ -142,6 +142,8 @@ export class NeedsYouStore {
 			}
 		);
 		this.#hub.start();
+		// The badge counts what waits on every screen, so the server part refreshes app-wide.
+		this.data.watch();
 	}
 
 	/** Loads the server part, or refreshes it when Home comes back on screen. */

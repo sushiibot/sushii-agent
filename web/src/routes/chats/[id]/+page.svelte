@@ -4,7 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { backTo } from '$lib/core/nav/back';
-	import { routedSheet } from '$lib/core/nav/sheet';
+	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import type { ChatSheet, FileRef } from '$lib/features/chat';
 	import {
@@ -51,10 +51,8 @@
 
 	async function closeThread() {
 		if (!(await threads.close(id))) return;
-		const popped = new Promise((r) => addEventListener('popstate', r, { once: true }));
-		closeSheet();
-		await popped;
-		// The closed thread is gone from the way back, so back from Main lands on Chats.
+		await leaveSheet(sheet ? sheets[sheet] : undefined);
+		// The closed thread leaves the way back, so back from Main lands on Chats.
 		await goto(resolve('/chat'), { replaceState: true });
 	}
 </script>

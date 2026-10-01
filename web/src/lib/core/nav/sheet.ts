@@ -46,3 +46,23 @@ export function routedSheet(id: App.SheetId): RoutedSheet {
 		}
 	};
 }
+
+/**
+ * Pops an open sheet's history entry and resolves once it is gone, so a navigation that follows
+ * pushes after it. A sheet that is already closed has no entry, so nothing is waited for.
+ */
+export function leaveSheet(sheet: RoutedSheet | undefined): Promise<void> {
+	if (!sheet?.open) return Promise.resolve();
+	const popped = new Promise<void>((resolve) => {
+		const done = () => {
+			clearTimeout(timer);
+			removeEventListener('popstate', done);
+			resolve();
+		};
+		// History can refuse to go back, as in a page opened with no entry before it.
+		const timer = setTimeout(done, 1000);
+		addEventListener('popstate', done);
+	});
+	sheet.close();
+	return popped;
+}

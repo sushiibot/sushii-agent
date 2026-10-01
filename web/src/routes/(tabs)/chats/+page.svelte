@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { routedSheet } from '$lib/core/nav/sheet';
+	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { keepScroll } from '$lib/core/nav/scroll';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { BranchSheet, ChatsScreen, threadsStore } from '$lib/features/threads';
@@ -16,17 +16,19 @@
 
 	onMount(() => {
 		void list.ensure();
+		const unwatch = list.watch();
 		const t = setInterval(() => (now = Date.now()), 30_000);
-		return () => clearInterval(t);
+		return () => {
+			clearInterval(t);
+			unwatch();
+		};
 	});
 	keepScroll('chats', () => document.querySelector('main'));
 
 	async function start(name: string) {
 		const id = await threads.branch('', name);
 		if (!id) return;
-		const popped = new Promise((r) => addEventListener('popstate', r, { once: true }));
-		sheet.close();
-		await popped;
+		await leaveSheet(sheet);
 		title = '';
 		await goto(resolve('/chats/[id]', { id }));
 	}

@@ -11,8 +11,12 @@
 
 	onMount(() => {
 		void overview.ensure();
+		const unwatch = overview.watch();
 		const t = setInterval(() => (now = Date.now()), 30_000);
-		return () => clearInterval(t);
+		return () => {
+			clearInterval(t);
+			unwatch();
+		};
 	});
 </script>
 

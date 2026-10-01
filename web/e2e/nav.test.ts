@@ -107,3 +107,31 @@ test('a deep link waits for /api/me before deciding, so it never bounces early',
 	await page.waitForTimeout(500);
 	await expect(page).toHaveURL(/\/runs$/);
 });
+
+for (const [path, api] of [
+	['/chats', /^\/api\/(chats|threads)/],
+	['/chats/x', /^\/api\/(chats|threads)/],
+	['/connectors/add', /^\/api\/connectors/],
+	['/skills/x/versions', /^\/api\/skills/],
+	['/memory/writes/x', /^\/api\/memory/],
+	['/memory/files/x', /^\/api\/memory/],
+	['/schedules/x', /^\/api\/schedules/],
+	['/browser', /^\/api\/browser/],
+	['/briefing', /^\/api\/briefing/]
+] as const) {
+	test(`${path} with its feature off goes Home without asking the bot for it`, async ({
+		page,
+		context
+	}) => {
+		await server(context);
+		const asked: string[] = [];
+		page.on('request', (req) => {
+			const p = new URL(req.url()).pathname;
+			if (api.test(p)) asked.push(p);
+		});
+		await page.goto(path);
+		await expect(page).toHaveURL(/\/$/);
+		await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
+		expect(asked).toEqual([]);
+	});
+}

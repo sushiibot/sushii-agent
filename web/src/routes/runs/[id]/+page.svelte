@@ -21,6 +21,7 @@
 			// Opening a finished run takes it off Home's "Ready for review".
 			needsYou().markOpened(runId);
 		});
+		return v.remote.watch();
 	});
 	onMount(() => {
 		const t = setInterval(() => (now = Date.now()), 30_000);

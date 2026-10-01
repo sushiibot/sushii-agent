@@ -58,6 +58,7 @@ test('closing a thread archives it and leaves a report in Main', async ({ page, 
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByRole('link', { name: /Thread closed · October trip/ })).toBeVisible();
 	await page.getByRole('link', { name: 'Back to Chats' }).click();
+	await expect(page).toHaveURL(/\/chats$/);
 	await expect(page.getByRole('link', { name: /October trip/ })).toContainText('Reported to Main');
 });
 

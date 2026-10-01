@@ -2,7 +2,7 @@
 	import { featureGate } from '$lib/core/nav/gate.svelte';
 
 	let { children } = $props();
-	featureGate('briefing');
+	const allowed = featureGate('briefing');
 </script>
 
-{@render children()}
+{#if allowed()}{@render children()}{/if}

@@ -12,8 +12,12 @@
 
 	onMount(() => {
 		void list.ensure();
+		const unwatch = list.watch();
 		const t = setInterval(() => (now = Date.now()), 30_000);
-		return () => clearInterval(t);
+		return () => {
+			clearInterval(t);
+			unwatch();
+		};
 	});
 	keepScroll('schedules', () => document.querySelector('main'));
 </script>

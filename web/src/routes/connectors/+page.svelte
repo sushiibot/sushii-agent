@@ -7,7 +7,10 @@
 
 	const list = connectorsStore().list;
 	const goBack = backTo(resolve('/more'));
-	onMount(() => void list.ensure());
+	onMount(() => {
+		void list.ensure();
+		return list.watch();
+	});
 </script>
 
 <svelte:head><title>Connectors · Agent</title></svelte:head>

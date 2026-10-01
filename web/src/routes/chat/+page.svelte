@@ -5,7 +5,7 @@
 	import { resolve } from '$app/paths';
 	import { features } from '$lib/core/features.svelte';
 	import { backTo } from '$lib/core/nav/back';
-	import { routedSheet } from '$lib/core/nav/sheet';
+	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
 	import {
@@ -115,9 +115,7 @@
 	async function startThread(name: string) {
 		const id = await threads?.branch(branchFrom?.id ?? '', name);
 		if (!id) return;
-		const popped = new Promise((r) => addEventListener('popstate', r, { once: true }));
-		branch.close();
-		await popped;
+		await leaveSheet(branch);
 		await goto(resolve('/chats/[id]', { id }));
 	}
 </script>
