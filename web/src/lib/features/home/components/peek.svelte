@@ -11,8 +11,6 @@
 	let {
 		peek,
 		now,
-		runHref,
-		chatHref,
 		onclose,
 		ondecide,
 		onanswer,
@@ -23,8 +21,6 @@
 	}: {
 		peek: HomePeek;
 		now: number;
-		runHref: (runId: string) => string;
-		chatHref: string;
 		onclose?: () => void;
 		ondecide?: (nonce: string, decision: 'approve' | 'deny') => void;
 		onanswer?: (askId: string, answer: string, index?: number) => void;
@@ -59,16 +55,7 @@
 		</div>
 	{:else if peek.item}
 		<div class="px-1">
-			<RecordPeek
-				item={peek.item}
-				{now}
-				{runHref}
-				{chatHref}
-				{onopenrun}
-				{onopenchat}
-				{ondismiss}
-				{onaskagent}
-			/>
+			<RecordPeek item={peek.item} {now} {onopenrun} {onopenchat} {ondismiss} {onaskagent} />
 		</div>
 	{:else if !peek.result}
 		<p role="status" class="px-1 text-sm">

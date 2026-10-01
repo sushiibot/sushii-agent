@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -90,9 +90,19 @@
 		};
 	});
 
-	function openChat() {
-		void goto(resolve('/chat'), { replaceState: sheet.open });
+	// A navigation that replaced the sheet's shallow entry would leave back on a stale page, so the
+	// sheet's entry is popped first and the new screen pushed after it.
+	async function leaveTo(href: string) {
+		if (sheet.open) {
+			const popped = new Promise((r) => addEventListener('popstate', r, { once: true }));
+			sheet.close();
+			await popped;
+			await tick();
+		}
+		await goto(href);
 	}
+
+	const openChat = () => void leaveTo(resolve('/chat'));
 
 	function askAgent(item: HomeItem) {
 		if (item.kind !== 'alert') return;
@@ -116,8 +126,6 @@
 	{now}
 	{peek}
 	updateReady={!!pwa.waiting}
-	runHref={(id) => `/runs/${id}`}
-	chatHref={resolve('/chat')}
 	onopen={(id) => {
 		home.clearResult(id);
 		sheet.openWith(id);
@@ -130,10 +138,7 @@
 		void home.dismiss(id);
 		sheet.close();
 	}}
-	onopenrun={(runId) => {
-		home.markOpened(runId);
-		void goto(`/runs/${runId}`, { replaceState: sheet.open });
-	}}
+	onopenrun={(id) => void leaveTo(resolve('/runs/[id]', { id }))}
 	onopenchat={openChat}
 	onaskagent={askAgent}
 	onreload={() => pwa.applyUpdate()}

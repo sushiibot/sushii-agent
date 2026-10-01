@@ -245,7 +245,7 @@ test('a failed job peeks with its error, and Dismiss takes it off Home', async (
 	await page.goto('/');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
-	await expect(sheet(page).getByRole('link', { name: 'Open run' })).toBeVisible();
+	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeVisible();
 	await sheet(page).getByRole('button', { name: 'Dismiss' }).click();
 	await expect(sheet(page)).toBeHidden();
 	await expect(page.getByText('nightly-sync failed')).toBeHidden();
@@ -265,6 +265,7 @@ test('Ask the agent opens the chat with the alert quoted in the composer', async
 	);
 	await page.goBack();
 	await expect(page).toHaveURL(/\/$/);
+	await expect(page.getByRole('heading', { name: 'Home', level: 1 })).toBeVisible();
 	await expect(sheet(page)).toBeHidden();
 });
 

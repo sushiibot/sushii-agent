@@ -52,8 +52,8 @@ export function flightsRun(now: number): RunSummary {
 		parentRunId: RUN_IDS.expenses,
 		title: 'Compare flight prices for the October trip',
 		status: 'timeout',
-		startedAt: iso(now, 330),
-		endedAt: iso(now, 300),
+		startedAt: iso(now, 90),
+		endedAt: iso(now, 60),
 		resultSummary: 'Stopped after 30 minutes with 2 of 4 airlines checked.'
 	};
 }
@@ -78,7 +78,7 @@ export function expensesRun(now: number): RunSummary {
 		title: 'Draft the quarterly expenses summary',
 		status: 'done',
 		startedAt: iso(now, 95),
-		endedAt: iso(now, 62),
+		endedAt: iso(now, 50),
 		resultSummary: 'Wrote projects/finance/q3-summary.md (2 pages).'
 	};
 }

@@ -25,8 +25,6 @@
 		now,
 		peek,
 		updateReady = false,
-		runHref = (id) => `/runs/${id}`,
-		chatHref = '/chat',
 		onopen,
 		onclose,
 		onretry,
@@ -51,8 +49,6 @@
 		/** The open peek sheet; leave out when closed. */
 		peek?: HomePeek;
 		updateReady?: boolean;
-		runHref?: (runId: string) => string;
-		chatHref?: string;
 		onopen?: (id: string) => void;
 		onclose?: () => void;
 		onretry?: () => void;
@@ -181,8 +177,6 @@
 		<Peek
 			peek={shownPeek}
 			{now}
-			{runHref}
-			{chatHref}
 			{onclose}
 			{ondecide}
 			{onanswer}

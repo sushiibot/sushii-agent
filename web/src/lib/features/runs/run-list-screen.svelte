@@ -1,0 +1,108 @@
+<script lang="ts">
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+	import { Button } from '$lib/ui/button';
+	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
+	import { byDay } from '$lib/ui/format/time';
+	import ListScreen from '$lib/ui/screen/list-screen.svelte';
+	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
+	import { Skeleton } from '$lib/ui/skeleton';
+	import RunRow from './components/run-row.svelte';
+	import { runTime } from './format';
+	import type { RunSummary } from './types';
+
+	let {
+		remote,
+		runs,
+		now,
+		back,
+		hasOlder = false,
+		olderLoading = false,
+		olderError = null,
+		truncated = false,
+		online = true,
+		runHref = (id) => `/runs/${id}`,
+		historyHref = '/history',
+		onretry,
+		onloadolder
+	}: {
+		remote: RemoteLike;
+		runs: RunSummary[];
+		now: number;
+		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
+		hasOlder?: boolean;
+		olderLoading?: boolean;
+		olderError?: string | null;
+		/** Older runs exist that only History can reach. */
+		truncated?: boolean;
+		online?: boolean;
+		runHref?: (runId: string) => string;
+		historyHref?: string;
+		onretry?: () => void;
+		onloadolder?: () => void;
+	} = $props();
+
+	const sections = $derived(byDay(runs, runTime, now));
+</script>
+
+{#snippet banner()}
+	{#if !online}<ConnectionBanner state={{ kind: 'app-offline' }} />{/if}
+{/snippet}
+
+{#snippet skeleton()}
+	<div class="flex flex-col gap-2" aria-hidden="true">
+		<Skeleton class="h-4 w-20" />
+		{#each [0, 1, 2, 3] as i (i)}
+			<div class="flex flex-col gap-2 px-2 py-3">
+				<Skeleton class="h-4 w-4/5" />
+				<Skeleton class="h-3 w-1/2" />
+			</div>
+		{/each}
+	</div>
+	<p role="status" class="sr-only">Loading runs…</p>
+{/snippet}
+
+{#snippet row(run: RunSummary)}
+	<RunRow {run} {now} href={runHref(run.runId)} />
+{/snippet}
+
+{#snippet after()}
+	{#if hasOlder}
+		<Button variant="outline" disabled={olderLoading} onclick={() => onloadolder?.()}>
+			{#if olderLoading}
+				<LoaderCircle class="animate-spin motion-reduce:animate-none" aria-hidden="true" />Loading
+				older runs…
+			{:else}
+				<ChevronDown />Show older runs
+			{/if}
+		</Button>
+		{#if olderError}
+			<p role="alert" class="text-sm text-failed">Couldn't load older runs. {olderError}</p>
+		{/if}
+	{:else if truncated}
+		<p class="px-1 text-sm text-muted-foreground">
+			Older runs are in <a href={historyHref} class="underline underline-offset-4">History</a>.
+		</p>
+	{/if}
+{/snippet}
+
+<ListScreen
+	title="Runs"
+	{back}
+	{banner}
+	state={{
+		remote,
+		offline: !online,
+		errorTitle: "Couldn't load runs.",
+		onretry,
+		skeleton,
+		empty: {
+			title: 'No runs yet',
+			body: 'Chat turns, scheduled jobs and background work show up here once they run.'
+		}
+	}}
+	{sections}
+	key={(r) => r.runId}
+	{row}
+	{after}
+/>

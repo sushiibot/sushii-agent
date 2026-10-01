@@ -12,8 +12,6 @@
 	let {
 		item,
 		now,
-		runHref,
-		chatHref,
 		onopenrun,
 		onopenchat,
 		ondismiss,
@@ -21,9 +19,6 @@
 	}: {
 		item: Exclude<HomeItem, { kind: 'approval' | 'ask' }>;
 		now: number;
-		runHref: (runId: string) => string;
-		chatHref: string;
-		/** Follows the link in place of the browser, so the sheet's entry can be replaced. */
 		onopenrun?: (runId: string) => void;
 		onopenchat?: () => void;
 		ondismiss?: (id: string) => void;
@@ -37,12 +32,6 @@
 		manual: 'You, by hand'
 	};
 	const triggerLabel = (t: string) => triggers[t] ?? t;
-
-	function follow(e: MouseEvent, go: (() => void) | undefined) {
-		if (!go) return;
-		e.preventDefault();
-		go();
-	}
 </script>
 
 {#snippet facts(rows: [string, string][])}
@@ -82,11 +71,7 @@
 		{/if}
 		<div class="flex flex-col gap-2">
 			{#if a.runId}
-				<Button
-					href={runHref(a.runId)}
-					onclick={(e) => follow(e, onopenrun && (() => onopenrun(a.runId!)))}
-					>Open run<ArrowUpRight /></Button
-				>
+				<Button onclick={() => onopenrun?.(a.runId!)}>Open run<ArrowUpRight /></Button>
 			{/if}
 			<div class="flex gap-2">
 				<Button variant="outline" class="flex-1" onclick={() => onaskagent?.(item)}
@@ -116,12 +101,7 @@
 				: ['Running for', duration(now - Date.parse(r.startedAt))]
 		])}
 		<div class="flex gap-2">
-			<Button
-				href={runHref(r.runId)}
-				class="flex-1"
-				onclick={(e) => follow(e, onopenrun && (() => onopenrun(r.runId)))}
-				>Open run<ArrowUpRight /></Button
-			>
+			<Button class="flex-1" onclick={() => onopenrun?.(r.runId)}>Open run<ArrowUpRight /></Button>
 			{#if item.group === 'failed'}
 				<Button variant="ghost" class="px-4" onclick={() => ondismiss?.(item.id)}
 					><X />Dismiss</Button
@@ -136,15 +116,11 @@
 			['Running for', duration(now - item.turn.startedAt)],
 			['Steps so far', String(item.turn.toolCount)]
 		])}
-		<Button href={chatHref} onclick={(e) => follow(e, onopenchat)}
-			><MessageSquare />Open chat</Button
-		>
+		<Button onclick={() => onopenchat?.()}><MessageSquare />Open chat</Button>
 	{:else}
 		<p class="text-sm">
 			The agent sent a sign-in link in the chat and is waiting until you use it.
 		</p>
-		<Button href={chatHref} onclick={(e) => follow(e, onopenchat)}
-			><MessageSquare />Open chat</Button
-		>
+		<Button onclick={() => onopenchat?.()}><MessageSquare />Open chat</Button>
 	{/if}
 </div>
