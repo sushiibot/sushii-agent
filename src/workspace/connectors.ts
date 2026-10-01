@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { lookup } from "node:dns/promises";
+import type { LookupAddress, LookupAllOptions } from "node:dns";
 import { BlockList, isIP } from "node:net";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -21,6 +22,7 @@ import {
 } from "../orchestration/contracts.ts";
 
 const blocked = new BlockList();
+const blockedV6 = new BlockList();
 for (const [address, prefix] of [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -41,11 +43,13 @@ for (const [address, prefix] of [
   ["ff00::", 8],
   ["::ffff:0:0", 96],
 ] as const)
-  blocked.addSubnet(address, prefix, "ipv6");
-async function checkPublicHost(url: string) {
+  blockedV6.addSubnet(address, prefix, "ipv6");
+export async function checkPublicHost(url: string, resolve: (hostname: string, options: LookupAllOptions) => Promise<LookupAddress[]> = lookup) {
   const host = new URL(connectorUrl(url)).hostname;
-  const addresses = await lookup(host, { all: true });
-  if (!addresses.length || addresses.some((a) => blocked.check(a.address, a.family === 6 ? "ipv6" : "ipv4")))
+  const addresses = await resolve(host, { all: true });
+  // BlockList also matches IPv4 addresses against mapped IPv6 subnets. Keep the
+  // families separate so rejecting mapped IPv6 does not reject every public IPv4.
+  if (!addresses.length || addresses.some((a) => (a.family === 6 ? blockedV6 : blocked).check(a.address, a.family === 6 ? "ipv6" : "ipv4")))
     throw new ConnectorError("Use a public HTTPS MCP server address.");
 }
 

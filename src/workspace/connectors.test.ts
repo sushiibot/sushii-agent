@@ -6,9 +6,19 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ConnectorManager, connectorUrl } from "./connectors.ts";
+import { ConnectorManager, connectorUrl, checkPublicHost } from "./connectors.ts";
 
 const dirs: string[] = [];
+test("DNS safety accepts public addresses and rejects private or mapped addresses", async () => {
+  const resolve = (addresses: { address: string; family: number }[]) => async () => addresses;
+  const url = "https://api.fastmail.com/mcp";
+  await checkPublicHost(url, resolve([{ address: "103.168.172.38", family: 4 }, { address: "103.168.172.53", family: 4 }]));
+  await checkPublicHost(url, resolve([{ address: "2606:4700:4700::1111", family: 6 }]));
+  for (const [address, family] of [["127.0.0.1", 4], ["10.0.0.1", 4], ["100.64.0.1", 4], ["::1", 6], ["fc00::1", 6], ["::ffff:103.168.172.38", 6]] as const)
+    await expect(checkPublicHost(url, resolve([{ address, family }]))).rejects.toThrow("public HTTPS");
+  await expect(checkPublicHost(url, resolve([{ address: "103.168.172.38", family: 4 }, { address: "192.168.1.1", family: 4 }]))).rejects.toThrow("public HTTPS");
+  await expect(checkPublicHost(url, resolve([]))).rejects.toThrow("public HTTPS");
+});
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
