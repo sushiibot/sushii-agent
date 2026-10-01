@@ -45,6 +45,7 @@ const P = {
 };
 for (const d of Object.values(P)) mkdirSync(d, { recursive: true });
 const DB_PATH = join(P.botData, "sushii-agent.db");
+const PUSH_CAPTURE = join(TMP, "push.jsonl");
 
 /** A Main session from before the web app, which the bot imports once from the workspace (flows/history-import). */
 function seedPreWebSession(): void {
@@ -204,6 +205,10 @@ function controlServer(bot: Proc, llmURL: string) {
           db.close();
         }
       }
+      if (req.method === "GET" && url.pathname === "/push/log") {
+        const lines = existsSync(PUSH_CAPTURE) ? readFileSync(PUSH_CAPTURE, "utf8").split("\n").filter(Boolean) : [];
+        return Response.json(lines.map((l) => JSON.parse(l)));
+      }
       if (req.method === "POST" && url.pathname === "/bot/restart") {
         await stop(bot);
         if (tornDown) return new Response("tearing down", { status: 503 });
@@ -345,6 +350,8 @@ async function main(): Promise<number> {
       VAPID_PUBLIC_KEY: vapid.publicKey,
       VAPID_PRIVATE_KEY: vapid.privateKey,
       VAPID_SUBJECT: "mailto:e2e@example.invalid",
+      WEB_FEATURES: "home,alerts",
+      E2E_PUSH_CAPTURE: PUSH_CAPTURE,
     },
   };
   const ws: Proc = {
@@ -383,7 +390,7 @@ async function main(): Promise<number> {
   control = controlServer(bot, llmURL);
   console.log("[e2e] stack ready; running flows");
 
-  return runToExit([join(HERE, "node_modules", ".bin", "playwright"), "test", ...process.argv.slice(2)], HERE, callerEnv({ E2E_TMP: TMP, E2E_WS_HOME: P.wsHome, E2E_PW_OUT: P.pwOut }));
+  return runToExit([join(HERE, "node_modules", ".bin", "playwright"), "test", ...process.argv.slice(2)], HERE, callerEnv({ E2E_TMP: TMP, E2E_WS_HOME: P.wsHome, E2E_WS_STATE: P.wsState, E2E_PW_OUT: P.pwOut }));
 }
 
 function finish(code: number): never {
