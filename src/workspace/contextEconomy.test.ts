@@ -144,7 +144,7 @@ describe("model list and choice", () => {
   test("env defaults and overrides", () => {
     const env = { ORCH_SECRET: "s", OPENAI_API_KEY: "k", HOME: "/h" };
     const cfg = loadWorkspaceConfig(env);
-    expect(cfg.economy).toEqual({ hygieneTokens: 150_000, compactTokens: 200_000, keepRecentTokens: 40_000, idleRotateMin: 25, idleRotateTokens: 100_000 });
+    expect(cfg.economy).toEqual({ hygieneTokens: 150_000, compactTokens: 200_000, keepRecentTokens: 8_000, idleRotateMin: 25, idleRotateTokens: 100_000 });
     expect(cfg.models!.map((m) => m.alias)).toEqual(parseModelList(DEFAULT_MODELS_SPEC).map((m) => m.alias));
     expect(cfg.tasks).toEqual({ staleDaysQuick: 2, autodropDaysQuick: 5, staleDaysProject: 7, autodropDaysProject: 21, maxOpen: 15 });
     const over = loadWorkspaceConfig({ ...env, WORKSPACE_HYGIENE_TOKENS: "90000", WORKSPACE_IDLE_ROTATE_MIN: "30", WORKSPACE_MODELS: "x=openrouter:a/b", WORKSPACE_TASK_MAX_OPEN: "20" });

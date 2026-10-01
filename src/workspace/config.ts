@@ -56,7 +56,7 @@ export interface EconomyConfig {
 export const DEFAULT_ECONOMY: EconomyConfig = {
   hygieneTokens: 150_000,
   compactTokens: 200_000,
-  keepRecentTokens: 40_000,
+  keepRecentTokens: 8_000,
   idleRotateMin: 25,
   idleRotateTokens: 100_000,
 };
