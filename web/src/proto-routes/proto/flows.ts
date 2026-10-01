@@ -12,6 +12,7 @@ import * as c from '$lib/features/chat/fixtures';
 import { m23Flows, m23Routes } from './m23-flows';
 import { m4Flows, m4Routes } from './m4-flows';
 import { m5Flows, m5Routes } from './m5-flows';
+import { m67Flows, m67Routes } from './m67-flows';
 
 export interface Frame {
 	id: string;
@@ -801,6 +802,7 @@ export const flows: Flow[] = [
 		]
 	},
 	...m5Flows,
+	...m67Flows,
 	{
 		id: 'connectors',
 		code: 'MC',
@@ -888,6 +890,7 @@ export const routes: [string, string][] = [
 	...m23Routes,
 	...m4Routes,
 	...m5Routes,
+	...m67Routes,
 	['/connectors/linear', 'mc-5'],
 	['/connectors/*', 'mc-6'],
 	['/connectors', 'mc-1'],
