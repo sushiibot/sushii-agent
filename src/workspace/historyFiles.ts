@@ -38,8 +38,8 @@ const DIR_ENTRIES_MAX = 10_000;
 /** Directory entries read per `history/days` call, across the root and every month dir. */
 const DAYS_SCAN_MAX = 40_000;
 const RUN_HEADER_MAX = 16 * 1024;
-/** Kept well under the bot's 2 MB response cap: quotes and backslashes double in JSON. */
-const DAY_BUDGET = 1_200_000;
+/** A whole history/day result, serialized, stays under this: the bot rejects anything over 2 MB. */
+const DAY_BUDGET = 1_400_000;
 
 /** The real path of `<home>/history` when it is a plain directory (not a symlink), else null. */
 export async function historyRoot(home: string): Promise<string | null> {
@@ -267,8 +267,16 @@ export async function historyDay(opts: HistoryReadOptions, p: unknown): Promise<
   const ids = await runIdsOn(root, date, DIR_ENTRIES_MAX);
   if (!daily && ids.length === 0) return { found: false };
 
-  let truncated = daily?.truncated ?? false;
-  let bytes = 0;
+  let truncated = (daily?.truncated ?? false) || ids.length > HISTORY_DAY_RUNS_MAX;
+  const index = ids.length ? await scanRunIndex(runLogPath(opts.stateDir)) : null;
+  const runs: RunSummary[] = [];
+  for (const runId of ids.slice(0, HISTORY_DAY_RUNS_MAX)) {
+    const rec = index?.runs.get(runId);
+    const summary = rec ? toRunSummary(rec) : await historyRunSummary(root, `${date.slice(0, 7)}/${date.slice(8)}-${runId}.md`, runId);
+    if (summary) runs.push(summary);
+  }
+
+  let bytes = Buffer.byteLength(JSON.stringify({ found: true, date, sessions: [], runs, truncated: false }));
   const sessions: { heading: string; markdown: string }[] = [];
   for (const s of daily ? splitSessions(daily.text) : []) {
     if (sessions.length >= HISTORY_DAY_SESSIONS_MAX) {
@@ -276,7 +284,7 @@ export async function historyDay(opts: HistoryReadOptions, p: unknown): Promise<
       break;
     }
     const item = { heading: safeText(s.heading, 300, { oneLine: true }), markdown: safeText(s.body, HISTORY_RECAP_MAX) };
-    const size = Buffer.byteLength(JSON.stringify(item));
+    const size = Buffer.byteLength(JSON.stringify(item)) + 1;
     if (bytes + size > DAY_BUDGET) {
       truncated = true;
       break;
@@ -285,15 +293,6 @@ export async function historyDay(opts: HistoryReadOptions, p: unknown): Promise<
     sessions.push(item);
     // Each recap redacts up to 32k chars; let other requests run between them.
     await new Promise<void>((r) => setImmediate(r));
-  }
-
-  if (ids.length > HISTORY_DAY_RUNS_MAX) truncated = true;
-  const index = ids.length ? await scanRunIndex(runLogPath(opts.stateDir)) : null;
-  const runs: RunSummary[] = [];
-  for (const runId of ids.slice(0, HISTORY_DAY_RUNS_MAX)) {
-    const rec = index?.runs.get(runId);
-    const summary = rec ? toRunSummary(rec) : await historyRunSummary(root, `${date.slice(0, 7)}/${date.slice(8)}-${runId}.md`, runId);
-    if (summary) runs.push(summary);
   }
   return historyDayResult.parse({ found: true, date, sessions, runs, truncated });
 }

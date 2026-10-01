@@ -341,6 +341,36 @@ describe("runs/get", () => {
   });
 });
 
+describe("runs/get response size", () => {
+  test("huge tool outputs, args and child titles: every page stays under 1.5 MB and the pages cover every step", async () => {
+    const runId = id(0);
+    const chatFile = join(agentDir, "chat", "big.jsonl");
+    const heavy = `${'"'.repeat(30_000)}${"€".repeat(10_000)}${"😀".repeat(5_000)}`;
+    const entries: object[] = [];
+    // ~40 MiB of transcript: under the 64 MiB session read cap, so every step is reachable.
+    for (let i = 0; i < 120; i++) {
+      entries.push(msg(`a${i}`, 1, { role: "assistant", content: [{ type: "text", text: heavy }, { type: "toolCall", id: `c${i}`, name: "bash", arguments: { command: heavy } }], stopReason: "toolUse" }));
+      entries.push(msg(`r${i}`, 2, { role: "toolResult", toolCallId: `c${i}`, toolName: "bash", content: [{ type: "text", text: heavy }], isError: false }));
+    }
+    session(chatFile, entries);
+    // A record line is a few KiB at most (the host clips task and result); these fill each field past its wire cap.
+    const field = `${'"'.repeat(600)}${"€".repeat(600)}`;
+    record({ runId, sessionFile: chatFile, endedAt: iso(3), task: field, resultSummary: field });
+    for (let i = 0; i < 60; i++) record({ runId: id(10 + i), agentName: field, parentRunId: runId, task: field, resultSummary: field, sessionFile: "x" });
+    const seen: string[] = [];
+    let after: string | null | undefined;
+    do {
+      const r = await runsGet(opts, { principalId: "owner", runId, limit: 200, ...(after ? { after } : {}) });
+      expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThan(1_500_000);
+      if (!r.found) throw new Error("not found");
+      seen.push(...r.steps.map((s) => s.id));
+      after = r.after;
+    } while (after);
+    expect(seen).toHaveLength(240);
+    expect(new Set(seen).size).toBe(240);
+  });
+});
+
 describe("runs/changed", () => {
   function recorder() {
     const sent: unknown[] = [];

@@ -39,8 +39,8 @@ const STAMP_MAX = 40;
 const ENTRY_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** Commands are matched by regexes that backtrack on long input. */
 const COMMAND_SCAN_MAX = 2_000;
-/** Kept well under the bot's 2 MB response cap. */
-const STEPS_BUDGET = 1_200_000;
+/** A whole runs/get result, serialized, stays under this: the bot rejects anything over 2 MB. */
+export const RUNS_GET_BUDGET = 1_400_000;
 const CHECKS_MAX = 20;
 const REPOS_MAX = 20;
 const MEMORY_WRITES_MAX = 50;
@@ -278,7 +278,7 @@ async function fromHistory(opts: RunsRpcOptions, root: string, runId: string): P
   return null;
 }
 
-function page(steps: RunStep[], after: string | undefined, limit: number): { steps: RunStep[]; after: string | null } {
+function page(steps: RunStep[], after: string | undefined, limit: number, budget: number): { steps: RunStep[]; after: string | null } {
   let start = 0;
   if (after !== undefined) {
     const at = steps.findIndex((s) => s.id === after);
@@ -289,8 +289,8 @@ function page(steps: RunStep[], after: string | undefined, limit: number): { ste
   let bytes = 0;
   for (let i = start; i < steps.length && out.length < limit; i++) {
     const size = Buffer.byteLength(JSON.stringify(steps[i]));
-    if (out.length && bytes + size > STEPS_BUDGET) break;
-    bytes += size;
+    if (out.length && bytes + size + 1 > budget) break;
+    bytes += size + 1;
     out.push(steps[i]!);
   }
   return { steps: out, after: start + out.length < steps.length ? out.at(-1)!.id : null };
@@ -332,22 +332,21 @@ export async function runsGet(opts: RunsRpcOptions, p: unknown): Promise<RunsGet
       await session.fh.close();
     }
   }
-  const { steps, after } = page(built.steps, params.after, params.limit);
-
   const startedAt = new Date(run.startedAt);
   const rel = Number.isNaN(startedAt.getTime()) ? null : runFileRel(run.runId, startedAt, opts.tz);
   const historyFile = root && rel && (await existingRunFile(root, rel)) ? rel : undefined;
-  return runsGetResult.parse({
-    found: true,
+  const rest = {
+    found: true as const,
     run,
     ...(parent ? { parent } : {}),
     children: childrenOf(index, run.runId),
     session: session.state,
-    steps,
-    after,
     ...(params.after === undefined ? { evidence: buildEvidence(built.uses, built.verifyNudged, opts.home) } : {}),
     ...(historyFile ? { historyFile } : {}),
-  });
+  };
+  const budget = RUNS_GET_BUDGET - Buffer.byteLength(JSON.stringify({ ...rest, steps: [], after: "x".repeat(ID_MAX) }));
+  const { steps, after } = page(built.steps, params.after, params.limit, budget);
+  return runsGetResult.parse({ ...rest, steps, after });
 }
 
 export function runsHandlers(opts: RunsRpcOptions): Record<string, (params: unknown) => Promise<unknown>> {
