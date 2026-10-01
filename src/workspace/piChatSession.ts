@@ -176,6 +176,14 @@ export function createPiChatSessionFactory(
       baseUrl: config.baseUrl,
       extraModels: opts.choice?.openrouterIds() ?? [],
     });
+    // Picks made from here on register in this session before they apply; one made while it was being
+    // created is caught by the register right after subscribing.
+    let syncOverrides: (() => void) | null = null;
+    const unsubscribeChoice = opts.choice?.onPrepare(async (ids) => {
+      await registerOpenRouter(ids);
+      syncOverrides?.();
+    });
+    if (opts.choice) await registerOpenRouter(opts.choice.openrouterIds());
     const openrouterJudge = config.autoMode
       ? registerJudgeModel(modelRuntime, { model: config.judgeModel ?? DEFAULT_JUDGE_MODEL, apiKey: config.apiKey, baseUrl: config.baseUrl })
       : null;
@@ -183,7 +191,15 @@ export function createPiChatSessionFactory(
     const chatgptModel = config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
     // Read per turn: `!model` rewrites the shared config between turns.
     const currentPrimary = () => (config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined);
-    const currentFallback = () => openrouterModels.get(config.model) ?? openrouterModel;
+    // A choice registers its model before it changes the config, so a miss here means registration failed:
+    // stay on the OpenRouter model in use rather than jump to the one this session started on.
+    const currentFallback = () => {
+      const picked = openrouterModels.get(config.model);
+      if (picked) return picked;
+      const inUse = sessionRef.current?.model;
+      log.warn({ model: config.model }, "picked OpenRouter model isn't registered; keeping the current one");
+      return inUse?.provider === PROVIDER_ID ? (inUse as typeof openrouterModel) : openrouterModel;
+    };
     const model = await selectInitialModel({
       config,
       runtime: modelRuntime,
@@ -284,15 +300,14 @@ export function createPiChatSessionFactory(
       },
     };
     settingsManager.applyOverrides(overrides);
-    // A model picked in the app after this session started is registered (with its compaction trigger)
-    // before the pick is answered, so the next turn can use it.
-    const unsubscribeChoice = opts.choice?.onChange(async () => {
-      await registerOpenRouter(opts.choice!.openrouterIds());
+    // A model registered after the session started gets its compaction trigger too.
+    syncOverrides = () => {
       for (const m of openrouterModels.values()) {
-        modelOverrides[`${m.provider}/${m.id}`] ??= { reserveTokens: reserveTokensFor(m.contextWindow, economy.compactTokens) };
+        modelOverrides[`${m.provider}/${m.id}`] = { reserveTokens: reserveTokensFor(m.contextWindow, economy.compactTokens) };
       }
       settingsManager.applyOverrides(overrides);
-    });
+    };
+    syncOverrides();
     // Warm requests would spend the ChatGPT subscription. Pi reads the mode only from the shared global
     // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
     settingsManager.getCacheWarmingMode = () => "off";

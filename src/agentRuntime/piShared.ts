@@ -32,7 +32,11 @@ type RawCatalogEntry = {
 };
 
 const CATALOG_TTL_MS = 10 * 60_000;
+/** An unreadable catalog is remembered this long, so an outage doesn't cost every caller a timeout. */
+const CATALOG_FAILURE_TTL_MS = 60_000;
 let catalogCache: { at: number; models: CatalogModel[] } | null = null;
+let catalogFailure: { at: number; error: Error } | null = null;
+let catalogInFlight: Promise<CatalogModel[]> | null = null;
 
 const perMillion = (raw: string | undefined) => {
   const n = raw === undefined ? NaN : Number(raw);
@@ -42,6 +46,19 @@ const perMillion = (raw: string | undefined) => {
 /** OpenRouter's model catalog, cached for ten minutes; throws when it can't be read. */
 export async function openRouterCatalog(now = Date.now()): Promise<CatalogModel[]> {
   if (catalogCache && now - catalogCache.at < CATALOG_TTL_MS) return catalogCache.models;
+  if (catalogFailure && now - catalogFailure.at < CATALOG_FAILURE_TTL_MS) throw catalogFailure.error;
+  catalogInFlight ??= fetchCatalog(now)
+    .catch((err: unknown) => {
+      catalogFailure = { at: now, error: err instanceof Error ? err : new Error(String(err)) };
+      throw catalogFailure.error;
+    })
+    .finally(() => {
+      catalogInFlight = null;
+    });
+  return catalogInFlight;
+}
+
+async function fetchCatalog(now: number): Promise<CatalogModel[]> {
   const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
   const payload = (await res.json()) as { data?: RawCatalogEntry[] };
@@ -57,12 +74,15 @@ export async function openRouterCatalog(now = Date.now()): Promise<CatalogModel[
       priceOut: perMillion(m.pricing?.completion),
     }));
   catalogCache = { at: now, models };
+  catalogFailure = null;
   return models;
 }
 
-/** Test seam: forget the cached catalog. */
+/** Test seam: forget the cached catalog and any remembered failure. */
 export function clearOpenRouterCatalog(): void {
   catalogCache = null;
+  catalogFailure = null;
+  catalogInFlight = null;
 }
 
 /**
@@ -72,17 +92,20 @@ export function clearOpenRouterCatalog(): void {
  * buffer on any fetch/parse failure. Image input is declared only when the catalog lists it, so an
  * unknown model stays text-only.
  */
-export async function resolveModelInfo(modelId: string, fallback: number): Promise<{ contextWindow: number; image: boolean }> {
+export async function resolveModelInfo(modelId: string, fallback: number): Promise<{ contextWindow: number; image: boolean; resolved: boolean }> {
   try {
     const entry = (await openRouterCatalog()).find((m) => m.id === modelId);
     if (!entry) throw new Error(`model ${modelId} missing from the catalog`);
     log.info({ modelId, contextWindow: entry.contextWindow, image: entry.image }, "resolved model metadata from OpenRouter");
-    return { contextWindow: entry.contextWindow, image: entry.image };
+    return { contextWindow: entry.contextWindow, image: entry.image, resolved: true };
   } catch (err) {
     log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using fallback");
-    return { contextWindow: fallback, image: false };
+    return { contextWindow: fallback, image: false, resolved: false };
   }
 }
+
+/** A reply may use at most this share of the window: a cap as large as the window overflows on any prompt. */
+const MAX_OUTPUT_SHARE = 0.25;
 
 // Prefer the human-meaningful field of a tool's args for the activity line (the command, the path,
 // the pattern), else compact JSON. Truncation happens downstream in activityLine.
@@ -126,17 +149,19 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   if (!existsSync(authPath)) writeFileSync(authPath, "{}");
   if (!existsSync(modelsPath)) writeFileSync(modelsPath, "{}");
   const modelRuntime: ModelRuntime = await ModelRuntime.create({ authPath, modelsPath });
-  type Limit = { id: string; contextWindow: number; maxTokens: number; input: ("text" | "image")[] };
+  type Limit = { id: string; contextWindow: number; maxTokens: number; input: ("text" | "image")[]; guessed: boolean };
   const limits = new Map<string, Limit>();
   const resolve = async (ids: string[]) => {
-    const fresh = ids.filter((id) => !limits.has(id));
+    // A guessed window is resolved again, so a catalog outage at pick time doesn't stick for the session.
+    const fresh = ids.filter((id) => !limits.has(id) || limits.get(id)!.guessed);
     const infos = await Promise.all(fresh.map((id) => resolveModelInfo(id, options.fallbackContextWindow ?? 800_000)));
     fresh.forEach((id, i) =>
       limits.set(id, {
         id,
         contextWindow: infos[i]!.contextWindow,
-        maxTokens: Math.min(options.maxOutputTokens ?? 65_536, infos[i]!.contextWindow),
+        maxTokens: Math.min(options.maxOutputTokens ?? 65_536, Math.floor(infos[i]!.contextWindow * MAX_OUTPUT_SHARE)),
         input: infos[i]!.image ? ["text", "image"] : ["text"],
+        guessed: !infos[i]!.resolved,
       }),
     );
   };
@@ -172,7 +197,7 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   const { contextWindow, maxTokens } = limits.get(options.model)!;
   /** Adds OpenRouter models to this runtime after it was made, e.g. one just picked in the app. */
   const register = async (ids: string[]) => {
-    if (ids.every((id) => limits.has(id))) return;
+    if (ids.every((id) => limits.has(id) && !limits.get(id)!.guessed)) return;
     await resolve(ids);
     registerAll();
   };

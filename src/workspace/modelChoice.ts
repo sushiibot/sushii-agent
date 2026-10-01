@@ -17,8 +17,7 @@ export class ModelChoice {
   private readonly base: ModelFields;
   private chosen: ModelEntry | null = null;
   private fallback: string | null = null;
-  private readonly listeners = new Set<() => Promise<void>>();
-  private pending: Promise<unknown> = Promise.resolve();
+  private readonly preparers = new Set<(ids: string[]) => Promise<void>>();
 
   constructor(
     private readonly config: WorkspaceConfig,
@@ -30,12 +29,12 @@ export class ModelChoice {
     if (typeof saved?.fallbackModel === "string" && isChatModelId(saved.fallbackModel)) this.fallback = saved.fallbackModel;
     const entry =
       typeof saved?.customModel === "string" && isChatModelId(saved.customModel)
-        ? custom(saved.customModel)
+        ? this.entryFor(saved.customModel)
         : typeof saved?.modelAlias === "string"
           ? this.find(saved.modelAlias)
           : undefined;
     if (entry) this.apply(entry);
-    else if (this.fallback) this.config.model = this.currentFallback();
+    else if (this.fallback && this.config.provider === "chatgpt") this.config.model = this.currentFallback();
   }
 
   /** The chosen entry, else the list entry matching the configured default, else null. */
@@ -63,37 +62,42 @@ export class ModelChoice {
     ];
   }
 
-  /** `target` is a list alias, or any OpenRouter model id ("vendor/model"). */
-  select(target: string): ModelSwitch {
-    const entry = this.find(target) ?? (isChatModelId(target.trim()) ? custom(target.trim()) : undefined);
+  /** The list entry for `target` (an alias, or a listed OpenRouter id), else a custom OpenRouter entry. */
+  resolve(target: string): ModelEntry | undefined {
+    const t = target.trim();
+    return this.find(t) ?? (isChatModelId(t) ? this.entryFor(t) : undefined);
+  }
+
+  /** `target` is a list alias, or any OpenRouter model id ("vendor/model"). The live sessions register the
+   *  model before the config changes, so the next turn can never land on a model that isn't there. */
+  async select(target: string): Promise<ModelSwitch> {
+    const entry = this.resolve(target);
     if (!entry) return { ok: false, error: `unknown model "${target}"; choose one of ${this.list.map((e) => e.alias).join(", ")}, or an OpenRouter id like deepseek/deepseek-v4-pro` };
+    const prepared = await this.prepare(entry.backend === "openrouter" ? [entry.id] : []);
+    if (prepared) return { ok: false, error: prepared };
     const changed = this.current()?.alias !== entry.alias;
     this.apply(entry);
     const listed = this.list.includes(entry);
     writeWorkspaceState(this.stateDir, { modelAlias: listed ? entry.alias : undefined, customModel: listed ? undefined : entry.id });
-    this.notify();
     return { ok: true, entry, changed };
   }
 
   /** Sets the OpenRouter model a ChatGPT choice falls back to; null goes back to the configured one. */
-  selectFallback(id: string | null): { ok: true } | { ok: false; error: string } {
+  async selectFallback(id: string | null): Promise<{ ok: true } | { ok: false; error: string }> {
     if (id !== null && !isChatModelId(id)) return { ok: false, error: `"${id}" isn't an OpenRouter model a chat can use` };
+    const prepared = await this.prepare(id ? [id] : []);
+    if (prepared) return { ok: false, error: prepared };
     this.fallback = id;
-    if (this.current()?.backend !== "openrouter") this.config.model = this.currentFallback();
+    // Only a ChatGPT choice falls back; an OpenRouter one keeps its own model.
+    if (this.config.provider === "chatgpt") this.config.model = this.currentFallback();
     writeWorkspaceState(this.stateDir, { fallbackModel: id ?? undefined });
-    this.notify();
     return { ok: true };
   }
 
-  /** Runs `listener` after every change; returns its unsubscribe. */
-  onChange(listener: () => Promise<void>): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  /** Resolves once the listeners of the latest change have run, e.g. a live session registering the model. */
-  settled(): Promise<void> {
-    return this.pending.then(() => undefined);
+  /** Registers `preparer`, which readies extra OpenRouter ids before a choice switches to them. */
+  onPrepare(preparer: (ids: string[]) => Promise<void>): () => void {
+    this.preparers.add(preparer);
+    return () => this.preparers.delete(preparer);
   }
 
   /** `!model`'s reply: the current choice and the list. */
@@ -111,9 +115,17 @@ export class ModelChoice {
     return lines.join("\n");
   }
 
-  private notify(): void {
-    const run = Promise.allSettled([...this.listeners].map((l) => l()));
-    this.pending = this.pending.then(() => run);
+  /** An error message when a live session couldn't ready `ids`, else null. */
+  private async prepare(ids: string[]): Promise<string | null> {
+    const all = [...new Set([...this.openrouterIds(), ...ids])];
+    const results = await Promise.allSettled([...this.preparers].map((p) => p(all)));
+    const failed = results.find((r) => r.status === "rejected");
+    return failed ? `couldn't load that model: ${String((failed as PromiseRejectedResult).reason).slice(0, 200)}` : null;
+  }
+
+  /** A listed OpenRouter entry with this id, so a pick by id lands on the list's alias; else a custom one. */
+  private entryFor(id: string): ModelEntry {
+    return this.list.find((e) => e.backend === "openrouter" && e.id === id) ?? custom(id);
   }
 
   private find(alias: string): ModelEntry | undefined {
@@ -141,7 +153,8 @@ export const OPENROUTER_ID_RE = /^~?[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$
 
 /** An OpenRouter id a live chat can use: `:batch` variants answer asynchronously, at a discount, never in a turn. */
 export function isChatModelId(id: string): boolean {
-  return OPENROUTER_ID_RE.test(id) && !/:batch$/i.test(id);
+  // `:free` variants are rate-limited and mostly need prompt logging, which the agent's requests refuse.
+  return OPENROUTER_ID_RE.test(id) && !/:(batch|free)$/i.test(id);
 }
 
 function custom(id: string): ModelEntry {

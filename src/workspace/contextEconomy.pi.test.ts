@@ -261,9 +261,12 @@ describe("!model on a real Pi session", () => {
       return reqs.slice(before).map((r) => `${r.backend}:${String(r.body.model)}`);
     };
     expect(await ask("one")).toEqual(["chatgpt:gpt-6.1-sol"]);
-    choice.select("or-mini");
+    await choice.select("or-mini");
     expect(await ask("two")).toEqual(["openrouter:test/mini"]);
-    choice.select("luna");
+    // An id nobody registered when the session started: the live session registers it before it applies.
+    expect(await choice.select("test/picked-later")).toMatchObject({ ok: true });
+    expect(await ask("two b")).toEqual(["openrouter:test/picked-later"]);
+    await choice.select("luna");
     expect(await ask("three")).toEqual(["chatgpt:gpt-6-luna"]);
     chatgptDown = true;
     expect(await ask("four")).toEqual(["chatgpt:gpt-6-luna", "openrouter:openai/gpt-6-luna"]);

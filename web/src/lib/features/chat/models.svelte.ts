@@ -31,7 +31,7 @@ export const httpModelsApi: ModelsApi = {
 			});
 		} catch (err) {
 			if (err instanceof HttpError && err.status === 409) {
-				throw new Error('That model is no longer on the list. Pick from the updated one.');
+				throw new Error("The agent can't use that model. Pick another from the list.");
 			}
 			throw workspaceReadError(err, "This agent can't switch models from the app yet.");
 		}

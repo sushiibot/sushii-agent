@@ -41,11 +41,27 @@ test('the model chip shows the current model, and picking another switches it', 
 	expect(posts).toEqual([{ alias: 'or-luna' }]);
 });
 
-test('an agent too old to say shows no chip', async ({ page, context }) => {
+test('an agent too old to list models shows no model, but the context ring still opens its details', async ({
+	page,
+	context
+}) => {
 	await withModels(context, 501);
 	await page.goto('/chat');
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 	await expect(page.getByRole('button', { name: /^Model:/ })).toHaveCount(0);
+	await push(page, 'reply', {
+		key: 'r1',
+		text: 'Done.',
+		usage: { model: 'm', inputTokens: 10, outputTokens: 2, contextPct: 41 },
+		files: []
+	});
+	await page.getByRole('button', { name: 'Context, context 41% used. Change model' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Model and context' });
+	await expect(sheet.getByRole('meter', { name: 'Context used' })).toHaveAttribute(
+		'aria-valuenow',
+		'41'
+	);
+	await expect(sheet).toContainText("can't say which models it has");
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {
@@ -104,7 +120,7 @@ test('a model the list no longer has says so and reloads the list', async ({ pag
 	await page.getByRole('button', { name: /^Model:/ }).click();
 	const sheet = page.getByRole('dialog', { name: 'Model' });
 	await sheet.getByRole('button', { name: /^or-luna/ }).click();
-	await expect(sheet.getByRole('alert')).toContainText('no longer on the list');
+	await expect(sheet.getByRole('alert')).toContainText("can't use that model");
 	await expect(sheet.getByRole('button', { name: /^or-luna/ })).toHaveCount(0);
 });
 
@@ -167,7 +183,7 @@ test('search finds any tool-capable OpenRouter model, and picking it as the fall
 		.click();
 	const sheet = page.getByRole('dialog', { name: 'Model and context' });
 	await expect(sheet.getByRole('status').first()).toContainText('ChatGPT is unavailable until');
-	await sheet.getByRole('radio', { name: 'Fallback' }).click();
+	await sheet.getByRole('button', { name: 'Fallback', exact: true }).click();
 	await expect(sheet.getByRole('button', { name: /^sol/ })).toHaveCount(0);
 	await sheet.getByRole('searchbox', { name: 'Search OpenRouter models' }).fill('deepseek');
 	const hit = sheet.getByRole('button', { name: /^DeepSeek V4 Flash/ });

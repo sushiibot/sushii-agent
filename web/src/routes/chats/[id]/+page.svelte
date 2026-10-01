@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { backTo } from '$lib/core/nav/back';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
-	import type { ChatSheet, FileRef } from '$lib/features/chat';
+	import { modelsStore, type ChatSheet, type FileRef } from '$lib/features/chat';
 	import {
 		ThreadScreen,
 		threadMessages,
@@ -36,6 +36,13 @@
 		if (!s) return;
 		untrack(() => s.setViewing(true));
 		return () => s.setViewing(false);
+	});
+
+	const models = modelsStore();
+	let modelRole = $state<'main' | 'fallback'>('main');
+	onMount(() => {
+		void models.remote.ensure();
+		return models.remote.watch();
 	});
 
 	type AnySheet = ChatSheet | Exclude<ThreadSheet, 'branch'>;
@@ -83,11 +90,29 @@
 				photos: store.photos,
 				quotaFull: store.quotaFull,
 				usage: store.usage,
+				models: models.remote.data ?? null,
+				modelPicking: models.picking,
+				modelError: models.error,
+				modelRole,
+				modelQuery: models.query,
+				modelResults: models.results,
+				modelSearching: models.searching,
+				modelSearchError: models.searchError,
+				onmodelrole: (r) => (modelRole = r),
+				onmodelquery: (q) => models.setQuery(q),
+				onpickmodel: (alias, role) =>
+					void models.pick(alias, role).then((ok) => ok && closeSheet()),
 				connection: pwa.online ? undefined : { kind: 'offline' },
 				toast: store.toast,
 				announce: store.announce,
 				viewer,
-				onopensheet: (s) => sheets[s].openWith(),
+				onopensheet: (s) => {
+					if (s === 'model') {
+						models.refresh();
+						modelRole = 'main';
+					}
+					sheets[s].openWith();
+				},
 				onclosesheet: closeSheet,
 				onopenfile: (f) => {
 					viewer = f;

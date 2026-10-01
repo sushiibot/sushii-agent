@@ -43,7 +43,9 @@ export async function runCommand(params: ChatCommandParams, deps: CommandDeps): 
     }
     case "model": {
       if (!params.args) return { text: deps.choice.describe(deps.currentModel?.() ?? null) };
-      const res = deps.choice.select(params.args);
+      const unknown = await notOnOpenRouter(deps, params.args);
+      if (unknown) return { text: unknown };
+      const res = await deps.choice.select(params.args);
       if (!res.ok) return { text: res.error };
       const e = res.entry;
       const where = e.backend === "chatgpt" ? `ChatGPT \`${e.id}\` (OpenRouter while ChatGPT is unavailable)` : `OpenRouter \`${e.id}\``;
@@ -81,12 +83,31 @@ async function models(deps: CommandDeps): Promise<ModelsResult> {
   };
 }
 
+/** Why an OpenRouter id can't be picked: it isn't in a readable catalog, or can't take tools. Null when it
+ *  can, when it is a list alias or ChatGPT entry, or when the catalog is down (the id is then trusted). */
+async function notOnOpenRouter(deps: CommandDeps, target: string, fallback = false): Promise<string | null> {
+  const entry = fallback ? null : deps.choice.resolve(target);
+  if (entry && (entry.backend === "chatgpt" || deps.choice.list.includes(entry))) return null;
+  const id = target.trim();
+  if (!isChatModelId(id)) return null;
+  const catalog = await (deps.catalog ?? openRouterCatalog)().catch(() => null);
+  if (!catalog) return null;
+  const found = catalog.find((m) => m.id === id);
+  if (!found) return `"${id}" isn't on OpenRouter; search for it in the app, or check the id`;
+  if (!found.tools) return `"${id}" can't call tools, which the agent needs`;
+  if (found.contextWindow < MIN_CONTEXT_WINDOW) return `"${id}" has a ${found.contextWindow.toLocaleString("en-US")}-token context, too small for the agent`;
+  return null;
+}
+
+/** Below this the system prompt, tools and a few turns don't fit. */
+export const MIN_CONTEXT_WINDOW = 100_000;
+
 /** Tool-capable catalog models whose id or name has every word of `query`, cheapest first. */
 async function search(deps: CommandDeps, query: string): Promise<ModelsSearchResult> {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const catalog = await (deps.catalog ?? openRouterCatalog)();
   const hits = catalog
-    .filter((m) => m.tools && isChatModelId(m.id) && words.every((w) => `${m.id} ${m.name}`.toLowerCase().includes(w)))
+    .filter((m) => m.tools && isChatModelId(m.id) && m.contextWindow >= MIN_CONTEXT_WINDOW && words.every((w) => `${m.id} ${m.name}`.toLowerCase().includes(w)))
     .sort((a, b) => (a.priceIn ?? Infinity) + (a.priceOut ?? Infinity) - ((b.priceIn ?? Infinity) + (b.priceOut ?? Infinity)));
   return { models: hits.slice(0, MODELS_SEARCH_MAX).map((m) => ({ id: m.id, name: m.name, ...facts(m) })) };
 }
@@ -104,9 +125,10 @@ export function commandHandlers(deps: CommandDeps): Record<string, (params: unkn
     [RPC_METHODS.modelsSet]: async (p) => {
       const params = modelsSetParams.parse(p);
       checkPrincipal(params.principalId);
-      const res = params.role === "fallback" ? deps.choice.selectFallback(params.alias) : deps.choice.select(params.alias);
+      const unknown = await notOnOpenRouter(deps, params.alias, params.role === "fallback");
+      if (unknown) throw new RpcHandlerError(unknown, UNKNOWN_MODEL_CODE);
+      const res = params.role === "fallback" ? await deps.choice.selectFallback(params.alias) : await deps.choice.select(params.alias);
       if (!res.ok) throw new RpcHandlerError(res.error, UNKNOWN_MODEL_CODE);
-      await deps.choice.settled();
       return models(deps);
     },
     [RPC_METHODS.modelsSearch]: async (p) => {

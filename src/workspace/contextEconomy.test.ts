@@ -155,7 +155,7 @@ describe("model list and choice", () => {
     expect(() => loadWorkspaceConfig({ ...env, WORKSPACE_COMPACT_TOKENS: "lots" })).toThrow(WorkspaceConfigError);
   });
 
-  test("a chatgpt choice keeps the OpenRouter fallback; an openrouter choice pins it; the choice persists", () => {
+  test("a chatgpt choice keeps the OpenRouter fallback; an openrouter choice pins it; the choice persists", async () => {
     const stateDir = tempDir();
     writeWorkspaceState(stateDir, { chatSessionFile: "/s/chat.jsonl" });
     const cfg = base(stateDir);
@@ -163,9 +163,9 @@ describe("model list and choice", () => {
     expect(choice.current()?.alias).toBe("sol");
     expect(choice.openrouterIds()).toEqual(["openai/gpt-6-luna", "test/mini"]);
 
-    expect(choice.select("LUNA")).toMatchObject({ ok: true, changed: true });
+    expect(await choice.select("LUNA")).toMatchObject({ ok: true, changed: true });
     expect(cfg).toMatchObject({ provider: "chatgpt", chatgptModel: "gpt-6-luna", model: "openai/gpt-6-luna" });
-    expect(choice.select("or-mini")).toMatchObject({ ok: true });
+    expect(await choice.select("or-mini")).toMatchObject({ ok: true });
     expect(cfg).toMatchObject({ provider: "openrouter", model: "test/mini" });
     expect(readWorkspaceState(stateDir)).toEqual({ chatSessionFile: "/s/chat.jsonl", modelAlias: "or-mini" });
 
@@ -173,40 +173,66 @@ describe("model list and choice", () => {
     expect(new ModelChoice(restarted, stateDir).current()?.alias).toBe("or-mini");
     expect(restarted).toMatchObject({ provider: "openrouter", model: "test/mini" });
 
-    expect(choice.select("gpt-7")).toMatchObject({ ok: false, error: expect.stringContaining('unknown model "gpt-7"; choose one of sol, luna, or-mini') });
-    expect(choice.select("sol")).toMatchObject({ ok: true });
+    expect(await choice.select("gpt-7")).toMatchObject({ ok: false, error: expect.stringContaining('unknown model "gpt-7"; choose one of sol, luna, or-mini') });
+    expect(await choice.select("sol")).toMatchObject({ ok: true });
     expect(cfg).toMatchObject({ provider: "chatgpt", chatgptModel: "gpt-6.1-sol", model: "openai/gpt-6-luna" });
     expect(choice.describe()).toContain("▸ `sol`");
   });
 
-  test("any OpenRouter id can be picked and the fallback chosen; both persist; batch variants are refused", async () => {
+  test("any OpenRouter id can be picked and the fallback chosen; both persist; a listed id lands on its alias; batch and free variants are refused", async () => {
     const stateDir = tempDir();
     writeWorkspaceState(stateDir, { chatSessionFile: "/s/chat.jsonl" });
     const cfg = base(stateDir);
     const choice = new ModelChoice(cfg, stateDir);
-    const changes: string[] = [];
-    const off = choice.onChange(async () => void changes.push(cfg.model));
+    const prepared: string[][] = [];
+    const off = choice.onPrepare(async (ids) => void prepared.push(ids));
 
-    expect(choice.select("deepseek/deepseek-v4-pro")).toMatchObject({ ok: true, changed: true });
+    expect(await choice.select("deepseek/deepseek-v4-pro")).toMatchObject({ ok: true, changed: true });
     expect(cfg).toMatchObject({ provider: "openrouter", model: "deepseek/deepseek-v4-pro" });
-    expect(choice.openrouterIds()).toContain("deepseek/deepseek-v4-pro");
-    expect(choice.selectFallback("qwen/qwen3.7-plus")).toEqual({ ok: true });
+    expect(prepared[0]).toContain("deepseek/deepseek-v4-pro");
+    expect(await choice.selectFallback("qwen/qwen3.7-plus")).toEqual({ ok: true });
     // An OpenRouter choice keeps its own model; the fallback only matters for a ChatGPT one.
     expect(cfg.model).toBe("deepseek/deepseek-v4-pro");
-    choice.select("sol");
+    await choice.select("sol");
     expect(cfg).toMatchObject({ provider: "chatgpt", model: "qwen/qwen3.7-plus" });
-    await choice.settled();
-    expect(changes).toEqual(["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro", "qwen/qwen3.7-plus"]);
 
-    choice.select("deepseek/deepseek-v4-pro");
-    const restarted = base(stateDir);
-    const again = new ModelChoice(restarted, stateDir);
+    await choice.select("deepseek/deepseek-v4-pro");
+    const again = new ModelChoice(base(stateDir), stateDir);
     expect(again.current()).toEqual({ alias: "deepseek/deepseek-v4-pro", backend: "openrouter", id: "deepseek/deepseek-v4-pro" });
     expect(again.currentFallback()).toBe("qwen/qwen3.7-plus");
 
-    expect(choice.select("deepseek/deepseek-v4-pro:batch")).toMatchObject({ ok: false });
-    expect(choice.selectFallback("openai/gpt-6-luna:batch")).toMatchObject({ ok: false });
+    expect(await choice.select("test/mini")).toMatchObject({ ok: true, entry: { alias: "or-mini" } });
+    expect(readWorkspaceState(stateDir)).toMatchObject({ modelAlias: "or-mini" });
+
+    for (const id of ["deepseek/deepseek-v4-pro:batch", "qwen/qwen3.8-27b:free"]) {
+      expect(await choice.select(id)).toMatchObject({ ok: false });
+      expect(await choice.selectFallback(id)).toMatchObject({ ok: false });
+    }
     off();
+  });
+
+  test("a model the live session can't load is refused, and nothing changes", async () => {
+    const stateDir = tempDir();
+    writeWorkspaceState(stateDir, { chatSessionFile: "/s/chat.jsonl" });
+    const cfg = base(stateDir);
+    const choice = new ModelChoice(cfg, stateDir);
+    choice.onPrepare(async () => {
+      throw new Error("provider rejected");
+    });
+    expect(await choice.select("deepseek/deepseek-v4-pro")).toMatchObject({ ok: false, error: expect.stringContaining("couldn't load that model") });
+    expect(await choice.selectFallback("deepseek/deepseek-v4-pro")).toMatchObject({ ok: false });
+    expect(cfg).toMatchObject({ provider: "chatgpt", model: "openai/gpt-6-luna" });
+    expect(choice.current()?.alias).toBe("sol");
+  });
+
+  test("on an OpenRouter base the fallback never replaces the main model", async () => {
+    const stateDir = tempDir();
+    writeWorkspaceState(stateDir, { chatSessionFile: "/s/chat.jsonl", fallbackModel: "qwen/qwen3.7-plus" });
+    const cfg = { ...base(stateDir), provider: "openrouter", model: "x/off-list" } as WorkspaceConfig;
+    const choice = new ModelChoice(cfg, stateDir);
+    expect(cfg.model).toBe("x/off-list");
+    await choice.selectFallback("deepseek/deepseek-v4-pro");
+    expect(cfg.model).toBe("x/off-list");
   });
 
   test("state writes merge: a later session swap keeps the model choice", () => {

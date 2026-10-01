@@ -284,15 +284,17 @@
 					icon: attachIcon
 				})}
 			{/if}
-			{#if model && onmodel}
+			{#if onmodel && (model || (context !== null && context !== undefined))}
 				<!-- A 36px pill inside the 48px target, like the round buttons. -->
 				<button
 					type="button"
 					aria-haspopup="dialog"
 					aria-label={[
-						fallback
-							? `Model: ${fallback}, standing in for ${model} while ChatGPT is unavailable`
-							: `Model: ${model}`,
+						!model
+							? 'Context'
+							: fallback
+								? `Model: ${fallback}, standing in for ${model} while ChatGPT is unavailable`
+								: `Model: ${model}`,
 						context === null || context === undefined
 							? null
 							: `context ${Math.round(context)}% used`
@@ -336,7 +338,7 @@
 								/>
 							</svg>
 						{/if}
-						<span class="truncate">{fallback ?? model}</span>
+						<span class="truncate">{fallback ?? model ?? 'Context'}</span>
 						{#if fallback}
 							<span class="size-1.5 shrink-0 rounded-full bg-waiting" aria-hidden="true"></span>
 						{/if}

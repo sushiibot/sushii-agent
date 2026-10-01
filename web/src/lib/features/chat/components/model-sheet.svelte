@@ -75,25 +75,36 @@
 	}
 
 	// The fallback must be an OpenRouter model: it is what answers while ChatGPT can't.
+	// The id behind the current choice, so a search hit for a listed model shows as current too.
+	const chosenId = $derived(
+		role === 'main'
+			? (models?.models.find((m) => m.alias === models.current)?.id ?? models?.current ?? null)
+			: (models?.fallback ?? null)
+	);
+	const unique = (rows: Row[]) =>
+		rows.filter((r, i) => rows.findIndex((o) => o.key === r.key) === i);
 	const listed = $derived.by((): Row[] => {
 		if (!models) return [];
-		const chosen = role === 'main' ? models.current : (models.fallback ?? null);
-		return models.models
-			.filter((m) => role === 'main' || m.backend === 'openrouter')
-			.map((m) => ({
-				key: role === 'main' ? m.alias : m.id,
-				title: m.alias === m.id ? modelName(m.id) : m.alias,
-				detail: [m.alias === m.id ? null : m.id, facts(m)].filter(Boolean).join(' · '),
-				current: role === 'main' ? m.alias === chosen : m.id === chosen
-			}));
+		return unique(
+			models.models
+				.filter((m) => role === 'main' || m.backend === 'openrouter')
+				.map((m) => ({
+					key: role === 'main' ? m.alias : m.id,
+					title: m.alias === m.id ? modelName(m.id) : m.alias,
+					detail: [m.alias === m.id ? null : m.id, facts(m)].filter(Boolean).join(' · '),
+					current: role === 'main' ? m.alias === models.current : m.id === chosenId
+				}))
+		);
 	});
 	const found = $derived(
-		(results ?? []).map((m): Row => ({
-			key: m.id,
-			title: m.name,
-			detail: [m.id, facts(m)].join(' · '),
-			current: role === 'main' ? m.id === models?.current : m.id === models?.fallback
-		}))
+		unique(
+			(results ?? []).map((m): Row => ({
+				key: m.id,
+				title: m.name,
+				detail: [m.id, facts(m)].join(' · '),
+				current: m.id === chosenId
+			}))
+		)
 	);
 </script>
 
@@ -185,15 +196,14 @@
 		{/if}
 
 		<div
-			role="radiogroup"
+			role="group"
 			aria-label="What to pick"
 			class="mx-2 grid grid-cols-2 gap-1 rounded-xl bg-muted p-1"
 		>
 			{#each [['main', 'Model'], ['fallback', 'Fallback']] as const as [value, label] (value)}
 				<button
 					type="button"
-					role="radio"
-					aria-checked={role === value}
+					aria-pressed={role === value}
 					onclick={() => onrole?.(value)}
 					class={cn(
 						'h-12 rounded-lg text-sm font-medium text-muted-foreground',

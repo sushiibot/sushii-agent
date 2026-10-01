@@ -376,10 +376,16 @@
 	const install = () => oninstall?.() ?? Promise.resolve('failed' as const);
 
 	// While ChatGPT cools down, a ChatGPT choice is answered by the fallback; the chip says which.
+	// Ticks so the chip's dot appears and clears when a cool-down starts or ends between refetches.
+	let now = $state(Date.now());
+	$effect(() => {
+		const t = setInterval(() => (now = Date.now()), 30_000);
+		return () => clearInterval(t);
+	});
 	const answeringFallback = $derived.by(() => {
 		const until = models?.fallbackUntil ? Date.parse(models.fallbackUntil) : 0;
 		const cur = models?.models.find((m) => m.alias === models.current);
-		return until > Date.now() && cur?.backend === 'chatgpt' && models?.fallback
+		return until > now && cur?.backend === 'chatgpt' && models?.fallback
 			? modelName(models.fallback)
 			: null;
 	});
@@ -459,7 +465,7 @@
 		<ModelSheet
 			{models}
 			{usage}
-			now={Date.now()}
+			{now}
 			role={modelRole}
 			query={modelQuery}
 			results={modelResults}

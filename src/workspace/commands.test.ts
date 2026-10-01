@@ -95,9 +95,9 @@ describe("workspace commands", () => {
   });
 
   test("models/search finds tool-capable models by every word, cheapest first, never batch variants", async () => {
-    const m = (id: string, priceIn: number, tools = true): CatalogModel => ({ id, name: id, contextWindow: 1000, image: false, tools, priceIn, priceOut: priceIn });
+    const m = (id: string, priceIn: number, tools = true, contextWindow = 200_000): CatalogModel => ({ id, name: id, contextWindow, image: false, tools, priceIn, priceOut: priceIn });
     const { d } = deps({
-      catalog: async () => [m("qwen/qwen3.7-plus", 0.32), m("qwen/qwen3.7-flash", 0.03), m("qwen/qwen3.7-flash:batch", 0.01), m("qwen/qwen-chat-only", 0.01, false), m("deepseek/v4", 0.2)],
+      catalog: async () => [m("qwen/qwen3.7-plus", 0.32), m("qwen/qwen3.7-flash", 0.03), m("qwen/qwen3.7-flash:batch", 0.01), m("qwen/qwen-chat-only", 0.01, false), m("qwen/qwen3.7-tiny", 0.001, true, 32_000), m("deepseek/v4", 0.2)],
     });
     const res = (await commandHandlers(d)[RPC_METHODS.modelsSearch]!({ principalId: "drk", query: "QWEN 3.7" })) as ModelsSearchResult;
     expect(res.models.map((x) => x.id)).toEqual(["qwen/qwen3.7-flash", "qwen/qwen3.7-plus"]);
