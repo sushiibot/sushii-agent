@@ -9,6 +9,7 @@ import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { mintWebActor, normalizeLogin } from "./actor.ts";
 import type { ChatRoutes } from "./chatRoutes.ts";
 import type { MeResponse } from "./events.ts";
+import { createReadRoutes, type ReadRouteDeps, type ReadRoutes } from "./readRoutes.ts";
 import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
   PushSubscriptionStore,
@@ -42,6 +43,8 @@ export interface WebHandlerDeps {
   uploads?: DiskUploadStore;
   /** The /api/chat routes; absent when the chat surface is not wired. */
   chat?: ChatRoutes;
+  /** /api/runs, /api/history and /api/search; absent: they answer 404. */
+  reads?: ReadRoutes;
 }
 
 /** The slice of Bun's server a route may use: lifting the idle timeout for a stream. */
@@ -82,7 +85,7 @@ export function decodeEncodedWords(value: string): string {
 const unsubscribeSchema = z.object({ endpoint: z.string().min(1).max(2048) });
 
 export function createWebHandler(deps: WebHandlerDeps): WebHandler {
-  const { config, peers, pushStore, pushSender, uploads, chat } = deps;
+  const { config, peers, pushStore, pushSender, uploads, chat, reads } = deps;
   const owner = normalizeLogin(config.ownerLogin);
   // Also enforced at parse time; repeated here because a WebConfig can be built without the parser.
   const devLogin = config.devLogin && isLoopback(config.bindAddr) ? config.devLogin : undefined;
@@ -99,6 +102,10 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
 
     if (chat) {
       const res = await chat.handle(req, path, actor, server);
+      if (res) return res;
+    }
+    if (reads) {
+      const res = await reads.handle(req, path);
       if (res) return res;
     }
 
@@ -189,6 +196,8 @@ export function internalErrorResponse(err: unknown): Response {
 export interface WebServerOptions {
   uploads?: DiskUploadStore;
   chat?: ChatRoutes;
+  /** Sources for the read-only routes; the gateway gates them on its WEB_FEATURES. */
+  reads?: Omit<ReadRouteDeps, "features">;
 }
 
 export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined>> {
@@ -215,6 +224,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     pushSender,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.chat ? { chat: opts.chat } : {}),
+    ...(opts.reads ? { reads: createReadRoutes({ ...opts.reads, features: config.features ?? [] }) } : {}),
   });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");

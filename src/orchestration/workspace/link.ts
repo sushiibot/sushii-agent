@@ -1,8 +1,26 @@
+import type { z } from "zod";
 import {
   AUTH_METHODS,
   LOGIN_ALREADY_PENDING,
   CHAT_EXPORT_TIMEOUT_MS,
+  HISTORY_SEARCH_TIMEOUT_MS,
   RPC_METHODS,
+  RUNS_TIMEOUT_MS,
+  historyDayParams,
+  historyDayResult,
+  historyDaysParams,
+  historyDaysResult,
+  historySearchParams,
+  historySearchResult,
+  runsGetParams,
+  runsGetResult,
+  runsListParams,
+  runsListResult,
+  type HistoryDayResult,
+  type HistoryDaysResult,
+  type HistorySearchResult,
+  type RunsGetResult,
+  type RunsListResult,
   chatDeliverParams,
   chatExportResult,
   type ChatExportParams,
@@ -52,6 +70,16 @@ import {
 } from "./surface.ts";
 
 const log = getLogger("orchestration/workspace/link");
+
+/** The workspace answered a read with something outside the contract. */
+export class WorkspaceBadResponseError extends Error {
+  constructor(
+    readonly method: string,
+    readonly issues?: z.ZodError,
+  ) {
+    super(`${method}: response outside the contract`);
+  }
+}
 
 export const MESSAGE_TIMEOUT_MS = 10_000;
 const CONTROL_TIMEOUT_MS = 30_000;
@@ -294,6 +322,35 @@ export class WorkspaceLink {
   async chatExport(q: Omit<ChatExportParams, "principalId">): Promise<ChatExportResult> {
     const params: ChatExportParams = { principalId: this.opts.principalId, ...q };
     return chatExportResult.parse(await this.request(RPC_METHODS.chatExport, params, CHAT_EXPORT_TIMEOUT_MS));
+  }
+
+  async runsList(q: Omit<z.input<typeof runsListParams>, "principalId">): Promise<RunsListResult> {
+    return this.read(RPC_METHODS.runsList, runsListParams, runsListResult, q, RUNS_TIMEOUT_MS);
+  }
+
+  async runsGet(q: Omit<z.input<typeof runsGetParams>, "principalId">): Promise<RunsGetResult> {
+    return this.read(RPC_METHODS.runsGet, runsGetParams, runsGetResult, q, RUNS_TIMEOUT_MS);
+  }
+
+  async historyDays(q: Omit<z.input<typeof historyDaysParams>, "principalId">): Promise<HistoryDaysResult> {
+    return this.read(RPC_METHODS.historyDays, historyDaysParams, historyDaysResult, q, RUNS_TIMEOUT_MS);
+  }
+
+  async historyDay(q: Omit<z.input<typeof historyDayParams>, "principalId">): Promise<HistoryDayResult> {
+    return this.read(RPC_METHODS.historyDay, historyDayParams, historyDayResult, q, RUNS_TIMEOUT_MS);
+  }
+
+  async historySearch(q: Omit<z.input<typeof historySearchParams>, "principalId">): Promise<HistorySearchResult> {
+    return this.read(RPC_METHODS.historySearch, historySearchParams, historySearchResult, q, HISTORY_SEARCH_TIMEOUT_MS);
+  }
+
+  /** A read-only workspace request. Run and history content is agent-writable, so a result outside the
+   *  contract rejects the whole response with WorkspaceBadResponseError. */
+  private async read<P extends z.ZodTypeAny, R extends z.ZodTypeAny>(method: string, params: P, result: R, q: object, timeoutMs: number): Promise<z.infer<R>> {
+    const raw = await this.request(method, params.parse({ ...q, principalId: this.opts.principalId }), timeoutMs);
+    const parsed = result.safeParse(raw);
+    if (!parsed.success) throw new WorkspaceBadResponseError(method, parsed.error);
+    return parsed.data;
   }
 
   isConnected(): boolean {

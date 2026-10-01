@@ -127,6 +127,13 @@
       "when": 1790810460065,
       "tag": "0017_web_events_turn_order",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1790811000000,
+      "tag": "0018_web_chat_search",
+      "breakpoints": true
     }
   ]
 }
