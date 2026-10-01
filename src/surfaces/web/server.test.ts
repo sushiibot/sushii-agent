@@ -155,6 +155,8 @@ describe("auth", () => {
       expect(res.headers.get("X-Frame-Options")).toBe("DENY");
       expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
       expect(res.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+      // Dictation needs the microphone; nothing else may ask for camera, microphone or location.
+      expect(res.headers.get("Permissions-Policy")).toBe("camera=(), microphone=(self), geolocation=()");
     }
   });
 });

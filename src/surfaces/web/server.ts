@@ -66,7 +66,8 @@ function withSecurityHeaders(res: Response, csp = BASE_CSP): Response {
   h.set("Referrer-Policy", "no-referrer");
   h.set("Cross-Origin-Opener-Policy", "same-origin");
   h.set("Cross-Origin-Resource-Policy", "same-origin");
-  h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // Microphone for dictation, from this origin only.
+  h.set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
   return res;
 }
 
