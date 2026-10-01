@@ -15,6 +15,11 @@ const PRUNABLE = `type NOT IN (${PERMANENT_EVENTS.map((t) => `'${t}'`).join(",")
 /** A row for `prepend`, its data typed by its event type. */
 export type PrependRow = { [T in DurableEventType]: { type: T; key: string; data: ChatEventMap[T]; createdAt: number } }[DurableEventType];
 
+/** Full-text index of the chat text; best-effort, so it never throws into a chat write. */
+export interface ChatTextIndex {
+  add(seq: number, text: string): void;
+}
+
 export type EphemeralEnvelope = Extract<ChatEnvelope, { type: EphemeralEventType }>;
 export type ChatSink = (ev: ChatEnvelope) => void;
 
@@ -80,6 +85,7 @@ export class SqliteChatLog implements ChatLog {
   private readonly now: () => number;
   private readonly maxRows: number;
   private readonly retentionMs: number;
+  private readonly index: ChatTextIndex | undefined;
   private readonly q: {
     byKey: Statement<Row, [string, string]>;
     insert: Statement<{ seq: number }, [string, string | null, string, number, number | null]>;
@@ -93,9 +99,10 @@ export class SqliteChatLog implements ChatLog {
 
   constructor(
     private readonly db: Database,
-    opts: { now?: () => number; maxRows?: number; retentionMs?: number } = {},
+    opts: { now?: () => number; maxRows?: number; retentionMs?: number; index?: ChatTextIndex } = {},
   ) {
     this.now = opts.now ?? Date.now;
+    this.index = opts.index;
     this.maxRows = opts.maxRows ?? EVENTS_MAX_ROWS;
     this.retentionMs = opts.retentionMs ?? EVENTS_RETENTION_MS;
     this.q = {
@@ -128,7 +135,10 @@ export class SqliteChatLog implements ChatLog {
       }
       return { seq: this.q.insert.get(type, key ?? null, json, this.now(), sortSeq ?? null)!.seq, created: true };
     })();
-    if (res.created) this.fanOut({ seq: res.seq, type, data } as ChatEnvelope);
+    if (res.created) {
+      if (this.index && (type === "user" || type === "reply" || type === "proactive" || type === "alert")) this.index.add(res.seq, (data as ChatEventMap["user"]).text);
+      this.fanOut({ seq: res.seq, type, data } as ChatEnvelope);
+    }
     return res;
   }
 

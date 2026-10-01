@@ -8,25 +8,28 @@ import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { applySchema } from "../../db/index.ts";
 import * as schema from "../../db/schema.ts";
 import { SqliteChatLog } from "./chatLog.ts";
-import { QUERY_TOKENS_MAX, RANGES_MAX, SNIPPET_MAX, ftsQuery, queryTokens, searchChat, snippet } from "./chatSearch.ts";
+import { ChatIndex, QUERY_TOKENS_MAX, RANGES_MAX, SNIPPET_MAX, ftsQuery, queryTokens, searchChat, snippet } from "./chatSearch.ts";
 import { historyPage } from "./history.ts";
 
 const T0 = Date.parse("2026-09-30T10:00:00.000Z");
 
-function setup() {
-  const db = new Database(":memory:");
-  applySchema(db);
+function setup(db = new Database(":memory:"), migrated = false) {
+  if (!migrated) applySchema(db);
   let t = T0;
-  const log = new SqliteChatLog(db, { now: () => (t += 1000) });
-  return { db, log };
+  const index = new ChatIndex(db);
+  const log = new SqliteChatLog(db, { now: () => (t += 1000), index });
+  return { db, log, index };
 }
 
 const user = (key: string, text: string) => ({ key, text, uploadIds: [], at: "2026-09-30T09:00:00.000Z" });
 const reply = (key: string, text: string) => ({ key, text, files: [] });
 const ids = (db: Database, q: string) => searchChat(db, q, 20).hits.map((h) => h.id);
 const integrity = (db: Database) => db.run("INSERT INTO web_chat_fts(web_chat_fts) VALUES ('integrity-check')");
+const drain = (index: ChatIndex) => {
+  while (index.catchUp(2)) {}
+};
 
-describe("chat FTS sync", () => {
+describe("chat index sync", () => {
   test("user, reply and proactive rows are indexed on insert; other events are not", () => {
     const { db, log } = setup();
     const u = log.append("user", user("u1", "the zebra crossing"), "u1");
@@ -38,68 +41,95 @@ describe("chat FTS sync", () => {
     integrity(db);
   });
 
-  test("imported rows with negative seqs are indexed and keep their history ids", () => {
-    const { db, log } = setup();
-    log.append("user", user("live", "live okapi"), "live");
+  test("a job alert is indexed by its text and returned as an agent message", () => {
+    const { db, log, index } = setup();
+    const alert = { source: "job" as const, job: "nightly", kind: "failed" as const, trigger: "daily" as const, startedAt: "2026-09-30T03:00:00Z", schedule: "daily 03:00" };
+    const seq = log.append("alert", { key: "o1", alert, text: "Scheduled job nightly failed: disk full" }, "o1");
+    expect(searchChat(db, "nightly disk", 20).hits).toEqual([
+      { source: "chat", id: String(seq), at: new Date(T0 + 1000).toISOString(), role: "agent", snippet: "Scheduled job nightly failed: disk full", ranges: [[14, 21], [30, 34]] },
+    ]);
+    db.run("DELETE FROM web_chat_fts");
+    drain(index);
+    expect(ids(db, "nightly")).toEqual([String(seq)]);
+  });
+
+  test("a missing or broken index never fails a chat write, and search then throws", () => {
+    const { db, log, index } = setup();
+    db.run("DROP TABLE web_chat_fts");
+    const seq = log.append("user", user("u1", "still stored"), "u1");
+    expect(log.find("user", "u1")?.seq).toBe(seq);
+    log.transaction(() => log.append("reply", reply("r1", "also stored"), "r1"));
+    expect(log.find("reply", "r1")).not.toBeNull();
+    expect(index.catchUp()).toBe(false);
+    expect(() => searchChat(db, "stored", 20)).toThrow();
+  });
+
+  test("catch-up indexes rows the live write missed, and imported rows below every live one", () => {
+    const { db, log, index } = setup();
+    const live = log.append("user", user("live", "live okapi"), "live");
+    db.run("INSERT INTO web_events (type, key, data, created_at) VALUES ('reply', 'missed', ?, ?)", [JSON.stringify(reply("missed", "missed okapi")), T0 + 5000]);
     log.prepend([
       { type: "reply", key: "pi:2", data: reply("pi:2", "imported okapi answer"), createdAt: T0 - 50_000 },
       { type: "user", key: "pi:1", data: user("pi:1", "imported okapi question"), createdAt: T0 - 60_000 },
     ]);
-    const hits = searchChat(db, "imported okapi", 20).hits;
-    expect(hits.map((h) => [h.id, h.role])).toEqual([
-      ["0", "agent"],
-      ["-1", "user"],
-    ]);
+    expect(ids(db, "okapi")).toEqual([String(live)]);
+    drain(index);
+    expect(ids(db, "okapi")).toEqual(["2", String(live), "0", "-1"]);
+    // A later import lands below the low-water mark and is picked up too; nothing is indexed twice.
+    log.prepend([{ type: "user", key: "pi:0", data: user("pi:0", "older okapi"), createdAt: T0 - 70_000 }]);
+    drain(index);
+    expect(ids(db, "okapi")).toEqual(["2", String(live), "0", "-1", "-2"]);
+    expect(index.catchUp()).toBe(false);
+    integrity(db);
+
     const historyIds = historyPage(log, { limit: 10 }, { maxBytes: 1 << 20 }).items.map((i) => i.id);
-    for (const h of hits) expect(historyIds).toContain(h.id);
+    for (const id of ids(db, "okapi")) expect(historyIds).toContain(id);
+  });
+
+  test("indexing a row twice keeps one entry", () => {
+    const { db, log, index } = setup();
+    const seq = log.append("reply", reply("r1", "single walrus"), "r1");
+    index.add(seq, "single walrus");
+    drain(index);
+    expect(ids(db, "walrus")).toEqual([String(seq)]);
     integrity(db);
   });
 
-  test("a delete the keep-chat trigger ignores leaves the index alone; a real delete removes the row", () => {
+  test("chat rows survive prune and deletes, so their entries stay; a row erased anyway drops out of results", () => {
     const { db, log } = setup();
+    const older = log.append("user", user("u0", "persistent narwhal"), "u0");
     const seq = log.append("user", user("u1", "persistent narwhal"), "u1");
-    const gone = log.append("notice", { type: "commandResult", text: "narwhal" });
+    log.append("notice", { type: "commandResult", text: "narwhal" });
     log.prune(T0 + 365 * 86_400_000);
     db.run("DELETE FROM web_events");
-    expect(db.query("SELECT seq FROM web_events").all()).toEqual([{ seq }]);
-    expect(ids(db, "narwhal")).toEqual([String(seq)]);
-    expect(gone).toBeGreaterThan(seq);
-    integrity(db);
+    expect(ids(db, "narwhal")).toEqual([String(seq), String(older)]);
 
     db.run("DROP TRIGGER web_events_keep_chat");
     db.run("DELETE FROM web_events WHERE seq = ?", [seq]);
-    expect(ids(db, "narwhal")).toEqual([]);
-    integrity(db);
+    expect(searchChat(db, "narwhal", 1)).toMatchObject({ hits: [{ id: String(older) }], more: false });
   });
 
-  test("an update re-indexes the row", () => {
-    const { db, log } = setup();
-    const seq = log.append("reply", reply("r1", "old walrus"), "r1");
-    db.run("UPDATE web_events SET data = ? WHERE seq = ?", [JSON.stringify(reply("r1", "new manatee")), seq]);
-    expect(ids(db, "walrus")).toEqual([]);
-    expect(ids(db, "manatee")).toEqual([String(seq)]);
-    integrity(db);
-  });
-
-  test("the migration backfills rows written before it, imported ones included", () => {
+  test("a database migrated before the index gets every chat row on catch-up", () => {
     const real = join(import.meta.dir, "..", "..", "..", "drizzle");
-    const scratch = mkdtempSync(join(tmpdir(), "migrations-pre0018-"));
+    const scratch = mkdtempSync(join(tmpdir(), "migrations-pre-chat-fts-"));
     try {
       cpSync(real, scratch, { recursive: true });
       const journalPath = join(scratch, "meta", "_journal.json");
-      const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { idx: number }[] };
-      journal.entries = journal.entries.filter((e) => e.idx <= 17);
+      const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries: { tag: string }[] };
+      journal.entries = journal.entries.filter((e) => e.tag !== "0019_web_chat_search");
       writeFileSync(journalPath, JSON.stringify(journal));
       const db = new Database(":memory:");
       migrate(drizzle({ client: db, schema }), { migrationsFolder: scratch });
       expect(db.query("SELECT name FROM sqlite_master WHERE name = 'web_chat_fts'").all()).toEqual([]);
-      const log = new SqliteChatLog(db, { now: () => T0 });
-      const u = log.append("user", user("u1", "early axolotl"), "u1");
-      log.append("notice", { type: "commandResult", text: "axolotl notice" });
-      log.prepend([{ type: "reply", key: "pi:1", data: reply("pi:1", "imported axolotl"), createdAt: T0 - 1000 }]);
+      const old = new SqliteChatLog(db, { now: () => T0 });
+      const u = old.append("user", user("u1", "early axolotl"), "u1");
+      old.append("notice", { type: "commandResult", text: "axolotl notice" });
+      old.prepend([{ type: "reply", key: "pi:1", data: reply("pi:1", "imported axolotl"), createdAt: T0 - 1000 }]);
 
       applySchema(db);
-      expect(ids(db, "axolotl").sort()).toEqual([String(u), "0"].sort());
+      const { log, index } = setup(db, true);
+      drain(index);
+      expect(ids(db, "axolotl")).toEqual([String(u), "0"]);
       integrity(db);
       log.append("reply", reply("r2", "later axolotl"), "r2");
       expect(ids(db, "axolotl")).toHaveLength(3);
@@ -107,6 +137,29 @@ describe("chat FTS sync", () => {
       rmSync(scratch, { recursive: true, force: true });
     }
   });
+
+  test("a broad search over 100k rows reads the index newest first instead of sorting every match", () => {
+    const db = new Database(":memory:");
+    applySchema(db);
+    const words = ["the", "a", "to", "and", "of", "in", "is", "it", "that", "was", "for", "on", "with", "as", "be", "at", "by", "this", "had", "not"];
+    const insert = db.query("INSERT INTO web_events (type, key, data, created_at) VALUES ('reply', ?, ?, ?)");
+    db.transaction(() => {
+      for (let i = 0; i < 100_000; i++) {
+        const text = Array.from({ length: 40 }, (_, k) => words[(i * 7 + k * 13) % words.length]).join(" ");
+        insert.run(`k${i}`, JSON.stringify(reply(`k${i}`, text)), T0 + i);
+      }
+    })();
+    const index = new ChatIndex(db);
+    while (index.catchUp(20_000)) {}
+    const plan = db.query("EXPLAIN QUERY PLAN SELECT rowid FROM web_chat_fts WHERE web_chat_fts MATCH ? ORDER BY rowid DESC LIMIT 21").all('"the"*') as { detail: string }[];
+    expect(plan.map((p) => p.detail).join(" ")).not.toContain("TEMP B-TREE");
+    const started = performance.now();
+    const res = searchChat(db, "the a to and of in is it", 20);
+    const ms = performance.now() - started;
+    expect(res.hits).toHaveLength(20);
+    expect(res.hits[0]!.id).toBe("100000");
+    expect(ms).toBeLessThan(400);
+  }, 60_000);
 });
 
 describe("chat search queries", () => {
@@ -154,7 +207,22 @@ describe("chat search queries", () => {
   test("tokens are capped and quoted", () => {
     expect(queryTokens("A a b")).toEqual(["a", "b"]);
     expect(queryTokens(Array.from({ length: 20 }, (_, i) => `w${i}`).join(" "))).toHaveLength(QUERY_TOKENS_MAX);
-    expect(ftsQuery(["ab", "c"])).toBe('"ab"* "c"*');
+    expect(ftsQuery(["ab", "c"])).toBe('"ab"* "c"');
+  });
+
+  test("a one-letter word matches exactly, not as a prefix", () => {
+    const { db, log } = setup();
+    const exact = log.append("user", user("a", "plan b ready"), "a");
+    log.append("user", user("b", "plan bravo"), "b");
+    expect(ids(db, "plan b")).toEqual([String(exact)]);
+  });
+
+  test("a word with combining marks stays one word, so it can't match its letters scattered", () => {
+    expect(queryTokens("हिंदी")).toEqual(["हिंदी"]);
+    const { db, log } = setup();
+    const hit = log.append("user", user("a", "मुझे हिंदी पसंद है"), "a");
+    log.append("user", user("b", "हम दो"), "b");
+    expect(ids(db, "हिंदी")).toEqual([String(hit)]);
   });
 
   test("a decomposed query finds composed text, accents folded", () => {
@@ -199,7 +267,29 @@ describe("snippet", () => {
     expect(s.ranges).toEqual([[3, 7]]);
   });
 
-  test("text with no visible match starts at the beginning with no ranges", () => {
-    expect(snippet("café au lait", ["cafe"])).toEqual({ snippet: "café au lait", ranges: [] });
+  test("matching folds diacritics the way the index does, both ways", () => {
+    expect(snippet("café au lait", ["cafe"])).toEqual({ snippet: "café au lait", ranges: [[0, 4]] });
+    expect(snippet("un cafe noir", ["café"]).ranges).toEqual([[3, 7]]);
+    // Stored decomposed: the range covers the trailing combining mark.
+    const nfd = "la cre\u0300me";
+    expect(snippet(nfd, ["crème"]).ranges).toEqual([[3, 9]]);
+  });
+
+  test("the window centres on a match found only after folding", () => {
+    const s = snippet(`${"x ".repeat(150)}the café closes`, ["cafe"]);
+    expect(s.snippet).toContain("café");
+    const [a, b] = s.ranges[0]!;
+    expect([...s.snippet].slice(a, b).join("")).toBe("café");
+  });
+
+  test("a one-letter token highlights only the whole word", () => {
+    expect(snippet("b bravo b", ["b"]).ranges).toEqual([
+      [0, 1],
+      [8, 9],
+    ]);
+  });
+
+  test("text with no match starts at the beginning with no ranges", () => {
+    expect(snippet("au lait", ["cafe"])).toEqual({ snippet: "au lait", ranges: [] });
   });
 });

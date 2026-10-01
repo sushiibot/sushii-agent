@@ -4,6 +4,7 @@ import type { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
 import { getLogger } from "../../logger.ts";
 import { createPiChatImporter } from "./chatImport.ts";
 import { SqliteChatLog } from "./chatLog.ts";
+import { ChatIndex } from "./chatSearch.ts";
 import { createChatRoutes, type ChatRoutes } from "./chatRoutes.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { createPresence } from "./presence.ts";
@@ -13,6 +14,7 @@ import { WebWorkspaceAdapter, type WebUploadPort } from "./workspaceAdapter.ts";
 const log = getLogger("web/chat");
 
 const PRUNE_EVERY_MS = 60 * 60 * 1000;
+const INDEX_CATCH_UP_EVERY_MS = 5 * 60 * 1000;
 
 export interface WebChatDeps {
   db: Database;
@@ -34,7 +36,8 @@ export interface WebChat {
 
 /** Push goes through the gateway's active sender, so until VAPID is configured every push reaches no device. */
 export function createWebChat(deps: WebChatDeps): WebChat {
-  const chatLog = new SqliteChatLog(deps.db);
+  const chatIndex = new ChatIndex(deps.db);
+  const chatLog = new SqliteChatLog(deps.db, { index: chatIndex });
   const inbound = new WebInboundStore(deps.db);
   const presence = createPresence({ head: () => chatLog.head() });
   const adapter = new WebWorkspaceAdapter({
@@ -61,6 +64,18 @@ export function createWebChat(deps: WebChatDeps): WebChat {
 
   const importer = createPiChatImporter({ db: deps.db, log: chatLog, source: deps.link });
 
+  let catchingUp = false;
+  /** Indexes whatever the live writes missed, imported rows included, a batch per macrotask. */
+  async function catchUpIndex(): Promise<void> {
+    if (catchingUp) return;
+    catchingUp = true;
+    try {
+      while (chatIndex.catchUp()) await new Promise((r) => setImmediate(r));
+    } finally {
+      catchingUp = false;
+    }
+  }
+
   function prune(): void {
     try {
       const now = Date.now();
@@ -79,16 +94,20 @@ export function createWebChat(deps: WebChatDeps): WebChat {
       prune();
       const timer = setInterval(prune, PRUNE_EVERY_MS);
       timer.unref?.();
+      void catchUpIndex();
+      const indexTimer = setInterval(() => void catchUpIndex(), INDEX_CATCH_UP_EVERY_MS);
+      indexTimer.unref?.();
       const off = deps.link.onConnectionChange((connected) => {
         chatLog.publish({ type: "workspace", data: { state: connected && deps.workspaceEnabled ? "online" : "offline" } });
         if (connected) {
           routes.workspaceConnected();
-          if (deps.workspaceEnabled) void importer.run();
+          if (deps.workspaceEnabled) void importer.run().then(catchUpIndex);
         }
       });
-      if (deps.workspaceEnabled && deps.link.isConnected()) void importer.run();
+      if (deps.workspaceEnabled && deps.link.isConnected()) void importer.run().then(catchUpIndex);
       return () => {
         clearInterval(timer);
+        clearInterval(indexTimer);
         off();
         routes.closeStreams();
         adapter.close();
