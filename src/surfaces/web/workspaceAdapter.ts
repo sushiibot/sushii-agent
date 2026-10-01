@@ -211,17 +211,18 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const alert = parsed.data;
     this.spend();
     const shown = capText(text, ALERT_TEXT_MAX);
-    const { seq, created } = this.deps.log.transaction(() => {
+    const { seq, created, change } = this.deps.log.transaction(() => {
       const res = this.deps.log.appendResult("alert", { key, alert, text: shown }, key);
-      if (res.created && this.deps.home?.applyAlert(alert, res.seq, key)) {
-        this.deps.log.append("alert_cleared", { id: `job:${alert.job}`, reason: "recovered" }, `recovered:${key}`);
-      }
-      return res;
+      const change = res.created ? (this.deps.home?.applyAlert(alert, res.seq, key) ?? "noop") : "noop";
+      if (change === "cleared") this.deps.log.append("alert_cleared", { id: `job:${alert.job}`, reason: "recovered" }, `recovered:${key}`);
+      return { ...res, change };
     });
-    if (!created) return;
+    // A stale alert is about a run older than one already reported: it stays in the chat, silently.
+    if (!created || change === "stale") return;
     // With the flag off a job alert still pushes, as the chat message it was before structured alerts.
     if (!this.deps.features?.includes("alerts")) void this.notify(seq, { kind: "proactive", text: shown });
     else if (alert.kind !== "recovered") void this.notify(seq, { kind: "alert", alert: { job: alert.job, kind: alert.kind, ...(alert.error ? { error: alert.error } : {}) } });
+    else if (change === "cleared") void this.notify(seq, { kind: "alertRecovered", job: alert.job });
   }
 
   progressEditGap(): number {

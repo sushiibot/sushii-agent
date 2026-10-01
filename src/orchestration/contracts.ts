@@ -200,6 +200,19 @@ export type UploadReadResult = z.infer<typeof uploadReadResult>;
 /** upload/read's error when the bot already has its budget of reads in flight; the caller retries. */
 export const UPLOAD_READ_BUSY = "busy";
 
+// The agent's "say nothing" reply; the bot reads it in run summaries too.
+export const NO_REPLY = "NO_REPLY";
+const NO_REPLY_EDGE = /^NO_REPLY(?:$|[\s.,;:!?—–-])|(?:^|[\s.,;:!?—–-])NO_REPLY$/;
+
+/** Whether a reply means "say nothing": NO_REPLY alone or leading/trailing, even wrapped in markdown, quotes or punctuation. */
+export function isNoReply(text: string): boolean {
+  const bare = text
+    .replace(/[*`"'“”‘’~]/g, "")
+    .replace(/^[\s_]+/, "")
+    .replace(/[\s_.!?,;:…]+$/, "");
+  return NO_REPLY_EDGE.test(bare);
+}
+
 // ── Runs and history (bot → workspace, read-only). ──
 // Errors follow chat/export: MethodNotFound = an older workspace. The bot re-parses every result with these
 // schemas and rejects the whole response on failure, since run and history content is agent-writable.

@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, ExtensionUIContext, PromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams, ChatEventParams, ChatMessageParams } from "../orchestration/contracts.ts";
-import { PersonalSession, formatUserText, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, type SessionSummaryRecord, STOP_NOTE } from "./personalSession.ts";
+import { PersonalSession, formatUserText, isContractRefusal, messageHeader, type ChatSession, type ChatSessionFactory, type ChatTransport, type ContextHooks, type MemoryHooks, type SessionSummaryRecord, STOP_NOTE } from "./personalSession.ts";
 import { HistoryWriter } from "./history.ts";
+import { RpcErrorResponse } from "../orchestration/transport/client.ts";
 import { FLUSH_MARKER } from "./memoryFlush.ts";
 import { readWorkspaceState, writeWorkspaceState } from "./state.ts";
 import type { ImageFetchOptions } from "./inboundImages.ts";
@@ -2920,7 +2921,9 @@ describe("job alerts and the bot's alert feature", () => {
     const { host, transport } = setup({ resendIntervalMs: 10 });
     await host.start();
     host.onRegistered(["alert"]);
-    transport.respond = (_m, params) => ((params as ChatDeliverParams).kind === "alert" ? Promise.reject(new Error("invalid params")) : Promise.resolve({}));
+    // What a bot from before `alert` answers: its zod parse failure as a generic -32000.
+    const zodIssues = JSON.stringify([{ code: "invalid_enum_value", path: ["kind"], message: "Invalid enum value" }], null, 2);
+    transport.respond = (_m, params) => ((params as ChatDeliverParams).kind === "alert" ? Promise.reject(new RpcErrorResponse(zodIssues, -32000)) : Promise.resolve({}));
     host.deliverAlert(ALERT, TEXT);
     await sleep(60);
     const kinds = transport.delivered().map((d) => d.kind);
@@ -2928,5 +2931,25 @@ describe("job alerts and the bot's alert feature", () => {
     expect(kinds.slice(1).every((k) => k === "proactive")).toBe(true);
     expect(kinds.length).toBeGreaterThan(1);
     await host.dispose();
+  });
+
+  test("any other error from the bot leaves the alert structured for the next resend", async () => {
+    const { host, transport } = setup({ resendIntervalMs: 10 });
+    await host.start();
+    host.onRegistered(["alert"]);
+    transport.respond = () => Promise.reject(new RpcErrorResponse("principal mismatch", -32000));
+    host.deliverAlert(ALERT, TEXT);
+    await sleep(40);
+    expect(new Set(transport.delivered().map((d) => d.kind))).toEqual(new Set(["alert"]));
+    await host.dispose();
+  });
+
+  test("isContractRefusal: method or params refused, or a zod issue list; nothing else", () => {
+    expect(isContractRefusal(new RpcErrorResponse("x", -32602))).toBe(true);
+    expect(isContractRefusal(new RpcErrorResponse("method not found", -32601))).toBe(true);
+    expect(isContractRefusal(new RpcErrorResponse('[{"code":"custom","path":["alert"],"message":"m"}]', -32000))).toBe(true);
+    expect(isContractRefusal(new RpcErrorResponse("[]", -32000))).toBe(false);
+    expect(isContractRefusal(new RpcErrorResponse("busy", -32000))).toBe(false);
+    expect(isContractRefusal(new Error("[{\"code\":\"x\",\"path\":[]}]"))).toBe(false);
   });
 });

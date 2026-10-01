@@ -49,6 +49,16 @@ export class RpcHandlerError extends Error {
   }
 }
 
+/** The peer answered a request with a JSON-RPC error. */
+export class RpcErrorResponse extends Error {
+  constructor(
+    message: string,
+    readonly code: number,
+  ) {
+    super(message);
+  }
+}
+
 export interface OrchestrationClientOptions {
   url: string;
   runnerId: string;
@@ -340,7 +350,7 @@ export class OrchestrationClient {
     const call = this.pending.get(res.data.id);
     if (!call) return;
     this.pending.delete(res.data.id);
-    if (res.data.error) call.reject(new Error(res.data.error.message));
+    if (res.data.error) call.reject(new RpcErrorResponse(res.data.error.message, res.data.error.code));
     else call.resolve(res.data.result);
   }
 }

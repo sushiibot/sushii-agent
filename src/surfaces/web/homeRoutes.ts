@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ID_MAX, JOB_NAME_RE, RUN_ID_RE, type RunSummary, type RunsListResult, type runsListParams } from "../../orchestration/contracts.ts";
-import { LOGIN_PENDING_MS } from "../../orchestration/workspace/link.ts";
+import { ID_MAX, JOB_NAME_RE, RUN_ID_RE, isNoReply, type RunSummary, type RunsListResult, type runsListParams } from "../../orchestration/contracts.ts";
+import { LOGIN_PENDING_MS, WorkspaceBadResponseError } from "../../orchestration/workspace/link.ts";
 import { APPROVAL_TIMEOUT_MS } from "../../orchestration/workspace/tools.ts";
 import { RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
@@ -15,6 +15,10 @@ const log = getLogger("web/homeRoutes");
 /** How long GET /api/home waits for the workspace part before answering without it. */
 export const HOME_WORKSPACE_TIMEOUT_MS = 3_000;
 const HOME_RUN_KINDS = ["job", "subagent", "agent"] as const;
+/** Job failures reach Home as alerts, so only background runs are listed as failed. */
+const FAILED_RUN_KINDS = ["subagent", "agent"] as const;
+/** Generous for any background run (a job times out at 10 min), so one ending inside the window is listed. */
+const RUN_MAX_LENGTH_MS = 24 * 60 * 60 * 1000;
 const JSON_RPC_METHOD_NOT_FOUND = -32601;
 
 /** The link calls Home makes. `runsList` matches WorkspaceLink.runsList. */
@@ -58,37 +62,41 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
     if (!deps.workspaceEnabled || !link.isConnected()) return { state: "offline" };
     const t = now();
     const cutoff = t - HOME_RECENT_HOURS * 60 * 60 * 1000;
-    // runs/list's `since` bounds startedAt, so finished runs are filtered on endedAt here.
-    const kinds = [...HOME_RUN_KINDS];
+    // runs/list's `since` bounds startedAt; starting earlier catches runs that began before the window and
+    // ended in it, and endedAt decides below.
+    const since = new Date(cutoff - RUN_MAX_LENGTH_MS).toISOString();
     let timer: ReturnType<typeof setTimeout> | undefined;
     // Enforced here too: the link's own timeout is only a hint it may not take.
     const budget = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new RpcTimeoutError("Home's workspace budget ran out")), timeoutMs)));
     try {
-      const [running, finished] = await Promise.race([
+      // One call per group, so a page full of finished runs can't crowd failed ones out.
+      const [running, failed, done] = await Promise.race([
         Promise.all([
-          link.runsList({ kinds, statuses: ["running"], limit: 50 }, timeoutMs),
-          link.runsList({ kinds, statuses: ["done", "failed", "timeout"], since: new Date(cutoff).toISOString(), limit: 50 }, timeoutMs),
+          link.runsList({ kinds: [...HOME_RUN_KINDS], statuses: ["running"], limit: 50 }, timeoutMs),
+          link.runsList({ kinds: [...FAILED_RUN_KINDS], statuses: ["failed", "timeout"], since, limit: 50 }, timeoutMs),
+          link.runsList({ kinds: [...HOME_RUN_KINDS], statuses: ["done"], since, limit: 50 }, timeoutMs),
         ]),
         budget,
       ]);
-      // The groups are the bot's to define, so kinds are checked again rather than trusted to the filter.
-      const recent = finished.runs
-        .filter((r) => isHomeKind(r) && endedAt(r) >= cutoff)
-        .sort((a, b) => endedAt(b) - endedAt(a));
-      const failed = recent.filter((r) => (r.kind === "subagent" || r.kind === "agent") && (r.status === "failed" || r.status === "timeout"));
-      const done = recent.filter((r) => r.status === "done");
-      const dismissed = store.dismissedRuns(failed.map((r) => r.runId));
-      const opened = store.openedRuns(done.map((r) => r.runId));
+      // The groups are the bot's to define, so kinds and statuses are checked again rather than trusted to the filter.
+      const recent = (runs: RunSummary[]) => runs.filter((r) => endedAt(r) >= cutoff).sort((a, b) => endedAt(b) - endedAt(a));
+      const failedRuns = recent(failed.runs).filter((r) => isKind(r, FAILED_RUN_KINDS) && (r.status === "failed" || r.status === "timeout"));
+      const doneRuns = recent(done.runs).filter((r) => isKind(r, HOME_RUN_KINDS) && r.status === "done" && hasOutput(r));
+      const dismissed = store.dismissedRuns(failedRuns.map((r) => r.runId));
+      const opened = store.openedRuns(doneRuns.map((r) => r.runId));
       return {
         state: "online",
-        running: running.runs.filter((r) => isHomeKind(r) && r.status === "running").slice(0, HOME_RUNS_MAX),
-        failedRuns: failed.filter((r) => !dismissed.has(r.runId)).slice(0, HOME_RUNS_MAX),
-        review: done.filter((r) => !opened.has(r.runId)).slice(0, HOME_RUNS_MAX),
+        running: running.runs.filter((r) => isKind(r, HOME_RUN_KINDS) && r.status === "running").slice(0, HOME_RUNS_MAX),
+        failedRuns: failedRuns.filter((r) => !dismissed.has(r.runId)).slice(0, HOME_RUNS_MAX),
+        review: doneRuns.filter((r) => !opened.has(r.runId)).slice(0, HOME_RUNS_MAX),
       };
     } catch (err) {
       if (err instanceof RpcErrorReply && err.code === JSON_RPC_METHOD_NOT_FOUND) return { state: "unsupported" };
       if (err instanceof RpcTimeoutError) return { state: "timeout" };
-      // Not connected any more, or an answer outside the contract: either way there is nothing to show.
+      if (err instanceof WorkspaceBadResponseError) {
+        log.warn({ err, issues: err.issues?.issues.slice(0, 3) }, "the workspace's runs/list answer is outside the contract");
+        return { state: "bad_response" };
+      }
       log.warn({ err }, "Home could not read the workspace's runs");
       return { state: "offline" };
     } finally {
@@ -149,8 +157,14 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
   };
 }
 
-function isHomeKind(r: RunSummary): boolean {
-  return (HOME_RUN_KINDS as readonly string[]).includes(r.kind);
+function isKind(r: RunSummary, kinds: readonly string[]): boolean {
+  return kinds.includes(r.kind);
+}
+
+/** A run that said something: NO_REPLY (a quiet heartbeat) or no result at all leaves nothing to review. */
+function hasOutput(r: RunSummary): boolean {
+  const text = r.resultSummary?.trim() ?? "";
+  return text !== "" && !isNoReply(text);
 }
 
 /** -Infinity for a run with no usable endedAt, so it never counts as recent. */

@@ -11,6 +11,9 @@ type AlertRow = { job: string; state: "open" | "cleared"; alert: string; first_a
 
 const startedMs = (a: { startedAt: string }) => Date.parse(a.startedAt);
 
+/** What a delivered alert did to its job's row. */
+export type AlertChange = "opened" | "cleared" | "stale" | "noop";
+
 /** Home's own state: job-alert streaks (`web_alerts`), dismissed failed runs and opened runs. */
 export class WebHomeStore {
   private readonly now: () => number;
@@ -18,6 +21,7 @@ export class WebHomeStore {
     alert: Statement<AlertRow, [string]>;
     upsert: Statement<unknown, [string, string, string, number, string, number]>;
     clear: Statement<unknown, [number, string, string]>;
+    record: Statement<unknown, [string, string, string, number, string, number]>;
     open: Statement<AlertRow, []>;
     dismiss: Statement<unknown, [number, number, string]>;
   };
@@ -35,28 +39,36 @@ export class WebHomeStore {
          key = excluded.key, dismissed_at = NULL, updated_at = excluded.updated_at`,
       ),
       clear: db.query("UPDATE web_alerts SET state = 'cleared', updated_at = ?, alert = ? WHERE job = ?"),
+      // A recovery with no open streak still sets the job's newest run, so an older failure is stale.
+      record: db.query(
+        `INSERT INTO web_alerts (job, state, alert, first_at, seq, key, dismissed_at, updated_at) VALUES (?, 'cleared', ?, ?, ?, ?, NULL, ?)
+         ON CONFLICT(job) DO UPDATE SET alert = excluded.alert, updated_at = excluded.updated_at`,
+      ),
       open: db.query("SELECT * FROM web_alerts WHERE state = 'open' AND dismissed_at IS NULL ORDER BY seq DESC"),
       dismiss: db.query("UPDATE web_alerts SET dismissed_at = ?, updated_at = ? WHERE job = ? AND state = 'open' AND dismissed_at IS NULL"),
     };
   }
 
   /**
-   * Records a delivered alert; run it in the transaction that appends the alert's event. `failed`/`stuck` open or
-   * extend the job's streak and undo a dismissal. `recovered` closes an open streak and returns true. An alert
-   * about a run older than the one the row last saw (a late resend) changes nothing.
+   * Records a delivered alert; run it in the transaction that appends the alert's event. The row keeps the
+   * newest alert it has seen per job, whatever its kind, so an alert about an older run is `stale` however
+   * the deliveries were reordered. `failed`/`stuck` open or extend the streak and undo a dismissal; `recovered`
+   * closes an open one.
    */
-  applyAlert(alert: JobAlert, seq: number, key: string): boolean {
+  applyAlert(alert: JobAlert, seq: number, key: string): AlertChange {
     const row = this.q.alert.get(alert.job);
-    const last = row ? (JSON.parse(row.alert) as JobAlert) : null;
-    if (last && startedMs(alert) < startedMs(last)) return false;
+    if (row && startedMs(alert) < startedMs(JSON.parse(row.alert) as JobAlert)) return "stale";
     if (alert.kind === "recovered") {
-      if (row?.state !== "open") return false;
-      this.q.clear.run(this.now(), JSON.stringify(alert), alert.job);
-      return true;
+      if (row?.state === "open") {
+        this.q.clear.run(this.now(), JSON.stringify(alert), alert.job);
+        return "cleared";
+      }
+      this.q.record.run(alert.job, JSON.stringify(alert), alert.startedAt, seq, key, this.now());
+      return "noop";
     }
     const firstAt = row?.state === "open" ? row.first_at : alert.startedAt;
     this.q.upsert.run(alert.job, JSON.stringify(alert), firstAt, seq, key, this.now());
-    return false;
+    return "opened";
   }
 
   /** Open, undismissed streaks, newest alert first. */

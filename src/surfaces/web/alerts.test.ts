@@ -13,6 +13,7 @@ import { WebInboundStore } from "./inbound.ts";
 import { createPresence } from "./presence.ts";
 import type { PushPayload } from "./push.ts";
 import { pushFor } from "./pushRules.ts";
+import { historyPage } from "./history.ts";
 import { WebWorkspaceAdapter } from "./workspaceAdapter.ts";
 
 const P = "drk";
@@ -100,7 +101,7 @@ describe("alert delivery", () => {
     expect(h.log.find("alert", "o1")?.data).toEqual({ key: "o1", alert: alert({ runId: RUN_A }), text: "job nightly failed" });
   });
 
-  test("recovered closes the open streak with alert_cleared, without a push", async () => {
+  test("recovered closes the open streak with alert_cleared, and silently replaces the failure notification", async () => {
     const h = bot(freshDb());
     await h.link.deliver(deliverAlert("o1", alert()));
     await h.link.deliver(deliverAlert("o2", alert({ kind: "recovered", startedAt: "2026-10-01T04:00:00.000Z", error: undefined })));
@@ -108,7 +109,40 @@ describe("alert delivery", () => {
     await tick();
     expect(h.home.openAlerts()).toEqual([]);
     expect(h.log.list(["alert_cleared"]).map((e) => e.data)).toEqual([{ id: "job:nightly", reason: "recovered" }]);
-    expect(h.pushes.map((p) => p.tag)).toEqual(["job:nightly"]);
+    expect(h.pushes.map((p) => [p.tag, p.silent ?? false])).toEqual([
+      ["job:nightly", false],
+      ["job:nightly", true],
+    ]);
+  });
+
+  test("a recovered that overtakes its failure leaves nothing open, and the late failure doesn't push", async () => {
+    const h = bot(freshDb());
+    await h.link.deliver(deliverAlert("o2", alert({ kind: "recovered", startedAt: "2026-10-01T04:00:00.000Z", error: undefined })));
+    await h.link.deliver(deliverAlert("o1", alert({ startedAt: "2026-09-30T04:00:00.000Z" })));
+    await tick();
+    expect(h.home.openAlerts()).toEqual([]);
+    expect(h.log.list(["alert"]).map((e) => e.key)).toEqual(["o2", "o1"]);
+    expect(h.pushes).toEqual([]);
+  });
+
+  test("a stale stuck behind a newer failure neither reopens nor pushes", async () => {
+    const h = bot(freshDb());
+    await h.link.deliver(deliverAlert("o2", alert({ startedAt: "2026-10-01T04:00:00.000Z" })));
+    h.home.dismissAlert("nightly");
+    await h.link.deliver(deliverAlert("o1", alert({ kind: "stuck", startedAt: "2026-09-30T04:00:00.000Z" })));
+    await tick();
+    expect(h.home.openAlerts()).toEqual([]);
+    expect(h.pushes).toHaveLength(1);
+  });
+
+  test("an alert is a permanent chat item and comes back in history", async () => {
+    const db = freshDb();
+    const h = bot(db);
+    await h.link.deliver(deliverAlert("o1", alert()));
+    db.run("DELETE FROM web_events WHERE type = 'alert'");
+    h.log.prune(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    const page = historyPage(h.log, { limit: 10 }, { maxBytes: 1_000_000 });
+    expect(page.items).toEqual([{ type: "alert", id: String(h.log.find("alert", "o1")!.seq), at: expect.any(String), outboxId: "o1", alert: alert(), text: "job nightly failed" }]);
   });
 
   test("a recovered with no open streak, or about an older run, clears nothing", async () => {
@@ -236,8 +270,10 @@ describe("alert push", () => {
       body: "nightly: boom at x",
       url: "/home?item=job:nightly",
       tag: "job:nightly",
+      renotify: true,
     });
-    expect(pushFor({ kind: "alert", alert: { job: "nightly", kind: "stuck" } })).toEqual({ title: "Scheduled job stuck", body: "nightly", url: "/home?item=job:nightly", tag: "job:nightly" });
+    expect(pushFor({ kind: "alert", alert: { job: "nightly", kind: "stuck" } })).toEqual({ title: "Scheduled job stuck", body: "nightly", url: "/home?item=job:nightly", tag: "job:nightly", renotify: true });
+    expect(pushFor({ kind: "alertRecovered", job: "nightly" })).toEqual({ title: "Scheduled job working again", body: "nightly", url: "/home", tag: "job:nightly", silent: true });
   });
 
   test("a seen receipt for the alert suppresses its push", async () => {

@@ -5,6 +5,7 @@ import type { WebConfig } from "../../config.ts";
 import { applySchema } from "../../db/index.ts";
 import type { RunSummary, RunsListResult } from "../../orchestration/contracts.ts";
 import { RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/server.ts";
+import { WorkspaceBadResponseError } from "../../orchestration/workspace/link.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import type { HomeResponse, WebFeature } from "./events.ts";
 import { createHomeRoutes, type HomeLink } from "./homeRoutes.ts";
@@ -20,7 +21,7 @@ let ids = 0;
 const rid = () => `01J${String(++ids).padStart(23, "0")}`;
 
 function run(o: Partial<RunSummary> & Pick<RunSummary, "kind" | "status">): RunSummary {
-  return { runId: rid(), agentName: o.kind === "job" ? "job:x" : "helper", title: "t", startedAt: iso(NOW - 80 * HOUR), ...o };
+  return { runId: rid(), agentName: o.kind === "job" ? "job:x" : "helper", title: "t", startedAt: iso(NOW - 80 * HOUR), resultSummary: "Did a thing.", ...o };
 }
 
 function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: boolean; loginPending?: boolean; runs?: (q: Parameters<HomeLink["runsList"]>[0]) => Promise<RunsListResult> } = {}) {
@@ -45,9 +46,9 @@ function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: b
   return { db, log, store, routes, calls, get, post };
 }
 
-/** Answers the running call and the finished call from two lists. */
+/** Answers the running call from `running` and each finished call with the runs of its statuses. */
 const lists = (running: RunSummary[], finished: RunSummary[]) => async (q: Parameters<HomeLink["runsList"]>[0]) => ({
-  runs: q.statuses?.includes("running") ? running : finished,
+  runs: q.statuses?.includes("running") ? running : finished.filter((r) => q.statuses?.includes(r.status)),
   before: null,
   truncated: false,
 });
@@ -68,14 +69,29 @@ describe("GET /api/home", () => {
     // Kinds the request excluded, in case the workspace ignores the filter.
     const chatDone = run({ kind: "chat", status: "done", endedAt: iso(NOW - HOUR) });
     const chatRunning = run({ kind: "chat", status: "running" });
-    const h = setup({ runs: lists([running, chatRunning], [failedIn, timeoutIn, failedOut, jobFailed, doneJob, doneAgent, doneOld, noEnd, badEnd, chatDone]) });
+    // Runs that delivered nothing aren't worth a review.
+    const quietHeartbeat = run({ kind: "job", status: "done", endedAt: iso(NOW - HOUR), resultSummary: "NO_REPLY" });
+    const silent = run({ kind: "subagent", status: "done", endedAt: iso(NOW - HOUR), resultSummary: undefined });
+    const h = setup({
+      runs: lists([running, chatRunning], [failedIn, timeoutIn, failedOut, jobFailed, doneJob, doneAgent, doneOld, noEnd, badEnd, chatDone, quietHeartbeat, silent]),
+    });
 
     const home = await h.get();
+    // failedIn and doneJob started 80 h ago, before the window, and ended inside it.
     expect(home.workspace).toEqual({ state: "online", running: [running], failedRuns: [timeoutIn, failedIn], review: [doneJob, doneAgent] });
+    const since = iso(cutoff - 24 * HOUR);
     expect(h.calls).toEqual([
       { kinds: ["job", "subagent", "agent"], statuses: ["running"], limit: 50 },
-      { kinds: ["job", "subagent", "agent"], statuses: ["done", "failed", "timeout"], since: iso(cutoff), limit: 50 },
+      { kinds: ["subagent", "agent"], statuses: ["failed", "timeout"], since, limit: 50 },
+      { kinds: ["job", "subagent", "agent"], statuses: ["done"], since, limit: 50 },
     ]);
+  });
+
+  test("a page full of finished runs can't crowd a failed one out", async () => {
+    const done = Array.from({ length: 50 }, (_, i) => run({ kind: "job", status: "done", endedAt: iso(NOW - i * 60_000) }));
+    const failed = run({ kind: "subagent", status: "failed", endedAt: iso(NOW - 40 * HOUR) });
+    const h = setup({ runs: lists([], [...done, failed]) });
+    expect(await h.get()).toMatchObject({ workspace: { state: "online", failedRuns: [failed] } });
   });
 
   test("opened runs leave review and dismissed runs leave failed, on the next load", async () => {
@@ -98,11 +114,12 @@ describe("GET /api/home", () => {
     expect(home.workspace.running).toHaveLength(20);
   });
 
-  test("the workspace part degrades to unsupported, timeout or offline", async () => {
+  test("the workspace part degrades to unsupported, timeout, bad_response or offline", async () => {
     const fail = (err: Error) => setup({ runs: async () => Promise.reject(err) });
     expect((await fail(new RpcErrorReply("method not found: runs/list", -32601)).get()).workspace).toEqual({ state: "unsupported" });
     expect((await fail(new RpcTimeoutError("runs/list timed out")).get()).workspace).toEqual({ state: "timeout" });
-    expect((await fail(new z.ZodError([])).get()).workspace).toEqual({ state: "offline" });
+    expect((await fail(new WorkspaceBadResponseError("runs/list", new z.ZodError([]))).get()).workspace).toEqual({ state: "bad_response" });
+    expect((await fail(new Error("socket closed")).get()).workspace).toEqual({ state: "offline" });
     const offline = setup({ connected: false });
     expect((await offline.get()).workspace).toEqual({ state: "offline" });
     expect(offline.calls).toEqual([]);

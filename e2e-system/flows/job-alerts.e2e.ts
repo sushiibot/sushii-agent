@@ -46,7 +46,7 @@ async function home(request: APIRequestContext) {
   return (await res.json()) as { failed: Array<{ id: string; kind: string; error?: string; runId?: string; seq: number }> };
 }
 
-test("a failing scheduled job shows on Home and pushes; its recovery clears it without a push", async ({ request }) => {
+test("a failing scheduled job shows on Home and pushes; its recovery clears it and quiets the notification", async ({ request }) => {
   test.setTimeout(240_000);
   // No chat page is open, so no seen receipt can suppress the push.
   const ua = createECDH("prime256v1");
@@ -77,6 +77,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it w
       tag: `job:${JOB}`,
       url: `/home?item=job:${JOB}`,
       body: expect.stringContaining(`${JOB}: `),
+      renotify: true,
     });
 
     schedule("E2E-NOREPLY check something");
@@ -87,9 +88,14 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it w
     expect((await home(request)).failed.map((a) => a.id)).not.toContain(`job:${JOB}`);
     const kinds = await stack.query<{ k: string }>("select json_extract(data, '$.alert.kind') k from web_events where type = 'alert' and json_extract(data, '$.alert.job') = ? order by seq", JOB);
     expect(kinds.map((r) => r.k)).toEqual(["failed", "recovered"]);
-    // Give a stray push for the recovery time to land.
+    const history = await request.get("/api/chat/history?limit=100", { headers: SAME_ORIGIN });
+    const items = ((await history.json()) as { items: Array<{ type: string; alert?: { job: string } }> }).items;
+    expect(items.filter((i) => i.type === "alert" && i.alert?.job === JOB)).toHaveLength(2);
+    // The recovery replaces the failure notification without a sound.
+    await expect.poll(async () => (await ours()).length, { timeout: 20_000 }).toBe(2);
+    expect(decrypt((await ours())[1]!, ua, auth)).toMatchObject({ title: "Scheduled job working again", tag: `job:${JOB}`, silent: true });
     await new Promise((r) => setTimeout(r, 2000));
-    expect(await ours()).toHaveLength(1);
+    expect(await ours()).toHaveLength(2);
   } finally {
     writeFileSync(join(stack.wsHome, "schedule.md"), "# Schedule\n");
     await request.delete("/api/push/subscribe", { headers: SAME_ORIGIN, data: { endpoint } });

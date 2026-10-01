@@ -11,6 +11,8 @@ export type PushEvent =
   | { kind: "auth" }
   | { kind: "reply" | "proactive"; text: string }
   | { kind: "alert"; alert: Pick<JobAlert, "job" | "error"> & { kind: "failed" | "stuck" } }
+  /** Replaces the job's failure notification in the tray, silently. */
+  | { kind: "alertRecovered"; job: string }
   | { kind: "interrupted" }
   | { kind: "quota"; usedBytes: number; capBytes: number };
 
@@ -32,8 +34,11 @@ export function pushFor(event: PushEvent): PushPayload {
       const { job, error } = event.alert;
       const body = error ? plainPushBody(`${job}: ${error}`) : job;
       // The job name already matched JOB_NAME_RE, so it needs no escaping in the URL.
-      return { title: event.alert.kind === "stuck" ? "Scheduled job stuck" : "Scheduled job failed", body, url: `/home?item=job:${job}`, tag: `job:${job}` };
+      // renotify: a new streak's push replaces the last one's notification, and must still ring.
+      return { title: event.alert.kind === "stuck" ? "Scheduled job stuck" : "Scheduled job failed", body, url: `/home?item=job:${job}`, tag: `job:${job}`, renotify: true };
     }
+    case "alertRecovered":
+      return { title: "Scheduled job working again", body: event.job, url: "/home", tag: `job:${event.job}`, silent: true };
     case "interrupted":
       return { title: TITLE, body: "Turn interrupted", url: "/", tag: "chat" };
     case "quota":

@@ -1,5 +1,6 @@
 import type { Server, ServerWebSocket } from "bun";
 import crypto from "node:crypto";
+import { ZodError } from "zod";
 import {
   ORCH_CLOSE,
   RPC_METHODS,
@@ -327,7 +328,9 @@ export class OrchestrationServer {
         (err) => {
           const notFound = err instanceof MethodNotFoundError;
           if (!notFound) logger.warn({ err, method, runnerId: conn.runnerId }, "workspace request failed");
-          reply({ error: { code: notFound ? -32601 : -32000, message: err instanceof Error ? err.message : String(err) } });
+          // -32602: the params failed the contract, so the same request will always be refused.
+          const code = notFound ? -32601 : err instanceof ZodError ? -32602 : -32000;
+          reply({ error: { code, message: err instanceof Error ? err.message : String(err) } });
         },
       );
       return true;

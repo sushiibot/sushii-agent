@@ -3,7 +3,7 @@ import { CLIENT_ID_RE, type ApprovalDecision, type DurableEventType, type Histor
 import type { WebUploadPort } from "./workspaceAdapter.ts";
 
 /** Durable events that show in history. Resolutions fold into the item they resolve. */
-const HISTORY_EVENTS = ["user", "reply", "proactive", "ask", "approval", "session"] as const satisfies readonly DurableEventType[];
+const HISTORY_EVENTS = ["user", "reply", "proactive", "ask", "approval", "session", "alert"] as const satisfies readonly DurableEventType[];
 
 type UploadLookup = Pick<WebUploadPort, "lookup">;
 
@@ -101,6 +101,10 @@ function toItem(
     case "approval": {
       const d = (ev as StoredEvent<"approval">).data;
       return { type: "approval", id: `approval:${d.nonce}`, at, nonce: d.nonce, view: d.view, decision: ctx.decisions.get(d.nonce) ?? null };
+    }
+    case "alert": {
+      const d = (ev as StoredEvent<"alert">).data;
+      return { type: "alert", id, at, outboxId: d.key, alert: d.alert, text: d.text };
     }
     default: {
       const d = (ev as StoredEvent<"session">).data;

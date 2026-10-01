@@ -21,7 +21,7 @@ import {
   type JobAlertWire,
   parseUploadUrl,
 } from "../orchestration/contracts.ts";
-import { ConnectionClosedError, NotConnectedError, RequestTimeoutError } from "../orchestration/transport/client.ts";
+import { RpcErrorResponse } from "../orchestration/transport/client.ts";
 import { ulid } from "./ulid.ts";
 import { getLogger } from "../logger.ts";
 import { failureNotice, mapSessionEvent, newRunAccumulator, replyText, runAborted, runUsage, type RunAccumulator } from "./events.ts";
@@ -1510,9 +1510,8 @@ export class PersonalSession {
       .request(RPC_METHODS.chatDeliver, params, this.opts.deliverTimeoutMs ?? DELIVER_TIMEOUT_MS)
       .catch((err) => {
         log.warn({ err, outboxId: entry.outboxId }, "chat/deliver not confirmed; will resend");
-        // The bot answered and refused it: an alert it can't take would be refused on every resend.
-        const refused = !(err instanceof NotConnectedError || err instanceof ConnectionClosedError || err instanceof RequestTimeoutError);
-        if (refused && entry.kind === "alert") this.downgradeAlert(entry);
+        // An alert the bot can't take would be refused on every resend; any other error may pass.
+        if (entry.kind === "alert" && isContractRefusal(err)) this.downgradeAlert(entry);
       })
       .finally(() => this.sending.delete(entry.outboxId));
   }
@@ -1687,4 +1686,18 @@ function isCompactionBusy(err: unknown): boolean {
 
 function sameConversation(a: ChatOrigin | undefined, b: ChatOrigin | undefined): boolean {
   return a?.surface === b?.surface && a?.conversationId === b?.conversationId;
+}
+
+/** The bot refused the request's params: -32602 from a bot that says so, or a zod issue list in a generic
+ *  -32000 from one that predates `alert`. */
+export function isContractRefusal(err: unknown): boolean {
+  if (!(err instanceof RpcErrorResponse)) return false;
+  if (err.code === -32601 || err.code === -32602) return true;
+  if (err.code !== -32000) return false;
+  try {
+    const issues = JSON.parse(err.message) as unknown;
+    return Array.isArray(issues) && issues.length > 0 && issues.every((i) => typeof i === "object" && i !== null && "code" in i && "path" in i);
+  } catch {
+    return false;
+  }
 }
