@@ -326,7 +326,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		page,
 		context
 	}) => {
-		await page.emulateMedia({ colorScheme });
+		// Inspect settled colors; sheet-motion.test.ts covers animated opening and dismissal.
+		await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
 		await homeServer(context, { pending: busy() });
 		await page.goto('/inbox');
 		await expect(page.getByText('nightly-sync failed')).toBeVisible();
@@ -343,7 +344,6 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			if (!(await row.count())) continue;
 			await row.click();
 			await expect(sheet(page)).toBeVisible();
-			await page.waitForTimeout(300);
 			expect(await axe(page), String(name)).toEqual([]);
 			expect(await smallTargets(page), String(name)).toEqual([]);
 			await page.goBack();
