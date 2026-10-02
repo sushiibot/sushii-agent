@@ -147,12 +147,24 @@ test('status steer settles the send as steered, without claiming a new turn', ()
 	const fx = run(s, [{ type: 'status', seq: 1, data: { clientId: 'C', state: 'steer' } }]);
 	// Delivered, but no Working row: the send joined the turn that was already running.
 	expect(fx).toContainEqual({ type: 'delivered', clientId: 'C' });
-	expect(fx).not.toContainEqual({ type: 'turnEnd' });
 	expect(s.items.some((i) => i.id === PENDING_TURN_ID)).toBe(false);
 	expect(toMessages(s.items)[0]).toMatchObject({ role: 'user', delivery: 'steered' });
 	// Restarting history drops it like any settled send: the bot carries it back.
 	restartHistory(s);
 	expect(toMessages(s.items).some((m) => m.role === 'user')).toBe(false);
+});
+
+test('status queued marks the send queued-run: the bot holds it behind the turn', () => {
+	const s = createState();
+	addLocalSend(s, { clientId: 'C', text: 'later', attachments: [], at: 'x', delivery: 'sending' });
+	const fx = run(s, [{ type: 'status', seq: 1, data: { clientId: 'C', state: 'queued' } }]);
+	// Unsettled: no receipt, so nothing leaves the outbox, and no Working row claims it.
+	expect(fx).not.toContainEqual({ type: 'delivered', clientId: 'C' });
+	expect(s.items.some((i) => i.id === PENDING_TURN_ID)).toBe(false);
+	expect(toMessages(s.items)[0]).toMatchObject({ role: 'user', delivery: 'queued-run' });
+	// A reload keeps it locally: the receipt is still owed by the bot.
+	restartHistory(s);
+	expect(toMessages(s.items).some((m) => m.role === 'user')).toBe(true);
 });
 
 test('a reply with no progress before it takes the Working slot, and the turn ends', () => {

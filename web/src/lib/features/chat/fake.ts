@@ -187,6 +187,11 @@ export function createFakeBackend(
 			await sleep(150);
 			return 'discarded';
 		},
+		async steerMessage(clientId) {
+			await sleep(150);
+			emit('status', { clientId, state: 'steer' });
+			return { seq: stream.seq, routed: false };
+		},
 		async stop() {
 			await sleep(200);
 			if (turn) turn.stopped = true;

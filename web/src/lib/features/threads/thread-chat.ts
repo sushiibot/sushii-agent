@@ -34,6 +34,7 @@ function readOnlyApi(detail: ThreadDetail): ChatApi {
 	return {
 		history: async () => ({ ok: true, page: { items: detail.history, before: null } }),
 		postMessage: refuse,
+		steerMessage: refuse,
 		discardMessage: async () => 'unknown',
 		stop: async () => {},
 		command: refuse,

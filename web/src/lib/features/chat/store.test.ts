@@ -58,13 +58,17 @@ function runningTurnStream() {
 	};
 }
 
-/** A history-ok API that records which client ids reached POST /api/chat/messages. */
-function recordingApi(posted: string[]) {
+/** A history-ok API that records which client ids reached POST /api/chat/messages, and /steer. */
+function recordingApi(posted: string[], steered: string[] = []) {
 	return {
 		history: async () => ({ ok: true as const, page: { items: [], before: null } }),
 		postMessage: async (body: { clientId: string }) => {
 			posted.push(body.clientId);
 			return {};
+		},
+		steerMessage: async (clientId: string) => {
+			steered.push(clientId);
+			return { seq: 7, routed: false };
 		}
 	} as unknown as ChatApi;
 }
@@ -74,39 +78,7 @@ const userText = (store: ChatStore, text: string) =>
 		(m) => m.role === 'user' && m.parts.some((p) => 'text' in p && p.text === text)
 	);
 
-test('a send while a turn runs is held, then posts when the turn ends, oldest first', async () => {
-	const { transport, turnFinal } = runningTurnStream();
-	const posted: string[] = [];
-	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
-	const store = new ChatStore('main', {
-		hub: createHub({ transport }),
-		api: recordingApi(posted),
-		outbox,
-		drafts: memory()
-	});
-	await store.start();
-	expect(store.running).toBe(true);
-	await store.send('first held');
-	await store.send('second held');
-	// Held, not posted: nothing was written to the wire while the turn runs.
-	await Bun.sleep(30);
-	expect(posted).toEqual([]);
-	expect(store.messages.filter((m) => m.role === 'user').map((m) => m.delivery)).toEqual([
-		'queued-run',
-		'queued-run'
-	]);
-	// No placeholder claims the agent is working on them, and the hold survives in the outbox.
-	expect(store.items.some((i) => i.id === 'turn:pending')).toBe(false);
-	const held = await outbox.all();
-	expect(held.map((e) => e.holdForTurn)).toEqual([true, true]);
-	expect(held.every((e) => !e.attempted && !e.posted)).toBe(true);
-	turnFinal();
-	await Bun.sleep(50);
-	expect(posted).toEqual(held.map((e) => e.clientId));
-	store.destroy();
-});
-
-test('Send now posts a held message immediately, and the bot acks it as steered', async () => {
+test('a send while a turn runs posts at once, and the bot queuing it reads as queued-run', async () => {
 	const { transport, push } = runningTurnStream();
 	const posted: string[] = [];
 	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
@@ -117,33 +89,71 @@ test('Send now posts a held message immediately, and the bot acks it as steered'
 		drafts: memory()
 	});
 	await store.start();
+	expect(store.running).toBe(true);
+	await store.send('held by the bot');
+	// The device never decides: the POST goes out while the turn runs.
+	await Bun.sleep(30);
+	expect(posted).toHaveLength(1);
+	const clientId = posted[0]!;
+	expect(userText(store, 'held by the bot')?.delivery).toBe('sending');
+	push({ type: 'status', seq: 7, data: { clientId, state: 'queued' } });
+	await Bun.sleep(40);
+	expect(userText(store, 'held by the bot')?.delivery).toBe('queued-run');
+	// No receipt yet: no outbox entry leaves, and no Working row claims to work on it.
+	expect(await outbox.all()).toHaveLength(1);
+	expect(store.items.some((i) => i.id === 'turn:pending')).toBe(false);
+	// The turn ends and the bot routes it: the accepted receipt settles it.
+	push({ type: 'status', seq: 8, data: { clientId, state: 'accepted' } });
+	await Bun.sleep(40);
+	expect(userText(store, 'held by the bot')?.delivery).toBe('sent');
+	expect(await outbox.all()).toEqual([]);
+	store.destroy();
+});
+
+test('Send now calls the steer route, and the bot acks it as steered', async () => {
+	const { transport, push } = runningTurnStream();
+	const posted: string[] = [];
+	const steered: string[] = [];
+	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
+	const store = new ChatStore('main', {
+		hub: createHub({ transport }),
+		api: recordingApi(posted, steered),
+		outbox,
+		drafts: memory()
+	});
+	await store.start();
 	await store.send('steer me');
-	expect(posted).toEqual([]);
+	await Bun.sleep(30);
+	expect(posted).toHaveLength(1);
+	push({ type: 'status', seq: 7, data: { clientId: posted[0]!, state: 'queued' } });
+	await Bun.sleep(40);
 	const message = userText(store, 'steer me');
 	expect(message?.delivery).toBe('queued-run');
 	store.steerNow(message!.id);
-	await Bun.sleep(20);
+	await Bun.sleep(30);
+	// The steer goes to the route, not to a second POST of the message.
+	expect(steered).toEqual(posted);
 	expect(posted).toHaveLength(1);
 	expect(store.running).toBe(true);
-	push({ type: 'status', seq: 7, data: { clientId: posted[0], state: 'steer' } });
-	await Bun.sleep(80);
+	push({ type: 'status', seq: 8, data: { clientId: posted[0]!, state: 'steer' } });
+	await Bun.sleep(60);
 	expect(userText(store, 'steer me')?.delivery).toBe('steered');
 	// Settled: the bot holds it, so it leaves the outbox like a sent message.
 	expect(await outbox.all()).toEqual([]);
 	store.destroy();
 });
 
-test('a reload mid-run keeps a held message held until the turn ends', async () => {
+test('a reload mid-queue keeps the message unsettled until the replayed queued ack arrives', async () => {
 	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
 	await outbox.put({
-		clientId: 'RELOADHOLD00000000000000',
+		clientId: 'RELOADQUEUED000000000000',
 		text: 'written mid-run',
 		uploadIds: [],
 		at: '2026-10-02T00:00:00.000Z',
-		posted: false,
-		holdForTurn: true
+		posted: true,
+		attempted: true
 	});
-	const { transport, turnFinal } = runningTurnStream();
+	const { transport, push } = runningTurnStream();
 	const posted: string[] = [];
 	const store = new ChatStore('main', {
 		hub: createHub({ transport }),
@@ -154,11 +164,14 @@ test('a reload mid-run keeps a held message held until the turn ends', async () 
 	await store.start();
 	expect(store.running).toBe(true);
 	await Bun.sleep(30);
-	expect(posted).toEqual([]);
+	// A reload re-sends an entry the bot has not settled — harmless: it dedupes by clientId and
+	// answers for the row it already holds — so the message waits on that receipt, not on the page.
+	expect(userText(store, 'written mid-run')?.delivery).toBe('sending');
+	// The bot's queued ack is durable, so the replay marks it what it is.
+	push({ type: 'status', seq: 7, data: { clientId: 'RELOADQUEUED000000000000', state: 'queued' } });
+	await Bun.sleep(40);
 	expect(userText(store, 'written mid-run')?.delivery).toBe('queued-run');
-	turnFinal();
-	await Bun.sleep(50);
-	expect(posted).toEqual(['RELOADHOLD00000000000000']);
+	expect(await outbox.all()).toHaveLength(1);
 	store.destroy();
 });
 
