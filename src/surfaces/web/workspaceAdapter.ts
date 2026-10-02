@@ -123,11 +123,18 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     return [...this.turns.values()].map((t) => this.view(t));
   }
 
+  /** Fires when a finalize leaves no open turn: the chat routes deliver messages queued behind it.
+   *  Set once by `createChatRoutes`; never fires while a turn is still open. */
+  onTurnsIdle: (() => void) | null = null;
+
   async ack(message: WebInbound, kind: AckKind): Promise<void> {
     if (kind === "transcribing") return;
     this.deps.log.transaction(() => {
+      // The status event is how the client learns the ack — including `queued`.
       this.deps.log.append("status", { clientId: message.id, state: kind }, `${message.id}:${kind}`);
-      this.deps.inbound.markRouted(message.id, this.now());
+      // A queued message the bot holds durably must stay pending: the turn's end (or a restart's
+      // re-drive) routes it then, so marking it routed here would lose it.
+      if (kind !== "queued") this.deps.inbound.markRouted(message.id, this.now());
     });
   }
 
@@ -329,15 +336,20 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const turn = this.turns.get(turnId);
     if (turn) this.timers.clear(turn.snapshotTimer);
     this.turns.delete(turnId);
-    const key = `${turnId}:${final.outcome}`;
-    if (this.deps.log.find("turn_final", key)) return;
-    if (!this.budget.take()) {
-      log.warn({ outcome: final.outcome }, "dropping a turn final over the workspace's append budget");
-      return;
+    try {
+      const key = `${turnId}:${final.outcome}`;
+      if (this.deps.log.find("turn_final", key)) return;
+      if (!this.budget.take()) {
+        log.warn({ outcome: final.outcome }, "dropping a turn final over the workspace's append budget");
+        return;
+      }
+      // One key per outcome, so a turn marked interrupted after a restart can still be marked done by its reply.
+      const { seq, created } = this.deps.log.appendResult("turn_final", { turnId, outcome: final.outcome, summary: final.summary, activityText: capText(final.activityText ?? turn?.text ?? "", TURN_TEXT_MAX), lines: [...(final.lines ?? turn?.lines ?? [])].map((line) => ({ ...line, name: capText(line.name, ID_MAX), summary: capText(line.summary, TOOL_SUMMARY_MAX) })) }, key);
+      if (created && final.outcome === "interrupted") void this.notify(seq, { kind: "interrupted" });
+    } finally {
+      // The last open turn ended: this is when a message queued behind it is delivered, in order.
+      if (this.turns.size === 0) this.onTurnsIdle?.();
     }
-    // One key per outcome, so a turn marked interrupted after a restart can still be marked done by its reply.
-    const { seq, created } = this.deps.log.appendResult("turn_final", { turnId, outcome: final.outcome, summary: final.summary, activityText: capText(final.activityText ?? turn?.text ?? "", TURN_TEXT_MAX), lines: [...(final.lines ?? turn?.lines ?? [])].map((line) => ({ ...line, name: capText(line.name, ID_MAX), summary: capText(line.summary, TOOL_SUMMARY_MAX) })) }, key);
-    if (created && final.outcome === "interrupted") void this.notify(seq, { kind: "interrupted" });
   }
 
   /** Adds a live turn; past the cap the oldest is finalized as interrupted, so `hello` stays bounded. */
