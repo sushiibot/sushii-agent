@@ -569,26 +569,50 @@ test('narrow Runs tabs keep full labels and keyboard selection reveals the last 
 	).toBe(true);
 });
 
-test('an interrupted touch cannot leave a pane cut off between tabs', async ({ page, context }) => {
-	await fixtureApp(context);
-	await page.goto(EXPENSES);
-	await expectSettled(page, 'Overview');
-	const drag = await heldDrag(page, 130);
-	try {
-		await expect
-			.poll(async () => {
-				const pane = await panel(page, 'Overview').boundingBox();
-				const viewport = await page.locator('[data-tab-pager]').boundingBox();
-				return viewport!.x - pane!.x;
-			})
-			.toBeGreaterThan(115);
-		await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-		await expectSettled(page, 'Overview');
-	} finally {
-		await drag.finish();
+for (const [path, first] of [
+	['/runs', 'All'],
+	[EXPENSES, 'Overview'],
+	['/history', 'Recaps'],
+	['/memory', 'Long-term'],
+	['/connectors/code-host', 'Tools']
+]) {
+	for (const width of [320, 412]) {
+		test(`${path} keeps full-width aligned panels after interruption at ${width}px`, async ({
+			page,
+			context
+		}) => {
+			await fixtureApp(context);
+			await page.setViewportSize({ width, height: 915 });
+			await page.goto(path);
+			if (path === '/history') {
+				await page.getByRole('main').getByRole('listitem').first().getByRole('link').click();
+			}
+			await expectSettled(page, first);
+			const drag = await heldDrag(page, 130);
+			try {
+				await expect
+					.poll(async () => {
+						const pane = await panel(page, first).boundingBox();
+						const viewport = await page.locator('[data-tab-pager]').boundingBox();
+						return viewport!.x - pane!.x;
+					})
+					.toBeGreaterThan(115);
+				await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+				await expectSettled(page, first);
+			} finally {
+				await drag.finish();
+			}
+			await expectSettled(page, first);
+			const viewport = await page.locator('[data-tab-pager]').boundingBox();
+			const pane = await panel(page, first).boundingBox();
+			expect(viewport!.x).toBeLessThan(1);
+			expect(viewport!.width).toBe(width);
+			expect(Math.abs(pane!.x - viewport!.x)).toBeLessThan(1);
+			expect(pane!.width).toBe(width);
+			expect(
+				await page.getByRole('main').evaluate((main) => getComputedStyle(main).overflowY)
+			).toBe('hidden');
+			expect(await page.getByRole('main').evaluate((main) => main.scrollLeft)).toBe(0);
+		});
 	}
-	await expectSettled(page, 'Overview');
-	const viewport = await page.locator('[data-tab-pager]').boundingBox();
-	expect(viewport!.x).toBeLessThan(1);
-	expect(viewport!.width).toBe(page.viewportSize()!.width);
-});
+}

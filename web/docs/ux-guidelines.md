@@ -267,7 +267,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 - **Keep secondary buttons within content.** Give pagination and optional tracking buttons their content width. Keep optional MCP tracking controls below the Tools list. Do not change panel height through a footer that appears on one tab.
 - **Keep other gestures available.** Preserve vertical scrolling, text selection, text input, and horizontal code scrolling. Reserve the screen edges for the drawer and system navigation.
 
-The browser checks in `e2e/tab-swipe.test.ts` cover drag movement, snapping, keyboard navigation, reduced motion, retained state, and delayed refreshes. The connector checks also cover stable panel height.
+The browser checks in `e2e/tab-swipe.test.ts` cover drag movement, snapping, keyboard navigation, reduced motion, retained state, and delayed refreshes. The connector checks also cover stable panel height. Every pager screen has alignment and scroll ownership checks at 320px and 412px. For each new pager screen, add a case to this shared usage check.
 
 ### Loading and background refresh
 
