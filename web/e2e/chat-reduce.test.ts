@@ -135,6 +135,26 @@ const labels = (s: ChatState) =>
 		m.parts.flatMap((p) => (p.type === 'data-turn' && p.data.label ? [p.data.label] : []))
 	);
 
+test('status steer settles the send as steered, without claiming a new turn', () => {
+	const s = createState();
+	addLocalSend(s, {
+		clientId: 'C',
+		text: 'steer me',
+		attachments: [],
+		at: 'x',
+		delivery: 'queued-run'
+	});
+	const fx = run(s, [{ type: 'status', seq: 1, data: { clientId: 'C', state: 'steer' } }]);
+	// Delivered, but no Working row: the send joined the turn that was already running.
+	expect(fx).toContainEqual({ type: 'delivered', clientId: 'C' });
+	expect(fx).not.toContainEqual({ type: 'turnEnd' });
+	expect(s.items.some((i) => i.id === PENDING_TURN_ID)).toBe(false);
+	expect(toMessages(s.items)[0]).toMatchObject({ role: 'user', delivery: 'steered' });
+	// Restarting history drops it like any settled send: the bot carries it back.
+	restartHistory(s);
+	expect(toMessages(s.items).some((m) => m.role === 'user')).toBe(false);
+});
+
 test('a reply with no progress before it takes the Working slot, and the turn ends', () => {
 	const s = createState();
 	addLocalSend(s, { clientId: 'A', text: 'first', attachments: [], at: 'x', delivery: 'sending' });

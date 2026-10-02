@@ -26,6 +26,8 @@ const NONE = { approvals: [], asks: [] };
 /** A stream that greets with a turn already running, and lets a test end that turn. */
 function runningTurnStream() {
 	let push: (ev: ChatEnvelope) => void = () => {};
+	// A wrapper, so a test holds a live handle: `connect` assigns `push` after the test destructures.
+	const send = (ev: ChatEnvelope) => push(ev);
 	const transport: ChatTransport = {
 		connect(_after, on, onState) {
 			push = on;
@@ -44,13 +46,16 @@ function runningTurnStream() {
 			return () => {};
 		}
 	};
-	const turnFinal = () =>
-		push({
-			type: 'turn_final',
-			seq: 6,
-			data: { turnId: 't1', outcome: 'done', summary: { durationMs: 10, toolCount: 0 } }
-		});
-	return { transport, push, turnFinal };
+	return {
+		transport,
+		push: send,
+		turnFinal: () =>
+			send({
+				type: 'turn_final',
+				seq: 6,
+				data: { turnId: 't1', outcome: 'done', summary: { durationMs: 10, toolCount: 0 } }
+			})
+	};
 }
 
 /** A history-ok API that records which client ids reached POST /api/chat/messages. */
@@ -65,7 +70,9 @@ function recordingApi(posted: string[]) {
 }
 
 const userText = (store: ChatStore, text: string) =>
-	store.messages.find((m) => m.role === 'user' && m.parts.some((p) => 'text' in p && p.text === text));
+	store.messages.find(
+		(m) => m.role === 'user' && m.parts.some((p) => 'text' in p && p.text === text)
+	);
 
 test('a send while a turn runs is held, then posts when the turn ends, oldest first', async () => {
 	const { transport, turnFinal } = runningTurnStream();
@@ -84,9 +91,10 @@ test('a send while a turn runs is held, then posts when the turn ends, oldest fi
 	// Held, not posted: nothing was written to the wire while the turn runs.
 	await Bun.sleep(30);
 	expect(posted).toEqual([]);
-	expect(
-		store.messages.filter((m) => m.role === 'user').map((m) => m.delivery)
-	).toEqual(['queued-run', 'queued-run']);
+	expect(store.messages.filter((m) => m.role === 'user').map((m) => m.delivery)).toEqual([
+		'queued-run',
+		'queued-run'
+	]);
 	// No placeholder claims the agent is working on them, and the hold survives in the outbox.
 	expect(store.items.some((i) => i.id === 'turn:pending')).toBe(false);
 	const held = await outbox.all();
