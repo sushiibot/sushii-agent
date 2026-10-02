@@ -22,6 +22,7 @@
 		threadHref = (id) => `/chats/${id}`,
 		onretry,
 		onnew,
+		onoptions,
 		onreload
 	}: {
 		remote: RemoteLike;
@@ -35,6 +36,7 @@
 		onretry?: () => void;
 		/** Starts a thread from scratch. */
 		onnew?: () => void;
+		onoptions?: (thread: ThreadSummary) => void;
 		onreload?: () => void;
 	} = $props();
 
@@ -109,7 +111,12 @@
 {/snippet}
 
 {#snippet row(t: ThreadSummary)}
-	<ThreadRow thread={t} href={threadHref(t.id)} {now} />
+	<ThreadRow
+		thread={t}
+		href={threadHref(t.id)}
+		{now}
+		onoptions={onoptions ? () => onoptions?.(t) : undefined}
+	/>
 {/snippet}
 
 {#snippet after()}

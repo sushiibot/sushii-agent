@@ -1,6 +1,7 @@
 <script lang="ts">
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import Check from '@lucide/svelte/icons/check';
+	import ToolIcon from './tool-icon.svelte';
+	import { toolCategory } from '../tool-activity';
 	import CircleX from '@lucide/svelte/icons/circle-x';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import ApprovalInline from './approval-inline.svelte';
@@ -44,17 +45,17 @@
 		<summary
 			class="flex min-h-12 cursor-pointer list-none items-center gap-2 py-1 [&::-webkit-details-marker]:hidden"
 		>
-			{#if step.state === 'running'}
-				<LoaderCircle
-					class="size-4 shrink-0 animate-spin text-running motion-reduce:animate-none"
+			<ToolIcon kind={toolCategory(step.tool).kind} />
+			{#if step.state === 'failed'}<CircleX
+					class="size-4 shrink-0 text-failed"
 					aria-hidden="true"
-				/>
-			{:else if step.state === 'failed'}
-				<CircleX class="size-4 shrink-0 text-failed" aria-hidden="true" />
-			{:else}<Check class="size-4 shrink-0" aria-hidden="true" />{/if}
+				/>{/if}
 			<span class="min-w-0 flex-1 truncate">{readable}</span>
-			<span class="shrink-0 text-meta"
-				>{executionUnknown && approval
+			<span class="flex shrink-0 items-center gap-1 text-meta"
+				>{#if step.state === 'running'}<LoaderCircle
+						class="size-3.5 animate-spin text-running motion-reduce:animate-none"
+						aria-hidden="true"
+					/>{/if}{executionUnknown && approval
 					? labels[approval.outcome]
 					: step.state === 'running'
 						? 'Running'

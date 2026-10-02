@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
+	import Settings from '@lucide/svelte/icons/settings';
+	import ThreadSettingsSheet from './components/thread-settings-sheet.svelte';
 	import Archive from '@lucide/svelte/icons/archive';
 	import BookMarked from '@lucide/svelte/icons/book-marked';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -28,6 +30,7 @@
 		onopensheet,
 		onclosesheet,
 		onclose,
+		onrename,
 		onretry
 	}: {
 		remote: RemoteLike;
@@ -50,6 +53,7 @@
 		onopensheet?: (sheet: ThreadSheet) => void;
 		onclosesheet?: () => void;
 		onclose?: () => void;
+		onrename?: (title: string) => void;
 		onreopen?: () => void;
 		onretry?: () => void;
 	} = $props();
@@ -111,6 +115,14 @@
 {/snippet}
 
 {#snippet headerActions()}
+	<Button
+		variant="ghost"
+		size="lg"
+		class="size-12 p-0"
+		aria-haspopup="dialog"
+		aria-label="Thread settings"
+		onclick={() => onopensheet?.('thread-settings')}><Settings /></Button
+	>
 	{#if !archived}
 		<Button variant="ghost" size="lg" onclick={() => onopensheet?.('thread-close')}
 			><Archive /><span class="@max-md:sr-only">Archive</span></Button
@@ -217,3 +229,13 @@
 		</div>
 	{/if}
 </RoutedSheet>
+
+<ThreadSettingsSheet
+	open={sheet === 'thread-settings'}
+	{thread}
+	{busy}
+	{error}
+	{onrename}
+	onarchive={onclose}
+	onclose={onclosesheet}
+/>

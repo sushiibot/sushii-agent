@@ -12,6 +12,7 @@ export interface ThreadsApi {
 	/** Moves the thread into Archived while keeping its history resumable. */
 	close(id: string): Promise<ThreadSummary>;
 	reopen(id: string): Promise<ThreadSummary>;
+	rename(id: string, title: string): Promise<ThreadSummary>;
 }
 
 const http = featureHttp("Threads aren't available yet.");
@@ -33,5 +34,6 @@ export const httpThreadsApi: ThreadsApi = {
 	get: (id) => http.find(`/threads/${enc(id)}`),
 	branch: (from) => action('/threads', from),
 	close: (id) => action(`/threads/${enc(id)}/close`),
-	reopen: (id) => action(`/threads/${enc(id)}/reopen`)
+	reopen: (id) => action(`/threads/${enc(id)}/reopen`),
+	rename: (id, title) => action(`/threads/${enc(id)}/rename`, { title })
 };

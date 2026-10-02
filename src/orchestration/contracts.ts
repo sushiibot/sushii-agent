@@ -54,7 +54,7 @@ export type ChatOrigin = z.infer<typeof chatOrigin>;
 export const TOPIC_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 export const topicsManageParams = z.object({
   principalId: z.string(), id: z.string().regex(TOPIC_ID_RE).refine(id => id !== "main"),
-  action: z.enum(["create", "close", "reopen"]),
+  action: z.enum(["create", "close", "reopen", "rename"]),
   title: z.string().trim().min(1).max(120).optional(),
   brief: z.string().max(16000).optional(),
 }).strict();

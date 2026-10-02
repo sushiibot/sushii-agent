@@ -48,7 +48,15 @@
 	});
 
 	type AnySheet = ChatSheet | Exclude<ThreadSheet, 'branch'>;
-	const ids: AnySheet[] = ['commands', 'new', 'viewer', 'model', 'thread-memory', 'thread-close'];
+	const ids: AnySheet[] = [
+		'commands',
+		'new',
+		'viewer',
+		'model',
+		'thread-memory',
+		'thread-close',
+		'thread-settings'
+	];
 	const sheets = Object.fromEntries(ids.map((s) => [s, routedSheet(s)])) as Record<
 		AnySheet,
 		ReturnType<typeof routedSheet>
@@ -171,6 +179,9 @@
 	}}
 	onclosesheet={closeSheet}
 	onclose={() => void closeThread()}
+	onrename={async (title) => {
+		if (await threads.rename(id, title)) await leaveSheet(sheets['thread-settings']);
+	}}
 	onreopen={() => void threads.reopen(id)}
 	onretry={() => void remote.refetch()}
 />

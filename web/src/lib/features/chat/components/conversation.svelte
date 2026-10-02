@@ -24,6 +24,8 @@
 	import Markdown from '../render/markdown.svelte';
 	import WorkingRow from './working-row.svelte';
 	import ToolRow from './tool-row.svelte';
+	import ToolActivityGroup from './tool-activity-group.svelte';
+	import { groupToolActivity } from '../tool-activity';
 	import ApprovalInline from './approval-inline.svelte';
 	import type { LocationReply } from '../location';
 	import MessageActions, { type MessageAction } from './message-actions.svelte';
@@ -165,7 +167,7 @@
 						: 'flex flex-col gap-2'
 				)}
 			>
-				{#each message.parts as part, i (i)}
+				{#each groupToolActivity(message.parts) as { part, index: i } (i)}
 					{#if part.type === 'text' && message.role === 'assistant'}
 						<div data-message-text>
 							<Markdown
@@ -200,6 +202,8 @@
 						</p>
 					{:else if part.type === 'data-turn'}
 						<WorkingRow turn={part.data} open={openTurn === message.id} {openStep} />
+					{:else if part.type === 'data-tool-group'}
+						<ToolActivityGroup steps={part.data} {openStep} />
 					{:else if part.type === 'data-tool'}
 						<ToolRow
 							step={part.data}

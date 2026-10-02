@@ -1,6 +1,8 @@
 <script lang="ts">
 	import CircleStop from '@lucide/svelte/icons/circle-stop';
 	import ToolRow from './tool-row.svelte';
+	import ToolActivityGroup from './tool-activity-group.svelte';
+	import { groupToolActivity } from '../tool-activity';
 	import type { Turn } from '../types';
 	let { turn, openStep }: { turn: Turn; open?: boolean; openStep?: string } = $props();
 	const busy = $derived(
@@ -9,10 +11,13 @@
 	const status = $derived(turn.state === 'stopping' ? 'Stopping…' : (turn.label ?? 'Working…'));
 </script>
 
-{#each turn.steps as step, i (`${i}:${step.id}`)}<ToolRow
-		{step}
-		open={openStep === step.id}
-	/>{/each}
+{#each groupToolActivity(turn.steps.map( (step) => ({ type: 'data-tool' as const, data: step }) )) as { part, index } (index)}
+	{#if part.type === 'data-tool-group'}<ToolActivityGroup steps={part.data} {openStep} />
+	{:else if part.type === 'data-tool'}<ToolRow
+			step={part.data}
+			open={openStep === part.data.id}
+		/>{/if}
+{/each}
 {#if busy}
 	<p
 		role="status"

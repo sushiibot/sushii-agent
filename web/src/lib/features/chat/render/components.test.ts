@@ -312,3 +312,58 @@ describe('compact inline activity', () => {
 		expect(els.filter((e) => e.tag === 'button').every((e) => 'disabled' in e.attrs)).toBe(true);
 	});
 });
+
+describe('grouped tool activity', () => {
+	test('openStep expands the containing group and its individual call without dropping output', async () => {
+		const { default: ToolActivityGroup } = await import('../components/tool-activity-group.svelte');
+		const { els, text } = await dom(ToolActivityGroup, {
+			steps: [
+				{
+					id: 'read1',
+					tool: 'read',
+					label: 'Read tasks',
+					state: 'ok',
+					input: 'TASKS.md',
+					output: 'Task content'
+				},
+				{ id: 'bash1', tool: 'bash', label: 'Run check', state: 'running', input: 'bun test' }
+			],
+			openStep: 'read1'
+		});
+		const details = els.filter((e) => e.tag === 'details');
+		expect(details).toHaveLength(3);
+		expect(details.map((e) => 'open' in e.attrs)).toEqual([true, true, false]);
+		expect(text).toContain('Task content');
+		expect(text).toContain('Read × 1');
+		expect(text).toContain('Bash × 1');
+		expect(text).toContain('Running');
+	});
+	test('completed multi-call groups start collapsed', async () => {
+		const { default: ToolActivityGroup } = await import('../components/tool-activity-group.svelte');
+		const { els } = await dom(ToolActivityGroup, {
+			steps: [1, 2].map((id) => ({
+				id: String(id),
+				tool: 'read',
+				label: 'Read tasks',
+				state: 'ok',
+				input: 'TASKS.md'
+			}))
+		});
+		expect(els.filter((e) => e.tag === 'details').every((e) => !('open' in e.attrs))).toBe(true);
+	});
+});
+
+test('legacy grouped steps with repeated ids render every occurrence', async () => {
+	const { els, text } = await dom(WorkingRow, {
+		turn: {
+			state: 'done',
+			steps: [
+				{ id: 'repeated', tool: 'read', label: 'Read first', state: 'ok', input: 'first.md' },
+				{ id: 'repeated', tool: 'read', label: 'Read second', state: 'ok', input: 'second.md' }
+			]
+		}
+	});
+	expect(els.filter((e) => 'data-tool-call' in e.attrs)).toHaveLength(2);
+	expect(text).toContain('first.md');
+	expect(text).toContain('second.md');
+});

@@ -52,6 +52,7 @@ export function createFixtureThreadsApi(
 			const d = await ready();
 			if (!d.threads.some((t) => t.id === id)) return null;
 			let detail = details.get(id) ?? threadDetail(Date.now(), id);
+			if (detail) detail = { ...detail, summary: d.threads.find((t) => t.id === id)! };
 			if (!detail) {
 				const summary = d.threads.find((t) => t.id === id)!;
 				detail = {
@@ -106,6 +107,12 @@ export function createFixtureThreadsApi(
 				archived: { at: new Date().toISOString(), by: 'you' }
 			});
 			return t;
+		},
+		async rename(id, title) {
+			await ready();
+			const name = title.trim();
+			if (!name || name.length > 120) throw new Error('Use a name between 1 and 120 characters.');
+			return update(id, { title: name });
 		},
 		async reopen(id) {
 			await ready();

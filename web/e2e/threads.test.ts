@@ -140,3 +140,144 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await checkScreen(page);
 	});
 }
+
+test('thread settings saves a name and preserves the conversation across a reload', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/chats/oct-trip');
+	await page.getByRole('button', { name: 'Thread settings', exact: true }).click();
+	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
+	const name = sheet.getByRole('textbox', { name: 'Thread name' });
+	await expect(name).toHaveValue('October trip');
+	await expect(sheet.getByRole('button', { name: 'Save name' })).toBeDisabled();
+	await name.fill('  Japan trip  ');
+	await sheet.getByRole('button', { name: 'Save name' }).click();
+	await expect(sheet).toBeHidden();
+	await expect(page.getByRole('heading', { name: 'Japan trip', level: 1 })).toBeVisible();
+	await expect(page.getByText('Picking up the trip here.')).toBeVisible();
+	await page.reload();
+	await expect(page.getByRole('heading', { name: 'Japan trip', level: 1 })).toBeVisible();
+	await page.goto('/chats');
+	await expect(page.getByRole('link', { name: /Japan trip/ })).toBeVisible();
+});
+
+test('row options rename archived threads and Back cancels unsaved changes', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/chats');
+	await page.getByRole('button', { name: 'Options for Couch delivery' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
+	await expect(sheet.getByRole('button', { name: 'Archive thread' })).toHaveCount(0);
+	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Unsaved');
+	await page.goBack();
+	await expect(sheet).toBeHidden();
+	await page.getByRole('button', { name: 'Options for Couch delivery' }).click();
+	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('Couch delivery');
+	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Delivered couch');
+	await sheet.getByRole('button', { name: 'Save name' }).click();
+	await expect(sheet).toBeHidden();
+	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('Delivered couch');
+});
+
+test('a failed rename keeps the sheet and its edited name available for retry', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	let failed = false;
+	await context.route('**/api/threads/oct-trip/rename', async (route) => {
+		if (!failed) {
+			failed = true;
+			await route.fulfill({ status: 503, json: { error: 'Workspace unavailable' } });
+		} else await route.fallback();
+	});
+	await page.goto('/chats/oct-trip');
+	await page.getByRole('button', { name: 'Thread settings', exact: true }).click();
+	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
+	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Japan trip');
+	await sheet.getByRole('button', { name: 'Save name' }).click();
+	await expect(sheet.getByRole('alert')).toContainText("Couldn't update the thread");
+	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('Japan trip');
+	await sheet.getByRole('button', { name: 'Save name' }).click();
+	await expect(sheet).toBeHidden();
+	await expect(page.getByRole('heading', { name: 'Japan trip', level: 1 })).toBeVisible();
+});
+
+test('long press opens row options, while a scroll gesture and a short tap do not', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/chats');
+	const row = page.getByRole('link', { name: /October trip/ });
+	const down = { pointerId: 1, pointerType: 'touch', button: 0, clientX: 100, clientY: 300 };
+	await row.dispatchEvent('pointerdown', down);
+	await row.dispatchEvent('pointermove', { ...down, clientY: 330 });
+	await page.waitForTimeout(550);
+	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
+	await expect(sheet).toBeHidden();
+	await row.dispatchEvent('pointerup', down);
+	await row.dispatchEvent('pointerdown', down);
+	await expect(sheet).toBeVisible();
+	await expect(page).toHaveURL(/\/chats$/);
+	// The click delivered after a completed long press must not follow the thread link.
+	await row.dispatchEvent('pointerup', down);
+	await row.dispatchEvent('click');
+	await expect(page).toHaveURL(/\/chats$/);
+	await page.goBack();
+	await expect(sheet).toBeHidden();
+	await row.click();
+	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+});
+
+for (const colorScheme of ['light', 'dark'] as const) {
+	test(`thread settings passes axe, targets and reflow in ${colorScheme}`, async ({
+		page,
+		context
+	}) => {
+		await page.emulateMedia({ colorScheme });
+		await fixtureApp(context);
+		await page.goto('/chats');
+		await page.getByRole('button', { name: 'Options for October trip' }).click();
+		await expect(page.getByRole('dialog', { name: 'Thread settings' })).toBeVisible();
+		await checkScreen(page);
+	});
+}
+
+test('refreshing thread metadata preserves an open name draft and archive confirmation', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/chats');
+	await page.getByRole('button', { name: 'Options for October trip' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
+	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('My unsaved name');
+	async function remoteRename(title: string) {
+		await page.evaluate(async (title) => {
+			await fetch('/api/threads/oct-trip/rename', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ title })
+			});
+		}, title);
+		const refreshed = page.waitForResponse(
+			(response) => response.url().endsWith('/api/chats') && response.request().method() === 'GET'
+		);
+		await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+		await refreshed;
+		await expect(page.getByRole('button', { name: `Options for ${title}` })).toBeAttached();
+	}
+	await remoteRename('Changed elsewhere');
+	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('My unsaved name');
+	await sheet.getByRole('button', { name: 'Archive thread', exact: true }).click();
+	await expect(sheet.getByText('Archive Changed elsewhere?', { exact: true })).toBeVisible();
+	await remoteRename('Changed again');
+	await expect(sheet.getByText('Archive Changed again?', { exact: true })).toBeVisible();
+	await sheet.getByRole('button', { name: 'Keep current' }).click();
+	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('My unsaved name');
+});

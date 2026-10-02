@@ -183,6 +183,12 @@ export class TopicSessions {
         this.save();
         throw err;
       }
+    } else if (q.action === "rename") {
+      if (!existing) throw new Error("unknown topic");
+      if (!q.title) throw new Error("title required");
+      existing.title = q.title;
+      this.save();
+      return { ok: true };
     } else {
       if (!existing) throw new Error("unknown topic");
       const s = await this.open(q.id);

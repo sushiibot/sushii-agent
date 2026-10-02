@@ -66,9 +66,7 @@
 			class="flex w-auto flex-wrap gap-2"
 		>
 			{#each RUN_FILTERS as f (f.value)}
-				<RadioGroup.Card value={f.value} class="shrink-0 rounded-full px-4"
-					>{f.label}</RadioGroup.Card
-				>
+				<RadioGroup.Card value={f.value} compact>{f.label}</RadioGroup.Card>
 			{/each}
 		</RadioGroup.Root>
 	{/if}

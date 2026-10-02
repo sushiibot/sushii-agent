@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TopicSessions, type TopicSession } from "./topicSessions.ts";
@@ -208,4 +208,72 @@ test("concurrent topic creation has no active limit and rejects path traversal",
   expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(9);
   await expect(h.create("../escape")).rejects.toThrow();
   await expect(h.create("main")).rejects.toThrow();
+});
+
+test("renaming running and archived topics persists names without restarting their sessions", async () => {
+  const h = setup();
+  await h.create("trip");
+  const session = h.created.get("trip")!;
+  session.idle = false;
+  const before = [...session.messages];
+  await h.manager.manage({
+    principalId: "owner",
+    id: "trip",
+    action: "rename",
+    title: "  Autumn trip  ",
+  });
+  expect(h.created.get("trip")).toBe(session);
+  expect(session.starts).toBe(1);
+  expect(session.messages).toEqual(before);
+  expect(session.disposed).toBe(false);
+  const catalog = () =>
+    JSON.parse(readFileSync(join(h.stateDir, "topics.json"), "utf8"));
+  expect(catalog().trip).toMatchObject({
+    title: "Autumn trip",
+    archived: false,
+  });
+  session.idle = true;
+  await h.manager.manage({ principalId: "owner", id: "trip", action: "close" });
+  await h.manager.manage({
+    principalId: "owner",
+    id: "trip",
+    action: "rename",
+    title: "Trip archive",
+  });
+  expect(session.starts).toBe(1);
+  expect(catalog().trip).toMatchObject({
+    title: "Trip archive",
+    archived: true,
+  });
+  await h.manager.dispose();
+  const restored = setup(h.stateDir);
+  await restored.manager.restore();
+  expect(restored.created.size).toBe(0);
+  await restored.manager.manage({
+    principalId: "owner",
+    id: "trip",
+    action: "reopen",
+  });
+  expect(restored.created.get("trip")!.messages[0]?.text).toContain(
+    "Trip archive",
+  );
+});
+
+test("invalid or unauthorized rename requests leave the topic name unchanged", async () => {
+  const h = setup();
+  await h.create("trip");
+  for (const request of [
+    { principalId: "stranger", id: "trip", title: "changed" },
+    { principalId: "owner", id: "missing", title: "changed" },
+    { principalId: "owner", id: "trip" },
+    { principalId: "owner", id: "trip", title: " " },
+    { principalId: "owner", id: "trip", title: "a".repeat(121) },
+  ])
+    await expect(
+      h.manager.manage({ ...request, action: "rename" }),
+    ).rejects.toThrow();
+  expect(
+    JSON.parse(readFileSync(join(h.stateDir, "topics.json"), "utf8")).trip
+      .title,
+  ).toBe("trip");
 });

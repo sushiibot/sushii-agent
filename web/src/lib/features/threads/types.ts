@@ -61,4 +61,4 @@ export interface ThreadDetail {
 }
 
 /** The sheets a thread chat opens over itself. */
-export type ThreadSheet = 'thread-memory' | 'thread-close' | 'branch';
+export type ThreadSheet = 'thread-memory' | 'thread-close' | 'thread-settings' | 'branch';

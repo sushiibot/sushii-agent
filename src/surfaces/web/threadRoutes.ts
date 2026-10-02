@@ -272,7 +272,9 @@ export class WebThreads {
     if (
       req.method === "POST" &&
       (path === "/api/threads" ||
-        /^\/api\/threads\/[^/]+\/(close|reopen|chat\/messages)$/.test(path))
+        /^\/api\/threads\/[^/]+\/(close|reopen|rename|chat\/messages)$/.test(
+          path,
+        ))
     )
       return this.exclusive(() => this.handleRequest(req, path, actor, server));
     return this.handleRequest(req, path, actor, server);
@@ -379,6 +381,25 @@ export class WebThreads {
       });
     if (req.method !== "POST")
       return json({ error: "method not allowed" }, 405);
+    if (sub === "rename") {
+      const raw = await readJson(req, 16000);
+      if (raw instanceof Response) return raw;
+      const body = z
+        .object({ title: z.string().trim().min(1).max(120) })
+        .strict()
+        .safeParse(raw);
+      if (!body.success) return json({ error: "invalid body" }, 400);
+      await this.deps.link.topicManage({
+        id: row.id,
+        action: "rename",
+        title: body.data.title,
+      });
+      this.deps.db
+        .query("UPDATE web_threads SET title = ? WHERE id = ?")
+        .run(body.data.title, row.id);
+      this.changed(row.id);
+      return json(this.summary(this.row(row.id)!));
+    }
     if (sub === "close") return json(await this.close(row, "you"));
     if (sub === "reopen") {
       await this.resume(row);

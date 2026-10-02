@@ -1925,3 +1925,65 @@ for (const width of [412, 1280]) {
 		await page.screenshot({ path: `/tmp/chat-approval-resolved-${width}.png` });
 	});
 }
+
+for (const width of [320, 412, 1280]) {
+	test(`tool stretches collapse into a category summary at ${width}px`, async ({
+		page,
+		context
+	}) => {
+		await chatServer(context);
+		await page.setViewportSize({ width, height: 915 });
+		await open(page);
+		await push(page, 'delta', { turnId: 'grouped', offset: 0, text: 'I will inspect the files.' });
+		for (const [id, name] of [
+			['read-1', 'read'],
+			['read-2', 'read'],
+			['bash-1', 'bash']
+		]) {
+			await push(page, 'tool', {
+				turnId: 'grouped',
+				id,
+				name,
+				summary: `${name} ${id}`,
+				textOffset: 24,
+				input: { command: id }
+			});
+			await push(page, 'tool', {
+				turnId: 'grouped',
+				id,
+				name,
+				summary: `${name} ${id}`,
+				textOffset: 24,
+				ok: true,
+				output: { result: `result ${id}` }
+			});
+		}
+		const group = page.locator('[data-tool-activity]');
+		await expect(group).toHaveCount(1);
+		await expect(group.locator(':scope > summary')).toContainText('Read × 2');
+		await expect(group.locator(':scope > summary')).toContainText('Bash × 1');
+		await expect(page.locator('[data-tool-call="read-1"]')).not.toBeVisible();
+		expect((await group.locator(':scope > summary').boundingBox())!.height).toBe(48);
+		await push(page, 'tool', {
+			turnId: 'grouped',
+			id: 'bad',
+			name: 'bash',
+			summary: 'Command failed',
+			textOffset: 24,
+			ok: false
+		});
+		await expect(page.locator('[data-tool-call="bad"]')).toBeVisible();
+		await expect(page.locator('[data-tool-call="bad"] summary')).toContainText('Failed');
+		await group.locator(':scope > summary').click();
+		await expect(page.locator('[data-tool-call="read-1"]')).toBeVisible();
+		await page.locator('[data-tool-call="read-1"] summary').click();
+		await expect(page.locator('[data-tool-call="read-1"]')).toContainText('Input');
+		await expect(page.locator('[data-tool-call="read-1"]')).toContainText('read read-1');
+		expect(
+			await page.evaluate(
+				() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+			)
+		).toBe(true);
+		await page.screenshot({ path: `/tmp/chat-grouped-tools-${width}.png` });
+	});
+}

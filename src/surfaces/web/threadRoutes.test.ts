@@ -29,6 +29,7 @@ function setup() {
   const controls: (ChatOrigin | undefined)[] = [];
   const managed: { id: string; action: string }[] = [];
   let held = false;
+  let renameFailed = false;
   const link = {
     isConnected: () => true,
     sendMessage: async (p: Omit<ChatMessageParams, "principalId">) => {
@@ -36,6 +37,8 @@ function setup() {
       return { accepted: true as const, mode: "prompt" as const };
     },
     topicManage: async (p: { id: string; action: string }) => {
+      if (renameFailed && p.action === "rename")
+        throw new Error("workspace unavailable");
       if (held && p.action === "close") throw new Error("stop work first");
       managed.push(p);
     },
@@ -107,6 +110,9 @@ function setup() {
     sent,
     controls,
     managed,
+    failRename: () => {
+      renameFailed = true;
+    },
     hold: () => {
       held = true;
     },
@@ -244,18 +250,16 @@ test("pending questions keep inactive threads current", async () => {
     Date.now() - 8 * 86400000,
     id,
   ]);
-  h.threads
-    .channel(id)
-    .log.append(
-      "ask",
-      {
-        key: "waiting",
-        askId: "waiting",
-        question: "Which topic?",
-        choices: [],
-      },
-      "waiting",
-    );
+  h.threads.channel(id).log.append(
+    "ask",
+    {
+      key: "waiting",
+      askId: "waiting",
+      question: "Which topic?",
+      choices: [],
+    },
+    "waiting",
+  );
   await h.threads.prune();
   const detail = await (await h.call(`/api/threads/${id}`))!.json();
   expect(detail.summary.state).toBe("needs-you");
@@ -263,4 +267,58 @@ test("pending questions keep inactive threads current", async () => {
   await expect(h.call(`/api/threads/${id}/close`, {})).rejects.toThrow(
     "pending requests",
   );
+});
+
+test("renaming updates list and detail without changing archive metadata or chat history", async () => {
+  const h = setup();
+  const { id } = await h.create();
+  const base = `/api/threads/${id}`;
+  h.threads
+    .channel(id)
+    .log.append(
+      "reply",
+      { key: "reply", text: "Keep this history", files: [] },
+      "reply",
+    );
+  await h.call(`${base}/close`, {});
+  const before = await (await h.call(base))!.json();
+  const response = await h.call(`${base}/rename`, { title: "  Japan trip  " });
+  expect(response!.status).toBe(200);
+  expect(await response!.json()).toMatchObject({
+    id,
+    title: "Japan trip",
+    state: "archived",
+    archived: before.summary.archived,
+  });
+  const after = await (await h.call(base))!.json();
+  expect(after.history).toEqual(before.history);
+  expect(after.brief).toEqual(before.brief);
+  const list = await (await h.call("/api/chats"))!.json();
+  expect(
+    list.threads.find((thread: { id: string }) => thread.id === id).title,
+  ).toBe("Japan trip");
+  expect(h.managed.at(-1)).toMatchObject({
+    id,
+    action: "rename",
+    title: "Japan trip",
+  });
+});
+
+test("rename rejects invalid names and keeps the old name if workspace persistence fails", async () => {
+  const h = setup();
+  const { id } = await h.create();
+  const base = `/api/threads/${id}`;
+  for (const body of [
+    {},
+    { title: " " },
+    { title: "a".repeat(121) },
+    { title: "Changed", extra: true },
+  ])
+    expect((await h.call(`${base}/rename`, body))!.status).toBe(400);
+  expect(h.managed).toHaveLength(1);
+  h.failRename();
+  await expect(h.call(`${base}/rename`, { title: "Changed" })).rejects.toThrow(
+    "workspace unavailable",
+  );
+  expect((await (await h.call(base))!.json()).summary.title).toBe("Trip");
 });

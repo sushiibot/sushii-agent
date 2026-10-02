@@ -5,11 +5,20 @@
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { keepScroll } from '$lib/core/nav/scroll';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
-	import { BranchSheet, ChatsScreen, threadsStore } from '$lib/features/threads';
+	import {
+		BranchSheet,
+		ChatsScreen,
+		ThreadSettingsSheet,
+		threadsStore,
+		type ThreadSummary
+	} from '$lib/features/threads';
 
 	const threads = threadsStore();
 	const list = threads.list;
 	const sheet = routedSheet('branch');
+	const settings = routedSheet('thread-settings');
+	let selected = $state<ThreadSummary>();
+	const picked = $derived(list.data?.threads.find((t) => t.id === settings.arg) ?? selected);
 	let query = $state('');
 	let title = $state('');
 	let now = $state(Date.now());
@@ -51,6 +60,11 @@
 		sheet.openWith();
 	}}
 	onreload={() => pwa.applyUpdate()}
+	onoptions={(thread) => {
+		selected = thread;
+		threads.clearError();
+		settings.openWith(thread.id);
+	}}
 />
 <BranchSheet
 	open={sheet.open}
@@ -59,4 +73,18 @@
 	error={threads.error}
 	onstart={(name) => void start(name)}
 	onclose={() => sheet.close()}
+/>
+
+<ThreadSettingsSheet
+	open={settings.open}
+	thread={picked}
+	busy={threads.busy}
+	error={threads.error}
+	onrename={async (title) => {
+		if (picked && (await threads.rename(picked.id, title))) await leaveSheet(settings);
+	}}
+	onarchive={async () => {
+		if (picked && (await threads.close(picked.id))) await leaveSheet(settings);
+	}}
+	onclose={() => settings.close()}
 />

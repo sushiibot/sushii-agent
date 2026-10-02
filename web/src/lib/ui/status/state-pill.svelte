@@ -13,6 +13,9 @@
 		className
 	)}
 >
-	<meta.icon class="size-3.5" aria-hidden="true" />
+	<meta.icon
+		class={cn('size-3.5', of === 'running' && 'animate-spin motion-reduce:animate-none')}
+		aria-hidden="true"
+	/>
 	{label ?? meta.label}
 </span>

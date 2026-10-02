@@ -378,7 +378,7 @@ export class WorkspaceLink {
     return this.read(RPC_METHODS.runsStop, runsStopParams, runsStopResult, { runId }, CONTROL_TIMEOUT_MS);
   }
 
-  async topicManage(q: { id: string; action: "create" | "close" | "reopen"; title?: string; brief?: string }): Promise<void> {
+  async topicManage(q: { id: string; action: "create" | "close" | "reopen" | "rename"; title?: string; brief?: string }): Promise<void> {
     await this.read(RPC_METHODS.topicsManage, topicsManageParams, topicsManageResult, q, NEW_SESSION_TIMEOUT_MS);
   }
 

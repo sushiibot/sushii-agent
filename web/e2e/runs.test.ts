@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { runDetailPage } from '../src/lib/features/runs/fixtures';
 import { fakeBackend, type Scenario } from './fake-backend';
 import { axe, horizontalOverflow, push, smallTargets, stubStream, openDrawer } from './helpers';
 
@@ -189,20 +190,29 @@ test('a finished run shows the host status, evidence and a collapsed timeline', 
 	await expect(
 		page.getByText('Finished. That means it ran to the end, not that it worked')
 	).toBeVisible();
-	await expect(page.getByText('cd projects/finance && bun test').first()).toBeVisible();
-	await expect(page.getByText('~/memory/finance.md').first()).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Timeline', exact: true })).toBeHidden();
+	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
+	const evidence = page.getByRole('tabpanel', { name: 'Evidence', exact: true });
+	await expect(
+		evidence.getByText('cd projects/finance && bun test', { exact: true })
+	).toBeVisible();
+	await expect(evidence.getByText('~/memory/finance.md', { exact: true })).toBeVisible();
 	await expect(page.getByRole('link', { name: /q3-summary\.pdf/ })).toHaveAttribute(
 		'href',
 		/^\/f\//
 	);
+	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 	const step = page.getByRole('button', { name: /^Succeeded bash .*python summarize/ });
 	await expect(step).toHaveAttribute('aria-expanded', 'false');
 	await expect(page.getByText('Wrote q3-summary.md (1,412 words).')).toBeHidden();
 	await step.click();
 	await expect(step).toHaveAttribute('aria-expanded', 'true');
 	await expect(page.getByText('Wrote q3-summary.md (1,412 words).')).toBeVisible();
+	await page.getByRole('tab', { name: 'Related', exact: true }).click();
 	await page.getByRole('link', { name: /Compare flight prices/ }).click();
+	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 	await expect(page.getByText('Timed out after 30 minutes.')).toBeVisible();
+	await page.getByRole('tab', { name: 'Related', exact: true }).click();
 	await page.getByRole('link', { name: /Draft the quarterly expenses summary/ }).click();
 	await expect(page.getByRole('link', { name: /Notes from that day/ })).toHaveAttribute(
 		'href',
@@ -214,8 +224,11 @@ test('a failed run shows the failing step and its error', async ({ page, context
 	await server(context);
 	await page.goto(`/runs/${RUN.nightlySync}`);
 	await expect(page.getByText('Failed. The host recorded an error')).toBeVisible();
+	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 	await expect(
-		page.getByText('Job failed: rsync exited with code 30 after 3 tries.')
+		page
+			.getByRole('tabpanel', { name: 'Timeline', exact: true })
+			.getByText('Job failed: rsync exited with code 30 after 3 tries.')
 	).toBeVisible();
 	await page.getByRole('button', { name: /^Failed bash .*rsync/ }).click();
 	await expect(page.getByText(/ssh: connect to host backup\.lan port 22/)).toBeVisible();
@@ -225,6 +238,7 @@ test('a running run says it is still going', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.triage}`);
 	await expect(page.getByText('Still running.')).toBeVisible();
+	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 	await expect(page.getByText('The agent is still working on this run.')).toBeVisible();
 	await expect(page.getByRole('button', { name: /^No result label_mail/ })).toBeVisible();
 });
@@ -232,8 +246,10 @@ test('a running run says it is still going', async ({ page, context }) => {
 test('a long run pages its steps', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.refactor}`);
-	await expect(page.getByText('100+ steps', { exact: true })).toBeVisible();
+	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
 	await expect(page.getByText('No check ran after the last change.')).toBeVisible();
+	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+	await expect(page.getByText('100+ steps', { exact: true })).toBeVisible();
 	await page.getByRole('button', { name: 'Show more steps' }).click();
 	await expect(page.getByText('162 steps', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Show more steps' })).toBeHidden();
@@ -242,6 +258,7 @@ test('a long run pages its steps', async ({ page, context }) => {
 test('a run without a transcript says why it has no steps', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.flush}`);
+	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 	await expect(
 		page.getByText("This run's transcript is gone, so there are no steps to show.")
 	).toBeVisible();
@@ -283,11 +300,23 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			await page.goto(path);
 			if (path === '/runs') await expect(rows(page).first()).toBeVisible();
 			else {
+				await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 				await expect(page.getByRole('heading', { name: /Timeline/ })).toBeVisible();
 				await page
 					.getByRole('button', { name: /^(Succeeded|Failed) / })
 					.first()
 					.click();
+			}
+			if (path !== '/runs') {
+				for (const section of ['Overview', 'Evidence', 'Related']) {
+					await page.getByRole('tab', { name: section, exact: true }).click();
+					expect(await axe(page), `${path} ${section}`).toEqual([]);
+					expect(await smallTargets(page), `${path} ${section}`).toEqual([]);
+					await page.setViewportSize({ width: 320, height: 800 });
+					expect(await horizontalOverflow(page), `${path} ${section} at 320px`).toEqual([]);
+					await page.setViewportSize({ width: 412, height: 915 });
+				}
+				await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
 			}
 			expect(await axe(page), path).toEqual([]);
 			expect(await smallTargets(page), path).toEqual([]);
@@ -299,3 +328,72 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		}
 	});
 }
+
+test('run sections support keyboard navigation and preserve expanded steps', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.goto(`/runs/${RUN.expenses}`);
+	const overview = page.getByRole('tab', { name: 'Overview', exact: true });
+	const timeline = page.getByRole('tab', { name: 'Timeline', exact: true });
+	await overview.focus();
+	await page.keyboard.press('ArrowRight');
+	await expect(timeline).toBeFocused();
+	await expect(timeline).toHaveAttribute('aria-selected', 'true');
+	const step = page.getByRole('button', { name: /^Succeeded bash .*python summarize/ });
+	await step.click();
+	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
+	await expect(step).toBeHidden();
+	await timeline.click();
+	await expect(step).toHaveAttribute('aria-expanded', 'true');
+	await timeline.focus();
+	await page.keyboard.press('End');
+	await expect(page.getByRole('tab', { name: 'Related', exact: true })).toBeFocused();
+	await page.keyboard.press('Home');
+	await expect(overview).toBeFocused();
+});
+
+test('running status chips animate in list and detail, and respect reduced motion', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await page.goto('/runs');
+	const listIcon = rows(page)
+		.filter({ hasText: 'Sort new mail' })
+		.getByText('Running', { exact: true })
+		.locator('svg');
+	await expect(listIcon).toHaveCSS('animation-name', 'spin');
+	await page.goto(`/runs/${RUN.triage}`);
+	const detailIcon = page.getByText('Running', { exact: true }).locator('svg');
+	await expect(detailIcon).toHaveCSS('animation-name', 'spin');
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await expect(detailIcon).toHaveCSS('animation-name', 'none');
+});
+
+test('long run titles expand on request while sections stay within reach', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	const detail = runDetailPage(Date.now(), RUN.expenses)!;
+	const title =
+		'Check whether anything needs attention right now: something due or overdue, a follow-up you promised, an open task that needs a nudge, or a change worth flagging. Read the project notes and recent daily entries before deciding what to do.';
+	await context.route(`**/api/runs/${RUN.expenses}`, (route) =>
+		route.fulfill({ json: { ...detail, run: { ...detail.run, title } } })
+	);
+	await page.goto(`/runs/${RUN.expenses}`);
+	const disclosure = page.getByRole('button', { name: 'Show full run title' });
+	await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+	const initial = await disclosure.boundingBox();
+	const tabs = await page.getByRole('tablist', { name: 'Run sections' }).boundingBox();
+	expect(tabs!.y).toBeLessThan(260);
+	await disclosure.click();
+	const expanded = page.getByRole('button', { name: 'Collapse run title' });
+	await expect(expanded).toHaveAttribute('aria-expanded', 'true');
+	expect((await expanded.boundingBox())!.height).toBeGreaterThan(initial!.height);
+	await expanded.click();
+	await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+});

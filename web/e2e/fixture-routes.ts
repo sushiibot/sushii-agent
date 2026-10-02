@@ -80,9 +80,13 @@ export async function fixtureRoutes(
 		}
 		if (path === '/chats') return answer(route, 'threads', () => threads.list());
 		if (path === '/threads' && post) return answer(route, 'threads', () => threads.branch(body));
-		if ((hit = m(/^\/threads\/([^/]+)\/(close|reopen)$/)))
+		if ((hit = m(/^\/threads\/([^/]+)\/(close|reopen|rename)$/)))
 			return answer(route, 'threads', () =>
-				hit![2] === 'close' ? threads.close(hit![1]) : threads.reopen(hit![1])
+				hit![2] === 'rename'
+					? threads.rename(hit![1], body.title)
+					: hit![2] === 'close'
+						? threads.close(hit![1])
+						: threads.reopen(hit![1])
 			);
 		if ((hit = m(/^\/threads\/([^/]+)$/)))
 			return answer(route, 'threads', () => threads.get(decodeURIComponent(hit![1])));
