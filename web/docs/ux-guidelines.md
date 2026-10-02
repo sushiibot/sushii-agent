@@ -31,7 +31,6 @@ The primary device is an Android phone running the installed PWA (Chrome WebAPK,
 - **The top bar holds title, back and secondary actions only. The general chat is titled Sushii, with no static subtitle; activity belongs beside the conversation.** Why: nothing there should need reaching for mid-task. Check: `review`.
 - **Destructive or outward actions (Deny, Delete, Send now) are never the largest target and never sit where a mis-tap from the primary lands.** Why: Fitts's law works against you for dangerous actions. Check: `shot`.
 - **Section swipes follow the visible tab order and stop at each end.** On touch screens, Runs filters, run details, History days, Memory and MCP details support left/right swipes in the content area. Vertical scrolling, text controls, selection and horizontal code/table scrolling keep their normal behavior. The left edge stays available to the drawer and the outer edges stay available to system navigation. Panels follow the finger continuously and snap on release; tapping a tab animates the same pager. The underline tracks the panel position. Keep headers fixed and preserve each panel’s scroll and expanded content. Tabs remain the tap and keyboard alternatives. Check: `pw` (`e2e/tab-swipe.test.ts`).
-- **Background refresh keeps readable content and stable geometry.** Do not insert loading text above cached rows or replace them with skeletons. First loads may use delayed row-shaped placeholders; pagination shows progress in its existing button. A swipe commits data changes after the pane settles. Pager screens have one vertical scroll owner per panel. Check: `pw` (`e2e/tab-swipe.test.ts`).
 - **No gesture-only actions. Every swipe or long-press has a visible button alternative.** Why: WCAG 2.5.7 Dragging Movements; gestures are undiscoverable. Check: `review`.
   - Per-message actions are visible icon buttons in a row under the message (Copy, and Share where the browser has `navigator.share`), never a gesture or a hijacked menu: the app does not intercept `contextmenu`, long-press or middle-click, so the browser's own menu, text selection and autoscroll work in the chat. The row is always shown under the newest reply and on touch screens; on hover-capable devices older rows are transparent until hover or `:focus-within`, keeping their height so nothing moves. Icons are 16px inside 48px buttons, each with an `aria-label` and a `title`. The row never holds anything approval-like. Check: `pw` (`e2e/message-actions.test.ts`).
 
@@ -254,6 +253,39 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 - **Motion explains a change (a sheet rising, a message arriving), never decorates.** Why: decorative motion delays the user. Check: `review`.
 - **The spinner icon (`LoaderCircle`) always comes with text.** Why: a spinner says nothing about what it waits on. Check: `review`.
 
+### Tabs, swipes, and scroll ownership
+
+- **Reuse the shared pager.** Use `ui/tabs/SwipeableTabs` for tabs with swipe navigation. Keep gesture handling and underline animation in this component.
+- **Move panels with the finger.** Snap to the destination after release. Move the underline with the physical panel position. Use the same transition for a tab tap.
+- **Keep labels readable.** When labels do not fit, allow horizontal scrolling within the tab bar. Keep the full label instead of an ellipsis. Keep the document width within the viewport.
+- **Keep one vertical scroll owner per panel.** When the pager owns scrolling, set `Screen` or `DetailScreen` to `scrollable={false}`. Keep the screen header and tab bar fixed.
+- **Preserve panel state.** Retain each panel's scroll offset, expanded rows, search input, and loaded older pages across tab changes.
+- **Keep content stable during motion.** Commit filter requests after the destination panel settles. Keep loaded panels mounted during background refreshes. Do not rebuild the pager when text, content height, or keyboard height changes.
+- **Keep focus within its intended area.** Reveal selected tabs through the tab bar's scroll offset. Do not use `scrollIntoView()` to move ancestor containers. Use `preventScroll` when keyboard navigation moves focus.
+- **Keep spacing consistent.** Use 16px content gutters and 16px space between the tab border and panel content. Align the tab bar with other screens.
+- **Keep secondary buttons within content.** Give pagination and optional tracking buttons their content width. Keep optional MCP tracking controls below the Tools list. Do not change panel height through a footer that appears on one tab.
+- **Keep other gestures available.** Preserve vertical scrolling, text selection, text input, and horizontal code scrolling. Reserve the screen edges for the drawer and system navigation.
+
+The browser checks in `e2e/tab-swipe.test.ts` cover drag movement, snapping, keyboard navigation, reduced motion, retained state, and delayed refreshes. The connector checks also cover stable panel height.
+
+### Loading and background refresh
+
+Treat first loads, background refreshes, and pagination as separate states. Cached content remains useful while a refresh runs.
+
+| State                               | UI behavior                                                                                                               |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| First load without content          | Keep the header and controls visible. For a noticeable wait, use delayed placeholders that match the row layout.          |
+| Background refresh with content     | Keep cached content visible and mounted. Do not insert “Loading” or “Updating” text above existing rows.                  |
+| Pagination                          | Show progress inside the existing “Show older” button. Keep its position stable. Append the new rows below existing rows. |
+| Refresh failure with cached content | Keep the cached rows visible. Show the error and retry action below the list.                                             |
+| First load failure                  | Show the error and a retry action in the content area.                                                                    |
+
+Do not replace cached rows with skeletons during a refresh. Do not add a blocking spinner for routine background work. Use accessible status text without a layout change when an announcement is useful.
+
+Fast requests do not need a flashing indicator. NN/g advises against skeletons and spinners for loads under one second. Apple recommends background loading that preserves access to other actions. These sources guide the interaction pattern, not a universal timeout.
+
+Verification covers row positions before and after delayed refreshes. It also covers a data update during a held swipe and filter requests after panel arrival. Review mobile captures at 320px and 412px, plus desktop captures in both themes.
+
 ## UX writing
 
 - **Plain verbs that name the action: "Approve and send", "Retry send", not "Submit" or "OK".** Why: the button should say what happens. Check: `review`.
@@ -331,7 +363,7 @@ A UX bug blocks when any of these is true:
 
 - A check in this doc fails (axe violation, a target under 48px, overflow at 320px, the scroll-jank test).
 - Data loss: a typed message, a draft edit, or a pending approval can disappear without the user choosing it.
-- A state is silent: something is loading, failing or waiting with no text saying so.
+- A blocking wait, failure, or required action has no visible feedback. Cached background refreshes can remain quiet.
 - Back does the wrong thing (exits the app, skips a screen, leaves an overlay open).
 - The keyboard covers the composer or the focused field.
 - A notification lands anywhere but the exact item.
@@ -365,6 +397,7 @@ Every frame on the board is a shipped feature screen, so the board breaks no rul
 ## Sources
 
 - Android: [API defaults, 48dp targets](https://developer.android.com/develop/ui/compose/accessibility/api-defaults), [Touch target size](https://support.google.com/accessibility/android/answer/7101858)
+- Loading: [Apple loading guidance](https://developer.apple.com/design/human-interface-guidelines/loading), [NN/g skeleton and progress guidance](https://www.nngroup.com/articles/skeleton-screens/), [SWR first-load and refresh states](https://swr.vercel.app/docs/advanced/understanding)
 - Material 3: [Easing and duration tokens](https://m3.material.io/styles/motion/easing-and-duration/tokens-specs)
 - Chrome: [Viewport resize behavior (`interactive-widget`)](https://developer.chrome.com/blog/viewport-resize-behavior), [Edge-to-edge on Android](https://developer.chrome.com/docs/css-ui/edge-to-edge)
 - Close requests and text scaling: [MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher), [MDN `<meta name="text-scale">`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/text-scale)

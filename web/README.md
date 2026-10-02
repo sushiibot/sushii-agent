@@ -49,6 +49,20 @@ Every screen on the prototype board is a feature's own screen, rendered from its
 
 A screen is built from `ui/screen` (`Screen`, `ListScreen`, `DetailScreen`, `ScreenState`) inside the root layout's `Shell`, with data from a feature store (`core/remote.svelte.ts` for fetched data, `core/realtime/hub.svelte.ts` for the stream). Sheets are `ui/sheet/routed-sheet.svelte`, opened through `core/nav/sheet.ts` so Android back closes them. Screens, their `components/` and `render/` take props and callbacks only, so the prototype board and the e2e harness can render them from fixtures.
 
+## Shared mobile tabs
+
+Use `ui/tabs/SwipeableTabs` for screens with tabs and swipe navigation.
+The component owns dragging, snapping, underline motion, and keyboard navigation.
+Screens provide tab labels, content, and callbacks.
+
+Each panel owns its vertical scroll. When the pager owns scrolling, set the enclosing
+`Screen` or `DetailScreen` to `scrollable={false}`. Keep cached content mounted
+during background refreshes. Commit filter requests after the panel settles.
+
+See [Tabs, swipes, and scroll ownership](docs/ux-guidelines.md#tabs-swipes-and-scroll-ownership)
+and [Loading and background refresh](docs/ux-guidelines.md#loading-and-background-refresh)
+for layout rules, loading patterns, research sources, and regression checks.
+
 ## Topic conversations
 
 Topic conversations are available automatically in the owner web app.
