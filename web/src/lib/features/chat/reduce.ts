@@ -293,6 +293,7 @@ function addApproval(s: ChatState, nonce: string, view: ApprovalView) {
 }
 
 const PENDING_ASK_PREFIX = 'pending:';
+const PENDING_APPROVAL_PREFIX = 'pending-approval:';
 
 /**
  * The bot's own log of what is still waiting, from the first frame. It is authoritative for the tray:
@@ -304,12 +305,12 @@ function applyPending(s: ChatState, p: PendingState) {
 	for (const a of s.approvals) if (!waiting.has(a.nonce)) dropApproval(s, a.nonce, 'timeout');
 	for (const a of p.approvals) {
 		addApproval(s, a.nonce, a.view);
-		const key = `a:${a.nonce}`;
+		const key = `p:${a.nonce}`;
 		if (s.keys.has(key)) continue;
 		s.keys.add(key);
 		s.items.push({
 			kind: 'approval',
-			id: uid(s, 'approval'),
+			id: `${PENDING_APPROVAL_PREFIX}${a.nonce}`,
 			nonce: a.nonce,
 			tool: a.view.tool,
 			outcome: 'pending'
@@ -698,16 +699,25 @@ export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const fx: Effect[] = [];
 	const local = new Map<string, Extract<ChatItem, { kind: 'user' }>>();
 	const seededAsks = new Map<string, ChatItem>();
+	const seededApprovals = new Map<string, ChatItem>();
 	for (const i of s.items) {
 		if (i.kind === 'user' && i.clientId) local.set(i.clientId, i);
 		if (i.kind === 'ask' && i.id.startsWith(PENDING_ASK_PREFIX)) seededAsks.set(i.askId, i);
+		if (i.kind === 'approval' && i.id.startsWith(PENDING_APPROVAL_PREFIX))
+			seededApprovals.set(i.nonce, i);
 	}
 	const moved = new Set<ChatItem>();
 	const mapped: ChatItem[] = [];
 	for (const h of items) {
-		const seeded = h.type === 'ask' ? seededAsks.get(h.askId) : undefined;
+		const seeded =
+			h.type === 'ask'
+				? seededAsks.get(h.askId)
+				: h.type === 'approval'
+					? seededApprovals.get(h.nonce)
+					: undefined;
 		if (seeded && !moved.has(seeded)) {
 			moved.add(seeded);
+			if (h.type === 'approval') seeded.id = `h:${h.id}`;
 			mapped.push(seeded);
 			continue;
 		}

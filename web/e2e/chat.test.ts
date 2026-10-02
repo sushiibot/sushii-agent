@@ -381,10 +381,7 @@ const approval = (nonce: string, tool = 'send_email') => ({
 	}
 });
 
-test('an approval shows inline Approve/Deny and posts the decision', async ({
-	page,
-	context
-}) => {
+test('an approval shows inline Approve/Deny and posts the decision', async ({ page, context }) => {
 	const { posts } = await chatServer(context);
 	await open(page);
 	await push(page, 'snapshot', {
@@ -1066,10 +1063,7 @@ test('a 403 on an approval says the device is not the owner', async ({ page, con
 	await expect(page.getByText("This device isn't signed in as the owner.")).toBeVisible();
 });
 
-test('a second approval after the first resolved shows inline', async ({
-	page,
-	context
-}) => {
+test('a second approval after the first resolved shows inline', async ({ page, context }) => {
 	await chatServer(context);
 	await open(page);
 	await push(page, 'approval', approval('n1'), 1);
@@ -1739,7 +1733,9 @@ test('location only reads the user browser after explicit share and sends one co
 	});
 	await open(page);
 	await push(page, 'approval', approval('location-nonce', 'request_current_location'), 1);
-	await expect(page.getByRole('button', { name: 'Approve request_current_location' })).toBeVisible();
+	await expect(
+		page.getByRole('button', { name: 'Approve request_current_location' })
+	).toBeVisible();
 	expect(
 		await page.evaluate(() => (window as unknown as { locationCalls: number }).locationCalls)
 	).toBe(0);

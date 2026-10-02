@@ -50,6 +50,8 @@ describe("browser location request", () => {
     const h = setup();
     expect(await h.requests.request(conn, { ...params, args: { reason: "x", latitude: 1 } })).toMatchObject({ ok: false });
     expect(await h.requests.request(conn, { ...params, agentId: "subagent" })).toMatchObject({ ok: false });
+    expect(await h.requests.request(conn, { ...params, origin: { surface: "web", conversationId: "trip" } })).toMatchObject({ ok: false });
+    expect(h.views).toHaveLength(0);
     const result = h.requests.request(conn, params);
     expect(await h.requests.request(conn, { ...params, callId: "call2" })).toMatchObject({ ok: false });
     expect(h.requests.cancel({ ...conn }, params.callId)).toBe(false);

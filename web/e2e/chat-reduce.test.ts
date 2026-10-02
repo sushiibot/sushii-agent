@@ -513,7 +513,10 @@ test('hello seeds the tray and ask cards from the bot log, and history does not 
 		}
 	]);
 	expect(s.approvals.map((a) => a.nonce)).toEqual(['n1']);
-	expect(s.items).toMatchObject([{ kind: 'ask', askId: 'k1', state: 'pending' }]);
+	expect(s.items).toMatchObject([
+		{ kind: 'approval', nonce: 'n1', outcome: 'pending' },
+		{ kind: 'ask', askId: 'k1', state: 'pending' }
+	]);
 
 	mergeHistory(s, [
 		{ type: 'user', id: 'u1', at: 'x', text: 'first', attachments: [] },
@@ -572,7 +575,10 @@ test('a reset leaves only the approvals the bot still has in the tray', () => {
 		}
 	]);
 	expect(s.approvals.map((a) => a.nonce)).toEqual(['n2']);
-	expect(s.items).toMatchObject([{ kind: 'ask', askId: 'k2', state: 'pending' }]);
+	expect(s.items).toMatchObject([
+		{ kind: 'approval', nonce: 'n2', outcome: 'pending' },
+		{ kind: 'ask', askId: 'k2', state: 'pending' }
+	]);
 });
 
 test('a hello on resume drops a tray approval the bot no longer lists', () => {
