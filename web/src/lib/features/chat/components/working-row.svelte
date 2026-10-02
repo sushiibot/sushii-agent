@@ -52,11 +52,9 @@
 	>
 		<span aria-hidden="true" class="flex items-center gap-1.5">
 			{#if themed}<span>{phrase.emoji}</span>{/if}
-			<span class="typing-status">
-				<span class="font-medium">Sushii</span> · {themed ? phrase.text : status}
-			</span>
+			<span class="typing-status">{themed ? phrase.text : status}</span>
 		</span>
-		<span class="sr-only">Sushii · {themed ? 'Thinking…' : status}</span>
+		<span class="sr-only">{themed ? 'Thinking…' : status}</span>
 	</p>
 {:else if turn.state === 'stopped'}
 	<p class="flex items-center gap-2 py-1 text-meta text-muted-foreground">
