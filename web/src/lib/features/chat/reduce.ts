@@ -302,7 +302,19 @@ function applyPending(s: ChatState, p: PendingState) {
 	const waiting = new Set(p.approvals.map((a) => a.nonce));
 	s.waiting = waiting;
 	for (const a of s.approvals) if (!waiting.has(a.nonce)) dropApproval(s, a.nonce, 'timeout');
-	for (const a of p.approvals) addApproval(s, a.nonce, a.view);
+	for (const a of p.approvals) {
+		addApproval(s, a.nonce, a.view);
+		const key = `a:${a.nonce}`;
+		if (s.keys.has(key)) continue;
+		s.keys.add(key);
+		s.items.push({
+			kind: 'approval',
+			id: uid(s, 'approval'),
+			nonce: a.nonce,
+			tool: a.view.tool,
+			outcome: 'pending'
+		});
+	}
 	for (const a of p.asks) {
 		const key = `a:${a.askId}`;
 		if (s.keys.has(key)) continue;

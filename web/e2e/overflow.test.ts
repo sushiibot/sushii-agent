@@ -164,8 +164,7 @@ const CASES: Case[] = [
 				},
 				1
 			),
-		reveal: (page) => page.getByRole('button', { name: 'Show details' }).click(),
-		shows: (page) => page.locator('[data-surface="approval"] dd', { hasText: TOKEN })
+		shows: (page) => page.locator('[data-approval] dd', { hasText: TOKEN })
 	},
 	{
 		name: 'a user message',

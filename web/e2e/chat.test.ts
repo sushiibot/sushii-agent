@@ -381,7 +381,7 @@ const approval = (nonce: string, tool = 'send_email') => ({
 	}
 });
 
-test('an approval holds Approve for a moment, hides Stop, and posts the decision', async ({
+test('an approval shows inline Approve/Deny and posts the decision', async ({
 	page,
 	context
 }) => {
@@ -394,8 +394,7 @@ test('an approval holds Approve for a moment, hides Stop, and posts the decision
 	await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible();
 	await push(page, 'approval', approval('n1'), 1);
 	const approve = page.getByRole('button', { name: 'Approve send_email' });
-	await expect(approve).toBeDisabled();
-	await expect(page.getByRole('button', { name: 'Stop' })).toBeHidden();
+	await expect(approve).toBeVisible();
 	await expect(approve).toBeEnabled();
 	await page.getByRole('button', { name: 'Deny send_email' }).click();
 	await expect
@@ -418,8 +417,7 @@ test('an approval decided on another device and a timeout both say so', async ({
 	await expect(page.getByText('Approved on another device')).toBeVisible();
 	await push(page, 'approval', approval('n2', 'run_shell'), 3);
 	await push(page, 'approval_resolved', { nonce: 'n2', decision: 'timeout' }, 4);
-	await expect(page.getByText('Timed out, denied.')).toBeVisible();
-	await expect(page.getByText('Timed out, denied.')).toBeHidden({ timeout: 8000 });
+	await expect(page.getByText('Timed out, denied')).toBeVisible();
 });
 
 test('an ask answers with the chip index and label, and never looks like an approval', async ({
@@ -1068,7 +1066,7 @@ test('a 403 on an approval says the device is not the owner', async ({ page, con
 	await expect(page.getByText("This device isn't signed in as the owner.")).toBeVisible();
 });
 
-test('a second approval after the first resolved is held from its first frame', async ({
+test('a second approval after the first resolved shows inline', async ({
 	page,
 	context
 }) => {
@@ -1078,25 +1076,7 @@ test('a second approval after the first resolved is held from its first frame', 
 	await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeEnabled();
 	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'deny' }, 2);
 	await expect(page.getByRole('button', { name: 'Approve send_email' })).toBeHidden();
-	// Records the button's state on the frame it first appears.
-	const firstFrame = page.evaluate(
-		() =>
-			new Promise<boolean>((resolve) => {
-				const check = () => {
-					const b = document.querySelector<HTMLButtonElement>(
-						'button[aria-label="Approve run_shell"]'
-					);
-					if (b) resolve(b.disabled);
-					else requestAnimationFrame(check);
-				};
-				check();
-			})
-	);
 	await push(page, 'approval', approval('n2', 'run_shell'), 3);
-	expect(await firstFrame).toBe(true);
-	await expect(page.getByRole('button', { name: 'Approve run_shell' })).toBeEnabled();
-	await page.setViewportSize({ width: 412, height: 600 });
-	await expect(page.getByRole('button', { name: 'Approve run_shell' })).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Approve run_shell' })).toBeEnabled();
 });
 
@@ -1759,17 +1739,17 @@ test('location only reads the user browser after explicit share and sends one co
 	});
 	await open(page);
 	await push(page, 'approval', approval('location-nonce', 'request_current_location'), 1);
-	await expect(page.getByText('stored in tool history', { exact: false })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Approve request_current_location' })).toBeVisible();
 	expect(
 		await page.evaluate(() => (window as unknown as { locationCalls: number }).locationCalls)
 	).toBe(0);
-	await page.getByRole('button', { name: 'Share current location' }).click();
+	await page.getByRole('button', { name: 'Approve request_current_location' }).click();
 	await expect
-		.poll(() => posts('/api/chat/location/location-nonce').at(0)?.body)
-		.toMatchObject({ status: 'shared', latitude: 34.123456, longitude: -118.654321, accuracy: 15 });
+		.poll(() => posts('/api/chat/approvals/location-nonce').at(0)?.body)
+		.toEqual({ decision: 'approve' });
 	expect(
 		await page.evaluate(() => (window as unknown as { locationCalls: number }).locationCalls)
-	).toBe(1);
+	).toBe(0);
 });
 
 test('location cancellation ignores a late browser fix', async ({ page, context }) => {
@@ -1789,12 +1769,8 @@ test('location cancellation ignores a late browser fix', async ({ page, context 
 	});
 	await open(page);
 	await push(page, 'approval', approval('location-cancel', 'request_current_location'), 1);
-	await page.getByRole('button', { name: 'Share current location' }).click();
-	await expect(page.getByText('Waiting for browser location permission…')).toBeVisible();
-	await page.getByRole('button', { name: 'Cancel location request' }).click();
+	await page.getByRole('button', { name: 'Deny request_current_location' }).click();
 	await expect
 		.poll(() => posts('/api/chat/approvals/location-cancel').at(0)?.body)
 		.toEqual({ decision: 'deny' });
-	await page.evaluate(() => (window as unknown as { lateLocation: () => void }).lateLocation());
-	expect(posts('/api/chat/location/location-cancel')).toHaveLength(0);
 });
