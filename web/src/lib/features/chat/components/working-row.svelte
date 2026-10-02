@@ -45,7 +45,9 @@
 	$effect(() => {
 		if (!themed || reducedMotion) return;
 		const timer = setInterval(() => {
-			if (!document.hidden) phase = (phase + 1) % phrases.length;
+			// Media change events can lag the CSS preference; honor the current value at the tick too.
+			if (!document.hidden && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+				phase = (phase + 1) % phrases.length;
 		}, 8000);
 		return () => clearInterval(timer);
 	});
