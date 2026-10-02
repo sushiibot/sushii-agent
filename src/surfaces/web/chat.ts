@@ -57,10 +57,10 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}),
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
-  const location = new BrowserLocationRequests({
+  const location: BrowserLocationRequests = new BrowserLocationRequests({
     isOwner: (actor) => deps.tools.isOwner(actor),
-    prompt: (view, nonce) => adapter.approvalPrompt(null, view, nonce),
-    resolved: (handle, view, nonce, decision) => adapter.resolveApproval({ id: handle.id ?? nonce }, view, nonce, decision),
+    prompt: (view, nonce, origin) => surface.approvalPrompt(origin?.surface === "web" ? origin : null, view, nonce),
+    resolved: (handle, view, nonce, decision) => surface.resolveApproval(handle as { id: string }, view, nonce, decision),
   });
   // Approvals still undecided here belonged to the previous process, which took their pending state with it.
   const orphaned = chatLog.cancelUnresolvedApprovals();
@@ -79,9 +79,11 @@ export function createWebChat(deps: WebChatDeps): WebChat {
 
   const threads = new WebThreads({
     db: deps.db, main: { log: chatLog, adapter, routes }, link: deps.link,
-    chat: { link: deps.link, tools: deps.tools, workspaceEnabled: deps.workspaceEnabled, ...(deps.uploads ? { uploads: deps.uploads } : {}) },
+    chat: { link: deps.link, tools: deps.tools, workspaceEnabled: deps.workspaceEnabled, location, ...(deps.uploads ? { uploads: deps.uploads } : {}) },
     adapter: { push: { send: sendPush }, ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}), ...(deps.uploads ? { uploads: deps.uploads } : {}) },
   });
+
+  const surface = threads.surface();
 
   const home = createHomeRoutes({ log: chatLog, adapter, store: homeStore, link: deps.link, workspaceEnabled: deps.workspaceEnabled });
 
@@ -112,7 +114,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
   }
 
   return {
-    adapter: threads.surface(),
+    adapter: surface,
     location,
     routes,
     home,

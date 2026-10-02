@@ -37,6 +37,17 @@ describe("browser location request", () => {
     expect(h.decisions).toEqual(["approve"]);
     expect(JSON.stringify(h.views)).not.toContain(String(shared.latitude));
   });
+  test("threads, subagents and other surfaces still require explicit owner sharing", async () => {
+    for (const origin of [{ surface: "web" as const, conversationId: "trip" }, { surface: "discord" as const, conversationId: "channel", guildId: "guild" }, undefined]) {
+      const h = setup();
+      const result = h.requests.request(conn, { ...params, agentId: "subagent", parentRunId: "parent", origin });
+      expect(h.views).toHaveLength(1);
+      expect(h.views[0]!.fields).toContainEqual({ key: "conversation", value: origin?.conversationId ?? "main", kind: "body" });
+      expect(h.requests.has(h.nonce())).toBe(true);
+      expect(h.requests.fulfill(h.nonce(), shared, owner())).toBe("decided");
+      expect((await result).ok).toBe(true);
+    }
+  });
   test("bounds, finite numbers, freshness, closed payloads", async () => {
     const h = setup();
     const result = h.requests.request(conn, params);
@@ -46,11 +57,9 @@ describe("browser location request", () => {
     expect(h.requests.fulfill(h.nonce(), { status: "denied" }, owner())).toBe("decided");
     expect(await result).toMatchObject({ ok: false, denied: true });
   });
-  test("request schema, main-only and cap", async () => {
+  test("request schema and pending cap", async () => {
     const h = setup();
     expect(await h.requests.request(conn, { ...params, args: { reason: "x", latitude: 1 } })).toMatchObject({ ok: false });
-    expect(await h.requests.request(conn, { ...params, agentId: "subagent" })).toMatchObject({ ok: false });
-    expect(await h.requests.request(conn, { ...params, origin: { surface: "web", conversationId: "trip" } })).toMatchObject({ ok: false });
     expect(h.views).toHaveLength(0);
     const result = h.requests.request(conn, params);
     expect(await h.requests.request(conn, { ...params, callId: "call2" })).toMatchObject({ ok: false });

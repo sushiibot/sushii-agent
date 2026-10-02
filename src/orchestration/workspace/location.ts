@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { WEB_CONVERSATION_ID, type ToolCallParams, type ToolCallResult, type ToolManifestEntry } from "../contracts.ts";
+import { WEB_CONVERSATION_ID, type ChatOrigin, type ToolCallParams, type ToolCallResult, type ToolManifestEntry } from "../contracts.ts";
 import type { ConnectionInfo } from "../transport/server.ts";
 import type { ApprovalDecision, ApprovalView, SurfaceActor, SurfaceMessageHandle } from "./surface.ts";
 
@@ -12,7 +12,7 @@ export const locationReply = z.discriminatedUnion("status", [
 ]);
 export const locationManifest: ToolManifestEntry = {
   name: LOCATION_TOOL,
-  description: "Ask the owner to share a one-time current location from their own browser for nearby questions. Requires an explicit Share current location click and browser permission; never use agent-browser geolocation. Only available to the main personal conversation. Waits at most 90 seconds. If rejected or unavailable, ask for a city/area instead; do not retry without the user asking. Coordinates are sensitive transient task context: never copy them into durable memory, notes, logs or analytics, and do not repeat exact coordinates in chat unless asked. Tool history is stored.",
+  description: "Ask the owner to share a one-time current location from their own browser for nearby questions. Requires an explicit Share current location click and browser permission; never use agent-browser geolocation. Available from any conversation or agent; always requires the owner to explicitly share. Waits at most 90 seconds. If rejected or unavailable, ask for a city/area instead; do not retry without the user asking. Coordinates are sensitive transient task context: never copy them into durable memory, notes, logs or analytics, and do not repeat exact coordinates in chat unless asked. Tool history is stored.",
   inputSchema: { type: "object", properties: { reason: { type: "string", minLength: 1, maxLength: 300 } }, required: ["reason"], additionalProperties: false },
   approval: "none", // This is a data request, not an executable action approval.
 };
@@ -27,13 +27,13 @@ interface Pending {
   resolve: (r: ToolCallResult) => void;
 }
 
-/** Owner-only web has one conversation (main). Nonces bind replies to a live call on one connection;
+/** Nonces bind owner replies to a live call on one connection;
  * coordinates go only to that call, never the durable approval log. Restarts invalidate all nonces. */
 export class BrowserLocationRequests {
   private pending = new Map<string, Pending>();
   constructor(private readonly opts: {
     isOwner: (actor: SurfaceActor) => boolean;
-    prompt: (view: ApprovalView, nonce: string) => Promise<SurfaceMessageHandle>;
+    prompt: (view: ApprovalView, nonce: string, origin?: ChatOrigin) => Promise<SurfaceMessageHandle>;
     resolved: (handle: SurfaceMessageHandle, view: ApprovalView, nonce: string, decision: ApprovalDecision) => Promise<void>;
     now?: () => number;
     timeoutMs?: number;
@@ -42,16 +42,15 @@ export class BrowserLocationRequests {
   async request(conn: ConnectionInfo, p: ToolCallParams): Promise<ToolCallResult> {
     const args = requestArgs.safeParse(p.args);
     if (!args.success) return { ok: false, error: "invalid location request arguments" };
-    if (p.agentId !== "main" || p.parentRunId || (p.origin?.surface === "web" && p.origin.conversationId !== WEB_CONVERSATION_ID)) return { ok: false, error: "location is only available in the main personal conversation" };
     if (this.pending.size >= 1) return { ok: false, error: "a location request is already pending" };
     const nonce = randomBytes(12).toString("base64url");
-    const view: ApprovalView = { tool: LOCATION_TOOL, agentId: p.agentId, agentName: p.agentName, fields: [{ key: "reason", value: args.data.reason, kind: "body" }, { key: "conversation", value: WEB_CONVERSATION_ID, kind: "body" }] };
+    const view: ApprovalView = { tool: LOCATION_TOOL, agentId: p.agentId, agentName: p.agentName, fields: [{ key: "reason", value: args.data.reason, kind: "body" }, { key: "conversation", value: p.origin?.conversationId ?? WEB_CONVERSATION_ID, kind: "body" }] };
     let resolve!: (r: ToolCallResult) => void;
     const result = new Promise<ToolCallResult>((r) => { resolve = r; });
     const pending: Pending = { conn, callId: p.callId, view, resolve, timer: setTimeout(() => this.settle(nonce, { ok: false, error: "location request timed out: no responding browser within 90 seconds; ask for a city/area instead" }, "timeout"), this.opts.timeoutMs ?? LOCATION_TIMEOUT_MS) };
     this.pending.set(nonce, pending);
     // Do not await posting before waiting for the bounded result: even a hung adapter cannot block it.
-    void (async () => this.opts.prompt(view, nonce))().then((handle) => {
+    void (async () => this.opts.prompt(view, nonce, p.origin))().then((handle) => {
       pending.handle = handle;
       if (!this.pending.has(nonce)) void this.opts.resolved(handle, view, nonce, pending.decision ?? "cancelled").catch(() => {});
     }, () => this.settle(nonce, { ok: false, error: "the user's web browser surface is unavailable; ask for a city/area instead" }, "cancelled"));
