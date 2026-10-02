@@ -12,6 +12,7 @@ import {
   parseProposal,
   pendingNotes,
   runConsolidation,
+  sha256,
   validateProposal,
   type ConsolidationDeps,
   type LiveSession,
@@ -353,6 +354,33 @@ describe("an untrusted proposal can only rearrange what the inputs hold", () => 
     expect(validate(USER, `${GOOD_MEMORY}- Filler line about the day's work. (src: 2026-09-28)\n`)).toEqual([]);
   });
 
+  test("a consolidation can merge facts spread across lines of the same daily note", async () => {
+    const lines = [
+      "- Existing location guard kept; added regression test rejecting `parentRunId` calls (commit 9f35638 on branch agent/01m3x7mkkgxz5m08zng3czx49t).",
+      "- E2E couldn't run locally (ARM, no full Chromium); svelte-check 0 errors, unit tests 16/16 pass. CI check after push not yet confirmed.",
+      "- Open: confirm CI green for 0a44b1e; branch agent/01m3x7mkkgxz5m08zng3czx49t (location test + mobile Enter) ready to run checks and push once drk approves.",
+    ];
+    const entry = "- Location guard regression test rejecting `parentRunId` calls added as 9f35638 on branch agent/01m3x7mkkgxz5m08zng3czx49t; mobile Enter commit sits on top. Branch awaits checks and drk's approval before push. CI green for main's inline-approval fix 0a44b1e still needs confirmation; local svelte-check had 0 errors and unit tests passed 16/16, but E2E could not run locally on ARM without full Chromium. (src: 2026-10-02)";
+    const words = contentTokens(entry);
+    // Each individual source line failed the old check, although together they support the entry.
+    expect(Math.max(...lines.map((line) => grounding(words, contentTokens(line))))).toBeLessThan(0.5);
+    writeFileSync(join(home, "memory", "2026-10-02.md"), `${lines.join("\n")}\n`);
+    const result = await runConsolidation(deps(reply(USER, `${GOOD_MEMORY}${entry}\n`)));
+    expect(result.status).toBe("applied");
+    expect(read("MEMORY.md")).toContain(entry);
+  });
+
+  test("grounding never pools words from different source tags", () => {
+    const lines = [
+      "- Granite quartz marble. (src: 2026-09-28, discord:777)",
+      "- Cedar oak walnut. (src: 2026-09-28, discord:888)",
+      "- Copper silver gold. (src: 2026-09-28, discord:999)",
+    ];
+    writeFileSync(join(home, "memory", "2026-09-28.md"), lines.join("\n"));
+    const entry = "- Granite quartz marble cedar oak walnut copper silver gold. (src: 2026-09-28, discord:777)\n";
+    expect(validate(USER, `${GOOD_MEMORY}${entry}`).join("\n")).toContain('entry not grounded in its tagged source: "- Granite');
+  });
+
   test("grounding is the share of the bullet's content words in one line, tags and stopwords aside", () => {
     const line = contentTokens("- sushii-agent auto-deploys from main via CI. (src: 2026-09-10, discord:333)");
     expect([...line].sort()).toEqual(["agent", "auto", "ci", "deploys", "main", "sushii", "via"]);
@@ -365,6 +393,17 @@ describe("an untrusted proposal can only rearrange what the inputs hold", () => 
 });
 
 describe("the review log", () => {
+  test("inputs rejected by the old single-line policy are eligible for a fresh attempt", async () => {
+    const before = { "USER.md": USER, "MEMORY.md": MEMORY };
+    const notes = pendingNotes(home, {}, 24_000).chunks;
+    const oldFingerprint = sha256(JSON.stringify([before["USER.md"], before["MEMORY.md"], notes.map((n) => [n.file, n.endOffset, n.text])]));
+    // Seed state by rejecting once, then replace its fingerprint with the old policy's format.
+    await runConsolidation(deps(reply(USER, `${GOOD_MEMORY}Prose.\n`)));
+    writeFileSync(join(stateDir, "consolidation.json"), JSON.stringify({ notes: {}, lastRejected: { fingerprint: oldFingerprint, at: "2026-09-29T04:00:00Z" } }));
+    expect((await runConsolidation(deps(reply(USER, GOOD_MEMORY)))).status).toBe("applied");
+    expect(prompts).toHaveLength(2);
+  });
+
   test("an applied entry lists the computed changes, including ones the model's summary leaves out", async () => {
     await runConsolidation(deps(reply(USER, GOOD_MEMORY, "merged: none")));
     const dreams = read("DREAMS.md");

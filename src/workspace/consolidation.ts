@@ -28,7 +28,7 @@ export interface ConsolidationLimits {
   maxNoteBytes: number;
   /** A file under its cap must keep at least this fraction of its entries. */
   minKeepRatio: number;
-  /** Minimum share of a changed bullet's words found in one input line with the same tag. */
+  /** Minimum share of a changed bullet's words found across input lines with the same tag. */
   minGrounding: number;
   /** DREAMS.md past this size loses its oldest entries (git history keeps them). */
   maxDreamsBytes: number;
@@ -185,9 +185,9 @@ function frameLines(text: string): string[] {
     .filter((l) => l.trim() !== "" && !TAGGED_BULLET.test(l));
 }
 
-/** The input fingerprint: the curated files as read plus the note bytes this run consumes. */
+/** Include the grounding policy so proposals rejected under the old single-line check can run again. */
 export function inputFingerprint(before: Record<CuratedName, string>, notes: NoteChunk[]): string {
-  return sha256(JSON.stringify([before["USER.md"], before["MEMORY.md"], notes.map((n) => [n.file, n.endOffset, n.text])]));
+  return sha256(JSON.stringify(["source-tag-grounding-v2", before["USER.md"], before["MEMORY.md"], notes.map((n) => [n.file, n.endOffset, n.text])]));
 }
 
 export function tagsIn(text: string): string[] {
@@ -303,7 +303,7 @@ export interface ValidationInput {
 }
 
 // Grounding is containment, not Jaccard: a merge or a promotion from a long note line is short next to its source,
-// so it asks what share of the bullet's own words appear in one input line carrying the same tag.
+// so it asks what share of the bullet's own words appear across input lines carrying the same tag.
 const STOPWORDS = new Set(
   "a an and are as at be but by for from has have he her his i if in into is it its of on or our she so that the their them then there these they this to was we were what when which who will with you your".split(" "),
 );
@@ -343,11 +343,11 @@ export function validateProposal(v: ValidationInput): string[] {
   // Input lines by the tags they carry. A note's own date tag stands for every line of that note, and each
   // non-blank note line can back at most one entry.
   const inputLines = [...v.before["USER.md"].split("\n"), ...v.before["MEMORY.md"].split("\n"), ...v.notes.flatMap((n) => n.text.split("\n"))].filter((l) => l.trim());
-  const linesByTag = new Map<string, Set<string>[]>();
+  const wordsByTag = new Map<string, Set<string>>();
   const addLine = (tag: string, line: string) => {
-    const list = linesByTag.get(tag) ?? [];
-    list.push(contentTokens(line));
-    linesByTag.set(tag, list);
+    const words = wordsByTag.get(tag) ?? new Set<string>();
+    for (const word of contentTokens(line)) words.add(word);
+    wordsByTag.set(tag, words);
   };
   for (const line of inputLines) for (const t of new Set(tagsIn(line))) addLine(t, line);
   const budget = new Map<string, number>();
@@ -398,8 +398,8 @@ export function validateProposal(v: ValidationInput): string[] {
       if (verbatim.has(line.trim())) continue;
       const tag = normalizeTag(TAGGED_BULLET.exec(line)![2]!);
       const words = contentTokens(line);
-      const best = Math.max(0, ...(linesByTag.get(tag) ?? []).map((l) => grounding(words, l)));
-      if (best < minGrounding) ungrounded.push(`"${clip(line)}" (${Math.round(best * 100)}% of its words in a (${tag}) input line)`);
+      const score = grounding(words, wordsByTag.get(tag) ?? new Set<string>());
+      if (score < minGrounding) ungrounded.push(`"${clip(line)}" (${Math.round(score * 100)}% of its words across (${tag}) input lines)`);
     }
     for (const u of ungrounded.slice(0, 3)) reasons.push(`${name}: entry not grounded in its tagged source: ${u}`);
     if (ungrounded.length > 3) reasons.push(`${name}: ${ungrounded.length - 3} more ungrounded entries`);
