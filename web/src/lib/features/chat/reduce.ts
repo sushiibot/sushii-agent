@@ -21,7 +21,7 @@ export type Delivery =
 	| 'failed'
 	| 'queued'
 	| 'queued-agent'
-	/** Held on this device because a turn is running; it posts when the turn ends. */
+	/** The bot took the POST but queued it behind the running turn; it routes when that turn ends. */
 	| 'queued-run'
 	/** The bot acked it while a turn ran: the send steered that turn. */
 	| 'steered';
@@ -129,8 +129,6 @@ export type Effect =
 	| { type: 'workspace'; state: WorkspaceState }
 	/** A first frame says the workspace is online: re-send every entry the bot hasn't routed yet. */
 	| { type: 'resend' }
-	/** A turn ended or was dropped: messages held for it may go out now. */
-	| { type: 'turnEnd' }
 	| { type: 'toast'; text: string }
 	| { type: 'announce'; text: string }
 	| { type: 'reload' }
@@ -410,8 +408,6 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		}
 		case 'reset': {
 			fx.push(...restartHistory(s));
-			// The reload dropped every running turn with the old history.
-			fx.push({ type: 'turnEnd' });
 			s.cursor = ev.data.headSeq;
 			// The history reload that follows re-sends unsettled entries when this says online.
 			setWorkspace(s, ev.data.workspace, fx);
@@ -439,11 +435,14 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		case 'status': {
 			// A steer joins the turn that is already running, so it settles without a Working row.
 			const steered = ev.data.state === 'steer';
+			// The bot holds the message behind the running turn: posted, but not routed yet, so it
+			// stays unsettled — Delete still withdraws it and no receipt has left the outbox.
+			const queued = ev.data.state === 'queued';
 			for (const i of s.items) {
 				if (i.kind === 'user' && i.clientId === ev.data.clientId)
-					i.delivery = steered ? 'steered' : 'sent';
+					i.delivery = steered ? 'steered' : queued ? 'queued-run' : 'sent';
 			}
-			fx.push({ type: 'delivered', clientId: ev.data.clientId });
+			if (!queued) fx.push({ type: 'delivered', clientId: ev.data.clientId });
 			if (ev.data.state === 'accepted' || ev.data.state === 'newSession') addPlaceholder(s, now);
 			break;
 		}
@@ -483,7 +482,6 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			const item = assistantFor(s, ev.data.turnId);
 			s.stopping = false;
 			dropPlaceholder(s);
-			fx.push({ type: 'turnEnd' });
 			if (!item) break;
 			item.streaming = false;
 			if (ev.data.activityText) item.activityText = ev.data.activityText;
@@ -605,7 +603,6 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 					if (i.delivery === 'sending' || i.clientId === clientId) i.delivery = 'queued-agent';
 				}
 				dropPlaceholder(s);
-				fx.push({ type: 'turnEnd' });
 			}
 			if (ev.data.type === 'nothingToStop' || ev.data.type === 'stopFailed') s.stopping = false;
 			const { line, toast } = noticeText(ev.data);
@@ -615,7 +612,6 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		}
 		case 'session': {
 			dropPlaceholder(s);
-			fx.push({ type: 'turnEnd' });
 			s.items.push({
 				kind: 'divider',
 				id: uid(s, 'divider'),
@@ -739,8 +735,8 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 }
 
 /**
- * Merges one oldest-first history page ahead of the items held. A held send the page contains already
- * reached the workspace, so it moves into the page and settles; so does an ask seeded from the first frame.
+ * Merges one oldest-first history page ahead of the items held. A send the page contains already
+ * sits in the bot's log, so it moves into the page and settles; so does an ask seeded from the first frame.
  */
 export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 	const fx: Effect[] = [];
@@ -770,8 +766,8 @@ export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 		}
 		const mine = h.type === 'user' && h.clientId ? local.get(h.clientId) : undefined;
 		if (mine && h.type === 'user' && h.clientId) {
-			// Settled sends (`sent`, `steered`) move in as they are; a held one reached the
-			// workspace with this page, so it settles and leaves the outbox.
+			// Settled sends (`sent`, `steered`) move in as they are; an unsettled one the page
+			// carries already sits in the bot's log, so it settles and leaves the outbox.
 			if (mine.delivery && mine.delivery !== 'sent' && mine.delivery !== 'steered') {
 				mine.delivery = 'sent';
 				fx.push({ type: 'delivered', clientId: h.clientId });

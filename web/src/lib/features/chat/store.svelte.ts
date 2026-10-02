@@ -315,10 +315,6 @@ export class ChatStore {
 			case 'resend':
 				this.#flushOutbox(true);
 				break;
-			case 'turnEnd':
-				// The state is already committed, so `running` reflects the turn that just ended.
-				this.#flushOutbox(false);
-				break;
 			case 'toast':
 				this.showToast(e.text);
 				break;

@@ -67,9 +67,9 @@ export type Delivery =
 	| 'failed'
 	| 'queued'
 	| 'queued-agent'
-	/** Held on this device because a turn is running; it posts when the turn ends. */
+	/** The bot took the POST but queued it behind the running turn; it routes when that turn ends. */
 	| 'queued-run'
-	/** The bot acked it while a turn ran: the send steered that turn. */
+	/** The bot queued it while a turn ran: steering joins the running turn. */
 	| 'steered';
 
 // Parsed markdown, rendered through components; raw HTML never reaches the DOM.
