@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -679,6 +679,36 @@ describe("limits, driving the host directly", () => {
     await until(() => gates.length === 1);
     gates.shift()!();
     expect((await Promise.all([a, b])).map((r) => r.status)).toEqual(["done", "done"]);
+    await host.dispose();
+  }, 30_000);
+
+  test("creating a queued writer's worktree does not trip the active writer's guard", async () => {
+    const { cfg, host, call } = await direct({ maxWriters: 1 });
+    await initRepo(cfg.home, "repo");
+    const hold = join(root, "hold-checkout");
+    const ready = join(root, "checkout-ready");
+    const release = join(root, "release-checkout");
+    const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
+    writeFileSync(join(cfg.home, "projects/repo/.git/hooks/post-checkout"),
+      `#!/bin/sh\nif [ -f ${quote(hold)} ]; then\n  touch ${quote(ready)}\n  while [ ! -f ${quote(release)} ]; do sleep 0.01; done\nfi\n`, { mode: 0o755 });
+    const gates: Array<() => void> = [];
+    respond = async () => {
+      await new Promise<void>((r) => gates.push(r));
+      return { text: "coded" };
+    };
+    const a = call("one", { agent: "coder", repo: "repo", background: false });
+    await until(() => gates.length === 1);
+    // Finish the first writer while Git still holds the second worktree's lock.
+    writeFileSync(hold, "");
+    const b = call("two", { agent: "coder", repo: "repo", background: false });
+    await until(() => existsSync(ready));
+    expect(gates).toHaveLength(1);
+    gates.shift()!();
+    const first = await a;
+    writeFileSync(release, "");
+    await until(() => gates.length === 1);
+    gates.shift()!();
+    expect([first.status, (await b).status]).toEqual(["done", "done"]);
     await host.dispose();
   }, 30_000);
 

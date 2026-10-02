@@ -618,7 +618,15 @@ export class SubagentHost {
     const id = ulid().toLowerCase();
     const path = join(projects, `${repo}-wt-${id}`);
     const branch = `agent/${id}`;
-    await runnerGit(src).raw(["worktree", "add", "-b", branch, path]);
+    // A queued writer's worktree setup can overlap another writer's guard.
+    const git = `projects/${repo}/.git`;
+    await this.whileMainWrites(() => runnerGit(src).raw(["worktree", "add", "-b", branch, path]), [
+      `projects/${repo}-wt-${id}`,
+      `${git}/worktrees/${repo}-wt-${id}`,
+      `${git}/refs/heads/${branch}`,
+      `${git}/refs/heads/${branch}.lock`,
+      `${git}/logs/refs/heads/${branch}`,
+    ]);
     return { path, branch };
   }
 
