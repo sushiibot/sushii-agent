@@ -52,6 +52,7 @@ export type ChatItem =
 			key?: string;
 			turnId?: string;
 			text: string;
+			activityText?: string;
 			files: UploadRef[];
 			usage?: ChatUsage;
 			turn?: TurnState;
@@ -207,9 +208,9 @@ export function noticeText(n: RouterNotice): { line?: string; toast?: string } {
 		case 'messageRejected':
 			return { line: `Your message didn't reach the agent: ${n.error}` };
 		case 'newSessionFailed':
-			return { line: `Couldn't start a new chat: ${n.error}` };
+			return { line: `Couldn't reset context: ${n.error}` };
 		case 'newWhileOffline':
-			return { toast: "Can't start a new chat while the agent is offline." };
+			return { toast: "Can't reset context while the agent is offline." };
 		case 'nothingToStop':
 			return { toast: 'Nothing to stop.' };
 		case 'stopFailed':
@@ -250,14 +251,36 @@ export function noticeText(n: RouterNotice): { line?: string; toast?: string } {
 function applyToolEvent(item: Extract<ChatItem, { kind: 'assistant' }>, e: ChatEventMap['tool']) {
 	const turn = (item.turn ??= { phase: 'working', lines: [], startedAt: Date.now() });
 	if (e.ok === undefined) {
-		turn.lines = [...turn.lines, { name: e.name, summary: e.summary, state: 'run' }];
+		turn.lines = [
+			...turn.lines,
+			{
+				name: e.name,
+				summary: e.summary,
+				state: 'run',
+				id: e.id,
+				textOffset: e.textOffset ?? item.text.length,
+				agentId: e.agentId
+			}
+		];
 		return;
 	}
 	const state = e.ok ? 'ok' : 'err';
-	const idx = turn.lines.findLastIndex((l) => l.name === e.name && l.state === 'run');
+	const idx = turn.lines.findLastIndex((l) =>
+		e.id ? l.id === e.id : l.name === e.name && l.agentId === e.agentId && l.state === 'run'
+	);
 	turn.lines =
 		idx === -1
-			? [...turn.lines, { name: e.name, summary: e.summary, state }]
+			? [
+					...turn.lines,
+					{
+						name: e.name,
+						summary: e.summary,
+						state,
+						id: e.id,
+						textOffset: e.textOffset ?? item.text.length,
+						agentId: e.agentId
+					}
+				]
 			: turn.lines.map((l, i) =>
 					i === idx ? { ...l, summary: e.summary || l.summary, state } : l
 				);
@@ -416,6 +439,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			if (target && !target.replied) {
 				Object.assign(target, {
 					key: ev.data.key,
+					activityText: target.text,
 					text: ev.data.text,
 					files: ev.data.files,
 					usage: ev.data.usage,
@@ -444,6 +468,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			dropPlaceholder(s);
 			if (!item) break;
 			item.streaming = false;
+			if (ev.data.activityText) item.activityText = ev.data.activityText;
 			const phase: TurnPhase =
 				ev.data.outcome === 'done'
 					? 'done'
@@ -453,7 +478,8 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			item.turn = {
 				...(item.turn ?? { lines: [], startedAt: now }),
 				phase,
-				durationMs: ev.data.summary?.durationMs
+				durationMs: ev.data.summary?.durationMs,
+				...(ev.data.lines ? { lines: ev.data.lines } : {})
 			};
 			if (!item.text && !item.turn.lines.length && phase === 'done') {
 				s.items = s.items.filter((i) => i !== item);
@@ -632,6 +658,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 				key: h.outboxId,
 				turnId: h.turnId,
 				text: h.text,
+				activityText: h.activityText,
 				files: h.files,
 				usage: h.usage,
 				turn: h.tools.length
@@ -639,7 +666,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 							phase: 'done',
 							startedAt: 0,
 							lines: h.tools.map((t) => ({
-								name: t.name,
+								...t,
 								summary: t.summary,
 								state: t.ok ? 'ok' : 'err'
 							}))

@@ -10,7 +10,7 @@ const errorText = (err: unknown) =>
 
 export class ThreadsStore {
 	list: Remote<ChatsData>;
-	/** Reports from threads closed since the app opened, for Main to show. */
+	/** Legacy report compatibility; ordinary threads do not publish reports. */
 	reports = $state.raw<ThreadReport[]>([]);
 	busy = $state(false);
 	error = $state<string | null>(null);
@@ -83,9 +83,8 @@ export class ThreadsStore {
 	}
 
 	async close(id: string): Promise<boolean> {
-		const report = await this.#act(() => this.#api.close(id));
-		if (!report) return false;
-		this.reports = [...this.reports, report];
+		const summary = await this.#act(() => this.#api.close(id));
+		if (!summary) return false;
 		await Promise.all([this.list.refetch(), this.thread(id).refetch()]);
 		return true;
 	}

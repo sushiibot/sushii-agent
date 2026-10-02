@@ -75,7 +75,7 @@ export function threadSummaries(now: number): ThreadSummary[] {
 			title: 'Couch delivery',
 			state: 'archived',
 			lastActivity: iso(now, 11 * 24 * 60),
-			preview: 'Delivered on the 12th. Reported to Main.',
+			preview: 'Delivered on the 12th.',
 			writes: 1,
 			archived: { at: iso(now, 4 * 24 * 60), by: 'idle' }
 		},
@@ -84,7 +84,7 @@ export function threadSummaries(now: number): ThreadSummary[] {
 			title: 'Passport renewal',
 			state: 'archived',
 			lastActivity: iso(now, 27 * 24 * 60),
-			preview: 'New passport arrived. Reported to Main.',
+			preview: 'New passport arrived.',
 			writes: 2,
 			archived: { at: iso(now, 26 * 24 * 60), by: 'you' }
 		}
@@ -92,7 +92,7 @@ export function threadSummaries(now: number): ThreadSummary[] {
 }
 
 export function chatsData(now: number): ChatsData {
-	return { main: mainSummary(now), threads: threadSummaries(now), cap: 8, archiveAfterDays: 7 };
+	return { main: mainSummary(now), threads: threadSummaries(now), archiveAfterDays: 7 };
 }
 
 export function emptyChatsData(now: number): ChatsData {
@@ -275,6 +275,6 @@ export function tripReport(now: number): ThreadReport {
 	return {
 		sessionId: THREADS.trip,
 		title: 'October trip',
-		line: threadDetail(now, THREADS.trip)!.closing.line
+		line: threadDetail(now, THREADS.trip)!.closing!.line
 	};
 }

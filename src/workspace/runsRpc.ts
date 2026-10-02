@@ -27,7 +27,7 @@ import { localTime, runFileRel } from "./history.ts";
 import { existingRunFile, historyRoot, historyRunSummary } from "./historyFiles.ts";
 import { MEMORY_PATHS } from "./home.ts";
 import { runLogPath, type RunRecord, type RunRecorder } from "./runLog.ts";
-import { SLICE_SLACK, entriesInWindow, openSession, realRoots, runIdTime, runKindOf, safeText, scanRunIndex, textOf, toRunSummary, type Entry, type RunIndex } from "./runReader.ts";
+import { SLICE_SLACK, entriesInWindow, openSession, realRoots, runIdTime, runKindOf, runConversationOf, safeText, scanRunIndex, textOf, toRunSummary, type Entry, type RunIndex } from "./runReader.ts";
 import { SEND_FILE_TOOL } from "./sendFile.ts";
 import { VERIFY_CUSTOM_TYPE, bashChangedRepo, bashMutates, isCheckCommand } from "./verifyGate.ts";
 
@@ -77,6 +77,9 @@ export async function runsList(opts: RunsRpcOptions, p: unknown): Promise<RunsLi
       if (!RUN_ID_RE.test(r.runId) || (params.before && r.runId >= params.before)) return false;
       // The fields toRunSummary rejects on, so a page of bad records can't push every candidate through redaction.
       if (!isStamp(r.startedAt) || !str(r.agentName) || !(RUN_STATUSES as readonly string[]).includes(r.status)) return false;
+      const parent = r.parentRunId ? index.runs.get(r.parentRunId) : undefined;
+      const conversationId = runConversationOf(r) ?? (parent ? runConversationOf(parent) : undefined) ?? "main";
+      if (params.conversationId && conversationId !== params.conversationId) return false;
       if (params.statuses && !(params.statuses as string[]).includes(r.status)) return false;
       if (params.kinds && !params.kinds.includes(runKindOf(r))) return false;
       const t = Date.parse(r.startedAt);

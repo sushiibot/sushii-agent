@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { BackgroundAgents } from '$lib/features/runs';
 	import { onMount, tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -17,7 +18,7 @@
 		type ChatMessage,
 		type FileRef
 	} from '$lib/features/chat';
-	import { BranchSheet, threadsStore, withReports } from '$lib/features/threads';
+	import { BranchSheet, threadsStore } from '$lib/features/threads';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 
 	const store = chatStore();
@@ -137,10 +138,23 @@
 	}
 </script>
 
-<svelte:head><title>Chat · sushii</title></svelte:head>
+<svelte:head><title>Main · sushii</title></svelte:head>
+
+{#snippet backgroundActivity()}<BackgroundAgents
+		onrun={(id) => goto(resolve('/runs/[id]', { id }))}
+		compact
+	/>{/snippet}
+{#snippet delegatedActivity(turnId: string)}<BackgroundAgents
+		onrun={(id) => goto(resolve('/runs/[id]', { id }))}
+		{turnId}
+	/>{/snippet}
 
 <ChatScreen
-	messages={threads ? withReports(s.messages, threads.reports) : s.messages}
+	title="Main"
+	{backgroundActivity}
+	{delegatedActivity}
+	approvalSubmitting={s.trayPhase === 'submitting'}
+	messages={s.messages}
 	history={s.history}
 	hasOlder={s.hasOlder}
 	olderLoading={s.olderLoading}
@@ -196,7 +210,7 @@
 	onretrysend={(id) => s.retry(id)}
 	ondeletesend={(id) => void s.discard(id)}
 	onanswer={(askId, answer) => s.answer(askId, answer)}
-	onapprove={(nonce) => void s.decide(nonce, 'approve')}
+	onapprove={(nonce, location) => void s.decide(nonce, 'approve', location)}
 	ondeny={(nonce) => void s.decide(nonce, 'deny')}
 	oninstall={() => pwa.install()}
 	onreload={() => pwa.applyUpdate()}
@@ -205,7 +219,8 @@
 
 {#snippet mainSubtitle()}
 	<span class="text-xs text-muted-foreground">
-		{#if s.running}The agent is working{:else}Threads report back here{/if}
+		{#if s.running}The agent is working{:else}General conversation · context from threads when
+			useful{/if}
 	</span>
 {/snippet}
 

@@ -73,11 +73,12 @@ expect(small).toEqual([]);
 In a standalone PWA there is no browser back button: the Android back gesture is the only back control. It must do what the user expects on every screen.
 
 - **Back closes the topmost overlay first (sheet, dialog, menu), and only then leaves the screen.** Why: Android sends a close request that native `<dialog>` and `popover` handle for free; a `div role="dialog"` ignores it and back navigates away instead ([MDN CloseWatcher](https://developer.mozilla.org/en-US/docs/Web/API/CloseWatcher)). This applies to the shadcn-svelte Dialog and Sheet too: bits-ui renders them as `div`s, so each needs the history-entry wrapper or a verified close on the phone. Build overlays on `<dialog>`/`popover`, or have them push a history entry and close on `popstate`. Check: `phone`: open every sheet and press back; the sheet closes and the screen stays.
+- **Dismissal finishes before a following route change.** Phone sheets slide out fully and fade; desktop dialogs fade with a small scale change. Content and scrim use the same duration. Reduced motion disables both animations. Check: `pw` (`e2e/sheet-motion.test.ts`).
 - **Every pushed screen (chat, run detail, memory diff) is a real URL navigated with `goto`, never `replaceState` or in-component state.** Why: with one history entry, back exits the app. Check: `phone`: Home → chat → run detail, then back twice lands on Home.
 - **Back closes the drawer first; back from a drawer destination returns to the chat; back from the chat exits.** Why: the Android convention for drawer apps, and the chat is where the app opens. Picking a destination from the drawer replaces the entry unless it is left from the chat. Check: `pw` (`e2e/nav.test.ts`), `phone`.
 - **A dirty composer or edit survives back and return.** Why: a mis-swipe must not cost a typed message. Keep the draft per chat in memory, and in `sessionStorage` for reloads. Check: `phone`: type, swipe back, reopen the chat; the text is there.
 - **No `target="_blank"` for in-app routes.** Why: it opens a Custom Tab and breaks back. Check: `review`.
-- **The app opens on the chat. Top-level destinations (Chat, Inbox, Chats, Runs, History, ..., Settings) live in a drawer opened from the header's menu button on phones and in the sidebar on desktop; detail screens show a back chevron instead.** Why: the chat keeps the full height (no tab bar under the composer), and one navigation system per screen. The drawer is a native modal `<dialog>`, so Android back and Escape close it. The menu button carries a dot when the inbox has something waiting or unread. Check: `shot`, `pw` (`e2e/nav.test.ts`).
+- **The app opens on the chat. Top-level destinations (Main, Inbox, Threads, Runs, History, ..., Settings) live in a drawer opened from the header's menu button on phones and in the sidebar on desktop; detail screens show a back chevron instead.** Why: the chat keeps the full height (no tab bar under the composer), and one navigation system per screen. The drawer is a native modal `<dialog>`, so Android back and Escape close it. The menu button carries a dot when the inbox has something waiting or unread. Check: `shot`, `pw` (`e2e/nav.test.ts`).
 
 ## Chat and agent
 
@@ -125,21 +126,21 @@ await expect(page.getByRole('button', { name: /new messages/i })).toBeVisible();
 
 ### Tool activity
 
-- **The agent shows it is working within 300ms of receiving a message: a "Working" row, or the first tool line.** Why: silence past a few hundred ms reads as "it didn't get it". Check: `pw` against a fixture server with delayed replies.
-- **Tool calls collapse into one "Working" row per turn that shows the current step in plain words ("Searching mail for 'invoice'") and a count ("4 steps").** Why: raw tool names and JSON in the transcript bury the answer. Check: `shot` of a turn with 5+ tool calls.
-- **The row expands to the step list; each step expands to its exact input and output.** Why: the detail must be one tap away for debugging, never the default. Check: `phone`.
-- **A failed step shows in the collapsed row ("1 step failed"), not only inside it.** Why: a collapsed failure is a hidden failure. Check: `shot`.
-- **When the turn ends the row becomes a summary ("Used 4 tools · 12s") and stays collapsed.** Why: finished work should take one line of history. Check: `shot`.
+- **The agent shows a compact typing indicator within 300ms of receiving a message, until text or activity arrives.** Why: silence reads as a missed message, while an oversized status block wastes space. Check: `pw` with delayed replies.
+- **Tool calls appear individually in chronological order between assistant text.** Each compact row names the action in plain words and shows its status; do not merge every call into one block above the reply. Why: the user can follow the work where it happened. Check: `pw`, `shot` with interleaved text and 5+ calls.
+- **Each tool row expands to exact input and output on demand.** Keep raw JSON and long results out of the default transcript. A failed action remains visibly failed while collapsed. Check: `phone`, `shot`.
+- **Completed tools remain compact in history and preserve the same ordering after reload.** Why: streaming and restored history should describe the same conversation. Check: `pw` after reload.
+- **Delegated work stays visible in the originating conversation.** Show a compact task card with agent, repository, status, and latest activity; keep a background-work strip above the composer while agents run. Tap for activity, results, or agent-specific Stop. Inbox is a secondary notification surface. Why: work should be findable where the user started it. Check: `pw` after the parent reply and reload.
 
 ### Approval cards
 
-- **The card shows the exact inputs the tool will run with (recipient, subject, full body, command, URL), with an "Exact input" view of the raw arguments.** Why: paraphrased approvals are how bad actions get approved; Grok Bot shows "the proposed operation and its inputs" for the same reason. Check: `review` against the tool schema; `shot`.
-- **Three actions: Approve, Edit, Deny. Approve names the action ("Approve and send").** Why: a bare "OK" hides what happens next. Check: `shot`.
-- **Approval cards never auto-dismiss or time out in the UI. They stay until decided, and stay in history after with the decision and who or what made it.** Why: a missed approval that silently expires is a lost task; WCAG 2.2.1 Timing Adjustable. Check: `pw`: leave a card open 10 minutes; it's still actionable.
-- **If the server withdraws a request (run cancelled), the card changes to "No longer needed" with the reason; it is not removed.** Why: things that disappear make the user doubt what they saw. Check: `shot`.
-- **"Always allow" is a separate, off-by-default switch that says exactly what future actions it covers.** Why: a durable rule needs a deliberate choice. Check: `review`.
-- **Tainted runs say so on the card ("This run read external email, so sending always asks first").** Why: it explains why this card appeared when an allow rule exists. Check: `shot`.
-- **Every pending approval appears on Home under "Waiting on you" and in the tab badge.** Why: a card buried 40 messages up in a chat is effectively lost. Check: `pw`.
+- **Pending approvals attach directly to their tool call, using the same component in prototypes and live chat.** Show a readable action title and structured details appropriate to the action, with exact raw arguments under “Exact input.” Long bodies expand on demand. Why: the user needs clarity without a large debug dump or duplicated card. Check: `review`, `shot` on mobile and desktop.
+- **Approve and Deny name the decision clearly.** Editing appears only when the action supports editing; do not imply it exists for every tool. Why: controls must match the action available. Check: `review` against API behavior.
+- **While submitting, disable decision controls and show “Submitting…” until server confirmation.** Do not dismiss the request optimistically. On failure, retain the request and show the error. Check: `pw` with delayed and rejected decisions.
+- **Once answered, replace the approval prompt with a quiet decision status in the tool's expandable details.** Retain the decision for inspection, but remove the attention card and controls. Denied, expired, and cancelled requests also cease to appear actionable. Why: an answered request should not look pending. Check: `pw` after answering and reload.
+- **Approval status is separate from execution status.** Approved does not imply Running, Completed, or successful execution. Check: `pw` for approval followed by execution failure.
+- **Durable allow rules are separate, off-by-default controls that explain exactly which future actions they cover.** Tainted runs explain why approval was requested despite an allow rule. Check: `review`.
+- **Every pending approval appears in Inbox and in the tab badge, with a link to its originating conversation.** Why: the user can find a buried request without making Inbox the only place it is visible. Check: `pw`.
 
 ### Outcomes: finished is not succeeded
 
@@ -296,7 +297,7 @@ expect(results.violations).toEqual([]);
 - **Run axe on every screen in both themes and after driving each interactive state (sheet open, approval editing, tool row expanded).** Why: axe sees only the DOM present at `analyze()` time. Check: the e2e suite.
 - **Reflow assertion at 320 and 412 wide: `document.documentElement.scrollWidth <= clientWidth`.** Why: 320 is WCAG 1.4.10's number (1280px at 400% zoom); 412 is the target phone. Check: `pw`.
 - **`bun run check` runs with `--fail-on-warnings` so compiler `a11y_*` warnings fail the build.** Why: the Svelte compiler is the only a11y linter for templates; eslint-plugin-svelte has none. Check: `check`.
-- **Screen-reader labels are real words: "Send message", "Back to Chats", "Copy code". Never "button", "icon", or the tool's internal name alone.** Why: axe checks that a name exists, not that it's useful. Check: `review`, plus a TalkBack pass on the phone for each new screen.
+- **Screen-reader labels are real words: "Send message", "Back to Threads", "Copy code". Never "button", "icon", or the tool's internal name alone.** Why: axe checks that a name exists, not that it's useful. Check: `review`, plus a TalkBack pass on the phone for each new screen.
 
 ## The UX gate
 

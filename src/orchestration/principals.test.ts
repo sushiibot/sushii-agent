@@ -31,6 +31,14 @@ describe("resolvePrincipal", () => {
     });
   });
 
+  test("web identities use the gateway's case-insensitive trimmed login matching", () => {
+    config.principals = { drk: { owner: true, identities: { web: "  Owner@Example.COM  ", slack: "CaseSensitive" } } };
+    expect(resolvePrincipal("web", "owner@example.com")).toEqual({ principalId: "drk", isOwner: true });
+    expect(resolvePrincipal("web", " Owner@Example.com ")).toEqual({ principalId: "drk", isOwner: true });
+    expect(resolvePrincipal("web", "other@example.com")).toBeUndefined();
+    expect(resolvePrincipal("slack", "casesensitive")).toBeUndefined();
+  });
+
   test("an unknown (surface, userId) resolves to undefined", () => {
     config.principals = DRK;
     expect(resolvePrincipal("discord", "someone-else")).toBeUndefined();

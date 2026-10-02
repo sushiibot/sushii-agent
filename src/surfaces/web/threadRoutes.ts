@@ -38,7 +38,6 @@ const branchBody = z
     title: z.string().trim().min(1).max(120),
   })
   .strict();
-const CAP = 8;
 const IDLE_DAYS = 7;
 
 /** Thread metadata and isolated web channels share the existing bot database. */
@@ -239,59 +238,30 @@ export class WebThreads {
         : {}),
     };
   }
-  private closing(row: ThreadRow) {
-    const last = this.channel(row.id).log.page(["reply"], { limit: 1 })[0];
-    const excerpt = last?.data.text.replace(/\s+/g, " ").trim().slice(0, 500);
-    return { writes: [], line: excerpt ?? "Closed without a reply." };
-  }
   private async close(row: ThreadRow, by: "you" | "idle") {
-    if (row.archived_at) return JSON.parse(row.report!);
-    await this.channel(row.id).routes.idle();
+    if (row.archived_at) return this.summary(row);
+    const channel = this.channel(row.id);
+    await channel.routes.idle();
+    const pending = channel.log.pending({ approvalsSince: 0, asks: 100 });
+    if (pending.asks.length || pending.approvals.length)
+      throw new Error(
+        "Answer the thread's pending requests before archiving it.",
+      );
     await this.deps.link.topicManage({ id: row.id, action: "close" });
-    const at = Date.now();
-    const report = {
-      sessionId: row.id,
-      title: row.title,
-      at,
-      ...this.closing(row),
-    };
-    this.deps.main.log.transaction(() => {
-      this.deps.db.run(
-        "UPDATE web_threads SET archived_at = ?, archived_by = ?, report = ?, report_delivered = 0 WHERE id = ?",
-        [at, by, JSON.stringify(report), row.id],
-      );
-      this.deps.main.log.append(
-        "proactive",
-        {
-          key: `thread-report:${row.id}:${at}`,
-          text: `Thread closed · ${row.title}\n\n${report.line}\n\n[Open thread](/chats/${row.id})`,
-          files: [],
-        },
-        `thread-report:${row.id}:${at}`,
-      );
-    });
+    this.deps.db.run(
+      "UPDATE web_threads SET archived_at = ?, archived_by = ?, report_delivered = 1 WHERE id = ?",
+      [Date.now(), by, row.id],
+    );
     this.changed(row.id);
-    await this.deliverReport(this.row(row.id)!);
-    return report;
+    return this.summary(this.row(row.id)!);
   }
-  private async deliverReport(row: ThreadRow) {
-    if (!row.report || row.report_delivered) return;
-    try {
-      const report = JSON.parse(row.report) as { line: string; at?: number };
-      await this.deps.link.sendMessage({
-        origin: { surface: "web", conversationId: "main" },
-        messageId: `thread-report:${row.id}:${report.at ?? row.archived_at}`,
-        text: `Thread closed · ${row.title}\n${report.line}`,
-        kind: "context",
-        author: { id: "workspace", name: "Topic report" },
-      });
-      this.deps.db.run(
-        "UPDATE web_threads SET report_delivered = 1 WHERE id = ? AND report = ?",
-        [row.id, row.report],
-      );
-    } catch {
-      /* Kept on disk; reconnect and periodic maintenance retry the same message id. */
-    }
+  private async resume(row: ThreadRow) {
+    await this.deps.link.topicManage({ id: row.id, action: "reopen" });
+    this.deps.db.run(
+      "UPDATE web_threads SET archived_at = NULL, archived_by = NULL WHERE id = ?",
+      [row.id],
+    );
+    this.changed(row.id);
   }
   async handle(
     req: Request,
@@ -337,7 +307,6 @@ export class WebThreads {
             : "Main conversation",
         },
         threads: this.rows().map((r) => this.summary(r)),
-        cap: CAP,
         archiveAfterDays: IDLE_DAYS,
       });
     }
@@ -348,8 +317,6 @@ export class WebThreads {
       if (raw instanceof Response) return raw;
       const body = branchBody.safeParse(raw);
       if (!body.success) return json({ error: "invalid body" }, 400);
-      if (this.rows().filter((r) => !r.archived_at).length >= CAP)
-        return json({ error: "Close a thread before starting another." }, 409);
       const source = body.data.messageId
         ? (this.deps.db
             .query(
@@ -395,8 +362,8 @@ export class WebThreads {
     const sub = match[2];
     const c = this.channel(row.id);
     if (sub?.startsWith("chat/")) {
-      if (row.archived_at && req.method !== "GET" && sub !== "chat/seen")
-        return json({ error: "Reopen this thread to send messages." }, 409);
+      if (row.archived_at && req.method === "POST" && sub === "chat/messages")
+        await this.resume(row);
       return c.routes.handle(req, `/api/${sub}`, actor, server);
     }
     if (!sub && req.method === "GET")
@@ -409,34 +376,23 @@ export class WebThreads {
           { limit: 40 },
           { maxBytes: 2 * 1024 * 1024 },
         ).items,
-        closing: this.closing(row),
       });
     if (req.method !== "POST")
       return json({ error: "method not allowed" }, 405);
     if (sub === "close") return json(await this.close(row, "you"));
     if (sub === "reopen") {
-      await this.deps.link.topicManage({ id: row.id, action: "reopen" });
-      this.deps.db.run(
-        "UPDATE web_threads SET archived_at = NULL, archived_by = NULL WHERE id = ?",
-        [row.id],
-      );
-      this.changed(row.id);
+      await this.resume(row);
       return json(this.summary(this.row(row.id)!));
     }
     return json({ error: "not found" }, 404);
   }
   workspaceConnected() {
-    void this.retryReports();
     for (const c of this.channels.values()) c.routes.workspaceConnected();
   }
   publish(ev: Parameters<SqliteChatLog["publish"]>[0]) {
     for (const c of this.channels.values()) c.log.publish(ev);
   }
-  private async retryReports() {
-    for (const row of this.rows()) await this.deliverReport(row);
-  }
   async prune() {
-    await this.retryReports();
     for (const r of this.rows()) {
       const c = this.channel(r.id);
       c.log.prune(Date.now());

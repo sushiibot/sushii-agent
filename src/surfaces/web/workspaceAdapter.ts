@@ -336,7 +336,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
       return;
     }
     // One key per outcome, so a turn marked interrupted after a restart can still be marked done by its reply.
-    const { seq, created } = this.deps.log.appendResult("turn_final", { turnId, outcome: final.outcome, summary: final.summary }, key);
+    const { seq, created } = this.deps.log.appendResult("turn_final", { turnId, outcome: final.outcome, summary: final.summary, activityText: capText(final.activityText ?? turn?.text ?? "", TURN_TEXT_MAX), lines: [...(final.lines ?? turn?.lines ?? [])].map((line) => ({ ...line, name: capText(line.name, ID_MAX), summary: capText(line.summary, TOOL_SUMMARY_MAX) })) }, key);
     if (created && final.outcome === "interrupted") void this.notify(seq, { kind: "interrupted" });
   }
 
@@ -363,7 +363,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
       if (prev && prev.state === line.state) return;
       this.deps.log.publish({
         type: "tool",
-        data: { turnId: turn.turnId, name: line.name, summary: line.summary, ...(line.state !== "run" ? { ok: line.state === "ok" } : {}) },
+        data: { turnId: turn.turnId, name: line.name, summary: line.summary, ...(line.id ? { id: line.id } : {}), ...(line.textOffset !== undefined ? { textOffset: line.textOffset } : {}), ...(line.agentId ? { agentId: line.agentId } : {}), ...(line.state !== "run" ? { ok: line.state === "ok" } : {}) },
       });
     });
     turn.lines = lines;

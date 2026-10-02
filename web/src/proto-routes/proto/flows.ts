@@ -59,9 +59,9 @@ export interface Flow {
 export const deviations = [
 	{
 		id: 1,
-		title: 'Approvals sit in a pinned tray, not in the chat',
+		title: 'Approvals attach to the tool call',
 		detail:
-			'UXG puts the approval card in the message list. M1 pins it above the composer, outside the scroll, and leaves a one-line marker in the chat that becomes the decision.',
+			'Each request renders beside its tool activity. Confirmed decisions remove the controls and remain in the tool details.',
 		flow: 'chat'
 	},
 	{
@@ -75,14 +75,14 @@ export const deviations = [
 		id: 3,
 		title: 'The bot times out after 30 min, as a deny',
 		detail:
-			'The UI never expires the tray itself. When the bot reports a timeout, the tray reads "Timed out, denied" for a few seconds, then folds into its chat marker, which stays in history.',
+			'The UI expires no request on its own. When the bot reports a timeout, controls disappear and the tool details retain the expired decision.',
 		flow: 'chat'
 	},
 	{
 		id: 4,
-		title: 'Approve is disabled for 1s after the tray appears or moves',
+		title: 'Submitting prevents duplicate decisions',
 		detail:
-			'Deny sits on the left and is the smaller target. Approve shows a visible held state with a line of text, so the tap does not read as broken.',
+			'Deny sits on the left and is the smaller target. Both controls disable while the server confirms; failed decisions can be retried.',
 		flow: 'chat'
 	}
 ];
@@ -177,7 +177,7 @@ export const flows: Flow[] = [
 		code: 'CH',
 		title: 'Chat turn with approval',
 		intro:
-			'The agent drafts an email and asks to send it. The request pins above the composer in a shielded tray that the chat can’t imitate; the chat keeps a one-line marker that turns into the decision. While the tray is up, Stop moves to the ⋮ menu so the chat keeps half the screen; Send still steers the run.',
+			'The agent drafts an email and asks to send it. A compact inline approval shows structured details and exact input. Confirmed decisions leave a quiet record, while tool execution has its own status.',
 		deviations: [1, 2, 3, 4],
 		frames: [
 			{
@@ -189,14 +189,14 @@ export const flows: Flow[] = [
 			},
 			{
 				id: 'ch-2',
-				label: 'Tray appears, Approve held for 1s',
+				label: 'Inline approval appears',
 				screen: ChatScreen,
 				props: {
 					messages: c.hvacPending,
 					running: true,
-					tray: { items: [c.hvacApproval], armed: false }
+					approvals: [c.hvacApproval]
 				},
-				next: 'After 1s'
+				next: 'Review details'
 			},
 			{
 				id: 'ch-3',
@@ -205,7 +205,7 @@ export const flows: Flow[] = [
 				props: {
 					messages: c.hvacPending,
 					running: true,
-					tray: { items: [c.hvacApproval] }
+					approvals: [c.hvacApproval]
 				},
 				next: 'Approve',
 				hits: { approve: 'ch-4', deny: 'ch-6', 'show details': 'ch-11' }
@@ -217,7 +217,8 @@ export const flows: Flow[] = [
 				props: {
 					messages: c.hvacPending,
 					running: true,
-					tray: { items: [c.hvacApproval], state: 'submitting' }
+					approvals: [c.hvacApproval],
+					approvalSubmitting: true
 				},
 				next: 'Bot confirms'
 			},
@@ -236,21 +237,21 @@ export const flows: Flow[] = [
 			},
 			{
 				id: 'ch-7',
-				label: 'Two approvals stacked, and a question',
+				label: 'Two inline approvals, and a question',
 				screen: ChatScreen,
 				props: {
 					messages: c.twoApprovalsAndAsk,
 					running: true,
-					tray: { items: [c.hvacApproval, c.prApproval] }
+					approvals: [c.hvacApproval, c.prApproval]
 				},
-				branch: 'Several pending: the tray says 1 of 2; the question stays in the chat'
+				branch: 'Each pending call has its own inline decision; the question stays in the chat'
 			},
 			{
 				id: 'ch-8',
 				label: 'Decided on another device',
 				screen: ChatScreen,
 				props: { messages: c.hvacElsewhere },
-				branch: 'Approved on the laptop: the tray closes, the marker says where'
+				branch: 'Approved on the laptop: controls close and tool details retain the decision'
 			},
 			{
 				id: 'ch-9',
@@ -258,9 +259,10 @@ export const flows: Flow[] = [
 				screen: ChatScreen,
 				props: {
 					messages: c.hvacTimedOut,
-					tray: { items: [c.hvacApproval], state: 'timeout' }
+					approvals: []
 				},
-				branch: 'Nobody decided in 30 min: the bot denies, the tray says so',
+				branch:
+					'Nobody decided in 30 min: the bot denies and tool details retain the expired decision',
 				next: 'After about 3s'
 			},
 			{
@@ -269,9 +271,9 @@ export const flows: Flow[] = [
 				screen: ChatScreen,
 				props: {
 					messages: c.hvacTimedOut,
-					tray: { items: [c.hvacApproval], state: 'timeout', collapsed: true }
+					approvals: []
 				},
-				branch: 'The tray folds away; the marker keeps the outcome'
+				branch: 'The tool details keep the outcome'
 			},
 			{
 				id: 'ch-10',
@@ -280,10 +282,10 @@ export const flows: Flow[] = [
 				props: {
 					messages: c.spoofReply,
 					running: true,
-					tray: { items: [c.hvacApproval] }
+					approvals: [c.hvacApproval]
 				},
 				branch:
-					'Spoof: markdown with a heading, bold “Approve” and a link; no buttons, next to the real tray'
+					'Spoof: markdown with a heading, bold “Approve” and a link; no buttons, next to the real inline approval'
 			},
 			{
 				id: 'ch-11',
@@ -292,10 +294,10 @@ export const flows: Flow[] = [
 				props: {
 					messages: c.hvacPending,
 					running: true,
-					tray: { items: [c.hvacApproval], details: true }
+					approvals: [c.hvacApproval]
 				},
 				hits: { approve: 'ch-4', deny: 'ch-6', 'hide details': 'ch-3' },
-				branch: 'Show details from CH-3: every field, scrolling inside the tray'
+				branch: 'Show details from CH-3: every field, scrolling inside the inline approval'
 			}
 		]
 	},
@@ -796,12 +798,12 @@ export const flows: Flow[] = [
 			},
 			{
 				id: 'dm-3',
-				label: 'The app: the pending tray',
+				label: 'The app: the inline approval',
 				screen: ChatScreen,
 				props: {
 					messages: c.hvacPending,
 					running: true,
-					tray: { items: [c.hvacApproval] }
+					approvals: [c.hvacApproval]
 				}
 			}
 		]

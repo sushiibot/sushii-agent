@@ -314,6 +314,27 @@ describe("delegate on real Pi sessions", () => {
     await h.dispose();
   }, 30_000);
 
+  test("Stop targets one background child after the parent replied", async () => {
+    const h = await host();
+    let releaseChild!: () => void;
+    const gate = new Promise<void>((r) => { releaseChild = r; });
+    respond = async (b) => {
+      if (isChild(b)) { await gate; return { text: "late child result" }; }
+      if (mainTurn(b) === 0) return { tool: { name: "delegate", args: { agent: "explore", task: "inspect background", background: true } } };
+      return { text: "parent is available" };
+    };
+    await h.personal.handleMessage(user("stop-target", "start background work"));
+    await until(() => h.delivered.length === 1 && bodies.some(isChild));
+    const child = h.runs.listRuns({ agentName: "explore" })[0];
+    expect(child.conversationId).toBe("main");
+    expect(h.subagents.stop("unknown")).toBe(false);
+    expect(h.subagents.stop(child.runId)).toBe(true);
+    await until(() => h.runs.getRun(child.runId)?.status === "aborted");
+    expect(h.subagents.stop(child.runId)).toBe(false);
+    releaseChild();
+    await h.dispose();
+  }, 30_000);
+
   test("a child can't write memory files", async () => {
     const h = await host();
     writeFileSync(join(h.cfg.home, ".agents/agents/scribe.md"), "---\nname: scribe\ndescription: writes\ntools: Read, Write, Edit, Bash\nbackground: true\n---\nYou write.\n");

@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { BackgroundAgents } from '$lib/features/runs';
+	import { onMount, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { backTo } from '$lib/core/nav/back';
@@ -59,12 +60,21 @@
 	async function closeThread() {
 		if (!(await threads.close(id))) return;
 		await leaveSheet(sheet ? sheets[sheet] : undefined);
-		// The closed thread leaves the way back, so back from Main lands on Chats.
-		await goto(resolve('/chat'), { replaceState: true });
 	}
 </script>
 
 <svelte:head><title>{detail?.summary.title ?? 'Thread'} · sushii</title></svelte:head>
+
+{#snippet backgroundActivity()}<BackgroundAgents
+		onrun={(id) => goto(resolve('/runs/[id]', { id }))}
+		conversationId={id}
+		compact
+	/>{/snippet}
+{#snippet delegatedActivity(turnId: string)}<BackgroundAgents
+		onrun={(id) => goto(resolve('/runs/[id]', { id }))}
+		conversationId={id}
+		{turnId}
+	/>{/snippet}
 
 <ThreadScreen
 	{remote}
@@ -74,7 +84,7 @@
 	busy={threads.busy}
 	error={threads.error}
 	sendable={threads.canSend}
-	back={{ href: resolve('/chats'), label: 'Back to Chats', onclick: goBack }}
+	back={{ href: resolve('/chats'), label: 'Back to Threads', onclick: goBack }}
 	writeHref={(w) => resolve('/memory/writes/[id]', { id: w })}
 	memoryHref={resolve('/memory/writes')}
 	chat={store
@@ -84,6 +94,9 @@
 				history: store.history,
 				hasOlder: store.hasOlder,
 				olderLoading: store.olderLoading,
+				backgroundActivity,
+				delegatedActivity,
+				approvalSubmitting: store.trayPhase === 'submitting',
 				olderError: store.olderError,
 				running: store.running,
 				stopping: store.stopping,
@@ -137,7 +150,7 @@
 				onretrysend: (m) => store.retry(m),
 				ondeletesend: (m) => void store.discard(m),
 				onanswer: (askId, answer) => store.answer(askId, answer),
-				onapprove: (nonce) => void store.decide(nonce, 'approve'),
+				onapprove: (nonce, location) => void store.decide(nonce, 'approve', location),
 				ondeny: (nonce) => void store.decide(nonce, 'deny')
 			}
 		: undefined}

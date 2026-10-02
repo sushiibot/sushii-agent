@@ -119,7 +119,7 @@ function safeText(s: string): string {
 const isFlush = (text: string | null | undefined) => !!text?.startsWith(FLUSH_MARKER);
 
 function kindOf(run: Pick<FinishedRun, "agentName" | "parentRunId">, flush = false): string {
-  if (run.agentName === "main") return flush ? "flush" : "chat";
+  if ((run.agentName === "main" || run.agentName.startsWith("topic:"))) return flush ? "flush" : "chat";
   if (run.agentName.startsWith("job:")) return "job";
   return run.parentRunId ? "subagent" : "agent";
 }
@@ -258,7 +258,7 @@ export class HistoryWriter {
     const start = localTime(run.startedAt, tz);
     const end = localTime(run.endedAt, tz);
     const origin = transcript?.firstUserText ? headerOrigin(transcript.firstUserText) : null;
-    const flush = run.agentName === "main" && isFlush(transcript?.firstUserText ?? run.task);
+    const flush = (run.agentName === "main" || run.agentName.startsWith("topic:")) && isFlush(transcript?.firstUserText ?? run.task);
     const kind = kindOf(run, flush);
     const link = (runId: string, startedAt: Date) => relative(dirname(file), join(this.dir, runFileRel(runId, startedAt, tz)));
 
@@ -284,7 +284,7 @@ export class HistoryWriter {
 
     const topic = flush ? "memory flush" : safeLine(stripHeader(transcript?.firstUserText ?? run.task), TOPIC_MAX) || "(no message)";
     const tools = transcript?.toolCount ?? 0;
-    const agent = run.agentName === "main" ? kind : `${kind}/${run.agentName}`;
+    const agent = (run.agentName === "main" || run.agentName.startsWith("topic:")) ? kind : `${kind}/${run.agentName}`;
     this.appendDaily(run.startedAt, RUNS_HEADING, `- ${start.time} ${agent} — ${topic} (${tools} tool${tools === 1 ? "" : "s"}, ${run.status}) [${run.runId}](${rel})`);
     return file;
   }

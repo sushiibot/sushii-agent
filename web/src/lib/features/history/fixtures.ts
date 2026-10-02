@@ -25,7 +25,16 @@ export function historyDays(now: number): HistoryDay[] {
 		[0, 1],
 		[2, 4]
 	];
-	return counts.map(([sessions, runs], i) => ({ date: dateAgo(now, i), sessions, runs }));
+	return counts.map(([sessions, runs], i) => ({
+		date: dateAgo(now, i),
+		sessions,
+		runs,
+		cost: {
+			usd: i === 3 ? 0 : 0.18 + runs * 0.04,
+			recordedRuns: i === 3 ? 0 : runs - (i === 1 ? 1 : 0),
+			unpricedRuns: i === 3 ? runs : i === 1 ? 1 : 0
+		}
+	}));
 }
 
 const recapToday = `Read **invoice #1042** from Eastside Auto ($412.60, due on the 14th) and checked it against the quote from August.
@@ -85,6 +94,7 @@ export function historyDay(now: number, date: string): HistoryDayDetail {
 		return {
 			found: true,
 			date,
+			cost: days.find((d) => d.date === date)?.cost,
 			sessions: [
 				{ heading: 'Invoice from Eastside Auto', markdown: recapToday },
 				{ heading: 'Quarterly expenses', markdown: recapExpenses },
@@ -98,6 +108,7 @@ export function historyDay(now: number, date: string): HistoryDayDetail {
 		return {
 			found: true,
 			date,
+			cost: days.find((d) => d.date === date)?.cost,
 			sessions: [{ heading: 'Dependencies and the HOA notes', markdown: recapYesterday }],
 			runs: [
 				{

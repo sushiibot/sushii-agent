@@ -49,6 +49,9 @@ class FakeLink implements ReadRouteLink {
     if (this.fail) throw this.fail;
     return value;
   }
+  runsStop(runId: string) {
+    return this.go("runs/stop", { runId }, { stopped: true });
+  }
   runsList(q: object) {
     return this.go("runs/list", q, { runs: [run()], before: null, truncated: true });
   }
@@ -359,6 +362,12 @@ describe("runs", () => {
 });
 
 describe("history", () => {
+  test("a day exposes its recorded cost summary including missing prices", async () => {
+    const { link, get } = setup();
+    const cost = { usd: 0.42, recordedRuns: 1, unpricedRuns: 1 };
+    link.dayResult = { found: true, date: "2026-09-30", sessions: [], runs: [run()], cost, truncated: false };
+    expect(((await get("/api/history/days/2026-09-30")).body as Extract<HistoryDayResponse, { found: true }>).cost).toEqual(cost);
+  });
   test("days and a day pass through", async () => {
     const { link, get } = setup();
     expect(await get("/api/history/days?before=2026-10-01&limit=5")).toEqual({
@@ -466,4 +475,14 @@ describe("search", () => {
     }
     expect(((await get("/api/search?q=bravo")).body as SearchResponse).hits).toHaveLength(1);
   });
+});
+
+
+test("stopping targets one valid run and retains owner and feature gates", async () => {
+  const h = setup();
+  expect(await h.post(`/api/runs/${CHILD}/stop`, {})).toEqual({ status: 200, body: { stopped: true } });
+  expect(h.link.calls).toEqual([{ method: "runs/stop", q: { runId: CHILD } }]);
+  expect((await h.post("/api/runs/invalid/stop", {})).status).toBe(405);
+  expect((await setup({ features: ["history"] }).post(`/api/runs/${CHILD}/stop`, {})).status).toBe(404);
+  expect((await h.get(`/api/runs/${CHILD}/stop`, { "Sec-Fetch-Site": "cross-site" }, "POST")).status).toBe(403);
 });

@@ -263,3 +263,50 @@ describe('ask card vs approval tray', () => {
 		expect(buttons.indexOf('Deny send_email')).toBeLessThan(buttons.indexOf('Approve send_email'));
 	});
 });
+
+describe('compact inline activity', () => {
+	test('thinking has a small status and no expandable task card', async () => {
+		const { els, text } = await dom(WorkingRow, { turn: { state: 'thinking', steps: [] } });
+		expect(text).toContain('Thinking');
+		expect(els.filter((e) => e.tag === 'details')).toHaveLength(0);
+		expect(els.some((e) => e.attrs.role === 'status')).toBe(true);
+	});
+
+	test('an approval without execution evidence never claims the tool finished', async () => {
+		const { default: ToolRow } = await import('../components/tool-row.svelte');
+		const { els, text } = await dom(ToolRow, {
+			step: { id: 'legacy', tool: 'send_email', label: 'Send email', state: 'ok', input: '' },
+			approval: { tool: 'send_email', outcome: 'approved' },
+			executionUnknown: true
+		});
+		expect(text).toContain('Approved');
+		expect(text).toContain('Execution status unavailable');
+		expect(text).not.toContain('Finished');
+		expect(els.filter((e) => e.tag === 'button')).toHaveLength(0);
+	});
+
+	test('approval shows structured fields, exact input and disabled submitting controls', async () => {
+		const { default: ApprovalInline } = await import('../components/approval-inline.svelte');
+		const { els, text } = await dom(ApprovalInline, {
+			pending: {
+				nonce: 'n1',
+				view: {
+					tool: 'send_email',
+					agentId: 'main',
+					agentName: 'Main',
+					fields: [
+						{ key: 'to', value: 'alex@example.com', kind: 'single', max: 100 },
+						{ key: 'subject', value: 'Updated plan', kind: 'single', max: 100 },
+						{ key: 'body', value: 'Full message', kind: 'body' }
+					]
+				}
+			},
+			submitting: true
+		});
+		expect(text).toContain('Send email');
+		expect(text).toContain('Subject');
+		expect(text).toContain('Exact input');
+		expect(text).toContain('Submitting');
+		expect(els.filter((e) => e.tag === 'button').every((e) => 'disabled' in e.attrs)).toBe(true);
+	});
+});

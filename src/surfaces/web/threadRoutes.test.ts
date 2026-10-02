@@ -138,7 +138,7 @@ test("topic history, replay, approvals and idempotency keys are isolated from Ma
   expect(again.find("reply", "same")?.data.text).toBe("Topic only");
 });
 
-test("messages and controls use the topic origin; archived topics reject messages and reopen", async () => {
+test("messages and controls use the topic origin; archived topics resume on the next message without reporting to Main", async () => {
   const h = setup();
   const { id } = await h.create();
   const base = `/api/threads/${id}`;
@@ -154,8 +154,8 @@ test("messages and controls use the topic origin; archived topics reject message
   await new Promise((r) => setImmediate(r));
   expect(h.controls[0]?.conversationId).toBe(id);
   await h.call(`${base}/close`, {});
-  expect(h.log.page(["proactive"], { limit: 10 })).toHaveLength(1);
-  expect(h.sent.at(-1)?.kind).toBe("context");
+  expect(h.log.page(["proactive"], { limit: 10 })).toHaveLength(0);
+  expect((await (await h.call(base))!.json()).summary.state).toBe("archived");
   expect(
     (
       await h.call(`${base}/chat/messages`, {
@@ -163,8 +163,9 @@ test("messages and controls use the topic origin; archived topics reject message
         text: "later",
       })
     )?.status,
-  ).toBe(409);
-  await h.call(`${base}/reopen`, {});
+  ).toBe(202);
+  await h.threads.channel(id).routes.idle();
+  expect(h.managed.at(-1)?.action).toBe("reopen");
   expect((await (await h.call(base))!.json()).summary.state).toBe("idle");
 });
 
@@ -211,4 +212,55 @@ test("closing work still in progress leaves metadata active", async () => {
   expect(
     (await (await h.call(`/api/threads/${id}`))!.json()).summary.state,
   ).toBe("idle");
+});
+
+test("more than eight persistent threads can be created and resumed", async () => {
+  const h = setup();
+  const ids = await Promise.all(Array.from({ length: 10 }, () => h.create()));
+  expect(new Set(ids.map((t) => t.id)).size).toBe(10);
+  const base = `/api/threads/${ids[0]!.id}`;
+  await h.call(`${base}/close`, {});
+  expect((await h.call(`${base}/reopen`, {}))?.status).toBe(200);
+});
+
+test("seven idle days move a thread into Archived without deleting history", async () => {
+  const h = setup();
+  const { id } = await h.create();
+  h.db.run("UPDATE web_threads SET created_at = ? WHERE id = ?", [
+    Date.now() - 8 * 86400000,
+    id,
+  ]);
+  await h.threads.prune();
+  const detail = await (await h.call(`/api/threads/${id}`))!.json();
+  expect(detail.summary.state).toBe("archived");
+  expect(detail.summary.archived.by).toBe("idle");
+  expect(h.log.page(["proactive"], { limit: 10 })).toHaveLength(0);
+});
+
+test("pending questions keep inactive threads current", async () => {
+  const h = setup();
+  const { id } = await h.create();
+  h.db.run("UPDATE web_threads SET created_at = ? WHERE id = ?", [
+    Date.now() - 8 * 86400000,
+    id,
+  ]);
+  h.threads
+    .channel(id)
+    .log.append(
+      "ask",
+      {
+        key: "waiting",
+        askId: "waiting",
+        question: "Which topic?",
+        choices: [],
+      },
+      "waiting",
+    );
+  await h.threads.prune();
+  const detail = await (await h.call(`/api/threads/${id}`))!.json();
+  expect(detail.summary.state).toBe("needs-you");
+  expect(h.managed.filter((m) => m.action === "close")).toHaveLength(0);
+  await expect(h.call(`/api/threads/${id}/close`, {})).rejects.toThrow(
+    "pending requests",
+  );
 });

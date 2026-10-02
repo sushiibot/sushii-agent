@@ -7,6 +7,7 @@ import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/trans
 import { MAX_OPEN_TURNS, WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
 import type { Timers } from "../../orchestration/workspace/progress.ts";
 import { SurfaceRegistry, type ApprovalView, type InboundMessage } from "../../orchestration/workspace/surface.ts";
+import { historyPage } from "./history.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import type { ChatEnvelope, UploadRef, WebFeature } from "./events.ts";
 import { WebHomeStore } from "./homeStore.ts";
@@ -258,8 +259,8 @@ describe("web adapter progress", () => {
     h.event("t1", { type: "turn_end", aborted: false });
     await h.link.settled();
     expect(h.events.filter((e) => e.type === "tool").map((e) => e.data)).toEqual([
-      { turnId: "t1", name: "bash", summary: "ls" },
-      { turnId: "t1", name: "bash", summary: "ls", ok: true },
+      { turnId: "t1", name: "bash", summary: "ls", id: "t1:0", textOffset: 0 },
+      { turnId: "t1", name: "bash", summary: "ls", ok: true, id: "t1:0", textOffset: 0 },
     ]);
     const final = h.events.find((e) => e.type === "turn_final")!;
     expect(final.seq).toBeNumber();
@@ -537,4 +538,23 @@ describe("web adapter bounds on what the workspace sends", () => {
     await h.adapter.notice(message, { type: "loginUsage" });
     expect(inbound.get(id)!.state).toBe("routed");
   });
+});
+
+
+test("commentary and tool positions survive final delivery, history reload and pruning", async () => {
+  const h = setup();
+  h.event("ordered", { type: "turn_start" });
+  await h.link.settled();
+  h.event("ordered", { type: "text_delta", text: "Checking the config." });
+  h.event("ordered", { type: "tool_start", name: "read", summary: "config.json" });
+  await h.link.settled();
+  h.event("ordered", { type: "tool_end", name: "read", ok: true });
+  h.event("ordered", { type: "text_delta", text: "The config is valid." });
+  await h.link.settled();
+  h.event("ordered", { type: "turn_end", aborted: false });
+  await h.link.settled();
+  await h.adapter.sendReply(null, { kind: "reply", turnId: "ordered", text: "The config is valid.", toolCount: 1 }, { outboxId: "ordered-reply", ledger: { isSent: () => false, markSent: () => {} }, plain: false });
+  h.log.prune(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  const history = historyPage(h.log, { limit: 30 }, { maxBytes: 100_000 });
+  expect(history.items).toMatchObject([{ type: "assistant", text: "The config is valid.", activityText: "Checking the config.The config is valid.", tools: [{ name: "read", textOffset: 20, ok: true }] }]);
 });

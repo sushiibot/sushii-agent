@@ -34,7 +34,7 @@
 	}
 </script>
 
-<svelte:head><title>Chats · sushii</title></svelte:head>
+<svelte:head><title>Threads · sushii</title></svelte:head>
 
 <ChatsScreen
 	remote={list}

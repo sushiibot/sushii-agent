@@ -38,15 +38,13 @@
 		<div class="flex flex-col gap-1">
 			<h2 class="text-lg font-semibold">Start a thread</h2>
 			<p class="text-sm text-muted-foreground">
-				A thread is its own conversation that shares memory with Main.
+				An ongoing conversation for a topic or workstream, with separate context and shared memory.
 				{#if quote}It starts with the selected reply from Main.{:else}Give it a name, then send your
 					first message.{/if}
 			</p>
 		</div>
 		{#if quote}
-			<p
-				class="line-clamp-3 border-l-2 pl-3 text-sm [overflow-wrap:anywhere] text-muted-foreground"
-			>
+			<p class="line-clamp-3 border-l pl-3 text-sm [overflow-wrap:anywhere] text-muted-foreground">
 				{quote}
 			</p>
 		{/if}

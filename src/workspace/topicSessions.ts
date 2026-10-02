@@ -92,7 +92,10 @@ export class TopicSessions {
     await this.changing;
     const id = this.id(origin);
     if (!id) return this.opts.main;
-    if (this.records[id]!.archived) throw new Error("topic is archived");
+    if (this.records[id]!.archived) {
+      this.records[id]!.archived = false;
+      this.save();
+    }
     return this.open(id);
   }
   private open(id: string): Promise<TopicSession> {
@@ -114,7 +117,7 @@ export class TopicSessions {
             principalId: this.opts.principalId,
             origin: { surface: "web", conversationId: id },
             messageId: `topic-brief:${id}`,
-            text: `Topic: ${record.title}\nBrief from Main:\n${record.brief}\nContinue only this topic. Shared workspace files are available; other conversations have separate transcripts.`,
+            text: `Topic: ${record.title}\nInitial context:\n${record.brief}\nThis is an ongoing topic conversation. Continue its existing workstream across visits. Shared workspace files are available; other conversations have separate transcripts.`,
             kind: "context",
             author: { id: "workspace", name: "Main" },
           });
@@ -160,8 +163,6 @@ export class TopicSessions {
     if (q.action === "create") {
       if (existing) return { ok: true };
       if (!q.title) throw new Error("title required");
-      if (Object.values(this.records).filter((t) => !t.archived).length >= 8)
-        throw new Error("active topic limit reached");
       this.records[q.id] = {
         id: q.id,
         title: q.title,
@@ -180,13 +181,7 @@ export class TopicSessions {
       if (!existing) throw new Error("unknown topic");
       const s = await this.open(q.id);
       if (q.action === "close" && !s.isIdle())
-        throw new Error("stop the topic's work before closing it");
-      if (
-        q.action === "reopen" &&
-        existing.archived &&
-        Object.values(this.records).filter((t) => !t.archived).length >= 8
-      )
-        throw new Error("active topic limit reached");
+        throw new Error("Stop the thread's work before archiving it.");
       if (q.action === "close" && !existing.archived) {
         // Keep the transcript and save memory before archiving.
         await s.prepareArchive();

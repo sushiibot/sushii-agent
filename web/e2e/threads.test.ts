@@ -13,17 +13,17 @@ const reply = {
 test('Chats pins Main and groups threads by what they need', async ({ page, context }) => {
 	await fixtureApp(context);
 	await page.goto('/chats');
-	await expect(page.getByRole('heading', { name: 'Chats', level: 1 })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Threads', level: 1 })).toBeVisible();
 	const menu = await openDrawer(page);
-	await expect(menu.getByRole('link', { name: 'Chats' })).toHaveAttribute('aria-current', 'page');
+	await expect(menu.getByRole('link', { name: 'Threads' })).toHaveAttribute('aria-current', 'page');
 	await page.keyboard.press('Escape');
 	await expect(page.getByRole('region', { name: 'Main' })).toContainText(
-		'Threads report back here'
+		'Your general-purpose conversation'
 	);
 	for (const h of ['Needs you', 'Running', 'Recent', 'Archived']) {
 		await expect(page.getByRole('heading', { name: new RegExp(`^${h}`) })).toBeVisible();
 	}
-	await expect(page.getByText('Couch delivery was archived after 7 idle days.')).toBeVisible();
+	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('Couch delivery');
 	await page.getByRole('searchbox').fill('lease');
 	await expect(page.getByRole('heading', { name: '1 matching' })).toBeVisible();
 	await page.getByRole('link', { name: /Lease renewal/ }).click();
@@ -61,19 +61,21 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	await expect(model).toBeHidden();
 });
 
-test('closing a thread archives it and leaves a report in Main', async ({ page, context }) => {
+test('archiving stays in the conversation and keeps the thread visible below current threads', async ({
+	page,
+	context
+}) => {
 	await fixtureApp(context);
+	await page.goto('/chats/oct-trip');
+	await page.getByRole('button', { name: 'Archive', exact: true }).click();
+	const sheet = page.getByRole('dialog', { name: 'Archive thread' });
+	await expect(sheet).not.toContainText('Report to Main');
+	await sheet.getByRole('button', { name: 'Archive thread', exact: true }).click();
+	await expect(sheet).toBeHidden();
+	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 	await page.goto('/chats');
-	await page.getByRole('link', { name: /October trip/ }).click();
-	await page.getByRole('button', { name: 'Close' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Close thread' });
-	await expect(sheet).toContainText('Report to Main');
-	await sheet.getByRole('button', { name: 'Close thread' }).click();
-	await expect(page).toHaveURL(/\/chat$/);
-	await expect(page.getByRole('link', { name: /Thread closed · October trip/ })).toBeVisible();
-	await (await openDrawer(page)).getByRole('link', { name: 'Chats' }).click();
-	await expect(page).toHaveURL(/\/chats$/);
-	await expect(page.getByRole('link', { name: /October trip/ })).toContainText('Reported to Main');
+	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('October trip');
 });
 
 test('a reply in Main starts a thread from a visible button', async ({ page, context }) => {
@@ -89,19 +91,17 @@ test('a reply in Main starts a thread from a visible button', async ({ page, con
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
-test('an idle thread archived by itself is read only until reopened', async ({ page, context }) => {
+test('an automatically archived thread remains directly sendable', async ({ page, context }) => {
 	await fixtureApp(context);
 	await page.goto('/chats/couch');
-	await expect(page.getByText(/after a week with nothing new\. Read only\./)).toBeVisible();
-	await page.getByRole('button', { name: 'Reopen' }).click();
-	await expect(page.getByText(/after a week with nothing new/)).toHaveCount(0);
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Reopen' })).toHaveCount(0);
 });
 
 test('a list that fails to load says so and retries', async ({ page, context }) => {
 	const app = await fixtureApp(context, { fixtures: { threads: 'error' } });
 	await page.goto('/chats');
-	await expect(page.getByRole('alert')).toContainText("Couldn't load your chats.");
+	await expect(page.getByRole('alert')).toContainText("Couldn't load your threads.");
 	app.set('threads', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
@@ -110,7 +110,7 @@ test('a list that fails to load says so and retries', async ({ page, context }) 
 test('with threads off, Chat is one conversation with no Chats list', async ({ page, context }) => {
 	await fixtureApp(context, { override: '' });
 	await page.goto('/chat');
-	await expect((await openDrawer(page)).getByRole('link', { name: 'Chats' })).toHaveCount(0);
+	await expect((await openDrawer(page)).getByRole('link', { name: 'Threads' })).toHaveCount(0);
 	await page.goto('/chats');
 	await expect(page).toHaveURL(/\/chat$/);
 });
@@ -128,8 +128,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.goto('/chats/oct-trip');
 		await expect(page.getByText('Brief from Main')).toBeVisible();
 		await checkScreen(page);
-		await page.getByRole('button', { name: 'Close' }).click();
-		await expect(page.getByRole('dialog', { name: 'Close thread' })).toBeVisible();
+		await page.getByRole('button', { name: 'Archive' }).click();
+		await expect(page.getByRole('dialog', { name: 'Archive thread' })).toBeVisible();
 		await checkScreen(page);
 	});
 }

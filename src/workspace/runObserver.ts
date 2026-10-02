@@ -13,6 +13,7 @@ export interface ObservableSession {
 }
 
 export interface ObserveRunsOptions {
+  conversationId?: string;
   recorder: RunRecorder;
   sessionFile: string;
   /** "main" for the chat session. */
@@ -52,6 +53,7 @@ export function observeRuns(session: ObservableSession, opts: ObserveRunsOptions
     if (r.runId) return r.runId;
     const turnId = opts.turnId?.();
     const runId = opts.recorder.startRun({
+      ...(opts.conversationId ? { conversationId: opts.conversationId } : {}),
       agentName: opts.agentName,
       ...(opts.parentRunId ? { parentRunId: opts.parentRunId } : {}),
       ...(turnId ? { turnId } : {}),

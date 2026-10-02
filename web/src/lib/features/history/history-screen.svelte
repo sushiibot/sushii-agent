@@ -10,6 +10,7 @@
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
 	import type { HistoryDay } from './types';
+	import { costLabel, costDescription } from './cost';
 
 	let {
 		remote,
@@ -98,6 +99,9 @@
 							.filter(Boolean)
 							.join(' · ')
 					: 'Nothing recorded'}
+				{#if day.runs}
+					<span title={costDescription(day.cost)}> · {costLabel(day.cost)}</span>
+				{/if}
 			</span>
 		</span>
 		<ChevronRight class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />

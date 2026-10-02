@@ -44,6 +44,16 @@ export async function horizontalOverflow(page: Page) {
 }
 
 export async function axe(page: Page) {
+	// Scan the settled surface: fade-in opacity temporarily blends text with the scrim.
+	// Infinite activity animations keep running and must never block accessibility checks.
+	await page.evaluate(async () => {
+		await Promise.all(
+			document
+				.getAnimations()
+				.filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+				.map((animation) => animation.finished.catch(() => {}))
+		);
+	});
 	const results = await new AxeBuilder({ page })
 		.options({ rules: { 'target-size': { enabled: true } } })
 		.withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])

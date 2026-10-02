@@ -17,6 +17,8 @@ export interface RunUsage {
 
 /** One line of runs.jsonl. */
 export interface RunRecord {
+  conversationId?: string;
+  repo?: string;
   runId: string;
   parentRunId?: string;
   /** The Main turn a main run answers: the join key to the bot's replies and files. Absent on older records. */
@@ -41,6 +43,8 @@ export function runLogPath(stateDir: string): string {
 }
 
 export interface StartRunInput {
+  conversationId?: string;
+  repo?: string;
   agentName: string;
   parentRunId?: string;
   turnId?: string;
@@ -181,6 +185,8 @@ export class RunLog implements RunRecorder {
       runId: this.newId(),
       ...(input.parentRunId ? { parentRunId: input.parentRunId } : {}),
       ...(input.turnId && TURN_ID_RE.test(input.turnId) ? { turnId: input.turnId } : {}),
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.repo ? { repo: input.repo } : {}),
       agentName: input.agentName,
       task: clip(input.task, TASK_MAX),
       sessionFile: input.sessionFile,

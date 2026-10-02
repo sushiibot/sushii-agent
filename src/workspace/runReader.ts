@@ -246,12 +246,19 @@ export function scanRunIndexSync(path: string): RunIndex {
 
 // --- run records → wire summaries ----------------------------------------------------------------
 
-/** Same rule as the history writer's: main → chat (or flush), main:rotate → rotate, job:<name> → job, a parent → subagent. */
+/** Same rule as the history writer's: main and topic:<id> → chat (or flush), main:rotate → rotate, job:<name> → job, a parent → subagent. */
 export function runKindOf(rec: Pick<RunRecord, "agentName" | "parentRunId" | "task">): RunKind {
-  if (rec.agentName === "main") return str(rec.task) && rec.task.startsWith(FLUSH_MARKER) ? "flush" : "chat";
+  if (rec.agentName === "main" || /^topic:[A-Za-z0-9_-]{1,80}$/.test(rec.agentName)) return str(rec.task) && rec.task.startsWith(FLUSH_MARKER) ? "flush" : "chat";
   if (rec.agentName === "main:rotate") return "rotate";
   if (str(rec.agentName) && rec.agentName.startsWith("job:")) return "job";
   return rec.parentRunId ? "subagent" : "agent";
+}
+
+/** Older topic records predate conversationId; their stable topic agent name identifies the conversation. */
+export function runConversationOf(rec: Pick<RunRecord, "conversationId" | "agentName">): string | undefined {
+  if (str(rec.conversationId) && /^[A-Za-z0-9_-]{1,80}$/.test(rec.conversationId)) return rec.conversationId;
+  const topic = /^topic:([A-Za-z0-9_-]{1,80})$/.exec(rec.agentName);
+  return topic?.[1];
 }
 
 /** `[web:… 2026-…]` and similar: the stamp every chat message starts with. */
@@ -288,6 +295,8 @@ export function toRunSummary(rec: RunRecord): RunSummary | null {
     runId: rec.runId,
     ...(parentRunId ? { parentRunId } : {}),
     ...(str(rec.turnId) && TURN_ID_RE.test(rec.turnId) ? { turnId: rec.turnId } : {}),
+    ...(runConversationOf(rec) ? { conversationId: runConversationOf(rec) } : {}),
+    ...(str(rec.repo) ? { repo: safeText(rec.repo, ID_MAX, { oneLine: true }) } : {}),
     kind,
     agentName: safeText(rec.agentName, ID_MAX, { oneLine: true }),
     ...(jobName && JOB_NAME_RE.test(jobName) ? { jobName } : {}),

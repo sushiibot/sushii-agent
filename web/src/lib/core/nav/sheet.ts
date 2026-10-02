@@ -1,5 +1,6 @@
 import { pushState, replaceState } from '$app/navigation';
 import { page } from '$app/state';
+import { tick } from 'svelte';
 
 // page.state changes only once the browser has popped the entry, so two closes in one frame
 // (Escape and a Close tap) would otherwise go back twice and leave the page.
@@ -51,7 +52,7 @@ export function routedSheet(id: App.SheetId): RoutedSheet {
  * Pops an open sheet's history entry and resolves once it is gone, so a navigation that follows
  * pushes after it. A sheet that is already closed has no entry, so nothing is waited for.
  */
-export function leaveSheet(sheet: RoutedSheet | undefined): Promise<void> {
+export async function leaveSheet(sheet: RoutedSheet | undefined): Promise<void> {
 	if (!sheet?.open) return Promise.resolve();
 	const popped = new Promise<void>((resolve) => {
 		const done = () => {
@@ -64,5 +65,20 @@ export function leaveSheet(sheet: RoutedSheet | undefined): Promise<void> {
 		addEventListener('popstate', done);
 	});
 	sheet.close();
-	return popped;
+	await popped;
+	// Popstate closes the controlled dialog, but Bits keeps its content mounted until its
+	// CSS exit completes. Wait for that same animation before a route can destroy it.
+	await tick();
+	await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+	const exiting = document.querySelectorAll<HTMLElement>(
+		'[data-routed-sheet][data-state="closed"], [data-slot="sheet-content"][data-state="closed"], [data-slot="sheet-overlay"][data-state="closed"]'
+	);
+	const animations = [...exiting].flatMap((element) => element.getAnimations());
+	if (!animations.length) return;
+	let timer: ReturnType<typeof setTimeout>;
+	await Promise.race([
+		Promise.allSettled(animations.map((animation) => animation.finished)),
+		new Promise<void>((resolve) => (timer = setTimeout(resolve, 1000)))
+	]);
+	clearTimeout(timer!);
 }

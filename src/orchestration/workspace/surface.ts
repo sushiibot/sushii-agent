@@ -17,7 +17,7 @@ export interface SurfaceCapabilities {
 }
 
 /** One tool in a turn's progress view. `agentId` is set for a subagent's tool, shown nested under the turn. */
-export type ToolLine = { name: string; summary: string; state: "run" | "ok" | "err"; agentId?: string };
+export type ToolLine = { name: string; summary: string; state: "run" | "ok" | "err"; agentId?: string; id?: string; textOffset?: number };
 
 export interface ProgressView {
   turnId: string;
@@ -32,6 +32,9 @@ export interface ProgressView {
 export type TurnOutcome = "done" | "stopped" | "interrupted";
 
 export interface ProgressFinal {
+  /** Final activity, including text positions, for surfaces that preserve a transcript. */
+  lines?: readonly ToolLine[];
+  activityText?: string;
   outcome: TurnOutcome;
   /** Null for a turn this process no longer tracks (it outlived a restart). */
   summary: { durationMs: number; toolCount: number } | null;

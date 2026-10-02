@@ -36,7 +36,7 @@ const JSON_RPC_METHOD_NOT_FOUND = -32601;
 /** The bot checks every param but the opaque cursors, so the workspace refusing params means a stale cursor. */
 const JSON_RPC_INVALID_PARAMS = -32602;
 
-export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch" | "modelsGet" | "modelsSet" | "modelsSearch">;
+export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsStop" | "runsList" | "runsGet" | "historyDays" | "historyDay" | "historySearch" | "modelsGet" | "modelsSet" | "modelsSearch">;
 
 export interface ReadRouteDeps {
   db: Database;
@@ -134,6 +134,8 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
   }
 
   function listRuns(params: URLSearchParams): Promise<Response> {
+    const conversationId = params.get("conversationId");
+    if (conversationId !== null && !/^[A-Za-z0-9_-]{1,80}$/.test(conversationId)) return Promise.resolve(badRequest("invalid conversation"));
     const before = params.get("before");
     if (before !== null && !RUN_ID_RE.test(before)) return Promise.resolve(badRequest("invalid cursor"));
     const limit = intParam(params.get("limit"), 1, 50);
@@ -146,6 +148,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
         link.runsList({
           ...(before !== null ? { before } : {}),
           ...(limit !== undefined ? { limit } : {}),
+          ...(conversationId !== null ? { conversationId } : {}),
           ...(kinds ? { kinds } : {}),
           ...(statuses ? { statuses } : {}),
         }),
@@ -197,7 +200,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
       const res = await fromWorkspace(() => link.historyDay({ date }));
       if (!res.found) return json({ found: false } satisfies HistoryDayResponse);
       if (res.date !== date) throw new WorkspaceBadResponseError("history/day", undefined);
-      return cappedJson({ found: true, date: res.date, sessions: res.sessions, runs: res.runs, truncated: res.truncated } satisfies HistoryDayResponse);
+      return cappedJson({ found: true, date: res.date, sessions: res.sessions, runs: res.runs, ...(res.cost ? { cost: res.cost } : {}), truncated: res.truncated } satisfies HistoryDayResponse);
     });
   }
 
@@ -313,6 +316,8 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
       const searchPath = path === "/api/search";
       if (!runs && !history && !searchPath) return null;
       if (!has(runs ? "runs" : "history")) return notFound();
+      const stop = /^\/api\/runs\/([^/]+)\/stop$/.exec(path);
+      if (stop && req.method === "POST" && RUN_ID_RE.test(stop[1]!)) return answer("runs/stop", async () => json(await fromWorkspace(() => link.runsStop(stop[1]!))));
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
       const params = new URL(req.url).searchParams;
       if (path === "/api/runs") return listRuns(params);

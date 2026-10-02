@@ -31,6 +31,7 @@ export const RPC_METHODS = {
   // Bot → workspace requests: read-only views of the workspace's run index, transcripts and ~/history.
   runsList: "runs/list",
   runsGet: "runs/get",
+  runsStop: "runs/stop",
   historyDays: "history/days",
   historyDay: "history/day",
   historySearch: "history/search",
@@ -308,6 +309,7 @@ export const runsListParams = z.object({
   limit: z.number().int().min(1).max(RUNS_PAGE_MAX).default(RUNS_PAGE_DEFAULT),
   kinds: z.array(z.enum(RUN_KINDS)).max(RUN_KINDS.length).optional(),
   statuses: z.array(z.enum(RUN_STATUSES)).max(RUN_STATUSES.length).optional(),
+  conversationId: z.string().regex(TOPIC_ID_RE).optional(),
   /** startedAt ≥ since. */
   since: isoInstant.optional(),
   /** startedAt < until. */
@@ -321,10 +323,15 @@ export const runUsage = z.object({
   costUsd: z.number().nonnegative().optional(),
   model: z.string().max(ID_MAX).optional(),
 });
+export const runsStopParams = z.object({ principalId: z.string(), runId });
+export const runsStopResult = z.object({ stopped: z.boolean() });
+
 export const runSummary = z.object({
   runId,
   parentRunId: runId.optional(),
   turnId: z.string().max(ID_MAX).optional(),
+  conversationId: z.string().regex(TOPIC_ID_RE).optional(),
+  repo: z.string().max(ID_MAX).optional(),
   kind: z.enum(RUN_KINDS),
   agentName: z.string().max(ID_MAX),
   jobName: z.string().max(JOB_NAME_MAX).optional(),
@@ -425,9 +432,16 @@ export const historyDaysParams = z.object({
   limit: z.number().int().min(1).max(HISTORY_DAYS_PAGE_MAX).default(HISTORY_DAYS_PAGE_DEFAULT),
 });
 export type HistoryDaysParams = z.infer<typeof historyDaysParams>;
+/** Recorded model cost for distinct runs started that local day; absent prices stay explicit. */
+export const historyCost = z.object({
+  usd: z.number().finite().nonnegative(),
+  recordedRuns: z.number().int().nonnegative(),
+  unpricedRuns: z.number().int().nonnegative(),
+});
+export type HistoryCost = z.infer<typeof historyCost>;
 export const historyDaysResult = z.object({
   days: z
-    .array(z.object({ date: historyDate, runs: z.number().int().nonnegative(), sessions: z.number().int().nonnegative() }))
+    .array(z.object({ date: historyDate, runs: z.number().int().nonnegative(), sessions: z.number().int().nonnegative(), cost: historyCost.optional() }))
     .max(HISTORY_DAYS_PAGE_MAX),
   before: historyDate.nullable(),
 });
@@ -444,6 +458,7 @@ export const historyDayResult = z.discriminatedUnion("found", [
     sessions: z.array(z.object({ heading: z.string().max(300), markdown: z.string().max(HISTORY_RECAP_MAX) })).max(HISTORY_DAY_SESSIONS_MAX),
     /** Runs whose run file is under YYYY-MM/DD-*, i.e. that started that local day. */
     runs: z.array(runSummary).max(HISTORY_DAY_RUNS_MAX),
+    cost: historyCost.optional(),
     /** The day's file was larger than the read cap. */
     truncated: z.boolean(),
   }),
@@ -495,6 +510,8 @@ export type HistorySearchResult = z.infer<typeof historySearchResult>;
 export const runsChangedParams = z.object({
   principalId: z.string().max(ID_MAX),
   runId,
+  conversationId: z.string().regex(TOPIC_ID_RE).optional(),
+  repo: z.string().max(ID_MAX).optional(),
   kind: z.enum(RUN_KINDS),
   status: z.enum(RUN_STATUSES),
   parentRunId: runId.optional(),

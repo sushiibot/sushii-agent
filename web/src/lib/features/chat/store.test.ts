@@ -227,3 +227,62 @@ test('an alert that arrives while the chat is off screen is never reported seen'
 	expect(seen).toEqual([]);
 	store.destroy();
 });
+
+test('a confirmed decision removes pending controls without waiting for an SSE resolution', async () => {
+	let send: ((event: ChatEnvelope) => void) | undefined;
+	let resolveDecision!: (result: { status: 'decided' }) => void;
+	let calls = 0;
+	const hub = createHub({
+		transport: {
+			connect(_after, on, onState) {
+				send = on;
+				setTimeout(() => {
+					onState('open');
+					on({
+						type: 'hello',
+						data: {
+							headSeq: 0,
+							workspace: 'online',
+							openTurns: [],
+							pending: { approvals: [], asks: [] }
+						}
+					});
+				}, 0);
+				return () => {};
+			}
+		}
+	});
+	const store = new ChatStore('main', {
+		hub,
+		outbox: memory(),
+		drafts: memory(),
+		api: {
+			history: async () => ({ ok: true, page: { items: [], before: null } }),
+			decide: () => {
+				calls++;
+				return new Promise((resolve) => {
+					resolveDecision = resolve;
+				});
+			}
+		} as unknown as ChatApi
+	});
+	await store.start();
+	send?.({
+		type: 'approval',
+		seq: 1,
+		data: {
+			nonce: 'n1',
+			view: { tool: 'send_email', agentId: 'main', agentName: 'Main', fields: [] }
+		}
+	});
+	await Bun.sleep(30);
+	const first = store.decide('n1', 'approve');
+	expect(store.trayPhase).toBe('submitting');
+	await store.decide('n1', 'deny');
+	expect(calls).toBe(1);
+	resolveDecision({ status: 'decided' });
+	await first;
+	expect(store.approvals).toHaveLength(0);
+	expect(store.trayPhase).toBe('ready');
+	store.destroy();
+});

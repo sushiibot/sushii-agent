@@ -1,3 +1,4 @@
+import { runsStopParams, RPC_METHODS } from "../orchestration/contracts.ts";
 // First: initialises OTel (when OTEL_EXPORTER_OTLP_ENDPOINT is set) before anything creates spans.
 import { otelSDK } from "../telemetry.ts";
 import { ConnectorManager } from "./connectors.ts";
@@ -266,6 +267,11 @@ async function main(): Promise<void> {
       ...authLogin.handlers(),
       ...commands,
       ...topics.handlers(),
+      [RPC_METHODS.runsStop]: async (p: unknown) => {
+        const q = runsStopParams.parse(p);
+        if (q.principalId !== config.principalId) throw new Error("principal mismatch");
+        return { stopped: subagents.stop(q.runId) };
+      },
     },
     onRegistered: (result) => {
       toolStubs.update(result?.tools ?? []);

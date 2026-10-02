@@ -1,7 +1,7 @@
 import { bubble, openChat, send, textbox } from "../lib/chat.ts";
 import { expect, nonce, stack, test } from "../lib/harness.ts";
 
-test("topic conversations stream independently, survive restart and report back to Main", async ({
+test("topic conversations stream independently, survive restart and resume after archiving", async ({
   page,
   context,
   watch,
@@ -51,22 +51,22 @@ test("topic conversations stream independently, survive restart and report back 
   await textbox(page).fill(`Resumed topic #${resumed}`);
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(bubble(page, `re-${resumed}`)).toContainText("Done.");
-  await page.getByRole("button", { name: "Close", exact: true }).click();
-  const close = page.getByRole("dialog", { name: "Close thread" });
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  const close = page.getByRole("dialog", { name: "Archive thread" });
   await close
-    .getByRole("button", { name: "Close thread", exact: true })
+    .getByRole("button", { name: "Archive thread", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/chat$/);
-  await expect(
-    page.getByText(`Thread closed · Trip ${tag}`, { exact: false }).first(),
-  ).toBeVisible();
-  await page.goto(topicUrl);
-  await expect(
-    page.getByRole("button", { name: "Reopen", exact: true }),
-  ).toBeVisible();
-  await expect(textbox(page)).toHaveCount(0);
-  await page.getByRole("button", { name: "Reopen", exact: true }).click();
+  await expect(page).toHaveURL(topicUrl);
   await expect(textbox(page)).toBeVisible();
+  await page.goto("/chats");
+  await expect(page.getByRole("region", { name: /^Archived/ })).toContainText(
+    `Trip ${tag}`,
+  );
+  await page.goto(topicUrl);
+  const afterArchive = nonce();
+  await textbox(page).fill(`Continuing archived topic #${afterArchive}`);
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(bubble(page, `re-${afterArchive}`)).toContainText("Done.");
   expect(await watch.violations()).toEqual([]);
 });
 

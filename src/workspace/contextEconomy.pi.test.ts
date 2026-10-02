@@ -143,6 +143,8 @@ const lastUserText = (r: Req): string => {
 
 describe("anchored compaction on a real Pi session", () => {
   test("the threshold compaction uses our summary, sent as a cached continuation of the main request", async () => {
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(join(root, "state", "topics.json"), JSON.stringify({ trip: { title: "Trip", archived: true } }));
     const session = await open(config("chatgpt", { compactTokens: 2000, keepRecentTokens: 1 }));
     expect(compactionTrigger(session)).toBe(2000);
     script.push({ text: "Drafted the Osaka plan.", inputTokens: 5000 }, { text: "## Goals\n- Osaka trip (first summary)" });
@@ -152,6 +154,7 @@ describe("anchored compaction on a real Pi session", () => {
     const main = reqs[0]!;
     const summary = reqs[1]!;
     expect(isSummary(main)).toBe(false);
+    expect(JSON.stringify(main.body)).toContain("Thread index (metadata only)");
     expect(isSummary(summary)).toBe(true);
     const mainInput = main.body.input as unknown[];
     expect((summary.body.input as unknown[]).slice(0, mainInput.length)).toEqual(mainInput);
@@ -187,6 +190,8 @@ describe("anchored compaction on a real Pi session", () => {
   }, 20_000);
 
   test("the recap is a cached continuation on OpenRouter too: same messages prefix and session affinity", async () => {
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(join(root, "state", "topics.json"), JSON.stringify({ trip: { title: "Trip", archived: false } }));
     const session = await open(config("openrouter"));
     script.push({ text: "Sure." }, { text: "## Goals\n- recap body" });
     await session.prompt("[discord:1 2026-09-29 13:00 UTC]\nremember the dentist on Friday");
@@ -197,6 +202,7 @@ describe("anchored compaction on a real Pi session", () => {
     const mainMessages = main.body.messages as unknown[];
     expect((rec.body.messages as unknown[]).slice(0, mainMessages.length)).toEqual(mainMessages);
     expect(rec.body.tools).toEqual(main.body.tools);
+    expect(JSON.stringify(main.body.messages)).toContain("Thread index (metadata only)");
     // "x-session-id" on openrouter.ai; the test base URL gets pi-ai's generic affinity header.
     const affinity = (r: Req) => r.headers.get("x-session-id") ?? r.headers.get("x-session-affinity");
     expect(affinity(rec)).toBe(session.sessionId);

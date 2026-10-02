@@ -1,3 +1,4 @@
+import { threadAwareness, threadContextTools } from "./threadContext.ts";
 import { createGitHubPushTool, GITHUB_PUSH_TOOL } from "./githubPush.ts";
 import { CONNECTOR_TOOLS, type ConnectorManager } from "./connectors.ts";
 import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../agentRuntime/piShared.ts";
@@ -166,6 +167,8 @@ export function createPiChatSessionFactory(
   const selector = opts.selector ?? new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
 
   return async ({ sessionFile, ui }) => {
+    const topicTools = opts.origin?.conversationId && opts.origin.conversationId !== "main" ? [] : threadContextTools({ principalId: config.principalId, stateDir: config.stateDir, home: config.home, tz: config.tz, agentDirs: [config.agentDir] });
+    const topicToolNames = topicTools.map((t) => t.name);
     const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
     const economy = economyOf(config);
     const {
@@ -249,6 +252,7 @@ export function createPiChatSessionFactory(
       // Only the factories below: the agent can write ~/.pi and <cwd>/.pi, so discovered extensions would run its code in-process.
       noExtensions: true,
       extensionFactories: [
+        ...(!opts.origin || opts.origin.conversationId === "main" ? [{ name: "sushii-thread-awareness", factory: threadAwareness(config.stateDir) }] : []),
         // First: tool_call stops at the first block, so a guard ahead of it would hide repeats from it.
         { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log, state: loopState }) },
         { name: "sushii-secret-guard", factory: createSecretGuardExtension({ agentDir: config.agentDir, cwd, home: config.home, stateDir: config.stateDir, log: guardLog }) },
@@ -335,13 +339,13 @@ export function createPiChatSessionFactory(
         settingsManager,
         // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
         // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
-        tools: [...WORKSPACE_TOOLS, ...pushTools, ...connectorTools, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
-        customTools: [bashTool, sendFileTool, ...(opts.github ? [createGitHubPushTool(cwd, opts.github)] : [])],
+        tools: [...WORKSPACE_TOOLS, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
+        customTools: [bashTool, sendFileTool, ...topicTools, ...(opts.github ? [createGitHubPushTool(cwd, opts.github)] : [])],
         excludeTools: ["ask_question"],
         sessionManager,
       }));
       sessionRef.current = session;
-      assertExactTools(session, [...WORKSPACE_TOOLS, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.offered() ?? [])]);
+      assertExactTools(session, [...WORKSPACE_TOOLS, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.offered() ?? [])]);
       stubs?.assertOwned(session, "workspace");
       // Pi keeps this binding across session.reload(), so each new session binds once.
       if (ui) await session.bindExtensions({ uiContext: ui, mode: "rpc" });
@@ -365,7 +369,7 @@ export function createPiChatSessionFactory(
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
     sessionOverrides.set(session, { session, overrides });
-    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: opts.agentName ?? "main", defaultModel: config.model, turnId: opts.mainTurnId });
+    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: opts.agentName ?? "main", defaultModel: config.model, turnId: opts.mainTurnId, conversationId: opts.origin?.conversationId ?? "main" });
     observerRef.current = observer;
     runObservers.set(session, observer);
     return { session, sessionFile: file, currentRunId: () => observer.currentRunId() };

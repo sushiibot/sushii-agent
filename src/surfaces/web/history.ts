@@ -29,11 +29,14 @@ export function historyPage(
   const uploadIds = events.flatMap((e) => (e.type === "user" ? (e as StoredEvent<"user">).data.uploadIds : []));
   const known = deps.uploads && uploadIds.length ? deps.uploads.lookup([...new Set(uploadIds)]) : new Map<string, UploadRef>();
 
+  const finals = new Map<string, StoredEvent<"turn_final">["data"]>();
+  const turnIds = events.flatMap((e) => e.type === "reply" || e.type === "proactive" ? [(e as StoredEvent<"reply">).data.turnId].filter((id): id is string => !!id) : []);
+  for (const final of log.list(["turn_final"], { keys: turnIds.flatMap((id) => [`${id}:done`, `${id}:stopped`, `${id}:interrupted`]) }) as StoredEvent<"turn_final">[]) finals.set(final.data.turnId, final.data);
   const items: WebHistoryItem[] = [];
   let bytes = 0;
   let cut = false;
   for (const ev of events) {
-    let item = toItem(ev, { answers, decisions, known });
+    let item = toItem(ev, { answers, decisions, known, finals });
     let size = Buffer.byteLength(JSON.stringify(item)) + 1;
     if (size > deps.maxBytes / 2) {
       item = tooLarge(item);
@@ -64,7 +67,7 @@ export function parseCursor(raw: string): HistoryPosition | null {
 
 function toItem(
   ev: StoredEvent,
-  ctx: { answers: Map<string, string | null>; decisions: Map<string, ApprovalDecision>; known: Map<string, UploadRef> },
+  ctx: { answers: Map<string, string | null>; decisions: Map<string, ApprovalDecision>; known: Map<string, UploadRef>; finals: Map<string, StoredEvent<"turn_final">["data"]> },
 ): WebHistoryItem {
   const id = String(ev.seq);
   const at = new Date(ev.createdAt).toISOString();
@@ -88,7 +91,8 @@ function toItem(
         text: d.text,
         outboxId: d.key,
         ...(d.turnId ? { turnId: d.turnId } : {}),
-        tools: [],
+        ...(d.turnId && ctx.finals.get(d.turnId)?.activityText ? { activityText: ctx.finals.get(d.turnId)!.activityText } : {}),
+        tools: (d.turnId ? ctx.finals.get(d.turnId)?.lines ?? [] : []).map(({ state, ...line }) => ({ ...line, ok: state === "ok" })),
         ...(d.usage ? { usage: d.usage } : {}),
         files: d.files,
       };

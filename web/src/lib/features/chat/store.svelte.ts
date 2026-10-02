@@ -831,7 +831,7 @@ export class ChatStore {
 	}
 
 	async command(command: 'new' | 'compact') {
-		if (command === 'new') addPlaceholder(this.#s, Date.now(), 'Starting a new chat…');
+		if (command === 'new') addPlaceholder(this.#s, Date.now(), 'Resetting context…');
 		if (command === 'compact') addPlaceholder(this.#s, Date.now(), 'Compacting…');
 		this.#commit();
 		try {
@@ -881,6 +881,8 @@ export class ChatStore {
 	}
 
 	async decide(nonce: string, decision: 'approve' | 'deny', location?: LocationReply) {
+		if (this.trayPhase === 'submitting' || !this.#s.approvals.some((a) => a.nonce === nonce))
+			return;
 		this.#s.mine.add(`p:${nonce}`);
 		this.trayPhase = 'submitting';
 		try {
@@ -888,7 +890,9 @@ export class ChatStore {
 				? await (this.#api.location ?? httpChatApi.location!)(nonce, location)
 				: await this.#api.decide(nonce, { decision });
 			if (location) this.showToast(locationOutcome(location));
-			if (r.status === 'expired') {
+			if (r.status === 'decided') {
+				applyEvent(this.#s, { type: 'approval_resolved', data: { nonce, decision } });
+			} else if (r.status === 'expired') {
 				dropApproval(this.#s, nonce, 'timeout');
 				this.showToast('That approval had already expired.');
 			}

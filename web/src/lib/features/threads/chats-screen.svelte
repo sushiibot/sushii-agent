@@ -38,19 +38,14 @@
 		onreload?: () => void;
 	} = $props();
 
-	const DAY = 86_400_000;
-	const threads = $derived(data?.threads ?? []);
+	const threads = $derived(
+		[...(data?.threads ?? [])].sort(
+			(a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity)
+		)
+	);
 	const q = $derived(query.trim().toLowerCase());
 	const active = $derived(threads.filter((t) => t.state !== 'archived'));
 	const archived = $derived(threads.filter((t) => t.state === 'archived'));
-	/** Archived by going idle within the last idle period, so the move doesn't go unnoticed. */
-	const justArchived = $derived(
-		archived.filter(
-			(t) =>
-				t.archived?.by === 'idle' &&
-				now - Date.parse(t.archived.at) < (data?.archiveAfterDays ?? 7) * DAY
-		)
-	);
 
 	const groups: [ThreadState, string][] = [
 		['needs-you', 'Needs you'],
@@ -74,7 +69,6 @@
 			{ label: 'Archived', icon: Archive, count: true, items: archived }
 		];
 	});
-	const names = (list: ThreadSummary[]) => list.map((t) => t.title).join(', ');
 </script>
 
 {#snippet banner()}
@@ -100,28 +94,17 @@
 			</div>
 		{/each}
 	</div>
-	<p role="status" class="sr-only">Loading chats…</p>
+	<p role="status" class="sr-only">Loading threads…</p>
 {/snippet}
 
 {#snippet lead()}
 	{#if data && !q}
 		<section aria-label="Main" class="rounded-xl border bg-card px-1 py-1">
 			<ThreadRow main={data.main} href={mainHref} {now} />
-			<p class="px-3 pb-2 text-meta text-muted-foreground">Threads report back here.</p>
-		</section>
-		{#if justArchived.length}
-			<p
-				role="status"
-				class="flex items-start gap-2.5 rounded-xl border border-dashed px-3 py-2.5 text-sm text-muted-foreground"
-			>
-				<Archive class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-				<span
-					>{names(justArchived)}
-					{justArchived.length === 1 ? 'was' : 'were'} archived after {data.archiveAfterDays} idle days.
-					Archived threads stay searchable and can be reopened.</span
-				>
+			<p class="px-3 pb-2 text-meta text-muted-foreground">
+				Your general-purpose conversation. Return to a thread for its topic.
 			</p>
-		{/if}
+		</section>
 	{/if}
 {/snippet}
 
@@ -132,29 +115,29 @@
 {#snippet after()}
 	{#if data && !q}
 		<p class="px-1 text-meta text-muted-foreground">
-			{active.length} of {data.cap} active threads. Threads idle for {data.archiveAfterDays} days archive
-			themselves.
+			Inactive threads move below into Archived after {data.archiveAfterDays} days. Send a message to
+			resume any thread. History stays available.
 		</p>
 	{/if}
 {/snippet}
 
 <ListScreen
-	title="Chats"
+	title="Threads"
 	{banner}
 	{actions}
 	toast={updateReady ? toast : undefined}
 	bind:search={query}
-	searchLabel="Search chats and threads"
+	searchLabel="Search threads"
 	state={{
 		remote,
 		offline: !online,
-		errorTitle: "Couldn't load your chats.",
+		errorTitle: "Couldn't load your threads.",
 		onretry,
 		skeleton,
 		empty: q
 			? {
-					title: 'No chats match',
-					body: `Nothing in Main or a thread mentions “${query.trim()}”.`
+					title: 'No threads match',
+					body: `No thread mentions “${query.trim()}”.`
 				}
 			: {
 					title: 'No threads yet',

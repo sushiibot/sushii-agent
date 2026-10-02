@@ -71,6 +71,9 @@ export interface UploadRef {
 }
 
 export interface ToolLine {
+	id?: string;
+	/** UTF-16 position in assistant text when this call began. */
+	textOffset?: number;
 	name: string;
 	summary: string;
 	state: 'run' | 'ok' | 'err';
@@ -160,6 +163,8 @@ export interface RunUsage {
 
 /** One run as the workspace host recorded it. Agent-writable: show it as the agent's record. */
 export interface RunSummary {
+	conversationId?: string;
+	repo?: string;
 	runId: string;
 	parentRunId?: string;
 	turnId?: string;
@@ -280,6 +285,8 @@ export interface ChatEventMap {
 		turnId: string;
 		outcome: TurnOutcome;
 		summary: { durationMs: number; toolCount: number } | null;
+		lines?: ToolLine[];
+		activityText?: string;
 	};
 	/** `clientId` is the owner message this notice answers, and settles it, except `messageRejected`,
 	 *  which fails it until a retry. It is never set on `workspaceOffline`, which asks the client to resend. */
@@ -288,7 +295,15 @@ export interface ChatEventMap {
 	snapshot: { turnId: string; view: ProgressView };
 	/** Apply only when `offset` equals the local text length; otherwise wait for a snapshot. */
 	delta: { turnId: string; offset: number; text: string };
-	tool: { turnId: string; name: string; summary: string; ok?: boolean };
+	tool: {
+		turnId: string;
+		name: string;
+		summary: string;
+		ok?: boolean;
+		id?: string;
+		textOffset?: number;
+		agentId?: string;
+	};
 	workspace: { state: WorkspaceState };
 	/** `key` is the workspace outbox id. `text` is the alert as plain text, for a client that can't show it. */
 	alert: { key: string; alert: JobAlert; text: string };
@@ -299,6 +314,8 @@ export interface ChatEventMap {
 	/** Refetch topic metadata and the Chats list; conversation content stays on its own stream. */
 	threads: { id: string };
 	run: {
+		conversationId?: string;
+		repo?: string;
 		runId: string;
 		kind: RunKind;
 		status: RunStatus;
@@ -374,7 +391,15 @@ export type WebHistoryItem =
 			text: string;
 			outboxId?: string;
 			turnId?: string;
-			tools: { name: string; summary: string; ok: boolean }[];
+			activityText?: string;
+			tools: {
+				name: string;
+				summary: string;
+				ok: boolean;
+				id?: string;
+				textOffset?: number;
+				agentId?: string;
+			}[];
 			usage?: ChatUsage;
 			files: UploadRef[];
 	  }
@@ -618,10 +643,18 @@ export interface RunDetailResponse {
 	files: UploadRef[];
 }
 
+/** Recorded model cost, counted once per run; subscription and missing prices are unpriced. */
+export interface HistoryCost {
+	usd: number;
+	recordedRuns: number;
+	unpricedRuns: number;
+}
+
 export interface HistoryDay {
 	date: string;
 	runs: number;
 	sessions: number;
+	cost?: HistoryCost;
 }
 
 /** GET /api/history/days?before=&limit=. */
@@ -641,6 +674,7 @@ export type HistoryDayResponse =
 			sessions: { heading: string; markdown: string }[];
 			/** Runs that started that local day. */
 			runs: RunSummary[];
+			cost?: HistoryCost;
 			/** The day's file was larger than the read cap. */
 			truncated: boolean;
 	  };

@@ -707,11 +707,11 @@ export class PersonalSession {
 
   /** Saves a topic's memory before archiving without replacing its conversation. */
   prepareArchive(): Promise<void> {
-    if (!this.isIdle() || this.opts.context?.busy?.()) return Promise.reject(new Error("stop the topic's work before closing it"));
+    if (!this.isIdle() || this.opts.context?.busy?.()) return Promise.reject(new Error("Stop the thread's work before archiving it."));
     return this.enqueue(async () => {
       const session = this.requireSession();
       if (session.isStreaming || this.run) throw new Error("the topic is still working");
-      const release = this.asks.hold("topic closing");
+      const release = this.asks.hold("thread archiving");
       try {
         await this.flushBeforeNew(session, Date.now() + NEW_BUDGET_MS, NEW_BUDGET_MS);
         if (this.opts.memory) await this.opts.memory.reload(session);
@@ -1245,7 +1245,10 @@ export class PersonalSession {
     if (!run) return;
     for (const ev of mapSessionEvent(event, run.acc)) {
       if (ev.type === "text_delta") this.bufferDelta(run, ev.text);
-      else this.emit(ev);
+      else {
+        if (ev.type === "tool_start") this.flushDelta(run);
+        this.emit(ev);
+      }
     }
   }
 

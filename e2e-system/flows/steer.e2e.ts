@@ -27,7 +27,7 @@ test("a message sent while a reply streams keeps the streamed text, live and aft
   await expect(slowReply).toContainText("slow29", { timeout: 30_000 });
   await expect.poll(() => stack.query("select 1 from web_events where type = 'reply' and data like ?", `%re-${tag}%`)).toHaveLength(1);
   // The slow turn has its reply; the steer's turn is running with no output yet.
-  await expect(page.getByText("Working…")).toBeVisible();
+  await expect(page.locator("[data-typing]")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
   expect(await echoReply.count()).toBe(0);
   await expect(echoReply).toContainText("Echo steered.", { timeout: 40_000 });

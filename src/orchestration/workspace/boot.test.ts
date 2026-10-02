@@ -214,6 +214,24 @@ describe("workspace owner check", () => {
     expect(isOwner(mintWebActor("someone-else@github"))).toBe(false);
   });
 
+  test("web: location accepts the verified gateway owner when the configured identity has mixed case and whitespace", async () => {
+    config.principals = { [P]: { owner: true, identities: { discord: OWNER_DISCORD, web: `  ${OWNER_LOGIN.toUpperCase()}  ` } } };
+    const b = boot("web", [new RecordingAdapter("discord"), new RecordingAdapter("web")]);
+    expect(b.link.isOwner(mintWebActor(OWNER_LOGIN))).toBe(true);
+    expect(b.tools.isOwner(mintWebActor(OWNER_LOGIN))).toBe(true);
+    let nonce = "";
+    const { BrowserLocationRequests } = await import("./location.ts");
+    const location = new BrowserLocationRequests({
+      isOwner: (actor) => b.tools.isOwner(actor),
+      prompt: async (_view, n) => { nonce = n; return { id: n }; },
+      resolved: async () => {},
+    });
+    const result = location.request(CONN, { principalId: P, callId: "location-case", name: "request_current_location", agentId: "main", agentName: "main", args: { reason: "Nearby coffee" } });
+    await Promise.resolve();
+    expect(location.fulfill(nonce, { status: "shared", latitude: 1, longitude: 2, accuracy: 10, timestamp: Date.now() }, mintWebActor(OWNER_LOGIN))).toBe("decided");
+    expect(await result).toMatchObject({ ok: true });
+  });
+
   test("web: a minted owner login that principals.json doesn't map is refused", () => {
     config.principals = { [P]: { owner: true, identities: { discord: OWNER_DISCORD } } };
     expect(isOwner(mintWebActor(OWNER_LOGIN))).toBe(false);

@@ -62,7 +62,7 @@ test("GET /api/runs and /api/runs/:id return the seeded job run, its child and i
 
 test("GET /api/history and /api/search read ~/history and never follow a planted link", async ({ request }) => {
   const days = await get<{ days: { date: string; runs: number; sessions: number }[] }>(request, "/api/history/days?limit=60");
-  expect(days.days).toContainEqual({ date: SEED.date, runs: 1, sessions: 1 });
+  expect(days.days).toContainEqual({ date: SEED.date, runs: 1, sessions: 1, cost: { usd: 0, recordedRuns: 0, unpricedRuns: 1 } });
   const dates = days.days.map((d) => d.date);
   expect(dates).not.toContain("2025-01-03");
   expect(dates).not.toContain("2025-01-04");

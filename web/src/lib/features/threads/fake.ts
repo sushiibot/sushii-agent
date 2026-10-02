@@ -1,4 +1,4 @@
-// Serves the Chats fixtures until the bot runs threads. Changes last until the page reloads.
+// Serves the Threads fixtures until the bot runs threads. Changes last until the page reloads.
 import { fixtureDelay, fixtureScenario, type FixtureScenario } from '../../core/fixtures';
 import type { ThreadsApi } from './api';
 import { chatsData, emptyChatsData, threadDetail } from './fixtures';
@@ -58,8 +58,7 @@ export function createFixtureThreadsApi(
 					summary,
 					brief: { known: [`Started from Main: ${summary.preview}`], open: [], recentFromMain: 0 },
 					writes: [],
-					history: [],
-					closing: { writes: [], line: `${summary.title}: nothing new to report.` }
+					history: []
 				};
 			}
 			details.set(id, detail);
@@ -96,20 +95,17 @@ export function createFixtureThreadsApi(
 						tools: [],
 						files: []
 					}
-				],
-				closing: { writes: [], line: `${title}: started and closed with nothing new.` }
+				]
 			});
 			return summary;
 		},
 		async close(id) {
 			await ready();
-			const detail = details.get(id) ?? threadDetail(Date.now(), id);
 			const t = update(id, {
 				state: 'archived',
-				archived: { at: new Date().toISOString(), by: 'you' },
-				preview: 'Closed. Reported to Main.'
+				archived: { at: new Date().toISOString(), by: 'you' }
 			});
-			return { sessionId: id, title: t.title, line: detail?.closing.line ?? t.preview };
+			return t;
 		},
 		async reopen(id) {
 			await ready();

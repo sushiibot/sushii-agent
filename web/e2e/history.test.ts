@@ -29,6 +29,9 @@ test('the day list groups days by month and opens a day', async ({ page, context
 	await expect(rows(page)).toHaveCount(10);
 	await expect(rows(page).first()).toContainText('Today');
 	await expect(rows(page).first()).toContainText('3 sessions · 9 runs');
+	await expect(rows(page).first()).toContainText('$0.54 cost');
+	await expect(rows(page).nth(1)).toContainText('$0.34 cost · partial');
+	await expect(rows(page).nth(3)).toContainText('Cost unavailable');
 	await page.getByRole('button', { name: 'Show older days' }).click();
 	await expect(rows(page)).toHaveCount(12);
 	await rows(page).first().getByRole('link').click();
@@ -44,6 +47,7 @@ test("a day shows the agent's recaps as safe markdown and that day's runs", asyn
 	await server(context);
 	await page.goto(`/history/${await today(page)}`);
 	await expect(page.getByRole('heading', { name: 'Invoice from Eastside Auto' })).toBeVisible();
+	await expect(page.getByText('$0.54 cost', { exact: true })).toBeVisible();
 	await expect(page.locator('strong', { hasText: 'invoice #1042' })).toBeVisible();
 	const planted = page.getByRole('article').filter({ hasText: 'A planted image' });
 	await expect(planted).toContainText('<b>raw html</b>');

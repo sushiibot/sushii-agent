@@ -58,13 +58,14 @@
 		<Sheet.Overlay class="z-20 bg-scrim supports-backdrop-filter:backdrop-blur-none" />
 		<SheetPrimitive.Content
 			bind:ref={content}
+			data-routed-sheet
 			aria-label={label}
 			onOpenAutoFocus={focusFirst}
 			class={cn(
 				'fixed inset-x-0 bottom-(--kb) z-20 flex max-h-[88%] flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-background pb-(--safe-bottom) text-foreground shadow-[0_-12px_40px_-12px_rgb(0_0_0/0.4)] outline-none kb:pb-0',
-				'duration-(--duration-medium) ease-(--ease-standard) motion-reduce:animate-none data-open:animate-in data-open:slide-in-from-bottom-10 data-closed:animate-out data-closed:slide-out-to-bottom-10',
+				'duration-(--duration-medium) ease-(--ease-standard) motion-reduce:animate-none! data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-10 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-full',
 				desktop &&
-					'@3xl:inset-x-auto @3xl:top-1/2 @3xl:bottom-auto @3xl:left-1/2 @3xl:w-full @3xl:max-w-md @3xl:-translate-x-1/2 @3xl:-translate-y-1/2 @3xl:rounded-3xl @3xl:pb-0'
+					'@3xl:inset-x-auto @3xl:top-1/2 @3xl:bottom-auto @3xl:left-1/2 @3xl:w-full @3xl:max-w-md @3xl:-translate-x-1/2 @3xl:-translate-y-1/2 @3xl:rounded-3xl @3xl:pb-0 @3xl:data-open:slide-in-from-bottom-0 @3xl:data-open:zoom-in-95 @3xl:data-closed:slide-out-to-bottom-0 @3xl:data-closed:zoom-out-95'
 			)}
 		>
 			<span

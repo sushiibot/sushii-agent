@@ -140,12 +140,13 @@ describe("SqliteChatLog", () => {
       log.append("auth", { key: `l${i}`, url: "https://x", instructions: "" }, `l${i}`);
     }
     log.prune(0);
-    expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(5);
+    expect(log.list(["status", "notice", "auth"])).toHaveLength(5);
     advance(365 * 24 * 60 * 60 * 1000);
     log.prune(now());
-    expect(log.list(["status", "notice", "turn_final", "auth"])).toHaveLength(0);
+    expect(log.list(["status", "notice", "auth"])).toHaveLength(0);
     expect(log.list(["user", "reply", "proactive", "approval", "approval_resolved", "ask", "ask_resolved", "session"])).toHaveLength(permanent);
     expect(log.find("reply", "r0")!.data.files).toEqual(files);
+    expect(log.list(["turn_final"])).toHaveLength(20);
   });
 
   test("the database trigger protects exactly the permanent types", () => {

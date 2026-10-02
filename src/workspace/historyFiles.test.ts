@@ -161,7 +161,7 @@ describe("history/days", () => {
     writeFileSync(join(hist, "notes.md"), "not a day");
     writeFileSync(join(hist, "2026-02-30.md"), "not a calendar day");
     const all = historyDaysResult.parse(await historyDays(opts, { principalId: "owner" }));
-    expect(all.days).toEqual([
+    expect(all.days.map(({ cost, ...counts }) => counts)).toEqual([
       { date: "2026-09-29", runs: 1, sessions: 2 },
       { date: "2026-09-28", runs: 2, sessions: 0 },
       { date: "2026-09-27", runs: 0, sessions: 0 },
@@ -177,5 +177,46 @@ describe("history/days", () => {
   test("no history dir yet is an empty list", async () => {
     rmSync(hist, { recursive: true });
     expect(await historyDays(opts, { principalId: "owner" })).toEqual({ days: [], before: null });
+  });
+});
+
+
+describe("History recorded costs", () => {
+  test("counts final parent and delegated usage once, keeps missing prices explicit, and agrees across list/detail", async () => {
+    const parent = ulid(T0);
+    const child = ulid(T0 + 1);
+    const subscription = ulid(T0 + 2);
+    for (const id of [parent, child, subscription]) runFile("2026-09-29", id);
+    const record = (runId: string, costUsd?: number, parentRunId?: string) => ({
+      runId, parentRunId, agentName: parentRunId ? "coder" : "main", task: "work", sessionFile: "x",
+      startedAt: new Date(T0).toISOString(), status: "done", usage: { inputTokens: 100, outputTokens: 20, ...(costUsd === undefined ? {} : { costUsd }) },
+    });
+    // The append-only log has both start and final records for each run. Parent usage excludes child usage.
+    writeFileSync(join(stateDir, "runs.jsonl"), [
+      { ...record(parent), status: "running" }, record(parent, 0.2),
+      { ...record(child, undefined, parent), status: "running" }, record(child, 0.3, parent), record(subscription),
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const expected = { usd: 0.5, recordedRuns: 2, unpricedRuns: 1 };
+    expect((await day("2026-09-29")).cost).toEqual(expected);
+    const list = await historyDays(opts, { principalId: "owner" });
+    expect(list.days[0]!.cost).toEqual(expected);
+  });
+
+  test("recovers costs from old writer headers but never from transcript dollar amounts", async () => {
+    const old = ulid(T0);
+    const missing = ulid(T0 + 1);
+    runFile("2026-09-29", old);
+    runFile("2026-09-29", missing);
+    const path = join(hist, "2026-09", `29-${old}.md`);
+    writeFileSync(path, `# job run ${old}\n\n- **Model:** model/id · 100 in / 20 out · $0.0123\n- **Status:** done\n\n## Transcript\n$99999 invoice\n`);
+    appendFileSync(join(hist, "2026-09", `29-${missing}.md`), "- **Model:** model/id · 100 in / 20 out · $999\n");
+    const expected = { usd: 0.0123, recordedRuns: 1, unpricedRuns: 1 };
+    expect((await day("2026-09-29")).cost).toEqual(expected);
+    expect((await historyDays(opts, { principalId: "owner" })).days[0]!.cost).toEqual(expected);
+  });
+
+  test("does not report a day of unpriced runs as free", async () => {
+    runFile("2026-09-29", ulid(T0));
+    expect((await day("2026-09-29")).cost).toEqual({ usd: 0, recordedRuns: 0, unpricedRuns: 1 });
   });
 });

@@ -387,7 +387,7 @@ test.describe('duplicate keys', () => {
 				];
 			});
 		});
-		await expect(page.locator('#steps li')).toHaveCount(2);
+		await expect(page.locator('#steps [data-tool-call]')).toHaveCount(2);
 		await expect(page.locator('#chat li', { hasText: /^same$/ })).toHaveCount(2);
 		await expect(page.locator('#chat li', { hasText: /^dup$/ })).toHaveCount(2);
 		expect(await page.evaluate(() => (window as unknown as Win).h.errors)).toEqual([]);

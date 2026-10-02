@@ -9,6 +9,7 @@
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
 	import type { HistoryDayDetail } from './types';
+	import { costLabel, costDescription } from './cost';
 
 	let {
 		date,
@@ -73,6 +74,15 @@
 >
 	{#if day}
 		<div class="mx-auto flex max-w-3xl flex-col gap-6 px-4 pt-4 pb-12">
+			{#if day.runs.length || day.cost?.unpricedRuns || day.cost?.recordedRuns}
+				<p class="text-sm text-muted-foreground" title={costDescription(day.cost)}>
+					{costLabel(day.cost)}
+					{#if day.cost?.unpricedRuns}
+						· {day.cost.unpricedRuns}
+						{day.cost.unpricedRuns === 1 ? 'run has' : 'runs have'} no recorded price
+					{/if}
+				</p>
+			{/if}
 			<section aria-labelledby="{uid}-s" class="flex flex-col gap-3">
 				<h2 id="{uid}-s" class="flex flex-col gap-0.5">
 					<span class="text-base font-semibold">Sessions</span>

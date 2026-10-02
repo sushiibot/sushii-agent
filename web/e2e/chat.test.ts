@@ -153,7 +153,7 @@ test('a send shows at once, carries a ULID, and settles on the status event', as
 	await push(page, 'status', { clientId: body.clientId, state: 'accepted' }, 2);
 	await expect(bubble(page, 'Book the car service')).toContainText('Sent');
 	await expect(page.locator('[data-message-id]').filter({ hasText: 'Book' })).toHaveCount(1);
-	await expect(page.getByText('Working…')).toBeVisible();
+	await expect(page.getByText('Thinking…')).toBeVisible();
 
 	await push(page, 'tool', { turnId: 't1', name: 'search_mail', summary: 'Searching mail' });
 	await expect(page.getByText('Searching mail').first()).toBeVisible();
@@ -176,7 +176,7 @@ test('a send shows at once, carries a ULID, and settles on the status event', as
 	);
 	await expect(page.getByText('Booked for Saturday 09:00.')).toBeVisible();
 	await expect(page.getByText('Booked for Saturday.', { exact: true })).toHaveCount(0);
-	await expect(page.getByText('Used 1 tool')).toBeVisible();
+	await expect(page.getByText('Searching mail').first()).toBeVisible();
 	await expect(page.getByRole('status').filter({ hasText: 'Agent replied' })).toBeAttached();
 	await expect.poll(() => posts('/api/chat/seen').at(-1)?.body).toEqual({ seq: 4 });
 });
@@ -399,7 +399,9 @@ test('an approval shows inline Approve/Deny and posts the decision', async ({ pa
 		.toEqual({ decision: 'deny' });
 	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'deny' }, 2);
 	await expect(approve).toBeHidden();
-	await expect(page.getByText('Denied ·')).toBeVisible();
+	await expect(
+		page.locator('[data-tool-call] summary').getByText('Denied', { exact: true })
+	).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible();
 });
 
@@ -411,10 +413,14 @@ test('an approval decided on another device and a timeout both say so', async ({
 	await open(page);
 	await push(page, 'approval', approval('n1'), 1);
 	await push(page, 'approval_resolved', { nonce: 'n1', decision: 'approve' }, 2);
-	await expect(page.getByText('Approved on another device')).toBeVisible();
+	await expect(
+		page.locator('[data-tool-call] summary').getByText('Approved on another device')
+	).toBeVisible();
 	await push(page, 'approval', approval('n2', 'run_shell'), 3);
 	await push(page, 'approval_resolved', { nonce: 'n2', decision: 'timeout' }, 4);
-	await expect(page.getByText('Timed out, denied')).toBeVisible();
+	await expect(
+		page.locator('[data-tool-call] summary').getByText('Expired', { exact: true })
+	).toBeVisible();
 });
 
 test('an ask answers with the chip index and label, and never looks like an approval', async ({
@@ -792,8 +798,8 @@ test('the new-chat and image sheets each close on one back', async ({ page, cont
 	});
 	await open(page);
 	await page.getByRole('button', { name: 'Chat commands' }).click();
-	await page.getByRole('button', { name: /New chat/ }).click();
-	await expect(page.getByRole('dialog', { name: 'Start a new chat' })).toBeVisible();
+	await page.getByRole('button', { name: /Reset context/ }).click();
+	await expect(page.getByRole('dialog', { name: 'Reset conversation context' })).toBeVisible();
 	await page.goBack();
 	await expect(page.getByRole('dialog')).toHaveCount(0);
 	await expect(page).toHaveURL(/\/chat$/);
@@ -814,13 +820,13 @@ test('the commands sheet closes on back and leaves Main in place', async ({ page
 	await expect(page.getByRole('dialog')).toHaveCount(0);
 	await expect(page).toHaveURL(/\/chat$/);
 	await page.getByRole('button', { name: 'Chat commands' }).click();
-	await page.getByRole('button', { name: /New chat/ }).click();
-	await page.getByRole('button', { name: 'Start new chat' }).click();
+	await page.getByRole('button', { name: /Reset context/ }).click();
+	await page.getByRole('button', { name: 'Reset context' }).click();
 	await expect.poll(() => posts('/api/chat/command').at(0)?.body).toEqual({ command: 'new' });
-	await expect(page.getByText('Starting a new chat…')).toBeVisible();
+	await expect(page.getByText('Resetting context…')).toBeVisible();
 	await push(page, 'session', { kind: 'new' }, 1);
-	await expect(page.getByText('New chat', { exact: true })).toBeVisible();
-	await expect(page.getByText('Starting a new chat…')).toBeHidden();
+	await expect(page.getByText('Context reset', { exact: true })).toBeVisible();
+	await expect(page.getByText('Resetting context…')).toBeHidden();
 });
 
 test('a forbidden stream says the device is not the owner', async ({ page, context }) => {
@@ -1228,7 +1234,7 @@ test('an approval and an ask waiting in the bot log show from the first frame', 
 	await expect(page.getByRole('button', { name: 'Tue' })).toBeVisible();
 });
 
-test('agent text renders as markdown while it streams, and finishing moves and re-mounts nothing', async ({
+test('streamed markdown stays mounted and content stays still when typing ends', async ({
 	page,
 	context
 }) => {
@@ -1277,7 +1283,9 @@ test('agent text renders as markdown while it streams, and finishing moves and r
 	await expect(reply.getByRole('button', { name: 'Copy reply' })).toBeVisible();
 	const after = await measure();
 	expect(after.connected.every(Boolean)).toBe(true);
-	expect(after.rects).toEqual(before.rects);
+	expect(after.rects.slice(0, -1)).toEqual(before.rects.slice(0, -1));
+	// Removing the small typing indicator moves only the action row.
+	expect(Math.abs(after.rects.at(-1)![0] - before.rects.at(-1)![0])).toBeLessThanOrEqual(40);
 });
 
 const XSS_TEXT = [
@@ -1378,7 +1386,7 @@ test('script payloads in replies, tool output and file names stay inert under Tr
 	await expect(page.getByText('"><img src=x onerror="window.__pwned=7">.html')).toBeVisible();
 });
 
-test('only the bot approval log draws the shield line; agent text that claims one does not', async ({
+test('only the bot approval log draws the decision record; agent text that claims one does not', async ({
 	page,
 	context
 }) => {
@@ -1404,9 +1412,9 @@ test('only the bot approval log draws the shield line; agent text that claims on
 	});
 	await open(page);
 	await expect(page.getByText('Approved ·', { exact: false }).first()).toBeVisible();
-	await expect(page.locator('[data-approval]')).toHaveCount(1);
+	await expect(page.locator('[data-approval-record]')).toHaveCount(1);
 	await expect(
-		page.locator('[data-message-id]').filter({ hasText: '🛡️' }).locator('[data-approval]')
+		page.locator('[data-message-id]').filter({ hasText: '🛡️' }).locator('[data-approval-record]')
 	).toHaveCount(0);
 });
 
@@ -1741,11 +1749,11 @@ test('location only reads the user browser after explicit share and sends one co
 	).toBe(0);
 	await page.getByRole('button', { name: 'Approve request_current_location' }).click();
 	await expect
-		.poll(() => posts('/api/chat/approvals/location-nonce').at(0)?.body)
-		.toEqual({ decision: 'approve' });
+		.poll(() => posts('/api/chat/location/location-nonce').at(0)?.body)
+		.toMatchObject({ status: 'shared', latitude: 34.123456, longitude: -118.654321 });
 	expect(
 		await page.evaluate(() => (window as unknown as { locationCalls: number }).locationCalls)
-	).toBe(0);
+	).toBe(1);
 });
 
 test('location cancellation ignores a late browser fix', async ({ page, context }) => {
@@ -1770,3 +1778,67 @@ test('location cancellation ignores a late browser fix', async ({ page, context 
 		.poll(() => posts('/api/chat/approvals/location-cancel').at(0)?.body)
 		.toEqual({ decision: 'deny' });
 });
+
+for (const width of [412, 1280]) {
+	test(`inline activity and approvals stay compact at ${width}px`, async ({ page, context }) => {
+		await chatServer(context);
+		await page.setViewportSize({ width, height: width === 412 ? 915 : 900 });
+		await open(page);
+		await push(page, 'snapshot', {
+			turnId: 'compact',
+			view: { turnId: 'compact', startedAt: Date.now(), text: '', lines: [], toolCount: 0 }
+		});
+		await expect(page.locator('[data-typing]')).toBeVisible();
+		await expect(page.locator('[data-typing]')).not.toContainText('Used');
+		await page.screenshot({ path: `/tmp/chat-typing-${width}.png` });
+		await push(page, 'delta', {
+			turnId: 'compact',
+			offset: 0,
+			text: 'I found the message. Here is the reply to review.'
+		});
+		await push(page, 'tool', {
+			turnId: 'compact',
+			id: 'send-call',
+			name: 'send_email',
+			summary: 'Send reply to Alex',
+			textOffset: 49
+		});
+		await push(
+			page,
+			'approval',
+			{
+				nonce: 'compact-approval',
+				view: {
+					tool: 'send_email',
+					agentId: 'main',
+					agentName: 'Main',
+					fields: [
+						{ key: 'to', value: 'Alex <alex@example.com>', kind: 'single', max: 100 },
+						{ key: 'subject', value: 'Updated plan for Friday', kind: 'single', max: 100 },
+						{
+							key: 'body',
+							value:
+								'Hi Alex,\nThe plan is ready. I will send the remaining details tomorrow.\nThanks!',
+							kind: 'body'
+						}
+					]
+				}
+			},
+			1
+		);
+		const request = page.locator('[data-surface="approval"]');
+		await expect(request).toHaveCount(1);
+		await expect(request).toContainText('Send email');
+		await expect(request).toContainText('Subject');
+		expect((await request.boundingBox())!.height).toBeLessThan(320);
+		await page.screenshot({ path: `/tmp/chat-approval-pending-${width}.png` });
+		await page.getByRole('button', { name: 'Approve send_email' }).click();
+		await expect(request).toHaveCount(0);
+		const call = page.locator('[data-tool-call="send-call"]');
+		await expect(call).toContainText('Running');
+		await expect(call.locator('summary')).not.toContainText('Approved');
+		await call.locator('summary').click();
+		await expect(call).toContainText('Approved');
+		await page.screenshot({ path: `/tmp/chat-approval-resolved-${width}.png` });
+	});
+}

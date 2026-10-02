@@ -17,6 +17,7 @@
 	import InstallHint from '$lib/ui/pwa/install-hint.svelte';
 	import UpdateToast from '$lib/ui/pwa/update-toast.svelte';
 	import { Button } from '$lib/ui/button';
+	import type { LocationReply } from './location';
 	import type { PendingApproval } from './types';
 	import Composer from './components/composer.svelte';
 	import ModelSheet from './components/model-sheet.svelte';
@@ -32,6 +33,8 @@
 		placeholder,
 		subtitle: subtitleOverride,
 		headerActions,
+		backgroundActivity,
+		delegatedActivity,
 		readOnly,
 		history = 'ready',
 		hasOlder = false,
@@ -40,6 +43,7 @@
 		running = false,
 		stopping = false,
 		approvals = [],
+		approvalSubmitting = false,
 		draft = '',
 		photos = [],
 		quotaFull = false,
@@ -102,6 +106,8 @@
 		subtitle?: Snippet;
 		/** Header buttons before the command menu. */
 		headerActions?: Snippet;
+		backgroundActivity?: Snippet;
+		delegatedActivity?: Snippet<[string]>;
 		/** Shown instead of the composer, for a conversation that can't take messages. */
 		readOnly?: Snippet;
 		history?: 'loading' | 'ready' | 'error';
@@ -112,6 +118,7 @@
 		stopping?: boolean;
 		/** Pending approvals for inline rendering. */
 		approvals?: PendingApproval[];
+		approvalSubmitting?: boolean;
 		draft?: string;
 		photos?: PhotoDraft[];
 		quotaFull?: boolean;
@@ -166,7 +173,7 @@
 		onretrysend?: (messageId: string) => void;
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
-		onapprove?: (nonce: string) => void;
+		onapprove?: (nonce: string, location?: LocationReply) => void;
 		ondeny?: (nonce: string) => void;
 		oninstall?: () => Promise<'accepted' | 'dismissed' | 'failed'>;
 		onreload?: () => void;
@@ -318,10 +325,10 @@
 		{
 			id: 'new' as const,
 			icon: MessageSquarePlus,
-			label: 'New chat',
+			label: 'Reset context',
 			note: commandsOffline
-				? "Can't start a new chat while the agent is offline."
-				: 'Archive this conversation and start fresh. The agent keeps its memory.',
+				? "Can't reset context while the agent is offline."
+				: 'Reset the active context in this conversation. History and memory stay available.',
 			disabled: commandsOffline
 		},
 		{
@@ -359,7 +366,7 @@
 
 	const sheetLabels: Record<ChatSheet, string> = {
 		commands: 'Chat commands',
-		new: 'Start a new chat',
+		new: 'Reset conversation context',
 		viewer: 'Image',
 		model: 'Model and context'
 	};
@@ -400,15 +407,15 @@
 	{:else if shownSheet === 'new'}
 		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
 			<div class="flex flex-col gap-1">
-				<h2 class="text-lg font-semibold">Start a new chat?</h2>
+				<h2 class="text-lg font-semibold">Reset conversation context?</h2>
 				<p class="text-sm text-muted-foreground">
-					The agent keeps its memory; this conversation is archived. Starting can take up to 4
-					minutes.
+					This conversation keeps its history and memory. The agent starts with fresh context, which
+					can take up to 4 minutes.
 				</p>
 			</div>
 			<div class="flex flex-col gap-2">
 				<Button size="lg" disabled={commandsOffline} onclick={() => runCommand('new')}
-					><MessageSquarePlus />Start new chat</Button
+					><MessageSquarePlus />Reset context</Button
 				>
 				<Button size="lg" variant="ghost" onclick={closeSheet}>Cancel</Button>
 			</div>
@@ -477,6 +484,7 @@
 {/snippet}
 
 {#snippet footer()}
+	{#if backgroundActivity}{@render backgroundActivity()}{/if}
 	{#if newMessages}
 		<div class="pointer-events-none absolute inset-x-0 bottom-full flex justify-center pb-3">
 			<Button
@@ -589,6 +597,8 @@
 				onshare={canShare ? shareMessage : undefined}
 				{copied}
 				{approvals}
+				{approvalSubmitting}
+				{delegatedActivity}
 				{onapprove}
 				{ondeny}
 			/>

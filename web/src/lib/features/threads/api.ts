@@ -1,6 +1,6 @@
 import { HttpError } from '$lib/core/http';
 import { enc, featureHttp } from '$lib/core/feature-http';
-import type { ChatsData, ThreadDetail, ThreadReport, ThreadSummary } from './types';
+import type { ChatsData, ThreadDetail, ThreadSummary } from './types';
 
 export interface ThreadsApi {
 	/** Main, then every thread, archived ones included. */
@@ -9,8 +9,8 @@ export interface ThreadsApi {
 	get(id: string): Promise<ThreadDetail | null>;
 	/** Opens a thread from a Main message, with the selected reply as its brief. */
 	branch(from: { messageId: string; title: string }): Promise<ThreadSummary>;
-	/** Archives the thread and posts its one-line report to Main. */
-	close(id: string): Promise<ThreadReport>;
+	/** Moves the thread into Archived while keeping its history resumable. */
+	close(id: string): Promise<ThreadSummary>;
 	reopen(id: string): Promise<ThreadSummary>;
 }
 

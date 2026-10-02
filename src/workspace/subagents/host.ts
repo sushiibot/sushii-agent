@@ -166,6 +166,13 @@ export class SubagentHost {
   private readonly slots: ChildSlots;
   private readonly spawns = new WeakMap<ParentSnapshot, Spawn>();
   private readonly defsBySpawn = new Map<string, AgentDef>();
+  private readonly cancellations = new Map<string, AbortController>();
+  stop(runId: string): boolean {
+    const controller = this.cancellations.get(runId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
   private readonly activeFiles = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly pendingOrigins = new Map<Promise<unknown>, ChatOrigin | undefined>();
@@ -343,7 +350,7 @@ export class SubagentHost {
     let runId: string;
     const startedAt = new Date();
     try {
-      runId = this.opts.runs.startRun({ agentName: def.name, parentRunId, task, sessionFile, startedAt });
+      runId = this.opts.runs.startRun({ agentName: def.name, parentRunId, task, sessionFile, startedAt, turnId: call.parent.currentTurn?.()?.turnId, conversationId: call.parent.currentTurn?.()?.origin?.surface === "web" ? call.parent.currentTurn?.()?.origin?.conversationId : this.opts.runs.getRun(parentRunId)?.conversationId ?? "main", ...(args.repo ? { repo: args.repo } : {}) });
     } catch (err) {
       release();
       if (worktree) log.warn({ worktree: worktree.path }, "subagent run not recorded; its new worktree is left in place");
@@ -381,7 +388,10 @@ export class SubagentHost {
     // Nested children run inside their parent's slot: taking another could deadlock a full pool of parents.
     const kind: SlotKind | null = depth > 1 ? null : def.writer ? "writer" : "reader";
     const queued = kind !== null && this.slots.running(kind) >= this.limits[kind === "writer" ? "maxWriters" : "maxReaders"];
-    const run = this.runSpawn(spawnKey, snapshot, spawn, task, kind, background ? undefined : call.signal);
+    const cancellation = new AbortController();
+    this.cancellations.set(spawn.runId, cancellation);
+    const childSignal = !background && call.signal ? AbortSignal.any([call.signal, cancellation.signal]) : cancellation.signal;
+    const run = this.runSpawn(spawnKey, snapshot, spawn, task, kind, childSignal).finally(() => this.cancellations.delete(spawn.runId));
     if (!background) {
       const outcome = await run;
       return outcome;
@@ -418,6 +428,7 @@ export class SubagentHost {
       if (this.disposed) throw new Error("the workspace is shutting down");
       if (spawn.capHit) throw new Error("timed out waiting for a free subagent slot");
       spawn.price = (await this.priceOf(spawn.def.model ?? this.opts.config.model)) ?? this.limits.fallbackPrice;
+      if (signal?.aborted) throw new DOMException("Stopped by owner", "AbortError");
       const id = this.manager.spawn(snapshot, spawnKey, task, {
         description: spawn.def.name,
         maxTurns: spawn.def.maxTurns ?? this.limits.maxTurns,
@@ -757,6 +768,10 @@ export class SubagentHost {
         stubs?.release();
       }
     };
+    if (this.cancellations.get(spawn.runId)?.signal.aborted) {
+      session.dispose();
+      throw new DOMException("Stopped by owner", "AbortError");
+    }
     spawn.abortChild = () => void session.abort();
     if (spawn.capHit) spawn.abortChild();
     spawn.started = true;

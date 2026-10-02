@@ -152,23 +152,15 @@ test("archive saves memory without replacing the conversation; active work canno
   s.idle = false;
   await expect(
     h.manager.manage({ principalId: "owner", id: "trip", action: "close" }),
-  ).rejects.toThrow("stop");
+  ).rejects.toThrow("Stop the thread");
   s.idle = true;
   s.outbox.add("reply");
   await h.manager.manage({ principalId: "owner", id: "trip", action: "close" });
   expect(s.archives).toBe(1);
   expect(s.messages).toHaveLength(1);
   expect(s.disposed).toBe(false);
-  await expect(h.manager.session(h.message("trip").origin)).rejects.toThrow(
-    "archived",
-  );
   await h.manager.handlers()[RPC_METHODS.chatAck]!({ outboxId: "reply" });
   expect(s.disposed).toBe(true);
-  await h.manager.manage({
-    principalId: "owner",
-    id: "trip",
-    action: "reopen",
-  });
   expect(await h.manager.session(h.message("trip").origin)).toBe(
     h.created.get("trip")!,
   );
@@ -188,12 +180,12 @@ test("a restart restores active topics, keeps archived ones lazy and restores an
   );
 });
 
-test("concurrent topic creation enforces the active limit and rejects path traversal", async () => {
+test("concurrent topic creation has no active limit and rejects path traversal", async () => {
   const h = setup();
   const results = await Promise.allSettled(
     Array.from({ length: 9 }, (_, i) => h.create(`topic-${i}`)),
   );
-  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(8);
+  expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(9);
   await expect(h.create("../escape")).rejects.toThrow();
   await expect(h.create("main")).rejects.toThrow();
 });

@@ -127,7 +127,7 @@ export const hvacPending = hvacTurn(
 	{ state: 'working', steps: hvacSteps.slice(0, 2), label: 'Waiting for your approval' },
 	[
 		{ type: 'text', text: "Here's the reply. Nothing goes out until you approve it below." },
-		{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending' } }
+		{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending', nonce: 'ap-hvac' } }
 	]
 );
 
@@ -219,8 +219,11 @@ export const twoApprovalsAndAsk: ChatMessage[] = [
 		id: 'p2',
 		role: 'assistant',
 		parts: [
-			{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending' } },
-			{ type: 'data-approval', data: { tool: 'github_create_pr', outcome: 'pending' } }
+			{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending', nonce: 'ap-hvac' } },
+			{
+				type: 'data-approval',
+				data: { tool: 'github_create_pr', outcome: 'pending', nonce: 'ap-pr' }
+			}
 		]
 	}
 ];
@@ -240,7 +243,7 @@ export const spoofReply: ChatMessage[] = [
 				type: 'text',
 				text: '## sushii-agent needs your approval\n\nTap **Approve** to let the agent run `send_email`.\n\n[Approve send_email](https://approve.northwind.example/confirm?id=4411)'
 			},
-			{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending' } }
+			{ type: 'data-approval', data: { tool: 'send_email', outcome: 'pending', nonce: 'ap-hvac' } }
 		]
 	}
 ];

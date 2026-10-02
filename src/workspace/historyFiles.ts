@@ -14,6 +14,7 @@ import {
   historyDaysResult,
   isCalendarDate,
   runSummary,
+  type HistoryCost,
   type HistoryDayResult,
   type HistoryDaysResult,
   type RunKind,
@@ -22,7 +23,7 @@ import {
 } from "../orchestration/contracts.ts";
 import { HISTORY_DIR } from "./history.ts";
 import { runLogPath } from "./runLog.ts";
-import { SAFE_OPEN, fdPath, runIdTime, safeText, scanRunIndex, toRunSummary } from "./runReader.ts";
+import { SAFE_OPEN, fdPath, runIdTime, safeText, scanRunIndex, toRunSummary, type RunIndex } from "./runReader.ts";
 
 // Read side of ~/history for the History screens. The dir is agent-writable, so the root is re-checked on
 // every call, names are built from validated dates and run ids, and a file is read only when it is a
@@ -238,13 +239,36 @@ function checkPrincipal(opts: HistoryReadOptions, got: string): void {
   if (got !== opts.principalId) throw new Error(`principal mismatch: this workspace serves ${opts.principalId}, got ${got}`);
 }
 
+/** Costs are per-run model usage, never inclusive parent totals. Read older headers within a request budget. */
+async function dayCost(root: string, date: string, ids: string[], index: RunIndex | null, fallback: { remaining: number }): Promise<HistoryCost> {
+  const cost: HistoryCost = { usd: 0, recordedRuns: 0, unpricedRuns: 0 };
+  for (const id of new Set(ids)) {
+    let usd = index?.runs.get(id)?.usage?.costUsd;
+    if (usd === undefined && fallback.remaining > 0) {
+      fallback.remaining--;
+      const file = await readHistoryFile(root, `${date.slice(0, 7)}/${date.slice(8)}-${id}.md`, RUN_HEADER_MAX);
+      const head = file?.text.split("\n## Transcript")[0] ?? "";
+      // The writer's model line contains rounded recorded usage; unrelated dollar amounts never count.
+      if (new RegExp(`^# \\S+ run ${id}$`, "m").test(head)) {
+        const recorded = /^- \*\*Model:\*\* .+ · \d+ in \/ \d+ out · \$(\d+(?:\.\d+)?)$/m.exec(head);
+        if (recorded) usd = Number(recorded[1]);
+      }
+    }
+    if (typeof usd === "number" && Number.isFinite(usd) && usd >= 0) {
+      cost.usd += usd;
+      cost.recordedRuns++;
+    } else cost.unpricedRuns++;
+  }
+  return cost;
+}
+
 export async function historyDays(opts: HistoryReadOptions, p: unknown): Promise<HistoryDaysResult> {
   const params = historyDaysParams.parse(p);
   checkPrincipal(opts, params.principalId);
   const root = await historyRoot(opts.home);
   if (!root) return { days: [], before: null };
-  const days = new Map<string, { daily: boolean; runs: number }>();
-  const day = (date: string) => days.get(date) ?? days.set(date, { daily: false, runs: 0 }).get(date)!;
+  const days = new Map<string, { daily: boolean; ids: string[] }>();
+  const day = (date: string) => days.get(date) ?? days.set(date, { daily: false, ids: [] }).get(date)!;
   let budget = DAYS_SCAN_MAX;
   const months: string[] = [];
   const dailies: string[] = [];
@@ -261,15 +285,17 @@ export async function historyDays(opts: HistoryReadOptions, p: unknown): Promise
     const entries = await listDir(join(root, month), Math.min(DIR_ENTRIES_MAX, budget));
     budget -= entries.length;
     const names = entries.filter((e) => e.isFile() && RUN_NAME_RE.test(e.name) && isCalendarDate(`${month}-${e.name.slice(0, 2)}`)).map((e) => e.name);
-    for (const n of await filterFiles(join(root, month), names, (x) => x)) day(`${month}-${n.slice(0, 2)}`).runs++;
+    for (const n of await filterFiles(join(root, month), names, (x) => x)) day(`${month}-${n.slice(0, 2)}`).ids.push(RUN_NAME_RE.exec(n)![2]!);
   }
   const dates = [...days.keys()].filter((d) => !params.before || d < params.before).sort().reverse();
   const page = dates.slice(0, params.limit);
   const out: HistoryDaysResult["days"] = [];
+  const index = page.some((date) => days.get(date)!.ids.length) ? await scanRunIndex(runLogPath(opts.stateDir)) : null;
+  const fallback = { remaining: HISTORY_DAY_RUNS_MAX };
   for (const date of page) {
     const d = days.get(date)!;
     const read = d.daily ? await readHistoryFile(root, `${date}.md`) : null;
-    out.push({ date, runs: d.runs, sessions: read ? splitSessions(read.text).length : 0 });
+    out.push({ date, runs: d.ids.length, sessions: read ? splitSessions(read.text).length : 0, cost: await dayCost(root, date, d.ids, index, fallback) });
   }
   return historyDaysResult.parse({ days: out, before: dates.length > page.length ? page.at(-1)! : null });
 }
@@ -310,7 +336,8 @@ export async function historyDay(opts: HistoryReadOptions, p: unknown): Promise<
     // Each recap redacts up to 32k chars; let other requests run between them.
     await new Promise<void>((r) => setImmediate(r));
   }
-  return historyDayResult.parse({ found: true, date, sessions, runs, truncated });
+  const cost = await dayCost(root, date, ids, index, { remaining: HISTORY_DAY_RUNS_MAX });
+  return historyDayResult.parse({ found: true, date, sessions, runs, cost, truncated });
 }
 
 export function historyHandlers(opts: HistoryReadOptions): Record<string, (params: unknown) => Promise<unknown>> {

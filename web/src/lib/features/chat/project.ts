@@ -46,7 +46,7 @@ const stepState = { run: 'running', ok: 'ok', err: 'failed' } as const;
 
 export function toTurn(t: TurnState, stopping: boolean): Turn {
 	const steps = t.lines.map((l: ToolLine, i) => ({
-		id: `${i}`,
+		id: l.id ?? `${i}`,
 		tool: l.name,
 		label: l.summary || l.name,
 		state: stepState[l.state],
@@ -58,7 +58,7 @@ export function toTurn(t: TurnState, stopping: boolean): Turn {
 		case 'working':
 			if (stopping) return { state: 'stopping', steps };
 			if (t.label) return { state: 'working', steps, label: t.label };
-			if (!steps.length) return { state: 'working', steps, label: 'Working…' };
+			if (!steps.length) return { state: 'working', steps, label: 'Thinking…' };
 			return { state: running ? 'working' : 'thinking', steps };
 		case 'done':
 			return { state: 'done', steps, elapsed };
@@ -75,6 +75,26 @@ export function toMessages(
 	opts: { stopping?: boolean; historyGap?: boolean } = {}
 ): ChatMessage[] {
 	const out: ChatMessage[] = [];
+	// Associate each approval with its most recent matching call. Unmatched legacy approvals
+	// keep their own inline row; no historical relationship is invented.
+	const attached = new Map<string, Extract<ChatItem, { kind: 'approval' }>>();
+	const matched = new Set<string>();
+	for (let ai = 0; ai < items.length; ai++) {
+		const approval = items[ai];
+		if (approval.kind !== 'approval') continue;
+		for (let ti = ai - 1; ti >= 0; ti--) {
+			const candidate = items[ti];
+			if (candidate.kind === 'user') break;
+			if (candidate.kind !== 'assistant' || !candidate.turn) continue;
+			const li = candidate.turn.lines.findLastIndex(
+				(l, i) => !l.agentId && l.name === approval.tool && !attached.has(`${candidate.id}:${i}`)
+			);
+			if (li < 0) continue;
+			attached.set(`${candidate.id}:${li}`, approval);
+			matched.add(approval.id);
+			break;
+		}
+	}
 	if (opts.historyGap)
 		out.push({ id: 'history-gap', role: 'assistant', parts: [{ type: 'data-history-gap' }] });
 	for (const item of items) {
@@ -95,9 +115,50 @@ export function toMessages(
 			}
 			case 'assistant': {
 				const parts: MessagePart[] = [];
-				if (item.turn) parts.push({ type: 'data-turn', data: toTurn(item.turn, !!opts.stopping) });
-				// Reply text stays a plain `text` part; the markdown renderer takes it from there.
-				if (item.text) parts.push({ type: 'text', text: item.text });
+				if (item.turn) {
+					const turn = toTurn(item.turn, !!opts.stopping);
+					const lastPosition = Math.max(
+						0,
+						...item.turn.lines.filter((l) => !l.agentId).map((l) => l.textOffset ?? 0)
+					);
+					// The delivered reply contains only the last assistant message. Retain earlier
+					// streamed commentary before its calls; the durable answer remains authoritative.
+					const text =
+						item.activityText && lastPosition > 0
+							? item.activityText.endsWith(item.text)
+								? item.activityText
+								: item.activityText.slice(0, lastPosition) + item.text
+							: item.text;
+					let offset = 0;
+					for (let i = 0; i < turn.steps.length; i++) {
+						if (item.turn.lines[i].agentId) continue;
+						const position = Math.max(
+							offset,
+							Math.min(text.length, item.turn.lines[i].textOffset ?? 0)
+						);
+						if (position > offset) parts.push({ type: 'text', text: text.slice(offset, position) });
+						const approval = attached.get(`${item.id}:${i}`);
+						parts.push({
+							type: 'data-tool',
+							data: {
+								...turn.steps[i],
+								...(approval
+									? {
+											approval: {
+												tool: approval.tool,
+												outcome: approval.outcome,
+												nonce: approval.nonce
+											}
+										}
+									: {})
+							}
+						});
+						offset = position;
+					}
+					if (offset < text.length) parts.push({ type: 'text', text: text.slice(offset) });
+					if (turn.state !== 'done')
+						parts.push({ type: 'data-turn', data: { ...turn, steps: [] } });
+				} else if (item.text) parts.push({ type: 'text', text: item.text });
 				if (item.files.length) {
 					parts.push({ type: 'data-files', data: { files: item.files.map((f) => fileRef(f)) } });
 				}
@@ -106,6 +167,7 @@ export function toMessages(
 					id: item.id,
 					role: 'assistant',
 					sourceId: item.key ?? item.id.replace(/^h:/, ''),
+					turnId: item.turnId,
 					parts,
 					streaming: item.streaming && !!item.text,
 					uploads: item.files
@@ -131,6 +193,7 @@ export function toMessages(
 				});
 				break;
 			case 'approval':
+				if (matched.has(item.id)) break;
 				out.push({
 					id: item.id,
 					role: 'assistant',

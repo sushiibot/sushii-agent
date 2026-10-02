@@ -1,3 +1,4 @@
+import { runsStopParams, runsStopResult } from "../contracts.ts";
 import { connectorsParams, connectorsResult, type ConnectorRequest, type ConnectorsResult } from "../contracts.ts";
 import type { z } from "zod";
 import {
@@ -370,6 +371,10 @@ export class WorkspaceLink {
 
   async connectors(request: ConnectorRequest): Promise<ConnectorsResult> {
     return this.read(RPC_METHODS.connectors, connectorsParams, connectorsResult, { request }, 60_000);
+  }
+
+  async runsStop(runId: string): Promise<{ stopped: boolean }> {
+    return this.read(RPC_METHODS.runsStop, runsStopParams, runsStopResult, { runId }, CONTROL_TIMEOUT_MS);
   }
 
   async topicManage(q: { id: string; action: "create" | "close" | "reopen"; title?: string; brief?: string }): Promise<void> {
@@ -1004,7 +1009,7 @@ export class WorkspaceLink {
   }
 
   private addToolLine(turn: TurnProgress, line: ToolLine): void {
-    turn.lines.push(line);
+    turn.lines.push({ ...line, id: `${turn.turnId}:${turn.toolCount}`, textOffset: turn.text.length });
     turn.toolCount++;
     this.touch(turn);
   }
@@ -1120,7 +1125,7 @@ export class WorkspaceLink {
 
   private queueFinal(turn: TurnProgress, outcome: TurnOutcome): Promise<unknown> {
     return this.queueEdit(turn, (adapter, handle, origin) =>
-      adapter.progressFinalize(origin, handle, { outcome, summary: { durationMs: this.now() - turn.startedAt, toolCount: turn.toolCount } }),
+      adapter.progressFinalize(origin, handle, { outcome, activityText: turn.text, lines: turn.lines.map((line) => ({ ...line })), summary: { durationMs: this.now() - turn.startedAt, toolCount: turn.toolCount } }),
     );
   }
 

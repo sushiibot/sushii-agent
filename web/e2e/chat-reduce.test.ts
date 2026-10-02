@@ -107,10 +107,10 @@ test('a snapshot resyncs text after a gap, and tool events pair start with finis
 		{ type: 'tool', data: { turnId: 't', name: 'read', summary: 'Read 3 files', ok: false } }
 	]);
 	expect(texts(s)).toEqual(['abcdef']);
-	const turn = toMessages(s.items)[0].parts[0];
+	const turn = toMessages(s.items)[0].parts.find((part) => part.type === 'data-tool');
 	expect(turn).toMatchObject({
-		type: 'data-turn',
-		data: { steps: [{ label: 'Read 3 files', state: 'failed' }] }
+		type: 'data-tool',
+		data: { label: 'Read 3 files', state: 'failed' }
 	});
 });
 
@@ -125,7 +125,7 @@ test('status accepted marks the send delivered and shows a Working row', () => {
 	const msgs = toMessages(s.items);
 	expect(msgs).toHaveLength(2);
 	expect(msgs[0]).toMatchObject({ role: 'user', delivery: 'sent' });
-	expect(msgs[1].parts[0]).toMatchObject({ type: 'data-turn', data: { label: 'Working…' } });
+	expect(msgs[1].parts[0]).toMatchObject({ type: 'data-turn', data: { label: 'Thinking…' } });
 	run(s, [{ type: 'tool', data: { turnId: 't', name: 'x', summary: 'Doing x' } }]);
 	expect(toMessages(s.items)).toHaveLength(2);
 });
@@ -149,7 +149,7 @@ test('a reply with no progress before it takes the Working slot, and the turn en
 	]);
 	expect(openTurns(s)).toHaveLength(0);
 	expect(s.items.some((i) => i.id === PENDING_TURN_ID)).toBe(false);
-	expect(labels(s)).not.toContain('Working…');
+	expect(labels(s)).not.toContain('Thinking…');
 	expect(texts(s)).toEqual(['first', 'Done.']);
 
 	addLocalSend(s, { clientId: 'B', text: 'second', attachments: [], at: 'y', delivery: 'sending' });
@@ -710,4 +710,98 @@ test("an alert's Details link is left out unless the job name is a plain job nam
 	run(s, [{ type: 'alert', seq: 1, data: { key: 'o9', alert, text: 't' } }]);
 	const [line] = toMessages(s.items).flatMap((m) => m.parts);
 	expect(line).toEqual({ type: 'data-alert', data: { job: 'x/../../f', kind: 'stuck' } });
+});
+
+test('text and calls keep their order through stream, final reply, snapshot and history', () => {
+	const s = createState();
+	const lines = [
+		{ id: 't:0', name: 'read', summary: 'Read config', state: 'ok' as const, textOffset: 6 },
+		{ id: 't:1', name: 'bash', summary: 'Check config', state: 'ok' as const, textOffset: 13 }
+	];
+	run(s, [
+		{ type: 'delta', data: { turnId: 't', offset: 0, text: 'Before' } },
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 't:0', name: 'read', summary: 'Read config', textOffset: 6 }
+		},
+		{ type: 'delta', data: { turnId: 't', offset: 6, text: 'Between' } },
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 't:1', name: 'bash', summary: 'Check config', textOffset: 13 }
+		},
+		{ type: 'delta', data: { turnId: 't', offset: 13, text: 'After' } }
+	]);
+	const sequence = () =>
+		toMessages(s.items)[0]
+			.parts.filter((p) => p.type !== 'data-turn')
+			.map((p) => (p.type === 'text' ? p.text : p.type === 'data-tool' ? p.data.tool : p.type));
+	expect(sequence()).toEqual(['Before', 'read', 'Between', 'bash', 'After']);
+	run(s, [
+		{ type: 'reply', seq: 1, data: { key: 'reply', turnId: 't', text: 'After', files: [] } },
+		{
+			type: 'turn_final',
+			seq: 2,
+			data: {
+				turnId: 't',
+				outcome: 'done',
+				summary: null,
+				lines,
+				activityText: 'BeforeBetweenAfter'
+			}
+		}
+	]);
+	expect(sequence()).toEqual(['Before', 'read', 'Between', 'bash', 'After']);
+	const restored = createState();
+	mergeHistory(restored, [
+		{
+			type: 'assistant',
+			id: 'reply',
+			at: 'now',
+			turnId: 't',
+			outboxId: 'reply',
+			text: 'After',
+			activityText: 'BeforeBetweenAfter',
+			tools: lines.map(({ state, ...l }) => ({ ...l, ok: state === 'ok' })),
+			files: []
+		}
+	]);
+	expect(toMessages(restored.items)[0].parts).toEqual(toMessages(s.items)[0].parts);
+});
+
+test('an approval attaches to its call and resolves inside the same tool row', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 'call', name: 'send_email', summary: 'Send email', textOffset: 0 }
+		},
+		{ type: 'approval', seq: 1, data: { nonce: 'nonce', view: view('send_email') } }
+	]);
+	expect(toMessages(s.items)).toHaveLength(1);
+	expect(toMessages(s.items)[0].parts[0]).toMatchObject({
+		type: 'data-tool',
+		data: { approval: { nonce: 'nonce', outcome: 'pending' } }
+	});
+	run(s, [{ type: 'approval_resolved', seq: 2, data: { nonce: 'nonce', decision: 'approve' } }]);
+	expect(s.approvals).toHaveLength(0);
+	expect(toMessages(s.items)[0].parts[0]).toMatchObject({
+		type: 'data-tool',
+		data: { state: 'running', approval: { outcome: 'approved-elsewhere' } }
+	});
+});
+
+test('child agent approval stays visible while child tool activity lives on its agent card', () => {
+	const s = createState();
+	run(s, [
+		{
+			type: 'tool',
+			data: { turnId: 't', name: 'send_email', summary: 'Send email', agentId: 'child' }
+		},
+		{ type: 'approval', seq: 1, data: { nonce: 'nonce', view: view('send_email') } }
+	]);
+	expect(
+		toMessages(s.items)
+			.flatMap((m) => m.parts)
+			.filter((part) => part.type === 'data-approval')
+	).toHaveLength(1);
 });

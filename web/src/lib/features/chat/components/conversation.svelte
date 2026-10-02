@@ -5,11 +5,8 @@
 	import Archive from '@lucide/svelte/icons/archive';
 	import BookMarked from '@lucide/svelte/icons/book-marked';
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
-	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import Clock from '@lucide/svelte/icons/clock';
 	import Check from '@lucide/svelte/icons/check';
-	import X from '@lucide/svelte/icons/x';
-	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
@@ -24,17 +21,12 @@
 	import FilesBlock from './files-block.svelte';
 	import Markdown from '../render/markdown.svelte';
 	import WorkingRow from './working-row.svelte';
+	import ToolRow from './tool-row.svelte';
+	import ApprovalInline from './approval-inline.svelte';
+	import type { LocationReply } from '../location';
 	import MessageActions, { type MessageAction } from './message-actions.svelte';
 	import { hasText } from '../render/plain-text';
-	import type {
-		ApprovalOutcome,
-		ChatMessage,
-		Delivery,
-		FileRef,
-		MessagePart,
-		PendingApproval,
-		Turn
-	} from '../types';
+	import type { ChatMessage, Delivery, FileRef, MessagePart, PendingApproval } from '../types';
 
 	let {
 		messages,
@@ -54,6 +46,8 @@
 		onkeephere,
 		copied,
 		approvals = [],
+		approvalSubmitting = false,
+		delegatedActivity,
 		onapprove,
 		ondeny
 	}: {
@@ -77,13 +71,15 @@
 		onstartthread?: (messageId: string) => void;
 		onkeephere?: (messageId: string) => void;
 		/** Approve a pending tool call. */
-		onapprove?: (nonce: string) => void;
+		onapprove?: (nonce: string, location?: LocationReply) => void;
 		/** Deny a pending tool call. */
 		ondeny?: (nonce: string) => void;
 		/** The message just copied, whose Copy shows a check for a moment. */
 		copied?: string;
 		/** Pending approvals for inline rendering of data-approval parts. */
 		approvals?: PendingApproval[];
+		approvalSubmitting?: boolean;
+		delegatedActivity?: Snippet<[string]>;
 	} = $props();
 
 	// The newest finished reply keeps its actions in view; older ones show them on hover or focus.
@@ -121,26 +117,6 @@
 	const uid = $props.id();
 
 	const isTool = (p: MessagePart) => p.type.startsWith('tool-');
-	// Tool parts from SDK-shaped messages collapse into one finished turn row.
-	function toolTurn(parts: MessagePart[]): Turn {
-		return {
-			state: 'done',
-			steps: parts.flatMap((p) =>
-				p.type.startsWith('tool-') && 'toolCallId' in p
-					? [
-							{
-								id: p.toolCallId,
-								tool: p.type.slice(5),
-								label: p.output?.found ?? p.type.slice(5),
-								state: p.state === 'output-denied' ? ('failed' as const) : ('ok' as const),
-								input: JSON.stringify(p.input, null, 2),
-								output: p.output ? JSON.stringify(p.output, null, 2) : undefined
-							}
-						]
-					: []
-			)
-		};
-	}
 
 	const delivery: Record<Delivery, { icon: typeof Check; text: string; tone?: string }> = {
 		sending: { icon: Clock, text: 'Sending' },
@@ -153,21 +129,12 @@
 			tone: 'text-waiting'
 		}
 	};
-	const outcome: Record<ApprovalOutcome, string> = {
-		pending: 'Approval requested',
-		approved: 'Approved',
-		denied: 'Denied',
-		timeout: 'Timed out, denied',
-		cancelled: 'No longer needed',
-		'approved-elsewhere': 'Approved on another device',
-		'denied-elsewhere': 'Denied on another device'
-	};
 </script>
 
 <ol class="flex min-w-0 flex-col gap-4 overflow-x-clip px-4 py-4 [overflow-wrap:anywhere]">
 	{#each messages as message (message.id)}
 		{@const owner = message.role === 'user'}
-		{@const firstTool = message.parts.findIndex(isTool)}
+		{@const lastText = message.parts.findLastIndex((part) => part.type === 'text')}
 		{@const failed = message.delivery === 'failed'}
 		{@const queued = message.delivery === 'queued' || message.delivery === 'queued-agent'}
 		{@const unsent = owner && (failed || queued)}
@@ -185,7 +152,11 @@
 				{#each message.parts as part, i (i)}
 					{#if part.type === 'text' && message.role === 'assistant'}
 						<div data-message-text>
-							<Markdown text={part.text} streaming={message.streaming} files={message.uploads} />
+							<Markdown
+								text={part.text}
+								streaming={message.streaming && i === lastText}
+								files={message.uploads}
+							/>
 						</div>
 					{:else if part.type === 'text'}
 						<p
@@ -213,100 +184,38 @@
 						</p>
 					{:else if part.type === 'data-turn'}
 						<WorkingRow turn={part.data} open={openTurn === message.id} {openStep} />
+					{:else if part.type === 'data-tool'}
+						<ToolRow
+							step={part.data}
+							approval={part.data.approval}
+							pending={approvals.find((a) => a.nonce === part.data.approval?.nonce)}
+							submitting={approvalSubmitting}
+							open={openStep === part.data.id}
+							{onapprove}
+							{ondeny}
+						/>
 					{:else if part.type === 'data-approval'}
 						{@const pendingApproval =
-							part.data.outcome === 'pending' &&
-							part.data.nonce &&
-							approvals?.find((a) => a.nonce === part.data.nonce)}
-						{#if pendingApproval}
-							{@const v = pendingApproval.view}
-							<details
-								open
-								data-approval
-								class="group/approval w-full rounded-xl border-2 border-approval/60 bg-approval-surface px-3 py-2.5 text-sm"
-							>
-								<summary
-									class="flex min-h-12 cursor-pointer list-none items-center gap-3 [&::-webkit-details-marker]:hidden"
-								>
-									<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
-									<span class="flex min-w-0 flex-1 items-center gap-2 font-medium">
-										<code class="font-mono text-code">{v.tool}</code>
-									</span>
-									<ChevronDown
-										class="size-3.5 transition-transform group-open/approval:rotate-180 motion-reduce:transition-none"
-										aria-hidden="true"
-									/>
-								</summary>
-								<div class="flex flex-col gap-2 pt-1">
-									<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-									<dl
-										tabindex="0"
-										aria-label="Exact input"
-										class="flex max-h-40 flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg border bg-background/70 p-2.5"
-									>
-										{#each v.fields as field, fi (fi)}
-											<div class="flex flex-col gap-0.5">
-												<dt class="text-xs [overflow-wrap:anywhere] text-muted-foreground">
-													{field.key}
-												</dt>
-												<dd
-													class={cn(
-														'font-mono text-code leading-relaxed [overflow-wrap:anywhere]',
-														field.kind === 'body' && 'whitespace-pre-wrap'
-													)}
-												>
-													{field.value}
-												</dd>
-											</div>
-										{/each}
-										<div class="flex flex-col gap-0.5 border-t pt-2">
-											<dt class="text-xs text-muted-foreground">Requested by</dt>
-											<dd class="font-mono text-code [overflow-wrap:anywhere]">
-												{v.agentName}
-												<span class="font-sans text-muted-foreground">(self-reported)</span>
-											</dd>
-										</div>
-									</dl>
-									{#if pendingApproval.tainted}
-										<p
-											class="flex items-start gap-2 rounded-lg bg-taint-soft px-2 py-1 text-xs leading-snug"
-										>
-											<TriangleAlert
-												class="mt-px size-3.5 shrink-0 text-taint"
-												aria-hidden="true"
-											/>
-											<span class="min-w-0 [overflow-wrap:anywhere] text-taint"
-												>{pendingApproval.tainted}</span
-											>
-										</p>
-									{/if}
-									<div class="flex gap-3">
-										<Button
-											variant="outline"
-											class="px-5"
-											aria-label="Deny {v.tool}"
-											data-nonce={pendingApproval.nonce}
-											onclick={() => ondeny?.(pendingApproval.nonce)}><X />Deny</Button
-										>
-										<Button
-											class="flex-1"
-											aria-label="Approve {v.tool}"
-											data-nonce={pendingApproval.nonce}
-											onclick={() => onapprove?.(pendingApproval.nonce)}><Check />Approve</Button
-										>
-									</div>
-								</div>
-							</details>
-						{:else}
-							<p data-approval class="flex items-center gap-2 text-sm text-muted-foreground">
-								<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
-								<span class="min-w-0 [overflow-wrap:anywhere]"
-									>{outcome[part.data.outcome]}
-									{part.data.outcome === 'pending' ? ':' : ' ·'}
-									<code class="font-mono text-code text-foreground">{part.data.tool}</code></span
-								>
-							</p>
-						{/if}
+							part.data.outcome === 'pending'
+								? approvals.find((a) => a.nonce === part.data.nonce)
+								: undefined}
+						{#if pendingApproval}<ApprovalInline
+								pending={pendingApproval}
+								submitting={approvalSubmitting}
+								{onapprove}
+								{ondeny}
+							/>
+						{:else}<ToolRow
+								step={{
+									id: part.data.nonce ?? message.id,
+									tool: part.data.tool,
+									label: part.data.tool.replaceAll('_', ' '),
+									state: part.data.outcome.startsWith('approved') ? 'ok' : 'failed',
+									input: ''
+								}}
+								approval={part.data}
+								executionUnknown
+							/>{/if}
 					{:else if part.type === 'data-ask'}
 						<AskCard
 							ask={part.data}
@@ -317,7 +226,7 @@
 						<FilesBlock files={part.data.files} dropped={part.data.dropped} onopen={onopenfile} />
 					{:else if part.type === 'data-divider'}
 						{@const label = {
-							new: 'New chat',
+							new: 'Context reset',
 							rotated: 'Conversation continued',
 							compacted: 'Conversation compacted'
 						}[part.data.kind]}
@@ -482,10 +391,26 @@
 							Saved to memory
 							<code class="truncate font-mono text-tab text-foreground/80">{part.data.file}</code>
 						</p>
-					{:else if isTool(part) && i === firstTool}
-						<WorkingRow turn={toolTurn(message.parts)} open={openTurn === message.id} {openStep} />
+					{:else if isTool(part) && 'toolCallId' in part}
+						<ToolRow
+							step={{
+								id: part.toolCallId,
+								tool: part.type.slice(5),
+								label: part.type.slice(5).replaceAll('_', ' '),
+								state:
+									part.state === 'output-denied'
+										? 'failed'
+										: part.state === 'output-available'
+											? 'ok'
+											: 'running',
+								input: JSON.stringify(part.input, null, 2),
+								output: part.output ? JSON.stringify(part.output, null, 2) : undefined
+							}}
+							open={openStep === part.toolCallId}
+						/>
 					{/if}
 				{/each}
+				{#if message.turnId && delegatedActivity}{@render delegatedActivity(message.turnId)}{/if}
 				{#if message.delivery}
 					{@const d = delivery[message.delivery]}
 					<p class={cn('flex items-center gap-1 text-xs text-muted-foreground', d.tone)}>

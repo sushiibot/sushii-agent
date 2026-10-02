@@ -1,0 +1,191 @@
+<script lang="ts">
+	import Bot from '@lucide/svelte/icons/bot';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+	import { untrack } from 'svelte';
+	import { backgroundWork } from './background.svelte';
+	import { request } from '$lib/core/http';
+	import { features } from '$lib/core/features.svelte';
+	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
+	import { Button } from '$lib/ui/button';
+	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
+	import { duration } from '$lib/ui/format/time';
+	import StepRow from './components/step-row.svelte';
+	import type { RunSummary, RunDetail } from './types';
+
+	let {
+		conversationId = 'main',
+		turnId,
+		compact = false,
+		onrun
+	}: {
+		conversationId?: string;
+		turnId?: string;
+		compact?: boolean;
+		onrun: (id: string) => Promise<void>;
+	} = $props();
+	const work = $derived(backgroundWork(conversationId));
+	const runs = $derived(work.runs);
+	let selected = $state<RunSummary | null>(null);
+	let detail = $state<RunDetail | null>(null);
+	let error = $state<string | null>(null);
+	let stopping = $state(false);
+	let now = $state(Date.now());
+	const sheet = routedSheet('agent-activity');
+	const uid = $props.id();
+	const sheetOpen = $derived(sheet.open && sheet.arg?.startsWith(`${uid}:`) === true);
+	const shown = $derived(
+		runs.filter((r) => (turnId ? r.turnId === turnId : r.status === 'running'))
+	);
+	const enabled = $derived(features.has('runs'));
+	async function refresh() {
+		await work.refresh();
+		if (selected) {
+			try {
+				detail = await work.readActivity(selected.runId);
+				error = null;
+			} catch (e) {
+				error = e instanceof Error ? e.message : 'Could not load agent activity.';
+			}
+		}
+		now = Date.now();
+	}
+	async function inspect(run: RunSummary) {
+		selected = run;
+		detail = null;
+		error = null;
+		sheet.openWith(`${uid}:${run.runId}`);
+		try {
+			detail = await work.readActivity(run.runId);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Could not load agent activity.';
+		}
+	}
+	async function openFullRun(event: MouseEvent) {
+		if (
+			event.defaultPrevented ||
+			event.button !== 0 ||
+			event.metaKey ||
+			event.ctrlKey ||
+			event.shiftKey ||
+			event.altKey
+		)
+			return;
+		const runId = selected?.runId;
+		if (!runId) return;
+		event.preventDefault();
+		await leaveSheet(sheet);
+		await onrun(runId);
+	}
+
+	async function stop() {
+		if (!selected || stopping) return;
+		stopping = true;
+		error = null;
+		try {
+			await request('POST', `/runs/${selected.runId}/stop`);
+			await refresh();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Could not stop this agent.';
+		} finally {
+			stopping = false;
+		}
+	}
+	$effect(() => {
+		const current = work;
+		if (!enabled) return;
+		const off = untrack(() => current.connect());
+		return off;
+	});
+	$effect(() => {
+		if (!sheetOpen) return;
+		const timer = setInterval(() => void refresh(), 3000);
+		return () => clearInterval(timer);
+	});
+</script>
+
+{#if enabled && shown.length}
+	{#if compact}
+		<details class="border-t px-4 text-sm" data-background-work>
+			<summary class="flex min-h-12 cursor-pointer items-center gap-2 text-muted-foreground">
+				<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+				Background work · {shown.length} running
+			</summary>
+			{#each shown as run (run.runId)}
+				<button
+					class="flex min-h-12 w-full items-center gap-2 text-left"
+					onclick={() => void inspect(run)}
+				>
+					<Bot class="size-4 shrink-0" aria-hidden="true" /><span class="min-w-0 flex-1 truncate"
+						>{run.title}</span
+					><ChevronRight class="size-4" aria-hidden="true" />
+				</button>
+			{/each}
+		</details>
+	{:else}
+		<div class="flex flex-col gap-1" data-delegated-agents>
+			{#each shown as run (run.runId)}
+				<button
+					class="flex min-h-12 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm hover:bg-muted/50"
+					onclick={() => void inspect(run)}
+				>
+					<Bot class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+					<span class="flex min-w-0 flex-1 flex-col"
+						><span class="truncate font-medium">{run.title}</span><span
+							class="truncate text-meta text-muted-foreground"
+							>{run.agentName}{run.repo ? ` · ${run.repo}` : ''} · {run.status === 'running'
+								? 'Running'
+								: run.status === 'done'
+									? 'Finished'
+									: run.status} · {duration(
+								Math.max(
+									0,
+									Date.parse(run.endedAt ?? new Date(now).toISOString()) - Date.parse(run.startedAt)
+								)
+							)}</span
+						>{#if work.activity[run.runId]}<span class="truncate text-meta text-muted-foreground"
+								>{work.activity[run.runId]}</span
+							>{/if}</span
+					>
+					<ChevronRight class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+				</button>
+			{/each}
+		</div>
+	{/if}
+{/if}
+
+<RoutedSheet open={sheetOpen} label="Agent activity" onclose={() => sheet.close()}>
+	<div class="flex flex-col gap-3 px-5 pb-5">
+		{#if selected}
+			<h2 class="text-lg font-semibold">{selected.title}</h2>
+			<p class="text-sm text-muted-foreground">
+				{selected.agentName}{selected.repo ? ` · ${selected.repo}` : ''} · {detail?.run.status ??
+					selected.status}
+			</p>
+			{#if error}<p role="alert" class="text-sm text-failed">{error}</p>{/if}
+			{#if detail}
+				<p class="text-meta text-muted-foreground">
+					Recent activity · open full run details for earlier history.
+				</p>
+				<div class="flex max-h-80 flex-col overflow-y-auto">
+					{#each detail.steps.toReversed() as step (step.id)}<StepRow {step} />{/each}
+				</div>
+				{#if detail.run.resultSummary}<p class="text-sm">{detail.run.resultSummary}</p>{/if}
+			{:else if !error}<p role="status" class="text-sm text-muted-foreground">
+					Loading activity…
+				</p>{/if}
+			<div class="flex flex-wrap gap-2">
+				<Button
+					variant="outline"
+					href="/runs/{selected.runId}"
+					onclick={(event) => void openFullRun(event)}>Full run details</Button
+				>
+				{#if (detail?.run.status ?? selected.status) === 'running'}<Button
+						variant="ghost"
+						disabled={stopping}
+						onclick={() => void stop()}>{stopping ? 'Stopping…' : 'Stop agent'}</Button
+					>{/if}
+			</div>
+		{/if}
+	</div>
+</RoutedSheet>

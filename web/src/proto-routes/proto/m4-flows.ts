@@ -1,6 +1,6 @@
-// M4 flows: the Chats list and thread chats, on the threads feature's fixtures.
+// M4 flows: the Threads list and thread chats, on the threads feature's fixtures.
 import { ChatScreen, type ChatMessage } from '$lib/features/chat';
-import { ChatsScreen, ThreadScreen, threadMessages, withReports } from '$lib/features/threads';
+import { ChatsScreen, ThreadScreen, threadMessages } from '$lib/features/threads';
 import * as t from '$lib/features/threads/fixtures';
 import WithBranch from './components/with-branch.svelte';
 import type { Flow, Frame } from './flows';
@@ -10,7 +10,7 @@ const ready = { status: 'ready' } as const;
 const chats = t.chatsData(NOW);
 const tabs = { shell: true, tabBar: true, tab: 'chat', badges: { home: 2 } } as const;
 const detail = { shell: true, tab: 'chat' } as const;
-const back = { href: '/chats', label: 'Back to Chats' };
+const back = { href: '/chats', label: 'Back to Threads' };
 
 const history = (id: string): ChatMessage[] =>
 	t.threadDetail(NOW, id)!.history.flatMap((h): ChatMessage[] =>
@@ -90,7 +90,7 @@ const mainProps = (messages: ChatMessage[], props: Record<string, unknown> = {})
 const chatsFrames: Frame[] = [
 	{
 		id: 'cs-1',
-		label: 'Chats: Main pinned, grouped by what they need',
+		label: 'Threads: Main pinned, grouped by activity',
 		screen: ChatsScreen,
 		props: list(),
 		...tabs,
@@ -187,7 +187,7 @@ const threadFrames: Frame[] = [
 		props: thread(t.THREADS.trip),
 		...detail,
 		next: 'Tap “Shares memory”',
-		hits: { 'shares memory': 'th-4', close: 'cl-1' }
+		hits: { 'shares memory': 'th-4', archive: 'cl-1' }
 	},
 	{
 		id: 'th-4',
@@ -233,25 +233,32 @@ const threadFrames: Frame[] = [
 const closeFrames: Frame[] = [
 	{
 		id: 'cl-1',
-		label: 'What closing keeps and reports',
+		label: 'Archive without ending the conversation',
 		screen: ThreadScreen,
 		props: thread(t.THREADS.trip, { sheet: 'thread-close' }),
 		...detail,
-		next: 'Close thread',
-		hits: { 'close thread': 'cl-2', 'keep open': 'th-3' }
+		next: 'Archive thread',
+		hits: { 'archive thread': 'cl-2', 'keep current': 'th-3' }
 	},
 	{
 		id: 'cl-2',
-		label: 'Main gets a one-line report',
-		screen: ChatScreen,
-		props: mainProps(withReports(t.mainOfferTaken, [t.tripReport(NOW)])),
-		...detail,
-		next: 'Open the report',
-		hits: { 'thread closed': 'cl-3' }
+		label: 'Archived stays visible below current threads',
+		screen: ChatsScreen,
+		props: list({
+			data: {
+				...chats,
+				threads: chats.threads.map((t) =>
+					t.id === archivedTrip().summary.id ? archivedTrip().summary : t
+				)
+			}
+		}),
+		...tabs,
+		next: 'Continue the thread',
+		hits: { 'october trip': 'cl-3' }
 	},
 	{
 		id: 'cl-3',
-		label: 'Closed thread: read only, with Reopen',
+		label: 'Archived thread: send a message to continue',
 		screen: ThreadScreen,
 		props: { ...thread(t.THREADS.trip), detail: archivedTrip() },
 		...detail
@@ -282,9 +289,9 @@ export const m4Flows: Flow[] = [
 	{
 		id: 'chats',
 		code: 'CS',
-		title: 'Chats: Main and threads',
+		title: 'Threads: Main and ongoing topics',
 		intro:
-			'With threads on, the Chat tab becomes Chats. Main is pinned and is where threads report back; threads group by what they need from you, and idle ones archive themselves, with a notice.',
+			'Main is the general-purpose hub. Persistent topic threads group by activity, and inactive ones move into the visible Archived section after seven days. Every thread stays available to resume.',
 		frames: chatsFrames
 	},
 	{
@@ -298,9 +305,9 @@ export const m4Flows: Flow[] = [
 	{
 		id: 'close',
 		code: 'CL',
-		title: 'Close a thread',
+		title: 'Archive and resume a thread',
 		intro:
-			'Closing shows what stays in memory and the one line Main gets. The thread is archived, not deleted, and can be reopened.',
+			'Archiving moves a thread below current conversations while keeping its history and composer available. Sending a message resumes the same thread. Ordinary threads do not report to Main.',
 		frames: closeFrames
 	}
 ];

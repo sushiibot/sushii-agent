@@ -4,14 +4,12 @@
 	import BookMarked from '@lucide/svelte/icons/book-marked';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import { ChatScreen } from '$lib/features/chat';
 	import { Button } from '$lib/ui/button';
 	import DetailScreen from '$lib/ui/screen/detail-screen.svelte';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
-	import { ago } from '$lib/ui/format/time';
 	import type { MemoryWrite, ThreadDetail, ThreadSheet } from './types';
 
 	type ChatProps = ComponentProps<typeof ChatScreen>;
@@ -20,7 +18,6 @@
 		remote,
 		detail,
 		chat,
-		now,
 		back,
 		sheet,
 		busy = false,
@@ -31,7 +28,6 @@
 		onopensheet,
 		onclosesheet,
 		onclose,
-		onreopen,
 		onretry
 	}: {
 		remote: RemoteLike;
@@ -117,7 +113,7 @@
 {#snippet headerActions()}
 	{#if !archived}
 		<Button variant="ghost" size="lg" onclick={() => onopensheet?.('thread-close')}
-			><Archive /><span class="@max-md:sr-only">Close</span></Button
+			><Archive /><span class="@max-md:sr-only">Archive</span></Button
 		>
 	{/if}
 {/snippet}
@@ -128,24 +124,6 @@
 			<Archive class="size-4 shrink-0" aria-hidden="true" />
 			Read only for now: the agent can't take messages in threads yet.
 		</p>
-	{:else if thread?.archived}
-		<div class="flex flex-wrap items-center gap-3 px-4 py-3 text-sm text-muted-foreground">
-			<Archive class="size-4 shrink-0" aria-hidden="true" />
-			<span class="min-w-0 flex-1 basis-48">
-				{#if thread.archived.by === 'idle'}
-					Archived {ago(thread.archived.at, now)} after a week with nothing new. Read only.
-				{:else}
-					Closed {ago(thread.archived.at, now)}. Read only.
-				{/if}
-			</span>
-			<Button variant="outline" disabled={busy} onclick={onreopen}>
-				{#if busy}<LoaderCircle
-						class="animate-spin motion-reduce:animate-none"
-						aria-hidden="true"
-					/>Reopening…{:else}<RotateCcw />Reopen{/if}
-			</Button>
-			{#if error}<p role="alert" class="w-full text-failed">Couldn't reopen. {error}</p>{/if}
-		</div>
 	{/if}
 {/snippet}
 
@@ -166,7 +144,7 @@
 		placeholder="Message in {thread.title}"
 		{subtitle}
 		{headerActions}
-		readOnly={archived || !sendable ? readOnly : undefined}
+		readOnly={!sendable ? readOnly : undefined}
 		back={{ ...back, desktop: true }}
 	/>
 {:else}
@@ -178,7 +156,7 @@
 			isEmpty: detail === null,
 			empty: {
 				title: 'No such thread',
-				body: 'It may have been closed on another device. Your chats are one tap back.'
+				body: 'Return to Threads to choose another conversation.'
 			},
 			errorTitle: "Couldn't load this thread.",
 			onretry,
@@ -191,7 +169,7 @@
 
 <RoutedSheet
 	open={!!threadSheet}
-	label={shown === 'thread-close' ? 'Close thread' : 'Memory shared with Main'}
+	label={shown === 'thread-close' ? 'Archive thread' : 'Memory shared with Main'}
 	onclose={() => onclosesheet?.()}
 >
 	{#if shown === 'thread-memory' && detail}
@@ -201,7 +179,7 @@
 				<p class="text-sm text-muted-foreground">
 					This thread has its own conversation but reads and writes the same memory as Main.
 					{#if thread?.memoryTracking !== false}Its writes are tagged with the thread, so you can
-						check or undo them.{:else}Memory changes stay available after you close the thread.{/if}
+						check or undo them.{:else}Memory changes stay available after you archive the thread.{/if}
 				</p>
 			</div>
 			{#if detail.writes.length}
@@ -220,35 +198,21 @@
 	{:else if shown === 'thread-close' && detail}
 		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
 			<div class="flex flex-col gap-1">
-				<h2 class="text-lg font-semibold">Close {detail.summary.title}?</h2>
+				<h2 class="text-lg font-semibold">Archive {detail.summary.title}?</h2>
 				<p class="text-sm text-muted-foreground">
-					The thread is archived and stays available in Chats. You can reopen it later.
+					Move this thread into the visible Archived section. Its history stays available; send a
+					message whenever you want to continue.
 				</p>
 			</div>
-			{#if detail.closing.writes.length}
-				<section class="flex flex-col gap-2">
-					<h3 class="text-sm font-medium">Kept in memory</h3>
-					{@render writeList(detail.closing.writes)}
-				</section>
-			{/if}
-			<section class="flex flex-col gap-2">
-				<h3 class="text-sm font-medium">Report to Main</h3>
-				<p class="flex items-start gap-2.5 rounded-xl border bg-muted/40 px-3 py-2.5 text-sm">
-					<Archive class="mt-0.5 size-4 shrink-0 text-review" aria-hidden="true" />
-					<span class="[overflow-wrap:anywhere]"
-						><span class="font-medium">{detail.summary.title}:</span> {detail.closing.line}</span
-					>
-				</p>
-			</section>
-			{#if error}<p role="alert" class="text-sm text-failed">Couldn't close it. {error}</p>{/if}
+			{#if error}<p role="alert" class="text-sm text-failed">Couldn't archive it. {error}</p>{/if}
 			<div class="flex flex-col gap-2 pt-1">
 				<Button size="lg" disabled={busy} onclick={onclose}>
 					{#if busy}<LoaderCircle
 							class="animate-spin motion-reduce:animate-none"
 							aria-hidden="true"
-						/>Closing…{:else}<Archive />Close thread{/if}
+						/>Archiving…{:else}<Archive />Archive thread{/if}
 				</Button>
-				<Button size="lg" variant="ghost" onclick={() => onclosesheet?.()}>Keep open</Button>
+				<Button size="lg" variant="ghost" onclick={() => onclosesheet?.()}>Keep current</Button>
 			</div>
 		</div>
 	{/if}

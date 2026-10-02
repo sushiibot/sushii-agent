@@ -35,8 +35,8 @@ export interface MainSummary {
 export interface ChatsData {
 	main: MainSummary;
 	threads: ThreadSummary[];
-	/** Active threads allowed at once; past it the agent asks before opening another. */
-	cap: number;
+	/** Legacy server field; persistent threads have no active-count limit. */
+	cap?: number;
 	/** Idle days before a thread archives itself. */
 	archiveAfterDays: number;
 }
@@ -56,8 +56,8 @@ export interface ThreadDetail {
 	writes: (MemoryWrite & { after?: string })[];
 	/** The conversation as the bot's chat log would serve it. */
 	history: WebHistoryItem[];
-	/** What closing would keep and say, worked out before you confirm. */
-	closing: { writes: MemoryWrite[]; line: string };
+	/** Legacy report preview retained only by older fixtures or clients. */
+	closing?: { writes: MemoryWrite[]; line: string };
 }
 
 /** The sheets a thread chat opens over itself. */

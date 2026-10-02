@@ -18,6 +18,10 @@ export type MessagePart =
 	| { type: 'data-memory-write'; data: MemoryWrite }
 	| { type: 'data-auth'; data: { instructions: string; url: string; https: boolean } }
 	| { type: 'data-turn'; data: Turn }
+	| {
+			type: 'data-tool';
+			data: TurnStep & { approval?: { tool: string; outcome: ApprovalOutcome; nonce?: string } };
+	  }
 	| { type: 'data-approval'; data: { tool: string; outcome: ApprovalOutcome; nonce?: string } }
 	| { type: 'data-ask'; data: AskView }
 	| { type: 'data-files'; data: { files: FileRef[]; dropped?: string } }
@@ -44,6 +48,7 @@ export interface AlertLine {
 }
 
 export interface ChatMessage {
+	turnId?: string;
 	/** Stable server key used when branching from a reply. */
 	sourceId?: string;
 	id: string;
