@@ -1,7 +1,7 @@
 // The bot's M2/M3 routes for the e2e suite, served from the feature fixtures over context.route.
 // The app build never contains fixtures, so this is the only way the screens see them here.
 import type { BrowserContext, Route } from '@playwright/test';
-import type { HomeResponse, RunStatus, WebFeature } from '../src/lib/core/realtime/events';
+import type { HomeResponse, RunStatus } from '../src/lib/core/realtime/events';
 import { historyDay, historyDays, searchFixtures } from '../src/lib/features/history/fixtures';
 import { emptyHomeData, homeData } from '../src/lib/features/home/fixtures';
 import { runDetailPage, runSummaries } from '../src/lib/features/runs/fixtures';
@@ -32,7 +32,6 @@ export interface FakeBackend {
 	calls: { method: string; path: string; search: string; body: unknown }[];
 }
 
-const ALL: WebFeature[] = ['runs', 'history', 'home', 'alerts'];
 const PAGE = 10;
 const SLOW_MS = 3000;
 
@@ -91,12 +90,12 @@ function homeResponse(scenario: Scenario, hidden: Set<string>, read: Set<string>
 }
 
 /**
- * Registers the M2/M3 routes and GET /api/me (all features on unless `features` says otherwise).
+ * Registers the live M2/M3 routes and GET /api/me.
  * Register it after the test's own catch-all route: anything else falls through to that.
  */
 export async function fakeBackend(
 	context: BrowserContext,
-	opts: Partial<Record<Area, Scenario>> & { features?: WebFeature[]; now?: number } = {}
+	opts: Partial<Record<Area, Scenario>> & { now?: number } = {}
 ): Promise<FakeBackend> {
 	const scenarios: Record<Area, Scenario> = {
 		home: opts.home ?? 'normal',
@@ -114,7 +113,6 @@ export async function fakeBackend(
 		const status = statuses.get(r.runId);
 		return status ? { ...r, status } : r;
 	};
-	const features = opts.features ?? ALL;
 	/** Dismissed and opened Home items, as the bot keeps them. */
 	const hidden = new Set<string>();
 	const read = new Set<string>();
@@ -143,9 +141,7 @@ export async function fakeBackend(
 			search: url.search,
 			body: raw ? JSON.parse(raw) : null
 		});
-		if (area === 'me') return json(route, { login: 'drk@example.com', features });
-		const feature: WebFeature = area === 'search' ? 'history' : area;
-		if (!features.includes(feature)) return json(route, { error: 'not found' }, 404);
+		if (area === 'me') return json(route, { login: 'drk@example.com' });
 
 		const scenario = scenarios[area];
 		if (scenario === 'slow') await new Promise((r) => setTimeout(r, SLOW_MS));

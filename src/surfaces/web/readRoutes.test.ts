@@ -8,7 +8,7 @@ import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotC
 import { SqliteChatLog } from "./chatLog.ts";
 import { HISTORY_RESPONSE_MAX } from "./chatRoutes.ts";
 import { ChatIndex } from "./chatSearch.ts";
-import type { ApprovalView, HistoryDayResponse, RunDetailResponse, SearchResponse, WebFeature } from "./events.ts";
+import type { ApprovalView, HistoryDayResponse, RunDetailResponse, SearchResponse } from "./events.ts";
 import { createPeerMatcher } from "./peers.ts";
 import { NOTES_SEARCHES_MAX, createReadRoutes, type ReadRouteLink } from "./readRoutes.ts";
 import { RUN_FILES_SQL } from "./runJoins.ts";
@@ -88,13 +88,13 @@ class FakeLink implements ReadRouteLink {
   }
 }
 
-function setup(opts: { features?: WebFeature[]; workspaceEnabled?: boolean; now?: number } = {}) {
+function setup(opts: { workspaceEnabled?: boolean; now?: number } = {}) {
   const db = new Database(":memory:");
   applySchema(db);
   let t = T0;
   const log = new SqliteChatLog(db, { now: () => t, index: new ChatIndex(db) });
   const link = new FakeLink();
-  const reads = createReadRoutes({ db, link, features: opts.features ?? ["runs", "history"], workspaceEnabled: opts.workspaceEnabled ?? true, now: () => opts.now ?? T0 + 120_000 });
+  const reads = createReadRoutes({ db, link, workspaceEnabled: opts.workspaceEnabled ?? true, now: () => opts.now ?? T0 + 120_000 });
   const config = { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW] } as WebConfig;
   const handler = createWebHandler({ config, peers: createPeerMatcher([GW]), reads });
   const get = async (path: string, headers: Record<string, string> = { "Sec-Fetch-Site": "same-origin" }, method = "GET", peer = GW) => {
@@ -113,7 +113,7 @@ function setup(opts: { features?: WebFeature[]; workspaceEnabled?: boolean; now?
 
 describe("model routes", () => {
   test("session costs are scoped to a validated conversation id", async () => {
-    const h = setup({ features: [] });
+    const h = setup();
     expect((await h.get("/api/models?conversationId=oct-trip")).status).toBe(200);
     expect(h.link.calls).toEqual([{ method: "models/get", q: { conversationId: "oct-trip" } }]);
     for (const bad of ["", "../private", "a".repeat(81)]) {
@@ -122,7 +122,7 @@ describe("model routes", () => {
     expect(h.link.calls).toHaveLength(1);
   });
   test("GET reads the choice and POST switches it, whatever slices are on; bad bodies never reach the workspace", async () => {
-    const h = setup({ features: [] });
+    const h = setup();
     expect(await h.get("/api/models")).toEqual({ status: 200, body: h.link.models });
     expect(await h.post("/api/models", { alias: "luna" })).toEqual({ status: 200, body: { ...h.link.models, current: "luna" } });
     expect((await h.post("/api/models", { alias: "luna", extra: 1 })).status).toBe(400);
@@ -154,17 +154,10 @@ describe("read routes: guards", () => {
     expect(link.calls).toEqual([]);
   });
 
-  test("a route whose feature is off answers 404 without asking the workspace", async () => {
-    const off = setup({ features: [] });
-    for (const p of PATHS) expect((await off.get(p)).status).toBe(404);
-    const runsOnly = setup({ features: ["runs"] });
-    expect((await runsOnly.get("/api/runs")).status).toBe(200);
-    expect((await runsOnly.get("/api/history/days")).status).toBe(404);
-    expect((await runsOnly.get("/api/search?q=hello")).status).toBe(404);
-    const historyOnly = setup({ features: ["history"] });
-    expect((await historyOnly.get(`/api/runs/${RUN}`)).status).toBe(404);
-    expect((await historyOnly.get("/api/search?q=hello")).status).toBe(200);
-    expect(off.link.calls).toEqual([]);
+  test("all implemented read routes are available without feature configuration", async () => {
+    const h = setup();
+    for (const path of PATHS) expect((await h.get(path)).status).toBe(200);
+    expect(h.link.calls.length).toBeGreaterThan(0);
   });
 
   test("only GET is allowed", async () => {
@@ -487,11 +480,10 @@ describe("search", () => {
 });
 
 
-test("stopping targets one valid run and retains owner and feature gates", async () => {
+test("stopping targets one valid run and retains owner security", async () => {
   const h = setup();
   expect(await h.post(`/api/runs/${CHILD}/stop`, {})).toEqual({ status: 200, body: { stopped: true } });
   expect(h.link.calls).toEqual([{ method: "runs/stop", q: { runId: CHILD } }]);
   expect((await h.post("/api/runs/invalid/stop", {})).status).toBe(405);
-  expect((await setup({ features: ["history"] }).post(`/api/runs/${CHILD}/stop`, {})).status).toBe(404);
   expect((await h.get(`/api/runs/${CHILD}/stop`, { "Sec-Fetch-Site": "cross-site" }, "POST")).status).toBe(403);
 });

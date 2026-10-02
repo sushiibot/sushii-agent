@@ -8,7 +8,7 @@ import { getLogger } from "../../logger.ts";
 import type { SurfaceActor } from "../../orchestration/workspace/surface.ts";
 import { mintWebActor, normalizeLogin } from "./actor.ts";
 import type { ChatRoutes } from "./chatRoutes.ts";
-import type { MeResponse } from "./events.ts";
+import { WEB_FEATURES, type MeResponse } from "./events.ts";
 import type { HomeRoutes } from "./homeRoutes.ts";
 import type { DictationRoutes } from "./dictationRoutes.ts";
 import { createReadRoutes, type ReadRouteDeps, type ReadRoutes } from "./readRoutes.ts";
@@ -46,7 +46,7 @@ export interface WebHandlerDeps {
   /** The /api/chat routes; absent when the chat surface is not wired. */
   chat?: ChatRoutes;
   threads?: import("./threadRoutes.ts").WebThreads;
-  /** The /api/home routes; they answer 404 unless WEB_FEATURES has `home`. */
+  /** The /api/home routes. */
   home?: HomeRoutes;
   /** /api/runs, /api/history and /api/search; absent: they answer 404. */
   reads?: ReadRoutes;
@@ -109,7 +109,7 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     } else if (!isSameOrigin(req)) return forbidden();
 
     if (path === "/api/chats" || path === "/api/threads" || path.startsWith("/api/threads/")) {
-      if (!deps.threads || !config.features?.includes("threads")) return json({ error: "not found" }, 404);
+      if (!deps.threads) return json({ error: "not found" }, 404);
       try { return (await deps.threads.handle(req, path, actor, server)) ?? json({ error: "not found" }, 404); }
       catch (err) { logger.warn({ err }, "thread request failed"); return json({ error: err instanceof Error ? err.message : "Thread request failed" }, 409); }
     }
@@ -127,14 +127,14 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     }
 
     if (path === "/api/home" || path.startsWith("/api/home/")) {
-      if (!home || !config.features?.includes("home")) return json({ error: "not found" }, 404);
+      if (!home) return json({ error: "not found" }, 404);
       return (await home.handle(req, path)) ?? json({ error: "not found" }, 404);
     }
 
     if (path === "/api/me") {
       if (method !== "GET") return json({ error: "method not allowed" }, 405);
       const name = req.headers.get("Tailscale-User-Name");
-      return json({ login, ...(name ? { displayName: decodeEncodedWords(name) } : {}), features: config.features ?? [], dictation: !!dictation } satisfies MeResponse);
+      return json({ login, ...(name ? { displayName: decodeEncodedWords(name) } : {}), features: [...WEB_FEATURES], dictation: !!dictation } satisfies MeResponse);
     }
 
     if (path === "/api/uploads") return uploads ? handleUploadPost(req, uploads) : json({ error: "not found" }, 404);
@@ -220,8 +220,8 @@ export interface WebServerOptions {
   chat?: ChatRoutes;
   threads?: import("./threadRoutes.ts").WebThreads;
   home?: HomeRoutes;
-  /** Sources for the read-only routes; the gateway gates them on its WEB_FEATURES. */
-  reads?: Omit<ReadRouteDeps, "features">;
+  /** Sources for the live read-only routes. */
+  reads?: ReadRouteDeps;
   dictation?: DictationRoutes;
 }
 
@@ -251,7 +251,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     ...(opts.chat ? { chat: opts.chat } : {}),
     ...(opts.threads ? { threads: opts.threads } : {}),
     ...(opts.home ? { home: opts.home } : {}),
-    ...(opts.reads ? { reads: createReadRoutes({ ...opts.reads, features: config.features ?? [] }) } : {}),
+    ...(opts.reads ? { reads: createReadRoutes(opts.reads) } : {}),
     ...(opts.dictation ? { dictation: opts.dictation } : {}),
   });
   if (config.devLogin && isLoopback(config.bindAddr)) {

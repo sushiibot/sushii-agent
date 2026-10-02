@@ -7,7 +7,7 @@ import type { ConnectionInfo, WorkspaceHandler } from "../../orchestration/trans
 import { WorkspaceLink, type WorkspaceRpc } from "../../orchestration/workspace/link.ts";
 import { SurfaceRegistry, type ReplyView, type SurfaceAdapter } from "../../orchestration/workspace/surface.ts";
 import { SqliteChatLog } from "./chatLog.ts";
-import type { ChatEnvelope, WebFeature } from "./events.ts";
+import type { ChatEnvelope } from "./events.ts";
 import { CLEARED_ALERTS_RETENTION_MS, WebHomeStore } from "./homeStore.ts";
 import { WebInboundStore } from "./inbound.ts";
 import { createPresence } from "./presence.ts";
@@ -45,7 +45,7 @@ function deliverAlert(outboxId: string, a: JobAlertWire): ChatDeliverParams {
 }
 
 /** A bot process on `db`: a new one on the same db is a restart. */
-function bot(db: Database, opts: { features?: WebFeature[]; sent?: number } = {}) {
+function bot(db: Database, opts: { sent?: number } = {}) {
   const log = new SqliteChatLog(db);
   const home = new WebHomeStore(db);
   const pushes: PushPayload[] = [];
@@ -56,7 +56,6 @@ function bot(db: Database, opts: { features?: WebFeature[]; sent?: number } = {}
     presence,
     push: { send: async (p) => (pushes.push(p), { sent: opts.sent ?? 1 }) },
     home,
-    features: opts.features ?? ["home", "alerts"],
   });
   const rpc = new FakeRpc();
   const link = new WorkspaceLink({ principalId: P, store: new WorkspaceLinkStore(db), surfaces: new SurfaceRegistry("web", { pinned: true }).register(adapter), owner: () => ({ id: "", name: "drk" }) });
@@ -164,15 +163,6 @@ describe("alert delivery", () => {
     expect(h.pushes.map((p) => p.title)).toEqual(["Scheduled job stuck", "Scheduled job failed"]);
   });
 
-  test("without the alerts feature it still shows in chat and pushes as a chat message, but not on Home's push tag", async () => {
-    const h = bot(freshDb(), { features: ["home"] });
-    await h.link.deliver(deliverAlert("o1", alert()));
-    await h.link.deliver(deliverAlert("o2", alert({ kind: "recovered", startedAt: "2026-10-01T04:00:00.000Z" })));
-    await tick();
-    expect(h.log.list(["alert"])).toHaveLength(2);
-    expect(h.pushes.map((p) => p.tag)).toEqual(["chat", "chat"]);
-  });
-
   test("an older workspace's job alert, sent as proactive text, still shows and pushes as a chat message", async () => {
     const h = bot(freshDb());
     await h.link.deliver({ outboxId: "o1", principalId: P, kind: "proactive", text: "⚠️ scheduled job `nightly` failed" });
@@ -207,7 +197,7 @@ describe("alert delivery", () => {
 
 describe("register and runs/changed", () => {
   test("the bot advertises alert to its own principal only", () => {
-    const h = bot(freshDb(), { features: [] });
+    const h = bot(freshDb());
     expect(h.rpc.handler!.features!(CONN)).toEqual(["alert"]);
     expect(h.rpc.handler!.features!({ ...CONN, principalId: "someone" })).toEqual([]);
   });

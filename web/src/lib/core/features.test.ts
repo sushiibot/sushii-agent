@@ -4,27 +4,42 @@ import { Features, parseOverride } from './features.svelte';
 
 const never = () => new Promise<never>(() => {});
 
-test('a bot feature is never off while /api/me is unknown, and off once it says so', async () => {
-	const f = new Features(async () => ({ features: ['home'] }), null, new Set());
-	expect(f.off('runs')).toBe(false);
-	await f.load();
-	expect(f.off('runs')).toBe(true);
-	expect(f.has('home')).toBe(true);
+test('fixture overrides apply only to preview screens', () => {
+	const previews = new Features(never, parseOverride('all'));
+	for (const id of ['skills', 'schedules', 'browser', 'briefing'] as const) {
+		expect(previews.has(id)).toBe(true);
+	}
+	expect(parseOverride('runs,history,threads,memory,connectors,nonsense')).toEqual(new Set());
+	expect(parseOverride('browser, threads')).toEqual(new Set(['browser']));
+	const normal = new Features(never, new Set());
+	expect(normal.has('browser')).toBe(false);
+	expect(normal.has(undefined)).toBe(true);
 });
 
-test('a client feature shows only through the override, and is off without it', () => {
-	const off = new Features(never, null, new Set());
-	expect(off.has('browser')).toBe(false);
-	expect(off.off('browser')).toBe(true);
-	const on = new Features(never, null, parseOverride('browser, threads'));
-	expect(on.has('browser')).toBe(true);
-	expect(on.off('browser')).toBe(false);
-	expect(on.has('skills')).toBe(false);
+test('/api/me supplies dictation capability and concurrent loads share one request', async () => {
+	let calls = 0;
+	const capabilities = new Features(async () => {
+		calls++;
+		return { dictation: true };
+	}, new Set());
+	expect(capabilities.dictation).toBe(false);
+	await Promise.all([capabilities.load(), capabilities.load()]);
+	expect(capabilities.dictation).toBe(true);
+	expect(capabilities.fresh).toBe(true);
+	await capabilities.load();
+	expect(calls).toBe(1);
 });
 
-test('the override can turn on a bot feature the bot left off', async () => {
-	const f = new Features(async () => ({ features: [] }), null, parseOverride('all'));
-	await f.load();
-	expect(f.off('runs')).toBe(false);
-	expect(parseOverride('nonsense,runs')).toEqual(new Set(['runs']));
+test('a failed capability request retries without enabling dictation', async () => {
+	let calls = 0;
+	const capabilities = new Features(async () => {
+		if (++calls === 1) throw new Error('offline');
+		return { dictation: true };
+	}, new Set());
+	await capabilities.load();
+	expect(capabilities.fresh).toBe(false);
+	expect(capabilities.dictation).toBe(false);
+	await capabilities.load();
+	expect(capabilities.dictation).toBe(true);
+	expect(capabilities.fresh).toBe(true);
 });

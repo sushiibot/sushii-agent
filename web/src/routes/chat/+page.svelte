@@ -22,8 +22,7 @@
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
 
 	const store = chatStore();
-	const threadsOn = $derived(features.has('threads'));
-	const threads = $derived(threadsOn ? threadsStore() : null);
+	const threads = threadsStore();
 	const branch = routedSheet('branch');
 	let branchFrom = $state<{ id: string; quote: string } | null>(null);
 	let threadTitle = $state('');
@@ -134,12 +133,12 @@
 	function openBranch(m: ChatMessage) {
 		branchFrom = { id: m.sourceId ?? m.id, quote: plain(m) };
 		threadTitle = '';
-		threads?.clearError();
+		threads.clearError();
 		branch.openWith();
 	}
 
 	async function startThread(name: string) {
-		const id = await threads?.branch(branchFrom?.id ?? '', name);
+		const id = await threads.branch(branchFrom?.id ?? '', name);
 		if (!id) return;
 		await leaveSheet(branch);
 		await goto(resolve('/chats/[id]', { id }));
@@ -198,7 +197,7 @@
 	{focusAsk}
 	{sheet}
 	{viewer}
-	onbranch={threadsOn ? openBranch : undefined}
+	onbranch={openBranch}
 	onopensheet={openSheet}
 	onclosesheet={closeSheet}
 	onopenfile={(f) => {
@@ -225,14 +224,12 @@
 />
 <ClearNotifications store={s} />
 
-{#if threads}
-	<BranchSheet
-		open={branch.open}
-		quote={branchFrom?.quote}
-		bind:title={threadTitle}
-		busy={threads.busy}
-		error={threads.error}
-		onstart={(name) => void startThread(name)}
-		onclose={() => branch.close()}
-	/>
-{/if}
+<BranchSheet
+	open={branch.open}
+	quote={branchFrom?.quote}
+	bind:title={threadTitle}
+	busy={threads.busy}
+	error={threads.error}
+	onstart={(name) => void startThread(name)}
+	onclose={() => branch.close()}
+/>

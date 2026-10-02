@@ -224,12 +224,10 @@ The personal workspace supports remote MCP servers through the web app's Connect
 The agent can list current tools and call them during a chat turn.
 Other chat surfaces and scheduled jobs do not receive these tools.
 
-1. Add `connectors` to the bot's `WEB_FEATURES` configuration.
-2. Restart the bot and workspace with the updated code.
-3. Open **Connectors → Add a server**.
-4. Enter the server's HTTPS address.
-5. For token authentication, enter an API token.
-6. For OAuth authentication, leave the token blank and follow the sign-in steps.
+1. Open **Connectors → Add a server**.
+2. Enter the server's HTTPS address.
+3. For token authentication, enter an API token.
+4. For OAuth authentication, leave the token blank and follow the sign-in steps.
 
 For Fastmail, use `https://api.fastmail.com/mcp`.
 Create an API token with **Type: MCP** and only **Read data** selected.

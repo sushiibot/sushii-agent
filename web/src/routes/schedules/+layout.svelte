@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { featureGate } from '$lib/core/nav/gate.svelte';
+	import { previewGate } from '$lib/core/nav/gate.svelte';
 
 	let { children } = $props();
-	const allowed = featureGate('schedules');
+	const allowed = previewGate('schedules');
 </script>
 
 {#if allowed()}{@render children()}{/if}

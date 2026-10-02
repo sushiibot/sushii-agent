@@ -4,14 +4,13 @@ import { CONNECTOR_ERROR_CODE, type ConnectorRequest, type ConnectorsResult } fr
 import { RpcErrorReply } from "../../orchestration/transport/server.ts";
 import { createReadRoutes, type ReadRouteLink } from "./readRoutes.ts";
 
-function setup(features = true) {
+function setup() {
   const calls: ConnectorRequest[] = [];
   let fail = false;
   const db = new Database(":memory:");
   const routes = createReadRoutes({
     db,
     link: { isConnected: () => true } as ReadRouteLink,
-    features: features ? ["connectors"] : [],
     workspaceEnabled: true,
     connectors: {
       connectors: async (q): Promise<ConnectorsResult> => {
@@ -58,10 +57,9 @@ test("connector routes validate requests, unwrap responses and return actionable
   s.db.close();
 });
 
-test("disabled connector feature rejects both reads and mutations before reaching the workspace", async () => {
-  const s = setup(false);
-  expect((await s.request("/api/connectors"))!.status).toBe(404);
-  expect((await s.request("/api/connectors/begin", "POST", { url: "https://api.fastmail.com/mcp" }))!.status).toBe(404);
-  expect(s.calls).toEqual([]);
+test("connectors are live without feature configuration", async () => {
+  const s = setup();
+  expect((await s.request("/api/connectors"))!.status).toBe(200);
+  expect(s.calls).toEqual([{ action: "list" }]);
   s.db.close();
 });

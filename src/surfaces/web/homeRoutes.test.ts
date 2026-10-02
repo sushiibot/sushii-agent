@@ -7,7 +7,7 @@ import type { RunSummary, RunsListResult } from "../../orchestration/contracts.t
 import { RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/server.ts";
 import { WorkspaceBadResponseError } from "../../orchestration/workspace/link.ts";
 import { SqliteChatLog } from "./chatLog.ts";
-import type { HomeResponse, WebFeature } from "./events.ts";
+import type { HomeResponse } from "./events.ts";
 import { createHomeRoutes, type HomeLink } from "./homeRoutes.ts";
 import { WebHomeStore } from "./homeStore.ts";
 import { createPeerMatcher } from "./peers.ts";
@@ -24,7 +24,7 @@ function run(o: Partial<RunSummary> & Pick<RunSummary, "kind" | "status">): RunS
   return { runId: rid(), agentName: o.kind === "job" ? "job:x" : "helper", title: "t", startedAt: iso(NOW - 80 * HOUR), resultSummary: "Did a thing.", ...o };
 }
 
-function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: boolean; loginPending?: boolean; runs?: (q: Parameters<HomeLink["runsList"]>[0]) => Promise<RunsListResult> } = {}) {
+function setup(opts: { connected?: boolean; enabled?: boolean; loginPending?: boolean; runs?: (q: Parameters<HomeLink["runsList"]>[0]) => Promise<RunsListResult> } = {}) {
   const db = new Database(":memory:");
   applySchema(db);
   const log = new SqliteChatLog(db, { now: () => NOW });
@@ -35,7 +35,7 @@ function setup(opts: { features?: WebFeature[]; connected?: boolean; enabled?: b
     isLoginPending: () => opts.loginPending ?? false,
     runsList: async (q) => (calls.push(q), opts.runs ? opts.runs(q) : { runs: [], before: null, truncated: false }),
   };
-  const routes = createHomeRoutes({ log, adapter: { openTurns: () => [] }, store, link, workspaceEnabled: opts.enabled ?? true, features: opts.features ?? ["home", "alerts"], now: () => NOW });
+  const routes = createHomeRoutes({ log, adapter: { openTurns: () => [] }, store, link, workspaceEnabled: opts.enabled ?? true, now: () => NOW });
   const get = async () => {
     const res = await routes.handle(new Request("http://x/api/home"), "/api/home");
     expect(res!.status).toBe(200);
@@ -156,19 +156,16 @@ describe("GET /api/home", () => {
     expect(offline.calls).toEqual([]);
     expect((await setup({ enabled: false }).get()).workspace).toEqual({ state: "offline" });
     const hung = setup({ runs: () => new Promise(() => {}) });
-    const slow = createHomeRoutes({ log: hung.log, adapter: { openTurns: () => [] }, store: hung.store, link: { isConnected: () => true, isLoginPending: () => false, runsList: () => new Promise(() => {}) }, workspaceEnabled: true, features: [], now: () => NOW, workspaceTimeoutMs: 20 });
+    const slow = createHomeRoutes({ log: hung.log, adapter: { openTurns: () => [] }, store: hung.store, link: { isConnected: () => true, isLoginPending: () => false, runsList: () => new Promise(() => {}) }, workspaceEnabled: true, now: () => NOW, workspaceTimeoutMs: 20 });
     const res = await slow.handle(new Request("http://x/api/home"), "/api/home");
     expect(((await res!.json()) as HomeResponse).workspace).toEqual({ state: "timeout" });
   });
 
-  test("open job alerts show only with the alerts feature", async () => {
+  test("open job alerts always appear in the inbox", async () => {
     const alert = { source: "job" as const, job: "nightly", kind: "failed" as const, trigger: "daily" as const, startedAt: iso(NOW - HOUR), schedule: "daily 04:00" };
     const on = setup();
     on.store.applyAlert(alert, 7, "o1");
     expect((await on.get()).failed).toEqual([{ id: "job:nightly", job: "nightly", kind: "failed", firstAt: alert.startedAt, lastAt: alert.startedAt, trigger: "daily", schedule: "daily 04:00", seq: 7 }]);
-    const off = setup({ features: ["home"] });
-    off.store.applyAlert(alert, 7, "o1");
-    expect((await off.get()).failed).toEqual([]);
   });
 
   test("waiting carries pending approvals and asks from the log, and the sign-in link only while its login is pending", async () => {
@@ -213,9 +210,9 @@ describe("POST /api/home/dismiss and /api/home/opened", () => {
 describe("Home behind the gateway", () => {
   const OWNER = "owner@example.com";
   const GW = "172.31.250.1";
-  function gateway(features: WebFeature[]) {
+  function gateway() {
     const h = setup();
-    const config: WebConfig = { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW], push: undefined, features };
+    const config: WebConfig = { port: 0, bindAddr: "127.0.0.1", ownerLogin: OWNER, distDir: "/nonexistent", devLogin: undefined, trustedPeers: [GW], push: undefined };
     return createWebHandler({ config, peers: createPeerMatcher([GW]), home: h.routes });
   }
   const req = (path: string, init: RequestInit = {}) => {
@@ -224,13 +221,13 @@ describe("Home behind the gateway", () => {
     return new Request(`http://apps.example.ts.net${path}`, { ...init, headers });
   };
 
-  test("answers 404 while WEB_FEATURES lacks home", async () => {
-    const handler = gateway(["alerts"]);
-    expect((await handler(req("/api/home", { headers: { "Sec-Fetch-Site": "same-origin" } }), GW)).status).toBe(404);
+  test("serves Home without feature configuration", async () => {
+    const handler = gateway();
+    expect((await handler(req("/api/home", { headers: { "Sec-Fetch-Site": "same-origin" } }), GW)).status).toBe(200);
   });
 
   test("needs Fetch-Metadata same-origin for reads and writes", async () => {
-    const handler = gateway(["home"]);
+    const handler = gateway();
     expect((await handler(req("/api/home", { headers: { "Sec-Fetch-Site": "same-origin" } }), GW)).status).toBe(200);
     expect((await handler(req("/api/home", { headers: { "Sec-Fetch-Site": "cross-site" } }), GW)).status).toBe(403);
     const write = (site: string) =>

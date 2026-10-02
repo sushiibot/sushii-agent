@@ -1,13 +1,19 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
+import { axe, horizontalOverflow, smallTargets, stubStream, fixtureApp } from './helpers';
 
-const LIVE = ['runs', 'history', 'home', 'alerts'];
+const LIVE_NAV = [
+	'Chat',
+	'Inbox',
+	'Threads',
+	'Runs',
+	'History',
+	'Memory',
+	'Connectors',
+	'Settings'
+];
 
-/** The app with the bot listing `live`; `override` is the device's fixture override. */
-async function server(
-	context: BrowserContext,
-	opts: { live?: string[]; override?: string; me?: 'hang' } = {}
-) {
+/** Live navigation never depends on /api/me; overrides enable only fixture previews. */
+async function server(context: BrowserContext, opts: { override?: string; me?: 'hang' } = {}) {
 	await stubStream(context);
 	await context.addInitScript((override) => {
 		if (override) localStorage.setItem('features:override', override);
@@ -16,7 +22,7 @@ async function server(
 		const path = new URL(route.request().url()).pathname;
 		if (path === '/api/me') {
 			if (opts.me === 'hang') return;
-			return route.fulfill({ json: { login: 'drk@example.com', features: opts.live ?? LIVE } });
+			return route.fulfill({ json: { login: 'drk@example.com' } });
 		}
 		if (path === '/api/chat/history') return route.fulfill({ json: { items: [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
@@ -31,7 +37,7 @@ async function drawer(page: Page) {
 	return menu;
 }
 
-test('the app opens on the chat; the drawer lists only live slices, Settings last', async ({
+test('the app opens on chat and all live screens appear in the drawer by default', async ({
 	page,
 	context
 }) => {
@@ -39,17 +45,11 @@ test('the app opens on the chat; the drawer lists only live slices, Settings las
 	await page.goto('/');
 	await expect(page).toHaveURL(/\/chat$/);
 	const menu = await drawer(page);
-	await expect(menu.getByRole('link')).toHaveText(['Chat', 'Inbox', 'Runs', 'History', 'Settings']);
+	await expect(menu.getByRole('link')).toHaveText(LIVE_NAV);
 	await expect(menu.getByRole('link', { name: 'Chat' })).toHaveAttribute('aria-current', 'page');
 });
 
-test('a slice the bot leaves off hides its entry', async ({ page, context }) => {
-	await server(context, { live: ['home'] });
-	await page.goto('/chat');
-	await expect((await drawer(page)).getByRole('link')).toHaveText(['Chat', 'Inbox', 'Settings']);
-});
-
-test('the fixture override shows every section, with Threads under Inbox', async ({
+test('the fixture override adds preview screens alongside every live screen', async ({
 	page,
 	context
 }) => {
@@ -96,42 +96,27 @@ test('picking from the drawer closes it; back from there returns to the chat, th
 	await expect(page).toHaveURL(/\/chat$/);
 });
 
-test('a screen whose slice is off sends you to the chat', async ({ page, context }) => {
-	await server(context);
-	await page.goto('/memory');
-	await expect(page).toHaveURL(/\/chat$/);
-	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-});
-
 test('an unknown address sends you to the chat', async ({ page, context }) => {
 	await server(context);
 	await page.goto('/no-such-screen');
 	await expect(page).toHaveURL(/\/chat$/);
 });
 
-test('a deep link waits for /api/me before deciding, so it never bounces early', async ({
-	page,
-	context
-}) => {
+test('a live deep link renders while /api/me is unavailable', async ({ page, context }) => {
 	await server(context, { me: 'hang' });
 	await page.goto('/runs');
-	await expect(page.getByRole('heading', { name: 'Runs', level: 1 })).toHaveCount(0);
+	await expect(page.getByRole('heading', { name: 'Runs', level: 1 })).toBeVisible();
 	await page.waitForTimeout(500);
 	await expect(page).toHaveURL(/\/runs$/);
 });
 
 for (const [path, api] of [
-	['/chats', /^\/api\/(chats|threads)/],
-	['/chats/x', /^\/api\/(chats|threads)/],
-	['/connectors/add', /^\/api\/connectors/],
 	['/skills/x/versions', /^\/api\/skills/],
-	['/memory/writes/x', /^\/api\/memory/],
-	['/memory/files/x', /^\/api\/memory/],
 	['/schedules/x', /^\/api\/schedules/],
 	['/browser', /^\/api\/browser/],
 	['/briefing', /^\/api\/briefing/]
 ] as const) {
-	test(`${path} with its feature off goes to the chat without asking the bot for it`, async ({
+	test(`${path} without its fixture preview goes to chat without requesting preview data`, async ({
 		page,
 		context
 	}) => {
@@ -196,72 +181,12 @@ test('widening past the sidebar breakpoint closes an open drawer, so the page st
 	await expect(page).toHaveURL(/\/runs$/);
 });
 
-for (const path of ['/memory', '/memory/files/x', '/memory/writes/x']) {
-	test(`${path} waits for the bot feature decision without fetching memory`, async ({
-		page,
-		context
-	}) => {
-		await server(context);
-		let release!: () => void;
-		const ready = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		let requested!: () => void;
-		const started = new Promise<void>((resolve) => {
-			requested = resolve;
-		});
-		await context.route('**/api/me', async (route) => {
-			requested();
-			await ready;
-			await route.fulfill({ json: { login: 'drk@example.com', features: LIVE } });
-		});
-		const asked: string[] = [];
-		page.on('request', (request) => {
-			const pathname = new URL(request.url()).pathname;
-			if (pathname.startsWith('/api/memory')) asked.push(pathname);
-		});
-		await page.goto(path);
-		await started;
-		await page.waitForTimeout(200);
-		await expect(page).toHaveURL(new RegExp(`${path.replaceAll('/', '\\/')}$`));
-		expect(asked).toEqual([]);
-		release();
-		await expect(page).toHaveURL(/\/chat$/);
-		await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-		expect(asked).toEqual([]);
-	});
-}
-
-test('an enabled memory deep link loads only after the bot confirms its feature', async ({
-	page,
-	context
-}) => {
-	await server(context);
-	let release!: () => void;
-	const ready = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	let requested!: () => void;
-	const started = new Promise<void>((resolve) => {
-		requested = resolve;
-	});
-	await context.route('**/api/me', async (route) => {
-		requested();
-		await ready;
-		await route.fulfill({ json: { login: 'drk@example.com', features: [...LIVE, 'memory'] } });
-	});
-	let reads = 0;
-	await context.route('**/api/memory', (route) => {
-		reads++;
-		return route.fulfill({ json: { files: [], writes: [], truncated: false } });
-	});
+test('Memory and thread deep links load without a fixture override', async ({ page, context }) => {
+	await fixtureApp(context, { override: '' });
 	await page.goto('/memory');
-	await started;
-	await page.waitForTimeout(200);
-	expect(reads).toBe(0);
-	release();
 	await expect(page.getByRole('heading', { name: 'Memory', level: 1 })).toBeVisible();
-	await expect(page.getByText('Nothing remembered yet')).toBeVisible();
-	await expect(page).toHaveURL(/\/memory$/);
-	expect(reads).toBe(1);
+	await expect(page.getByRole('link', { name: /MEMORY.md/ })).toBeVisible();
+	await page.goto('/chats/oct-trip');
+	await expect(page.getByRole('heading', { name: 'October trip', level: 1 })).toBeVisible();
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });

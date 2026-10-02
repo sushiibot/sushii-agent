@@ -1,6 +1,5 @@
 // Dev only (`bun dev` with ?fake); +layout.ts imports it behind import.meta.env.DEV.
-import { ALL_FEATURES, features } from '$lib/core/features.svelte';
-import { WEB_FEATURES } from '$lib/core/realtime/events';
+import { CLIENT_FEATURES, features } from '$lib/core/features.svelte';
 import { createHub, hub } from '$lib/core/realtime/hub.svelte';
 import { memoryKeyValue, type Draft, type OutboxEntry } from '$lib/core/storage/outbox';
 import { configureBriefing } from '$lib/features/briefing';
@@ -56,8 +55,7 @@ export function installFakes() {
 			};
 		}
 	});
-	features.list = [...WEB_FEATURES];
 	features.fresh = true;
 	// For this page view only, so a later visit without ?fake shows what production shows.
-	features.override = new Set(ALL_FEATURES);
+	features.override = new Set(CLIENT_FEATURES);
 }

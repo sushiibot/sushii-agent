@@ -32,7 +32,6 @@ async function homeServer(
 		fixtures?: Scenario;
 		streamStatus?: number;
 		decide?: number;
-		features?: Parameters<typeof fakeBackend>[1]['features'];
 	} = {}
 ) {
 	const calls: Call[] = [];
@@ -63,7 +62,7 @@ async function homeServer(
 		if (url.pathname === '/api/chat/seen') return route.fulfill({ status: 204 });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
-	const backend = await fakeBackend(context, { home: opts.fixtures, features: opts.features });
+	const backend = await fakeBackend(context, { home: opts.fixtures });
 	const posts = (prefix: string) =>
 		[...calls, ...backend.calls].filter((c) => c.method === 'POST' && c.path.startsWith(prefix));
 	return { calls, posts, backend };
@@ -406,19 +405,6 @@ test("an agent answer outside the contract says Home's running work couldn't be 
 	await expect(page.getByText('Approve send_email')).toBeVisible();
 });
 
-test('with Home off on the bot, Home still shows what waits on you from the stream', async ({
-	page,
-	context
-}) => {
-	await homeServer(context, { pending: busy(), features: ['runs', 'history'] });
-	await page.goto('/inbox?item=job%3Anightly-sync');
-	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
-	await sheet(page).getByRole('button', { name: 'Close' }).click();
-	await expect(page.getByText('Approve send_email')).toBeVisible();
-	await expect(page.getByText("Couldn't load failed and running work")).toBeHidden();
-	await expect(page.getByText('nightly-sync failed')).toBeHidden();
-});
-
 test('a cold link to a job alert that has cleared says Already handled', async ({
 	page,
 	context
@@ -550,14 +536,6 @@ test('a dismissed job is posted once and stays off Home after a reload', async (
 	await page.reload();
 	await expect(page.getByRole('button', { name: /Your passport renewal/ })).toBeVisible();
 	await expect(page.getByText('nightly-sync failed')).toBeHidden();
-});
-
-test('with Runs off on the bot, a failed job peek has no Open run', async ({ page, context }) => {
-	await homeServer(context, { features: ['home', 'alerts', 'history'] });
-	await page.goto('/inbox');
-	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
-	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
-	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeHidden();
 });
 
 test("a cold link to a job when Home's server part fails says it can't check, not handled", async ({

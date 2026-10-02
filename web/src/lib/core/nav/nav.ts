@@ -11,15 +11,15 @@ import Settings from '@lucide/svelte/icons/settings';
 import Sparkles from '@lucide/svelte/icons/sparkles';
 import Sunrise from '@lucide/svelte/icons/sunrise';
 import type { NavItem } from '$lib/ui/shell/types';
-import type { AppFeature } from '../features.svelte';
+import type { ClientFeature } from '../features.svelte';
 
-/** A nav entry that shows only while its slice of the app is on. */
+/** Live navigation, with optional fixture previews. */
 export interface NavEntry extends NavItem {
-	feature?: AppFeature;
+	feature?: ClientFeature;
 }
 
-/** Which features are on; the prototype passes `allOn`. */
-export type FeatureCheck = (feature: AppFeature | undefined) => boolean;
+/** Which fixture previews are visible; the prototype passes `allOn`. */
+export type FeatureCheck = (feature: ClientFeature | undefined) => boolean;
 export const allOn: FeatureCheck = () => true;
 
 const chat: NavEntry = { id: 'chat', href: '/chat', label: 'Chat', icon: MessageSquare };
@@ -41,7 +41,6 @@ const moreEntries: NavEntry[] = [
 		href: '/runs',
 		label: 'Runs',
 		icon: Activity,
-		feature: 'runs',
 		description: 'Every chat turn, scheduled job and background run'
 	},
 	{
@@ -49,7 +48,6 @@ const moreEntries: NavEntry[] = [
 		href: '/history',
 		label: 'History',
 		icon: History,
-		feature: 'history',
 		description: "The agent's notes by day, and search across chat and notes"
 	},
 	{
@@ -57,7 +55,6 @@ const moreEntries: NavEntry[] = [
 		href: '/memory',
 		label: 'Memory',
 		icon: BookMarked,
-		feature: 'memory',
 		description: 'What the agent remembers, and every change to it'
 	},
 	{
@@ -81,7 +78,6 @@ const moreEntries: NavEntry[] = [
 		href: '/connectors',
 		label: 'Connectors',
 		icon: Plug,
-		feature: 'connectors',
 		description: 'MCP servers and the tools they give the agent'
 	},
 	{
@@ -101,14 +97,14 @@ const moreEntries: NavEntry[] = [
 	}
 ];
 
-/** The More screen's entries that are on. */
+/** Live screens plus the fixture previews enabled on this device. */
 export function moreFor(on: FeatureCheck): NavEntry[] {
-	return moreEntries.filter((e) => on(e.feature));
+	return moreEntries.filter((e) => !e.feature || on(e.feature));
 }
 
 /** The drawer and the desktop sidebar, top to bottom; Settings comes last. */
 export function navFor(on: FeatureCheck): NavEntry[] {
-	return [chat, inbox, ...(on('threads') ? [chats] : []), ...moreFor(on)];
+	return [chat, inbox, chats, ...moreFor(on)];
 }
 
 const pathOf = (routeId: string) => routeId.replace(/\/\([^)]+\)/g, '') || '/';

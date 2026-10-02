@@ -8,7 +8,6 @@ import { createPiChatImporter } from "./chatImport.ts";
 import { SqliteChatLog } from "./chatLog.ts";
 import { ChatIndex } from "./chatSearch.ts";
 import { createChatRoutes, type ChatRoutes } from "./chatRoutes.ts";
-import type { WebFeature } from "./events.ts";
 import { createHomeRoutes, type HomeRoutes } from "./homeRoutes.ts";
 import { WebHomeStore } from "./homeStore.ts";
 import { WebInboundStore } from "./inbound.ts";
@@ -29,8 +28,6 @@ export interface WebChatDeps {
   /** Wakes the owner on Discord when an approval push reached no device. */
   breakGlass?: (nonce: string) => Promise<boolean>;
   uploads?: WebUploadPort;
-  /** WEB_FEATURES. */
-  features?: readonly WebFeature[];
 }
 
 export interface WebChat {
@@ -51,14 +48,12 @@ export function createWebChat(deps: WebChatDeps): WebChat {
   const inbound = new WebInboundStore(deps.db);
   const presence = createPresence({ head: () => chatLog.head() });
   const homeStore = new WebHomeStore(deps.db);
-  const features = deps.features ?? [];
   const adapter = new WebWorkspaceAdapter({
     log: chatLog,
     inbound,
     presence,
     push: { send: sendPush },
     home: homeStore,
-    features,
     ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}),
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
@@ -88,7 +83,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     adapter: { push: { send: sendPush }, ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}), ...(deps.uploads ? { uploads: deps.uploads } : {}) },
   });
 
-  const home = createHomeRoutes({ log: chatLog, adapter, store: homeStore, link: deps.link, workspaceEnabled: deps.workspaceEnabled, features });
+  const home = createHomeRoutes({ log: chatLog, adapter, store: homeStore, link: deps.link, workspaceEnabled: deps.workspaceEnabled });
 
   const importer = createPiChatImporter({ db: deps.db, log: chatLog, source: deps.link });
 

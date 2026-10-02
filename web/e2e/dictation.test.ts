@@ -13,7 +13,7 @@ async function withDictation(context: BrowserContext, text: string | null) {
 	await fixtureApp(context, { override: '' });
 	const posts: string[] = [];
 	await context.route('**/api/me', (route) =>
-		route.fulfill({ json: { login: 'drk@example.com', features: [], dictation: true } })
+		route.fulfill({ json: { login: 'drk@example.com', dictation: true } })
 	);
 	await context.route('**/api/dictation', async (route) => {
 		posts.push(route.request().headers()['content-type'] ?? '');

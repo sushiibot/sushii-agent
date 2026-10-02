@@ -369,7 +369,6 @@ async function main(): Promise<number> {
       VAPID_PUBLIC_KEY: vapid.publicKey,
       VAPID_PRIVATE_KEY: vapid.privateKey,
       VAPID_SUBJECT: "mailto:e2e@example.invalid",
-      WEB_FEATURES: "runs,history,home,alerts,threads,memory",
       E2E_PUSH_CAPTURE: PUSH_CAPTURE,
       E2E_LINK_SOCKET: LINK_SOCKET,
     },

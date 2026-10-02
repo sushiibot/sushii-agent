@@ -115,14 +115,6 @@ test('a list that fails to load says so and retries', async ({ page, context }) 
 	await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
 });
 
-test('with threads off, Chat is one conversation with no Chats list', async ({ page, context }) => {
-	await fixtureApp(context, { override: '' });
-	await page.goto('/chat');
-	await expect((await openDrawer(page)).getByRole('link', { name: 'Threads' })).toHaveCount(0);
-	await page.goto('/chats');
-	await expect(page).toHaveURL(/\/chat$/);
-});
-
 for (const colorScheme of ['light', 'dark'] as const) {
 	test(`Chats and a thread pass axe, targets and reflow in ${colorScheme}`, async ({
 		page,

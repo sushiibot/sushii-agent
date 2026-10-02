@@ -3,7 +3,6 @@
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { features } from '$lib/core/features.svelte';
 	import { returnTo } from '$lib/core/nav/back';
 	import { routedSheet } from '$lib/core/nav/sheet';
 	import { closeShownNotifications } from '$lib/core/pwa/notifications';
@@ -203,7 +202,7 @@
 	onreply={reply}
 	undo={home.undoable}
 	onundo={() => void home.undo()}
-	onopenrun={features.has('runs') ? (id) => void leaveTo(resolve('/runs/[id]', { id })) : undefined}
+	onopenrun={(id) => void leaveTo(resolve('/runs/[id]', { id }))}
 	onopenchat={openChat}
 	onaskagent={askAgent}
 	onreload={() => pwa.applyUpdate()}

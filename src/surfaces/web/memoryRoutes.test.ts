@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createReadRoutes, type ReadRouteLink } from "./readRoutes.ts";
 
-test("Memory routes are feature-gated, read-only and map missing files", async () => {
+test("Memory routes are available without configuration, read-only and map missing files", async () => {
   const db = new Database(":memory:");
   let calls = 0;
   const link = { isConnected: () => true } as ReadRouteLink;
@@ -13,10 +13,8 @@ test("Memory routes are feature-gated, read-only and map missing files", async (
     },
   };
   const base = { db, link, memory, workspaceEnabled: true };
-  const off = createReadRoutes({ ...base, features: [] });
-  const on = createReadRoutes({ ...base, features: ["memory"] });
+  const on = createReadRoutes(base);
   const request = (path: string, method = "GET") => new Request(`http://localhost${path}`, { method });
-  expect((await off.handle(request("/api/memory"), "/api/memory"))?.status).toBe(404);
   expect(calls).toBe(0);
   expect((await on.handle(request("/api/memory", "POST"), "/api/memory"))?.status).toBe(405);
   expect((await on.handle(request("/api/memory/writes/foo"), "/api/memory/writes/foo"))?.status).toBe(404);
@@ -33,7 +31,6 @@ test("Memory routes are feature-gated, read-only and map missing files", async (
   const offline = createReadRoutes({
     ...base,
     workspaceEnabled: false,
-    features: ["memory"],
   });
   expect((await offline.handle(request("/api/memory"), "/api/memory"))?.status).toBe(503);
   expect(calls).toBe(2);

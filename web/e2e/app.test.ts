@@ -36,7 +36,7 @@ async function mockApi(context: BrowserContext, initial: ApiOptions = {}) {
 			route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
 		if (path === '/api/me') {
 			if (opts.meStatus !== 200) return route.fulfill({ status: opts.meStatus, body: 'Forbidden' });
-			return json({ login: 'drk@example.com', features: ['runs', 'history', 'home', 'alerts'] });
+			return json({ login: 'drk@example.com' });
 		}
 		if (path === '/api/push/key') {
 			if (opts.keyStatus !== 200) return route.fulfill({ status: opts.keyStatus, body: 'Nope' });

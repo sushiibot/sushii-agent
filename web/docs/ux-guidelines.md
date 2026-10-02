@@ -358,7 +358,7 @@ Seen in open-source agent UIs and chat apps. Don't ship any of these.
 
 ## Known gaps in the prototype
 
-Every frame on the board is a shipped feature screen, so the board breaks no rule the app keeps. Screens whose backend doesn't exist yet run on fixtures behind their feature flag; their gaps are in what the fixtures can show, not in the screens.
+Every frame on the board is a shipped feature screen, so the board breaks no rule the app keeps. Screens whose backend doesn't exist yet run on fixtures in the development preview; their gaps are in what the fixtures can show, not in the screens.
 
 ## Sources
 

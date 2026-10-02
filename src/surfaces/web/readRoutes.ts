@@ -21,7 +21,6 @@ import {
   type RunsPage,
   type SearchHit,
   type SearchResponse,
-  type WebFeature,
   type WorkspaceUnavailableResponse,
 } from "./events.ts";
 import { HISTORY_RESPONSE_MAX } from "./chatRoutes.ts";
@@ -41,7 +40,6 @@ export type ReadRouteLink = Pick<WorkspaceLink, "isConnected" | "runsStop" | "ru
 export interface ReadRouteDeps {
   db: Database;
   link: ReadRouteLink;
-  features: readonly WebFeature[];
   workspaceEnabled: boolean;
   now?: () => number;
   memory?: Pick<WorkspaceLink, "memoryRead">;
@@ -109,7 +107,6 @@ const badRequest = (error: string) => json({ error }, 400);
 export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
   const { db, link } = deps;
   const now = deps.now ?? Date.now;
-  const has = (f: WebFeature) => deps.features.includes(f);
   let notesInFlight = 0;
 
   async function fromWorkspace<T>(call: () => Promise<T>): Promise<T> {
@@ -279,7 +276,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
   return {
     async handle(req, path) {
       if (path === "/api/memory" || path.startsWith("/api/memory/")) {
-        if (!has("memory") || !deps.memory) return notFound();
+        if (!deps.memory) return notFound();
         if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
         const file = /^\/api\/memory\/files\/([A-Za-z0-9_-]{1,1024})$/.exec(path);
         if (path !== "/api/memory" && !file) return notFound();
@@ -289,7 +286,7 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
         });
       }
       if (path === "/api/connectors" || path.startsWith("/api/connectors/")) {
-        if (!has("connectors") || !deps.connectors) return notFound();
+        if (!deps.connectors) return notFound();
         let request: unknown;
         const suffix = path.slice("/api/connectors".length);
         if (req.method === "GET") request = suffix ? { action: "get", id: suffix.slice(1) } : { action: "list" };
@@ -330,7 +327,6 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
       const history = path === "/api/history" || path.startsWith("/api/history/");
       const searchPath = path === "/api/search";
       if (!runs && !history && !searchPath) return null;
-      if (!has(runs ? "runs" : "history")) return notFound();
       const stop = /^\/api\/runs\/([^/]+)\/stop$/.exec(path);
       if (stop && req.method === "POST" && RUN_ID_RE.test(stop[1]!)) return answer("runs/stop", async () => json(await fromWorkspace(() => link.runsStop(stop[1]!))));
       if (req.method !== "GET") return json({ error: "method not allowed" }, 405);

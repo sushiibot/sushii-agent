@@ -27,7 +27,7 @@ in `brand-src/prompts.json`.
 
 ## MCP connections
 
-The bot serves Connectors when `WEB_FEATURES` includes `connectors`.
+Connectors is available automatically in the owner web app.
 The workspace stores connections and credentials outside the browser.
 The screen supports token or OAuth authentication, tool-list review, reconnection, disconnection, and removal.
 See the root README for Fastmail setup and protocol limits.
@@ -41,19 +41,19 @@ Imports point down this list only:
 - `src/lib/core/`: app infrastructure with no screens: the SSE stream (`realtime/`), IndexedDB (`storage/`), PWA and push (`pwa/`), service-worker logic (`sw/`).
 - `src/lib/ui/`: the design system, with no domain imports. shadcn-svelte adds components here (`components.json`).
 
-Every screen on the prototype board is a feature's own screen, rendered from its `fixtures.ts`; the board imports features only through `index.ts` and `fixtures.ts`. Screens whose backend doesn't exist yet (skills, schedules, browser, briefing) call the routes that backend will serve (`api.ts`) and show only while their feature is on: `/api/me` `features`, plus the device override in `localStorage` `features:override` (`all` or a comma list). Their fixture APIs (`fake.ts`) never reach the app build (`scripts/bundle-guard.ts`): `bun dev` with `?fake` installs them from `src/routes/dev-fakes.ts` with every feature on, where `fixtures:<feature>` picks the state a fake serves (`empty`, `error`, `slow`, `offline`, `unsupported`), and the e2e suite serves the same APIs over `context.route` (`e2e/fixture-routes.ts`).
+Every screen on the prototype board is a feature's own screen, rendered from its `fixtures.ts`; the board imports features only through `index.ts` and `fixtures.ts`. Screens whose backend doesn't exist yet (skills, schedules, browser, briefing) call the routes that backend will serve (`api.ts`) and remain development previews, enabled through the device override in `localStorage` `features:override` (`all` or a comma list). All live screens are always available; `/api/me` `features` is a compatibility catalog, not a configuration switch. Their fixture APIs (`fake.ts`) never reach the app build (`scripts/bundle-guard.ts`): `bun dev` with `?fake` installs them from `src/routes/dev-fakes.ts` with every feature on, where `fixtures:<feature>` picks the state a fake serves (`empty`, `error`, `slow`, `offline`, `unsupported`), and the e2e suite serves the same APIs over `context.route` (`e2e/fixture-routes.ts`).
 
 A screen is built from `ui/screen` (`Screen`, `ListScreen`, `DetailScreen`, `ScreenState`) inside the root layout's `Shell`, with data from a feature store (`core/remote.svelte.ts` for fetched data, `core/realtime/hub.svelte.ts` for the stream). Sheets are `ui/sheet/routed-sheet.svelte`, opened through `core/nav/sheet.ts` so Android back closes them. Screens, their `components/` and `render/` take props and callbacks only, so the prototype board and the e2e harness can render them from fixtures.
 
 ## Topic conversations
 
-The bot serves topic conversations when `WEB_FEATURES` includes `threads`.
+Topic conversations are available automatically in the owner web app.
 Each topic has a separate persisted workspace session and chat stream.
 See [Topic threads](docs/topic-threads.md) for routing, shared memory, lifecycle, and tests.
 
 ## Memory browser
 
-The bot serves read-only Memory when `WEB_FEATURES` includes `memory`. Long-term shows
+Read-only Memory is available automatically in the owner web app. Long-term shows
 `USER.md`, `MEMORY.md`, `DREAMS.md` and other markdown under the workspace's `memory/`.
 Daily notes shows `memory/YYYY-MM-DD.md`; History holds work recaps and run records.
 The browser reads the real workspace files and offers file-name search. It does not

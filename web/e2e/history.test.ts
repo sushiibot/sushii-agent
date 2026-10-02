@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { fakeBackend } from './fake-backend';
-import { axe, horizontalOverflow, smallTargets, stubStream, openDrawer } from './helpers';
+import { axe, horizontalOverflow, smallTargets, stubStream } from './helpers';
 
 /** The app on fixtures; `opts` picks what the fake backend's History and search routes answer. */
 async function server(context: BrowserContext, opts: Parameters<typeof fakeBackend>[1] = {}) {
@@ -175,21 +175,6 @@ test('a search that fails offers Retry', async ({ page, context }) => {
 	backend.set('search', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(rows(page)).toHaveCount(6);
-});
-
-test('with History turned off on the bot, its screens and search send you to the chat', async ({
-	page,
-	context
-}) => {
-	await server(context, { features: ['runs', 'home', 'alerts'] });
-	for (const path of ['/history', '/history/search?q=eastside']) {
-		await page.goto(path);
-		await expect(page).toHaveURL(/\/chat$/);
-		await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-	}
-	const menu = await openDrawer(page);
-	await expect(menu.getByRole('link', { name: /Runs/ })).toBeVisible();
-	await expect(menu.getByRole('link', { name: /History/ })).toBeHidden();
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {

@@ -5,7 +5,6 @@
 	import { untrack } from 'svelte';
 	import { backgroundWork } from './background.svelte';
 	import { request } from '$lib/core/http';
-	import { features } from '$lib/core/features.svelte';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { Button } from '$lib/ui/button';
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
@@ -37,7 +36,6 @@
 	const shown = $derived(
 		runs.filter((r) => (turnId ? r.turnId === turnId : r.status === 'running'))
 	);
-	const enabled = $derived(features.has('runs'));
 	async function refresh() {
 		await work.refresh();
 		if (selected) {
@@ -93,7 +91,6 @@
 	}
 	$effect(() => {
 		const current = work;
-		if (!enabled) return;
 		const off = untrack(() => current.connect());
 		return off;
 	});
@@ -104,7 +101,7 @@
 	});
 </script>
 
-{#if enabled && shown.length}
+{#if shown.length}
 	{#if compact}
 		<details class="border-t px-4 text-sm" data-background-work>
 			<summary class="flex min-h-12 cursor-pointer items-center gap-2 text-muted-foreground">

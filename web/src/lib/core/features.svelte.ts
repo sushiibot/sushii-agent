@@ -1,57 +1,28 @@
 import { api } from './api';
 import { WEB_FEATURES, type WebFeature } from './realtime/events';
 
-/**
- * Screens that have no backend yet. The bot never lists them in /api/me, so they show only
- * through the device override; a backend adds its id to WEB_FEATURES when it ships.
- */
-export const CLIENT_FEATURES = [
-	'skills',
-	'schedules',
-	'browser',
-	'briefing',
-	'connectors'
-] as const;
+/** Fixture-only screens; live screens are always available. */
+export const CLIENT_FEATURES = ['skills', 'schedules', 'browser', 'briefing'] as const;
 export type ClientFeature = (typeof CLIENT_FEATURES)[number];
 export type AppFeature = WebFeature | ClientFeature;
 export const ALL_FEATURES: readonly AppFeature[] = [...WEB_FEATURES, ...CLIENT_FEATURES];
 
-const KEY = 'web-features';
-/** `all`, or a comma list of feature ids, turned on on this device whatever the bot says. */
+/** Device previews for screens that do not yet have a backend. */
 export const OVERRIDE_KEY = 'features:override';
 
-const isWeb = (f: string): f is WebFeature => (WEB_FEATURES as readonly string[]).includes(f);
-
-function cached(): WebFeature[] | null {
-	try {
-		const raw: unknown = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-		return Array.isArray(raw) ? raw.filter((f): f is WebFeature => isWeb(f)) : null;
-	} catch {
-		return null;
-	}
-}
-
-function remember(list: readonly WebFeature[]) {
-	try {
-		localStorage.setItem(KEY, JSON.stringify(list));
-	} catch {
-		// Only a faster first paint next time.
-	}
-}
-
-export function parseOverride(raw: string | null): ReadonlySet<AppFeature> {
+export function parseOverride(raw: string | null): ReadonlySet<ClientFeature> {
 	if (!raw?.trim()) return new Set();
-	if (raw.trim() === 'all') return new Set(ALL_FEATURES);
-	const known = new Set<string>(ALL_FEATURES);
+	if (raw.trim() === 'all') return new Set(CLIENT_FEATURES);
+	const known = new Set<string>(CLIENT_FEATURES);
 	return new Set(
 		raw
 			.split(',')
 			.map((s) => s.trim())
-			.filter((f): f is AppFeature => known.has(f))
+			.filter((f): f is ClientFeature => known.has(f))
 	);
 }
 
-function storedOverride(): ReadonlySet<AppFeature> {
+function storedOverride(): ReadonlySet<ClientFeature> {
 	try {
 		return parseOverride(localStorage.getItem(OVERRIDE_KEY));
 	} catch {
@@ -59,46 +30,26 @@ function storedOverride(): ReadonlySet<AppFeature> {
 	}
 }
 
-/** The slices that are on: what the bot lists in `GET /api/me`, plus this device's override. */
+/** Dictation capability and local previews; live routes never depend on /api/me. */
 export class Features {
-	/** null until known; an earlier visit's answer stands in until this visit's arrives. */
-	list = $state.raw<readonly WebFeature[] | null>(null);
-	/** This visit's /api/me has answered. */
 	fresh = $state(false);
-	/** Turned on here for fixture screens, whatever the bot says. */
-	override = $state.raw<ReadonlySet<AppFeature>>(new Set());
+	override = $state.raw<ReadonlySet<ClientFeature>>(new Set());
 	/** The bot can turn speech into text (POST /api/dictation). */
 	dictation = $state(false);
 
-	#load: () => Promise<{ features?: WebFeature[]; dictation?: boolean }>;
+	#load: () => Promise<{ dictation?: boolean }>;
 	#inflight: Promise<void> | null = null;
 
-	constructor(
-		load: () => Promise<{ features?: WebFeature[]; dictation?: boolean }> = api.me,
-		initial = cached(),
-		override = storedOverride()
-	) {
+	constructor(load: () => Promise<{ dictation?: boolean }> = api.me, override = storedOverride()) {
 		this.#load = load;
-		this.list = initial;
 		this.override = override;
 	}
 
-	/** Shown in the nav: on as far as anything says. */
-	has = (f: AppFeature | undefined): boolean =>
-		!f || this.override.has(f) || (isWeb(f) && (this.list?.includes(f) ?? false));
-
-	/**
-	 * Known to be off right now, so its screens send you Home. Unknown is never off: a bot
-	 * feature counts as off only once this visit's /api/me has answered. A client feature has no
-	 * bot answer to wait for, so without the override it is off.
-	 */
-	off(f: AppFeature): boolean {
-		if (this.has(f)) return false;
-		return isWeb(f) ? this.fresh : true;
-	}
+	/** Fixture previews enabled on this device. */
+	has = (f: ClientFeature | undefined): boolean => !f || this.override.has(f);
 
 	/** Turns fixture screens on for this device; `null` clears it. */
-	setOverride(value: 'all' | AppFeature[] | null) {
+	setOverride(value: 'all' | ClientFeature[] | null) {
 		const raw = value === null ? null : value === 'all' ? 'all' : value.join(',');
 		try {
 			if (raw === null) localStorage.removeItem(OVERRIDE_KEY);
@@ -114,11 +65,8 @@ export class Features {
 		if (this.fresh) return Promise.resolve();
 		return (this.#inflight ??= this.#load()
 			.then((me) => {
-				const list = WEB_FEATURES.filter((f) => me.features?.includes(f));
-				this.list = list;
 				this.dictation = me.dictation === true;
 				this.fresh = true;
-				remember(list);
 			})
 			.catch(() => {
 				// Keep what we had; offline or not signed in yet.

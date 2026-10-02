@@ -15,7 +15,7 @@ Owner-only SvelteKit SPA (PWA) served by the bot's web gateway at agent.sushii.b
 Structure and rules: `web/README.md`, `web/docs/ux-guidelines.md`. Gate from `web/`: `bun run check`,
 `bun run lint` (prettier + raw-HTML, token and import-boundary checks + unit tests), `bun run build`,
 `bun run test:e2e` (ports via `PW_PORT` / `PW_HARNESS_PORT`). Dev with sample data: `bun dev`, then `?fake`.
-Screens not yet backed by the bot are hidden by feature flags; the bot's `WEB_FEATURES` lists the live ones.
+All live screens are available automatically. Fixture-only screens stay in the development preview until their APIs exist.
 
 ## End-to-end system tests (`e2e-system/`)
 

@@ -83,10 +83,9 @@ Concurrent agents still operate on the same workspace. Topic separation does not
 The initial implementation does not attribute individual memory edits to topics.
 The memory audit and undo screens remain separate features.
 
-## Enable and test
+## Test
 
-After both bot and workspace support topics, add `threads` to the bot's `WEB_FEATURES` configuration.
-The feature stays hidden without this flag.
+Topic conversations are available automatically when the web gateway is enabled.
 
 Run the normal repository and web checks. Run `bun run e2e:system threads.e2e.ts` for the real topic flow.
 The system flows cover branching, streaming, history isolation, workspace restart, archiving, resuming, independent Stop, and topic approvals.

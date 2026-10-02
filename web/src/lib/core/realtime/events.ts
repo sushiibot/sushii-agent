@@ -29,7 +29,7 @@ export const HOME_RECENT_HOURS = 72;
 /** Per Home run list (`running`, `failedRuns`, `review`). */
 export const HOME_RUNS_MAX = 20;
 
-/** Slices the bot turns on with `WEB_FEATURES`. A route whose feature is off answers 404. */
+/** Supported live screens advertised to compatibility clients; all implemented screens are available. */
 export const WEB_FEATURES = [
 	'runs',
 	'history',

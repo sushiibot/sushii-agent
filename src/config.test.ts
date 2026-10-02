@@ -153,7 +153,6 @@ describe("parseWebConfig", () => {
       devLogin: undefined,
       trustedPeers: ["127.0.0.1"],
       push: undefined,
-      features: [],
     });
   });
 

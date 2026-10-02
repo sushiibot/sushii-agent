@@ -1,7 +1,7 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { runDetailPage } from '../src/lib/features/runs/fixtures';
 import { fakeBackend, type Scenario } from './fake-backend';
-import { axe, horizontalOverflow, push, smallTargets, stubStream, openDrawer } from './helpers';
+import { axe, horizontalOverflow, push, smallTargets, stubStream } from './helpers';
 
 const RUN = {
 	triage: '01K6B4D2F4H6K8M0P2R4T6V8X0',
@@ -15,7 +15,7 @@ const RUN = {
 async function server(
 	context: BrowserContext,
 	runs?: Scenario,
-	opts: Pick<Parameters<typeof fakeBackend>[1], 'features' | 'now'> = {}
+	opts: Pick<Parameters<typeof fakeBackend>[1], 'now'> = {}
 ) {
 	await stubStream(context);
 	await context.route('**/api/**', (route) => {
@@ -161,19 +161,6 @@ test("a run event changes the run's status on screen without a reload", async ({
 	backend.setRunStatus(RUN.triage, 'done');
 	await push(page, 'run', { runId: RUN.triage, kind: 'subagent', status: 'done' });
 	await expect(triage).toContainText('Done');
-});
-
-test('with Runs turned off on the bot, its screens send you to the chat', async ({
-	page,
-	context
-}) => {
-	await server(context, undefined, { features: ['history', 'home', 'alerts'] });
-	await page.goto(`/runs/${RUN.triage}`);
-	await expect(page).toHaveURL(/\/chat$/);
-	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-	const menu = await openDrawer(page);
-	await expect(menu.getByRole('link', { name: /History/ })).toBeVisible();
-	await expect(menu.getByRole('link', { name: /Runs/ })).toBeHidden();
 });
 
 test('offline, the list keeps what it had and shows the banner', async ({ page, context }) => {

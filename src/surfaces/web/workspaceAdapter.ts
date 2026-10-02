@@ -23,7 +23,7 @@ import {
 import { getLogger } from "../../logger.ts";
 import { WEB_SURFACE } from "./actor.ts";
 import type { SqliteChatLog } from "./chatLog.ts";
-import { isHttpsUrl, MESSAGE_TEXT_MAX, type ApprovalDecision as WireDecision, type TurnView, type UploadRef, type WebFeature } from "./events.ts";
+import { isHttpsUrl, MESSAGE_TEXT_MAX, type ApprovalDecision as WireDecision, type TurnView, type UploadRef } from "./events.ts";
 import type { WebHomeStore } from "./homeStore.ts";
 import type { WebInboundStore } from "./inbound.ts";
 import type { Presence } from "./presence.ts";
@@ -75,8 +75,6 @@ export interface WebAdapterDeps {
   uploads?: WebUploadPort;
   /** Job-alert streaks and job messages for Home; without it both show in the chat. */
   home?: Pick<WebHomeStore, "applyAlert" | "addMessage" | "hasMessage">;
-  /** WEB_FEATURES; `alerts` turns on the job-alert push, `home` files job messages on Home. Default none. */
-  features?: readonly WebFeature[];
   now?: () => number;
   timers?: Timers;
   appendBudget?: { burst: number; perSec: number };
@@ -172,7 +170,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     this.checkOrigin(origin);
     const key = outboxKey(attempt);
     // The last plain try goes to the chat, so a failing inbox never keeps a message unseen.
-    if (reply.kind === "proactive" && reply.job && this.deps.home && this.deps.features?.includes("home") && !attempt.plain) return this.fileMessage(key, reply.text, reply.job);
+    if (reply.kind === "proactive" && reply.job && this.deps.home && !attempt.plain) return this.fileMessage(key, reply.text, reply.job);
     if (this.deps.log.find(reply.kind, key) || (reply.job && this.deps.home?.hasMessage(key))) return;
     this.spend();
     const { files, dropped } = await this.storeFiles(reply.files ?? [], key);
@@ -252,9 +250,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     });
     // A stale alert is about a run older than one already reported: it stays in the chat, silently.
     if (!created || change === "stale") return;
-    // With the flag off a job alert still pushes, as the chat message it was before structured alerts.
-    if (!this.deps.features?.includes("alerts")) void this.notify(seq, { kind: "proactive", text: shown });
-    else if (alert.kind !== "recovered") void this.notify(seq, { kind: "alert", alert: { job: alert.job, kind: alert.kind, ...(alert.error ? { error: alert.error } : {}) } });
+    if (alert.kind !== "recovered") void this.notify(seq, { kind: "alert", alert: { job: alert.job, kind: alert.kind, ...(alert.error ? { error: alert.error } : {}) } });
     else if (change === "cleared") void this.notify(seq, { kind: "alertRecovered", job: alert.job });
   }
 

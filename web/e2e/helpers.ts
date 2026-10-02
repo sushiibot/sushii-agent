@@ -157,7 +157,7 @@ export const streamRequests = (page: Page) =>
 	page.evaluate(() => (window as unknown as SseWindow).__sse.requests);
 
 /**
- * The app with every slice turned on through the device override, the M2/M3 routes from the shared
+ * The app with fixture previews enabled through the device override, the live routes from the shared
  * fake backend and the fixture screens' routes from their fixture APIs. `fixtures` picks the state
  * a fixture feature serves; the returned handle changes it mid-test.
  */

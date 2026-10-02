@@ -6,7 +6,7 @@ import { RpcErrorReply, RpcTimeoutError } from "../../orchestration/transport/se
 import { getLogger } from "../../logger.ts";
 import type { SqliteChatLog } from "./chatLog.ts";
 import { PENDING_ASKS_MAX } from "./chatRoutes.ts";
-import { HOME_RECENT_HOURS, HOME_RUNS_MAX, type HomeResponse, type TurnView, type WebFeature } from "./events.ts";
+import { HOME_RECENT_HOURS, HOME_RUNS_MAX, type HomeResponse, type TurnView } from "./events.ts";
 import type { WebHomeStore } from "./homeStore.ts";
 import { isJson, json, readJson } from "./http.ts";
 
@@ -37,7 +37,6 @@ export interface HomeRouteDeps {
   store: WebHomeStore;
   link: HomeLink;
   workspaceEnabled: boolean;
-  features: readonly WebFeature[];
   now?: () => number;
   workspaceTimeoutMs?: number;
 }
@@ -117,7 +116,7 @@ export function createHomeRoutes(deps: HomeRouteDeps): HomeRoutes {
       asOf: new Date(t).toISOString(),
       waiting: { approvals: pending.approvals, asks: pending.asks, auth: pendingAuth() },
       openTurns: deps.adapter.openTurns(),
-      failed: deps.features.includes("alerts") ? store.openAlerts() : [],
+      failed: store.openAlerts(),
       inbox: store.messages(),
       workspace: await workspacePart(),
     };
