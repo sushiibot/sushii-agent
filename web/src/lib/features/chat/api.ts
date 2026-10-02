@@ -19,6 +19,8 @@ export interface ChatApi {
 	postMessage(body: PostMessageBody): Promise<PostMessageResponse>;
 	/** Asks the bot to never deliver a posted message. `unknown`: it never stored it. */
 	discardMessage(clientId: string): Promise<'discarded' | 'routed' | 'unknown'>;
+	/** Routes a queued message now: it joins the running turn instead of waiting for it to end. */
+	steerMessage(clientId: string): Promise<PostMessageResponse>;
 	stop(turnId?: string): Promise<void>;
 	command(command: 'new' | 'compact'): Promise<void>;
 	answerAsk(askId: string, body: PostAskBody): Promise<PostAskResponse>;
@@ -64,6 +66,9 @@ export function createHttpChatApi(base = '/chat'): ChatApi {
 				if (err instanceof HttpError && err.status === 404) return 'unknown';
 				throw err;
 			}
+		},
+		async steerMessage(clientId) {
+			return json(await send('POST', `${base}/messages/${encodeURIComponent(clientId)}/steer`));
 		},
 		async stop(turnId) {
 			await send('POST', `${base}/stop`, turnId ? { turnId } : {});

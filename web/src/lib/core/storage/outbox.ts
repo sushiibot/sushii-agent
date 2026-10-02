@@ -11,9 +11,6 @@ export interface OutboxEntry {
 	posted: boolean;
 	/** A POST went out at least once. Its 202 may have been lost, so the bot may hold the message. */
 	attempted?: boolean;
-	/** Held on this device because a turn was running when it was sent; it posts when the turn ends.
-	 *  Kept across a reload, so a message written mid-run stays held after the app restarts. */
-	holdForTurn?: boolean;
 	/** Refused (by the workspace or the bot); only the owner's Retry sends it again, even after a reload. */
 	failed?: boolean;
 }
