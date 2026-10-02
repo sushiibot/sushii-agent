@@ -1919,7 +1919,7 @@ for (const width of [412, 1280]) {
 		await expect(request).toHaveCount(0);
 		const call = page.locator('[data-tool-call="send-call"]');
 		await expect(call).toContainText('Running');
-		await expect(call.locator('summary')).not.toContainText('Approved');
+		await expect(call.locator('summary')).toContainText('Approved');
 		await call.locator('summary').click();
 		await expect(call).toContainText('Approved');
 		await page.screenshot({ path: `/tmp/chat-approval-resolved-${width}.png` });
@@ -1987,3 +1987,117 @@ for (const width of [320, 412, 1280]) {
 		await page.screenshot({ path: `/tmp/chat-grouped-tools-${width}.png` });
 	});
 }
+
+for (const width of [412, 1280]) {
+	for (const theme of ['light', 'dark'] as const) {
+		test(`typed confirmation follows its call lifecycle at ${width}px in ${theme}`, async ({
+			page,
+			context
+		}) => {
+			await chatServer(context);
+			await page.setViewportSize({ width, height: 915 });
+			await page.emulateMedia({ colorScheme: theme });
+			await open(page);
+			await push(page, 'delta', { turnId: 'confirm-turn', offset: 0, text: 'Checking status.' });
+			await push(
+				page,
+				'ask',
+				{
+					key: 'confirm-ask',
+					askId: 'confirm-ask',
+					question: 'Allow command?',
+					choices: ['Yes', 'No'],
+					toolConfirmation: {
+						tool: 'bash',
+						input: 'ws-consolidate --status',
+						reason: 'Review the command',
+						toolCallId: 'confirm-call'
+					}
+				},
+				1
+			);
+			const confirmation = page.locator('[data-surface="tool-confirmation"]');
+			await expect(confirmation).toContainText('Approval needed');
+			await expect(confirmation).toContainText('ws-consolidate --status');
+			await page.screenshot({ path: `/tmp/chat-confirmation-pending-${width}-${theme}.png` });
+			await confirmation.getByRole('button', { name: 'Approve', exact: true }).click();
+			await push(page, 'ask_resolved', { askId: 'confirm-ask', answer: 'Yes' }, 2);
+			await expect(confirmation).toContainText('Approved');
+			await expect(confirmation.locator('summary')).not.toContainText('Finished');
+			await push(page, 'tool', {
+				turnId: 'confirm-turn',
+				id: 'confirm-call',
+				name: 'bash',
+				summary: 'ws-consolidate --status',
+				textOffset: 16,
+				ok: true
+			});
+			await push(page, 'tool', {
+				turnId: 'confirm-turn',
+				id: 'next-call',
+				name: 'read',
+				summary: 'Read next file',
+				textOffset: 16
+			});
+			await expect(confirmation).toHaveCount(0);
+			const executed = page.locator('[data-tool-call="confirm-call"]');
+			await expect(executed.locator('summary')).toContainText('Approved');
+			await expect(executed.locator('summary')).toContainText('Finished');
+			await expect(page.locator('[data-tool-call="next-call"]')).toBeVisible();
+			expect(
+				await page.evaluate(() => {
+					const a = document.querySelector('[data-tool-call="confirm-call"]')!;
+					const b = document.querySelector('[data-tool-call="next-call"]')!;
+					return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+				})
+			).toBe(true);
+			await page.screenshot({ path: `/tmp/chat-confirmation-resolved-${width}-${theme}.png` });
+			await executed.locator('summary').click();
+			await expect(executed).toContainText('Reason');
+			await expect(executed).toContainText('Review the command');
+			expect(
+				await page.evaluate(
+					() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+				)
+			).toBe(true);
+		});
+	}
+}
+
+test('another-device decision with a long command reflows at 320px', async ({ page, context }) => {
+	await chatServer(context);
+	await page.setViewportSize({ width: 320, height: 915 });
+	await open(page);
+	await push(page, 'tool', {
+		turnId: 'long-confirm',
+		id: 'long-call',
+		name: 'bash',
+		summary: 'Run a very long command description that must truncate safely'
+	});
+	await push(
+		page,
+		'ask',
+		{
+			key: 'long-ask',
+			askId: 'long-ask',
+			question: 'Allow?',
+			choices: ['Yes', 'No'],
+			toolConfirmation: {
+				tool: 'bash',
+				input: 'printf very-long-command-input',
+				toolCallId: 'long-call'
+			}
+		},
+		1
+	);
+	await push(page, 'ask_resolved', { askId: 'long-ask', answer: 'Yes' }, 2);
+	const summary = page.locator('[data-tool-call="long-call"] summary');
+	await expect(summary).toContainText('Approved on another device');
+	await expect(summary).toContainText('Running');
+	expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(48);
+	expect(
+		await page.evaluate(
+			() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+		)
+	).toBe(true);
+});

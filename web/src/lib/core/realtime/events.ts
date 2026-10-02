@@ -138,6 +138,13 @@ export type RouterNotice =
 
 /** Unresolved items from the bot's own log, carried on the first frame so showing them never depends
  *  on the workspace's history. */
+export interface ToolConfirmation {
+	tool: string;
+	input: string;
+	reason?: string;
+	toolCallId?: string;
+}
+
 export interface PendingState {
 	/** Approvals still waiting for a decision, oldest first. */
 	approvals: { seq: number; at: string; nonce: string; view: ApprovalView }[];
@@ -149,6 +156,7 @@ export interface PendingState {
 		askId: string;
 		question: string;
 		choices: string[];
+		toolConfirmation?: ToolConfirmation;
 	}[];
 }
 
@@ -275,7 +283,13 @@ export interface ChatEventMap {
 	status: { clientId: string; state: 'accepted' | 'steer' | 'queued' | 'stopped' | 'newSession' };
 	reply: { key: string; turnId?: string; text: string; usage?: ChatUsage; files: UploadRef[] };
 	proactive: { key: string; turnId?: string; text: string; usage?: ChatUsage; files: UploadRef[] };
-	ask: { key: string; askId: string; question: string; choices: string[] };
+	ask: {
+		key: string;
+		askId: string;
+		question: string;
+		choices: string[];
+		toolConfirmation?: ToolConfirmation;
+	};
 	/** A null `answer`: the ask is no longer waiting (it timed out, or the workspace restarted). */
 	ask_resolved: { askId: string; answer: string | null };
 	/** Render `url` as a link only when isHttpsUrl(url); otherwise as inert text. */
@@ -412,6 +426,7 @@ export type WebHistoryItem =
 			askId: string;
 			question: string;
 			choices: string[];
+			toolConfirmation?: ToolConfirmation;
 			/** Null: no longer waiting, and never answered. */
 			answer?: string | null;
 	  }

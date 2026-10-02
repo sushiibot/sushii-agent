@@ -100,7 +100,7 @@ function toItem(
     case "ask": {
       const d = (ev as StoredEvent<"ask">).data;
       const answer = ctx.answers.get(d.askId);
-      return { type: "ask", id, at, outboxId: d.key, askId: d.askId, question: d.question, choices: d.choices, ...(answer !== undefined ? { answer } : {}) };
+      return { type: "ask", id, at, outboxId: d.key, askId: d.askId, question: d.question, choices: d.choices, ...(d.toolConfirmation ? { toolConfirmation: d.toolConfirmation } : {}), ...(answer !== undefined ? { answer } : {}) };
     }
     case "approval": {
       const d = (ev as StoredEvent<"approval">).data;

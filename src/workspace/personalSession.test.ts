@@ -648,8 +648,8 @@ describe("PersonalSession outbox", () => {
     await tick();
     expect(transport.events()).toEqual([
       { type: "turn_start" },
-      { type: "tool_start", name: "bash", summary: "ls -la" },
-      { type: "tool_end", name: "bash", ok: true },
+      { type: "tool_start", name: "bash", summary: "ls -la", toolCallId: "t1" },
+      { type: "tool_end", name: "bash", ok: true, toolCallId: "t1" },
       { type: "turn_end", aborted: false },
     ]);
     const turnIds = new Set(transport.notifications.map((n) => (n.params as ChatEventParams).turnId));

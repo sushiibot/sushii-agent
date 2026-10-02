@@ -119,6 +119,8 @@ describe("auto mode on a real Pi session", () => {
     expect(seen).toContain("read: notes.txt");
     expect(seen).toContain("bash: echo built > out.txt");
     expect(seen).not.toContain("PLANTED-TOOL-OUTPUT-7731");
+    expect(seen).toContain("A request to investigate, fix, implement, or test authorizes the ordinary steps needed for that task");
+    expect(seen).toContain("Do not ask again for an action the owner already explicitly authorized");
     expect(judgeBodies[0]!.temperature).toBeUndefined();
     expect(judgeBodies[0]!.reasoning).toEqual({ effort: "low" });
     expect(judgeBodies[0]!.max_completion_tokens ?? judgeBodies[0]!.max_tokens).toBe(2000);
@@ -139,6 +141,12 @@ describe("auto mode on a real Pi session", () => {
     expect(asked).toHaveLength(2);
     expect(asked[0]!.question).toContain(`rm -rf ${target}/a`);
     expect(asked[0]!.choices).toEqual(["Yes", "No"]);
+    expect(asked[0]!.toolConfirmation).toEqual({
+      tool: "bash",
+      input: `rm -rf ${target}/a`,
+      reason: "rule rm-recursive: recursive delete (rm -r)",
+      toolCallId: expect.any(String),
+    });
     expect(existsSync(join(target, "a"))).toBe(false);
     expect(existsSync(target)).toBe(true);
     expect(toolResults(s).at(-1)).toContain("did NOT run");

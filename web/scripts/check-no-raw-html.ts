@@ -59,6 +59,8 @@ export const APPROVAL_SURFACE_FILES = new Set([
 	'src/lib/features/chat/chat-screen.svelte',
 	'src/lib/features/chat/components/approval-tray.svelte',
 	'src/lib/features/chat/components/approval-inline.svelte',
+	// Typed workspace confirmations own the permission controls; question text cannot select this surface.
+	'src/lib/features/chat/components/tool-confirmation.svelte',
 	'src/lib/features/chat/components/ask-card.svelte',
 	'src/lib/features/chat/components/conversation.svelte',
 	'src/lib/features/home/components/home-row.svelte',

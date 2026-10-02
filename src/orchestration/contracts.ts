@@ -581,7 +581,7 @@ export const chatDeliverParams = z
     replyTo: z.string().optional(),
     turnId: z.string().optional(),
     usage: chatUsage.optional(),
-    ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional() }).optional(),
+    ask: z.object({ askId: z.string(), question: z.string(), choices: z.array(z.string()).optional(), toolConfirmation: z.object({ tool: z.string().max(256), input: z.string().max(16000), reason: z.string().max(1000).optional(), toolCallId: z.string().max(256).optional() }).optional() }).optional(),
     // kind "auth": a sign-in link to open. https only: zod's url() alone accepts javascript: and data:.
     auth: z.object({ url: z.string().max(4096).refine(isHttpsUrl, "must be an https: URL"), instructions: z.string() }).optional(),
     // Set on the reply that ends a surface login, so the bot stops treating pastes as its callback.
@@ -605,8 +605,8 @@ export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;
 
 export const chatEventPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("turn_start") }),
-  z.object({ type: z.literal("tool_start"), name: z.string(), summary: z.string() }),
-  z.object({ type: z.literal("tool_end"), name: z.string(), ok: z.boolean() }),
+  z.object({ type: z.literal("tool_start"), name: z.string(), summary: z.string(), toolCallId: z.string().min(1).max(256).optional() }),
+  z.object({ type: z.literal("tool_end"), name: z.string(), ok: z.boolean(), toolCallId: z.string().min(1).max(256).optional() }),
   z.object({ type: z.literal("text_delta"), text: z.string() }),
   z.object({ type: z.literal("model_activity"), activity: z.enum(["waiting", "thinking"]) }),
   z.object({ type: z.literal("turn_end"), aborted: z.boolean() }),

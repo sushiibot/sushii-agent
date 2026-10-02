@@ -1,3 +1,4 @@
+import type { ToolConfirmation } from './types';
 // Folds history pages, durable events and streaming deltas into chat state. No I/O: side effects
 // come back as a list for the store to run, so the whole fold is testable without a browser.
 import { isDurableEvent } from '$lib/core/realtime/events';
@@ -47,6 +48,13 @@ export interface TurnState {
 	label?: string;
 }
 
+export interface ActivityAnchor {
+	assistantId: string;
+	lineIndex: number;
+	textOffset: number;
+	callIndex?: number;
+}
+
 export type ChatItem =
 	| {
 			kind: 'user';
@@ -74,6 +82,8 @@ export type ChatItem =
 	  }
 	| {
 			kind: 'ask';
+			anchor?: ActivityAnchor;
+			toolConfirmation?: ToolConfirmation;
 			id: string;
 			askId: string;
 			question: string;
@@ -83,6 +93,7 @@ export type ChatItem =
 	  }
 	| {
 			kind: 'approval';
+			anchor?: ActivityAnchor;
 			id: string;
 			nonce: string;
 			tool: string;
@@ -322,6 +333,37 @@ function resolveApproval(s: ChatState, e: ChatEventMap['approval_resolved'], fx:
 	}
 }
 
+/** Freeze the point where an interaction arrived before this assistant grows more calls/text. */
+function activityAnchor(s: ChatState, tool?: string): ActivityAnchor | undefined {
+	const assistant = s.items.findLast(
+		(i): i is Extract<ChatItem, { kind: 'assistant' }> =>
+			i.kind === 'assistant' && !!i.turn && live(i)
+	);
+	if (!assistant?.turn) return;
+	const lines = assistant.turn.lines;
+	const used = new Set(
+		s.items.flatMap((i) =>
+			i.kind === 'approval' &&
+			i.anchor?.assistantId === assistant.id &&
+			i.anchor.callIndex !== undefined
+				? [i.anchor.callIndex]
+				: []
+		)
+	);
+	const matching = tool
+		? lines.findLastIndex(
+				(line, index) =>
+					!line.agentId && line.name === tool && line.state === 'run' && !used.has(index)
+			)
+		: -1;
+	return {
+		assistantId: assistant.id,
+		lineIndex: lines.length,
+		textOffset: assistant.text.length,
+		...(matching >= 0 ? { callIndex: matching } : {})
+	};
+}
+
 function addApproval(s: ChatState, nonce: string, view: ApprovalView) {
 	if (!s.approvals.some((a) => a.nonce === nonce)) s.approvals = [...s.approvals, { nonce, view }];
 }
@@ -359,6 +401,7 @@ function applyPending(s: ChatState, p: PendingState) {
 			id: `${PENDING_ASK_PREFIX}${a.askId}`,
 			askId: a.askId,
 			question: a.question,
+			toolConfirmation: a.toolConfirmation,
 			choices: a.choices,
 			state: 'pending'
 		});
@@ -549,6 +592,8 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 				id: uid(s, 'ask'),
 				askId: ev.data.askId,
 				question: ev.data.question,
+				anchor: activityAnchor(s),
+				toolConfirmation: ev.data.toolConfirmation,
 				choices: ev.data.choices,
 				state: 'pending'
 			});
@@ -591,6 +636,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 				id: uid(s, 'approval'),
 				nonce: ev.data.nonce,
 				tool: ev.data.view.tool,
+				anchor: activityAnchor(s, ev.data.view.tool),
 				outcome: 'pending'
 			});
 			break;
@@ -711,6 +757,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 				id: `h:${h.id}`,
 				askId: h.askId,
 				question: h.question,
+				toolConfirmation: h.toolConfirmation,
 				choices: h.choices,
 				// Only an ask with no answer yet is still answerable; a null answer is a dead ask.
 				state: h.answer === undefined ? 'pending' : 'history',

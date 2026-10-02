@@ -212,7 +212,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
         askId = "";
       }
       const choices = askId ? ask.choices.slice(0, ASK_CHOICES_MAX).map((c) => capText(c, ID_MAX)) : [];
-      return { ...this.deps.log.appendResult("ask", { key, askId, question: capText(ask.question, MESSAGE_TEXT_MAX), choices }, key), askId };
+      return { ...this.deps.log.appendResult("ask", { key, askId, question: capText(ask.question, MESSAGE_TEXT_MAX), choices, ...(ask.toolConfirmation ? { toolConfirmation: { tool: capText(ask.toolConfirmation.tool, ID_MAX), input: capText(ask.toolConfirmation.input, MESSAGE_TEXT_MAX), ...(ask.toolConfirmation.reason ? { reason: capText(ask.toolConfirmation.reason, 1000) } : {}), ...(ask.toolConfirmation.toolCallId ? { toolCallId: capText(ask.toolConfirmation.toolCallId, ID_MAX) } : {}) } } : {}) }, key), askId };
     });
     if (created) void this.notify(seq, { kind: "ask", askId, question: ask.question });
   }

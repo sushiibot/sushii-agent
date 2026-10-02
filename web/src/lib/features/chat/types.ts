@@ -20,7 +20,11 @@ export type MessagePart =
 	| { type: 'data-turn'; data: Turn }
 	| {
 			type: 'data-tool';
-			data: TurnStep & { approval?: { tool: string; outcome: ApprovalOutcome; nonce?: string } };
+			data: TurnStep & {
+				approval?: { tool: string; outcome: ApprovalOutcome; nonce?: string };
+				approvalReason?: string;
+				confirmation?: AskView;
+			};
 	  }
 	| { type: 'data-approval'; data: { tool: string; outcome: ApprovalOutcome; nonce?: string } }
 	| { type: 'data-ask'; data: AskView }
@@ -107,7 +111,15 @@ export type ApprovalOutcome =
 
 export type AskState = 'pending' | 'answering' | 'answered' | 'elsewhere' | 'history';
 
+export interface ToolConfirmation {
+	tool: string;
+	input: string;
+	reason?: string;
+	toolCallId?: string;
+}
+
 export interface AskView {
+	toolConfirmation?: ToolConfirmation;
 	askId: string;
 	question: string;
 	choices: string[];

@@ -1173,3 +1173,16 @@ describe("upload/read through the link", () => {
     expect(seen).toEqual([params]);
   });
 });
+
+
+test("same-name tool results complete only the matching Pi call, with legacy IDs retained", async () => {
+  const { link, event, test: adapter } = setup();
+  event("t1", { type: "tool_start", name: "bash", summary: "first", toolCallId: "call1" }, TEST);
+  event("t1", { type: "tool_start", name: "bash", summary: "second", toolCallId: "call2" }, TEST);
+  event("t1", { type: "tool_end", name: "bash", ok: false, toolCallId: "call2" }, TEST);
+  await link.settled();
+  expect((adapter.of("progressUpdate").at(-1)!.arg as { view: ProgressView }).view.lines).toMatchObject([{ id: "call1", state: "run" }, { id: "call2", state: "err" }]);
+  event("t1", { type: "tool_start", name: "read", summary: "legacy" }, TEST);
+  await link.settled();
+  expect((adapter.of("progressUpdate").at(-1)!.arg as { view: ProgressView }).view.lines[2]?.id).toBe("t1:2");
+});

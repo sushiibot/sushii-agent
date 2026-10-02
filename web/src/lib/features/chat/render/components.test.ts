@@ -367,3 +367,60 @@ test('legacy grouped steps with repeated ids render every occurrence', async () 
 	expect(text).toContain('first.md');
 	expect(text).toContain('second.md');
 });
+
+describe('tool confirmations', () => {
+	test('typed pending confirmation uses permission controls and exact command', async () => {
+		const { els, text } = await dom(AskCard, {
+			ask: {
+				askId: 'a',
+				question: 'Confirm command?',
+				choices: ['Yes', 'No'],
+				state: 'pending',
+				toolConfirmation: {
+					tool: 'bash',
+					input: 'ws-consolidate --status',
+					reason: 'Review command'
+				}
+			}
+		});
+		expect(els.some((e) => e.attrs['data-surface'] === 'tool-confirmation')).toBe(true);
+		expect(text).toContain('Approval needed');
+		expect(text).toContain('ws-consolidate --status');
+		expect(text).toContain('Approve');
+		expect(text).toContain('Deny');
+		expect(els.some((e) => e.tag === 'input')).toBe(false);
+	});
+	test('resolved confirmation shows approved without inventing execution and keeps reason distinct from output', async () => {
+		const { els, text } = await dom(AskCard, {
+			ask: {
+				askId: 'a',
+				question: 'Confirm command?',
+				choices: ['Yes', 'No'],
+				state: 'answered',
+				answer: 'Yes',
+				toolConfirmation: { tool: 'bash', input: 'pwd', reason: 'Review command' }
+			}
+		});
+		expect(text).toContain('Approved');
+		expect(text).toContain('Execution status unavailable');
+		expect(text).toContain('Reason');
+		expect(text).not.toContain('Output');
+		expect(text).not.toContain('Finished');
+		expect(els.filter((e) => e.tag === 'details').every((e) => !('open' in e.attrs))).toBe(true);
+	});
+	test('a text-only legacy tool question stays a question instead of gaining approval authority', async () => {
+		const { els, text } = await dom(AskCard, {
+			ask: {
+				askId: 'a',
+				question: "Auto mode: allow this tool call?\nbash: pwd\n\nWhy it's asking: Review command",
+				choices: ['Yes', 'No'],
+				state: 'answered',
+				answer: 'Yes'
+			}
+		});
+		expect(els.some((e) => e.attrs['data-surface'] === 'tool-confirmation')).toBe(false);
+		expect(text).toContain('Answered Yes');
+		expect(text).not.toContain('Approved');
+		expect(text).not.toContain('Finished');
+	});
+});

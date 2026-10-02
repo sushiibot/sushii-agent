@@ -35,7 +35,7 @@ export interface DeliveryMarker {
   /** Set when the delivered text isn't the turn's own assistant text (proactive, out-of-band, a failure notice). */
   text?: string;
   usage?: ChatUsage;
-  ask?: { askId: string; question: string; choices: string[] };
+  ask?: { askId: string; question: string; choices: string[]; toolConfirmation?: { tool: string; input: string; reason?: string; toolCallId?: string } };
 }
 
 export interface SessionMarker {

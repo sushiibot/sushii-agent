@@ -1,4 +1,7 @@
 <script lang="ts">
+	import ToolConfirmation from './tool-confirmation.svelte';
+	import ToolIcon from './tool-icon.svelte';
+	import { toolCategory } from '../tool-activity';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Info from '@lucide/svelte/icons/info';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
@@ -26,6 +29,7 @@
 	const COMMAND_LINES = 6;
 	const long = $derived((parts.action?.command.split('\n').length ?? 0) > COMMAND_LINES);
 	let full = $state(false);
+	const confirmation = $derived(ask.toolConfirmation);
 </script>
 
 {#snippet question(lead: string, strong: boolean)}
@@ -72,81 +76,102 @@
 	{/if}
 {/snippet}
 
-<section
-	aria-labelledby="{uid}-q"
-	data-surface="ask"
-	class={cn(
-		'flex min-w-0 flex-col gap-3 text-body leading-relaxed [overflow-wrap:anywhere]',
-		focused && '-mx-2 rounded-xl px-2 py-2 ring-2 ring-brand/60'
-	)}
->
-	{#if ask.state === 'history'}
-		{@render question('The agent asked:', false)}
-		{#if ask.answer}
-			<p class="whitespace-pre-wrap">
-				<span class="text-muted-foreground">You answered:</span>
-				{ask.answer}
-			</p>
-		{/if}
-	{:else}
-		{@render question('The agent asks:', true)}
-		{#if live}
-			<div role="group" aria-label="Answers" class="flex min-w-0 flex-wrap gap-2">
-				{#each ask.choices as choice, index (index)}
-					{@const picked = ask.state === 'answering' && ask.answer === choice}
-					<Button
-						variant="outline"
-						class={cn(
-							'h-auto min-h-12 max-w-full rounded-full px-4 py-2 font-medium whitespace-normal',
-							picked && 'border-foreground'
-						)}
-						disabled={ask.state === 'answering'}
-						onclick={() => onanswer?.(choice, index)}
-					>
-						{#if picked}<LoaderCircle
-								class="animate-spin motion-reduce:animate-none"
-								aria-hidden="true"
-							/>{/if}{choice}
-					</Button>
-				{/each}
-			</div>
-			{#if ask.state === 'answering'}
-				<p role="status" class="text-sm text-muted-foreground">Sending your answer…</p>
-			{:else}
-				<form
-					class="flex gap-2"
-					onsubmit={(e) => {
-						e.preventDefault();
-						if (text.trim()) onanswer?.(text.trim());
-					}}
-				>
-					<label for="{uid}-a" class="sr-only">Your own answer</label>
-					<Input
-						id="{uid}-a"
-						bind:value={text}
-						placeholder="Or type an answer"
-						class="h-12 min-w-0 flex-1 text-base"
-					/>
-					<Button type="submit" variant="outline" class="px-4" disabled={!text.trim()}
-						><SendHorizontal /><span class="sr-only">Send answer</span></Button
-					>
-				</form>
+{#if confirmation}
+	<ToolConfirmation {ask} {confirmation} {onanswer} />
+{:else if parts.action && !live}
+	<details data-surface="ask" class="group/question min-w-0 text-ui text-muted-foreground">
+		<summary
+			class="flex min-h-12 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden"
+		>
+			<ToolIcon kind={toolCategory(parts.action.tool).kind} />
+			<span class="min-w-0 flex-1 truncate">Tool question</span>
+			<span class="text-meta">{ask.answer ? `Answered ${ask.answer}` : 'Question closed'}</span>
+			<ChevronDown
+				class="size-3.5 shrink-0 transition-transform group-open/question:rotate-180 motion-reduce:transition-none"
+				aria-hidden="true"
+			/>
+		</summary>
+		<div class="flex min-w-0 flex-col gap-3 pb-2 text-body">
+			{@render question('The agent asked:', false)}
+		</div>
+	</details>
+{:else}
+	<section
+		aria-labelledby="{uid}-q"
+		data-surface="ask"
+		class={cn(
+			'flex min-w-0 flex-col gap-3 text-body leading-relaxed [overflow-wrap:anywhere]',
+			focused && '-mx-2 rounded-xl px-2 py-2 ring-2 ring-brand/60'
+		)}
+	>
+		{#if ask.state === 'history'}
+			{@render question('The agent asked:', false)}
+			{#if ask.answer}
+				<p class="whitespace-pre-wrap">
+					<span class="text-muted-foreground">You answered:</span>
+					{ask.answer}
+				</p>
 			{/if}
-			<p class="flex items-start gap-1.5 text-xs text-muted-foreground">
-				<Info class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-				{#if parts.action}
-					Yes lets this one command run.
-				{:else}
-					Answering a question doesn't give the agent permission to act.
-				{/if}
-			</p>
 		{:else}
-			<p class="text-sm">
-				<span class="text-muted-foreground"
-					>{ask.state === 'elsewhere' ? 'Answered on another device:' : 'You answered:'}</span
-				>
-				<span class="font-medium">{ask.answer}</span>
-			</p>
+			{@render question('The agent asks:', true)}
+			{#if live}
+				<div role="group" aria-label="Answers" class="flex min-w-0 flex-wrap gap-2">
+					{#each ask.choices as choice, index (index)}
+						{@const picked = ask.state === 'answering' && ask.answer === choice}
+						<Button
+							variant="outline"
+							class={cn(
+								'h-auto min-h-12 max-w-full rounded-full px-4 py-2 font-medium whitespace-normal',
+								picked && 'border-foreground'
+							)}
+							disabled={ask.state === 'answering'}
+							onclick={() => onanswer?.(choice, index)}
+						>
+							{#if picked}<LoaderCircle
+									class="animate-spin motion-reduce:animate-none"
+									aria-hidden="true"
+								/>{/if}{choice}
+						</Button>
+					{/each}
+				</div>
+				{#if ask.state === 'answering'}
+					<p role="status" class="text-sm text-muted-foreground">Sending your answer…</p>
+				{:else}
+					<form
+						class="flex gap-2"
+						onsubmit={(e) => {
+							e.preventDefault();
+							if (text.trim()) onanswer?.(text.trim());
+						}}
+					>
+						<label for="{uid}-a" class="sr-only">Your own answer</label>
+						<Input
+							id="{uid}-a"
+							bind:value={text}
+							placeholder="Or type an answer"
+							class="h-12 min-w-0 flex-1 text-base"
+						/>
+						<Button type="submit" variant="outline" class="px-4" disabled={!text.trim()}
+							><SendHorizontal /><span class="sr-only">Send answer</span></Button
+						>
+					</form>
+				{/if}
+				<p class="flex items-start gap-1.5 text-xs text-muted-foreground">
+					<Info class="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+					{#if parts.action}
+						Yes lets this one command run.
+					{:else}
+						Answering a question doesn't give the agent permission to act.
+					{/if}
+				</p>
+			{:else}
+				<p class="text-sm">
+					<span class="text-muted-foreground"
+						>{ask.state === 'elsewhere' ? 'Answered on another device:' : 'You answered:'}</span
+					>
+					<span class="font-medium">{ask.answer}</span>
+				</p>
+			{/if}
 		{/if}
-	{/if}
-</section>
+	</section>
+{/if}

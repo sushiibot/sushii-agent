@@ -99,8 +99,11 @@ test("the inbox, a run, a History day and search open in the app on the workspac
 
   await page.goto(`/runs/${SEED.jobRunId}`);
   await expect(page.getByText("Outcome, as the host recorded it")).toBeVisible();
-  await expect(page.getByText("cd projects/app && bun test").first()).toBeVisible();
+  await page.getByRole("tab", { name: "Evidence", exact: true }).click();
+  await expect(page.getByRole("tabpanel", { name: "Evidence", exact: true }).getByText("cd projects/app && bun test", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Timeline", exact: true }).click();
   await expect(page.getByText("E2E-RUNS nightly finished.")).toBeVisible();
+  await page.getByRole("tab", { name: "Related", exact: true }).click();
   await page.getByRole("link", { name: /look around/ }).click();
   await expect(page).toHaveURL(new RegExp(`/runs/${SEED.childRunId}$`));
   await expect(page.getByText("it broke")).toBeVisible();

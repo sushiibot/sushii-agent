@@ -1,4 +1,5 @@
-import type { ChatMessage, FileRef, MessagePart, Turn } from './types';
+import { confirmationOutcome } from './tool-confirmation';
+import type { AskView, ChatMessage, FileRef, MessagePart, Turn } from './types';
 import {
 	fileUrl,
 	isHttpsUrl,
@@ -78,6 +79,26 @@ export function toTurn(t: TurnState, stopping: boolean): Turn {
 	}
 }
 
+type Interaction = Extract<ChatItem, { kind: 'ask' | 'approval' }>;
+function interactionPart(item: Interaction): MessagePart {
+	if (item.kind === 'approval')
+		return {
+			type: 'data-approval',
+			data: { tool: item.tool, outcome: item.outcome, nonce: item.nonce }
+		};
+	return { type: 'data-ask', data: askView(item) };
+}
+function askView(item: Extract<ChatItem, { kind: 'ask' }>): AskView {
+	return {
+		askId: item.askId,
+		question: item.question,
+		choices: item.choices,
+		state: item.state,
+		answer: item.answer,
+		toolConfirmation: item.toolConfirmation
+	};
+}
+
 /** Projects store items onto the prototype's message shape, which the chat components render. */
 export function toMessages(
 	items: readonly ChatItem[],
@@ -86,11 +107,66 @@ export function toMessages(
 	const out: ChatMessage[] = [];
 	// Associate each approval with its most recent matching call. Unmatched legacy approvals
 	// keep their own inline row; no historical relationship is invented.
-	const attached = new Map<string, Extract<ChatItem, { kind: 'approval' }>>();
+	const attached = new Map<string, Interaction>();
 	const matched = new Set<string>();
+	const inline = new Map<string, Interaction[]>();
+	for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+		const item = items[itemIndex];
+		if (item.kind === 'ask' && item.toolConfirmation?.toolCallId) {
+			const confirmation = item.toolConfirmation;
+			// Live anchors identify the turn. A cold-history ask precedes its durable reply;
+			// never borrow an earlier turn's reused Pi id or cross the next user message.
+			const nextUser = items.findIndex(
+				(candidate, index) => index > itemIndex && candidate.kind === 'user'
+			);
+			const candidates = item.anchor
+				? items.filter(
+						(candidate) =>
+							candidate.kind === 'assistant' && candidate.id === item.anchor?.assistantId
+					)
+				: items.slice(itemIndex + 1, nextUser < 0 ? items.length : nextUser);
+			const matching = candidates.filter(
+				(candidate): candidate is Extract<ChatItem, { kind: 'assistant' }> =>
+					candidate.kind === 'assistant' &&
+					!!candidate.turn?.lines.some(
+						(line) =>
+							!line.agentId &&
+							line.id === confirmation.toolCallId &&
+							line.name === confirmation.tool
+					)
+			);
+			const candidate = matching.length === 1 ? matching[0] : undefined;
+			const index =
+				candidate?.turn?.lines.findIndex(
+					(line) =>
+						!line.agentId && line.id === confirmation.toolCallId && line.name === confirmation.tool
+				) ?? -1;
+			const uniqueLine =
+				candidate?.turn?.lines.filter(
+					(line) =>
+						!line.agentId && line.id === confirmation.toolCallId && line.name === confirmation.tool
+				).length === 1;
+			if (candidate && index >= 0 && uniqueLine) {
+				attached.set(`${candidate.id}:${index}`, item);
+				matched.add(item.id);
+				continue;
+			}
+		}
+		if (
+			(item.kind !== 'ask' && item.kind !== 'approval') ||
+			!item.anchor ||
+			!items.some((i) => i.kind === 'assistant' && i.id === item.anchor?.assistantId)
+		)
+			continue;
+		matched.add(item.id);
+		if (item.kind === 'approval' && item.anchor.callIndex !== undefined)
+			attached.set(`${item.anchor.assistantId}:${item.anchor.callIndex}`, item);
+		else
+			inline.set(item.anchor.assistantId, [...(inline.get(item.anchor.assistantId) ?? []), item]);
+	}
 	for (let ai = 0; ai < items.length; ai++) {
 		const approval = items[ai];
-		if (approval.kind !== 'approval') continue;
+		if (approval.kind !== 'approval' || approval.anchor) continue;
 		for (let ti = ai - 1; ti >= 0; ti--) {
 			const candidate = items[ti];
 			if (candidate.kind === 'user') break;
@@ -139,7 +215,22 @@ export function toMessages(
 								: item.activityText.slice(0, lastPosition) + item.text
 							: item.text;
 					let offset = 0;
+					const interactions = inline.get(item.id) ?? [];
+					const insertInteractions = (lineIndex: number) => {
+						for (const interaction of interactions) {
+							if (interaction.anchor?.lineIndex !== lineIndex) continue;
+							const position = Math.max(
+								offset,
+								Math.min(text.length, interaction.anchor.textOffset)
+							);
+							if (position > offset)
+								parts.push({ type: 'text', text: text.slice(offset, position) });
+							parts.push(interactionPart(interaction));
+							offset = position;
+						}
+					};
 					for (let i = 0; i < turn.steps.length; i++) {
+						insertInteractions(i);
 						if (item.turn.lines[i].agentId) continue;
 						const position = Math.max(
 							offset,
@@ -151,7 +242,7 @@ export function toMessages(
 							type: 'data-tool',
 							data: {
 								...turn.steps[i],
-								...(approval
+								...(approval?.kind === 'approval'
 									? {
 											approval: {
 												tool: approval.tool,
@@ -159,11 +250,22 @@ export function toMessages(
 												nonce: approval.nonce
 											}
 										}
-									: {})
+									: approval?.kind === 'ask' && approval.toolConfirmation
+										? {
+												approval: {
+													tool: approval.toolConfirmation.tool,
+													outcome: confirmationOutcome(approval)
+												},
+												approvalReason: approval.toolConfirmation.reason,
+												input: approval.toolConfirmation.input,
+												confirmation: askView(approval)
+											}
+										: {})
 							}
 						});
 						offset = position;
 					}
+					insertInteractions(turn.steps.length);
 					if (offset < text.length) parts.push({ type: 'text', text: text.slice(offset) });
 					if (turn.state !== 'done')
 						parts.push({ type: 'data-turn', data: { ...turn, steps: [] } });
@@ -184,35 +286,9 @@ export function toMessages(
 				break;
 			}
 			case 'ask':
-				out.push({
-					id: item.id,
-					role: 'assistant',
-					parts: [
-						{
-							type: 'data-ask',
-							data: {
-								askId: item.askId,
-								question: item.question,
-								choices: item.choices,
-								state: item.state,
-								answer: item.answer
-							}
-						}
-					]
-				});
-				break;
 			case 'approval':
 				if (matched.has(item.id)) break;
-				out.push({
-					id: item.id,
-					role: 'assistant',
-					parts: [
-						{
-							type: 'data-approval',
-							data: { tool: item.tool, outcome: item.outcome, nonce: item.nonce }
-						}
-					]
-				});
+				out.push({ id: item.id, role: 'assistant', parts: [interactionPart(item)] });
 				break;
 			case 'divider':
 				out.push({

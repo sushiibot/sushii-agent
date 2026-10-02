@@ -52,3 +52,10 @@ test("an interrupted reasoning stream returns to waiting before the next provide
   expect(mapSessionEvent({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "provider unavailable" } } as unknown as AgentSessionEvent, acc)).toEqual([{ type: "model_activity", activity: "waiting" }]);
   expect(mapSessionEvent(update("thinking_delta", "retry reasoning"), acc)).toEqual([{ type: "model_activity", activity: "thinking" }]);
 });
+
+
+test("tool execution events preserve Pi call IDs for exact approval/result correlation", () => {
+  const acc = newRunAccumulator();
+  expect(mapSessionEvent({ type: "tool_execution_start", toolCallId: "call1", toolName: "bash", args: { command: "ls" } } as AgentSessionEvent, acc)).toEqual([{ type: "tool_start", name: "bash", summary: "ls", toolCallId: "call1" }]);
+  expect(mapSessionEvent({ type: "tool_execution_end", toolCallId: "call1", toolName: "bash", isError: false, result: { content: [] } } as unknown as AgentSessionEvent, acc)).toEqual([{ type: "tool_end", name: "bash", ok: true, toolCallId: "call1" }]);
+});

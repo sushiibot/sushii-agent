@@ -232,7 +232,7 @@ export type DeliveryView = { type: "reply"; view: ReplyView } | { type: "ask"; v
 export function deliveryView(p: ChatDeliverParams, toolCount: number | null = null): DeliveryView {
   if (p.kind === "ask") {
     const choices = (p.ask?.choices ?? []).map((c, i) => (c.trim() ? c : `(option ${i + 1})`));
-    return { type: "ask", view: { askId: p.ask?.askId ?? null, question: p.ask?.question ?? p.text, choices } };
+    return { type: "ask", view: { askId: p.ask?.askId ?? null, question: p.ask?.question ?? p.text, choices, ...(p.ask?.toolConfirmation ? { toolConfirmation: p.ask.toolConfirmation } : {}) } };
   }
   if (p.kind === "auth" && p.auth) return { type: "auth", view: { url: p.auth.url, instructions: p.auth.instructions } };
   return {
@@ -978,10 +978,10 @@ export class WorkspaceLink {
         return;
       }
       case "tool_start":
-        this.addToolLine(this.turnFor(p.turnId, origin), { name: ev.name, summary: ev.summary, state: "run" });
+        this.addToolLine(this.turnFor(p.turnId, origin), { name: ev.name, summary: ev.summary, state: "run", ...(ev.toolCallId ? { id: ev.toolCallId } : {}) });
         return;
       case "tool_end":
-        this.endToolLine(this.turns.get(p.turnId), ev.name, ev.ok, undefined);
+        this.endToolLine(this.turns.get(p.turnId), ev.name, ev.ok, undefined, ev.toolCallId);
         return;
       case "turn_end": {
         // A turn this process never saw start has nothing to finalize; the workspace can repeat these at will.
@@ -1012,12 +1012,12 @@ export class WorkspaceLink {
       log.debug({ agentId: p.agentId, turnId: p.turnId, type: p.ev.type }, "ignoring subagent event without a live parent turn");
       return;
     }
-    if (p.ev.type === "tool_start") this.addToolLine(turn, { name: p.ev.name, summary: p.ev.summary, state: "run", agentId: p.agentId });
-    else if (p.ev.type === "tool_end") this.endToolLine(turn, p.ev.name, p.ev.ok, p.agentId);
+    if (p.ev.type === "tool_start") this.addToolLine(turn, { name: p.ev.name, summary: p.ev.summary, state: "run", agentId: p.agentId, ...(p.ev.toolCallId ? { id: p.ev.toolCallId } : {}) });
+    else if (p.ev.type === "tool_end") this.endToolLine(turn, p.ev.name, p.ev.ok, p.agentId, p.ev.toolCallId);
   }
 
   private addToolLine(turn: TurnProgress, line: ToolLine): void {
-    turn.lines.push({ ...line, id: `${turn.turnId}:${turn.toolCount}`, textOffset: turn.text.length });
+    turn.lines.push({ ...line, id: line.id ?? `${turn.turnId}:${turn.toolCount}`, textOffset: turn.text.length });
     turn.toolCount++;
     this.touch(turn);
   }
@@ -1045,8 +1045,8 @@ export class WorkspaceLink {
     });
   }
 
-  private endToolLine(turn: TurnProgress | undefined, name: string, ok: boolean, agentId: string | undefined): void {
-    const line = turn?.lines.find((l) => l.name === name && l.agentId === agentId && l.state === "run");
+  private endToolLine(turn: TurnProgress | undefined, name: string, ok: boolean, agentId: string | undefined, toolCallId?: string): void {
+    const line = turn?.lines.find((l) => l.name === name && l.agentId === agentId && l.state === "run" && (!toolCallId || l.id === toolCallId));
     if (!turn || !line) return;
     line.state = ok ? "ok" : "err";
     this.markDirty(turn);

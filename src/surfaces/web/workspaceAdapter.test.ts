@@ -617,3 +617,14 @@ describe("web adapter queue receipts", () => {
     expect(idle).toBe(2);
   });
 });
+
+
+test("tool confirmation metadata survives RPC delivery, replay, pending state and history", async () => {
+  const h = setup();
+  const toolConfirmation = { tool: "bash", input: "bash: rm -rf build", reason: "recursive delete", toolCallId: "tc1" };
+  await h.link.deliver(deliver({ outboxId: "confirm1", kind: "ask", text: "Allow?", ask: { askId: "q1", question: "Allow?", choices: ["Yes", "No"], toolConfirmation } }));
+  expect(h.log.find("ask", "confirm1")!.data).toMatchObject({ toolConfirmation });
+  expect(h.log.pending({ approvalsSince: 0, asks: 10 }).asks[0]).toMatchObject({ toolConfirmation });
+  const history = historyPage(h.log, { limit: 10 }, { maxBytes: 100_000 });
+  expect(history.items.find((item) => item.type === "ask")).toMatchObject({ toolConfirmation });
+});

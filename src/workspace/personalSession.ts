@@ -1479,7 +1479,7 @@ export class PersonalSession {
       ...(entry.turnId ? { turnId: entry.turnId } : {}),
       ...(entry.kind !== "auth" && !inTranscript ? { text: entry.text } : {}),
       ...(entry.usage ? { usage: entry.usage } : {}),
-      ...(entry.kind === "ask" && entry.ask ? { ask: { askId: entry.ask.askId, question: entry.ask.question, choices: entry.ask.choices ?? [] } } : {}),
+      ...(entry.kind === "ask" && entry.ask ? { ask: { askId: entry.ask.askId, question: entry.ask.question, choices: entry.ask.choices ?? [], ...(entry.ask.toolConfirmation ? { toolConfirmation: entry.ask.toolConfirmation } : {}) } } : {}),
     };
     this.appendMarker(this.session, DELIVERY_ENTRY, marker);
   }

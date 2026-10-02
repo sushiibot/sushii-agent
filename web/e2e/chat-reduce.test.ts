@@ -840,3 +840,81 @@ test('child agent approval stays visible while child tool activity lives on its 
 			.filter((part) => part.type === 'data-approval')
 	).toHaveLength(1);
 });
+
+test('asks stay at their arrival point while later tool calls and text grow the same turn', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'delta', data: { turnId: 't', offset: 0, text: 'Before' } },
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 'first', name: 'read', summary: 'Before read', textOffset: 6 }
+		},
+		{
+			type: 'ask',
+			seq: 1,
+			data: {
+				key: 'ask',
+				askId: 'ask',
+				question: 'Allow?',
+				choices: ['Yes', 'No'],
+				toolConfirmation: {
+					tool: 'bash',
+					input: 'ws-consolidate --status',
+					reason: 'Review the command'
+				}
+			}
+		},
+		{ type: 'ask_resolved', seq: 2, data: { askId: 'ask', answer: 'Yes' } },
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 'second', name: 'bash', summary: 'After bash', textOffset: 6 }
+		},
+		{ type: 'delta', data: { turnId: 't', offset: 6, text: 'After' } }
+	]);
+	const parts = toMessages(s.items)[0].parts;
+	expect(
+		parts.map((p) => (p.type === 'text' ? p.text : p.type === 'data-tool' ? p.data.id : p.type))
+	).toEqual(['Before', 'first', 'data-ask', 'second', 'After', 'data-turn']);
+	expect(parts[2]).toMatchObject({
+		data: { answer: 'Yes', toolConfirmation: { tool: 'bash', input: 'ws-consolidate --status' } }
+	});
+	expect(toMessages(s.items)).toHaveLength(1);
+});
+
+test('an approval remains on its original call when a later call uses the same tool name', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'tool', data: { turnId: 't', id: 'original', name: 'send_email', summary: 'First' } },
+		{ type: 'approval', seq: 1, data: { nonce: 'first', view: view('send_email') } },
+		{ type: 'approval_resolved', seq: 2, data: { nonce: 'first', decision: 'approve' } },
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 'original', name: 'send_email', summary: 'Sent', ok: true }
+		},
+		{ type: 'tool', data: { turnId: 't', id: 'later', name: 'send_email', summary: 'Second' } },
+		{ type: 'approval', seq: 3, data: { nonce: 'second', view: view('send_email') } }
+	]);
+	const tools = toMessages(s.items)[0].parts.filter((p) => p.type === 'data-tool');
+	expect(tools.map((p) => [p.data.id, p.data.approval?.nonce])).toEqual([
+		['original', 'first'],
+		['later', 'second']
+	]);
+});
+
+test('an unmatched approval is placed before later activity instead of following the whole turn', () => {
+	const s = createState();
+	run(s, [
+		{ type: 'delta', data: { turnId: 't', offset: 0, text: 'Before' } },
+		{ type: 'approval', seq: 1, data: { nonce: 'first', view: view('send_email') } },
+		{
+			type: 'tool',
+			data: { turnId: 't', id: 'later', name: 'read', summary: 'Read later', textOffset: 6 }
+		}
+	]);
+	expect(toMessages(s.items)[0].parts.map((p) => p.type)).toEqual([
+		'text',
+		'data-approval',
+		'data-tool',
+		'data-turn'
+	]);
+});

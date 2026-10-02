@@ -205,15 +205,24 @@
 					{:else if part.type === 'data-tool-group'}
 						<ToolActivityGroup steps={part.data} {openStep} />
 					{:else if part.type === 'data-tool'}
-						<ToolRow
-							step={part.data}
-							approval={part.data.approval}
-							pending={approvals.find((a) => a.nonce === part.data.approval?.nonce)}
-							submitting={approvalSubmitting}
-							open={openStep === part.data.id}
-							{onapprove}
-							{ondeny}
-						/>
+						{#if part.data.confirmation && ['pending', 'answering'].includes(part.data.confirmation.state)}
+							<AskCard
+								ask={part.data.confirmation}
+								focused={focusAsk === part.data.confirmation.askId}
+								onanswer={(answer) => onanswer?.(part.data.confirmation!.askId, answer)}
+							/>
+						{:else}
+							<ToolRow
+								step={part.data}
+								approval={part.data.approval}
+								approvalReason={part.data.approvalReason}
+								pending={approvals.find((a) => a.nonce === part.data.approval?.nonce)}
+								submitting={approvalSubmitting}
+								open={openStep === part.data.id}
+								{onapprove}
+								{ondeny}
+							/>
+						{/if}
 					{:else if part.type === 'data-approval'}
 						{@const pendingApproval =
 							part.data.outcome === 'pending'

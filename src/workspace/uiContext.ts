@@ -10,10 +10,18 @@ export const ASK_TIMEOUT_MS = 30 * 60_000;
 export const ASK_ANSWER_PREFIX = "wsask:";
 const CLOSED_KEPT = 100;
 
+export interface ToolConfirmation {
+  tool: string;
+  input: string;
+  reason?: string;
+  toolCallId?: string;
+}
+
 export interface AskRequest {
   askId: string;
   question: string;
   choices: string[];
+  toolConfirmation?: ToolConfirmation;
 }
 
 /** Parses an answer text into the dialog's value, or null when the text doesn't answer it. */
@@ -52,7 +60,7 @@ export class ChatAsks {
     return this.pending.length;
   }
 
-  ask<T>(question: string, choices: string[], parse: Parse<T>, fallback: T, dialog?: ExtensionUIDialogOptions): Promise<T> {
+  ask<T>(question: string, choices: string[], parse: Parse<T>, fallback: T, dialog?: ExtensionUIDialogOptions, toolConfirmation?: ToolConfirmation): Promise<T> {
     if (dialog?.signal?.aborted) return Promise.resolve(fallback);
     if (this.holds > 0) {
       log.info("extension dialog opened while its run is being stopped or reset; using its default");
@@ -85,7 +93,7 @@ export class ChatAsks {
       timer.unref?.();
       dialog?.signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        this.deliver({ askId, question, choices });
+        this.deliver({ askId, question, choices, ...(toolConfirmation ? { toolConfirmation } : {}) });
       } catch (err) {
         log.warn({ err, askId }, "delivering an extension dialog failed; using its default");
         entry.settle(fallback);
@@ -188,11 +196,23 @@ export const plainTheme = {
   getBashModeBorderColor: () => plain,
 } as unknown as Theme;
 
+// Pi wraps UI contexts, but forwards the same dialog options to the headless adapter.
+const toolConfirmationKey = Symbol("toolConfirmation");
+type ToolDialogOptions = ExtensionUIDialogOptions & { [toolConfirmationKey]?: ToolConfirmation };
+
+/** Carry typed action details through Pi's UI wrappers without classifying question text. */
+export function confirmToolCall(ui: ExtensionUIContext, toolConfirmation: ToolConfirmation, dialog?: ExtensionUIDialogOptions): Promise<boolean> {
+  const title = "Auto mode: allow this tool call?";
+  const detail = `${toolConfirmation.tool}: ${toolConfirmation.input}${toolConfirmation.reason ? `\n\nWhy it's asking: ${toolConfirmation.reason}` : ""}`;
+  const options: ToolDialogOptions = { ...dialog, [toolConfirmationKey]: toolConfirmation };
+  return ui.confirm(title, detail, options);
+}
+
 /** Pi's extension UI over the chat surface: dialogs become asks, TUI-only calls are no-ops, custom() declines. */
 export function createHeadlessUIContext(asks: ChatAsks): ExtensionUIContext {
   return {
     select: (title, options, opts) => asks.ask(title, options, parseSelect(options), undefined as string | undefined, opts),
-    confirm: (title, message, opts) => asks.ask(question(title, message), CONFIRM_CHOICES, parseConfirm, false, opts),
+    confirm: (title, message, opts) => asks.ask(question(title, message), CONFIRM_CHOICES, parseConfirm, false, opts, (opts as ToolDialogOptions | undefined)?.[toolConfirmationKey]),
     input: (title, placeholder, opts) => asks.ask(question(title, placeholder), [], parseText, undefined as string | undefined, opts),
     editor: (title, prefill) => asks.ask(question(title, prefill), [], parseText, undefined as string | undefined),
     notify: (message, type) => log.info({ type: type ?? "info" }, `extension notice: ${message}`),

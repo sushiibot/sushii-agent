@@ -214,7 +214,7 @@ export class SqliteChatLog implements ChatLog {
       }),
       asks: asks.reverse().map((r) => {
         const d = JSON.parse(r.data) as ChatEventMap["ask"];
-        return { seq: r.seq, at: at(r), key: d.key, askId: d.askId, question: d.question, choices: d.choices };
+        return { seq: r.seq, at: at(r), key: d.key, askId: d.askId, question: d.question, choices: d.choices, ...(d.toolConfirmation ? { toolConfirmation: d.toolConfirmation } : {}) };
       }),
     };
   }

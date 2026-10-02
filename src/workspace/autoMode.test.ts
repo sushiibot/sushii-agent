@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import { createAutoModeExtension, judgeCompletion, judgeForBackend, READ_ONLY_TOOLS, type AutoModeAudit } from "./autoMode.ts";
+import { AUTO_MODE_POLICY, createAutoModeExtension, judgeCompletion, judgeForBackend, READ_ONLY_TOOLS, type AutoModeAudit } from "./autoMode.ts";
 import { BackendSelector } from "./chatgptFallback.ts";
 import { DEFAULT_JUDGE_CHATGPT_MODEL, DEFAULT_JUDGE_MODEL, WorkspaceConfigError, loadWorkspaceConfig } from "./config.ts";
 import { ChatAsks, createHeadlessUIContext } from "./uiContext.ts";
@@ -68,6 +68,48 @@ function harness(opts: { completions?: Completion[]; judge?: boolean; hasUI?: bo
 const verdict = (v: string, reason = "because") => ({ text: `<verdict>${v}</verdict> ${reason}` });
 
 describe("auto mode", () => {
+  test("consolidation status is a known read-only helper, even when the judge is down", async () => {
+    const h = harness({ judge: false });
+    expect(await h.call("bash", { command: "  ws-consolidate --status\n" })).toBeUndefined();
+    expect(h.prompts).toHaveLength(0);
+    expect(h.confirms).toHaveLength(0);
+    expect(h.logs[0]!.obj).toMatchObject({ verdict: "allow", source: "rule", reason: "read-only consolidation status" });
+  });
+
+  test.each([
+    "ws-consolidate --status && make deploy",
+    "ws-consolidate --status > state.json",
+    "ws-consolidate --status $(make deploy)",
+    "ws-consolidate --status --now",
+    "unknown-command --status",
+    "ws-consolidate --now",
+  ])("does not mistake a status-like command for the known read-only helper: %s", async (command) => {
+    const h = harness({ completions: [verdict("ask", "effects need authorization")] });
+    expect(await h.call("bash", { command })).toMatchObject({ block: true });
+    expect(h.prompts).toHaveLength(1);
+    expect(h.confirms).toHaveLength(1);
+  });
+
+  test.each(["bun test", "bun run build", "bun install", "git diff", "bun run dev"])(
+    "ordinary development runs under the task-scoped autonomy policy: %s", async (command) => {
+      const h = harness({ completions: [verdict("allow", "routine project workflow")] });
+      expect(await h.call("bash", { command })).toBeUndefined();
+      expect(h.confirms).toHaveLength(0);
+      expect(h.prompts[0]!.system).toBe(AUTO_MODE_POLICY);
+      expect(h.prompts[0]!.system).toContain("Do not ask again for an action the owner already explicitly authorized");
+      expect(h.prompts[0]!.system).toContain("ordinary tests, builds, lint, formatting");
+      expect(h.prompts[0]!.system).toContain("If the command's effects are materially unclear, ask");
+    },
+  );
+
+  test("the self-protection floor still blocks edits to the agent's own configuration", async () => {
+    const h = harness({ completions: [verdict("allow")] });
+    expect(await h.call("write", { path: "/tmp/nonexistent-agent-dir/config/pi-verdict.json", content: "{}" })).toMatchObject({ block: true });
+    expect(h.prompts).toHaveLength(0);
+    expect(h.confirms).toHaveLength(0);
+    expect(h.logs[0]!.obj).toMatchObject({ verdict: "deny", source: "rule" });
+  });
+
   test("a benign bash call is allowed by the judge without asking", async () => {
     const h = harness({ completions: [verdict("allow", "read-only git inspection")] });
     expect(await h.call("bash", { command: "git status" })).toBeUndefined();

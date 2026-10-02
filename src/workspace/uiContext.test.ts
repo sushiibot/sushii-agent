@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AgentSession, ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { ChatDeliverParams } from "../orchestration/contracts.ts";
 import { PersonalSession, type ChatSession } from "./personalSession.ts";
-import { ChatAsks, createHeadlessUIContext, parseConfirm, parseSelect, plainTheme, type AskRequest } from "./uiContext.ts";
+import { ChatAsks, confirmToolCall, createHeadlessUIContext, parseConfirm, parseSelect, plainTheme, type AskRequest } from "./uiContext.ts";
 
 function broker(timeoutMs?: number) {
   const asked: AskRequest[] = [];
@@ -234,4 +234,36 @@ describe("a real Pi extension", () => {
     ]);
     await host.dispose();
   });
+});
+
+
+test("tool confirmations preserve exact action metadata and generic confirms stay generic", async () => {
+  const { asks, asked, ui } = broker();
+  const toolConfirmation = { tool: "bash", input: "rm -rf build", reason: "recursive delete", toolCallId: "tc1" };
+  const confirm = confirmToolCall(ui, toolConfirmation);
+  expect(asked[0]).toMatchObject({ choices: ["Yes", "No"], toolConfirmation });
+  expect(asked[0]!.question).toBe("Auto mode: allow this tool call?\nbash: rm -rf build\n\nWhy it's asking: recursive delete");
+  asks.answer(`wsask:${asked[0]!.askId}`, "Yes");
+  expect(await confirm).toBe(true);
+  const generic = ui.confirm("Proceed?", "something else");
+  expect(asked[1]).not.toHaveProperty("toolConfirmation");
+  asks.cancelAll("test");
+  expect(await generic).toBe(false);
+});
+
+test("tool confirmations retain the normal terminal UI fallback", async () => {
+  const seen: string[] = [];
+  const ui = { confirm: async (title: string, detail: string) => { seen.push(title, detail); return true; } } as unknown as ExtensionUIContext;
+  expect(await confirmToolCall(ui, { tool: "bash", input: "rm build", reason: "delete" })).toBe(true);
+  expect(seen).toEqual(["Auto mode: allow this tool call?", "bash: rm build\n\nWhy it's asking: delete"]);
+});
+
+
+test("tool metadata survives Pi-style UI wrappers that forward dialog options", async () => {
+  const { asks, asked, ui } = broker();
+  const wrapped = { ...ui, confirm: (title: string, message: string, opts: Parameters<ExtensionUIContext["confirm"]>[2]) => ui.confirm(title, message, opts) };
+  const pending = confirmToolCall(wrapped, { tool: "bash", input: "rm build", toolCallId: "tc2" });
+  expect(asked[0]!.toolConfirmation).toEqual({ tool: "bash", input: "rm build", toolCallId: "tc2" });
+  asks.cancelAll("test");
+  expect(await pending).toBe(false);
 });

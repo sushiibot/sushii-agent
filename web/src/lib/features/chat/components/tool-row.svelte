@@ -10,6 +10,7 @@
 	let {
 		step,
 		approval,
+		approvalReason,
 		pending,
 		submitting = false,
 		open = false,
@@ -18,6 +19,7 @@
 		ondeny
 	}: {
 		step: TurnStep;
+		approvalReason?: string;
 		approval?: { tool: string; outcome: ApprovalOutcome; nonce?: string };
 		pending?: PendingApproval;
 		submitting?: boolean;
@@ -51,11 +53,12 @@
 					aria-hidden="true"
 				/>{/if}
 			<span class="min-w-0 flex-1 truncate">{readable}</span>
-			<span class="flex shrink-0 items-center gap-1 text-meta"
+			<span class="flex max-w-[65%] shrink-0 items-center gap-1 text-right text-meta"
 				>{#if step.state === 'running'}<LoaderCircle
 						class="size-3.5 animate-spin text-running motion-reduce:animate-none"
 						aria-hidden="true"
-					/>{/if}{executionUnknown && approval
+					/>{/if}{#if approval && !executionUnknown}{labels[approval.outcome]} ·
+				{/if}{executionUnknown && approval
 					? labels[approval.outcome]
 					: step.state === 'running'
 						? 'Running'
@@ -78,6 +81,10 @@
 								: ' · Execution status shown above'
 							: ''}
 					</dd>
+				</div>{/if}
+			{#if approvalReason}<div>
+					<dt>Reason</dt>
+					<dd class="whitespace-pre-wrap">{approvalReason}</dd>
 				</div>{/if}
 			<div>
 				<dt class="text-muted-foreground">Tool</dt>

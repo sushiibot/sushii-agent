@@ -271,7 +271,10 @@ test('the auto-mode ask keeps its lines, clamps the command and expands it', asy
 	await expect(card.getByRole('button', { name: /approve/i })).toHaveCount(0);
 });
 
-test('an answered auto-mode ask in history keeps the same layout', async ({ page, context }) => {
+test('an answered legacy auto-mode question collapses while retaining command details', async ({
+	page,
+	context
+}) => {
 	await server(context, [
 		{
 			type: 'ask',
@@ -286,6 +289,10 @@ test('an answered auto-mode ask in history keeps the same layout', async ({ page
 	]);
 	await open(page);
 	const card = page.locator('[data-surface="ask"]');
+	await expect(card.locator(':scope > summary')).toContainText('Answered Yes');
+	await expect(card.getByRole('group', { name: 'bash command' })).not.toBeVisible();
+	expect((await card.locator(':scope > summary').boundingBox())!.height).toBeGreaterThanOrEqual(48);
+	await card.locator(':scope > summary').click();
 	await expect(card.getByText('The agent asked:')).toBeVisible();
 	await expect(card.getByRole('group', { name: 'bash command' })).toContainText(
 		'from pathlib import Path'

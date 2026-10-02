@@ -60,10 +60,10 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
     case "tool_execution_start": {
       acc.outputStarted = true;
       const summary = summarizeToolArgs(event.args).replace(/\s+/g, " ").trim().slice(0, TOOL_SUMMARY_MAX);
-      return [{ type: "tool_start", name: event.toolName, summary }];
+      return [{ type: "tool_start", name: event.toolName, summary, toolCallId: event.toolCallId }];
     }
     case "tool_execution_end":
-      return [{ type: "tool_end", name: event.toolName, ok: event.isError !== true }];
+      return [{ type: "tool_end", name: event.toolName, ok: event.isError !== true, toolCallId: event.toolCallId }];
     case "message_update": {
       const m = event.assistantMessageEvent;
       if (m.type === "text_delta" && m.delta) acc.outputStarted = true;

@@ -62,12 +62,20 @@ export interface ReplyView {
   job?: DeliverJob;
 }
 
+export interface ToolConfirmation {
+  tool: string;
+  input: string;
+  reason?: string;
+  toolCallId?: string;
+}
+
 export interface AskView {
   /** Null when the workspace sent a bare ask with no id: nothing to answer by button. */
   askId: string | null;
   question: string;
   /** Non-blank labels, in the workspace's order. */
   choices: string[];
+  toolConfirmation?: ToolConfirmation;
 }
 
 /** A sign-in link for the principal to open; the result arrives later as an ordinary reply. */
