@@ -14,7 +14,7 @@ const RUN = {
 async function server(
 	context: BrowserContext,
 	runs?: Scenario,
-	opts: { features?: Parameters<typeof fakeBackend>[1]['features'] } = {}
+	opts: Pick<Parameters<typeof fakeBackend>[1], 'features' | 'now'> = {}
 ) {
 	await stubStream(context);
 	await context.route('**/api/**', (route) => {
@@ -22,7 +22,7 @@ async function server(
 		if (path === '/api/chat/history') return route.fulfill({ json: { items: [], before: null } });
 		return route.fulfill({ status: 404, body: 'Not found' });
 	});
-	return fakeBackend(context, { runs, features: opts.features });
+	return fakeBackend(context, { runs, ...opts });
 }
 const rows = (page: Page) => page.getByRole('main').getByRole('listitem');
 
@@ -30,7 +30,10 @@ test('the list groups runs by day, each with its status and what started it', as
 	page,
 	context
 }) => {
-	await server(context);
+	// Relative fixtures and the browser share a fixed midday, including when CI runs at midnight.
+	const now = new Date('2026-10-02T19:00:00Z');
+	await page.clock.setFixedTime(now);
+	await server(context, undefined, { now: now.getTime() });
 	await page.goto('/runs');
 	await expect(page.getByRole('heading', { name: 'Runs', level: 1 })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();

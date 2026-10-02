@@ -47,14 +47,19 @@ export class MarkdownStream {
 	#noReuse = false;
 	#slowFrames = 0;
 	readonly #view: (tail: string) => string;
+	readonly #now: () => number;
 	/** `performance.now()` before which a new parse isn't worth starting. */
 	nextAt = 0;
 	/** Cost of the last parse, in ms. */
 	lastMs = 0;
 
 	/** `view` turns the raw tail into what is shown; tests pass the identity to check reuse alone. */
-	constructor(view: (tail: string) => string = streamingView) {
+	constructor(
+		view: (tail: string) => string = streamingView,
+		now: () => number = () => performance.now()
+	) {
 		this.#view = view;
+		this.#now = now;
 	}
 
 	/** How many leading blocks are kept and no longer re-parsed. */
@@ -80,7 +85,7 @@ export class MarkdownStream {
 		this.#text = text;
 		if (this.#overBudget || exceedsParseLimits(text)) return (this.#tree = [plainOf(text)]);
 
-		const t0 = performance.now();
+		const t0 = this.#now();
 		if (DEFINITION_RE.test(text)) this.#noReuse = true;
 		if (this.#noReuse) {
 			this.#source = '';
@@ -116,7 +121,7 @@ export class MarkdownStream {
 			}
 			this.#tree = this.#stable.concat(nodes.flatMap((n) => n.blocks));
 		}
-		this.lastMs = performance.now() - t0;
+		this.lastMs = this.#now() - t0;
 		this.nextAt = t0 + this.lastMs * (1 + STREAM_BACKOFF);
 		if (this.lastMs > STREAM_PARSE_BUDGET_MS) this.#overBudget = true;
 		return this.#tree;
@@ -124,7 +129,7 @@ export class MarkdownStream {
 
 	/** Reports what the last update cost once rendered (parse, DOM and layout up to the next frame),
 	 *  so a tail that is cheap to parse but slow to draw backs off and falls back too. */
-	rendered(ms: number, now = performance.now()) {
+	rendered(ms: number, now = this.#now()) {
 		if (this.#final) return;
 		this.nextAt = Math.max(this.nextAt, now + ms * STREAM_BACKOFF);
 		this.#slowFrames = ms > STREAM_FRAME_BUDGET_MS ? this.#slowFrames + 1 : 0;

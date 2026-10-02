@@ -49,6 +49,7 @@ const DB_PATH = join(P.botData, "sushii-agent.db");
 const PUSH_CAPTURE = join(TMP, "push.jsonl");
 // The bot's link probe (stack/link-probe.preload.ts) listens here; the control server forwards to it.
 const LINK_SOCKET = join(TMP, "link.sock");
+const SCHEDULER_SOCKET = join(TMP, "scheduler.sock");
 
 /** A Main session from before the web app, which the bot imports once from the workspace (flows/history-import). */
 function seedPreWebSession(): void {
@@ -216,6 +217,9 @@ function controlServer(bot: Proc, ws: Proc, llmURL: string) {
       if (req.method === "POST" && url.pathname === "/link/request") {
         return fetch("http://link/request", { method: "POST", body: await req.text(), unix: LINK_SOCKET } as RequestInit);
       }
+      if (req.method === "POST" && url.pathname === "/scheduler/tick") {
+        return fetch("http://scheduler/tick", { method: "POST", unix: SCHEDULER_SOCKET } as RequestInit);
+      }
       if (req.method === "POST" && url.pathname === "/workspace/restart") {
         await stop(ws);
         if (tornDown) return new Response("tearing down", { status: 503 });
@@ -372,11 +376,12 @@ async function main(): Promise<number> {
   };
   const ws: Proc = {
     name: "ws",
-    cmd: [BUN, "--no-env-file", "--preload", guard, "src/workspace/index.ts"],
+    cmd: [BUN, "--no-env-file", "--preload", join(HERE, "stack", "scheduler-probe.preload.ts"), "--preload", guard, "src/workspace/index.ts"],
     cwd: REPO,
     env: {
       ...common,
       HOME: P.wsHome,
+      E2E_SCHEDULER_SOCKET: SCHEDULER_SOCKET,
       ORCH_URL: `ws://${addrs.local}:${ports.orch}`,
       ORCH_SECRET: orchSecret,
       OPENAI_API_KEY: "e2e-stub",

@@ -1,3 +1,4 @@
+import { realTimers, type Timers } from "../../orchestration/workspace/progress.ts";
 import { conversationKey, type ConversationRef, type HookBus, type ToolActivity } from "../../core/contracts.ts";
 import { getLogger } from "../../logger.ts";
 import type { SlackPostClient } from "./session.ts";
@@ -35,13 +36,14 @@ export class SlackToolProgress {
   private messageTs: string | null = null;
   private lines: string[] = [];
   private lastContent = "";
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushTimer: unknown = null;
   private readonly header = pickCooking();
 
   constructor(
     private readonly client: SlackPostClient,
     private readonly channelId: string,
     private readonly threadTs: string,
+    private readonly timers: Timers = realTimers,
   ) {}
 
   add(tools: ToolActivity[]): void {
@@ -60,8 +62,8 @@ export class SlackToolProgress {
   }
 
   private scheduleFlush(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = setTimeout(() => { void this.flush(); }, DEBOUNCE_MS);
+    if (this.flushTimer !== null) this.timers.clear(this.flushTimer);
+    this.flushTimer = this.timers.set(() => { void this.flush(); }, DEBOUNCE_MS);
   }
 
   private async flush(): Promise<void> {
@@ -83,7 +85,7 @@ export class SlackToolProgress {
    *  message if one exists, else posted as a fresh reply so a failure is never silent. On success
    *  with a pending first flush (no message posted yet), nothing is created — the answer stands alone. */
   async finalize(errorText?: string): Promise<void> {
-    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+    if (this.flushTimer !== null) { this.timers.clear(this.flushTimer); this.flushTimer = null; }
     try {
       if (this.messageTs) {
         const content = errorText ? `${this.lastContent ? `${this.lastContent}\n\n` : ""}⚠️ ${errorText}` : this.lastContent;

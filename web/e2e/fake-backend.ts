@@ -96,7 +96,7 @@ function homeResponse(scenario: Scenario, hidden: Set<string>, read: Set<string>
  */
 export async function fakeBackend(
 	context: BrowserContext,
-	opts: Partial<Record<Area, Scenario>> & { features?: WebFeature[] } = {}
+	opts: Partial<Record<Area, Scenario>> & { features?: WebFeature[]; now?: number } = {}
 ): Promise<FakeBackend> {
 	const scenarios: Record<Area, Scenario> = {
 		home: opts.home ?? 'normal',
@@ -149,7 +149,7 @@ export async function fakeBackend(
 
 		const scenario = scenarios[area];
 		if (scenario === 'slow') await new Promise((r) => setTimeout(r, SLOW_MS));
-		const now = Date.now();
+		const now = opts.now ?? Date.now();
 
 		if (area === 'home') {
 			if (req.method() === 'POST') {

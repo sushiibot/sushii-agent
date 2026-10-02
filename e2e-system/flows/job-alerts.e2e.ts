@@ -13,9 +13,10 @@ function schedule(prompt: string): void {
   writeFileSync(join(stack.wsHome, "schedule.md"), `# Schedule\n\n## ${JOB}\nwhen: every 60 minutes\nenabled: false\n\n${prompt}\n`);
 }
 
-function requestRun(): void {
+async function requestRun(): Promise<void> {
   mkdirSync(join(stack.wsState, "requests"), { recursive: true });
   writeFileSync(join(stack.wsState, "requests", `${JOB}.request`), `${JSON.stringify({ requestedAt: new Date().toISOString() })}\n`);
+  await stack.tickScheduler();
 }
 
 /** RFC 8291 aes128gcm, decrypted with the subscription's own keys. */
@@ -60,7 +61,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
 
   try {
     schedule("E2E-JOBFAIL check something");
-    requestRun();
+    await requestRun();
 
     await expect.poll(async () => (await home(request)).failed.map((a) => a.id), { timeout: 90_000, intervals: [1000] }).toContain(`job:${JOB}`);
     const alert = (await home(request)).failed.find((a) => a.id === `job:${JOB}`)!;
@@ -90,7 +91,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
     await expect(page).toHaveURL(/\/inbox$/);
 
     schedule("E2E-NOREPLY check something");
-    requestRun();
+    await requestRun();
     await expect
       .poll(async () => stack.query("select data from web_events where type = 'alert_cleared' and json_extract(data, '$.id') = ?", `job:${JOB}`), { timeout: 90_000, intervals: [1000] })
       .toHaveLength(1);

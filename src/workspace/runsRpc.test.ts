@@ -458,13 +458,15 @@ describe("runs/get on windows with very many entries or calls", () => {
     const { out, gap } = await timed(() => get(runId, { limit: 200 }));
     expect(out.steps.filter((s) => s.id.startsWith("a0/")).length).toBe(64);
     expect(gap).toBeLessThan(200);
-    let after: string | null = out.after;
-    let last = out;
-    while (after) {
-      last = await get(runId, { limit: 200, after });
-      after = last.after;
-    }
+    const next = await get(runId, { limit: 200, after: out.after });
+    expect(next.steps[0]!.id).toBe("a3/t8");
+    // Cursor traversal is covered above. Inspect the cap boundary directly instead of rereading
+    // this 400k-call transcript for every intermediate page. The 20k cap finishes its last batch.
+    const last = await get(runId, { limit: 200, after: "a310/t63" });
+    expect(last.steps[0]!.id).toBe("a311/t0");
+    expect(last.steps.at(-2)!.id).toBe("a312/t63");
     expect(last.steps.at(-1)).toMatchObject({ id: "#tail", type: "note" });
+    expect(last.after).toBeNull();
   }, 60_000);
 });
 

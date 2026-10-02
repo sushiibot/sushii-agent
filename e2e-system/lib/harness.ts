@@ -63,10 +63,14 @@ export const stack = {
     const body = JSON.stringify({ principalId: "owner", method, params: { principalId: "owner", ...params } });
     return (await call("/link/request", { method: "POST", body })).json() as Promise<LinkResult<T>>;
   },
-  /** SIGTERMs the bot and starts it again on the same data. `waitReady` also waits for the workspace to re-register. */
+  /** Processes pending scheduler requests without waiting for the production polling interval. */
+  async tickScheduler(): Promise<void> {
+    await call("/scheduler/tick", { method: "POST" });
+  },
   async restartWorkspace(): Promise<void> {
     await call("/workspace/restart", { method: "POST" });
   },
+  /** SIGTERMs the bot and starts it again on the same data. `waitReady` also waits for the workspace to re-register. */
   async restartBot(opts: { waitReady?: boolean } = {}): Promise<void> {
     await call(`/bot/restart${opts.waitReady ? "?wait=ready" : ""}`, { method: "POST" });
   },

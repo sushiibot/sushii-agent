@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { manualTimers } from "../../test/manualTimers.ts";
 import type { BuzzClient, BuzzSendResult } from "./buzzClient.ts";
 import { BuzzToolProgress } from "./progress.ts";
-
-const waitFlush = () => new Promise((r) => setTimeout(r, 1100)); // > DEBOUNCE_MS
 
 interface Recorder {
   sends: { content: string; replyToId?: string }[];
@@ -24,17 +23,40 @@ function recordingClient(rec: Recorder, sendId = "prog-evt"): BuzzClient {
 }
 
 describe("BuzzToolProgress", () => {
+  test("batches reset the debounce and finalize cancels a pending flush", async () => {
+    const rec: Recorder = { sends: [], edits: [] };
+    const clock = manualTimers();
+    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root", clock.timers);
+    p.add([{ name: "first", input: {} }]);
+    await clock.advance(999);
+    expect(rec.sends).toHaveLength(0);
+    p.add([{ name: "second", input: {} }]);
+    await clock.advance(1);
+    expect(rec.sends).toHaveLength(0);
+    await clock.advance(999);
+    expect(rec.sends).toHaveLength(1);
+    expect(rec.sends[0].content).toContain("first");
+    expect(rec.sends[0].content).toContain("second");
+    p.add([{ name: "cancelled", input: {} }]);
+    await p.finalize();
+    const edits = rec.edits.length;
+    await clock.advance(1000);
+    expect(rec.edits).toHaveLength(edits);
+    expect(rec.sends).toHaveLength(1);
+  });
+
   test("first tool batch posts a working message, later batches edit it in place", async () => {
     const rec: Recorder = { sends: [], edits: [] };
-    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root");
+    const clock = manualTimers();
+    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root", clock.timers);
     p.add([{ name: "wiki_search", input: { query: "deploy" } }]);
-    await waitFlush();
+    await clock.advance(1000);
     expect(rec.sends).toHaveLength(1);
     expect(rec.sends[0]).toMatchObject({ replyToId: "root" });
     expect(rec.sends[0].content).toContain("wiki_search(query=\"deploy\")");
 
     p.add([{ name: "read_channel", input: {} }]);
-    await waitFlush();
+    await clock.advance(1000);
     expect(rec.sends).toHaveLength(1); // no second post
     expect(rec.edits).toHaveLength(1);
     expect(rec.edits[0]).toMatchObject({ targetEventId: "prog-evt" });
@@ -43,9 +65,10 @@ describe("BuzzToolProgress", () => {
 
   test("only the last 3 tool lines show, with an earlier-calls header", async () => {
     const rec: Recorder = { sends: [], edits: [] };
-    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root");
+    const clock = manualTimers();
+    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root", clock.timers);
     p.add([1, 2, 3, 4, 5].map((n) => ({ name: `t${n}`, input: {} })));
-    await waitFlush();
+    await clock.advance(1000);
     const c = rec.sends[0].content;
     expect(c).toContain("…2 earlier tool calls");
     expect(c).toContain("t5");
@@ -54,7 +77,8 @@ describe("BuzzToolProgress", () => {
 
   test("finalize on a clean turn with no posted message creates nothing", async () => {
     const rec: Recorder = { sends: [], edits: [] };
-    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root");
+    const clock = manualTimers();
+    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root", clock.timers);
     await p.finalize(); // no tools dispatched, no error
     expect(rec.sends).toHaveLength(0);
     expect(rec.edits).toHaveLength(0);
@@ -62,7 +86,8 @@ describe("BuzzToolProgress", () => {
 
   test("finalize with an error and no prior message posts the error as a fresh reply", async () => {
     const rec: Recorder = { sends: [], edits: [] };
-    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root");
+    const clock = manualTimers();
+    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root", clock.timers);
     await p.finalize("it broke");
     expect(rec.sends).toHaveLength(1);
     expect(rec.sends[0]).toMatchObject({ replyToId: "root" });
@@ -72,9 +97,10 @@ describe("BuzzToolProgress", () => {
 
   test("finalize with an error and an existing message edits the error onto it", async () => {
     const rec: Recorder = { sends: [], edits: [] };
-    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root");
+    const clock = manualTimers();
+    const p = new BuzzToolProgress(recordingClient(rec), "chan", "root", clock.timers);
     p.add([{ name: "wiki_search", input: {} }]);
-    await waitFlush();
+    await clock.advance(1000);
     await p.finalize("it broke");
     expect(rec.edits.at(-1)?.content).toContain("⚠️ it broke");
     expect(rec.edits.at(-1)?.content).toContain("wiki_search");

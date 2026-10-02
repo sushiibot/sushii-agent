@@ -1,5 +1,6 @@
 # The personal web app (SvelteKit static build); only the bot image serves it.
-FROM oven/bun:1 AS web-build
+# Static assets are architecture-independent; build once natively, including for arm64 images.
+FROM --platform=$BUILDPLATFORM oven/bun:1 AS web-build
 WORKDIR /web
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile

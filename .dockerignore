@@ -16,3 +16,5 @@ web/proto-screenshots/
 web/test-results/
 web/playwright-report/
 web/.env*
+e2e-system/node_modules/
+e2e-system/test-results/

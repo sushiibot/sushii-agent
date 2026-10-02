@@ -61,14 +61,13 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run lint
-      - run: bun run build
+      # Playwright builds the production app before starting preview.
       # Full Chromium without the headless shell: playwright.config.ts runs the `chromium` channel.
       - run: bunx playwright install --with-deps --no-shell chromium
       - run: bun run test:e2e
 
   # Real-process e2e (e2e-system/README.md): the built web app, the bot and the workspace as processes,
-  # with a fake model and a Traefik stand-in dialing from loopback aliases. It finishes well before
-  # browser-smoke's image builds, so gating the image builds on it adds no time to a deploy.
+  # with a fake model and a Traefik stand-in dialing from loopback aliases.
   e2e-system:
     runs-on: ubuntu-latest
     timeout-minutes: 15

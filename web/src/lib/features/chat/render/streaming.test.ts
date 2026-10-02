@@ -48,14 +48,14 @@ function hrefs(
 describe('incremental parse', () => {
 	for (const [name, doc] of Object.entries(CORPUS)) {
 		test(`${name}: kept blocks plus the tail equal a full parse at every prefix`, () => {
-			const stream = new MarkdownStream(identity);
+			const stream = new MarkdownStream(identity, () => 0);
 			for (const prefix of prefixes(doc)) {
 				expect(json(stream.update(prefix, CTX))).toBe(json(parseMarkdown(prefix, CTX)));
 			}
 		});
 
 		test(`${name}: with display edits, kept blocks still match the finished reply`, () => {
-			const stream = new MarkdownStream();
+			const stream = new MarkdownStream(undefined, () => 0);
 			const full = parseMarkdown(doc, CTX);
 			let kept: MdBlockNode[] = [];
 			for (const prefix of prefixes(doc)) {
@@ -72,7 +72,7 @@ describe('incremental parse', () => {
 
 	test('long replies keep most blocks and parse only the tail', () => {
 		const doc = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} with **bold**.`).join('\n\n');
-		const stream = new MarkdownStream();
+		const stream = new MarkdownStream(undefined, () => 0);
 		let tree: MdBlockNode[] = [];
 		for (const prefix of prefixes(doc, 7)) tree = stream.update(prefix, CTX);
 		expect(stream.kept).toBeGreaterThanOrEqual(38);
@@ -82,7 +82,7 @@ describe('incremental parse', () => {
 	});
 
 	test('the same input returns the same array', () => {
-		const stream = new MarkdownStream();
+		const stream = new MarkdownStream(undefined, () => 0);
 		const a = stream.update('**a** b\n\nc', CTX);
 		expect(stream.update('**a** b\n\nc', CTX)).toBe(a);
 		const done = stream.finish('**a** b\n\nc', CTX);
@@ -90,7 +90,7 @@ describe('incremental parse', () => {
 	});
 
 	test('a definition anywhere turns reuse off, so earlier references resolve', () => {
-		const stream = new MarkdownStream(identity);
+		const stream = new MarkdownStream(identity, () => 0);
 		const doc = CORPUS.definitions;
 		for (const prefix of prefixes(doc)) stream.update(prefix, CTX);
 		expect(stream.kept).toBe(0);
@@ -98,7 +98,7 @@ describe('incremental parse', () => {
 	});
 
 	test('replaced text and new inline images start over', () => {
-		const stream = new MarkdownStream(identity);
+		const stream = new MarkdownStream(identity, () => 0);
 		stream.update('a\n\nb\n\nc\n\nd', CTX);
 		expect(stream.kept).toBeGreaterThan(0);
 		expect(json(stream.update('x\n\ny', CTX))).toBe(json(parseMarkdown('x\n\ny', CTX)));
@@ -109,7 +109,7 @@ describe('incremental parse', () => {
 	});
 
 	test('input past the parse limits renders as one plain block, as the full parse does', () => {
-		const stream = new MarkdownStream();
+		const stream = new MarkdownStream(undefined, () => 0);
 		const hostile = '> '.repeat(40) + 'x';
 		expect(stream.update(hostile, CTX)).toEqual([{ kind: 'plain', text: hostile }]);
 		expect(stream.finish(hostile, CTX)).toEqual(parseMarkdown(hostile, CTX));
@@ -252,7 +252,7 @@ describe('display edits', () => {
 		];
 		for (const doc of docs) {
 			const final = hrefs(parseMarkdown(doc, CTX));
-			const stream = new MarkdownStream();
+			const stream = new MarkdownStream(undefined, () => 0);
 			for (const prefix of prefixes(doc)) {
 				for (const href of hrefs(stream.update(prefix, CTX))) {
 					expect(final.has(href), `${href} at ${JSON.stringify(prefix)}`).toBe(true);
@@ -262,7 +262,7 @@ describe('display edits', () => {
 	});
 
 	test('an open fence grows as a code block', () => {
-		const stream = new MarkdownStream();
+		const stream = new MarkdownStream(undefined, () => 0);
 		const tree = stream.update('Intro\n\n```ts\nconst a = 1;\nconst b', CTX);
 		expect(tree.at(-1)).toEqual({ kind: 'code', lang: 'ts', text: 'const a = 1;\nconst b' });
 		expect(openFence('```\na\n```\n')).toBeNull();
@@ -273,7 +273,7 @@ describe('display edits', () => {
 describe('vanishing definitions', () => {
 	for (const [name, prefix, rest] of VANISHING) {
 		test(`${name}: no text shows mid-stream that the finished reply drops`, () => {
-			const stream = new MarkdownStream();
+			const stream = new MarkdownStream(undefined, () => 0);
 			const frame = texts(stream.update(prefix, CTX)).join('|');
 			const done = texts(stream.finish(prefix + rest, CTX)).join('|');
 			expect(frame.includes('Approve') && !done.includes('Approve')).toBe(false);
@@ -282,15 +282,31 @@ describe('vanishing definitions', () => {
 });
 
 describe('limits', () => {
+	test('a slow parse falls back until completion; a new reply resets the budget', () => {
+		let time = 0;
+		let cost = 10;
+		const stream = new MarkdownStream(undefined, () => (time += cost));
+		const text = 'Some **text**';
+		expect(stream.update(text, CTX)[0].kind).toBe('paragraph');
+		expect(stream.lastMs).toBe(10);
+		cost = 60;
+		expect(stream.update(text + ' a', CTX)[0].kind).toBe('paragraph');
+		expect(stream.lastMs).toBe(60);
+		cost = 10;
+		expect(stream.update(text + ' ab', CTX)[0].kind).toBe('plain');
+		expect(stream.finish(text + ' ab', CTX)[0].kind).toBe('paragraph');
+		expect(stream.update('New **reply**', CTX, 'next')[0].kind).toBe('paragraph');
+	});
+
 	test('closers added for display never push a reply past the delimiter cap', () => {
 		const text = ' *a*'.repeat(1499) + ' **b';
-		const tree = new MarkdownStream().update(text, CTX);
+		const tree = new MarkdownStream(undefined, () => 0).update(text, CTX);
 		expect(tree).toEqual([{ kind: 'plain', text }]);
 	});
 
 	test('slow rendered frames fall back to plain text; one noisy frame does not', () => {
 		const text = 'Some **text**\n\nmore';
-		const stream = new MarkdownStream();
+		const stream = new MarkdownStream(undefined, () => 0);
 		stream.update(text, CTX);
 		stream.rendered(40, 0);
 		stream.rendered(10, 0);
@@ -299,7 +315,7 @@ describe('limits', () => {
 		stream.rendered(40, 0);
 		stream.rendered(40, 0);
 		expect(stream.update(text + ' ab', CTX)).toEqual([{ kind: 'plain', text: text + ' ab' }]);
-		const once = new MarkdownStream();
+		const once = new MarkdownStream(undefined, () => 0);
 		once.update(text, CTX);
 		once.rendered(60, 0);
 		expect(once.update(text + ' a', CTX)[0].kind).toBe('plain');
