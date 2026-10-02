@@ -6,6 +6,8 @@
 	import BookMarked from '@lucide/svelte/icons/book-marked';
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
 	import Clock from '@lucide/svelte/icons/clock';
+	import Hourglass from '@lucide/svelte/icons/hourglass';
+	import CornerUpRight from '@lucide/svelte/icons/corner-up-right';
 	import Check from '@lucide/svelte/icons/check';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
@@ -36,6 +38,7 @@
 		focusAsk,
 		onopenfile,
 		onretrysend,
+		onsteersend,
 		ondeletesend,
 		onanswer,
 		onretryhistory,
@@ -59,6 +62,8 @@
 		focusAsk?: string;
 		onopenfile?: (file: FileRef) => void;
 		onretrysend?: (messageId: string) => void;
+		/** Posts a message held for a running turn right now, steering that turn with it. */
+		onsteersend?: (messageId: string) => void;
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
 		onretryhistory?: () => void;
@@ -127,6 +132,16 @@
 			icon: CloudOff,
 			text: 'Queued, sends when the agent is back',
 			tone: 'text-waiting'
+		},
+		'queued-run': {
+			icon: Hourglass,
+			text: 'Queued · sends when this turn finishes',
+			tone: 'text-waiting'
+		},
+		steered: {
+			icon: CornerUpRight,
+			text: 'Steered into the running turn',
+			tone: 'text-muted-foreground'
 		}
 	};
 </script>
@@ -137,7 +152,8 @@
 		{@const lastText = message.parts.findLastIndex((part) => part.type === 'text')}
 		{@const failed = message.delivery === 'failed'}
 		{@const queued = message.delivery === 'queued' || message.delivery === 'queued-agent'}
-		{@const unsent = owner && (failed || queued)}
+		{@const held = message.delivery === 'queued-run'}
+		{@const unsent = owner && (failed || queued || held)}
 		{@const actions = hasText(message) ? actionsFor(message) : []}
 		<li data-message-id={message.id} class="min-w-0">
 			<div
@@ -431,9 +447,18 @@
 						<Button variant="ghost" class="px-3" onclick={() => ondeletesend?.(message.id)}
 							><Trash2 />Delete</Button
 						>
-						<Button variant="outline" class="px-4" onclick={() => onretrysend?.(message.id)}
-							><RotateCcw />Retry send</Button
-						>
+						{#if held}
+							<Button
+								class="px-4"
+								aria-label="Send now — steers the running turn"
+								title="Send now — steers the running turn"
+								onclick={() => onsteersend?.(message.id)}>Send now</Button
+							>
+						{:else}
+							<Button variant="outline" class="px-4" onclick={() => onretrysend?.(message.id)}
+								><RotateCcw />Retry send</Button
+							>
+						{/if}
 					</div>
 				{/if}
 				{#if actions.length && !unsent}

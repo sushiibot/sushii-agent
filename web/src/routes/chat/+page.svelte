@@ -208,6 +208,7 @@
 	onloadolder={() => s.loadOlder()}
 	onretryhistory={() => s.retryHistory()}
 	onretrysend={(id) => s.retry(id)}
+	onsteersend={(id) => s.steerNow(id)}
 	ondeletesend={(id) => void s.discard(id)}
 	onanswer={(askId, answer) => s.answer(askId, answer)}
 	onapprove={(nonce, location) => void s.decide(nonce, 'approve', location)}

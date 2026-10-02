@@ -61,7 +61,16 @@ export interface ChatMessage {
 	uploads?: readonly UploadRef[];
 }
 
-export type Delivery = 'sending' | 'sent' | 'failed' | 'queued' | 'queued-agent';
+export type Delivery =
+	| 'sending'
+	| 'sent'
+	| 'failed'
+	| 'queued'
+	| 'queued-agent'
+	/** Held on this device because a turn is running; it posts when the turn ends. */
+	| 'queued-run'
+	/** The bot acked it while a turn ran: the send steered that turn. */
+	| 'steered';
 
 // Parsed markdown, rendered through components; raw HTML never reaches the DOM.
 export type MdInline =

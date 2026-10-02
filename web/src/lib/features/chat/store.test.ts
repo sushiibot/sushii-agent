@@ -3,7 +3,8 @@ import { afterAll, expect, test } from 'bun:test';
 import type { ChatEnvelope } from '$lib/core/realtime/events';
 import { createHub } from '$lib/core/realtime/hub.svelte';
 import type { ChatTransport } from '$lib/core/realtime/transport';
-import type { KeyValue } from '$lib/core/storage/outbox';
+import type { KeyValue, OutboxEntry } from '$lib/core/storage/outbox';
+import { memoryKeyValue } from '$lib/core/storage/outbox';
 import type { ChatApi } from './api';
 import { ChatStore } from './store.svelte';
 
@@ -19,6 +20,139 @@ afterAll(() => {
 function memory<T>(): KeyValue<T> {
 	return { all: async () => [], put: async () => {}, delete: async () => {} };
 }
+
+const NONE = { approvals: [], asks: [] };
+
+/** A stream that greets with a turn already running, and lets a test end that turn. */
+function runningTurnStream() {
+	let push: (ev: ChatEnvelope) => void = () => {};
+	const transport: ChatTransport = {
+		connect(_after, on, onState) {
+			push = on;
+			setTimeout(() => {
+				onState('open');
+				on({
+					type: 'hello',
+					data: {
+						headSeq: 5,
+						workspace: 'online',
+						openTurns: [{ turnId: 't1', startedAt: 0, lines: [], toolCount: 0, text: '' }],
+						pending: NONE
+					}
+				});
+			}, 0);
+			return () => {};
+		}
+	};
+	const turnFinal = () =>
+		push({
+			type: 'turn_final',
+			seq: 6,
+			data: { turnId: 't1', outcome: 'done', summary: { durationMs: 10, toolCount: 0 } }
+		});
+	return { transport, push, turnFinal };
+}
+
+/** A history-ok API that records which client ids reached POST /api/chat/messages. */
+function recordingApi(posted: string[]) {
+	return {
+		history: async () => ({ ok: true as const, page: { items: [], before: null } }),
+		postMessage: async (body: { clientId: string }) => {
+			posted.push(body.clientId);
+			return {};
+		}
+	} as unknown as ChatApi;
+}
+
+const userText = (store: ChatStore, text: string) =>
+	store.messages.find((m) => m.role === 'user' && m.parts.some((p) => 'text' in p && p.text === text));
+
+test('a send while a turn runs is held, then posts when the turn ends, oldest first', async () => {
+	const { transport, turnFinal } = runningTurnStream();
+	const posted: string[] = [];
+	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
+	const store = new ChatStore('main', {
+		hub: createHub({ transport }),
+		api: recordingApi(posted),
+		outbox,
+		drafts: memory()
+	});
+	await store.start();
+	expect(store.running).toBe(true);
+	await store.send('first held');
+	await store.send('second held');
+	// Held, not posted: nothing was written to the wire while the turn runs.
+	await Bun.sleep(30);
+	expect(posted).toEqual([]);
+	expect(
+		store.messages.filter((m) => m.role === 'user').map((m) => m.delivery)
+	).toEqual(['queued-run', 'queued-run']);
+	// No placeholder claims the agent is working on them, and the hold survives in the outbox.
+	expect(store.items.some((i) => i.id === 'turn:pending')).toBe(false);
+	const held = await outbox.all();
+	expect(held.map((e) => e.holdForTurn)).toEqual([true, true]);
+	expect(held.every((e) => !e.attempted && !e.posted)).toBe(true);
+	turnFinal();
+	await Bun.sleep(50);
+	expect(posted).toEqual(held.map((e) => e.clientId));
+	store.destroy();
+});
+
+test('Send now posts a held message immediately, and the bot acks it as steered', async () => {
+	const { transport, push } = runningTurnStream();
+	const posted: string[] = [];
+	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
+	const store = new ChatStore('main', {
+		hub: createHub({ transport }),
+		api: recordingApi(posted),
+		outbox,
+		drafts: memory()
+	});
+	await store.start();
+	await store.send('steer me');
+	expect(posted).toEqual([]);
+	const message = userText(store, 'steer me');
+	expect(message?.delivery).toBe('queued-run');
+	store.steerNow(message!.id);
+	await Bun.sleep(20);
+	expect(posted).toHaveLength(1);
+	expect(store.running).toBe(true);
+	push({ type: 'status', seq: 7, data: { clientId: posted[0], state: 'steer' } });
+	await Bun.sleep(80);
+	expect(userText(store, 'steer me')?.delivery).toBe('steered');
+	// Settled: the bot holds it, so it leaves the outbox like a sent message.
+	expect(await outbox.all()).toEqual([]);
+	store.destroy();
+});
+
+test('a reload mid-run keeps a held message held until the turn ends', async () => {
+	const outbox = memoryKeyValue<OutboxEntry>((e) => e.clientId);
+	await outbox.put({
+		clientId: 'RELOADHOLD00000000000000',
+		text: 'written mid-run',
+		uploadIds: [],
+		at: '2026-10-02T00:00:00.000Z',
+		posted: false,
+		holdForTurn: true
+	});
+	const { transport, turnFinal } = runningTurnStream();
+	const posted: string[] = [];
+	const store = new ChatStore('main', {
+		hub: createHub({ transport }),
+		api: recordingApi(posted),
+		outbox,
+		drafts: memory()
+	});
+	await store.start();
+	expect(store.running).toBe(true);
+	await Bun.sleep(30);
+	expect(posted).toEqual([]);
+	expect(userText(store, 'written mid-run')?.delivery).toBe('queued-run');
+	turnFinal();
+	await Bun.sleep(50);
+	expect(posted).toEqual(['RELOADHOLD00000000000000']);
+	store.destroy();
+});
 
 test('history merges after the hello that arrived with it, so first-frame asks keep their place', async () => {
 	const hello: ChatEnvelope = {
