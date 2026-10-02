@@ -15,6 +15,7 @@
 		back,
 		online = true,
 		copied = false,
+		copyError = null,
 		onurl,
 		ontoken,
 		onredirect,
@@ -28,6 +29,7 @@
 		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
 		online?: boolean;
 		copied?: boolean;
+		copyError?: string | null;
 		ontoken?: (token: string) => void;
 		onurl?: (url: string) => void;
 		onredirect?: (redirect: string) => void;
@@ -49,7 +51,9 @@
 
 {#snippet footer()}
 	<div class="flex flex-col gap-2 border-t px-4 py-3">
-		{#if add.error}<p role="alert" class="text-sm text-failed">{add.error}</p>{/if}
+		{#if add.error && !add.errorField}<p role="alert" class="text-sm text-failed">
+				{add.error}
+			</p>{/if}
 		{#if add.stage === 'url'}
 			<Button size="lg" disabled={!add.url.trim() || add.busy || !online} onclick={onbegin}>
 				{#if add.busy}<LoaderCircle
@@ -91,6 +95,8 @@
 				<label for="{uid}-url" class="text-sm font-medium">Server address</label>
 				<Input
 					id="{uid}-url"
+					aria-invalid={add.errorField === 'url' || undefined}
+					aria-describedby={`${uid}-url-help${add.errorField === 'url' ? ` ${uid}-url-error` : ''}`}
 					value={add.url}
 					oninput={(e) => onurl?.(e.currentTarget.value)}
 					placeholder="https://example.com/mcp"
@@ -100,13 +106,21 @@
 					spellcheck={false}
 					class="h-12 font-mono text-base"
 				/>
-				<p class="text-sm text-muted-foreground">
+				<p id="{uid}-url-help" class="text-sm text-muted-foreground">
 					An https:// address for a Streamable HTTP MCP server. Leave the token blank to sign in
 					with OAuth.
 				</p>
+				{#if add.errorField === 'url'}<p
+						id="{uid}-url-error"
+						role="alert"
+						class="text-sm text-failed"
+					>
+						{add.error}
+					</p>{/if}
 				<label for="{uid}-token" class="mt-3 text-sm font-medium">API token (optional)</label>
 				<Input
 					id="{uid}-token"
+					aria-describedby="{uid}-token-help"
 					type="password"
 					value={add.token ?? ''}
 					oninput={(e) => ontoken?.(e.currentTarget.value)}
@@ -114,7 +128,7 @@
 					spellcheck={false}
 					class="h-12 text-base"
 				/>
-				<p class="text-sm text-muted-foreground">
+				<p id="{uid}-token-help" class="text-sm text-muted-foreground">
 					For Fastmail, use https://api.fastmail.com/mcp and create an MCP token with only “Read
 					data” enabled. The token is stored on the workspace server.
 				</p>
@@ -127,7 +141,8 @@
 				</p>
 				<div class="flex items-start gap-2 rounded-xl border bg-muted/50 p-3">
 					<Link2 class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-					<code class="min-w-0 flex-1 font-mono text-meta break-all">{add.authUrl}</code>
+					<code class="min-w-0 flex-1 font-mono text-meta break-all select-text">{add.authUrl}</code
+					>
 				</div>
 				<div class="flex flex-wrap gap-2">
 					<Button
@@ -141,6 +156,7 @@
 						><Copy />{copied ? 'Copied' : 'Copy'}</Button
 					>
 				</div>
+				{#if copyError}<p role="alert" class="text-sm text-failed">{copyError}</p>{/if}
 				<p class="text-sm text-muted-foreground">
 					After you approve, the browser lands on a localhost page that won't load. That's expected:
 					the agent runs on a server, not on this phone. Copy that page's whole address.
@@ -151,6 +167,8 @@
 				<label for="{uid}-redirect" class="text-sm font-medium">Address from the browser</label>
 				<Input
 					id="{uid}-redirect"
+					aria-invalid={(!!add.redirect && !hasCode) || undefined}
+					aria-describedby={`${uid}-redirect-help${add.redirect && !hasCode ? ` ${uid}-redirect-error` : ''}`}
 					value={add.redirect}
 					oninput={(e) => onredirect?.(e.currentTarget.value)}
 					placeholder="http://localhost:7461/callback?code=…"
@@ -159,11 +177,11 @@
 					spellcheck={false}
 					class="h-12 font-mono text-base"
 				/>
-				<p class="text-sm text-muted-foreground">
+				<p id="{uid}-redirect-help" class="text-sm text-muted-foreground">
 					Copy the whole localhost callback address, including its code and state.
 				</p>
 				{#if add.redirect && !hasCode}
-					<p class="text-sm text-failed">
+					<p id="{uid}-redirect-error" role="alert" class="text-sm text-failed">
 						That address has no code. Copy it again after approving.
 					</p>
 				{/if}

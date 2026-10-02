@@ -18,6 +18,7 @@
 			<span aria-hidden="true">·</span>
 			<span class="tabular-nums">{ago(write.at, now)}</span>
 			{#if write.thread}<span>From thread · {write.thread.title}</span>{/if}
+			{#if write.run}<span>From run · {write.run.title}</span>{/if}
 		</span>
 		{#if write.taint || write.reverted}
 			<span class="flex flex-wrap gap-1.5">

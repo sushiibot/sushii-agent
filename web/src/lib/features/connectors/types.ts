@@ -31,6 +31,8 @@ export interface McpServer extends McpServerSummary {
 /** The add-by-URL flow: paste the address, sign in, paste the redirect back. */
 export type AddStage = 'url' | 'oauth' | 'paste';
 
+export type ConnectorOperation = 'snapshot' | 'reconnect' | 'disconnect' | 'remove';
+
 export interface AddState {
 	stage: AddStage;
 	token?: string;
@@ -42,4 +44,5 @@ export interface AddState {
 	redirect: string;
 	busy: boolean;
 	error: string | null;
+	errorField?: 'url';
 }

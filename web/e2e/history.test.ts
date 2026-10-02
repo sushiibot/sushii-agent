@@ -150,6 +150,50 @@ test('a search with no matches says so', async ({ page, context }) => {
 	await server(context);
 	await page.goto('/history/search?q=zebra%20crossing');
 	await expect(page.getByText('No results for “zebra crossing”')).toBeVisible();
+	await page.getByRole('button', { name: 'Clear search' }).click();
+	await expect(field(page)).toHaveValue('');
+	await expect(field(page)).toBeFocused();
+	await expect(page.getByText('Type at least two characters.')).toBeVisible();
+});
+
+test('a capped search without hits explains that recall is incomplete', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await context.route('**/api/search?*', (route) =>
+		route.fulfill({
+			json: {
+				query: 'absent',
+				hits: [],
+				truncated: true,
+				unavailable: []
+			}
+		})
+	);
+	await page.goto('/history/search?q=absent');
+	await expect(page.getByText('No matches in the searched portion')).toBeVisible();
+	await expect(
+		page.getByText('Search stopped early, so some matches may be missing.')
+	).toBeVisible();
+});
+
+test('failed History refresh retains loaded older days and offers retry', async ({
+	page,
+	context
+}) => {
+	const backend = await server(context);
+	await page.goto('/history');
+	await page.getByRole('button', { name: 'Show older days' }).click();
+	await expect(rows(page)).toHaveCount(12);
+	backend.set('history', 'error');
+	await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+	await expect(page.getByRole('alert')).toContainText("Couldn't refresh history.");
+	await expect(rows(page)).toHaveCount(12);
+	backend.set('history', 'normal');
+	await page.getByRole('button', { name: 'Retry refresh' }).click();
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await expect(rows(page)).toHaveCount(12);
 });
 
 test('a capped search says matches may be missing', async ({ page, context }) => {

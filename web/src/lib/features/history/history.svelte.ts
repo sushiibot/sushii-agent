@@ -91,6 +91,7 @@ export class HistoryStore {
 
 	#api: HistoryApi;
 	#days = new Map<string, Remote<HistoryDayDetail>>();
+	#head: HistoryDaysPage['days'] = [];
 
 	constructor(api: HistoryApi = httpHistoryApi) {
 		this.#api = api;
@@ -98,8 +99,17 @@ export class HistoryStore {
 		this.days = new Remote(
 			async () => {
 				const page = await api.days({});
-				this.older = [];
-				this.before = page.before;
+				if (this.older.length) {
+					const fresh = new Set(page.days.map((day) => day.date));
+					this.older = [
+						...new Map([...this.#head, ...this.older].map((day) => [day.date, day])).values()
+					]
+						.filter((day) => !fresh.has(day.date))
+						.sort((a, b) => b.date.localeCompare(a.date));
+				} else {
+					this.before = page.before;
+				}
+				this.#head = page.days;
 				return page;
 			},
 			{ refetchOnFocus: true }

@@ -87,7 +87,7 @@ These rules guide new screens and changes to existing screens. They describe the
 
 - **Start with the user's next decision.** Why: a screen becomes easier to scan when its content supports one task. Check: `review`: name the task and the main action before choosing the layout.
 - **Reuse familiar controls and shared components.** Why: repeated patterns reduce relearning and prevent layout drift. Check: `review`: inspect existing `ui/` components and feature patterns before creating a new variant.
-- **Group secondary actions in one predictable menu.** Why: several equally prominent actions compete with the main task. Check: `shot`, `phone`: related thread actions share one overflow menu, and the main action remains visible.
+- **Group secondary actions in one predictable menu.** Reuse `ui/menu/ActionMenu` for compact header commands. Why: several equally prominent actions compete with the main task. Check: `shot`, `phone`: related thread actions share one overflow menu, and the main action remains visible.
 - **Use links for navigation and buttons for actions.** Why: browser behavior and accessible semantics depend on this distinction. Check: `review`, `check`: navigation rows use anchors; actions use buttons; interactive controls never nest inside anchors.
 - **Keep decision-changing information visible.** Why: users cannot act on a consequence hidden behind a disclosure. Check: `review`: permissions, action scope, and failure status remain visible before the relevant action.
 - **Disclose reference detail where it helps.** Why: long explanations crowd the task. Check: `shot`, `phone`: inline details use a disclosure; mid-task reading uses a sheet that returns to the same position.

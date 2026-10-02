@@ -11,14 +11,17 @@
 	connectors.add.url = page.url.searchParams.get('url') ?? '';
 	const goBack = backTo(resolve('/connectors'));
 	let copied = $state(false);
+	let copyError = $state<string | null>(null);
 
 	async function copy(text: string) {
+		copyError = null;
 		try {
 			await navigator.clipboard.writeText(text);
 			copied = true;
 			setTimeout(() => (copied = false), 2000);
 		} catch {
 			copied = false;
+			copyError = 'Couldn’t copy the sign-in link. Select the link and copy it manually.';
 		}
 	}
 
@@ -41,8 +44,15 @@
 	back={{ href: resolve('/connectors'), label: 'Back', onclick: goBack }}
 	online={pwa.online}
 	{copied}
+	{copyError}
 	ontoken={(v) => (connectors.add.token = v)}
-	onurl={(v) => (connectors.add.url = v)}
+	onurl={(v) => {
+		connectors.add.url = v;
+		if (connectors.add.errorField === 'url') {
+			connectors.add.error = null;
+			connectors.add.errorField = undefined;
+		}
+	}}
 	onredirect={(v) => (connectors.add.redirect = v)}
 	onbegin={() => void begin()}
 	onsignedin={() => connectors.signedIn()}

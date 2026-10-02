@@ -118,6 +118,12 @@
 {/snippet}
 
 {#snippet after()}
+	{#if days.length && remote.status === 'error'}
+		<div role="alert" class="flex flex-col items-start gap-2">
+			<p class="text-sm text-failed">Couldn't refresh history. {remote.error}</p>
+			<Button variant="outline" onclick={onretry}>Retry refresh</Button>
+		</div>
+	{/if}
 	{#if hasOlder}
 		<Button variant="outline" disabled={olderLoading} onclick={() => onloadolder?.()}>
 			{#if olderLoading}
@@ -139,7 +145,10 @@
 	{banner}
 	{lead}
 	state={{
-		remote,
+		remote:
+			days.length && (remote.status === 'loading' || remote.status === 'error')
+				? { status: 'ready' }
+				: remote,
 		offline: !online,
 		errorTitle: "Couldn't load history.",
 		onretry,

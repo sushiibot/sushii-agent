@@ -15,8 +15,7 @@
 
 <script lang="ts" generics="T">
 	import type { ComponentProps, Snippet } from 'svelte';
-	import Search from '@lucide/svelte/icons/search';
-	import { Input } from '$lib/ui/input';
+	import SearchField from '$lib/ui/input/search-field.svelte';
 	import { cn } from '$lib/utils';
 	import Screen from './screen.svelte';
 	import ScreenState from './screen-state.svelte';
@@ -66,20 +65,7 @@
 <Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer}>
 	<div class="mx-auto flex max-w-2xl flex-col gap-5 px-4 pt-4 pb-10">
 		{#if search !== undefined}
-			<label class="relative block">
-				<span class="sr-only">{searchLabel}</span>
-				<Search
-					class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-					aria-hidden="true"
-				/>
-				<Input
-					type="search"
-					bind:value={search}
-					bind:ref={searchInput}
-					placeholder={searchLabel}
-					class="h-12 pl-9 text-base"
-				/>
-			</label>
+			<SearchField label={searchLabel} bind:value={search} bind:ref={searchInput} />
 		{/if}
 		{@render lead?.()}
 		<ScreenState {...state} {isEmpty}>

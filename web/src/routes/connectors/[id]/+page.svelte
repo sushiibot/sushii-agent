@@ -32,7 +32,9 @@
 	online={pwa.online}
 	{justConnected}
 	busy={connectors.busy}
-	error={connectors.error}
+	operation={connectors.operation?.id === id ? connectors.operation.kind : undefined}
+	errorOperation={connectors.errorOperation?.id === id ? connectors.errorOperation.kind : undefined}
+	error={connectors.errorOperation?.id === id ? connectors.error : null}
 	runHref={(run) => resolve('/runs/[id]', { id: run })}
 	signInHref={resolve('/connectors/add') + '?url=' + encodeURIComponent(remote.data?.url ?? '')}
 	onreconnect={() => void connectors.action(id, 'reconnect')}

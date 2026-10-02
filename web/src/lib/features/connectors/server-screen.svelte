@@ -4,6 +4,7 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Plug from '@lucide/svelte/icons/plug';
 	import { Button } from '$lib/ui/button';
+	import ActionMenu from '$lib/ui/menu/action-menu.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import { ago } from '$lib/ui/format/time';
 	import TabbedScreen from '$lib/ui/screen/tabbed-screen.svelte';
@@ -11,7 +12,7 @@
 	import { Skeleton } from '$lib/ui/skeleton';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import { cn } from '$lib/utils';
-	import type { McpServer } from './types';
+	import type { ConnectorOperation, McpServer } from './types';
 
 	let {
 		remote,
@@ -21,6 +22,8 @@
 		online = true,
 		justConnected = false,
 		busy = false,
+		operation,
+		errorOperation,
 		error = null,
 		runHref = (id) => `/runs/${id}`,
 		onaccept,
@@ -38,6 +41,8 @@
 		online?: boolean;
 		justConnected?: boolean;
 		busy?: boolean;
+		operation?: ConnectorOperation;
+		errorOperation?: ConnectorOperation;
 		error?: string | null;
 		runHref?: (id: string) => string;
 		onreconnect?: () => void;
@@ -76,9 +81,8 @@
 {#snippet trackingSnapshot()}
 	{#if server?.changed}
 		<div class="mt-6 flex flex-col gap-2 border-t pt-4">
-			{#if error}<p role="alert" class="text-sm text-failed">Couldn't save it. {error}</p>{/if}
 			<Button class="self-start" variant="outline" disabled={busy || !online} onclick={onaccept}>
-				{#if busy}<LoaderCircle
+				{#if operation === 'snapshot'}<LoaderCircle
 						class="animate-spin motion-reduce:animate-none"
 						aria-hidden="true"
 					/>Saving…{:else}<Check />Save tracking snapshot{/if}
@@ -87,6 +91,49 @@
 				Optional: reset the tool comparison. Current tools are already available to the agent.
 			</p>
 		</div>
+	{/if}
+{/snippet}
+
+{#snippet actions()}
+	{#if server}
+		<ActionMenu label="Connection actions">
+			{#snippet children(close)}
+				<Button
+					variant="ghost"
+					class="w-full justify-start"
+					disabled={busy || !online}
+					onclick={() => {
+						close();
+						onreconnect?.();
+					}}>Reconnect</Button
+				>
+				{#if server.enabled !== false}<Button
+						variant="ghost"
+						class="w-full justify-start"
+						disabled={busy || !online}
+						onclick={() => {
+							close();
+							ondisconnect?.();
+						}}>Disconnect</Button
+					>{/if}
+				{#if signInHref}<Button
+						variant="ghost"
+						class="w-full justify-start"
+						href={signInHref}
+						disabled={busy || !online}
+						onclick={() => close()}>Sign in / replace token</Button
+					>{/if}
+				<Button
+					variant="ghost"
+					class="w-full justify-start"
+					disabled={busy || !online}
+					onclick={() => {
+						close();
+						removing = true;
+					}}>Remove…</Button
+				>
+			{/snippet}
+		</ActionMenu>
 	{/if}
 {/snippet}
 
@@ -104,7 +151,15 @@
 			{/if}
 			<header class="flex flex-col gap-2">
 				<span class="flex flex-wrap items-center gap-2">
-					{#if server.status === 'connected'}<StatePill of="active" label="Connected" />
+					{#if operation && operation !== 'snapshot'}<StatePill
+							of="running"
+							label={operation === 'reconnect'
+								? 'Reconnecting…'
+								: operation === 'disconnect'
+									? 'Disconnecting…'
+									: 'Removing…'}
+						/>
+					{:else if server.status === 'connected'}<StatePill of="active" label="Connected" />
 					{:else if server.status === 'signed-out'}<StatePill of="waiting" label="Sign in again" />
 					{:else}<StatePill of="failed" label="Not working" />{/if}
 				</span>
@@ -112,34 +167,45 @@
 					>{server.url}</code
 				>
 				{#if server.problem}<p class="text-sm">{server.problem}</p>{/if}
-				<div class="flex flex-wrap gap-2">
-					<Button variant="outline" disabled={busy || !online} onclick={onreconnect}
-						>Reconnect</Button
-					>
-					{#if server.enabled !== false}<Button
-							variant="outline"
-							disabled={busy || !online}
-							onclick={ondisconnect}>Disconnect</Button
-						>{/if}
-					{#if signInHref}<Button variant="outline" href={signInHref}
-							>Sign in / replace token</Button
-						>{/if}
-					<Button variant="ghost" disabled={busy || !online} onclick={() => (removing = !removing)}
-						>Remove…</Button
-					>
-				</div>
+
 				{#if removing}
 					<p class="text-sm">
 						Remove this connection and its saved credentials? Your account data stays with the
 						provider.
 					</p>
-					<div class="flex gap-2">
-						<Button variant="outline" disabled={busy || !online} onclick={onremove}
-							>Remove connection</Button
-						><Button variant="ghost" onclick={() => (removing = false)}>Cancel</Button>
+					<div class="flex flex-wrap gap-2">
+						<Button variant="outline" disabled={busy || !online} onclick={onremove}>
+							<span class="grid"
+								><span aria-hidden="true" class="invisible col-start-1 row-start-1"
+									>Removing connection…</span
+								><span class="col-start-1 row-start-1"
+									>{operation === 'remove' ? 'Removing connection…' : 'Remove connection'}</span
+								></span
+							>
+						</Button><Button variant="ghost" onclick={() => (removing = false)}>Cancel</Button>
 					</div>
 				{/if}
-				{#if error}<p role="alert" class="text-sm text-failed">{error}</p>{/if}
+				{#if operation}<p role="status" class="sr-only">
+						{operation === 'snapshot'
+							? 'Saving tracking snapshot…'
+							: operation === 'reconnect'
+								? 'Reconnecting…'
+								: operation === 'disconnect'
+									? 'Disconnecting…'
+									: 'Removing connection…'}
+					</p>{/if}
+				{#if error}<p role="alert" class="text-sm text-failed">
+						{errorOperation === 'snapshot'
+							? 'Couldn’t save the tracking snapshot.'
+							: errorOperation === 'reconnect'
+								? 'Couldn’t reconnect.'
+								: errorOperation === 'disconnect'
+									? 'Couldn’t disconnect.'
+									: errorOperation === 'remove'
+										? 'Couldn’t remove the connection.'
+										: ''}
+						{error}
+					</p>{/if}
 			</header>
 		</div>
 	{/if}
@@ -149,6 +215,7 @@
 	title={server?.name ?? 'Server'}
 	{back}
 	{banner}
+	{actions}
 	state={{
 		remote: server === null ? { status: 'ready' } : remote,
 		isEmpty: server === null,

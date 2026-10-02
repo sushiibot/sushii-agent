@@ -5,8 +5,8 @@
 	import { ago } from '$lib/ui/format/time';
 	import TabbedScreen from '$lib/ui/screen/tabbed-screen.svelte';
 	import ScreenState from '$lib/ui/screen/screen-state.svelte';
-	import Search from '@lucide/svelte/icons/search';
-	import { Input } from '$lib/ui/input';
+	import SearchField from '$lib/ui/input/search-field.svelte';
+	import { Button } from '$lib/ui/button';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
 	import WriteRow from './components/write-row.svelte';
@@ -41,6 +41,7 @@
 
 	let category = $state('long-term');
 	let search = $state('');
+	const query = $derived(search.trim().toLowerCase());
 	const tabs = $derived([
 		{ value: 'long-term', label: 'Long-term' },
 		{ value: 'daily', label: 'Daily notes' },
@@ -52,12 +53,19 @@
 	const daily = (f: MemoryFileSummary) => /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(f.path);
 	function itemsFor(value: string): Item[] {
 		if (value === 'changes')
-			return (data?.writes ?? []).slice(0, recent).map((w) => ({ kind: 'write', w }));
+			return (data?.writes ?? [])
+				.filter((w) =>
+					`${w.path} ${w.summary} ${w.thread?.title ?? ''} ${w.run?.title ?? ''}`
+						.toLowerCase()
+						.includes(query)
+				)
+				.slice(0, recent)
+				.map((w) => ({ kind: 'write', w }));
 		return (data?.files ?? [])
 			.filter(
 				(f) =>
 					(value === 'daily' ? daily(f) : !daily(f)) &&
-					`${f.path} ${f.about}`.toLowerCase().includes(search.toLowerCase())
+					`${f.path} ${f.about}`.toLowerCase().includes(query)
 			)
 			.sort((a, b) =>
 				value === 'daily' ? b.path.localeCompare(a.path) : a.path.localeCompare(b.path)
@@ -109,19 +117,7 @@
 
 {#snippet lead()}
 	<div class="flex flex-col gap-3">
-		<label class="relative block">
-			<span class="sr-only">Find a memory file</span>
-			<Search
-				class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-				aria-hidden="true"
-			/>
-			<Input
-				type="search"
-				bind:value={search}
-				placeholder="Find a memory file"
-				class="h-12 pl-9 text-base"
-			/>
-		</label>
+		<SearchField label="Search memory" bind:value={search} />
 		{#if data?.truncated}<p role="status" class="text-sm text-muted-foreground">
 				Some files could not be shown in full because the memory browsing limit was reached.
 			</p>{/if}
@@ -148,16 +144,27 @@
 						: 'Recent recorded changes to saved memory.'}
 			</p>
 			<ScreenState
-				remote={data && remote.status === 'loading' ? { status: 'ready' } : remote}
+				remote={data && (remote.status === 'loading' || remote.status === 'error')
+					? { status: 'ready' }
+					: remote}
 				offline={!online}
 				errorTitle="Couldn't load memory."
 				{onretry}
 				{skeleton}
 				isEmpty={!items.length}
 				empty={{
-					title: 'Nothing remembered yet',
-					body: search
-						? 'No files match your search. Try another file name.'
+					title: query
+						? 'No matching memory'
+						: value === 'daily'
+							? 'No daily notes yet'
+							: value === 'changes'
+								? 'No recorded changes yet'
+								: 'Nothing remembered yet',
+					action: query ? { label: 'Clear search', onclick: () => (search = '') } : undefined,
+					body: query
+						? value === 'changes'
+							? 'No changes match your search. Try another word or clear the search.'
+							: 'No files match your search. Try another word or clear the search.'
 						: value === 'daily'
 							? 'Daily notes appear here when the agent saves them.'
 							: 'Saved facts and preferences appear here when the agent remembers them.'
@@ -179,6 +186,12 @@
 						>All {data.writes.length} changes</a
 					>{/if}
 			</ScreenState>
+			{#if data && remote.status === 'error'}
+				<div role="alert" class="flex flex-col items-start gap-2">
+					<p class="text-sm text-failed">Couldn't refresh memory. {remote.error}</p>
+					{#if onretry}<Button variant="outline" onclick={onretry}>Retry refresh</Button>{/if}
+				</div>
+			{/if}
 		</div>
 	{/snippet}
 </TabbedScreen>

@@ -111,7 +111,7 @@ test('memory swipes preserve search, taps and the drawer gesture', async ({ page
 	await expect(longTerm).toHaveAttribute('aria-selected', 'true');
 	await change(page, 'next');
 	await expect(daily).toHaveAttribute('aria-selected', 'true');
-	const input = page.getByRole('searchbox', { name: 'Find a memory file' });
+	const input = page.getByRole('searchbox', { name: 'Search memory' });
 	await input.fill('2026');
 	const box = await input.boundingBox();
 	await swipe(
@@ -193,6 +193,13 @@ const panel = (page: Page, name: string) =>
 	page.getByRole('tabpanel', { name, exact: true, includeHidden: true });
 
 async function heldDrag(page: Page, distance: number) {
+	await page.evaluate(() => document.fonts.ready);
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
 	const session = await page.context().newCDPSession(page);
 	const box = await page.locator('[data-tab-pager]').boundingBox();
 	expect(box).not.toBeNull();
@@ -586,6 +593,11 @@ for (const [path, first] of [
 			await page.goto(path);
 			if (path === '/history') {
 				await page.getByRole('main').getByRole('listitem').first().getByRole('link').click();
+			}
+			if (path === '/memory') {
+				await expect(
+					page.getByRole('heading', { name: 'Long-term files', exact: true })
+				).toBeVisible();
 			}
 			await expectSettled(page, first);
 			await expect(page.locator('[data-tabbed-screen]')).toHaveCount(1);

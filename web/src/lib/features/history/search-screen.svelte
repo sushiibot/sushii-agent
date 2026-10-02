@@ -88,7 +88,7 @@
 				these results are from {result.unavailable.includes('chat') ? 'run notes' : 'chat'} only.
 			</p>
 		{/if}
-		{#if result.truncated && hits.length}
+		{#if result.truncated}
 			<p role="status" class="flex items-start gap-2 px-1 text-sm text-muted-foreground">
 				<Info class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
 				Search stopped early, so some matches may be missing. Try more words.
@@ -117,8 +117,12 @@
 					body: 'Finds what you and the agent said in chat, and what the agent wrote in its notes. Type at least two characters.'
 				}
 			: {
-					title: `No results for “${query.trim()}”`,
-					body: 'Search matches the exact words, ignoring case. Try fewer or different words.'
+					title: result?.truncated
+						? 'No matches in the searched portion'
+						: `No results for “${result?.query ?? query.trim()}”`,
+					body: result?.truncated
+						? 'Search stopped early, so some matches may be missing. Try more specific words.'
+						: 'Search matches the exact words, ignoring case. Try fewer or different words.'
 				}
 	}}
 	sections={[{ items: hits }]}
