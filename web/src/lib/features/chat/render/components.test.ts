@@ -266,9 +266,10 @@ describe('ask card vs approval tray', () => {
 
 describe('compact inline activity', () => {
 	test('thinking has a small status and no expandable task card', async () => {
-		const { els, text } = await dom(WorkingRow, { turn: { state: 'thinking', steps: [] } });
-		expect(text).toContain('🍣');
-		expect(text).toContain('Rolling sushi');
+		const { els, text } = await dom(WorkingRow, {
+			turn: { state: 'thinking', steps: [], label: 'Thinking…' }
+		});
+		expect(text).toContain('Thinking…');
 		expect(els.filter((e) => e.tag === 'details')).toHaveLength(0);
 		expect(els.some((e) => e.attrs.role === 'status')).toBe(true);
 	});

@@ -125,7 +125,10 @@ test('status accepted marks the send delivered and shows a Working row', () => {
 	const msgs = toMessages(s.items);
 	expect(msgs).toHaveLength(2);
 	expect(msgs[0]).toMatchObject({ role: 'user', delivery: 'sent' });
-	expect(msgs[1].parts[0]).toMatchObject({ type: 'data-turn', data: { label: 'Thinking…' } });
+	expect(msgs[1].parts[0]).toMatchObject({
+		type: 'data-turn',
+		data: { label: 'Waiting for the model…' }
+	});
 	run(s, [{ type: 'tool', data: { turnId: 't', name: 'x', summary: 'Doing x' } }]);
 	expect(toMessages(s.items)).toHaveLength(2);
 });

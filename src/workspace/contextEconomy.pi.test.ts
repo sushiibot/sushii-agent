@@ -1,3 +1,4 @@
+import { clearOpenRouterCatalog } from "../agentRuntime/piShared.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,6 +65,7 @@ function completionsSse(reply: Reply): Response {
 }
 
 beforeEach(() => {
+  clearOpenRouterCatalog();
   root = mkdtempSync(join(tmpdir(), "ws-economy-pi-"));
   reqs = [];
   script = [];
@@ -80,7 +82,7 @@ beforeEach(() => {
   );
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.startsWith("https://openrouter.ai/api/v1/models")) return new Response("", { status: 503 });
+    if (url.startsWith("https://openrouter.ai/api/v1/models")) return Response.json({ data: [{ id: "openai/gpt-6-luna", context_length: 800000 }, { id: "test/mini", context_length: 800000 }, { id: "test/picked-later", context_length: 800000 }] });
     const backend: Backend | null = url.startsWith("https://api.openai.com/") ? "chatgpt" : url.startsWith(`${OPENROUTER_BASE}/chat/completions`) ? "openrouter" : null;
     if (!backend) throw new Error(`unexpected fetch in test: ${url}`);
     const raw = init?.body ?? (input instanceof Request ? await input.text() : "{}");
@@ -97,6 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearOpenRouterCatalog();
   globalThis.fetch = realFetch;
   if (realKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = realKey;

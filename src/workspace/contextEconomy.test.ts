@@ -1,3 +1,4 @@
+import { autoCompactionSettings } from "./contextEconomy.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -241,4 +242,26 @@ describe("model list and choice", () => {
     writeWorkspaceState(stateDir, { chatSessionFile: "/b", recap: undefined });
     expect(readWorkspaceState(stateDir)).toEqual({ chatSessionFile: "/b", modelAlias: "luna" });
   });
+});
+
+test("auto-compaction is enabled for all backends and follows context size, with room for retained messages", () => {
+  const settings = autoCompactionSettings([
+    { provider: "or", id: "small", contextWindow: 8000 },
+    { provider: "chatgpt", id: "large", contextWindow: 272000 },
+  ]);
+  expect(settings.enabled).toBe(true);
+  expect(settings.modelOverrides["or/small"]).toEqual({
+    reserveTokens: 2000,
+    keepRecentTokens: 800,
+  });
+  expect(settings.modelOverrides["chatgpt/large"]).toEqual({
+    reserveTokens: 68000,
+    keepRecentTokens: 20000,
+  });
+  for (const contextWindow of [0, -1, NaN, Infinity])
+    expect(() =>
+      autoCompactionSettings([
+        { provider: "or", id: "unknown", contextWindow },
+      ]),
+    ).toThrow("unknown model context window");
 });

@@ -205,6 +205,7 @@ interface ProgressSnapshot {
 }
 
 interface TurnProgress {
+  modelActivity?: "waiting" | "thinking";
   turnId: string;
   /** Where the turn's message came from; null for the preferred surface. */
   origin: ChatOrigin | null;
@@ -969,6 +970,13 @@ export class WorkspaceLink {
         if (!turn.message && target?.adapter.turnStarted) this.openView(turn, () => target.adapter.turnStarted!(target.origin, this.view(turn)));
         return;
       }
+      case "model_activity": {
+        const turn = this.turns.get(p.turnId);
+        if (!turn || turn.text || turn.lines.length || turn.modelActivity === ev.activity) return;
+        turn.modelActivity = ev.activity;
+        this.touch(turn);
+        return;
+      }
       case "tool_start":
         this.addToolLine(this.turnFor(p.turnId, origin), { name: ev.name, summary: ev.summary, state: "run" });
         return;
@@ -1075,7 +1083,7 @@ export class WorkspaceLink {
   }
 
   private view(turn: TurnProgress): ProgressView {
-    return { turnId: turn.turnId, startedAt: turn.startedAt, lines: turn.lines, toolCount: turn.toolCount, text: turn.text };
+    return { modelActivity: turn.modelActivity, turnId: turn.turnId, startedAt: turn.startedAt, lines: turn.lines, toolCount: turn.toolCount, text: turn.text };
   }
 
   private async createView(turn: TurnProgress): Promise<SurfaceMessageHandle | null> {

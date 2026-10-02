@@ -285,6 +285,27 @@ describe("web adapter progress", () => {
     ]);
   });
 
+  test("reasoning status reaches live snapshots and reconnect views without changing progress after output", async () => {
+    const h = setup();
+    h.event("t1", { type: "turn_start" });
+    await h.link.settled();
+    expect(h.adapter.openTurns()[0]!.modelActivity).toBeUndefined();
+    h.event("t1", { type: "model_activity", activity: "thinking" });
+    await h.link.settled();
+    h.timers.flush();
+    expect(h.adapter.openTurns()[0]!.modelActivity).toBe("thinking");
+    expect(h.events.filter((e) => e.type === "snapshot").at(-1)!.data).toMatchObject({ view: { modelActivity: "thinking", text: "" } });
+    h.event("t1", { type: "model_activity", activity: "waiting" });
+    await h.link.settled();
+    h.timers.flush();
+    expect(h.adapter.openTurns()[0]!.modelActivity).toBe("waiting");
+    h.event("t1", { type: "text_delta", text: "reply" });
+    h.event("t1", { type: "model_activity", activity: "thinking" });
+    await h.link.settled();
+    h.timers.flush();
+    expect(h.adapter.openTurns()[0]!.modelActivity).toBe("waiting");
+  });
+
   test("snapshots are throttled while a turn runs", async () => {
     const h = setup();
     h.event("t1", { type: "text_delta", text: "a" });

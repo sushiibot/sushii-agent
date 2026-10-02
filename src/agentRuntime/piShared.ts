@@ -88,8 +88,8 @@ export function clearOpenRouterCatalog(): void {
 /**
  * Resolve the model's real context window from OpenRouter's catalog so max_tokens is capped under
  * the true ceiling: setting max_tokens to the full context window (what OpenRouter reports as
- * max_completion_tokens) makes every prompt overflow and get silently rejected. Falls back to a safe
- * buffer on any fetch/parse failure. Image input is declared only when the catalog lists it, so an
+ * max_completion_tokens) makes every prompt overflow and get silently rejected. Falls back to a known catalog window or an explicit caller limit
+ * on a fetch/parse failure; an unknown window fails loudly. Image input is declared only when the catalog lists it, so an
  * unknown model stays text-only.
  */
 export async function resolveModelInfo(modelId: string, fallback: number): Promise<{ contextWindow: number; image: boolean; resolved: boolean }> {
@@ -99,7 +99,11 @@ export async function resolveModelInfo(modelId: string, fallback: number): Promi
     log.info({ modelId, contextWindow: entry.contextWindow, image: entry.image }, "resolved model metadata from OpenRouter");
     return { contextWindow: entry.contextWindow, image: entry.image, resolved: true };
   } catch (err) {
-    log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using fallback");
+    if (!Number.isFinite(fallback) || fallback <= 0) {
+      log.error({ modelId, err }, "cannot determine model context window; refusing to run without auto-compaction");
+      throw new Error(`Cannot determine context window for ${modelId}`, { cause: err });
+    }
+    log.warn({ modelId, err, fallback }, "failed to resolve context window from OpenRouter catalog; using known fallback window");
     return { contextWindow: fallback, image: false, resolved: false };
   }
 }
@@ -154,7 +158,7 @@ export async function createOpenRouterModel(options: OpenRouterModelOptions) {
   const resolve = async (ids: string[]) => {
     // A guessed window is resolved again, so a catalog outage at pick time doesn't stick for the session.
     const fresh = ids.filter((id) => !limits.has(id) || limits.get(id)!.guessed);
-    const infos = await Promise.all(fresh.map((id) => resolveModelInfo(id, options.fallbackContextWindow ?? 800_000)));
+    const infos = await Promise.all(fresh.map((id) => resolveModelInfo(id, options.fallbackContextWindow ?? modelRuntime.getModel("openrouter", id)?.contextWindow ?? 0)));
     fresh.forEach((id, i) =>
       limits.set(id, {
         id,

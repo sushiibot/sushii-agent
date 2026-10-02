@@ -58,7 +58,16 @@ export function toTurn(t: TurnState, stopping: boolean): Turn {
 		case 'working':
 			if (stopping) return { state: 'stopping', steps };
 			if (t.label) return { state: 'working', steps, label: t.label };
-			if (!steps.length) return { state: 'working', steps, label: 'Thinking…' };
+			if (!steps.length)
+				return {
+					state: 'working',
+					steps,
+					label: t.responseStarted
+						? 'Working…'
+						: t.modelActivity === 'thinking'
+							? 'Thinking…'
+							: 'Waiting for the model…'
+				};
 			return { state: running ? 'working' : 'thinking', steps };
 		case 'done':
 			return { state: 'done', steps, elapsed };

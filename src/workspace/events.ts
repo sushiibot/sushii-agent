@@ -12,6 +12,8 @@ const TOOL_SUMMARY_MAX = 120;
 /** What one agent run (prompt → settled, including steers) has produced so far. */
 export interface RunAccumulator {
   finalText: string;
+  outputStarted?: boolean;
+  modelActivity?: "waiting" | "thinking";
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
@@ -56,6 +58,7 @@ export function assistantText(message: AssistantLike): string {
 export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): ChatEventPayload[] {
   switch (event.type) {
     case "tool_execution_start": {
+      acc.outputStarted = true;
       const summary = summarizeToolArgs(event.args).replace(/\s+/g, " ").trim().slice(0, TOOL_SUMMARY_MAX);
       return [{ type: "tool_start", name: event.toolName, summary }];
     }
@@ -63,6 +66,14 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
       return [{ type: "tool_end", name: event.toolName, ok: event.isError !== true }];
     case "message_update": {
       const m = event.assistantMessageEvent;
+      if (m.type === "text_delta" && m.delta) acc.outputStarted = true;
+      if (!acc.outputStarted) {
+        const activity = m.type === "thinking_delta" && m.delta ? "thinking" : m.type === "thinking_end" ? "waiting" : undefined;
+        if (activity && activity !== acc.modelActivity) {
+          acc.modelActivity = activity;
+          return [{ type: "model_activity", activity }];
+        }
+      }
       return m.type === "text_delta" && m.delta ? [{ type: "text_delta", text: m.delta }] : [];
     }
     case "message_end": {
@@ -80,6 +91,11 @@ export function mapSessionEvent(event: AgentSessionEvent, acc: RunAccumulator): 
       // Shown in chat and recorded in the run log, so a failed token refresh must not carry the endpoint's body.
       acc.errorMessage = msg.stopReason === "error" ? publicAuthError(msg.errorMessage ?? "unknown error") : undefined;
       acc.finalText = assistantText(msg);
+      // An interrupted reasoning stream must not claim to think during retry/provider latency.
+      if (!acc.outputStarted && acc.modelActivity === "thinking") {
+        acc.modelActivity = "waiting";
+        return [{ type: "model_activity", activity: "waiting" }];
+      }
       return [];
     }
     default:

@@ -1,3 +1,4 @@
+import { clearOpenRouterCatalog } from "../agentRuntime/piShared.ts";
 import { LOCATION_TOOL } from "../orchestration/workspace/location.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -266,10 +267,12 @@ describe("real Pi session", () => {
   const BUILTINS = ["bash", "edit", "find", "get_thread_history", "grep", "list_threads", "ls", "read", "send_file", "write"];
 
   beforeEach(() => {
+  clearOpenRouterCatalog();
     root = mkdtempSync(join(tmpdir(), "ws-stubs-"));
-    globalThis.fetch = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => String(input).includes("/models") ? Response.json({ data: [{ id: "test/model", context_length: 800000 }] }) : new Response("", { status: 503 })) as unknown as typeof fetch;
   });
   afterEach(() => {
+  clearOpenRouterCatalog();
     globalThis.fetch = realFetch;
     rmSync(root, { recursive: true, force: true });
   });

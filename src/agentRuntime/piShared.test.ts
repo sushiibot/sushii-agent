@@ -69,3 +69,8 @@ describe("openRouterCatalog", () => {
     expect(calls).toBe(2);
   });
 });
+
+test("a model with no catalog entry or known window fails loudly instead of guessing a window", async () => {
+  serve(async () => Response.json(catalog));
+  await expect(resolveModelInfo("vendor/unknown", 0)).rejects.toThrow("Cannot determine context window for vendor/unknown");
+});

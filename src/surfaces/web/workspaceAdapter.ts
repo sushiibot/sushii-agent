@@ -83,6 +83,7 @@ export interface WebAdapterDeps {
 }
 
 interface LiveTurn {
+  modelActivity?: "waiting" | "thinking";
   turnId: string;
   startedAt: number;
   lines: ToolLine[];
@@ -378,12 +379,13 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
         data: { turnId: turn.turnId, name: line.name, summary: line.summary, ...(line.id ? { id: line.id } : {}), ...(line.textOffset !== undefined ? { textOffset: line.textOffset } : {}), ...(line.agentId ? { agentId: line.agentId } : {}), ...(line.state !== "run" ? { ok: line.state === "ok" } : {}) },
       });
     });
+    turn.modelActivity = view.modelActivity;
     turn.lines = lines;
     turn.toolCount = view.toolCount;
   }
 
   private view(turn: LiveTurn): ProgressView {
-    return { turnId: turn.turnId, startedAt: turn.startedAt, lines: turn.lines.slice(-SNAPSHOT_LINES_MAX).map((l) => ({ ...l })), toolCount: turn.toolCount, text: turn.text };
+    return { modelActivity: turn.modelActivity, turnId: turn.turnId, startedAt: turn.startedAt, lines: turn.lines.slice(-SNAPSHOT_LINES_MAX).map((l) => ({ ...l })), toolCount: turn.toolCount, text: turn.text };
   }
 
   /** Over budget, a delivery stays unacked without counting a failure; the workspace resends it later. */

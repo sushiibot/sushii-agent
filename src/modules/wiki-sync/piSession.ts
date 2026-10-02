@@ -1,3 +1,5 @@
+import { autoCompactionSettings } from "../../workspace/contextEconomy.ts";
+import { resolveModelInfo } from "../../agentRuntime/piShared.ts";
 import { join, resolve, sep } from "node:path";
 import { type Span, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "../../config.ts";
@@ -24,31 +26,6 @@ const WIKI_SYNC_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "commit_
 const MAX_EMPTY_TURN_RETRIES = 2;
 const CONTINUE_NUDGE_PROMPT =
   "Your last response had no text and made no tool calls. If you're not finished, continue working. If you are finished, call commit_and_push (or explain in text why there's nothing to change).";
-
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
-const MODEL_METADATA_TIMEOUT_MS = 5000;
-
-/**
- * Looks up the model's real context window from OpenRouter's catalog so wiki-sync tracks
- * the provider's actual limit instead of a hand-checked constant that silently drifts out of
- * sync with it -- which is exactly how the previous hardcoded value ended up above the model's
- * real ceiling. Falls back to config.wikiSync.contextLimit on any fetch/parse failure or if the
- * model isn't listed -- a sweep shouldn't hard-fail just because the catalog endpoint is slow
- * or down.
- */
-async function resolveContextWindow(modelId: string): Promise<number> {
-  try {
-    const res = await fetch(OPENROUTER_MODELS_URL, { signal: AbortSignal.timeout(MODEL_METADATA_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`OpenRouter models catalog returned ${res.status}`);
-    const payload = (await res.json()) as { data?: Array<{ id: string; context_length?: number }> };
-    const entry = payload.data?.find((m) => m.id === modelId);
-    if (!entry?.context_length || entry.context_length <= 0) throw new Error(`model ${modelId} missing context_length in catalog`);
-    return entry.context_length;
-  } catch (err) {
-    logger.warn({ modelId, err, fallback: config.wikiSync.contextLimit }, "failed to resolve context window from OpenRouter catalog, using configured fallback");
-    return config.wikiSync.contextLimit;
-  }
-}
 
 /** Keeps log lines (and Loki structured-metadata fields, which silently drop oversized values) from ballooning on large tool payloads. */
 function preview(value: unknown, max = 400): string {
@@ -309,7 +286,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   // OpenRouter's dashboard/activity view -- no manual id plumbing needed here.
   // Independent of the main agent's model: wiki-sync now reads image/PDF attachments
   // materialized into the inbox, so its model must accept image input.
-  const contextWindow = await resolveContextWindow(config.wikiSync.model);
+  const contextWindow = (await resolveModelInfo(config.wikiSync.model, modelRuntime.getModel("openrouter", config.wikiSync.model)?.contextWindow ?? 0)).contextWindow;
   // Capped against the resolved contextWindow, not used as-is -- config.wikiSync.maxOutputTokens
   // is a per-turn output budget we control, not the model's own max_completion_tokens (which
   // OpenRouter reports as equal to its context window for this model; sending that directly as
@@ -359,14 +336,8 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   });
   await loader.reload();
 
-  // In-memory only (no settings.json written) -- pi's compaction defaults to a 16384-token
-  // reserve, sized for a normal reply. maxOutputTokens now lets a single turn emit up to the
-  // model's real ceiling, so the reserve has to scale with it: otherwise compaction's own
-  // "is there room left" check can pass right before a turn tries to use its full output
-  // budget, blows past contextWindow, and the request fails outright instead of ever getting
-  // proactively compacted.
   const settingsManager = SettingsManager.inMemory({
-    compaction: { reserveTokens: config.wikiSync.maxOutputTokens },
+    compaction: autoCompactionSettings([model]),
   });
 
   const { session } = await createAgentSession({

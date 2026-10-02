@@ -1,3 +1,4 @@
+import { autoCompactionSettings } from "../contextEconomy.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentSession, AgentSessionEvent, AgentToolResult, ExtensionAPI, ExtensionContext, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -658,7 +659,7 @@ export class SubagentHost {
     const { createAgentSession, DefaultResourceLoader, SettingsManager } = await import("@earendil-works/pi-coding-agent");
     // A def that names its own model is pinned to it; every other child follows the shared backend like main.
     const pinned = spawn.def.model !== undefined;
-    const { modelRuntime, model: openrouterModel, maxTokens } = await this.model(spawn.def.model);
+    const { modelRuntime, model: openrouterModel } = await this.model(spawn.def.model);
     const chatgptModel = !pinned && config.provider === "chatgpt" ? modelRuntime.getModel(CHATGPT_PROVIDER, config.chatgptModel) : undefined;
     const model = pinned
       ? openrouterModel
@@ -726,10 +727,7 @@ export class SubagentHost {
       await loader.reload();
       const settingsManager = SettingsManager.create(cwd, config.agentDir);
       settingsManager.applyOverrides({
-        compaction: {
-          reserveTokens: maxTokens,
-          ...(chatgptModel ? { modelOverrides: { [`${CHATGPT_PROVIDER}/${chatgptModel.id}`]: { reserveTokens: chatgptModel.maxTokens } } } : {}),
-        },
+        compaction: autoCompactionSettings([openrouterModel, ...(chatgptModel ? [chatgptModel] : [])]),
       });
       settingsManager.getCacheWarmingMode = () => "off";
       // Bash writes wherever the process can, so only a writer (confined to its worktree by the watch) gets it.

@@ -34,11 +34,15 @@ function textOf(content: unknown): string {
 
 const imagesIn = (content: unknown) => (Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "image_url").length : 0);
 
-function stream(pieces: string[], gapMs: number, tag: string | undefined, delayMs = 0): Response {
+function stream(pieces: string[], gapMs: number, tag: string | undefined, delayMs = 0, reasoning = false): Response {
   if (tag) pieces = [`re-${tag} ${pieces[0] ?? ""}`, ...pieces.slice(1)];
   const body = new ReadableStream({
     async start(c) {
       await Bun.sleep(delayMs);
+      if (reasoning) {
+        c.enqueue(enc.encode(chunk({ role: "assistant", reasoning_content: "Private reasoning must never appear in chat." }, null)));
+        await Bun.sleep(3000);
+      }
       for (const p of pieces) {
         c.enqueue(enc.encode(chunk({ role: "assistant", content: p }, null)));
         await Bun.sleep(gapMs);
@@ -72,6 +76,8 @@ function reply(msgs: Msg[], userText: string, lastUser: Msg | undefined): Respon
     const total = msgs.reduce((a, m) => a + imagesIn(m.content), 0);
     return stream([`I received ${imagesIn(lastUser?.content)} image part(s) in this turn `, `(${total} in the whole context).`], 100, tag);
   }
+  if (userText.includes("E2E-THINK")) return stream(["Thoughtful reply."], 100, tag, 3000, true);
+  if (userText.includes("E2E-WAIT")) return stream(["Reply without reasoning."], 100, tag, 3500);
   if (userText.includes("E2E-SLOW")) return stream(Array.from({ length: 30 }, (_, i) => `slow${i} `), 500, tag);
   const echo = /E2E-ECHO (\S+)/.exec(userText);
   if (echo) return stream([`Echo ${echo[1]}.`], 10, tag, userText.includes("E2E-LATE") ? 4000 : 0);

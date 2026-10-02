@@ -308,6 +308,7 @@ export function createPiChatSessionFactory(
     for (const m of known) modelOverrides[`${m.provider}/${m.id}`] = { reserveTokens: reserveTokensFor(m.contextWindow, economy.compactTokens) };
     const overrides: Settings = {
       compaction: {
+        enabled: true,
         reserveTokens: reserveTokensFor(openrouterModel.contextWindow, economy.compactTokens),
         keepRecentTokens: economy.keepRecentTokens,
         modelOverrides,

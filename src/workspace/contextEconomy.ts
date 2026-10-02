@@ -10,7 +10,29 @@ export const COMPACT_MAX_FILL = 0.75;
  *  Not floored at the model's maxTokens: ChatGPT models declare 128K of a 272K window, which would pull the
  *  trigger far below `compactTokens`; Pi's overflow recovery covers a rare reply that doesn't fit. */
 export function reserveTokensFor(contextWindow: number, compactTokens: number): number {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) throw new Error(`Cannot auto-compact: unknown model context window (${contextWindow})`);
   return contextWindow - Math.min(compactTokens, Math.floor(contextWindow * COMPACT_MAX_FILL));
+}
+
+/** Every session uses a model-specific trigger, including after backend fallback. */
+export function autoCompactionSettings(
+  models: readonly { provider: string; id: string; contextWindow: number }[],
+) {
+  if (!models.length) throw new Error("Cannot auto-compact without a model");
+  const modelOverrides = Object.fromEntries(
+    models.map((m) => [
+      `${m.provider}/${m.id}`,
+      {
+        reserveTokens: reserveTokensFor(m.contextWindow, Infinity),
+        keepRecentTokens: Math.min(20_000, Math.floor(m.contextWindow * 0.1)),
+      },
+    ]),
+  );
+  return {
+    enabled: true,
+    ...modelOverrides[`${models[0]!.provider}/${models[0]!.id}`]!,
+    modelOverrides,
+  };
 }
 
 // ── Hygiene: clear old tool output without an LLM call. ──

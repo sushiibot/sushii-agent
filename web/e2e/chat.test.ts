@@ -153,7 +153,7 @@ test('a send shows at once, carries a ULID, and settles on the status event', as
 	await push(page, 'status', { clientId: body.clientId, state: 'accepted' }, 2);
 	await expect(bubble(page, 'Book the car service')).toContainText('Sent');
 	await expect(page.locator('[data-message-id]').filter({ hasText: 'Book' })).toHaveCount(1);
-	// The cycling emoji phrase ("Rolling sushi…") carries the status; no "Sushii ·" prefix anymore.
+	// The status names the actual model state.
 	await expect(page.locator('[data-typing] [aria-hidden=true]')).toContainText(/\S.*…/);
 	await expect(page.locator('[data-typing]')).not.toContainText('Sushii');
 
@@ -1851,12 +1851,25 @@ for (const width of [412, 1280]) {
 		await expect(page.locator('[data-typing]')).not.toContainText('Used');
 		await page.screenshot({ path: `/tmp/chat-typing-${width}.png` });
 		const visibleStatus = page.locator('[data-typing] [aria-hidden=true]');
-		const firstPhrase = await visibleStatus.textContent();
-		await page.clock.runFor(8000);
-		await expect(visibleStatus).not.toHaveText(firstPhrase!);
-		const secondPhrase = await visibleStatus.textContent();
-		await page.clock.runFor(8000);
-		await expect(visibleStatus).not.toHaveText(secondPhrase!);
+		await expect(visibleStatus).toHaveText('Waiting for the model…');
+		await page.clock.runFor(16000);
+		await expect(visibleStatus).toHaveText('Waiting for the model…');
+		await push(page, 'snapshot', {
+			turnId: 'compact',
+			view: {
+				turnId: 'compact',
+				startedAt: Date.now(),
+				text: '',
+				lines: [],
+				toolCount: 0,
+				modelActivity: 'thinking'
+			}
+		});
+		await expect(visibleStatus).toHaveText('Thinking…');
+		await expect(page.locator('[data-typing] .sr-only')).toHaveText('Thinking…');
+		await page.emulateMedia({ reducedMotion: 'reduce' });
+		await expect(visibleStatus.locator('.typing-status')).toHaveCSS('animation-name', 'none');
+		await page.screenshot({ path: `/tmp/chat-thinking-${width}.png` });
 		await push(page, 'delta', {
 			turnId: 'compact',
 			offset: 0,

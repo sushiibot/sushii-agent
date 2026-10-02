@@ -608,6 +608,7 @@ export const chatEventPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("tool_start"), name: z.string(), summary: z.string() }),
   z.object({ type: z.literal("tool_end"), name: z.string(), ok: z.boolean() }),
   z.object({ type: z.literal("text_delta"), text: z.string() }),
+  z.object({ type: z.literal("model_activity"), activity: z.enum(["waiting", "thinking"]) }),
   z.object({ type: z.literal("turn_end"), aborted: z.boolean() }),
 ]);
 export type ChatEventPayload = z.infer<typeof chatEventPayload>;

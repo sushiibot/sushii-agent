@@ -82,6 +82,7 @@ export interface ToolLine {
 
 /** A running turn's live view. */
 export interface ProgressView {
+	modelActivity?: 'waiting' | 'thinking';
 	turnId: string;
 	startedAt: number;
 	lines: readonly ToolLine[];

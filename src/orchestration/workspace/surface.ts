@@ -20,6 +20,7 @@ export interface SurfaceCapabilities {
 export type ToolLine = { name: string; summary: string; state: "run" | "ok" | "err"; agentId?: string; id?: string; textOffset?: number };
 
 export interface ProgressView {
+  modelActivity?: "waiting" | "thinking";
   turnId: string;
   startedAt: number;
   /** Every tool line of the turn, oldest first; the adapter decides how many to show. */

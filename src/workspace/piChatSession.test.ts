@@ -1,3 +1,4 @@
+import { clearOpenRouterCatalog } from "../agentRuntime/piShared.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,11 +14,13 @@ let root: string;
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
+  clearOpenRouterCatalog();
   root = mkdtempSync(join(tmpdir(), "ws-pichat-"));
-  // No network: the OpenRouter catalog lookup falls back to its default context window.
-  globalThis.fetch = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+  // No network: the fixture declares its context window in a fake model catalog.
+  globalThis.fetch = (async (input: RequestInfo | URL) => String(input).includes("/models") ? Response.json({ data: [{ id: "test/model", context_length: 800000 }] }) : new Response("", { status: 503 })) as unknown as typeof fetch;
 });
 afterEach(() => {
+  clearOpenRouterCatalog();
   globalThis.fetch = realFetch;
   rmSync(root, { recursive: true, force: true });
 });
@@ -85,6 +88,18 @@ describe("run log", () => {
 });
 
 describe("reloadContext", () => {
+  test("auto-compaction stays enabled despite disabled disk settings, including after reload", async () => {
+    const config = testConfig();
+    mkdirSync(config.agentDir, { recursive: true });
+    writeFileSync(join(config.agentDir, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+    const session = await realSession();
+    try {
+      expect(session.settingsManager.getCompactionSettings(session.model).enabled).toBe(true);
+      await reloadContext(session);
+      expect(session.settingsManager.getCompactionSettings(session.model).enabled).toBe(true);
+    } finally { session.dispose(); }
+  });
+
   test("keeps the compaction reserve override across a reload", async () => {
     const session = await realSession();
     const reserve = session.settingsManager.getCompactionSettings().reserveTokens;

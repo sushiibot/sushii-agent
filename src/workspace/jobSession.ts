@@ -1,3 +1,4 @@
+import { autoCompactionSettings } from "./contextEconomy.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent, ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -32,6 +33,7 @@ const JOB_CONTEXT_CAPS: Record<string, number | undefined> = { "AGENTS.md": unde
 
 const PROVIDER_ID = "sushii-workspace-job-openrouter";
 export const JOB_TIMEOUT_MS = 10 * 60_000;
+export const JOB_COMPACTION_TIMEOUT_MS = 5 * 60_000;
 
 export interface ToolFreeJobInput {
   /** Run-log agent name, "job:<name>". */
@@ -157,7 +159,13 @@ export async function runToolFreeJob(config: WorkspaceConfig, input: ToolFreeJob
   });
   // drk's default thinking level from settings.json, which an in-memory manager would not read.
   const defaultThinkingLevel = SettingsManager.create(cwd, config.agentDir).getDefaultThinkingLevel();
-  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, ...(defaultThinkingLevel ? { defaultThinkingLevel } : {}) });
+  const settingsManager = SettingsManager.inMemory({
+    compaction: autoCompactionSettings([
+      openrouterModel,
+      ...(chatgptModel ? [chatgptModel] : []),
+    ]),
+    ...(defaultThinkingLevel ? { defaultThinkingLevel } : {}),
+  });
   settingsManager.getCacheWarmingMode = () => "off";
   const sessionManager = SessionManager.create(cwd, jobSessionDir(config.agentDir));
   let session: AgentSession;
@@ -211,17 +219,38 @@ function lastAssistant(session: Pick<JobSession, "messages">): AssistantMsg | un
 }
 
 /** Sends `prompt`, waits for the run to settle, and returns the final assistant text; throws on error, abort or timeout. */
-export async function promptToSettle(session: JobSession, prompt: string, timeoutMs: number): Promise<string> {
+export async function promptToSettle(session: JobSession, prompt: string, timeoutMs: number, compactionTimeoutMs = JOB_COMPACTION_TIMEOUT_MS): Promise<string> {
   let settled!: () => void;
   const done = new Promise<void>((resolve) => (settled = resolve));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let remainingMs = timeoutMs;
+  let armedAt = Date.now();
+  let compacting = false;
+  let rejectTimeout!: (err: Error) => void;
+  const timeout = new Promise<never>((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const arm = () => {
+    armedAt = Date.now();
+    timer = setTimeout(() => rejectTimeout(new Error(`job did not settle within ${timeoutMs}ms of work time`)), remainingMs);
+  };
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
     if (event.type === "agent_settled") settled();
+    if (event.type === "compaction_start" && !compacting) {
+      remainingMs = Math.max(0, remainingMs - (Date.now() - armedAt));
+      clearTimeout(timer);
+      compacting = true;
+      // A stuck summarizer must still be bounded, independently of the job's work budget.
+      timer = setTimeout(() => rejectTimeout(new Error(`job compaction did not finish within ${compactionTimeoutMs}ms`)), compactionTimeoutMs);
+    }
+    if (event.type === "compaction_end" && compacting) {
+      clearTimeout(timer);
+      compacting = false;
+      arm();
+    }
   });
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  arm();
   try {
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`job did not settle within ${timeoutMs}ms`)), timeoutMs);
-    });
     await Promise.race([Promise.all([session.prompt(prompt), done]), timeout]);
   } catch (err) {
     await session.abort().catch(() => {});

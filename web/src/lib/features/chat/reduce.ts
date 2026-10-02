@@ -37,6 +37,8 @@ export interface Attachment {
 export type TurnPhase = 'working' | 'done' | 'stopped' | 'interrupted';
 
 export interface TurnState {
+	responseStarted?: boolean;
+	modelActivity?: 'waiting' | 'thinking';
 	phase: TurnPhase;
 	lines: ToolLine[];
 	startedAt: number;
@@ -509,7 +511,13 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			const v = ev.data.view;
 			item.text = v.text;
 			item.streaming = true;
-			item.turn = { phase: 'working', lines: [...v.lines], startedAt: v.startedAt };
+			item.turn = {
+				phase: 'working',
+				lines: [...v.lines],
+				startedAt: v.startedAt,
+				responseStarted: !!v.text,
+				modelActivity: v.text ? undefined : v.modelActivity
+			};
 			break;
 		}
 		case 'delta': {
@@ -519,6 +527,10 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			const item = existing ?? turnItem(s, ev.data.turnId, now);
 			if (ev.data.offset !== item.text.length) break;
 			item.text += ev.data.text;
+			if (item.turn) {
+				item.turn.modelActivity = undefined;
+				item.turn.responseStarted = true;
+			}
 			item.streaming = true;
 			break;
 		}
