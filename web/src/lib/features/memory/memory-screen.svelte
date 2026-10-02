@@ -38,6 +38,7 @@
 
 	let category = $state<'long-term' | 'daily' | 'changes'>('long-term');
 	let search = $state('');
+	const categories = $derived(['long-term', 'daily', ...(data?.writes.length ? ['changes'] : [])]);
 	const daily = (f: MemoryFileSummary) => /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(f.path);
 	const sections = $derived.by((): ListSection<Item>[] => {
 		if (category === 'changes')
@@ -139,6 +140,11 @@
 {/snippet}
 
 <ListScreen
+	swipe={() => ({
+		values: categories,
+		value: category,
+		onchange: (value) => (category = value as typeof category)
+	})}
 	title="Memory"
 	{back}
 	{banner}

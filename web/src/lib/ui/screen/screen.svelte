@@ -4,6 +4,7 @@
 	import Menu from '@lucide/svelte/icons/menu';
 	import { cn } from '$lib/utils';
 	import { getDrawer } from '../shell/drawer';
+	import { swipeTabs, type SwipeTabsOptions } from '../tabs/swipe';
 
 	let {
 		title,
@@ -14,6 +15,7 @@
 		toast,
 		footer,
 		stickToBottom = false,
+		swipe,
 		scroller = $bindable(null),
 		children
 	}: {
@@ -29,6 +31,8 @@
 		footer?: Snippet;
 		/** Keep the newest content in view, for chats. */
 		stickToBottom?: boolean;
+		/** Touch navigation between adjacent sections; scrolling and edge navigation keep priority. */
+		swipe?: () => SwipeTabsOptions;
 		/** The scrolling region, for callers that track the reader's position. */
 		scroller?: HTMLElement | null;
 		children: Snippet;
@@ -86,6 +90,7 @@
 
 <!-- column-reverse keeps a chat pinned to its newest message without scripting. -->
 <main
+	use:swipeTabs={swipe}
 	bind:this={scroller}
 	class={cn(
 		'@container min-h-0 flex-1 overflow-x-clip overflow-y-auto overscroll-contain',

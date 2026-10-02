@@ -115,6 +115,11 @@
 {/snippet}
 
 <ListScreen
+	swipe={() => ({
+		values: onfilter ? RUN_FILTERS.map((f) => f.value) : [],
+		value: filter,
+		onchange: (value) => onfilter?.(value as RunFilter)
+	})}
 	title="Runs"
 	{back}
 	{banner}

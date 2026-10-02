@@ -140,6 +140,11 @@
 {/snippet}
 
 <DetailScreen
+	swipe={() => ({
+		values: ['overview', 'timeline', 'evidence', 'related'],
+		value: section,
+		onchange: (value) => (section = value)
+	})}
 	title="Run"
 	{back}
 	{banner}

@@ -92,6 +92,11 @@
 {/snippet}
 
 <DetailScreen
+	swipe={() => ({
+		values: ['tools', 'history', 'used'],
+		value: section,
+		onchange: (value) => (section = value)
+	})}
 	title={server?.name ?? 'Server'}
 	{back}
 	{banner}
