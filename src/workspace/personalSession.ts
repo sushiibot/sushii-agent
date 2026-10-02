@@ -40,7 +40,8 @@ import {
 import { DELIVERY_ENTRY, SESSION_ENTRY, type DeliveryMarker, type SessionMarker } from "./chatExport.ts";
 import { bindSendFileSink, type SendFileSink } from "./sendFile.ts";
 import { dailyFileRel } from "./history.ts";
-import { RecentIds } from "./recentIds.ts";
+import { DurableInbox, type DurableInput } from "./durableInbox.ts";
+import type { DurableState } from "../agentRuntime/durableState.ts";
 import { readFileSurfaces, readPendingMarkers, readWorkspaceState, writeWorkspaceState, type PendingMarkers } from "./state.ts";
 import { ChatAsks, createHeadlessUIContext, type AskRequest } from "./uiContext.ts";
 import {
@@ -90,7 +91,7 @@ export type ChatSession = Pick<
 >;
 
 /** Opens `sessionFile` when given, else creates a fresh chat session, its extensions bound to `ui`. */
-export type ChatSessionFactory = (input: { sessionFile: string | null; ui?: ExtensionUIContext }) => Promise<{
+export type ChatSessionFactory = (input: { sessionFile: string | null; ui?: ExtensionUIContext; checkpoint?: () => Promise<void> }) => Promise<{
   session: ChatSession;
   sessionFile: string;
   /** The run in progress on `session` (a subagent's parentRunId); null between runs. */
@@ -184,6 +185,9 @@ export interface PersonalSessionOptions {
   principalId: string;
   model: string;
   stateDir: string;
+  /** Process-wide storage shared by main and every topic. Standalone hosts own a store when absent. */
+  durableState?: DurableState;
+  conversationId?: string;
   factory: ChatSessionFactory;
   transport: ChatTransport;
   /** Coalescing window for text_delta events; null omits them. Default 500ms. */
@@ -267,7 +271,10 @@ type SettleOutcome = "reply" | "notice" | "aborted" | "suppressed" | "silent";
 export class PersonalSession {
   private readonly opts: PersonalSessionOptions;
   private readonly outbox: Outbox;
-  private readonly recentIds: RecentIds;
+  private readonly inbox: DurableInbox;
+  private recoveredInputs: readonly DurableInput[] = [];
+  private recovering: Promise<void> | null = null;
+  private closing = false;
   private readonly newId: () => string;
   private session: ChatSession | null = null;
   private sessionFile = "";
@@ -335,7 +342,7 @@ export class PersonalSession {
   constructor(opts: PersonalSessionOptions) {
     this.opts = opts;
     this.outbox = new Outbox(opts.stateDir);
-    this.recentIds = new RecentIds(opts.stateDir);
+    this.inbox = new DurableInbox(opts.stateDir, 500, { store: opts.durableState, conversationId: opts.conversationId });
     this.newId = opts.newId ?? ulid;
     this.asks = new ChatAsks({ deliver: (ask) => this.deliverAsk(ask), timeoutMs: opts.askTimeoutMs, newId: this.newId });
     this.ui = createHeadlessUIContext(this.asks);
@@ -366,6 +373,7 @@ export class PersonalSession {
       this.pendingNew === 0 &&
       this.queued === 0 &&
       this.inFlight.size === 0 &&
+      this.recoveredInputs.length === 0 &&
       this.pendingContext.length === 0 &&
       this.hiddenNext === null &&
       this.orphanFlush === null
@@ -406,10 +414,12 @@ export class PersonalSession {
 
   /** Reopens the chat session recorded in state.json, or creates one and records it. */
   async start(): Promise<void> {
+    await this.inbox.open();
+    this.recoveredInputs = await this.inbox.pending();
     const exists = this.opts.fileExists ?? existsSync;
     const recorded = readWorkspaceState(this.opts.stateDir);
     const reopen = recorded && exists(recorded.chatSessionFile) ? recorded.chatSessionFile : null;
-    const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen, ui: this.ui });
+    const { session, sessionFile } = await this.opts.factory({ sessionFile: reopen, ui: this.ui, checkpoint: () => this.checkpoint() });
     this.attach(session, sessionFile);
     // Markers and a rotation's recap live only in memory until the new session's first message; a restart before then re-appends them.
     const pending = readPendingMarkers(this.opts.stateDir);
@@ -429,7 +439,30 @@ export class PersonalSession {
       this.idleTimer = setInterval(() => void this.checkIdle().catch((err) => log.warn({ err }, "idle rotation check failed")), every);
       this.idleTimer.unref?.();
     }
+    await this.recoverInputs();
     log.info({ sessionFile, reopened: reopen !== null }, "personal session ready");
+  }
+
+  private recoverInputs(): Promise<void> {
+    if (this.recovering) return this.recovering;
+    if (this.closing || !this.recoveredInputs.length || !(this.opts.transport.isConnected?.() ?? true)) return Promise.resolve();
+    // Reserve one chain slot for the entire startup backlog, before newly arriving inputs.
+    // Wait for registration: proxied tools and the reply's origin need the connected bot.
+    this.recovering = this.enqueue(async () => {
+      while (!this.closing && this.recoveredInputs.length) {
+        const input = this.recoveredInputs[0]!;
+        await this.promptOrSteer(input.messageId, input.text, input.origin, undefined, input.images);
+        this.inbox.add(input.messageId);
+        await this.inbox.flush();
+        this.recoveredInputs = this.recoveredInputs.slice(1);
+      }
+    }).finally(() => { this.recovering = null; });
+    return this.recovering;
+  }
+
+  private async checkpoint(): Promise<void> {
+    if (this.closing) throw new Error("workspace session is shutting down");
+    await this.inbox.flush();
   }
 
   handlers(): Record<string, (params: unknown) => Promise<unknown>> {
@@ -454,14 +487,16 @@ export class PersonalSession {
 
   async handleMessage(params: ChatMessageParams): Promise<ChatMessageResult> {
     this.touch();
+    await this.inbox.flush();
     const id = params.messageId;
-    if (this.isSeen(id)) return DUPLICATE;
     const original = this.inFlight.get(id);
     if (original) return original.then(() => DUPLICATE);
+    if (this.isSeen(id)) return DUPLICATE;
     // Ahead of the chain: the run waiting on the dialog holds up everything queued behind it.
     const answered = params.kind === "user" ? (this.ownerAsks.answer(id, params.text, { foreignIds: true }) ?? this.asks.answer(id, params.text)) : null;
     if (answered) {
-      this.recentIds.add(id);
+      this.inbox.add(id);
+      await this.inbox.flush();
       return answered === "answered" ? { accepted: true, mode: "prompt" } : DUPLICATE;
     }
     const handling = this.accept(params);
@@ -480,6 +515,7 @@ export class PersonalSession {
     if (params.kind === "context") {
       const text = formatUserText(params, receivedAt);
       await this.enqueue(() => this.appendContext(id, text));
+      await this.inbox.flush();
       return { accepted: true, mode: "context" };
     }
     this.recordFileUploads(params.origin.surface, params.fileUploads === true);
@@ -489,7 +525,8 @@ export class PersonalSession {
       const { images, saved } = await attachments;
       return this.promptOrSteer(id, formatUserText(params, receivedAt, saved), params.origin, undefined, images);
     });
-    this.recentIds.add(id);
+    this.inbox.add(id);
+    await this.inbox.flush();
     return { accepted: true, mode };
   }
 
@@ -513,7 +550,7 @@ export class PersonalSession {
   }
 
   private isSeen(id: string): boolean {
-    return this.recentIds.has(id) || this.unpersistedContextIds.includes(id) || this.pendingContext.some((c) => c.messageId === id);
+    return this.inbox.has(id) || this.unpersistedContextIds.includes(id) || this.pendingContext.some((c) => c.messageId === id);
   }
 
   // Chained so a steer can't slip into Pi's queue between clearQueue() and abort(). Queued steers are dropped:
@@ -538,6 +575,7 @@ export class PersonalSession {
       // Lands before the next prompt, like context that arrives mid-run.
       if (aborted && this.run && !this.run.hidden) this.pendingContext.push({ messageId: `stop:${this.newId()}`, text: STOP_NOTE });
       await session.abort();
+      await this.inbox.flush();
       return { aborted };
     }).finally(release);
   }
@@ -589,7 +627,8 @@ export class PersonalSession {
           if (reason === "rotate") recap = await this.makeRecap(old, Math.max(deadline - reserve, Date.now() + 1000));
         }
         // Build the replacement first: if that fails, the old session stays attached and usable.
-        const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui });
+        await this.inbox.flush();
+        const { session, sessionFile } = await this.opts.factory({ sessionFile: null, ui: this.ui, checkpoint: () => this.checkpoint() });
         this.detach();
         // chat/new's recap only feeds the history files, so it runs after the swap instead of delaying it.
         if (old && reason === "new") this.recapInBackground(old, previousSessionFile);
@@ -919,6 +958,7 @@ export class PersonalSession {
    *  on an interval while connected. A bot without `alert` (an older one, or a rollback) gets queued alerts as text. */
   onRegistered(features: readonly string[] = []): void {
     this.botFeatures = features;
+    void this.recoverInputs().catch((err) => log.error({ err }, "replaying durable inputs failed; retrying at the next registration"));
     if (!features.includes("alert")) for (const entry of this.outbox.unacked()) if (entry.kind === "alert") this.downgradeAlert(entry);
     this.resendUnacked();
     if (this.resendTimer) return;
@@ -983,6 +1023,7 @@ export class PersonalSession {
   }
 
   async dispose(): Promise<void> {
+    this.closing = true;
     if (this.resendTimer) clearInterval(this.resendTimer);
     this.resendTimer = null;
     if (this.idleTimer) clearInterval(this.idleTimer);
@@ -991,10 +1032,14 @@ export class PersonalSession {
     this.ownerAsks.hold("shutdown");
     const session = this.session;
     this.detach();
+    // Leave the durable inputs pending, but prevent Pi from draining them while abort waits.
+    session?.clearQueue();
     if (session?.isStreaming) await session.abort().catch(() => {});
     session?.dispose();
     for (const abort of this.backgroundRecaps) abort.abort();
     await this.turnCommit;
+    await this.recovering?.catch((err) => log.warn({ err }, "input recovery interrupted at shutdown"));
+    await this.inbox.close();
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -1009,6 +1054,7 @@ export class PersonalSession {
     let steered: { text: string; images: ImageContent[] } | undefined;
     let retriedCompaction = false;
     for (;;) {
+      if (this.closing) throw new Error("workspace session is shutting down");
       if (this.orphanFlush) await this.orphanFlush;
       await this.waitForCompaction();
       await this.waitForSettle();
@@ -1027,6 +1073,11 @@ export class PersonalSession {
       // Registered before prompt(): Pi can drain a steer before it calls preflightResult.
       // The text is exactly what Pi queues, so a stranded steer is found again by it.
       const pending: PendingInbound = { messageId, text: input.text, origin, ...(wakeId ? { wakeId } : {}), ...(input.images ? { images: input.images } : {}) };
+      await this.inbox.prepare(pending);
+      if (this.closing) throw new Error("workspace session is shutting down");
+      // Storage can yield while Pi settles or starts compaction. Recompute the prompt's mode
+      // before registering its origin, just as after an asynchronous image resize.
+      if (session.isCompacting || session.isStreaming !== (mode === "steer") || (this.run && !session.isStreaming)) continue;
       this.unconsumed.push(pending);
       if (mode === "prompt") this.nextRunPrompt = pending;
       const sent = input.images;
@@ -1058,6 +1109,8 @@ export class PersonalSession {
         });
         return mode;
       } catch (err) {
+        this.inbox.consume([messageId], false);
+        await this.inbox.flush();
         this.unconsumed = this.unconsumed.filter((p) => p !== pending);
         if (this.nextRunPrompt === pending) this.nextRunPrompt = undefined;
         if (!retriedCompaction && isCompactionBusy(err)) {
@@ -1073,6 +1126,7 @@ export class PersonalSession {
   private dropQueued(session: ChatSession): void {
     const { steering, followUp } = session.clearQueue();
     if (steering.length || followUp.length) log.info({ dropped: steering.length + followUp.length }, "dropped queued messages");
+    this.inbox.consume(this.unconsumed.map((p) => p.messageId));
     this.unconsumed = [];
   }
 
@@ -1088,6 +1142,10 @@ export class PersonalSession {
       // A chat/new queued ahead of it drops it, like any other steer queued on the old conversation.
       void this.enqueue(async () => {
         if (gen === this.generation) await this.promptOrSteer(messageId ?? "", text, stranded?.origin, undefined, stranded?.images);
+        else {
+          this.inbox.consume([messageId ?? ""]);
+          await this.inbox.flush();
+        }
       }).catch((err) => this.deliverFailure(err, messageId, undefined, stranded?.origin));
     }
   }
@@ -1098,7 +1156,7 @@ export class PersonalSession {
     if (i === -1) return undefined;
     // Earlier entries never became user messages (e.g. handled as extension commands); forget them.
     const entry = this.unconsumed[i];
-    this.unconsumed.splice(0, i + 1);
+    this.inbox.consume(this.unconsumed.splice(0, i + 1).map((p) => p.messageId));
     if (entry.wakeId) {
       // A wake isn't drk speaking: the reply threading keeps following drk's last message.
       const w = this.wakes.get(entry.wakeId);
@@ -1141,19 +1199,19 @@ export class PersonalSession {
 
   // Pi writes nothing to the session file until its first user or assistant message; until then a crash would lose the context.
   private markContextAppended(session: ChatSession, messageId: string): void {
-    if (hasConversation(session)) this.recentIds.add(messageId);
+    if (hasConversation(session)) this.inbox.add(messageId);
     else this.unpersistedContextIds.push(messageId);
   }
 
   private commitUnpersistedContext(session: ChatSession): void {
     if (!this.unpersistedContextIds.length || !hasConversation(session)) return;
-    for (const id of this.unpersistedContextIds.splice(0)) this.recentIds.add(id);
+    for (const id of this.unpersistedContextIds.splice(0)) this.inbox.add(id);
   }
 
   // The old conversation's context goes with it; its ids count as handled so a retry can't land in the new one.
   private retireContext(): void {
     for (const id of [...this.unpersistedContextIds.splice(0), ...this.pendingContext.splice(0).map((c) => c.messageId)]) {
-      this.recentIds.add(id);
+      this.inbox.add(id);
     }
   }
 

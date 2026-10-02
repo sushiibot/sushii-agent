@@ -123,6 +123,32 @@ describe("reloadContext", () => {
 });
 
 describe("extensions", () => {
+  test("a failed input checkpoint blocks a real Pi bash call", async () => {
+    const config = testConfig();
+    mkdirSync(config.home, { recursive: true });
+    const marker = join(config.home, "should-not-exist");
+    let calls = 0;
+    let fences = 0;
+    const chunk = (delta: object, finish: string | null) => `data: ${JSON.stringify({ id: "gen", object: "chat.completion.chunk", created: 1, model: "test/model", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/models")) return Response.json({ data: [{ id: "test/model", context_length: 800000 }] });
+      calls++;
+      if (calls === 1) return new Response(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "blocked-bash", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: `touch ${marker}` }) } }] }, null) + chunk({}, "tool_calls") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+      expect(String(init?.body)).toContain("input checkpoint could not be saved");
+      return new Response(chunk({ role: "assistant", content: "Tool was blocked." }, null) + chunk({}, "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const { session } = await createPiChatSessionFactory(config)({
+      sessionFile: null,
+      checkpoint: async () => { fences++; throw new Error("checkpoint unavailable"); },
+    });
+    try {
+      await session.prompt("Create the marker.");
+      expect(calls).toBe(2);
+      expect(fences).toBeGreaterThanOrEqual(3);
+      expect(existsSync(marker)).toBe(false);
+    } finally { session.dispose(); }
+  });
+
   // Pi would load these from the agent dir and from the project (<cwd>/.pi); the agent can write both.
   function plantExtensions(config: WorkspaceConfig): string[] {
     const markers: string[] = [];

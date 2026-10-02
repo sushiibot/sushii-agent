@@ -205,6 +205,49 @@ traffic stays in-process.
   `!login chatgpt`.
 - **Run history:** `runs.jsonl` in the state dir; `ws-runs` inside the container.
 
+Pi coding-agent and Pi Durable use version 1.0.0. One `workspace.sqlite` database in the workspace
+state directory stores accepted input receipts and queued instructions. Main and all topics
+share one connection. Conversation IDs select separate documents inside that database.
+Pi Durable owns the SQLite adapter, atomic commits, and document storage. The application
+supplies a versioned inbox document family and a checkpoint hook for the coding-agent session.
+
+After a workspace restart, queued instructions resume when the bot connects. Their original
+text, origin, and image attachments remain available. Consumed inputs do not replay because
+their tools can have external effects. The checkpoint hook blocks tools if the consumed-input
+commit fails. Stop and new-session commands withdraw queued instructions.
+
+The first start imports existing `recent-ids.json` receipts. Existing Pi transcripts, provider
+fallback, guards, and delivery outboxes keep their current formats. Active turns and subagents
+still stop on restart. Full task recovery requires the Durable harness and explicit replay rules
+for each tool. The inbox uses the standalone Durable session API, so it does not require a harness migration.
+
+### Storage ownership
+
+Each state item has one authoritative store. New workspace runtime state belongs in
+`workspace.sqlite`, through the shared `DurableState` connection and versioned Durable documents.
+Domain modules define documents. They do not open another database for each feature or topic.
+
+| Data | Current store | Consolidation direction |
+|---|---|---|
+| Bot messages, routing, web events, and OAuth state | Bot SQLite database | Keep with the bot process. |
+| Workspace input receipts and queued instructions | `workspace.sqlite` | Shared Durable documents, scoped by conversation. |
+| Session pointers, topic metadata, scheduler state, and proactive limits | `state.json`, `topics.json`, `scheduler.json`, `proactive.json` | Migrate to versioned documents in `workspace.sqlite`. |
+| Delivery receipts, subagent results, and run records | `outbox.jsonl`, `subagent-results.jsonl`, `runs.jsonl` | Migrate runtime records to `workspace.sqlite`. Keep history files as exports. |
+| Pi transcripts and Pi-owned credentials | Pi JSONL sessions and `auth.json` | Keep Pi's formats until an explicit harness or credential migration. |
+| Memory, tasks, skills, and schedules | Markdown files under the workspace home | Keep editable content as files. |
+| Uploads, delivery attachments, and repository files | Filesystem | Store file references in runtime records. |
+
+The remaining JSON and JSONL migrations are separate work. A migration must import existing
+data before switching its authoritative store. It must stop writes to the old store and cover
+restart recovery. The input-receipt migration follows this rule and does not write `recent-ids.json`.
+
+Conversation storage must remain accessible through read-only history commands and APIs.
+`ws-runs search` searches historical sessions. `ws-runs show <id> --full` exposes full tool traces,
+with credential redaction. History exports and chat APIs provide historical conversation access.
+If transcripts move to SQLite, these interfaces must retain original messages and tool results,
+including entries removed from the model's context by compaction. Markdown history can remain a derived export.
+The agent reads history through these interfaces without direct database write access.
+
 Deploy: pushing to `main` builds both images, deploys the bot, then deploys the workspace (CI bumps
 `workspace_image_tag` in sushii-ansible). A manual redeploy is
 `./deploy.sh -y apps private-bots/sushii-agent-workspace`. Tunables (`WORKSPACE_MODELS`,

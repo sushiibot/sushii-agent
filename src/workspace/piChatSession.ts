@@ -166,7 +166,7 @@ export function createPiChatSessionFactory(
   // The process-wide selector in production; a fallback instance only for tests that build a factory alone.
   const selector = opts.selector ?? new BackendSelector({ primaryEnabled: config.provider === "chatgpt" });
 
-  return async ({ sessionFile, ui }) => {
+  return async ({ sessionFile, ui, checkpoint }) => {
     const topicTools = opts.origin?.conversationId && opts.origin.conversationId !== "main" ? [] : threadContextTools({ principalId: config.principalId, stateDir: config.stateDir, home: config.home, tz: config.tz, agentDirs: [config.agentDir] });
     const topicToolNames = topicTools.map((t) => t.name);
     const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import("@earendil-works/pi-coding-agent");
@@ -252,6 +252,7 @@ export function createPiChatSessionFactory(
       // Only the factories below: the agent can write ~/.pi and <cwd>/.pi, so discovered extensions would run its code in-process.
       noExtensions: true,
       extensionFactories: [
+        ...(checkpoint ? [{ name: "sushii-durable-input", factory: createInputCheckpointExtension(checkpoint) }] : []),
         ...(!opts.origin || opts.origin.conversationId === "main" ? [{ name: "sushii-thread-awareness", factory: threadAwareness(config.stateDir) }] : []),
         // First: tool_call stops at the first block, so a guard ahead of it would hide repeats from it.
         { name: "sushii-loop-guard", factory: createLoopGuardExtension({ log, state: loopState }) },
@@ -374,5 +375,21 @@ export function createPiChatSessionFactory(
     observerRef.current = observer;
     runObservers.set(session, observer);
     return { session, sessionFile: file, currentRunId: () => observer.currentRunId() };
+  };
+}
+
+/** Pi event observers queue the consumed-input commit; await it before executing any tools. */
+export function createInputCheckpointExtension(checkpoint: () => Promise<void>): import("@earendil-works/pi-coding-agent").ExtensionFactory {
+  return (pi) => {
+    pi.on("context", async () => { await checkpoint(); });
+    // Context-hook errors are reported by Pi and do not stop generation. Tool guards fail closed.
+    pi.on("tool_call", async () => {
+      try {
+        await checkpoint();
+        return undefined;
+      } catch {
+        return { block: true, reason: "The input checkpoint could not be saved. Tool execution is blocked until the workspace recovers." };
+      }
+    });
   };
 }

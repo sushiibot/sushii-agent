@@ -232,6 +232,7 @@ function setup(
     clock?: () => number;
     images?: ImageFetchOptions;
     uploads?: { dir: string; timeoutMs?: number };
+    isConnected?: () => boolean;
   } = {},
 ) {
   const stateDir = opts.stateDir ?? tempDir();
@@ -249,6 +250,7 @@ function setup(
       return { session: s as unknown as ChatSession, sessionFile: s.file };
     });
   const transport = new FakeTransport();
+  if (opts.isConnected) Object.assign(transport, { isConnected: opts.isConnected });
   let id = 0;
   const host = new PersonalSession({
     principalId: "drk",
@@ -392,6 +394,74 @@ describe("PersonalSession routing", () => {
 });
 
 describe("PersonalSession idempotency", () => {
+  test("a turn that settles during the durable write changes the next input from steer to prompt", async () => {
+    const { host, sessions } = setup();
+    await host.start();
+    await host.handleMessage(msg("m1", "started work"));
+    const inbox = (host as unknown as { inbox: import("./durableInbox.ts").DurableInbox }).inbox;
+    const prepare = inbox.prepare.bind(inbox);
+    inbox.prepare = async (input) => {
+      await prepare(input);
+      if (input.messageId === "m2" && sessions[0].isStreaming) sessions[0].finish("first reply");
+    };
+    expect((await host.handleMessage(msg("m2", "next turn"))).mode).toBe("prompt");
+    expect(sessions[0].steers).toHaveLength(0);
+    await host.dispose();
+  });
+
+  test("a restart replays an accepted queued steer, but not the consumed unfinished turn", async () => {
+    const stateDir = tempDir();
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleMessage(msg("m1", "started work"));
+    await first.host.handleMessage(msg("m2", "queued instruction"));
+    expect(first.sessions[0].steers).toHaveLength(1);
+    // Shutdown detaches before aborting; the same queued payload survives a process crash.
+    await first.host.dispose();
+    const restarted = setup({ stateDir });
+    await restarted.host.start();
+    expect(restarted.sessions[0].prompts.map((p) => p.text)).toEqual([stamped("m2", "queued instruction")]);
+    expect(await restarted.host.handleMessage(msg("m2", "queued instruction"))).toEqual({ accepted: true, mode: "duplicate" });
+    await restarted.host.dispose();
+  });
+
+  test("stop withdraws a queued steer durably so it cannot restart later", async () => {
+    const stateDir = tempDir();
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleMessage(msg("m1", "started work"));
+    await first.host.handleMessage(msg("m2", "withdraw this steer"));
+    await first.host.handleAbort();
+    await first.host.dispose();
+    const restarted = setup({ stateDir });
+    await restarted.host.start();
+    expect(restarted.sessions[0].prompts).toHaveLength(0);
+    expect(await restarted.host.handleMessage(msg("m2", "withdraw this steer"))).toEqual({ accepted: true, mode: "duplicate" });
+    await restarted.host.dispose();
+  });
+
+  test("startup recovery waits for bot registration and runs only once on reconnect", async () => {
+    const stateDir = tempDir();
+    const first = setup({ stateDir });
+    await first.host.start();
+    await first.host.handleMessage(msg("m1", "started work"));
+    await first.host.handleMessage(msg("m2", "queued instruction"));
+    await first.host.dispose();
+    let connected = false;
+    const restarted = setup({ stateDir, isConnected: () => connected });
+    await restarted.host.start();
+    expect(restarted.sessions[0].prompts).toHaveLength(0);
+    connected = true;
+    restarted.host.onRegistered();
+    // This message waits behind the startup backlog, even if registration and input arrive together.
+    await restarted.host.handleMessage(msg("m3", "new input"));
+    expect(restarted.sessions[0].prompts.map((p) => p.text)).toEqual([stamped("m2", "queued instruction"), stamped("m3", "new input")]);
+    restarted.host.onRegistered();
+    await tick();
+    expect(restarted.sessions[0].prompts).toHaveLength(2);
+    await restarted.host.dispose();
+  });
+
   test("a repeated messageId is a no-op duplicate, including across restarts", async () => {
     const stateDir = tempDir();
     const first = setup({ stateDir });

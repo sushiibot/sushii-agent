@@ -34,6 +34,7 @@ import { notifyRunChanges, runsHandlers } from "./runsRpc.ts";
 import { memoryHandlers } from "./memoryFiles.ts";
 import { historyHandlers } from "./historyFiles.ts";
 import { HistorySearch, historySearchHandlers } from "./historySearch.ts";
+import { DurableState } from "../agentRuntime/durableState.ts";
 
 const log = getLogger("workspace");
 
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
   // Late-bound: background results only arrive after personal.start().
   let personalRef: PersonalSession | null = null;
   let topicsRef: TopicSessions | null = null;
+  const durableState = new DurableState(config.stateDir);
   const subagents = new SubagentHost({
     config,
     runs,
@@ -120,6 +122,8 @@ async function main(): Promise<void> {
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
+    durableState,
+    conversationId: "main",
     tz: config.tz,
     uploads: { dir: join(config.home, UPLOADS_DIR) },
     factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, parentTurn: () => { const turnId = personalTurn?.currentTurnId(); return turnId ? turns.get(turnId) : null; }, mainTurnId: () => personalTurn?.currentTurnId() }),
@@ -196,6 +200,7 @@ async function main(): Promise<void> {
       topic = new PersonalSession({
         ...personalOptions,
         stateDir: join(config.stateDir, "topics", id),
+        conversationId: id,
         factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, parentTurn: () => { const turnId = topic.currentTurnId(); return turnId ? { turnId, origin: { surface: "web", conversationId: id } } : null; }, origin: { surface: "web", conversationId: id }, sessionDir: join(config.agentDir, "topics", id), agentName: `topic:${id}`, mainTurnId: () => topic.currentTurnId() }),
         context: { ...personalOptions.context, busy: () => subagents.isBusy({ surface: "web", conversationId: id }) },
       });
@@ -293,6 +298,7 @@ async function main(): Promise<void> {
     // Children first: they record their runs and persist background results while main can still take them.
     await subagents.dispose();
     await Promise.all([scheduler.stop(), personal.dispose(), topics.dispose(), connectors.dispose()]);
+    await durableState.close();
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
   };

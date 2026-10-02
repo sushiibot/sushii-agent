@@ -12,7 +12,9 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.50",
     "@block65/webcrypto-web-push": "2.0.0",
-    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-durable": "1.0.0",
     "@linear/sdk": "^92.0.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@openrouter/ai-sdk-provider": "^2.8.0",
