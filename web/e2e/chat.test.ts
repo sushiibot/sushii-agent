@@ -1296,6 +1296,10 @@ test('streamed markdown stays mounted and content stays still when typing ends',
 	page,
 	context
 }) => {
+	// Keep timing deterministic for this DOM identity check. The render harness tests slow-frame fallback.
+	await context.addInitScript(() => {
+		performance.now = () => 0;
+	});
 	await chatServer(context);
 	await open(page);
 	await push(page, 'snapshot', {
