@@ -82,6 +82,20 @@ describe('finding imports', () => {
 describe('the layer rules', () => {
 	const imp = (path: string) => svelte(`import x from '${path}';`);
 
+	test('features use the tabbed screen while UI can compose the pager engine', () => {
+		const engine = '$lib/ui/tabs/swipeable-tabs.svelte';
+		expect(rules('src/lib/features/runs/run-list-screen.svelte', imp(engine))).toEqual([
+			'features use ui/screen/tabbed-screen.svelte so paging layout and scrolling stay shared'
+		]);
+		expect(
+			rules(
+				'src/lib/features/runs/run-list-screen.svelte',
+				imp('$lib/ui/screen/tabbed-screen.svelte')
+			)
+		).toEqual([]);
+		expect(rules('src/lib/ui/screen/tabbed-screen.svelte', imp(engine))).toEqual([]);
+	});
+
 	test('ui imports only ui, utils and packages', () => {
 		const file = 'src/lib/ui/screen/screen.svelte';
 		expect(

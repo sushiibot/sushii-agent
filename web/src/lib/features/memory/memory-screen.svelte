@@ -3,9 +3,8 @@
 	import FileText from '@lucide/svelte/icons/file-text';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import { ago } from '$lib/ui/format/time';
-	import Screen from '$lib/ui/screen/screen.svelte';
+	import TabbedScreen from '$lib/ui/screen/tabbed-screen.svelte';
 	import ScreenState from '$lib/ui/screen/screen-state.svelte';
-	import SwipeableTabs from '$lib/ui/tabs/swipeable-tabs.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import { Input } from '$lib/ui/input';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
@@ -109,7 +108,7 @@
 {/snippet}
 
 {#snippet lead()}
-	<div class="flex flex-col gap-3 px-4 pt-4 pb-3">
+	<div class="flex flex-col gap-3">
 		<label class="relative block">
 			<span class="sr-only">Find a memory file</span>
 			<Search
@@ -129,53 +128,57 @@
 	</div>
 {/snippet}
 
-<Screen title="Memory" {back} {banner} scrollable={false}>
-	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col">
-		<SwipeableTabs {tabs} bind:value={category} label="Memory sections" {lead}>
-			{#snippet children(value)}
-				{@const items = itemsFor(value)}
-				<div class="flex flex-col gap-5 px-4 pt-4 pb-12">
-					<p class="text-sm text-muted-foreground">
-						{value === 'long-term'
-							? 'Saved facts and preferences the agent keeps across conversations. Open a file to read its current contents.'
-							: value === 'daily'
-								? 'The agent’s memory notes for each day. Work recaps and run records live in History.'
-								: 'Recent recorded changes to saved memory.'}
-					</p>
-					<ScreenState
-						remote={data && remote.status === 'loading' ? { status: 'ready' } : remote}
-						offline={!online}
-						errorTitle="Couldn't load memory."
-						{onretry}
-						{skeleton}
-						isEmpty={!items.length}
-						empty={{
-							title: 'Nothing remembered yet',
-							body: search
-								? 'No files match your search. Try another file name.'
-								: value === 'daily'
-									? 'Daily notes appear here when the agent saves them.'
-									: 'Saved facts and preferences appear here when the agent remembers them.'
-						}}
-					>
-						<section aria-label={heading(value)} class="flex flex-col gap-1">
-							<h2 class="px-1 text-sm font-medium text-muted-foreground">{heading(value)}</h2>
-							<ul class="flex flex-col">
-								{#each items as item (item.kind === 'write' ? `w:${item.w.id}` : `f:${item.f.id}`)}<li
-										class="min-h-12"
-									>
-										{@render row(item)}
-									</li>{/each}
-							</ul>
-						</section>
-						{#if value === 'changes' && data && data.writes.length > recent}<a
-								href={writesHref}
-								class="flex h-12 items-center justify-center rounded-md border text-sm font-medium hover:bg-muted"
-								>All {data.writes.length} changes</a
-							>{/if}
-					</ScreenState>
-				</div>
-			{/snippet}
-		</SwipeableTabs>
-	</div>
-</Screen>
+<TabbedScreen
+	title="Memory"
+	{back}
+	{banner}
+	{tabs}
+	bind:value={category}
+	label="Memory sections"
+	{lead}
+>
+	{#snippet children(value)}
+		{@const items = itemsFor(value)}
+		<div class="flex flex-col gap-5">
+			<p class="text-sm text-muted-foreground">
+				{value === 'long-term'
+					? 'Saved facts and preferences the agent keeps across conversations. Open a file to read its current contents.'
+					: value === 'daily'
+						? 'The agent’s memory notes for each day. Work recaps and run records live in History.'
+						: 'Recent recorded changes to saved memory.'}
+			</p>
+			<ScreenState
+				remote={data && remote.status === 'loading' ? { status: 'ready' } : remote}
+				offline={!online}
+				errorTitle="Couldn't load memory."
+				{onretry}
+				{skeleton}
+				isEmpty={!items.length}
+				empty={{
+					title: 'Nothing remembered yet',
+					body: search
+						? 'No files match your search. Try another file name.'
+						: value === 'daily'
+							? 'Daily notes appear here when the agent saves them.'
+							: 'Saved facts and preferences appear here when the agent remembers them.'
+				}}
+			>
+				<section aria-label={heading(value)} class="flex flex-col gap-1">
+					<h2 class="px-1 text-sm font-medium text-muted-foreground">{heading(value)}</h2>
+					<ul class="flex flex-col">
+						{#each items as item (item.kind === 'write' ? `w:${item.w.id}` : `f:${item.f.id}`)}<li
+								class="min-h-12"
+							>
+								{@render row(item)}
+							</li>{/each}
+					</ul>
+				</section>
+				{#if value === 'changes' && data && data.writes.length > recent}<a
+						href={writesHref}
+						class="flex h-12 items-center justify-center rounded-md border text-sm font-medium hover:bg-muted"
+						>All {data.writes.length} changes</a
+					>{/if}
+			</ScreenState>
+		</div>
+	{/snippet}
+</TabbedScreen>

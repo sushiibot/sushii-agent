@@ -588,6 +588,14 @@ for (const [path, first] of [
 				await page.getByRole('main').getByRole('listitem').first().getByRole('link').click();
 			}
 			await expectSettled(page, first);
+			await expect(page.locator('[data-tabbed-screen]')).toHaveCount(1);
+			const gutters = await panel(page, first)
+				.locator('[data-tab-content]')
+				.evaluate((content) => {
+					const style = getComputedStyle(content);
+					return [style.paddingLeft, style.paddingRight, style.paddingTop];
+				});
+			expect(gutters).toEqual(['16px', '16px', '16px']);
 			const drag = await heldDrag(page, 130);
 			try {
 				await expect

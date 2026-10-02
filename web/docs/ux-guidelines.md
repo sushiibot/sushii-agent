@@ -255,15 +255,15 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 
 ### Tabs, swipes, and scroll ownership
 
-- **Reuse the shared pager.** Use `ui/tabs/SwipeableTabs` for tabs with swipe navigation. Keep gesture handling and underline animation in this component.
+- **Reuse the shared tabbed screen.** Use `ui/screen/TabbedScreen` for tabs with swipe navigation. It owns the screen shell, full-width pager, gutters, and panel scrolling. The import boundary check blocks direct feature imports of the pager engine.
 - **Move panels with the finger.** Snap to the destination after release. Move the underline with the physical panel position. Use the same transition for a tab tap.
 - **Keep labels readable.** When labels do not fit, allow horizontal scrolling within the tab bar. Keep the full label instead of an ellipsis. Keep the document width within the viewport.
-- **Keep one vertical scroll owner per panel.** When the pager owns scrolling, set `Screen` or `DetailScreen` to `scrollable={false}`. Keep the screen header and tab bar fixed.
+- **Keep one vertical scroll owner per panel.** `TabbedScreen` disables outer scrolling and keeps the screen header and tab bar fixed. Supply content without an enclosing screen or extra vertical scroll container.
 - **Preserve panel state.** Retain each panel's scroll offset, expanded rows, search input, and loaded older pages across tab changes.
 - **Keep content stable during motion.** Commit filter requests after the destination panel settles. Keep loaded panels mounted during background refreshes. Do not rebuild the pager when text, content height, or keyboard height changes.
 - **Recover interrupted gestures.** When the app loses focus or becomes hidden, release the gesture and align the committed panel. Do not leave the pager between tabs after an interrupted touch.
 - **Keep focus within its intended area.** Reveal selected tabs through the tab bar's scroll offset. Do not use `scrollIntoView()` to move ancestor containers. Use `preventScroll` when keyboard navigation moves focus.
-- **Keep spacing consistent.** Use 16px content gutters and 16px space between the tab border and panel content. Align the tab bar with other screens.
+- **Keep spacing consistent.** `TabbedScreen` applies 16px content gutters and 16px space below the tab border. Supply lead and panel content without outer padding. Use `wide` for detailed desktop content. Keep padding inside cards.
 - **Keep secondary buttons within content.** Give pagination and optional tracking buttons their content width. Keep optional MCP tracking controls below the Tools list. Do not change panel height through a footer that appears on one tab.
 - **Keep other gestures available.** Preserve vertical scrolling, text selection, text input, and horizontal code scrolling. Reserve the screen edges for the drawer and system navigation.
 

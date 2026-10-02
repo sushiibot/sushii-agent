@@ -51,13 +51,16 @@ A screen is built from `ui/screen` (`Screen`, `ListScreen`, `DetailScreen`, `Scr
 
 ## Shared mobile tabs
 
-Use `ui/tabs/SwipeableTabs` for screens with tabs and swipe navigation.
-The component owns dragging, snapping, underline motion, and keyboard navigation.
-Screens provide tab labels, content, and callbacks.
+Use `ui/screen/TabbedScreen` for screens with tabs and swipe navigation.
+It owns the screen shell, full-width pager, 16px content gutters, and panel scrolling.
+Screens provide tab labels, lead content, panel content, and callbacks.
+Do not add an enclosing screen, horizontal padding, or another vertical scroll container.
+Use `wide` for the wider desktop content measure.
 
-Each panel owns its vertical scroll. When the pager owns scrolling, set the enclosing
-`Screen` or `DetailScreen` to `scrollable={false}`. Keep cached content mounted
-during background refreshes. Commit filter requests after the panel settles.
+The internal `SwipeableTabs` engine owns dragging, snapping, underline motion, and keyboard navigation.
+The import boundary check prevents features from using that engine directly.
+For detail screens, pass `state` and `hasContent` to preserve the pager during background loading.
+Lists retain their per-panel cached state. Commit filter requests after the panel settles.
 
 See [Tabs, swipes, and scroll ownership](docs/ux-guidelines.md#tabs-swipes-and-scroll-ownership)
 and [Loading and background refresh](docs/ux-guidelines.md#loading-and-background-refresh)

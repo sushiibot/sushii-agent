@@ -2,10 +2,9 @@
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { Button } from '$lib/ui/button';
-	import SwipeableTabs from '$lib/ui/tabs/swipeable-tabs.svelte';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import { byDay } from '$lib/ui/format/time';
-	import Screen from '$lib/ui/screen/screen.svelte';
+	import TabbedScreen from '$lib/ui/screen/tabbed-screen.svelte';
 	import ScreenState from '$lib/ui/screen/screen-state.svelte';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
@@ -87,12 +86,10 @@
 {/snippet}
 
 {#snippet lead()}
-	<div class="px-4 pt-4 pb-3">
-		<p class="text-sm text-muted-foreground">
-			A run is one attempt by the agent to respond or complete a task. Open it for the steps, result
-			and evidence.
-		</p>
-	</div>
+	<p class="text-sm text-muted-foreground">
+		A run is one attempt by the agent to respond or complete a task. Open it for the steps, result
+		and evidence.
+	</p>
 {/snippet}
 
 {#snippet skeleton()}
@@ -120,7 +117,12 @@
 	{@const loading = current && olderLoading}
 	{@const error = current ? olderError : saved?.olderError}
 	{#if older}
-		<Button variant="outline" disabled={loading || !current} onclick={() => onloadolder?.()}>
+		<Button
+			variant="outline"
+			class="self-start"
+			disabled={loading}
+			onclick={() => current && onloadolder?.()}
+		>
 			{#if loading}<LoaderCircle
 					class="animate-spin motion-reduce:animate-none"
 					aria-hidden="true"
@@ -134,69 +136,65 @@
 		</p>{/if}
 {/snippet}
 
-<Screen title="Runs" {back} {banner} scrollable={false}>
-	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col">
-		<SwipeableTabs
-			{tabs}
-			value={filter}
-			onchange={(value) => onfilter?.(value as RunFilter)}
-			label="Type of run"
-			{lead}
-		>
-			{#snippet children(value)}
-				{@const shown = RUN_FILTERS.find((f) => f.value === value) ?? RUN_FILTERS[0]}
-				{@const sections = byDay(panelRuns(value), runTime, now)}
-				<div class="flex flex-col gap-5 px-4 pt-4 pb-12">
-					<p class="text-sm text-muted-foreground">{shown.description}</p>
-					{#if value === filter && remote.status === 'loading' && snapshots[value]}<p
-							role="status"
-							class="sr-only"
-						>
-							Updating runs…
-						</p>{/if}
-					<ScreenState
-						remote={panelRemote(value)}
-						offline={!online}
-						errorTitle="Couldn't load runs."
-						{onretry}
-						{skeleton}
-						isEmpty={!sections.length}
-						empty={value === 'all'
-							? {
-									title: 'No runs yet',
-									body: 'Chat turns, scheduled jobs and background work show up here once they run.'
-								}
-							: {
-									title: `No ${shown.noun} yet`,
-									body: 'They show up here once one runs.',
-									action: onfilter && { label: 'Show all runs', onclick: () => onfilter('all') }
-								}}
-					>
-						{#each sections as group, i (group.label)}
-							<section aria-labelledby={`${uid}-${value}-s${i}`} class="flex flex-col gap-1">
-								<h2
-									id={`${uid}-${value}-s${i}`}
-									class="px-1 text-sm font-medium text-muted-foreground"
-								>
-									{group.label}
-								</h2>
-								<ul class="flex flex-col">
-									{#each group.items as run (run.runId)}<li class="min-h-12">
-											{@render row(run)}
-										</li>{/each}
-								</ul>
-							</section>
-						{/each}
-						{@render after(value)}
-					</ScreenState>
-					{#if value === filter && remote.status === 'error' && snapshots[value]}
-						<div role="alert" class="flex flex-col items-start gap-2">
-							<p class="text-sm text-failed">Couldn't refresh runs. {remote.error}</p>
-							<Button variant="outline" onclick={onretry}>Retry refresh</Button>
-						</div>
-					{/if}
+<TabbedScreen
+	title="Runs"
+	{back}
+	{banner}
+	{tabs}
+	value={filter}
+	onchange={(value) => onfilter?.(value as RunFilter)}
+	label="Type of run"
+	{lead}
+>
+	{#snippet children(value)}
+		{@const shown = RUN_FILTERS.find((f) => f.value === value) ?? RUN_FILTERS[0]}
+		{@const sections = byDay(panelRuns(value), runTime, now)}
+		<div class="flex flex-col gap-5">
+			<p class="text-sm text-muted-foreground">{shown.description}</p>
+			{#if value === filter && remote.status === 'loading' && snapshots[value]}<p
+					role="status"
+					class="sr-only"
+				>
+					Updating runs…
+				</p>{/if}
+			<ScreenState
+				remote={panelRemote(value)}
+				offline={!online}
+				errorTitle="Couldn't load runs."
+				{onretry}
+				{skeleton}
+				isEmpty={!sections.length}
+				empty={value === 'all'
+					? {
+							title: 'No runs yet',
+							body: 'Chat turns, scheduled jobs and background work show up here once they run.'
+						}
+					: {
+							title: `No ${shown.noun} yet`,
+							body: 'They show up here once one runs.',
+							action: onfilter && { label: 'Show all runs', onclick: () => onfilter('all') }
+						}}
+			>
+				{#each sections as group, i (group.label)}
+					<section aria-labelledby={`${uid}-${value}-s${i}`} class="flex flex-col gap-1">
+						<h2 id={`${uid}-${value}-s${i}`} class="px-1 text-sm font-medium text-muted-foreground">
+							{group.label}
+						</h2>
+						<ul class="flex flex-col">
+							{#each group.items as run (run.runId)}<li class="min-h-12">
+									{@render row(run)}
+								</li>{/each}
+						</ul>
+					</section>
+				{/each}
+				{@render after(value)}
+			</ScreenState>
+			{#if value === filter && remote.status === 'error' && snapshots[value]}
+				<div role="alert" class="flex flex-col items-start gap-2">
+					<p class="text-sm text-failed">Couldn't refresh runs. {remote.error}</p>
+					<Button variant="outline" onclick={onretry}>Retry refresh</Button>
 				</div>
-			{/snippet}
-		</SwipeableTabs>
-	</div>
-</Screen>
+			{/if}
+		</div>
+	{/snippet}
+</TabbedScreen>

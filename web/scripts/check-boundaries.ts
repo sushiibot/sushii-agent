@@ -123,6 +123,9 @@ export function checkImport(from: string, target: string | null): string | null 
 	}
 
 	if (fromFeature) {
+		if (to === `${LIB}ui/tabs/swipeable-tabs.svelte`) {
+			return 'features use ui/screen/tabbed-screen.svelte so paging layout and scrolling stay shared';
+		}
 		if (special) return `features may not use ${special}; the route passes values in`;
 		if (toFeature && toFeature.name !== fromFeature.name && !isPublic(toFeature.rest)) {
 			return `import ${toFeature.name} through its index.ts`;
