@@ -233,3 +233,85 @@ test('connection actions support keyboard navigation, Escape and outside dismiss
 	await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toBeHidden();
 	await expect(page).toHaveURL(/\/connectors\/code-host$/);
 });
+
+test('leaving server setup preserves its address but clears tokens and allows starting over', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/connectors');
+	await page.getByRole('link', { name: 'Add a server by URL' }).click();
+	await page.getByRole('textbox', { name: 'Server address' }).fill('https://api.fastmail.com/mcp');
+	await page.getByLabel('API token (optional)').fill('unsaved-secret-token');
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await page.getByRole('link', { name: 'Add a server by URL' }).click();
+	await expect(page.getByRole('textbox', { name: 'Server address' })).toHaveValue(
+		'https://api.fastmail.com/mcp'
+	);
+	await expect(page.getByLabel('API token (optional)')).toHaveValue('');
+	await expect(page.getByRole('status')).toContainText('Resumed your server setup.');
+	await page.getByRole('button', { name: 'Start over', exact: true }).click();
+	await expect(page.getByRole('textbox', { name: 'Server address' })).toHaveValue('');
+	await expect(page.getByText('Resumed your server setup.', { exact: false })).toHaveCount(0);
+});
+
+test('OAuth setup resumes its stage with a cleared callback and resets after a successful connection', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/connectors');
+	await page.getByRole('link', { name: 'Add a server by URL' }).click();
+	await page
+		.getByRole('textbox', { name: 'Server address' })
+		.fill('https://mcp.tracker.example/sse');
+	await page.getByRole('button', { name: 'Continue', exact: true }).click();
+	const authUrl = await page.getByRole('link', { name: 'Open sign-in link' }).getAttribute('href');
+	await page.getByRole('button', { name: "I've signed in" }).click();
+	await page
+		.getByRole('textbox', { name: 'Address from the browser' })
+		.fill('http://localhost:7461/callback?code=secret&state=q');
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await page.getByRole('link', { name: 'Add a server by URL' }).click();
+	await expect(page.getByRole('textbox', { name: 'Address from the browser' })).toHaveValue('');
+	await expect(page.getByRole('button', { name: 'Connect', exact: true })).toBeDisabled();
+	await expect(page.getByRole('status')).toContainText('callback addresses were cleared');
+	await page.getByRole('button', { name: 'Back to sign-in', exact: true }).click();
+	await expect(page.getByRole('link', { name: 'Open sign-in link' })).toHaveAttribute(
+		'href',
+		authUrl!
+	);
+	await page.getByRole('button', { name: "I've signed in" }).click();
+	await page
+		.getByRole('textbox', { name: 'Address from the browser' })
+		.fill('http://localhost:7461/callback?code=abc&state=q');
+	await page.getByRole('button', { name: 'Connect', exact: true }).click();
+	await expect(page).toHaveURL(/\/connectors\/tracker$/);
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await page.getByRole('link', { name: 'Add a server by URL' }).click();
+	await expect(page.getByRole('textbox', { name: 'Server address' })).toHaveValue('');
+	await expect(page.getByLabel('API token (optional)')).toHaveValue('');
+	await expect(page.getByRole('button', { name: 'Start over', exact: true })).toHaveCount(0);
+});
+
+test('a different server sign-in intent replaces unrelated saved setup', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/connectors');
+	await page.getByRole('link', { name: 'Add a server by URL' }).click();
+	await page
+		.getByRole('textbox', { name: 'Server address' })
+		.fill('https://mcp.tracker.example/sse');
+	await page.getByRole('button', { name: 'Continue', exact: true }).click();
+	await page.getByRole('link', { name: 'Back', exact: true }).click();
+	await page.getByRole('link', { name: /Code host/ }).click();
+	await page.getByRole('button', { name: 'Connection actions', exact: true }).click();
+	await page.getByRole('link', { name: 'Sign in / replace token', exact: true }).click();
+	await expect(page.getByRole('textbox', { name: 'Server address' })).toHaveValue(
+		'https://mcp.code-host.example/mcp'
+	);
+	await expect(page.getByRole('button', { name: 'Start over', exact: true })).toHaveCount(0);
+	await expect(page.getByRole('link', { name: 'Open sign-in link' })).toHaveCount(0);
+});

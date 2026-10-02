@@ -9,6 +9,7 @@
 	let {
 		nav,
 		active,
+		navigationKey,
 		home = 'chat',
 		badges = {},
 		onhome,
@@ -17,6 +18,8 @@
 		/** The phone drawer and the desktop sidebar. */
 		nav: NavItem[];
 		active?: string;
+		/** The committed route path, including search. Close only after the destination renders. */
+		navigationKey?: string;
 		/** The entry back returns to: leaving any other entry from the drawer replaces it. */
 		home?: string;
 		/** A count for a pill, or true for an unread dot, by nav id. */
@@ -50,7 +53,7 @@
 
 	// A navigation from anywhere, back included, leaves the drawer closed.
 	$effect(() => {
-		void active;
+		void (navigationKey ?? active);
 		drawer?.close();
 	});
 
@@ -82,7 +85,19 @@
 			aria-current={active === item.id ? 'page' : undefined}
 			data-sveltekit-replacestate={active && active !== home && item.id !== active ? '' : undefined}
 			onclick={(e) => {
-				drawer?.close();
+				// A destination click keeps the old screen covered while its route loads.
+				// The route-key effect closes the drawer after the new screen renders.
+				if (
+					(navigationKey ? item.href === navigationKey : item.id === active) &&
+					e.button === 0 &&
+					!e.metaKey &&
+					!e.ctrlKey &&
+					!e.shiftKey &&
+					!e.altKey
+				) {
+					e.preventDefault();
+					drawer?.close();
+				}
 				if (item.id === home && item.id !== active) onhome?.(e);
 			}}
 			class={cn(

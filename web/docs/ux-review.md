@@ -18,17 +18,19 @@ It combines source review with browser regression checks. It does not replace te
 | Copying an OAuth link can fail silently                                    | Show a copy error and explain manual selection                                       | Clipboard rejection                                          |
 | Connection validation lacks field associations                             | Associate helper text and local validation with the relevant input                   | Invalid URL and callback descriptions                        |
 
-## Remaining findings
+## Follow-up fixes
 
-- **Add-server progress resets after navigation.** Returning to the Add route starts the flow again. Preserve non-secret progress in memory, or offer an explicit discard guard. Never persist tokens or callback codes as ordinary form drafts.
-- **Cached detail refresh failures still replace the detail view.** Run, History-day, and MCP details retain content during loading, but their shared fallback replaces it after a failure. Extend the shared screen state to keep usable cached content and offer an inline retry.
+- **Add-server progress survives navigation.** The URL and sign-in step stay in memory for the app visit. Tokens and callback addresses clear on leaving. A visible restored-progress notice explains this and offers Start over. Successful connections clear the flow.
+- **Cached detail survives refresh failure.** `TabbedScreen` keeps the pager and expanded content mounted. An error and retry appear below the current panel's content. First-load failures and missing records keep their existing states.
+- **Drawer selection does not expose the previous screen.** The drawer remains open during route loading. The shared shell dismisses it after the committed route renders, including changes within the same navigation section.
 
-Treat these as implementation gaps. The guidelines describe the intended behavior; they do not claim these gaps are resolved.
+These fixes address the two findings left open by the initial pass and the reported navigation flash.
 
 ## Validation
 
 - Svelte checks pass with no errors or warnings. Lint and 330 unit tests pass.
-- The full browser suite passed 414 checks before the final action-menu revision.
-- The final menu and shared pager pass 37 focused browser checks.
+- The full browser run passed 420 checks. One new navigation assertion incorrectly queried a hidden dialog.
+- After correcting that assertion and current-page dismissal, all 19 navigation and drawer checks pass.
+- Add-server resume and cached detail refresh regressions passed in the full run.
 - Five real bot system checks cover Runs, History, and Memory.
 - Visual review covers 320px, 412px, and desktop dark layouts, including the open menu and filtered empty state.

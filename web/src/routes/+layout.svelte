@@ -34,6 +34,7 @@
 	<Shell
 		nav={navFor(features.has)}
 		active={activeNav(page.route.id)}
+		navigationKey={page.url.pathname + page.url.search}
 		badges={{ inbox: home.needsYouCount || home.unreadCount > 0 }}
 		onhome={(e) => {
 			// Back to the chat entry already under this one, rather than stacking a second.

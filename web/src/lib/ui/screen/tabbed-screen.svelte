@@ -38,9 +38,12 @@
 	} = $props();
 
 	const effectiveState = $derived(
-		state && hasContent && state.remote.status === 'loading'
+		state && hasContent && (state.remote.status === 'loading' || state.remote.status === 'error')
 			? { ...state, remote: { status: 'ready' as const } }
 			: state
+	);
+	const refreshFailure = $derived(
+		state && hasContent && state.remote.status === 'error' ? state : undefined
 	);
 	const showPager = $derived(
 		!effectiveState ||
@@ -64,6 +67,13 @@
 				{#snippet children(panelValue)}
 					<div data-tab-content class="min-w-0 px-4 pt-4 pb-12">
 						{@render panelContent(panelValue)}
+						{#if refreshFailure}
+							<div class="mt-5">
+								<ScreenState {...refreshFailure} errorTitle="Couldn't refresh this page.">
+									{#snippet children()}{/snippet}
+								</ScreenState>
+							</div>
+						{/if}
 					</div>
 				{/snippet}
 			</SwipeableTabs>

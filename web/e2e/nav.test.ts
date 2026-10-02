@@ -102,6 +102,70 @@ test('an unknown address sends you to the chat', async ({ page, context }) => {
 	await expect(page).toHaveURL(/\/chat$/);
 });
 
+test('drawer navigation keeps the old screen covered until the destination mounts', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/chat');
+	await expect(page.getByRole('heading', { name: 'Sushii', level: 1 })).toBeVisible();
+	let release!: () => void;
+	let requested!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	const loading = new Promise<void>((resolve) => (requested = resolve));
+	await context.route('**/_app/immutable/nodes/*.js', async (route) => {
+		requested();
+		await gate;
+		await route.continue();
+	});
+	const menu = await drawer(page);
+	await menu.evaluate((element) => {
+		element.addEventListener('close', () => {
+			element.setAttribute(
+				'data-closed-over',
+				document.querySelector('header h1')?.textContent ?? ''
+			);
+		});
+	});
+	try {
+		await menu.getByRole('link', { name: 'Runs', exact: true }).click();
+		await loading;
+		await expect(menu).toBeVisible();
+		await expect(page).toHaveURL(/\/chat$/);
+		release();
+		await expect(page).toHaveURL(/\/runs$/);
+		await expect(menu).toBeHidden();
+		await expect(page.getByRole('dialog', { name: 'Menu', includeHidden: true })).toHaveAttribute(
+			'data-closed-over',
+			'Runs'
+		);
+	} finally {
+		release();
+	}
+});
+
+test('choosing the current drawer destination dismisses it without navigating', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/runs');
+	const menu = await drawer(page);
+	await page.evaluate(() => {
+		window.addEventListener(
+			'click',
+			(event) => {
+				document.documentElement.dataset.dismissPrevented = String(event.defaultPrevented);
+			},
+			{ once: true }
+		);
+	});
+	await menu.getByRole('link', { name: 'Runs', exact: true }).click();
+	await expect(page.locator('html')).toHaveAttribute('data-dismiss-prevented', 'true');
+	await expect(menu).toBeHidden();
+	await expect(page).toHaveURL(/\/runs$/);
+});
+
 test('a live deep link renders while /api/me is unavailable', async ({ page, context }) => {
 	await server(context, { me: 'hang' });
 	await page.goto('/runs');

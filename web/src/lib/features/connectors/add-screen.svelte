@@ -16,6 +16,8 @@
 		online = true,
 		copied = false,
 		copyError = null,
+		restored = false,
+		onstartover,
 		onurl,
 		ontoken,
 		onredirect,
@@ -30,6 +32,8 @@
 		online?: boolean;
 		copied?: boolean;
 		copyError?: string | null;
+		restored?: boolean;
+		onstartover?: () => void;
 		ontoken?: (token: string) => void;
 		onurl?: (url: string) => void;
 		onredirect?: (redirect: string) => void;
@@ -90,6 +94,15 @@
 			{/each}
 		</ol>
 
+		{#if restored}
+			<div class="flex flex-col items-start gap-2">
+				<p role="status" class="text-sm text-muted-foreground">
+					Resumed your server setup. Tokens and callback addresses were cleared when you left; enter
+					them again if needed.
+				</p>
+				<Button variant="ghost" disabled={add.busy} onclick={onstartover}>Start over</Button>
+			</div>
+		{/if}
 		{#if add.stage === 'url'}
 			<section class="flex flex-col gap-2">
 				<label for="{uid}-url" class="text-sm font-medium">Server address</label>

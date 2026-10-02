@@ -12,11 +12,14 @@ export class ConnectorsStore {
 	operation = $state<{ id: string; kind: ConnectorOperation } | null>(null);
 	errorOperation = $state<{ id: string; kind: ConnectorOperation } | null>(null);
 	add = $state<AddState>(blank());
+	addRestored = $state(false);
 	/** The server just connected, so its screen can say so once. */
 	justConnected = $state<string | null>(null);
 
 	#api: ConnectorsApi;
 	#servers = new Map<string, Remote<McpServer | null>>();
+	#addVersion = 0;
+	#addSaved = false;
 
 	constructor(api: ConnectorsApi = httpConnectorsApi) {
 		this.#api = api;
@@ -48,7 +51,31 @@ export class ConnectorsStore {
 	}
 
 	resetAdd() {
+		this.#addVersion++;
+		this.#addSaved = false;
+		this.addRestored = false;
 		this.add = blank();
+	}
+
+	/** Resume nonsecret progress for this app visit, or start a different server's flow. */
+	openAdd(url?: string) {
+		if (url !== undefined && url.trim() !== this.add.url.trim()) {
+			this.resetAdd();
+			this.add.url = url;
+		}
+		this.addRestored = this.#addSaved;
+		this.#addSaved = false;
+	}
+
+	/** Keep the address and sign-in reference; credentials never survive leaving this screen. */
+	leaveAdd() {
+		this.#addVersion++;
+		this.#addSaved = !!this.add.url.trim();
+		this.add.token = '';
+		this.add.redirect = '';
+		this.add.busy = false;
+		this.add.error = null;
+		this.add.errorField = undefined;
 	}
 
 	/** Moves the add flow back a step, as its Back does. */
@@ -59,6 +86,8 @@ export class ConnectorsStore {
 	}
 
 	async begin(): Promise<string | null> {
+		if (this.add.busy) return null;
+		const version = this.#addVersion;
 		this.add.error = null;
 		this.add.errorField = undefined;
 		if (!/^https:\/\/[^/\s]+/i.test(this.add.url.trim())) {
@@ -72,19 +101,23 @@ export class ConnectorsStore {
 				this.add.url.trim(),
 				this.add.token?.trim() || undefined
 			);
+			if (version !== this.#addVersion) {
+				if ('id' in result) void this.list.refetch();
+				return null;
+			}
 			this.add.token = '';
 			if ('id' in result) {
 				this.server(result.id).data = result;
 				this.justConnected = result.id;
 				void this.list.refetch();
-				this.add = blank();
+				this.resetAdd();
 				return result.id;
 			}
 			this.add = { ...this.add, name: result.name, authUrl: result.authUrl, stage: 'oauth' };
 		} catch (err) {
-			this.add.error = errorText(err);
+			if (version === this.#addVersion) this.add.error = errorText(err);
 		} finally {
-			this.add.busy = false;
+			if (version === this.#addVersion) this.add.busy = false;
 		}
 		return null;
 	}
@@ -117,20 +150,26 @@ export class ConnectorsStore {
 
 	/** Resolves to the new server's id, or null with the error on the flow. */
 	async finish(): Promise<string | null> {
+		if (this.add.busy) return null;
+		const version = this.#addVersion;
 		this.add.busy = true;
 		this.add.error = null;
 		try {
 			const s = await this.#api.finish(this.add.url.trim(), this.add.redirect.trim());
+			if (version !== this.#addVersion) {
+				void this.list.refetch();
+				return null;
+			}
 			this.server(s.id).data = s;
 			this.justConnected = s.id;
 			void this.list.refetch();
-			this.add = blank();
+			this.resetAdd();
 			return s.id;
 		} catch (err) {
-			this.add.error = errorText(err);
+			if (version === this.#addVersion) this.add.error = errorText(err);
 			return null;
 		} finally {
-			this.add.busy = false;
+			if (version === this.#addVersion) this.add.busy = false;
 		}
 	}
 }

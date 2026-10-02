@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { backTo } from '$lib/core/nav/back';
@@ -7,8 +8,11 @@
 	import { AddServerScreen, connectorsStore } from '$lib/features/connectors';
 
 	const connectors = connectorsStore();
-	connectors.resetAdd();
-	connectors.add.url = page.url.searchParams.get('url') ?? '';
+	$effect(() => {
+		const url = page.url.searchParams.get('url') ?? undefined;
+		untrack(() => connectors.openAdd(url));
+	});
+	onDestroy(() => connectors.leaveAdd());
 	const goBack = backTo(resolve('/connectors'));
 	let copied = $state(false);
 	let copyError = $state<string | null>(null);
@@ -45,6 +49,8 @@
 	online={pwa.online}
 	{copied}
 	{copyError}
+	restored={connectors.addRestored}
+	onstartover={() => connectors.resetAdd()}
 	ontoken={(v) => (connectors.add.token = v)}
 	onurl={(v) => {
 		connectors.add.url = v;

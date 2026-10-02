@@ -66,7 +66,8 @@ Use `wide` for the wider desktop content measure.
 
 The internal `SwipeableTabs` engine owns dragging, snapping, underline motion, and keyboard navigation.
 The import boundary check prevents features from using that engine directly.
-For detail screens, pass `state` and `hasContent` to preserve the pager during background loading.
+For detail screens, pass `state` and `hasContent` to preserve the pager during background loading and refresh failures.
+Cached refresh failures show retry below the current content; first-load failures use the screen state.
 Lists retain their per-panel cached state. Commit filter requests after the panel settles.
 
 See [Tabs, swipes, and scroll ownership](docs/ux-guidelines.md#tabs-swipes-and-scroll-ownership)
