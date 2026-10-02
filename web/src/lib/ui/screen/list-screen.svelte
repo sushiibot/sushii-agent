@@ -32,7 +32,6 @@
 		banner,
 		toast,
 		footer,
-		swipe,
 		state,
 		sections,
 		search = $bindable(),
@@ -64,7 +63,7 @@
 	const isEmpty = $derived(emptyOverride ?? sections.every((s) => s.items.length === 0));
 </script>
 
-<Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer} {swipe}>
+<Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer}>
 	<div class="mx-auto flex max-w-2xl flex-col gap-5 px-4 pt-4 pb-10">
 		{#if search !== undefined}
 			<label class="relative block">

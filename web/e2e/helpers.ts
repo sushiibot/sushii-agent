@@ -16,9 +16,36 @@ export async function smallTargets(page: Page) {
 	);
 }
 
+// Embla animates with requestAnimationFrame, outside the Web Animations API.
+async function settlePagers(page: Page) {
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
+	await expect
+		.poll(() =>
+			page.evaluate(() =>
+				Array.from(document.querySelectorAll<HTMLElement>('[data-tab-pager]')).every((viewport) => {
+					const panel = viewport.querySelector<HTMLElement>(
+						'[data-tab-panel][aria-hidden="false"]'
+					);
+					return (
+						!panel ||
+						Math.abs(panel.getBoundingClientRect().left - viewport.getBoundingClientRect().left) <
+							0.5
+					);
+				})
+			)
+		)
+		.toBe(true);
+}
+
 // The app shell scrolls inside <main>, so the document itself never grows: look at every element
 // that sticks out of the viewport and every horizontal scroll container with something to scroll.
 export async function horizontalOverflow(page: Page) {
+	await settlePagers(page);
 	return page.evaluate(() => {
 		const width = document.documentElement.clientWidth;
 		const describe = (el: Element) =>
@@ -27,6 +54,9 @@ export async function horizontalOverflow(page: Page) {
 		const scroller = document.scrollingElement;
 		if (scroller && scroller.scrollWidth > scroller.clientWidth) offenders.push('document scrolls');
 		for (const el of document.body.querySelectorAll('*')) {
+			// Pager tracks and inactive panels intentionally sit beyond a clipped viewport.
+			if (el.matches('[data-tab-track]') || el.closest('[data-tab-panel][aria-hidden=true]'))
+				continue;
 			const style = getComputedStyle(el);
 			const r = el.getBoundingClientRect();
 			// Visually hidden text is clipped to 1px on purpose.
@@ -44,6 +74,7 @@ export async function horizontalOverflow(page: Page) {
 }
 
 export async function axe(page: Page) {
+	await settlePagers(page);
 	// Scan the settled surface: fade-in opacity temporarily blends text with the scrim.
 	// Infinite activity animations keep running and must never block accessibility checks.
 	await page.evaluate(async () => {

@@ -3,7 +3,11 @@
 	import FileText from '@lucide/svelte/icons/file-text';
 	import ConnectionBanner from '$lib/ui/connection-banner.svelte';
 	import { ago } from '$lib/ui/format/time';
-	import ListScreen, { type ListSection } from '$lib/ui/screen/list-screen.svelte';
+	import Screen from '$lib/ui/screen/screen.svelte';
+	import ScreenState from '$lib/ui/screen/screen-state.svelte';
+	import SwipeableTabs from '$lib/ui/tabs/swipeable-tabs.svelte';
+	import Search from '@lucide/svelte/icons/search';
+	import { Input } from '$lib/ui/input';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
 	import WriteRow from './components/write-row.svelte';
@@ -36,33 +40,33 @@
 		onretry?: () => void;
 	} = $props();
 
-	let category = $state<'long-term' | 'daily' | 'changes'>('long-term');
+	let category = $state('long-term');
 	let search = $state('');
-	const categories = $derived(['long-term', 'daily', ...(data?.writes.length ? ['changes'] : [])]);
-	const daily = (f: MemoryFileSummary) => /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(f.path);
-	const sections = $derived.by((): ListSection<Item>[] => {
-		if (category === 'changes')
-			return [
-				{
-					label: 'Recent changes',
-					items: (data?.writes ?? []).slice(0, recent).map((w) => ({ kind: 'write', w }))
-				}
-			];
-		const files = (data?.files ?? []).filter(
-			(f) =>
-				(category === 'daily' ? daily(f) : !daily(f)) &&
-				`${f.path} ${f.about}`.toLowerCase().includes(search.toLowerCase())
-		);
-		files.sort((a, b) =>
-			category === 'daily' ? b.path.localeCompare(a.path) : a.path.localeCompare(b.path)
-		);
-		return [
-			{
-				label: category === 'daily' ? 'Daily notes' : 'Long-term files',
-				items: files.map((f) => ({ kind: 'file', f }))
-			}
-		];
+	const tabs = $derived([
+		{ value: 'long-term', label: 'Long-term' },
+		{ value: 'daily', label: 'Daily notes' },
+		...(data?.writes.length ? [{ value: 'changes', label: 'Changes' }] : [])
+	]);
+	$effect(() => {
+		if (!tabs.some((tab) => tab.value === category)) category = tabs[0].value;
 	});
+	const daily = (f: MemoryFileSummary) => /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(f.path);
+	function itemsFor(value: string): Item[] {
+		if (value === 'changes')
+			return (data?.writes ?? []).slice(0, recent).map((w) => ({ kind: 'write', w }));
+		return (data?.files ?? [])
+			.filter(
+				(f) =>
+					(value === 'daily' ? daily(f) : !daily(f)) &&
+					`${f.path} ${f.about}`.toLowerCase().includes(search.toLowerCase())
+			)
+			.sort((a, b) =>
+				value === 'daily' ? b.path.localeCompare(a.path) : a.path.localeCompare(b.path)
+			)
+			.map((f) => ({ kind: 'file', f }));
+	}
+	const heading = (value: string) =>
+		value === 'changes' ? 'Recent changes' : value === 'daily' ? 'Daily notes' : 'Long-term files';
 </script>
 
 {#snippet banner()}
@@ -105,69 +109,71 @@
 {/snippet}
 
 {#snippet lead()}
-	<div class="sticky top-0 z-10 flex flex-col gap-3 bg-background pb-3">
-		<div class="flex gap-2" aria-label="Memory sections">
-			{#each [{ id: 'long-term' as const, label: 'Long-term' }, { id: 'daily' as const, label: 'Daily notes' }, ...(data?.writes.length ? [{ id: 'changes' as const, label: 'Changes' }] : [])] as tab (tab.id)}
-				<button
-					class="min-h-12 flex-1 rounded-md px-3 text-ui font-medium hover:bg-muted"
-					class:bg-muted={category === tab.id}
-					aria-pressed={category === tab.id}
-					onclick={() => (category = tab.id)}>{tab.label}</button
-				>
-			{/each}
-		</div>
-		<p class="text-sm text-muted-foreground">
-			{category === 'long-term'
-				? 'Saved facts and preferences the agent keeps across conversations. Open a file to read its current contents.'
-				: category === 'daily'
-					? 'The agent’s memory notes for each day. Work recaps and run records live in History.'
-					: 'Recent recorded changes to saved memory.'}
-		</p>
-		{#if data?.truncated}<p role="status" class="text-sm text-muted-foreground">
-				Some files could not be shown in full because the memory browsing limit was reached.
-			</p>{/if}
+	<label class="relative block">
+		<span class="sr-only">Find a memory file</span>
+		<Search
+			class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+			aria-hidden="true"
+		/>
+		<Input
+			type="search"
+			bind:value={search}
+			placeholder="Find a memory file"
+			class="h-12 pl-9 text-base"
+		/>
+	</label>
+	{#if data?.truncated}<p role="status" class="text-sm text-muted-foreground">
+			Some files could not be shown in full because the memory browsing limit was reached.
+		</p>{/if}
+{/snippet}
+
+<Screen title="Memory" {back} {banner}>
+	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col px-4 pt-4">
+		<SwipeableTabs {tabs} bind:value={category} label="Memory sections" {lead}>
+			{#snippet children(value)}
+				{@const items = itemsFor(value)}
+				<div class="flex flex-col gap-5 pb-10">
+					<p class="text-sm text-muted-foreground">
+						{value === 'long-term'
+							? 'Saved facts and preferences the agent keeps across conversations. Open a file to read its current contents.'
+							: value === 'daily'
+								? 'The agent’s memory notes for each day. Work recaps and run records live in History.'
+								: 'Recent recorded changes to saved memory.'}
+					</p>
+					<ScreenState
+						{remote}
+						offline={!online}
+						errorTitle="Couldn't load memory."
+						{onretry}
+						{skeleton}
+						isEmpty={!items.length}
+						empty={{
+							title: 'Nothing remembered yet',
+							body: search
+								? 'No files match your search. Try another file name.'
+								: value === 'daily'
+									? 'Daily notes appear here when the agent saves them.'
+									: 'Saved facts and preferences appear here when the agent remembers them.'
+						}}
+					>
+						<section aria-label={heading(value)} class="flex flex-col gap-1">
+							<h2 class="px-1 text-sm font-medium text-muted-foreground">{heading(value)}</h2>
+							<ul class="flex flex-col">
+								{#each items as item (item.kind === 'write' ? `w:${item.w.id}` : `f:${item.f.id}`)}<li
+										class="min-h-12"
+									>
+										{@render row(item)}
+									</li>{/each}
+							</ul>
+						</section>
+						{#if value === 'changes' && data && data.writes.length > recent}<a
+								href={writesHref}
+								class="flex h-12 items-center justify-center rounded-md border text-sm font-medium hover:bg-muted"
+								>All {data.writes.length} changes</a
+							>{/if}
+					</ScreenState>
+				</div>
+			{/snippet}
+		</SwipeableTabs>
 	</div>
-{/snippet}
-
-{#snippet after()}
-	{#if category === 'changes' && data && data.writes.length > recent}
-		<a
-			href={writesHref}
-			class="flex h-12 items-center justify-center rounded-md border text-sm font-medium hover:bg-muted"
-			>All {data.writes.length} changes</a
-		>
-	{/if}
-{/snippet}
-
-<ListScreen
-	swipe={() => ({
-		values: categories,
-		value: category,
-		onchange: (value) => (category = value as typeof category)
-	})}
-	title="Memory"
-	{back}
-	{banner}
-	state={{
-		remote,
-		offline: !online,
-		errorTitle: "Couldn't load memory.",
-		onretry,
-		skeleton,
-		empty: {
-			title: 'Nothing remembered yet',
-			body: search
-				? 'No files match your search. Try another file name.'
-				: category === 'daily'
-					? 'Daily notes appear here when the agent saves them.'
-					: 'Saved facts and preferences appear here when the agent remembers them.'
-		}
-	}}
-	{sections}
-	{lead}
-	bind:search
-	searchLabel="Find a memory file"
-	key={(i) => (i.kind === 'write' ? `w:${i.w.id}` : `f:${i.f.id}`)}
-	{row}
-	{after}
-/>
+</Screen>

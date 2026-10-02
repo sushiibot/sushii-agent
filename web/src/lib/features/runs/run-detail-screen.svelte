@@ -9,7 +9,7 @@
 	import DetailScreen from '$lib/ui/screen/detail-screen.svelte';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
-	import * as Tabs from '$lib/ui/tabs';
+	import SwipeableTabs from '$lib/ui/tabs/swipeable-tabs.svelte';
 	import StatePill from '$lib/ui/status/state-pill.svelte';
 	import Evidence from './components/evidence.svelte';
 	import RunRow from './components/run-row.svelte';
@@ -140,11 +140,6 @@
 {/snippet}
 
 <DetailScreen
-	swipe={() => ({
-		values: ['overview', 'timeline', 'evidence', 'related'],
-		value: section,
-		onchange: (value) => (section = value)
-	})}
 	title="Run"
 	{back}
 	{banner}
@@ -162,174 +157,193 @@
 	}}
 >
 	{#if detail && run}
-		<article class="mx-auto flex max-w-3xl flex-col gap-6 px-4 pt-4 pb-12">
-			<header class="flex flex-col gap-2">
-				{#if run.title.length > 160}
-					<button
-						type="button"
-						class="flex min-h-12 w-full items-start gap-2 text-left"
-						aria-label={fullTitle ? 'Collapse run title' : 'Show full run title'}
-						aria-expanded={fullTitle}
-						onclick={() => (fullTitle = !fullTitle)}
-					>
-						<span
-							class="min-w-0 flex-1 text-lg leading-snug font-semibold [overflow-wrap:anywhere]"
-							class:line-clamp-3={!fullTitle}>{run.title}</span
-						>
-						<ChevronDown
-							class="mt-1 size-4 shrink-0 transition-transform motion-reduce:transition-none {fullTitle
-								? 'rotate-180'
-								: ''}"
-							aria-hidden="true"
-						/>
-					</button>
-				{:else}
-					<p class="text-lg leading-snug font-semibold [overflow-wrap:anywhere]">{run.title}</p>
-				{/if}
-				<p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-					<StatePill of={run.status} />
-					<span>{kindLabel(run)}</span>
-				</p>
-			</header>
-
-			<Tabs.Root bind:value={section} class="flex min-w-0 flex-col gap-5">
-				<Tabs.List
-					aria-label="Run sections"
-					class="sticky top-0 z-10 grid grid-cols-4 gap-2 border-b bg-background"
-				>
-					{#each ['Overview', 'Timeline', 'Evidence', 'Related'] as label (label)}
-						<Tabs.Trigger
-							value={label.toLowerCase()}
-							class="min-h-12 min-w-12 border-b-2 border-transparent px-1 text-sm font-medium text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:text-foreground"
-							>{label}</Tabs.Trigger
-						>
-					{/each}
-				</Tabs.List>
-				<Tabs.Content value="overview" class="flex flex-col gap-5 data-[state=inactive]:hidden">
-					{#if run.kind === 'chat'}
-						<p class="text-sm text-muted-foreground">
-							{RUN_FILTERS.find((f) => f.value === 'chat')?.description}
-						</p>
-						{#if chatHref}<Button variant="outline" href={chatHref} class="self-start"
-								>Open conversation<ArrowUpRight /></Button
-							>{/if}
-					{/if}
-					<dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-						{#each facts as [k, v] (k)}
-							<dt class="text-muted-foreground">{k}</dt>
-							<dd class="min-w-0 [overflow-wrap:anywhere] tabular-nums">{v}</dd>
-						{/each}
-					</dl>
-					<section
-						aria-labelledby="{uid}-out"
-						class="flex flex-col gap-2 rounded-xl border bg-card px-4 py-3"
-					>
-						<h2 id="{uid}-out" class="text-sm font-medium text-muted-foreground">
-							Outcome, as the host recorded it
-						</h2>
-						<p class="text-sm">{outcome}</p>
-						{#if run.resultSummary}
-							<p class="text-sm [overflow-wrap:anywhere]">
-								<span class="text-muted-foreground">The agent noted:</span>
-								{run.resultSummary}
-							</p>
-						{/if}
-					</section>
-
-					{#if day}
-						<Button variant="outline" href={historyHref(day)} class="self-start">
-							<FileText />Notes from that day<ArrowUpRight />
-						</Button>
-					{/if}
-				</Tabs.Content>
-				<Tabs.Content value="timeline" class="data-[state=inactive]:hidden">
-					<section aria-labelledby="{uid}-tl" class="flex flex-col gap-2">
-						<h2
-							id="{uid}-tl"
-							class="flex items-baseline justify-between gap-3 text-base font-semibold"
-						>
-							Timeline
-							{#if steps.length}
-								<span class="text-meta font-normal text-muted-foreground tabular-nums"
-									>{steps.length}{hasMore ? '+' : ''} steps</span
+		<article class="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col">
+			{#snippet lead()}
+				<div class="flex flex-col gap-3 px-4 pt-4 pb-3">
+					<header class="flex flex-col gap-2">
+						{#if run.title.length > 160}
+							<button
+								type="button"
+								class="flex min-h-12 w-full items-start gap-2 text-left"
+								aria-label={fullTitle ? 'Collapse run title' : 'Show full run title'}
+								aria-expanded={fullTitle}
+								onclick={() => (fullTitle = !fullTitle)}
+							>
+								<span
+									class="min-w-0 flex-1 text-lg leading-snug font-semibold [overflow-wrap:anywhere]"
+									class:line-clamp-3={!fullTitle}>{run.title}</span
 								>
-							{/if}
-						</h2>
-						{#if sessionNote}
-							<p class="rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground">
-								{sessionNote}
-							</p>
-						{:else if !steps.length}
-							<p class="text-sm text-muted-foreground">No steps recorded yet.</p>
+								<ChevronDown
+									class="mt-1 size-4 shrink-0 transition-transform motion-reduce:transition-none {fullTitle
+										? 'rotate-180'
+										: ''}"
+									aria-hidden="true"
+								/>
+							</button>
 						{:else}
-							<ol class="flex flex-col">
-								{#each steps as step (step.id)}
-									<li><StepRow {step} open={openSteps.includes(step.id)} /></li>
-								{/each}
-							</ol>
-							{#if run.status === 'running' && !hasMore}
-								<p role="status" class="flex items-center gap-2 px-2 text-sm text-muted-foreground">
-									<LoaderCircle
-										class="size-4 animate-spin motion-reduce:animate-none"
-										aria-hidden="true"
-									/>
-									The agent is still working on this run.
-								</p>
-							{/if}
+							<p class="text-lg leading-snug font-semibold [overflow-wrap:anywhere]">{run.title}</p>
 						{/if}
-						{#if hasMore}
-							<Button variant="outline" disabled={moreLoading} onclick={() => onloadmore?.()}>
-								{#if moreLoading}
-									<LoaderCircle
-										class="animate-spin motion-reduce:animate-none"
-										aria-hidden="true"
-									/>Loading more steps…
-								{:else}
-									<ChevronDown />Show more steps
-								{/if}
-							</Button>
-							{#if moreError}
-								<p role="alert" class="text-sm text-failed">
-									Couldn't load more steps. {moreError}
-								</p>
-							{/if}
-						{/if}
-					</section>
-				</Tabs.Content>
-				<Tabs.Content value="evidence" class="data-[state=inactive]:hidden">
-					<Evidence evidence={detail.evidence} approvals={detail.approvals} files={detail.files} />
-				</Tabs.Content>
-				<Tabs.Content value="related" class="data-[state=inactive]:hidden">
-					{#if detail.parent || detail.children.length}
-						<section aria-labelledby="{uid}-rel" class="flex flex-col gap-1">
-							<h2 id="{uid}-rel" class="text-sm font-medium text-muted-foreground">Related runs</h2>
-							<ul class="flex flex-col">
-								{#if detail.parent}
-									<li class="flex flex-col">
-										<span class="px-2 pt-1 text-meta text-muted-foreground">Started by</span>
-										<RunRow run={detail.parent} {now} href={runHref(detail.parent.runId)} />
-									</li>
-								{/if}
-								{#each detail.children as child (child.runId)}
-									<li class="flex flex-col">
-										<span class="px-2 pt-1 text-meta text-muted-foreground"
-											>Started in the background</span
-										>
-										<RunRow run={child} {now} href={runHref(child.runId)} />
-									</li>
-								{/each}
-							</ul>
-						</section>
-					{/if}
-
-					{#if !detail.parent && !detail.children.length}
-						<h2 class="text-base font-semibold">Related runs</h2>
-						<p class="mt-2 text-sm text-muted-foreground">
-							This run has no parent or background runs.
+						<p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+							<StatePill of={run.status} />
+							<span>{kindLabel(run)}</span>
 						</p>
+					</header>
+				</div>
+			{/snippet}
+			<SwipeableTabs
+				tabs={[
+					{ value: 'overview', label: 'Overview' },
+					{ value: 'timeline', label: 'Timeline' },
+					{ value: 'evidence', label: 'Evidence' },
+					{ value: 'related', label: 'Related' }
+				]}
+				bind:value={section}
+				label="Run sections"
+				{lead}
+			>
+				{#snippet children(tabValue)}
+					{#if tabValue === 'overview'}
+						<div class="flex flex-col gap-5 px-4 pt-4 pb-12">
+							{#if run.kind === 'chat'}
+								<p class="text-sm text-muted-foreground">
+									{RUN_FILTERS.find((f) => f.value === 'chat')?.description}
+								</p>
+								{#if chatHref}<Button variant="outline" href={chatHref} class="self-start"
+										>Open conversation<ArrowUpRight /></Button
+									>{/if}
+							{/if}
+							<dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+								{#each facts as [k, v] (k)}
+									<dt class="text-muted-foreground">{k}</dt>
+									<dd class="min-w-0 [overflow-wrap:anywhere] tabular-nums">{v}</dd>
+								{/each}
+							</dl>
+							<section
+								aria-labelledby="{uid}-out"
+								class="flex flex-col gap-2 rounded-xl border bg-card px-4 py-3"
+							>
+								<h2 id="{uid}-out" class="text-sm font-medium text-muted-foreground">
+									Outcome, as the host recorded it
+								</h2>
+								<p class="text-sm">{outcome}</p>
+								{#if run.resultSummary}
+									<p class="text-sm [overflow-wrap:anywhere]">
+										<span class="text-muted-foreground">The agent noted:</span>
+										{run.resultSummary}
+									</p>
+								{/if}
+							</section>
+
+							{#if day}
+								<Button variant="outline" href={historyHref(day)} class="self-start">
+									<FileText />Notes from that day<ArrowUpRight />
+								</Button>
+							{/if}
+						</div>
+					{:else if tabValue === 'timeline'}
+						<div class="px-4 pt-4 pb-12">
+							<section aria-labelledby="{uid}-tl" class="flex flex-col gap-2">
+								<h2
+									id="{uid}-tl"
+									class="flex items-baseline justify-between gap-3 text-base font-semibold"
+								>
+									Timeline
+									{#if steps.length}
+										<span class="text-meta font-normal text-muted-foreground tabular-nums"
+											>{steps.length}{hasMore ? '+' : ''} steps</span
+										>
+									{/if}
+								</h2>
+								{#if sessionNote}
+									<p
+										class="rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground"
+									>
+										{sessionNote}
+									</p>
+								{:else if !steps.length}
+									<p class="text-sm text-muted-foreground">No steps recorded yet.</p>
+								{:else}
+									<ol class="flex flex-col">
+										{#each steps as step (step.id)}
+											<li><StepRow {step} open={openSteps.includes(step.id)} /></li>
+										{/each}
+									</ol>
+									{#if run.status === 'running' && !hasMore}
+										<p
+											role="status"
+											class="flex items-center gap-2 px-2 text-sm text-muted-foreground"
+										>
+											<LoaderCircle
+												class="size-4 animate-spin motion-reduce:animate-none"
+												aria-hidden="true"
+											/>
+											The agent is still working on this run.
+										</p>
+									{/if}
+								{/if}
+								{#if hasMore}
+									<Button variant="outline" disabled={moreLoading} onclick={() => onloadmore?.()}>
+										{#if moreLoading}
+											<LoaderCircle
+												class="animate-spin motion-reduce:animate-none"
+												aria-hidden="true"
+											/>Loading more steps…
+										{:else}
+											<ChevronDown />Show more steps
+										{/if}
+									</Button>
+									{#if moreError}
+										<p role="alert" class="text-sm text-failed">
+											Couldn't load more steps. {moreError}
+										</p>
+									{/if}
+								{/if}
+							</section>
+						</div>
+					{:else if tabValue === 'evidence'}
+						<div class="px-4 pt-4 pb-12">
+							<Evidence
+								evidence={detail.evidence}
+								approvals={detail.approvals}
+								files={detail.files}
+							/>
+						</div>
+					{:else if tabValue === 'related'}
+						<div class="px-4 pt-4 pb-12">
+							{#if detail.parent || detail.children.length}
+								<section aria-labelledby="{uid}-rel" class="flex flex-col gap-1">
+									<h2 id="{uid}-rel" class="text-sm font-medium text-muted-foreground">
+										Related runs
+									</h2>
+									<ul class="flex flex-col">
+										{#if detail.parent}
+											<li class="flex flex-col">
+												<span class="px-2 pt-1 text-meta text-muted-foreground">Started by</span>
+												<RunRow run={detail.parent} {now} href={runHref(detail.parent.runId)} />
+											</li>
+										{/if}
+										{#each detail.children as child (child.runId)}
+											<li class="flex flex-col">
+												<span class="px-2 pt-1 text-meta text-muted-foreground"
+													>Started in the background</span
+												>
+												<RunRow run={child} {now} href={runHref(child.runId)} />
+											</li>
+										{/each}
+									</ul>
+								</section>
+							{/if}
+
+							{#if !detail.parent && !detail.children.length}
+								<h2 class="text-base font-semibold">Related runs</h2>
+								<p class="mt-2 text-sm text-muted-foreground">
+									This run has no parent or background runs.
+								</p>
+							{/if}
+						</div>
 					{/if}
-				</Tabs.Content>
-			</Tabs.Root>
+				{/snippet}
+			</SwipeableTabs>
 		</article>
 	{/if}
 </DetailScreen>

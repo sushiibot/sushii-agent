@@ -10,10 +10,10 @@ test('Memory separates saved files, daily notes and recorded changes', async ({
 	await (await openDrawer(page)).getByRole('link', { name: /Memory/ }).click();
 	await expect(page.getByRole('heading', { name: 'Memory', level: 1 })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Long-term files' })).toBeVisible();
-	await page.getByRole('button', { name: 'Daily notes', exact: true }).click();
+	await page.getByRole('tab', { name: 'Daily notes', exact: true }).click();
 	await expect(page.getByRole('link', { name: /memory\/2026-09-29\.md/ })).toBeVisible();
 	await expect(page.getByRole('link', { name: /MEMORY\.md.*The index/ })).toHaveCount(0);
-	await page.getByRole('button', { name: 'Long-term', exact: true }).click();
+	await page.getByRole('tab', { name: 'Long-term', exact: true }).click();
 	await page.getByRole('searchbox', { name: 'Find a memory file' }).fill('MEMORY.md');
 	await expect(page.getByRole('link', { name: /USER\.md/ })).toHaveCount(0);
 	await page.getByRole('link', { name: /MEMORY\.md.*The index/ }).click();
@@ -22,7 +22,7 @@ test('Memory separates saved files, daily notes and recorded changes', async ({
 		'Eastside Auto'
 	);
 	await page.goBack();
-	await page.getByRole('button', { name: 'Changes', exact: true }).click();
+	await page.getByRole('tab', { name: 'Changes', exact: true }).click();
 	await page.getByRole('link', { name: 'All 6 changes' }).click();
 	await expect(page.getByRole('heading', { name: 'Memory changes', level: 1 })).toBeVisible();
 });
@@ -49,7 +49,11 @@ test('a change shows its diff and who wrote it, and Revert offers Restore', asyn
 test('empty, failing and unknown memory screens say so', async ({ page, context }) => {
 	const app = await fixtureApp(context, { fixtures: { memory: 'empty' } });
 	await page.goto('/memory');
-	await expect(page.getByText('Nothing remembered yet')).toBeVisible();
+	await expect(
+		page
+			.getByRole('tabpanel', { name: 'Long-term', exact: true })
+			.getByText('Nothing remembered yet')
+	).toBeVisible();
 	app.set('memory', 'error');
 	await page.reload();
 	await expect(page.getByRole('alert')).toContainText("Couldn't load memory.");

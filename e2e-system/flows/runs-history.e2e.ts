@@ -111,7 +111,8 @@ test("the inbox, a run, a History day and search open in the app on the workspac
   await page.goto(`/history/${SEED.date}`);
   await expect(page.getByText(`recap mentions ${SEED.needle} in the daily notes`)).toBeVisible();
   await page.getByRole("tab", { name: /^Runs/ }).click();
-  await expect(page.getByText(`recap mentions ${SEED.needle} in the daily notes`)).toBeHidden();
+  await expect(page.getByRole("tabpanel", { name: "Recaps", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /^Runs/ })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("main").getByRole("link", { name: /Run the nightly check/ }).click();
   await expect(page).toHaveURL(new RegExp(`/runs/${SEED.jobRunId}$`));
 

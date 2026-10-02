@@ -18,7 +18,12 @@
 			unwatch();
 		};
 	});
-	keepScroll('runs', () => document.querySelector('main'));
+	keepScroll(
+		'runs',
+		() =>
+			document.querySelector<HTMLElement>('[data-tab-panel]:not([aria-hidden=true])') ??
+			document.querySelector('main')
+	);
 </script>
 
 <svelte:head><title>Runs · sushii</title></svelte:head>

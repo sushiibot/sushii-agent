@@ -6,6 +6,12 @@ import { filterKinds, type RunFilter } from './format';
 import type { RunDetail, RunStatus, RunStep, RunSummary, RunsPage } from './types';
 
 const REFRESH_DEBOUNCE_MS = 1000;
+type ListCache = {
+	head: RunsPage;
+	older: RunSummary[];
+	before: string | null;
+	truncated: boolean;
+};
 
 /** A run's detail with the steps paged in so far. */
 export class RunView {
@@ -73,14 +79,28 @@ export class RunsStore {
 	#stop: (() => void) | null = null;
 	#headTimer: ReturnType<typeof setTimeout> | null = null;
 	#detailTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	#lists = new Map<RunFilter, ListCache>();
+	#headVersion = 0;
+	#viewVersion = 0;
 
 	constructor(api: RunsApi = httpRunsApi, hub: Hub = appHub) {
 		this.#api = api;
 		this.#hub = hub;
 		this.list = new Remote(
 			async () => {
-				const page = await api.list({ kinds: filterKinds(this.filter) });
-				this.older = [];
+				const filter = this.filter;
+				const version = ++this.#headVersion;
+				const page = await api.list({ kinds: filterKinds(filter) });
+				if (filter !== this.filter || version !== this.#headVersion) return page;
+				const head = this.list.data;
+				if (head && this.older.length) {
+					const seen = new Set<string>();
+					const merged = [...page.runs, ...head.runs, ...this.older]
+						.filter((r) => !seen.has(r.runId) && !!seen.add(r.runId))
+						.sort((a, b) => (a.runId < b.runId ? 1 : -1));
+					this.older = merged.slice(page.runs.length);
+					return { ...page, runs: merged.slice(0, page.runs.length) };
+				}
 				this.before = page.before;
 				this.truncated = page.truncated;
 				return page;
@@ -89,13 +109,25 @@ export class RunsStore {
 		);
 	}
 
-	/** Shows only the runs the filter picks, reloading the list from the newest. */
+	/** Restores each filter's loaded pages, then refreshes its newest records in place. */
 	setFilter(filter: RunFilter) {
 		if (filter === this.filter) return;
+		if (this.list.data) {
+			this.#lists.set(this.filter, {
+				head: this.list.data,
+				older: this.older,
+				before: this.before,
+				truncated: this.truncated
+			});
+		}
+		this.#viewVersion++;
 		this.filter = filter;
-		this.older = [];
-		this.before = null;
-		this.truncated = false;
+		const saved = this.#lists.get(filter);
+		this.list.data = saved?.head;
+		this.older = saved?.older ?? [];
+		this.before = saved?.before ?? null;
+		this.truncated = saved?.truncated ?? false;
+		this.olderLoading = false;
 		this.olderError = null;
 		void this.list.refetch();
 	}
@@ -103,20 +135,21 @@ export class RunsStore {
 	async loadOlder() {
 		if (!this.before || this.olderLoading) return;
 		const filter = this.filter;
+		const version = this.#viewVersion;
 		this.olderLoading = true;
 		this.olderError = null;
 		try {
 			const page = await this.#api.list({ before: this.before, kinds: filterKinds(filter) });
 			// The filter changed meanwhile, and the list restarted under the new one.
-			if (filter !== this.filter) return;
+			if (filter !== this.filter || version !== this.#viewVersion) return;
 			this.older = [...this.older, ...page.runs];
 			this.before = page.before;
 			this.truncated = page.truncated;
 		} catch (err) {
-			if (filter === this.filter)
+			if (filter === this.filter && version === this.#viewVersion)
 				this.olderError = err instanceof Error ? err.message : 'Something went wrong.';
 		} finally {
-			this.olderLoading = false;
+			if (version === this.#viewVersion) this.olderLoading = false;
 		}
 	}
 
@@ -174,10 +207,12 @@ export class RunsStore {
 		const head = this.list.data;
 		if (this.list.status !== 'ready' || !head) return;
 		const filter = this.filter;
+		const version = this.#viewVersion;
 		try {
 			const page = await this.#api.list({ kinds: filterKinds(filter) });
-			// A full reload started meanwhile and wins.
-			if (this.list.status !== 'ready' || filter !== this.filter) return;
+			// A full reload or filter revisit started meanwhile and wins.
+			if (this.list.status !== 'ready' || filter !== this.filter || version !== this.#viewVersion)
+				return;
 			if (!this.older.length) {
 				this.list.data = page;
 				this.before = page.before;

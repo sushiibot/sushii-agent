@@ -18,7 +18,12 @@
 			unwatch();
 		};
 	});
-	keepScroll('memory', () => document.querySelector('main'));
+	keepScroll(
+		'memory',
+		() =>
+			document.querySelector<HTMLElement>('[data-tab-panel]:not([aria-hidden=true])') ??
+			document.querySelector('main')
+	);
 </script>
 
 <svelte:head><title>Memory · sushii</title></svelte:head>

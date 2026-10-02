@@ -95,7 +95,7 @@ test('a new run joins the top of the list without losing older pages or repeatin
 	expect(store.before).toBeNull();
 });
 
-test('the type filter reloads the list from the newest with only that kind', async () => {
+test('type filters refresh their newest runs while preserving loaded pages', async () => {
 	const { store } = setup([
 		run(1, 'done', 'chat'),
 		run(2),
@@ -114,5 +114,34 @@ test('the type filter reloads the list from the newest with only that kind', asy
 	expect(store.before).toBeNull();
 	store.setFilter('all');
 	await Bun.sleep(10);
-	expect(shown(store)).toEqual(['run 6', 'run 5', 'run 4']);
+	expect(shown(store)).toEqual(['run 6', 'run 5', 'run 4', 'run 3', 'run 2', 'run 1']);
+	expect(store.before).toBeNull();
+});
+
+test('returning to a paginated filter preserves its cursor and accepts new runs without duplicates', async () => {
+	const { store, all } = setup([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => run(n)));
+	await store.list.refetch();
+	await store.loadOlder();
+	expect(store.before).toBe(id(4));
+	store.setFilter('chat');
+	await Bun.sleep(10);
+	all.push(run(10));
+	store.setFilter('all');
+	await Bun.sleep(10);
+	expect(shown(store)).toEqual(['run 10', 'run 9', 'run 8', 'run 7', 'run 6', 'run 5', 'run 4']);
+	expect(store.before).toBe(id(4));
+	await store.loadOlder();
+	expect(shown(store)).toEqual([
+		'run 10',
+		'run 9',
+		'run 8',
+		'run 7',
+		'run 6',
+		'run 5',
+		'run 4',
+		'run 3',
+		'run 2',
+		'run 1'
+	]);
+	expect(store.before).toBeNull();
 });

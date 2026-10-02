@@ -14,7 +14,6 @@
 		banner,
 		toast,
 		footer,
-		swipe,
 		state,
 		children
 	}: Omit<ScreenProps, 'back' | 'children' | 'stickToBottom' | 'scroller'> & {
@@ -25,7 +24,7 @@
 	} = $props();
 </script>
 
-<Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer} {swipe}>
+<Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer}>
 	{#if state}
 		<ScreenState {...state}>{@render children()}</ScreenState>
 	{:else}

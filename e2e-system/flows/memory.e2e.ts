@@ -80,7 +80,7 @@ test("Memory reads saved facts and daily notes from real workspace files without
     await page.getByRole("link", { name: new RegExp(`e2e-saved-${tag}`) }).click();
     await expect(page.getByRole("region", { name: "What the file says" })).toContainText(`lavender notebooks ${tag}`);
     await page.goto("/memory");
-    await page.getByRole("button", { name: "Daily notes", exact: true }).click();
+    await page.getByRole("tab", { name: "Daily notes", exact: true }).click();
     await expect(page.getByRole("link", { name: new RegExp(`e2e-saved-${tag}`) })).toHaveCount(0);
     await page.getByRole("searchbox", { name: "Find a memory file" }).fill("2001-01-01");
     await page.getByRole("link", { name: /memory\/2001-01-01\.md/ }).click();
