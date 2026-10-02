@@ -14,7 +14,6 @@
 		modelsStore,
 		Dictation,
 		type ChatSheet,
-		type ChatTray,
 		type ChatMessage,
 		type FileRef
 	} from '$lib/features/chat';
@@ -64,12 +63,6 @@
 		if (hub.connection !== 'reconnecting') return;
 		const t = setInterval(() => (now = Date.now()), 1000);
 		return () => clearInterval(t);
-	});
-
-	const tray = $derived.by((): ChatTray | undefined => {
-		if (store.approvals.length) return { items: store.approvals, state: store.trayPhase };
-		if (store.timedOut) return { items: [store.timedOut], armed: false, state: 'timeout' };
-		return undefined;
 	});
 
 	onMount(() => {
@@ -154,7 +147,7 @@
 	olderError={s.olderError}
 	running={s.running}
 	stopping={s.stopping}
-	{tray}
+	approvals={store.approvals}
 	draft={s.draft}
 	photos={s.photos}
 	quotaFull={s.quotaFull}
@@ -203,7 +196,8 @@
 	onretrysend={(id) => s.retry(id)}
 	ondeletesend={(id) => void s.discard(id)}
 	onanswer={(askId, answer) => s.answer(askId, answer)}
-	ondecide={(nonce, decision, location) => s.decide(nonce, decision, location)}
+	onapprove={(nonce) => void s.decide(nonce, 'approve')}
+	ondeny={(nonce) => void s.decide(nonce, 'deny')}
 	oninstall={() => pwa.install()}
 	onreload={() => pwa.applyUpdate()}
 />

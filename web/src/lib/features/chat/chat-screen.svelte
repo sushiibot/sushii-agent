@@ -1,5 +1,4 @@
 <script lang="ts">
-	import type { LocationReply } from './location';
 	import { tick, type ComponentProps, type Snippet } from 'svelte';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ChevronUp from '@lucide/svelte/icons/chevron-up';
@@ -18,14 +17,14 @@
 	import InstallHint from '$lib/ui/pwa/install-hint.svelte';
 	import UpdateToast from '$lib/ui/pwa/update-toast.svelte';
 	import { Button } from '$lib/ui/button';
-	import ApprovalTray from './components/approval-tray.svelte';
+	import type { PendingApproval } from './types';
 	import Composer from './components/composer.svelte';
 	import ModelSheet from './components/model-sheet.svelte';
 	import Conversation from './components/conversation.svelte';
 	import { messagePlainText } from './render/plain-text';
 	import { modelName } from './render/usage';
 	import type { ChatUsage, ModelsResponse } from '$lib/core/realtime/events';
-	import type { ChatMessage, ChatSheet, ChatTray, FileRef, PhotoDraft } from './types';
+	import type { ChatMessage, ChatSheet, FileRef, PhotoDraft } from './types';
 
 	let {
 		messages,
@@ -40,7 +39,7 @@
 		olderError = false,
 		running = false,
 		stopping = false,
-		tray,
+		approvals = [],
 		draft = '',
 		photos = [],
 		quotaFull = false,
@@ -86,7 +85,8 @@
 		onretrysend,
 		ondeletesend,
 		onanswer,
-		ondecide,
+		onapprove,
+		ondeny,
 		oninstall,
 		onreload,
 		onbranch,
@@ -110,8 +110,8 @@
 		olderError?: boolean;
 		running?: boolean;
 		stopping?: boolean;
-		/** Pending approvals, or a timed-out one that is about to fold into its chat marker. */
-		tray?: ChatTray;
+		/** Pending approvals for inline rendering. */
+		approvals?: PendingApproval[];
 		draft?: string;
 		photos?: PhotoDraft[];
 		quotaFull?: boolean;
@@ -166,7 +166,8 @@
 		onretrysend?: (messageId: string) => void;
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
-		ondecide?: (nonce: string, decision: 'approve' | 'deny', location?: LocationReply) => void;
+		onapprove?: (nonce: string) => void;
+		ondeny?: (nonce: string) => void;
 		oninstall?: () => Promise<'accepted' | 'dismissed' | 'failed'>;
 		onreload?: () => void;
 		/** Starts a thread from a reply; without it replies have no Start-a-thread button. */
@@ -176,14 +177,11 @@
 		onkeephere?: (messageId: string) => void;
 	} = $props();
 
-	const ARM_MS = 1000;
 	const NEAR_BOTTOM_PX = 48;
 
 	let scroller = $state<HTMLElement | null>(null);
 	// svelte-ignore state_referenced_locally
 	let newMessages = $state(initialNewMessages);
-	let armedFor = $state<string | null>(null);
-	let armGen = $state(0);
 	let slowLoad = $state(false);
 	let older = $state<HTMLElement | null>(null);
 
@@ -197,38 +195,6 @@
 	let copyNote = $state('');
 	let copied = $state<string | undefined>();
 	const empty = $derived(history !== 'loading' && messages.length === 0);
-
-	// Approve stays locked for a moment whenever a new request reaches the top of the tray or the
-	// tray moves. Derived, so a new top request is locked in the same frame it first paints.
-	const topNonce = $derived(tray && tray.state !== 'timeout' ? tray.items[0]?.nonce : undefined);
-	const armKey = $derived(topNonce ? `${topNonce}:${armGen}` : null);
-	const armed = $derived(armKey !== null && armedFor === armKey);
-	$effect(() => {
-		const key = armKey;
-		if (!key) return;
-		const t = setTimeout(() => (armedFor = key), ARM_MS);
-		return () => clearTimeout(t);
-	});
-	$effect(() => {
-		if (!topNonce) return;
-		// The tray's own size changes when it arms, so re-arm on viewport changes (keyboard, rotation)
-		// and on returning to the app, not on tray resizes.
-		const rearm = () => armGen++;
-		const onVisibility = () => {
-			if (document.visibilityState === 'visible') rearm();
-		};
-		const vv = window.visualViewport;
-		vv?.addEventListener('resize', rearm);
-		window.addEventListener('resize', rearm);
-		document.addEventListener('visibilitychange', onVisibility);
-		return () => {
-			vv?.removeEventListener('resize', rearm);
-			window.removeEventListener('resize', rearm);
-			document.removeEventListener('visibilitychange', onVisibility);
-		};
-	});
-
-	const shownTray = $derived(tray && { ...tray, armed: tray.armed ?? armed });
 
 	$effect(() => {
 		if (history !== 'loading') {
@@ -524,19 +490,12 @@
 		<div class="border-t">{@render readOnly()}</div>
 	{:else}
 		<div class="border-t">
-			{#if shownTray}
-				<ApprovalTray
-					{...shownTray}
-					onapprove={(nonce, location) => ondecide?.(nonce, 'approve', location)}
-					ondeny={(nonce) => ondecide?.(nonce, 'deny')}
-				/>
-			{/if}
 			<Composer
 				bind:value={() => draft, (v) => ondraft?.(v)}
 				placeholder={placeholder ?? (running && !stopping ? 'Steer the agent…' : undefined)}
 				{running}
 				{stopping}
-				stop={!shownTray || !!shownTray.collapsed}
+				stop={true}
 				{photos}
 				{quotaFull}
 				onsend={send}
@@ -629,6 +588,9 @@
 				{onkeephere}
 				onshare={canShare ? shareMessage : undefined}
 				{copied}
+				{approvals}
+				{onapprove}
+				{ondeny}
 			/>
 		</div>
 	{/if}

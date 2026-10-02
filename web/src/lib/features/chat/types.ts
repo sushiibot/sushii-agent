@@ -18,7 +18,7 @@ export type MessagePart =
 	| { type: 'data-memory-write'; data: MemoryWrite }
 	| { type: 'data-auth'; data: { instructions: string; url: string; https: boolean } }
 	| { type: 'data-turn'; data: Turn }
-	| { type: 'data-approval'; data: { tool: string; outcome: ApprovalOutcome } }
+	| { type: 'data-approval'; data: { tool: string; outcome: ApprovalOutcome; nonce?: string } }
 	| { type: 'data-ask'; data: AskView }
 	| { type: 'data-files'; data: { files: FileRef[]; dropped?: string } }
 	| { type: 'data-divider'; data: { kind: 'new' | 'rotated' | 'compacted'; summary?: string } }

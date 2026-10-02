@@ -133,7 +133,12 @@ export function toMessages(
 				out.push({
 					id: item.id,
 					role: 'assistant',
-					parts: [{ type: 'data-approval', data: { tool: item.tool, outcome: item.outcome } }]
+					parts: [
+						{
+							type: 'data-approval',
+							data: { tool: item.tool, outcome: item.outcome, nonce: item.nonce }
+						}
+					]
 				});
 				break;
 			case 'divider':

@@ -8,6 +8,8 @@
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import Clock from '@lucide/svelte/icons/clock';
 	import Check from '@lucide/svelte/icons/check';
+	import X from '@lucide/svelte/icons/x';
+	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
@@ -30,6 +32,7 @@
 		Delivery,
 		FileRef,
 		MessagePart,
+		PendingApproval,
 		Turn
 	} from '../types';
 
@@ -49,7 +52,10 @@
 		onbranch,
 		onstartthread,
 		onkeephere,
-		copied
+		copied,
+		approvals = [],
+		onapprove,
+		ondeny
 	}: {
 		messages: ChatMessage[];
 		after?: Snippet;
@@ -70,8 +76,14 @@
 		onbranch?: (message: ChatMessage) => void;
 		onstartthread?: (messageId: string) => void;
 		onkeephere?: (messageId: string) => void;
+		/** Approve a pending tool call. */
+		onapprove?: (nonce: string) => void;
+		/** Deny a pending tool call. */
+		ondeny?: (nonce: string) => void;
 		/** The message just copied, whose Copy shows a check for a moment. */
 		copied?: string;
+		/** Pending approvals for inline rendering of data-approval parts. */
+		approvals?: PendingApproval[];
 	} = $props();
 
 	// The newest finished reply keeps its actions in view; older ones show them on hover or focus.
@@ -202,13 +214,99 @@
 					{:else if part.type === 'data-turn'}
 						<WorkingRow turn={part.data} open={openTurn === message.id} {openStep} />
 					{:else if part.type === 'data-approval'}
-						<p data-approval class="flex items-center gap-2 text-sm text-muted-foreground">
-							<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
-							<span class="min-w-0 [overflow-wrap:anywhere]"
-								>{outcome[part.data.outcome]}{part.data.outcome === 'pending' ? ':' : ' ·'}
-								<code class="font-mono text-code text-foreground">{part.data.tool}</code></span
+						{@const pendingApproval =
+							part.data.outcome === 'pending' &&
+							part.data.nonce &&
+							approvals?.find((a) => a.nonce === part.data.nonce)}
+						{#if pendingApproval}
+							{@const v = pendingApproval.view}
+							<details
+								open
+								data-approval
+								class="group/approval w-full rounded-xl border-2 border-approval/60 bg-approval-surface px-3 py-2.5 text-sm"
 							>
-						</p>
+								<summary
+									class="flex min-h-12 cursor-pointer list-none items-center gap-3 [&::-webkit-details-marker]:hidden"
+								>
+									<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
+									<span class="flex min-w-0 flex-1 items-center gap-2 font-medium">
+										<code class="font-mono text-code">{v.tool}</code>
+									</span>
+									<ChevronDown
+										class="size-3.5 transition-transform group-open/approval:rotate-180 motion-reduce:transition-none"
+										aria-hidden="true"
+									/>
+								</summary>
+								<div class="flex flex-col gap-2 pt-1">
+									<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+									<dl
+										tabindex="0"
+										aria-label="Exact input"
+										class="flex max-h-40 flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg border bg-background/70 p-2.5"
+									>
+										{#each v.fields as field, fi (fi)}
+											<div class="flex flex-col gap-0.5">
+												<dt class="text-xs [overflow-wrap:anywhere] text-muted-foreground">
+													{field.key}
+												</dt>
+												<dd
+													class={cn(
+														'font-mono text-code leading-relaxed [overflow-wrap:anywhere]',
+														field.kind === 'body' && 'whitespace-pre-wrap'
+													)}
+												>
+													{field.value}
+												</dd>
+											</div>
+										{/each}
+										<div class="flex flex-col gap-0.5 border-t pt-2">
+											<dt class="text-xs text-muted-foreground">Requested by</dt>
+											<dd class="font-mono text-code [overflow-wrap:anywhere]">
+												{v.agentName}
+												<span class="font-sans text-muted-foreground">(self-reported)</span>
+											</dd>
+										</div>
+									</dl>
+									{#if pendingApproval.tainted}
+										<p
+											class="flex items-start gap-2 rounded-lg bg-taint-soft px-2 py-1 text-xs leading-snug"
+										>
+											<TriangleAlert
+												class="mt-px size-3.5 shrink-0 text-taint"
+												aria-hidden="true"
+											/>
+											<span class="min-w-0 [overflow-wrap:anywhere] text-taint"
+												>{pendingApproval.tainted}</span
+											>
+										</p>
+									{/if}
+									<div class="flex gap-3">
+										<Button
+											variant="outline"
+											class="px-5"
+											aria-label="Deny {v.tool}"
+											data-nonce={pendingApproval.nonce}
+											onclick={() => ondeny?.(pendingApproval.nonce)}><X />Deny</Button
+										>
+										<Button
+											class="flex-1"
+											aria-label="Approve {v.tool}"
+											data-nonce={pendingApproval.nonce}
+											onclick={() => onapprove?.(pendingApproval.nonce)}><Check />Approve</Button
+										>
+									</div>
+								</div>
+							</details>
+						{:else}
+							<p data-approval class="flex items-center gap-2 text-sm text-muted-foreground">
+								<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
+								<span class="min-w-0 [overflow-wrap:anywhere]"
+									>{outcome[part.data.outcome]}
+									{part.data.outcome === 'pending' ? ':' : ' ·'}
+									<code class="font-mono text-code text-foreground">{part.data.tool}</code></span
+								>
+							</p>
+						{/if}
 					{:else if part.type === 'data-ask'}
 						<AskCard
 							ask={part.data}
