@@ -153,7 +153,9 @@ test('a send shows at once, carries a ULID, and settles on the status event', as
 	await push(page, 'status', { clientId: body.clientId, state: 'accepted' }, 2);
 	await expect(bubble(page, 'Book the car service')).toContainText('Sent');
 	await expect(page.locator('[data-message-id]').filter({ hasText: 'Book' })).toHaveCount(1);
-	await expect(page.locator('[data-typing] [aria-hidden=true]')).toContainText(/Sushii.*…/);
+	// The cycling emoji phrase ("Rolling sushi…") carries the status; no "Sushii ·" prefix anymore.
+	await expect(page.locator('[data-typing] [aria-hidden=true]')).toContainText(/\S.*…/);
+	await expect(page.locator('[data-typing]')).not.toContainText('Sushii');
 
 	await push(page, 'tool', { turnId: 't1', name: 'search_mail', summary: 'Searching mail' });
 	await expect(page.getByText('Searching mail').first()).toBeVisible();
