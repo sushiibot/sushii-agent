@@ -15,7 +15,16 @@ import type {
 	WorkspaceState
 } from '$lib/core/realtime/events';
 
-export type Delivery = 'sending' | 'sent' | 'failed' | 'queued' | 'queued-agent';
+export type Delivery =
+	| 'sending'
+	| 'sent'
+	| 'failed'
+	| 'queued'
+	| 'queued-agent'
+	/** Held on this device because a turn is running; it posts when the turn ends. */
+	| 'queued-run'
+	/** The bot acked it while a turn ran: the send steered that turn. */
+	| 'steered';
 
 export interface Attachment {
 	name: string;
@@ -120,6 +129,8 @@ export type Effect =
 	| { type: 'workspace'; state: WorkspaceState }
 	/** A first frame says the workspace is online: re-send every entry the bot hasn't routed yet. */
 	| { type: 'resend' }
+	/** A turn ended or was dropped: messages held for it may go out now. */
+	| { type: 'turnEnd' }
 	| { type: 'toast'; text: string }
 	| { type: 'announce'; text: string }
 	| { type: 'reload' }
@@ -357,9 +368,10 @@ function applyPending(s: ChatState, p: PendingState) {
 /** Drops everything but unsent messages and first-frame asks ahead of a history reload. The tray and
  *  cursor stay. */
 export function restartHistory(s: ChatState): Effect[] {
+	// `steered` is settled like `sent`: the bot holds the message, so history carries it back.
 	const keep = s.items.filter(
 		(i) =>
-			(i.kind === 'user' && i.delivery && i.delivery !== 'sent') ||
+			(i.kind === 'user' && i.delivery && i.delivery !== 'sent' && i.delivery !== 'steered') ||
 			(i.kind === 'ask' && i.id.startsWith(PENDING_ASK_PREFIX))
 	);
 	Object.assign(s, createState(), {
@@ -398,6 +410,8 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		}
 		case 'reset': {
 			fx.push(...restartHistory(s));
+			// The reload dropped every running turn with the old history.
+			fx.push({ type: 'turnEnd' });
 			s.cursor = ev.data.headSeq;
 			// The history reload that follows re-sends unsettled entries when this says online.
 			setWorkspace(s, ev.data.workspace, fx);
@@ -423,8 +437,11 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			break;
 		}
 		case 'status': {
+			// A steer joins the turn that is already running, so it settles without a Working row.
+			const steered = ev.data.state === 'steer';
 			for (const i of s.items) {
-				if (i.kind === 'user' && i.clientId === ev.data.clientId) i.delivery = 'sent';
+				if (i.kind === 'user' && i.clientId === ev.data.clientId)
+					i.delivery = steered ? 'steered' : 'sent';
 			}
 			fx.push({ type: 'delivered', clientId: ev.data.clientId });
 			if (ev.data.state === 'accepted' || ev.data.state === 'newSession') addPlaceholder(s, now);
@@ -466,6 +483,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			const item = assistantFor(s, ev.data.turnId);
 			s.stopping = false;
 			dropPlaceholder(s);
+			fx.push({ type: 'turnEnd' });
 			if (!item) break;
 			item.streaming = false;
 			if (ev.data.activityText) item.activityText = ev.data.activityText;
@@ -587,6 +605,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 					if (i.delivery === 'sending' || i.clientId === clientId) i.delivery = 'queued-agent';
 				}
 				dropPlaceholder(s);
+				fx.push({ type: 'turnEnd' });
 			}
 			if (ev.data.type === 'nothingToStop' || ev.data.type === 'stopFailed') s.stopping = false;
 			const { line, toast } = noticeText(ev.data);
@@ -596,6 +615,7 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 		}
 		case 'session': {
 			dropPlaceholder(s);
+			fx.push({ type: 'turnEnd' });
 			s.items.push({
 				kind: 'divider',
 				id: uid(s, 'divider'),
@@ -750,7 +770,9 @@ export function mergeHistory(s: ChatState, items: WebHistoryItem[]): Effect[] {
 		}
 		const mine = h.type === 'user' && h.clientId ? local.get(h.clientId) : undefined;
 		if (mine && h.type === 'user' && h.clientId) {
-			if (mine.delivery && mine.delivery !== 'sent') {
+			// Settled sends (`sent`, `steered`) move in as they are; a held one reached the
+			// workspace with this page, so it settles and leaves the outbox.
+			if (mine.delivery && mine.delivery !== 'sent' && mine.delivery !== 'steered') {
 				mine.delivery = 'sent';
 				fx.push({ type: 'delivered', clientId: h.clientId });
 			}

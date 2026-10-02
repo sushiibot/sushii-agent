@@ -148,6 +148,7 @@
 				onloadolder: () => store.loadOlder(),
 				onretryhistory: () => store.retryHistory(),
 				onretrysend: (m) => store.retry(m),
+				onsteersend: (m) => store.steerNow(m),
 				ondeletesend: (m) => void store.discard(m),
 				onanswer: (askId, answer) => store.answer(askId, answer),
 				onapprove: (nonce, location) => void store.decide(nonce, 'approve', location),

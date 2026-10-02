@@ -87,6 +87,7 @@
 		onloadolder,
 		onretryhistory,
 		onretrysend,
+		onsteersend,
 		ondeletesend,
 		onanswer,
 		onapprove,
@@ -171,6 +172,7 @@
 		onloadolder?: () => Promise<void>;
 		onretryhistory?: () => void;
 		onretrysend?: (messageId: string) => void;
+		onsteersend?: (messageId: string) => void;
 		ondeletesend?: (messageId: string) => void;
 		onanswer?: (askId: string, answer: string) => void;
 		onapprove?: (nonce: string, location?: LocationReply) => void;
@@ -587,6 +589,7 @@
 				{openStep}
 				onopenfile={(f) => onopenfile?.(f)}
 				onretrysend={(id) => onretrysend?.(id)}
+				onsteersend={(id) => onsteersend?.(id)}
 				ondeletesend={(id) => ondeletesend?.(id)}
 				onanswer={(askId, answer) => onanswer?.(askId, answer)}
 				onretryhistory={() => onretryhistory?.()}
