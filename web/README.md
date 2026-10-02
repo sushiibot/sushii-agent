@@ -36,6 +36,12 @@ The workspace stores connections and credentials outside the browser.
 The screen supports token or OAuth authentication, tool-list review, reconnection, disconnection, and removal.
 See the root README for Fastmail setup and protocol limits.
 
+## UI and UX guidance
+
+Read [UX guidelines](docs/ux-guidelines.md) before changing a screen or shared component.
+They cover interaction hierarchy, lists and filters, forms and recovery, mobile layout, loading, copy, and accessibility.
+The guidelines include review and verification methods. Document new reusable patterns there alongside their shared implementation.
+
 ## Layout
 
 Imports point down this list only:

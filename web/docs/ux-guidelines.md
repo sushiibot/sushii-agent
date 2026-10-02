@@ -81,6 +81,47 @@ In a standalone PWA there is no browser back button: the Android back gesture is
 - **No `target="_blank"` for in-app routes.** Why: it opens a Custom Tab and breaks back. Check: `review`.
 - **The app opens on the chat. Top-level destinations (Chat, Inbox, Threads, Runs, History, ..., Settings) live in a drawer opened from the header's menu button on phones and in the sidebar on desktop; detail screens show a back chevron instead.** Why: the chat keeps the full height (no tab bar under the composer), and one navigation system per screen. The drawer is a native modal `<dialog>`, so Android back and Escape close it. The menu button carries a dot when the inbox has something waiting or unread. Check: `shot`, `pw` (`e2e/nav.test.ts`).
 
+## Interaction and information hierarchy
+
+These rules guide new screens and changes to existing screens. They describe the required behavior, not completed implementation.
+
+- **Start with the user's next decision.** Why: a screen becomes easier to scan when its content supports one task. Check: `review`: name the task and the main action before choosing the layout.
+- **Reuse familiar controls and shared components.** Why: repeated patterns reduce relearning and prevent layout drift. Check: `review`: inspect existing `ui/` components and feature patterns before creating a new variant.
+- **Group secondary actions in one predictable menu.** Why: several equally prominent actions compete with the main task. Check: `shot`, `phone`: related thread actions share one overflow menu, and the main action remains visible.
+- **Use links for navigation and buttons for actions.** Why: browser behavior and accessible semantics depend on this distinction. Check: `review`, `check`: navigation rows use anchors; actions use buttons; interactive controls never nest inside anchors.
+- **Keep decision-changing information visible.** Why: users cannot act on a consequence hidden behind a disclosure. Check: `review`: permissions, action scope, and failure status remain visible before the relevant action.
+- **Disclose reference detail where it helps.** Why: long explanations crowd the task. Check: `shot`, `phone`: inline details use a disclosure; mid-task reading uses a sheet that returns to the same position.
+- **Name disclosures by their contents.** Why: labels such as “More info” do not explain why someone would open them. Check: `review`: the label names the topic, and expanded content adds detail instead of repeating visible copy.
+- **Reuse explanatory content across presentations.** Why: separate copies of the same help text drift. Check: `review`: a disclosure and sheet that explain the same concept render shared content.
+
+## Lists, filters, and data views
+
+Apply these rules to Runs, History, Memory, connections, and future data screens.
+
+- **Keep row anatomy consistent.** Why: the same object must remain recognizable across lists and lifecycle states. Check: `shot`: title, summary, status, and metadata keep their relative positions across views.
+- **Put consequential decisions in their full context.** Why: a summary row can omit the information needed for a safe decision. Check: `review`: approval opens the exact action and evidence before the decision controls.
+- **Keep status transitions traceable.** Why: an item that disappears after an action can look lost. Check: `pw`: an updated item remains reachable through its detail URL or an explicit completed/history view.
+- **Show the active scope.** Why: an unexplained filter can look like missing data. Check: `shot`, `pw`: the selected tab or filter is visible, and users can clear filters without reloading.
+- **Separate empty results from empty collections.** Why: “No runs yet” gives the wrong explanation when a filter excludes existing runs. Check: `pw`: no-match states offer clear/reset; empty collections explain what will appear and the next useful action.
+- **Choose a useful default order.** Why: insertion order rarely matches the next decision. Check: `review`: queues prioritize attention; history prioritizes recency; the current sort is understandable.
+- **Adapt dense data to phones.** Why: a wide desktop table can hide the fields needed for the task. Check: `shot` at 320px and 412px: rows become stacked summaries where appropriate, with secondary fields in detail.
+- **Align comparable numbers.** Why: stable columns make differences easier to scan. Check: `shot`: numeric columns align right and use tabular numerals; text aligns left.
+- **Add table machinery only for a concrete need.** Why: sorting a small loaded list does not require a new abstraction or dependency. Check: `review`: pagination, virtualization, or column management justifies extra table infrastructure.
+- **Make bulk scope explicit when bulk actions exist.** Why: selection can extend beyond the visible page. Check: `pw`, `shot`: visible checkboxes and an affected-item count distinguish current-page selection from all matching items.
+
+## Forms, edits, and recovery
+
+- **Use persistent labels and field-level errors.** Why: placeholders disappear during entry, and a generic error leaves users guessing. Check: `axe`, `pw`: labels remain visible; errors associate with the relevant fields; values survive failed saves.
+- **Accept harmless input variation.** Why: whitespace or common formatting must not create unnecessary work. Check: `pw`: supported input formats normalize consistently, without changing a meaningful URL, token, or identifier.
+- **Use the control that matches the choice.** Why: actions, settings, and fixed options have different expectations. Check: `review`: menus contain actions; selects contain mutually exclusive options; switches represent immediate on/off settings.
+- **Confirm the actual save result.** Why: an optimistic update is not proof that the server accepted it. Check: `pw`: saving, saved, and failed states remain distinct; failed edits retain values and offer retry.
+- **Protect substantial unsaved work.** Why: accidental back or dismissal must not silently discard an edit. Check: `pw`, `phone`: dirty forms preserve their draft or explain discard; clean forms close without a warning.
+- **Scope restored drafts to the record.** Why: an edit for one item must never appear in another. Check: `pw`: draft keys include the route and record identity; successful saves clear the draft.
+- **Make restored form drafts explicit.** Why: stale values can overwrite a fresh edit unnoticed. Check: `shot`, `pw`: restoration has a visible discard action and an expiry appropriate to the task. Chat drafts follow the chat-specific rule above.
+- **Choose draft storage deliberately.** Why: persistent storage can expose secrets or sensitive content on a shared device. Check: `review`: persistence, retained fields, expiry, and clearing behavior are documented; credentials never enter form draft storage.
+- **Match confirmation to the consequence.** Why: routine confirmation trains reflexive acceptance. Check: `review`: reversible local edits favor recovery or undo; consequential actions explain the exact effect before commitment.
+- **Keep delayed external effects honest.** Why: a queued action is not complete, and undo must remain available while cancellation is possible. Check: `pw`: any grace period appears on the item, survives navigation, and states when undo ends.
+
 ## Chat and agent
 
 ### Sending
@@ -162,21 +203,21 @@ await expect(page.getByRole('button', { name: /new messages/i })).toBeVisible();
 
 ### Never-silent states
 
-Every state has visible text. A spinner alone is a bug.
+Blocking waits and required actions need visible feedback. Cached background refreshes can remain quiet. A spinner alone does not explain a wait.
 
-| State            | What the user sees                                                  | Check         |
-| ---------------- | ------------------------------------------------------------------- | ------------- |
-| Offline          | Top banner "Offline. Messages send when you reconnect."             | `pw` offline  |
-| Reconnecting     | "Reconnecting…" with elapsed time after 5s; resumes on its own      | `pw`, `phone` |
-| Reconnected      | Banner clears; missed messages load in place, no duplicate bubbles  | `pw`          |
-| Queued send      | Bubble marked "Queued"                                              | `pw`          |
-| Failed send      | Bubble marked "Failed" with Retry                                   | `pw`          |
-| Agent working    | "Working" row with the current step                                 | `shot`        |
-| Waiting on you   | Card in chat, item on Home, badge on the Home tab                   | `shot`        |
-| Agent error      | Inline error naming the layer that failed (model, tool, connection) | `shot`        |
-| Loading a screen | Skeleton with the screen's real layout after 300ms, never a blank   | `shot`        |
-| Empty            | What will appear here, plus one next action                         | `shot`        |
-| Update available | "Update ready · Reload"; never reloads on its own mid-typing        | `phone`       |
+| State            | What the user sees                                                           | Check         |
+| ---------------- | ---------------------------------------------------------------------------- | ------------- |
+| Offline          | Top banner "Offline. Messages send when you reconnect."                      | `pw` offline  |
+| Reconnecting     | "Reconnecting…" with elapsed time after 5s; resumes on its own               | `pw`, `phone` |
+| Reconnected      | Banner clears; missed messages load in place, no duplicate bubbles           | `pw`          |
+| Queued send      | Bubble marked "Queued"                                                       | `pw`          |
+| Failed send      | Bubble marked "Failed" with Retry                                            | `pw`          |
+| Agent working    | "Working" row with the current step                                          | `shot`        |
+| Waiting on you   | Card in chat, item in Inbox, badge on the drawer button                      | `shot`        |
+| Agent error      | Inline error naming the layer that failed (model, tool, connection)          | `shot`        |
+| Loading a screen | Delayed layout-matched placeholders on first load; cached content on refresh | `shot`        |
+| Empty            | What will appear here, plus one next action                                  | `shot`        |
+| Update available | "Update ready · Reload"; never reloads on its own mid-typing                 | `phone`       |
 
 - **Reconnection is automatic with backoff, and never asks the user to reload.** Why: the tailnet drops whenever the phone changes network. Check: `phone`: toggle airplane mode for 20s mid-stream; the reply finishes after reconnect.
 - **Error text names what failed and what to do ("Model provider timed out. Retry."), never a status code alone.** Why: Hermes's layer-named error cards are the good example. Check: `review`.
@@ -240,6 +281,8 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 
 - **4px grid. Screen gutter 16px (`px-4`); list rows at least 48px tall; 16px between messages.** Why: one-handed use needs room between targets more than it needs density. Check: `shot`.
 - **One column on phones. The desktop sidebar layout starts at the `@3xl` container width.** Why: phone first; desktop is a bonus. Check: `shot` at 412 and 1280.
+- **Keep layout dimensions in shared components.** Why: per-screen widths and gutters drift when each caller repeats them. Check: `review`, `shot`: screen wrappers own sizing and scroll policy; content does not add competing outer widths or gutters.
+- **Align visible content edges.** Why: a header or back control with unexplained inset looks detached from its content. Check: `shot` at 320px, 412px, and desktop: compare text and icon edges, not only control bounding boxes.
 - **Line length of chat text at most ~70 characters on desktop.** Why: long lines are hard to track. Check: `shot` at 1280.
 
 ### Dark and light
@@ -294,6 +337,15 @@ Verification covers row positions before and after delayed refreshes. It also co
 - **Errors say what happened and the next step, in one sentence each.** Why: users act on errors, they don't study them. Check: `review`.
 - **Relative times for today ("2 min ago", "09:14"), full dates beyond.** Why: scannable and unambiguous. Check: `review`.
 
+### Copy accuracy and dates
+
+- **Use one term for each concept.** Why: different names for the same state suggest different behavior. Check: `review`: labels agree across navigation, list rows, detail views, and notifications.
+- **Write one idea per sentence in active voice.** Why: direct instructions reduce rereading. Check: `review`: helper text names the action without filler or internal implementation terms.
+- **Use input-neutral wording.** Why: people use touch, keyboards, and assistive technology. Check: `review`: instructions say “Select” rather than assuming a mouse click.
+- **Do not promise unimplemented behavior.** Why: copy can create false expectations about permissions, completion, delivery, or recovery. Check: `review`: each claim matches the current behavior; unresolved decisions stay in technical notes.
+- **Make date ranges compact and unambiguous.** Why: repeated timestamps obscure the difference. Check: `shot`: same-day ranges show the date once; cross-day ranges show both dates; seconds appear only when useful.
+- **Keep timezone meaning consistent.** Why: the same instant can belong to different calendar days. Check: `review`, `pw`: displays use shared `ui/format/time.ts` helpers, identify non-local schedule zones, and cover midnight and daylight-saving boundaries when relevant.
+
 ## Accessibility
 
 Target: WCAG 2.2 AA. The criteria that matter for this app, and how each is checked:
@@ -332,6 +384,7 @@ expect(results.violations).toEqual([]);
 - **Run axe on every screen in both themes and after driving each interactive state (sheet open, approval editing, tool row expanded).** Why: axe sees only the DOM present at `analyze()` time. Check: the e2e suite.
 - **Reflow assertion at 320 and 412 wide: `document.documentElement.scrollWidth <= clientWidth`.** Why: 320 is WCAG 1.4.10's number (1280px at 400% zoom); 412 is the target phone. Check: `pw`.
 - **`bun run check` runs with `--fail-on-warnings` so compiler `a11y_*` warnings fail the build.** Why: the Svelte compiler is the only a11y linter for templates; eslint-plugin-svelte has none. Check: `check`.
+- **Review what automated scans cannot judge.** Why: a valid label can still be misleading, and hidden states escape a static scan. Check: `review`, keyboard pass: meaningful names, reading order, focus return, understandable errors, and hover/active-state contrast.
 - **Screen-reader labels are real words: "Send message", "Back to Threads", "Copy code". Never "button", "icon", or the tool's internal name alone.** Why: axe checks that a name exists, not that it's useful. Check: `review`, plus a TalkBack pass on the phone for each new screen.
 
 ## The UX gate
