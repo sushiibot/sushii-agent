@@ -261,6 +261,7 @@ The push payload is `{ title, body, url, tag? }`; the service worker shows it, a
 - **Keep one vertical scroll owner per panel.** When the pager owns scrolling, set `Screen` or `DetailScreen` to `scrollable={false}`. Keep the screen header and tab bar fixed.
 - **Preserve panel state.** Retain each panel's scroll offset, expanded rows, search input, and loaded older pages across tab changes.
 - **Keep content stable during motion.** Commit filter requests after the destination panel settles. Keep loaded panels mounted during background refreshes. Do not rebuild the pager when text, content height, or keyboard height changes.
+- **Recover interrupted gestures.** When the app loses focus or becomes hidden, release the gesture and align the committed panel. Do not leave the pager between tabs after an interrupted touch.
 - **Keep focus within its intended area.** Reveal selected tabs through the tab bar's scroll offset. Do not use `scrollIntoView()` to move ancestor containers. Use `preventScroll` when keyboard navigation moves focus.
 - **Keep spacing consistent.** Use 16px content gutters and 16px space between the tab border and panel content. Align the tab bar with other screens.
 - **Keep secondary buttons within content.** Give pagination and optional tracking buttons their content width. Keep optional MCP tracking controls below the Tools list. Do not change panel height through a footer that appears on one tab.

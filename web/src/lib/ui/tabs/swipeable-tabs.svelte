@@ -198,6 +198,32 @@
 				viewport.dispatchEvent(new Event('touchcancel'));
 		};
 		viewport.addEventListener('touchmove', cancelSelectionDrag, { capture: true, passive: true });
+		const recoverInterruptedGesture = () => {
+			if (!api || disposed) return;
+			const pendingTap = userTransition && value !== publishedValue;
+			// Losing the app/window can also lose touchend. Release Embla's pointer before
+			// aligning the committed pane, so return never leaves a half-held track.
+			userTransition = false;
+			if (dragging) viewport.dispatchEvent(new Event('touchcancel'));
+			dragging = false;
+			api.scrollTo(
+				Math.max(
+					0,
+					tabs.findIndex((tab) => tab.value === value)
+				),
+				true
+			);
+			userTransition = pendingTap;
+			if (pendingTap) settle();
+			else publishedValue = value;
+			paintIndicator();
+		};
+		const visibilityChange = () => {
+			if (viewport.ownerDocument.hidden) recoverInterruptedGesture();
+		};
+		view.addEventListener('blur', recoverInterruptedGesture);
+		view.addEventListener('pagehide', recoverInterruptedGesture);
+		viewport.ownerDocument.addEventListener('visibilitychange', visibilityChange);
 		const reInit = (carousel: EmblaCarouselType) => {
 			// A tap updates accessible selection immediately but publishes only on arrival.
 			// Preserve that pending tap across rotation; unfinished drags retain the old value.
@@ -256,6 +282,9 @@
 				resize.disconnect();
 				media.removeEventListener('change', motionChange);
 				viewport.removeEventListener('touchmove', cancelSelectionDrag, true);
+				view.removeEventListener('blur', recoverInterruptedGesture);
+				view.removeEventListener('pagehide', recoverInterruptedGesture);
+				viewport.ownerDocument.removeEventListener('visibilitychange', visibilityChange);
 				viewport.removeEventListener('emblaInit', init);
 				action.destroy?.();
 			}

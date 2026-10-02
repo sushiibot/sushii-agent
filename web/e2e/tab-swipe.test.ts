@@ -568,3 +568,27 @@ test('narrow Runs tabs keep full labels and keyboard selection reveals the last 
 		)
 	).toBe(true);
 });
+
+test('an interrupted touch cannot leave a pane cut off between tabs', async ({ page, context }) => {
+	await fixtureApp(context);
+	await page.goto(EXPENSES);
+	await expectSettled(page, 'Overview');
+	const drag = await heldDrag(page, 130);
+	try {
+		await expect
+			.poll(async () => {
+				const pane = await panel(page, 'Overview').boundingBox();
+				const viewport = await page.locator('[data-tab-pager]').boundingBox();
+				return viewport!.x - pane!.x;
+			})
+			.toBeGreaterThan(115);
+		await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+		await expectSettled(page, 'Overview');
+	} finally {
+		await drag.finish();
+	}
+	await expectSettled(page, 'Overview');
+	const viewport = await page.locator('[data-tab-pager]').boundingBox();
+	expect(viewport!.x).toBeLessThan(1);
+	expect(viewport!.width).toBe(page.viewportSize()!.width);
+});
