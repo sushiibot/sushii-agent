@@ -8,6 +8,9 @@ const enc = new TextEncoder();
 const seen: LlmRequest[] = [];
 let n = 0;
 
+// A flow holds a stream at a known chunk until it has exercised the concurrent operation.
+const held = new Map<string, () => void>();
+
 export interface LlmRequest {
   n: number;
   at: string;
@@ -34,22 +37,38 @@ function textOf(content: unknown): string {
 
 const imagesIn = (content: unknown) => (Array.isArray(content) ? (content as Part[]).filter((p) => p?.type === "image_url").length : 0);
 
-function stream(pieces: string[], gapMs: number, tag: string | undefined, delayMs = 0, reasoning = false): Response {
+function stream(pieces: string[], gapMs: number, tag: string | undefined, delayMs = 0, reasoning = false, holdAfter?: number): Response {
   if (tag) pieces = [`re-${tag} ${pieces[0] ?? ""}`, ...pieces.slice(1)];
+  let cancelled = false;
+  let release: (() => void) | undefined;
+  const gate = holdAfter === undefined ? undefined : new Promise<void>((resolve) => { release = resolve; });
+  if (gate && tag) held.set(tag, release!);
   const body = new ReadableStream({
+    cancel() {
+      cancelled = true;
+      release?.();
+      if (tag) held.delete(tag);
+    },
     async start(c) {
-      await Bun.sleep(delayMs);
-      if (reasoning) {
-        c.enqueue(enc.encode(chunk({ role: "assistant", reasoning_content: "Private reasoning must never appear in chat." }, null)));
-        await Bun.sleep(3000);
+      try {
+        await Bun.sleep(delayMs);
+        if (reasoning) {
+          c.enqueue(enc.encode(chunk({ role: "assistant", reasoning_content: "Private reasoning must never appear in chat." }, null)));
+          await Bun.sleep(3000);
+        }
+        for (const [i, p] of pieces.entries()) {
+          if (i === holdAfter) await gate;
+          if (cancelled) return;
+          c.enqueue(enc.encode(chunk({ role: "assistant", content: p }, null)));
+          await Bun.sleep(gapMs);
+        }
+        if (cancelled) return;
+        c.enqueue(enc.encode(chunk({}, "stop", usage)));
+        c.enqueue(enc.encode("data: [DONE]\n\n"));
+        c.close();
+      } finally {
+        if (tag) held.delete(tag);
       }
-      for (const p of pieces) {
-        c.enqueue(enc.encode(chunk({ role: "assistant", content: p }, null)));
-        await Bun.sleep(gapMs);
-      }
-      c.enqueue(enc.encode(chunk({}, "stop", usage)));
-      c.enqueue(enc.encode("data: [DONE]\n\n"));
-      c.close();
     },
   });
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
@@ -78,9 +97,12 @@ function reply(msgs: Msg[], userText: string, lastUser: Msg | undefined): Respon
   }
   if (userText.includes("E2E-THINK")) return stream(["Thoughtful reply."], 100, tag, 3000, true);
   if (userText.includes("E2E-WAIT")) return stream(["Reply without reasoning."], 100, tag, 3500);
-  if (userText.includes("E2E-SLOW")) return stream(Array.from({ length: 30 }, (_, i) => `slow${i} `), 500, tag);
+  if (userText.includes("E2E-SLOW")) {
+    const controlled = userText.includes("E2E-HOLD");
+    return stream(Array.from({ length: 30 }, (_, i) => `slow${i} `), controlled ? 25 : 500, tag, 0, false, controlled ? 4 : undefined);
+  }
   const echo = /E2E-ECHO (\S+)/.exec(userText);
-  if (echo) return stream([`Echo ${echo[1]}.`], 10, tag, userText.includes("E2E-LATE") ? 4000 : 0);
+  if (echo) return stream([`Echo ${echo[1]}.`], 10, tag, userText.includes("E2E-LATE") ? 4000 : 0, false, userText.includes("E2E-HOLD") ? 0 : undefined);
   const fill = /E2E-FILL-(\d+)/.exec(userText);
   if (fill) return stream([`Filler reply ${fill[1]}.`], 10, tag);
   return stream(["**Bold reply** with a list:\n\n", "- one\n- two\n\n", "```ts\nconst answer = 42;\nconsole.log(answer);\n```\n\n", "Done."], 400, tag);
@@ -92,6 +114,14 @@ Bun.serve({
   idleTimeout: 120,
   async fetch(req) {
     const url = new URL(req.url);
+    if (req.method === "POST" && url.pathname === "/__release") {
+      const tag = url.searchParams.get("tag") ?? "";
+      const release = held.get(tag);
+      if (!release) return new Response("no held stream for tag", { status: 404 });
+      release();
+      held.delete(tag);
+      return Response.json({ ok: true });
+    }
     if (url.pathname === "/__log") return Response.json(seen);
     if (url.pathname.endsWith("/models")) return Response.json({ data: [{ id: model, context_length: 400000 }] });
     if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });

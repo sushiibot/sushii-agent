@@ -13,7 +13,9 @@ export default defineConfig({
 	// A test that fails and then passes on a retry is reported as flaky, not failed, so a timing hiccup on
 	// a busy runner doesn't block the deploy. Locally it fails on the first try, so flakes still show.
 	retries: process.env.CI ? 2 : 0,
-	reporter: process.env.CI ? 'github' : 'list',
+	reporter: process.env.CI
+		? [['github'], ['json', { outputFile: 'playwright-results.json' }]]
+		: 'list',
 	use: {
 		baseURL: `http://localhost:${PORT}`,
 		viewport: { width: 412, height: 915 },

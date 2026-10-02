@@ -41,6 +41,10 @@ export const stack = {
   async llmLog(): Promise<LlmRequest[]> {
     return (await call("/llm/log")).json() as Promise<LlmRequest[]>;
   },
+  /** Releases the fake model stream held by E2E-HOLD for this message's nonce. */
+  async releaseLlm(tag: string): Promise<void> {
+    await call(`/llm/release?tag=${encodeURIComponent(tag)}`, { method: "POST" });
+  },
   /** Waits until a model request matches, and returns it. */
   async waitForLlm(match: (r: LlmRequest) => boolean, timeoutMs = 20_000): Promise<LlmRequest> {
     const until = Date.now() + timeoutMs;

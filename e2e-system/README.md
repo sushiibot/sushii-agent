@@ -97,11 +97,16 @@ New stack capabilities go in `run.ts`'s control server, not in the flows:
 | `E2E-APPROVE` | a `file_linear_issue` tool call (needs an approval), titled `E2E approval <tag>` |
 | `E2E-PHOTO` | `I received N image part(s) in this turn …` |
 | `E2E-SLOW` | 30 pieces `slow0 … slow29`, 500 ms apart |
+| `E2E-HOLD` | With `E2E-SLOW`, pauses after `slow3`, then uses 25 ms gaps. With `E2E-ECHO`, pauses before output. |
 | `E2E-FILL-<n>` | `Filler reply <n>.` |
 | `E2E-JOBFAIL` | an HTTP 400 error, which Pi doesn't retry, so a scheduled job's run fails |
 | `E2E-NOREPLY` | `NO_REPLY` |
 | a tool result | `Tool finished. Result: …` |
 | anything else | markdown: bold, a two-item list, a `ts` code block, `Done.` |
+
+A message with `E2E-HOLD` must include a `#<nonce>` tag.
+After the required concurrent operation, call `stack.releaseLlm(tag)` to continue the stream.
+This control keeps the stream active until the flow completes its assertions.
 
 ## CI
 

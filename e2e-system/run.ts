@@ -199,6 +199,9 @@ function controlServer(bot: Proc, ws: Proc, llmURL: string) {
     async fetch(req) {
       const url = new URL(req.url);
       if (req.method === "GET" && url.pathname === "/llm/log") return fetch(`${llmURL}/__log`);
+      if (req.method === "POST" && url.pathname === "/llm/release") {
+        return fetch(`${llmURL}/__release?${url.searchParams}`, { method: "POST" });
+      }
       if (req.method === "POST" && url.pathname === "/db/query") {
         const { sql, params = [] } = (await req.json()) as { sql: string; params?: (string | number | null)[] };
         const db = new Database(DB_PATH, { readonly: true });

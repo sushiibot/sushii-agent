@@ -287,10 +287,13 @@ test('Open run from a Home peek replaces the sheet, and the run stays in the inb
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {
-	test(`Runs pass axe, 48px targets and reflow in ${colorScheme}`, async ({ page, context }) => {
-		await page.emulateMedia({ colorScheme });
-		await server(context);
-		for (const path of ['/runs', `/runs/${RUN.expenses}`, `/runs/${RUN.refactor}`]) {
+	for (const path of ['/runs', `/runs/${RUN.expenses}`, `/runs/${RUN.refactor}`]) {
+		test(`Runs ${path} passes axe, 48px targets and reflow in ${colorScheme}`, async ({
+			page,
+			context
+		}) => {
+			await page.emulateMedia({ colorScheme });
+			await server(context);
 			await page.goto(path);
 			if (path === '/runs') await expect(rows(page).first()).toBeVisible();
 			else {
@@ -319,8 +322,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
 				expect(await horizontalOverflow(page), `${path} at ${width}px`).toEqual([]);
 			}
 			await page.setViewportSize({ width: 412, height: 915 });
-		}
-	});
+		});
+	}
 }
 
 test('run sections support keyboard navigation and preserve expanded steps', async ({

@@ -18,3 +18,5 @@ web/playwright-report/
 web/.env*
 e2e-system/node_modules/
 e2e-system/test-results/
+
+web/playwright-results.json

@@ -87,13 +87,13 @@ test("Main keeps streaming when a simultaneous topic is stopped", async ({
     .click();
   await expect(page).toHaveURL(/\/chats\/[^/]+$/);
   const topicTag = nonce();
-  await textbox(page).fill(`E2E-SLOW topic #${topicTag}`);
+  await textbox(page).fill(`E2E-SLOW topic E2E-HOLD #${topicTag}`);
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(bubble(page, `re-${topicTag}`)).toContainText("slow3");
   const main = await context.newPage();
   await openChat(main);
   const mainTag = nonce();
-  await send(main, `E2E-SLOW Main #${mainTag}`);
+  await send(main, `E2E-SLOW Main E2E-HOLD #${mainTag}`);
   await expect(bubble(main, `re-${mainTag}`)).toContainText("slow3");
   await expect(
     page.getByRole("button", { name: "Stop", exact: true }),
@@ -102,6 +102,7 @@ test("Main keeps streaming when a simultaneous topic is stopped", async ({
   await expect(
     page.getByRole("button", { name: "Stop", exact: true }),
   ).toHaveCount(0);
+  await stack.releaseLlm(mainTag);
   await expect(bubble(main, `re-${mainTag}`)).toContainText("slow29", {
     timeout: 30000,
   });

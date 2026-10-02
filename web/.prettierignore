@@ -11,3 +11,5 @@ bun.lockb
 /test-results/
 /playwright-report/
 /e2e/harness/dist/
+
+/playwright-results.json

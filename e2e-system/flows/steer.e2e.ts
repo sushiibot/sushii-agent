@@ -14,15 +14,17 @@ test("a message sent while a reply streams keeps the streamed text, live and aft
   await openChat(page);
   const tag = nonce();
   const qtag = nonce();
-  const slow = `E2E-SLOW steered reply #${tag}`;
-  // LATE holds the steer's answer back, so the flow can see its turn working before any output.
-  const steer = `E2E-ECHO steered E2E-LATE #${qtag}`;
+  const slow = `E2E-SLOW steered reply E2E-HOLD #${tag}`;
+  // Hold the next answer until the flow has verified its working state.
+  const steer = `E2E-ECHO steered E2E-HOLD #${qtag}`;
   const slowReply = bubble(page, `re-${tag}`);
 
   expect((await send(page, slow)).status).toBe(202);
   await expect(slowReply).toContainText("slow3", { timeout: 20_000 });
   expect((await send(page, steer)).status).toBe(202);
 
+  await stack.releaseLlm(tag);
+  await stack.waitForLlm((r) => r.userText.includes(steer));
   const echoReply = bubble(page, `re-${qtag}`);
   await expect(slowReply).toContainText("slow29", { timeout: 30_000 });
   await expect.poll(() => stack.query("select 1 from web_events where type = 'reply' and data like ?", `%re-${tag}%`)).toHaveLength(1);
@@ -30,6 +32,7 @@ test("a message sent while a reply streams keeps the streamed text, live and aft
   await expect(page.locator("[data-typing]")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
   expect(await echoReply.count()).toBe(0);
+  await stack.releaseLlm(qtag);
   await expect(echoReply).toContainText("Echo steered.", { timeout: 40_000 });
   const stored = await stack.query("select 1 from web_events where type = 'reply' and data like ?", `%re-${qtag}%`);
   expect(stored).toHaveLength(1);

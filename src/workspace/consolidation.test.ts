@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
@@ -23,14 +23,26 @@ import { containsSecret } from "./secretPatterns.ts";
 const GIT_ENV = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const savedEnv: Record<string, string | undefined> = {};
 
-beforeAll(() => {
+let seedRoot: string;
+let seedHome: string;
+
+beforeAll(async () => {
   for (const [k, v] of Object.entries(GIT_ENV)) {
     savedEnv[k] = process.env[k];
     process.env[k] = v;
   }
+  // Build one real repository, then copy it (including .git) into each test's own directory.
+  seedRoot = mkdtempSync(join(tmpdir(), "ws-consolidate-seed-"));
+  seedHome = join(seedRoot, "home");
+  await scaffoldHome(seedHome);
+  writeFileSync(join(seedHome, "USER.md"), USER);
+  writeFileSync(join(seedHome, "MEMORY.md"), MEMORY);
+  writeFileSync(join(seedHome, "memory", "2026-09-28.md"), NOTE);
+  await commitHome("seed", { home: seedHome });
 });
 
 afterAll(() => {
+  if (seedRoot) rmSync(seedRoot, { recursive: true, force: true });
   for (const k of Object.keys(GIT_ENV)) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
@@ -60,15 +72,11 @@ let home: string;
 let stateDir: string;
 let prompts: string[];
 
-beforeEach(async () => {
+beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ws-consolidate-"));
   home = join(root, "home");
   stateDir = join(root, "state");
-  await scaffoldHome(home);
-  writeFileSync(join(home, "USER.md"), USER);
-  writeFileSync(join(home, "MEMORY.md"), MEMORY);
-  writeFileSync(join(home, "memory", "2026-09-28.md"), NOTE);
-  await commitHome("seed", { home });
+  cpSync(seedHome, home, { recursive: true });
   prompts = [];
 });
 

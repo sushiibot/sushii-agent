@@ -6,7 +6,7 @@
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts | pino-pretty",
     "workspace": "bun src/workspace/index.ts",
-    "test": "bun test",
+    "test": "bun test --parallel=4",
     "e2e:system": "bun --no-env-file e2e-system/run.ts"
   },
   "dependencies": {

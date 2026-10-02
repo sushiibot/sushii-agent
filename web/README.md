@@ -12,6 +12,10 @@ bun run build        # app build in build/ (no prototype)
 bun run test:e2e     # builds, then Playwright against `vite preview` with /api mocked
 ```
 
+CI runs browser tests in two shards. Static checks and unit tests run once in a separate job.
+Each shard builds its own app and render harness. CI saves a JSON report for each shard.
+To run one shard locally, use `bun run test:e2e --shard=1/2` or `--shard=2/2`.
+
 The clickable prototype lives in its own routes tree, `src/proto-routes`, so it never reaches `build/`:
 
 ```sh

@@ -32,3 +32,5 @@ vite.config.ts.timestamp-*
 
 # Render harness build
 /e2e/harness/dist
+
+/playwright-results.json

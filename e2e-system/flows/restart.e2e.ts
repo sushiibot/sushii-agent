@@ -19,7 +19,7 @@ test("a bot restart mid-turn leaves exactly one copy of each message", async ({ 
   await openChat(page);
   const tag = nonce();
   const qtag = nonce();
-  const slow = `E2E-SLOW long reply #${tag}`;
+  const slow = `E2E-SLOW long reply E2E-HOLD #${tag}`;
   const queued = `E2E-ECHO queued while offline #${qtag}`;
   const slowReply = bubble(page, `re-${tag}`);
   const echoReply = bubble(page, `re-${qtag}`);
@@ -33,8 +33,11 @@ test("a bot restart mid-turn leaves exactly one copy of each message", async ({ 
   await expect.poll(() => outbox(page)).toContainEqual(queued);
 
   await stack.restartBot({ waitReady: true });
-  // The slow turn is usually still running, so the queued message is steered into it.
+  // The held turn stays running across the restart while the outbox sends its queued message.
+  const resent = page.waitForResponse((r) => r.url().endsWith("/api/chat/messages") && r.request().method() === "POST" && (r.request().postData() ?? "").includes(queued));
   await context.setOffline(false);
+  expect((await resent).status()).toBe(202);
+  await stack.releaseLlm(tag);
 
   await expect(slowReply).toContainText("slow29", { timeout: 30_000 });
   await expect(echoReply).toContainText("Echo queued.", { timeout: 30_000 });

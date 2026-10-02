@@ -18,7 +18,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - run: bun install
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
       - run: bunx tsc --noEmit
 
   test:
@@ -28,6 +30,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
       # Matches the Dockerfile's lychee install (same version, amd64 since GitHub-hosted runners
       # are always x86_64) -- without it, wiki-sync's findBrokenLinks tests skip rather than run.
       - name: Install lychee
@@ -37,17 +41,15 @@ jobs:
       # The workspace image ships ripgrep for history/search; without it those tests skip rather than run.
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
-      - run: bun install
-      - run: bun test
+      - run: bun install --frozen-lockfile
+      - run: bun run test
         env:
           # config.ts requires these at import time; no test actually calls Discord/OpenAI, so
           # dummy values are enough to get past the module-load check.
           DISCORD_BOT_TOKEN: test-token
           OPENAI_API_KEY: test-key
 
-  # The personal web app, installed and built the way the Dockerfile's web-build stage does it. `lint`
-  # runs the raw-HTML rule and the bun unit tests; `test:e2e` starts both Playwright servers itself:
-  # the app on :4173 and the render harness on :4174.
+  # Web static checks and unit tests. Browser shards build and test the app separately.
   web:
     runs-on: ubuntu-latest
     defaults:
@@ -58,13 +60,45 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run lint
-      # Playwright builds the production app before starting preview.
-      # Full Chromium without the headless shell: playwright.config.ts runs the `chromium` channel.
+
+  # Browser shards run independently; web checks and unit tests above run only once.
+  web-e2e:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      # Each shard builds the production app and harness before preview.
+      # Notification tests require full Chromium, not headless shell.
       - run: bunx playwright install --with-deps --no-shell chromium
-      - run: bun run test:e2e
+      - run: bun run test:e2e --shard=${{ matrix.shard }}/2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: web-e2e-${{ matrix.shard }}
+          path: |
+            web/test-results
+            web/playwright-results.json
+          retention-days: 7
 
   # Real-process e2e (e2e-system/README.md): the built web app, the bot and the workspace as processes,
   # with a fake model and a Traefik stand-in dialing from loopback aliases.
@@ -76,10 +110,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
       # The workspace runs history/search with ripgrep, as in its image.
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
-      - run: bun install
+      - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: web
       - run: bun install --frozen-lockfile
@@ -113,18 +149,36 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - run: docker build -t sushii-agent:smoke .
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          load: true
+          push: false
+          tags: sushii-agent:smoke
+          cache-from: type=gha,version=2,scope=smoke-bot-${{ runner.arch }}
+          cache-to: type=gha,version=2,scope=smoke-bot-${{ runner.arch }},mode=max,ignore-error=true,timeout=2m
       - run: docker run --rm --init --entrypoint sh sushii-agent:smoke scripts/browser-smoke.sh
       # Workspace target under its production hardening (non-root, no caps, no privilege escalation),
       # through its own entrypoint. docker-build-workspace needs this job, so a failure blocks the push.
-      - run: docker build --target workspace -t sushii-agent:smoke-workspace .
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          target: workspace
+          load: true
+          push: false
+          tags: sushii-agent:smoke-workspace
+          cache-from: |
+            type=gha,version=2,scope=smoke-bot-${{ runner.arch }}
+            type=gha,version=2,scope=smoke-workspace-${{ runner.arch }}
+          cache-to: type=gha,version=2,scope=smoke-workspace-${{ runner.arch }},mode=max,ignore-error=true,timeout=2m
       - run: >-
           docker run --rm --init --user 1000:1000 --cap-drop ALL
           --security-opt no-new-privileges --shm-size 1g
           sushii-agent:smoke-workspace sh scripts/browser-smoke.sh
 
   docker-build:
-    needs: [typecheck, test, web, browser-smoke, e2e-system]
+    needs: [typecheck, test, web, web-e2e, browser-smoke, e2e-system]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: sushiibot/sushii-workflows/.github/workflows/docker-build.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
     with:
