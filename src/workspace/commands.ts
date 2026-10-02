@@ -11,6 +11,7 @@ import {
   type ChatCommandResult,
   type ModelsResult,
   type ModelsSearchResult,
+  type ModelCosts,
 } from "../orchestration/contracts.ts";
 import { openRouterCatalog, type CatalogModel } from "../agentRuntime/piShared.ts";
 import { RpcHandlerError } from "../orchestration/transport/client.ts";
@@ -29,6 +30,8 @@ export interface CommandDeps {
   fallbackUntil?(): number | null;
   /** OpenRouter's catalog; the shared cached one by default. */
   catalog?(): Promise<CatalogModel[]>;
+  /** Recorded usage for the current conversation session and the workspace's local day. */
+  costs?(conversationId?: string): Promise<ModelCosts>;
 }
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -118,8 +121,10 @@ export function commandHandlers(deps: CommandDeps): Record<string, (params: unkn
   };
   return {
     [RPC_METHODS.modelsGet]: async (p) => {
-      checkPrincipal(modelsGetParams.parse(p).principalId);
-      return models(deps);
+      const params = modelsGetParams.parse(p);
+      checkPrincipal(params.principalId);
+      const [result, cost] = await Promise.all([models(deps), deps.costs?.(params.conversationId)]);
+      return { ...result, ...(cost ? { cost } : {}) };
     },
     // Same as `!model <alias>`: it applies from the next turn, once a live session has registered the model.
     [RPC_METHODS.modelsSet]: async (p) => {

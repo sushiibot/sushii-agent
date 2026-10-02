@@ -47,6 +47,14 @@
 	});
 	const sheet = $derived((Object.keys(sheets) as ChatSheet[]).find((s) => sheets[s].open));
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
+	$effect(() => {
+		if (sheet !== 'model') return;
+		untrack(() => models.refresh());
+		const timer = setInterval(() => {
+			if (!document.hidden) models.refresh();
+		}, 15_000);
+		return () => clearInterval(timer);
+	});
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
 		if (!pwa.online) return { kind: 'offline' };
@@ -138,7 +146,7 @@
 	}
 </script>
 
-<svelte:head><title>Main · sushii</title></svelte:head>
+<svelte:head><title>Chat · sushii</title></svelte:head>
 
 {#snippet backgroundActivity()}<BackgroundAgents
 		onrun={(id) => goto(resolve('/runs/[id]', { id }))}
@@ -150,7 +158,7 @@
 	/>{/snippet}
 
 <ChatScreen
-	title="Main"
+	title="Sushii"
 	{backgroundActivity}
 	{delegatedActivity}
 	approvalSubmitting={s.trayPhase === 'submitting'}
@@ -190,7 +198,6 @@
 	{focusAsk}
 	{sheet}
 	{viewer}
-	subtitle={threadsOn ? mainSubtitle : undefined}
 	onbranch={threadsOn ? openBranch : undefined}
 	onopensheet={openSheet}
 	onclosesheet={closeSheet}
@@ -217,13 +224,6 @@
 	onreload={() => pwa.applyUpdate()}
 />
 <ClearNotifications store={s} />
-
-{#snippet mainSubtitle()}
-	<span class="text-xs text-muted-foreground">
-		{#if s.running}The agent is working{:else}General conversation · context from threads when
-			useful{/if}
-	</span>
-{/snippet}
 
 {#if threads}
 	<BranchSheet

@@ -8,16 +8,19 @@ export type ModelRole = 'main' | 'fallback';
 
 export interface ModelsApi {
 	/** null: the agent is too old to say, so the composer shows no model. */
-	get(): Promise<ModelsResponse | null>;
+	get(conversationId?: string): Promise<ModelsResponse | null>;
 	set(alias: string, role?: ModelRole): Promise<ModelsResponse>;
 	/** Tool-capable OpenRouter models matching `query`, cheapest first. */
 	search(query: string): Promise<ModelsSearchResponse>;
 }
 
 export const httpModelsApi: ModelsApi = {
-	async get() {
+	async get(conversationId) {
 		try {
-			return await request<ModelsResponse>('GET', '/models');
+			return await request<ModelsResponse>(
+				'GET',
+				`/models${conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''}`
+			);
 		} catch (err) {
 			if (err instanceof HttpError && err.status === 501) return null;
 			throw err;
@@ -66,9 +69,9 @@ export class ModelsStore {
 	#searchTimer: ReturnType<typeof setTimeout> | null = null;
 	#searchRun = 0;
 
-	constructor(api: ModelsApi) {
+	constructor(api: ModelsApi, conversationId?: string) {
 		this.#api = api;
-		this.remote = new Remote(() => api.get(), { refetchOnFocus: true });
+		this.remote = new Remote(() => api.get(conversationId), { refetchOnFocus: true });
 	}
 
 	/** Reloads the choice, which `!model` or another device may have changed; clears an old error. */
@@ -109,7 +112,9 @@ export class ModelsStore {
 		this.picking = alias;
 		this.error = null;
 		try {
-			this.remote.data = await this.#api.set(alias, role);
+			const cost = this.remote.data?.cost;
+			const choice = await this.#api.set(alias, role);
+			this.remote.data = { ...choice, ...(cost ? { cost } : {}) };
 			return true;
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : 'Something went wrong.';
@@ -131,7 +136,8 @@ export function configureModels(api: ModelsApi) {
 	configured = api;
 }
 
-export function modelsStore(): ModelsStore {
+export function modelsStore(conversationId?: string): ModelsStore {
+	if (conversationId) return new ModelsStore(configured, conversationId);
 	return (store ??= new ModelsStore(configured));
 }
 
@@ -143,6 +149,12 @@ export function createFixtureModelsApi(): ModelsApi {
 		current,
 		fallback,
 		fallbackUntil: null,
+		cost: {
+			session: { usd: 0.042, recordedRuns: 3, unpricedRuns: 1 },
+			today: { usd: 1.28, recordedRuns: 12, unpricedRuns: 2 },
+			date: new Date().toISOString().slice(0, 10),
+			timeZone: 'UTC'
+		},
 		models: [
 			{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol', contextWindow: 1_050_000 },
 			{ alias: 'luna', backend: 'chatgpt', id: 'gpt-6-luna', contextWindow: 1_050_000 },

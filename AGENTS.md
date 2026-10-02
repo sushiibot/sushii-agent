@@ -24,6 +24,8 @@ Real bot + real workspace + fake model + Traefik-like proxy, driven by Chromium:
 
 ## Deployment
 
+When work is finalized and checks pass, commit and push to `main` without asking for confirmation.
+
 Auto-deploys via CI on every push to `main` (`.github/workflows/ci.yml`): `typecheck`, `test`, `web`,
 `browser-smoke` and `e2e-system` → `docker-build` / `docker-build-workspace` → `deploy`
 (`private-bots/sushii-agent` on host `apps`) → `deploy-workspace` (`private-bots/sushii-agent-workspace`,

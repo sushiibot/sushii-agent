@@ -124,7 +124,23 @@ export const MODELS_MAX = 20;
 /** models/set's JSON-RPC error code for an alias the workspace's list doesn't have. */
 export const UNKNOWN_MODEL_CODE = -32011;
 export const MODELS_SEARCH_MAX = 25;
-export const modelsGetParams = z.object({ principalId: z.string() });
+export const modelsGetParams = z.object({ principalId: z.string(), conversationId: z.string().regex(TOPIC_ID_RE).optional() });
+/** Recorded model cost for distinct runs; absent prices stay explicit. */
+export const historyCost = z.object({
+  usd: z.number().finite().nonnegative(),
+  recordedRuns: z.number().int().nonnegative(),
+  unpricedRuns: z.number().int().nonnegative(),
+});
+export type HistoryCost = z.infer<typeof historyCost>;
+export const modelCosts = z.object({
+  session: historyCost.optional(),
+  today: historyCost,
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  timeZone: z.string().max(100),
+  /** Older runs could not be read within the bounded index scan. */
+  truncated: z.boolean().optional(),
+});
+export type ModelCosts = z.infer<typeof modelCosts>;
 /** `alias` is a list alias or an OpenRouter id; `role: "fallback"` sets what a ChatGPT choice falls back to. */
 export const modelsSetParams = z.object({ principalId: z.string(), alias: z.string().min(1).max(ID_MAX), role: z.enum(["main", "fallback"]).optional() });
 export const modelsSearchParams = z.object({ principalId: z.string(), query: z.string().max(100) });
@@ -145,6 +161,7 @@ export const modelsResult = z.object({
   fallback: z.string().max(ID_MAX).optional(),
   /** While set, ChatGPT is cooling down after a limit or sign-in failure and the fallback answers. */
   fallbackUntil: z.string().max(40).nullable().optional(),
+  cost: modelCosts.optional(),
 });
 export type ModelsResult = z.infer<typeof modelsResult>;
 export const modelsSearchResult = z.object({
@@ -434,13 +451,6 @@ export const historyDaysParams = z.object({
   limit: z.number().int().min(1).max(HISTORY_DAYS_PAGE_MAX).default(HISTORY_DAYS_PAGE_DEFAULT),
 });
 export type HistoryDaysParams = z.infer<typeof historyDaysParams>;
-/** Recorded model cost for distinct runs started that local day; absent prices stay explicit. */
-export const historyCost = z.object({
-  usd: z.number().finite().nonnegative(),
-  recordedRuns: z.number().int().nonnegative(),
-  unpricedRuns: z.number().int().nonnegative(),
-});
-export type HistoryCost = z.infer<typeof historyCost>;
 export const historyDaysResult = z.object({
   days: z
     .array(z.object({ date: historyDate, runs: z.number().int().nonnegative(), sessions: z.number().int().nonnegative(), cost: historyCost.optional() }))

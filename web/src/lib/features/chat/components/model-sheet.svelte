@@ -7,7 +7,7 @@
 	import { Button } from '$lib/ui/button';
 	import { Input } from '$lib/ui/input';
 	import { cn } from '$lib/utils';
-	import { contextTone, modelName, usageRows } from '../render/usage';
+	import { aggregateCost, contextTone, modelName, usageRows } from '../render/usage';
 
 	type Role = 'main' | 'fallback';
 	type Row = { key: string; title: string; detail: string; current: boolean };
@@ -139,6 +139,30 @@
 
 <div class="flex flex-col gap-4 px-3 pt-1 pb-3">
 	<h2 class="px-2 pt-1 text-lg font-semibold">Model and context</h2>
+	<section aria-labelledby="{uid}-cost" class="flex flex-col gap-1 px-2">
+		<h3 id="{uid}-cost" class="text-sm font-medium">Cost</h3>
+		<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+			<dt class="text-muted-foreground">This session</dt>
+			<dd class="text-right tabular-nums">
+				{aggregateCost(models?.cost?.session, models?.cost?.truncated)}
+			</dd>
+			<dt
+				class="text-muted-foreground"
+				title={models?.cost ? `${models.cost.date} · ${models.cost.timeZone}` : undefined}
+			>
+				Today
+			</dt>
+			<dd class="text-right tabular-nums">
+				{aggregateCost(models?.cost?.today, models?.cost?.truncated)}
+			</dd>
+		</dl>
+		<p class="text-meta text-muted-foreground">
+			Recorded USD, including delegated work.
+			{#if models?.cost?.truncated}Older runs are outside this total.{/if}
+			{#if models?.cost?.session?.unpricedRuns || models?.cost?.today.unpricedRuns}Unpriced and
+				subscription usage is excluded.{/if}
+		</p>
+	</section>
 
 	{#if pct !== null && usage}
 		<section aria-labelledby="{uid}-ctx" class="flex flex-col gap-2 px-2">

@@ -696,6 +696,61 @@ test("the model chip's ring shows the last reply's context, holds still while st
 	await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
+for (const width of [412, 1280]) {
+	test(`model sheet shows and refreshes session and daily costs at ${width}px`, async ({
+		page,
+		context
+	}) => {
+		await chatServer(context);
+		await page.clock.install();
+		let usd = 1.25;
+		let unpriced = 0;
+		let recorded = 2;
+		await context.route('**/api/models', (route) =>
+			route.fulfill({
+				json: {
+					current: 'sol',
+					models: [{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' }],
+					cost: {
+						session: { usd: 0.042, recordedRuns: 2, unpricedRuns: 0 },
+						today: { usd, recordedRuns: recorded, unpricedRuns: unpriced },
+						date: '2026-10-01',
+						timeZone: 'America/Los_Angeles'
+					}
+				}
+			})
+		);
+		await page.setViewportSize({ width, height: width === 412 ? 915 : 900 });
+		await open(page);
+		await page.getByRole('button', { name: /^Model: .*Change model$/ }).click();
+		const sheet = page.getByRole('dialog', { name: 'Model and context' });
+		const cost = sheet.getByRole('region', { name: 'Cost', exact: true });
+		await expect(cost).toContainText('This session');
+		await expect(cost).toContainText('$0.042');
+		await expect(cost).toContainText('$1.25');
+		await expect(cost.locator('dt', { hasText: 'Today' })).toHaveAttribute(
+			'title',
+			'2026-10-01 · America/Los_Angeles'
+		);
+		await page.clock.runFor(300);
+		await axe(page);
+		await page.screenshot({ path: `/tmp/model-cost-${width}.png` });
+		usd = 2.5;
+		unpriced = 1;
+		await page.clock.runFor(15_000);
+		await expect(cost).toContainText('$2.50 · partial');
+		await expect(cost).toContainText('subscription usage is excluded');
+		usd = 0;
+		recorded = 0;
+		await page.clock.runFor(15_000);
+		await expect(cost).toContainText('Unavailable');
+		unpriced = 0;
+		await page.clock.runFor(15_000);
+		await expect(cost.locator('dd').last()).toHaveText('$0');
+		await horizontalOverflow(page);
+	});
+}
+
 test('Compact now in the model sheet runs the compact command', async ({ page, context }) => {
 	const { posts } = await chatServer(context, { history: [withUsage] });
 	await open(page);

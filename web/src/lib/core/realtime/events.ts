@@ -599,6 +599,14 @@ export interface ModelsResponse {
 	fallback?: string;
 	/** While set, ChatGPT is cooling down and the fallback answers. */
 	fallbackUntil?: string | null;
+	/** Recorded USD costs; session is the current conversation context, today spans all runs. */
+	cost?: {
+		session?: HistoryCost;
+		today: HistoryCost;
+		date: string;
+		timeZone: string;
+		truncated?: boolean;
+	};
 }
 
 /** From OpenRouter's catalog when it could be read; prices are USD per million tokens. */

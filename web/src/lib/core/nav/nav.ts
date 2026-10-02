@@ -22,7 +22,7 @@ export interface NavEntry extends NavItem {
 export type FeatureCheck = (feature: AppFeature | undefined) => boolean;
 export const allOn: FeatureCheck = () => true;
 
-const chat: NavEntry = { id: 'chat', href: '/chat', label: 'Main', icon: MessageSquare };
+const chat: NavEntry = { id: 'chat', href: '/chat', label: 'Chat', icon: MessageSquare };
 const inbox: NavEntry = { id: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox };
 const chats: NavEntry = { id: 'chats', href: '/chats', label: 'Threads', icon: MessagesSquare };
 

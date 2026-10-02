@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TopicSessions, type TopicSession } from "./topicSessions.ts";
+import { writeWorkspaceState } from "./state.ts";
 import {
   RPC_METHODS,
   chatMessageParams,
@@ -12,6 +13,7 @@ import {
 } from "../orchestration/contracts.ts";
 
 class FakeSession implements TopicSession {
+  currentSessionFile = "";
   messages: ChatMessageParams[] = [];
   idle = true;
   disposed = false;
@@ -143,6 +145,24 @@ test("topic sessions have independent messages and controls, and refuse unknown 
       principalId: "stranger",
     }),
   ).rejects.toThrow("principal mismatch");
+});
+
+test("cost scope reads live and archived session files without resuming or opening topics", async () => {
+  const h = setup();
+  h.main.currentSessionFile = "main-live.jsonl";
+  expect(h.manager.sessionFileFor()).toBe("main-live.jsonl");
+  await h.create("trip");
+  const topic = h.created.get("trip")!;
+  topic.currentSessionFile = "topic-live.jsonl";
+  writeWorkspaceState(join(h.stateDir, "topics", "trip"), { chatSessionFile: "topic-persisted.jsonl" });
+  expect(h.manager.sessionFileFor("trip")).toBe("topic-live.jsonl");
+  await h.manager.manage({ principalId: "owner", id: "trip", action: "close" });
+  expect(topic.disposed).toBe(true);
+  expect(h.manager.sessionFileFor("trip")).toBe("topic-persisted.jsonl");
+  expect(h.created.get("trip")).toBe(topic);
+  expect(topic.starts).toBe(1);
+  expect(() => h.manager.sessionFileFor("missing")).toThrow("unknown topic");
+  expect(() => h.manager.sessionFileFor("../trip")).toThrow("unknown topic");
 });
 
 test("archive saves memory without replacing the conversation; active work cannot close", async () => {

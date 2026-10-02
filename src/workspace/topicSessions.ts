@@ -33,7 +33,7 @@ export type TopicSession = Pick<
   | "ownsDelivery"
   | "hasUnackedDeliveries"
   | "requestContextReload"
->;
+> & { readonly currentSessionFile?: string };
 
 interface TopicRecord {
   id: string;
@@ -87,6 +87,12 @@ export class TopicSessions {
     if (!TOPIC_ID_RE.test(id) || !this.records[id])
       throw new Error("unknown topic conversation");
     return id;
+  }
+  /** Read the current session without opening or resuming an archived conversation. */
+  sessionFileFor(conversationId = "main"): string | null {
+    const id = this.id({ surface: "web", conversationId });
+    if (!id) return this.opts.main.currentSessionFile || null;
+    return this.sessions.get(id)?.currentSessionFile || readWorkspaceState(join(this.opts.stateDir, "topics", id))?.chatSessionFile || null;
   }
   async session(origin?: ChatOrigin): Promise<TopicSession> {
     await this.changing;

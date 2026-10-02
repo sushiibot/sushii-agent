@@ -66,8 +66,8 @@ class FakeLink implements ReadRouteLink {
     return this.go("history/day", q, { found: true as const, date: q.date, sessions: [{ heading: "## x", markdown: "<b>y</b>" }], runs: [run()], truncated: false });
   }
   models = { current: "sol", models: [{ alias: "sol", backend: "chatgpt" as const, id: "gpt-6.1-sol" }, { alias: "luna", backend: "chatgpt" as const, id: "gpt-6-luna" }] };
-  modelsGet() {
-    return this.go("models/get", {}, this.models);
+  modelsGet(conversationId?: string) {
+    return this.go("models/get", conversationId ? { conversationId } : {}, this.models);
   }
   modelsSearch(query: string) {
     return this.go("models/search", { query }, { models: [{ id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", priceIn: 0.21 }] });
@@ -112,6 +112,15 @@ function setup(opts: { features?: WebFeature[]; workspaceEnabled?: boolean; now?
 }
 
 describe("model routes", () => {
+  test("session costs are scoped to a validated conversation id", async () => {
+    const h = setup({ features: [] });
+    expect((await h.get("/api/models?conversationId=oct-trip")).status).toBe(200);
+    expect(h.link.calls).toEqual([{ method: "models/get", q: { conversationId: "oct-trip" } }]);
+    for (const bad of ["", "../private", "a".repeat(81)]) {
+      expect((await h.get(`/api/models?conversationId=${encodeURIComponent(bad)}`)).status).toBe(400);
+    }
+    expect(h.link.calls).toHaveLength(1);
+  });
   test("GET reads the choice and POST switches it, whatever slices are on; bad bodies never reach the workspace", async () => {
     const h = setup({ features: [] });
     expect(await h.get("/api/models")).toEqual({ status: 200, body: h.link.models });

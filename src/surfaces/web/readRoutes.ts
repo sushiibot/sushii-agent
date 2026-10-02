@@ -1,7 +1,7 @@
 import { connectorRequest, CONNECTOR_ERROR_CODE } from "../../orchestration/contracts.ts";
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { ID_MAX, UNKNOWN_MODEL_CODE, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
+import { ID_MAX, TOPIC_ID_RE, UNKNOWN_MODEL_CODE, historySearchParams, isCalendarDate, type HistorySearchResult } from "../../orchestration/contracts.ts";
 import { WorkspaceBadResponseError, type WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import { RpcConnectionClosedError, RpcErrorReply, RpcTimeoutError, WorkspaceNotConnectedError } from "../../orchestration/transport/server.ts";
 import { getLogger } from "../../logger.ts";
@@ -255,7 +255,11 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
 
   /** GET: the model choice. POST {alias}: switch from the next turn. */
   async function models(req: Request): Promise<Response> {
-    if (req.method === "GET") return answer("models/get", async () => json(await fromWorkspace(() => link.modelsGet())));
+    if (req.method === "GET") {
+      const conversationId = new URL(req.url).searchParams.get("conversationId");
+      if (conversationId !== null && !TOPIC_ID_RE.test(conversationId)) return badRequest("invalid conversationId");
+      return answer("models/get", async () => json(await fromWorkspace(() => link.modelsGet(conversationId ?? undefined))));
+    }
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
     if (!isJson(req)) return json({ error: "expected application/json" }, 415);
     const raw = await readJson(req);

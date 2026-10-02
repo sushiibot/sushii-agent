@@ -30,6 +30,19 @@ function deps(over: Partial<CommandDeps> = {}) {
 }
 
 describe("workspace commands", () => {
+  test("models/get forwards the validated conversation scope and remains compatible without costs", async () => {
+    const cost = { today: { usd: 0.2, recordedRuns: 1, unpricedRuns: 0 }, date: "2026-10-01", timeZone: "UTC" };
+    const scopes: (string | undefined)[] = [];
+    const { d } = deps({ catalog: async () => [], costs: async scope => { scopes.push(scope); return cost; } });
+    const get = commandHandlers(d)[RPC_METHODS.modelsGet]!;
+    expect(await get({ principalId: "drk", conversationId: "ux" })).toMatchObject({ cost });
+    expect(await get({ principalId: "drk" })).toMatchObject({ cost });
+    expect(scopes).toEqual(["ux", undefined]);
+    await expect(get({ principalId: "drk", conversationId: "../bad" })).rejects.toThrow();
+    await expect(get({ principalId: "mallory" })).rejects.toThrow("principal mismatch");
+    expect(scopes).toHaveLength(2);
+    expect(await commandHandlers(deps({ catalog: async () => [] }).d)[RPC_METHODS.modelsGet]!({ principalId: "drk" })).not.toHaveProperty("cost");
+  });
   test("!compact reports tokens before and after, or why it didn't", async () => {
     const { d } = deps();
     expect(await runCommand({ principalId: "drk", command: "compact" }, d)).toEqual({ text: "🗜️ Compacted: 152,300 → ~41,200 tokens." });

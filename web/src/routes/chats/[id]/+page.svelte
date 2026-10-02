@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { BackgroundAgents } from '$lib/features/runs';
-	import { onMount, untrack } from 'svelte';
+	import { untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { backTo } from '$lib/core/nav/back';
@@ -39,11 +39,12 @@
 		return () => s.setViewing(false);
 	});
 
-	const models = modelsStore();
+	const models = $derived(modelsStore(id));
 	let modelRole = $state<'main' | 'fallback'>('main');
-	onMount(() => {
-		void models.remote.ensure();
-		return models.remote.watch();
+	$effect(() => {
+		const m = models;
+		untrack(() => void m.remote.ensure());
+		return m.remote.watch();
 	});
 
 	type AnySheet = ChatSheet | Exclude<ThreadSheet, 'branch'>;
@@ -53,6 +54,15 @@
 		ReturnType<typeof routedSheet>
 	>;
 	const sheet = $derived(ids.find((s) => sheets[s].open));
+	$effect(() => {
+		if (sheet !== 'model') return;
+		const m = models;
+		untrack(() => m.refresh());
+		const timer = setInterval(() => {
+			if (!document.hidden) m.refresh();
+		}, 15_000);
+		return () => clearInterval(timer);
+	});
 	const closeSheet = () => {
 		if (sheet) sheets[sheet].close();
 	};

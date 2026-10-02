@@ -1,4 +1,4 @@
-import type { ChatUsage } from '$lib/core/realtime/events';
+import type { ChatUsage, HistoryCost } from '$lib/core/realtime/events';
 
 /** `openrouter/deepseek/deepseek-v4.1-flash` reads as `deepseek-v4.1-flash`. */
 export function shortModel(model: string): string {
@@ -10,6 +10,13 @@ export function formatCost(usd: number): string {
 	if (usd < 0.01) return `$${usd.toFixed(4)}`;
 	if (usd < 1) return `$${usd.toFixed(3)}`;
 	return `$${usd.toFixed(2)}`;
+}
+
+/** A known empty aggregate is zero; unpriced runs never become a free total. */
+export function aggregateCost(cost: HistoryCost | undefined, truncated = false): string {
+	if (!cost || (!cost.recordedRuns && (cost.unpricedRuns || truncated))) return 'Unavailable';
+	const amount = cost.usd > 0 && cost.usd < 0.0001 ? '<$0.0001' : formatCost(cost.usd);
+	return `${amount}${cost.unpricedRuns || truncated ? ' · partial' : ''}`;
 }
 
 export const formatTokens = (n: number) => n.toLocaleString('en-US');

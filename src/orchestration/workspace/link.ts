@@ -381,8 +381,8 @@ export class WorkspaceLink {
     await this.read(RPC_METHODS.topicsManage, topicsManageParams, topicsManageResult, q, NEW_SESSION_TIMEOUT_MS);
   }
 
-  async modelsGet(): Promise<ModelsResult> {
-    return this.read(RPC_METHODS.modelsGet, modelsGetParams, modelsResult, {}, CONTROL_TIMEOUT_MS);
+  async modelsGet(conversationId?: string): Promise<ModelsResult> {
+    return this.read(RPC_METHODS.modelsGet, modelsGetParams, modelsResult, conversationId ? { conversationId } : {}, CONTROL_TIMEOUT_MS);
   }
 
   /** Switches the owner's model, or the ChatGPT fallback, from the next turn, as `!model <alias>` does. */

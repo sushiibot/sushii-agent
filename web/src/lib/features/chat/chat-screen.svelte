@@ -29,7 +29,7 @@
 
 	let {
 		messages,
-		title = 'Main',
+		title = 'Sushii',
 		placeholder,
 		subtitle: subtitleOverride,
 		headerActions,
@@ -459,12 +459,6 @@
 	{/if}
 {/snippet}
 
-{#snippet defaultSubtitle()}
-	<span class="text-xs text-muted-foreground">
-		{#if running}The agent is working{:else}Your agent{/if}
-	</span>
-{/snippet}
-
 {#snippet actions()}
 	{@render headerActions?.()}
 	{#if !readOnly}
@@ -527,7 +521,7 @@
 <Screen
 	{title}
 	{back}
-	subtitle={subtitleOverride ?? defaultSubtitle}
+	subtitle={subtitleOverride}
 	{actions}
 	{banner}
 	{footer}

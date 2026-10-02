@@ -17,7 +17,7 @@ test('Chats pins Main and groups threads by what they need', async ({ page, cont
 	const menu = await openDrawer(page);
 	await expect(menu.getByRole('link', { name: 'Threads' })).toHaveAttribute('aria-current', 'page');
 	await page.keyboard.press('Escape');
-	await expect(page.getByRole('region', { name: 'Main' })).toContainText(
+	await expect(page.getByRole('region', { name: 'Chat' })).toContainText(
 		'Your general-purpose conversation'
 	);
 	for (const h of ['Needs you', 'Running', 'Recent', 'Archived']) {
@@ -35,10 +35,16 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	context
 }) => {
 	await fixtureApp(context);
-	await context.route('**/api/models', (route) =>
+	await context.route('**/api/models?conversationId=oct-trip', (route) =>
 		route.fulfill({
 			json: {
 				current: 'sol',
+				cost: {
+					session: { usd: 0.24, recordedRuns: 2, unpricedRuns: 0 },
+					today: { usd: 1.25, recordedRuns: 6, unpricedRuns: 0 },
+					date: '2026-10-01',
+					timeZone: 'America/Los_Angeles'
+				},
 				models: [{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' }]
 			}
 		})
@@ -57,6 +63,7 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	await page.getByRole('button', { name: /^Model: .*Change model$/ }).click();
 	const model = page.getByRole('dialog', { name: /^Model/ });
 	await expect(model).toBeVisible();
+	await expect(model.getByRole('region', { name: 'Cost', exact: true })).toContainText('$0.240');
 	await page.goBack();
 	await expect(model).toBeHidden();
 });

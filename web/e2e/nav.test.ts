@@ -39,14 +39,14 @@ test('the app opens on the chat; the drawer lists only live slices, Settings las
 	await page.goto('/');
 	await expect(page).toHaveURL(/\/chat$/);
 	const menu = await drawer(page);
-	await expect(menu.getByRole('link')).toHaveText(['Main', 'Inbox', 'Runs', 'History', 'Settings']);
-	await expect(menu.getByRole('link', { name: 'Main' })).toHaveAttribute('aria-current', 'page');
+	await expect(menu.getByRole('link')).toHaveText(['Chat', 'Inbox', 'Runs', 'History', 'Settings']);
+	await expect(menu.getByRole('link', { name: 'Chat' })).toHaveAttribute('aria-current', 'page');
 });
 
 test('a slice the bot leaves off hides its entry', async ({ page, context }) => {
 	await server(context, { live: ['home'] });
 	await page.goto('/chat');
-	await expect((await drawer(page)).getByRole('link')).toHaveText(['Main', 'Inbox', 'Settings']);
+	await expect((await drawer(page)).getByRole('link')).toHaveText(['Chat', 'Inbox', 'Settings']);
 });
 
 test('the fixture override shows every section, with Threads under Inbox', async ({
@@ -56,7 +56,7 @@ test('the fixture override shows every section, with Threads under Inbox', async
 	await server(context, { override: 'all' });
 	await page.goto('/chat');
 	const all = [
-		'Main',
+		'Chat',
 		'Inbox',
 		'Threads',
 		'Briefing',
@@ -174,7 +174,7 @@ test('Main from the drawer steps back to the chat underneath instead of stacking
 	await page.goto('/chat');
 	await (await drawer(page)).getByRole('link', { name: 'Inbox' }).click();
 	await expect(page).toHaveURL(/\/inbox$/);
-	await (await drawer(page)).getByRole('link', { name: 'Main' }).click();
+	await (await drawer(page)).getByRole('link', { name: 'Chat' }).click();
 	await expect(page).toHaveURL(/\/chat$/);
 	await page.goForward();
 	await expect(page).toHaveURL(/\/inbox$/);

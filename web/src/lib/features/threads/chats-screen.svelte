@@ -99,7 +99,7 @@
 
 {#snippet lead()}
 	{#if data && !q}
-		<section aria-label="Main" class="rounded-xl border bg-card px-1 py-1">
+		<section aria-label="Chat" class="rounded-xl border bg-card px-1 py-1">
 			<ThreadRow main={data.main} href={mainHref} {now} />
 			<p class="px-3 pb-2 text-meta text-muted-foreground">
 				Your general-purpose conversation. Return to a thread for its topic.

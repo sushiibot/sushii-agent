@@ -11,6 +11,7 @@ import { PersonalSession } from "./personalSession.ts";
 import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
 import { ModelChoice } from "./modelChoice.ts";
 import { commandHandlers } from "./commands.ts";
+import { readModelCosts } from "./modelCosts.ts";
 import { TASK_PATHS, renderTasksCommand, runTaskReview } from "./tasks.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
@@ -179,6 +180,11 @@ async function main(): Promise<void> {
     choice,
     currentModel: () => (personal.chatSession ? sessionModelLabel(personal.chatSession) : null),
     fallbackUntil: () => selector.coolingDownUntil,
+    costs: conversationId => readModelCosts({
+      stateDir: config.stateDir,
+      timeZone: config.tz,
+      sessionFile: topicsRef ? topicsRef.sessionFileFor(conversationId) : personal.currentSessionFile || null,
+    }),
     tasks: (arg) => renderTasksCommand(config.home, taskRulesOf(config), new Date(), arg),
   });
   const topics = new TopicSessions({

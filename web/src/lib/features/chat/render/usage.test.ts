@@ -1,6 +1,20 @@
 /// <reference types="bun" />
 import { expect, test } from 'bun:test';
-import { formatCost, shortModel, usageLine } from './usage';
+import { aggregateCost, formatCost, shortModel, usageLine } from './usage';
+
+test('aggregate costs distinguish free, unknown, partial and bounded totals', () => {
+	expect(aggregateCost(undefined)).toBe('Unavailable');
+	expect(aggregateCost({ usd: 0, recordedRuns: 0, unpricedRuns: 0 })).toBe('$0');
+	expect(aggregateCost({ usd: 0, recordedRuns: 0, unpricedRuns: 2 })).toBe('Unavailable');
+	expect(aggregateCost({ usd: 0, recordedRuns: 1, unpricedRuns: 0 })).toBe('$0');
+	expect(aggregateCost({ usd: 0.0024, recordedRuns: 2, unpricedRuns: 1 })).toBe(
+		'$0.0024 · partial'
+	);
+	expect(aggregateCost({ usd: 1.23, recordedRuns: 2, unpricedRuns: 0 }, true)).toBe(
+		'$1.23 · partial'
+	);
+	expect(aggregateCost({ usd: 0.00001, recordedRuns: 1, unpricedRuns: 0 })).toBe('<$0.0001');
+});
 
 test('model ids lose their provider prefix', () => {
 	expect(shortModel('openrouter/deepseek/deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash');

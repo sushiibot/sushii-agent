@@ -19,7 +19,7 @@
 	} = $props();
 
 	const row = $derived(main ?? thread!);
-	const title = $derived(main ? 'Main' : thread!.title);
+	const title = $derived(main ? 'Chat' : thread!.title);
 	const archived = $derived(!main && thread?.state === 'archived');
 </script>
 
