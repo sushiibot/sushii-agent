@@ -49,6 +49,10 @@ jobs:
   # runs the raw-HTML rule and the bun unit tests; `test:e2e` starts both Playwright servers itself:
   # the app on :4173 and the render harness on :4174.
   web:
+    strategy:
+      fail-fast: false
+      matrix:
+        workers: [2, 4]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -64,7 +68,7 @@ jobs:
       # Playwright builds the production app before starting preview.
       # Full Chromium without the headless shell: playwright.config.ts runs the `chromium` channel.
       - run: bunx playwright install --with-deps --no-shell chromium
-      - run: bun run test:e2e
+      - run: bun run test:e2e --workers=${{ matrix.workers }} --retries=0
 
   # Real-process e2e (e2e-system/README.md): the built web app, the bot and the workspace as processes,
   # with a fake model and a Traefik stand-in dialing from loopback aliases.
