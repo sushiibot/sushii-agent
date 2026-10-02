@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
-	import Settings from '@lucide/svelte/icons/settings';
+	import Pencil from '@lucide/svelte/icons/pencil';
 	import ThreadSettingsSheet from './components/thread-settings-sheet.svelte';
 	import Archive from '@lucide/svelte/icons/archive';
 	import BookMarked from '@lucide/svelte/icons/book-marked';
@@ -39,7 +39,13 @@
 		/** The chat screen's props for this thread's conversation. */
 		chat?: Omit<
 			ChatProps,
-			'title' | 'placeholder' | 'subtitle' | 'headerActions' | 'readOnly' | 'back'
+			| 'title'
+			| 'placeholder'
+			| 'subtitle'
+			| 'headerActions'
+			| 'commandActions'
+			| 'readOnly'
+			| 'back'
 		>;
 		now: number;
 		back: { href: string; label: string; onclick?: (e: MouseEvent) => void };
@@ -114,20 +120,23 @@
 	{/if}
 {/snippet}
 
-{#snippet headerActions()}
-	<Button
-		variant="ghost"
-		size="lg"
-		class="size-12 p-0"
-		aria-haspopup="dialog"
-		aria-label="Thread settings"
-		onclick={() => onopensheet?.('thread-settings')}><Settings /></Button
-	>
-	{#if !archived}
-		<Button variant="ghost" size="lg" onclick={() => onopensheet?.('thread-close')}
-			><Archive /><span class="@max-md:sr-only">Archive</span></Button
+{#snippet commandActions()}
+	<div class="flex flex-col border-b pb-2">
+		<Button
+			variant="ghost"
+			size="lg"
+			class="justify-start"
+			onclick={() => onopensheet?.('thread-settings')}><Pencil />Rename thread</Button
 		>
-	{/if}
+		{#if !archived}
+			<Button
+				variant="ghost"
+				size="lg"
+				class="justify-start"
+				onclick={() => onopensheet?.('thread-close')}><Archive />Archive thread</Button
+			>
+		{/if}
+	</div>
 {/snippet}
 
 {#snippet readOnly()}
@@ -155,7 +164,7 @@
 		title={thread.title}
 		placeholder="Message in {thread.title}"
 		{subtitle}
-		{headerActions}
+		{commandActions}
 		readOnly={!sendable ? readOnly : undefined}
 		back={{ ...back, desktop: true }}
 	/>

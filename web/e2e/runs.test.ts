@@ -75,6 +75,13 @@ test('the type filter asks the bot for one kind and shows only those runs', asyn
 	await expect(rows(page)).toHaveCount(2);
 	await expect(rows(page).filter({ hasText: 'Compare flight prices' })).toBeVisible();
 	await expect(rows(page).filter({ hasText: 'Book the car service' })).toBeHidden();
+	await expect(page.getByText('Work delegated by another run.')).toBeVisible();
+	await page.getByRole('radio', { name: 'Chat', exact: true }).click();
+	await expect(
+		page.getByText('A conversation contains many runs.', { exact: false })
+	).toBeVisible();
+	await expect(rows(page).first()).toContainText('Chat turn');
+	await expect(rows(page).first()).toContainText('General chat');
 	await page.getByRole('radio', { name: 'All' }).click();
 	await expect(rows(page)).toHaveCount(10);
 });

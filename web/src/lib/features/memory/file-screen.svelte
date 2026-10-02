@@ -60,6 +60,9 @@
 			<p class="text-sm text-muted-foreground">
 				{detail.file.about}. Changed {ago(detail.file.updatedAt, now)}.
 			</p>
+			{#if detail.file.truncated}<p role="status" class="text-sm text-muted-foreground">
+					This file is large. Showing the first 256 KB.
+				</p>{/if}
 			<section
 				aria-label="What the file says"
 				class="rounded-xl border bg-card px-4 py-3 text-body"

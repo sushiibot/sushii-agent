@@ -1,3 +1,4 @@
+import { memoryParams, memoryOverview, memoryDetail } from "../memoryContracts.ts";
 import { runsStopParams, runsStopResult } from "../contracts.ts";
 import { connectorsParams, connectorsResult, type ConnectorRequest, type ConnectorsResult } from "../contracts.ts";
 import type { z } from "zod";
@@ -356,6 +357,10 @@ export class WorkspaceLink {
 
   async runsGet(q: Omit<z.input<typeof runsGetParams>, "principalId">): Promise<RunsGetResult> {
     return this.read(RPC_METHODS.runsGet, runsGetParams, runsGetResult, q, RUNS_TIMEOUT_MS);
+  }
+
+  async memoryRead(id?: string) {
+    return id === undefined ? this.read("memory/read", memoryParams, memoryOverview, {}, RUNS_TIMEOUT_MS) : this.read("memory/read", memoryParams, memoryDetail, { id }, RUNS_TIMEOUT_MS);
   }
 
   async historyDays(q: Omit<z.input<typeof historyDaysParams>, "principalId">): Promise<HistoryDaysResult> {

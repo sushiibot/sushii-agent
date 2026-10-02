@@ -48,7 +48,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // This tool pins its push to a mandatory owner approval.
   "github_push",
   "mcp_list_tools",
-  // Connector execution applies its own approval gate before calling the server.
+  // The owner authorizes MCP tool access by connecting the server.
   "mcp_call_tool",
   "read",
   "grep",

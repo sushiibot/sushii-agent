@@ -115,7 +115,7 @@ test('a deep link waits for /api/me before deciding, so it never bounces early',
 }) => {
 	await server(context, { me: 'hang' });
 	await page.goto('/runs');
-	await expect(page.getByRole('heading', { name: 'Runs', level: 1 })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Runs', level: 1 })).toHaveCount(0);
 	await page.waitForTimeout(500);
 	await expect(page).toHaveURL(/\/runs$/);
 });
@@ -194,4 +194,74 @@ test('widening past the sidebar breakpoint closes an open drawer, so the page st
 	await expect(page.getByRole('dialog', { name: 'Menu' })).toBeHidden();
 	await page.locator('nav[aria-label="Main"]').first().getByRole('link', { name: 'Runs' }).click();
 	await expect(page).toHaveURL(/\/runs$/);
+});
+
+for (const path of ['/memory', '/memory/files/x', '/memory/writes/x']) {
+	test(`${path} waits for the bot feature decision without fetching memory`, async ({
+		page,
+		context
+	}) => {
+		await server(context);
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let requested!: () => void;
+		const started = new Promise<void>((resolve) => {
+			requested = resolve;
+		});
+		await context.route('**/api/me', async (route) => {
+			requested();
+			await ready;
+			await route.fulfill({ json: { login: 'drk@example.com', features: LIVE } });
+		});
+		const asked: string[] = [];
+		page.on('request', (request) => {
+			const pathname = new URL(request.url()).pathname;
+			if (pathname.startsWith('/api/memory')) asked.push(pathname);
+		});
+		await page.goto(path);
+		await started;
+		await page.waitForTimeout(200);
+		await expect(page).toHaveURL(new RegExp(`${path.replaceAll('/', '\\/')}$`));
+		expect(asked).toEqual([]);
+		release();
+		await expect(page).toHaveURL(/\/chat$/);
+		await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+		expect(asked).toEqual([]);
+	});
+}
+
+test('an enabled memory deep link loads only after the bot confirms its feature', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	let release!: () => void;
+	const ready = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let requested!: () => void;
+	const started = new Promise<void>((resolve) => {
+		requested = resolve;
+	});
+	await context.route('**/api/me', async (route) => {
+		requested();
+		await ready;
+		await route.fulfill({ json: { login: 'drk@example.com', features: [...LIVE, 'memory'] } });
+	});
+	let reads = 0;
+	await context.route('**/api/memory', (route) => {
+		reads++;
+		return route.fulfill({ json: { files: [], writes: [], truncated: false } });
+	});
+	await page.goto('/memory');
+	await started;
+	await page.waitForTimeout(200);
+	expect(reads).toBe(0);
+	release();
+	await expect(page.getByRole('heading', { name: 'Memory', level: 1 })).toBeVisible();
+	await expect(page.getByText('Nothing remembered yet')).toBeVisible();
+	await expect(page).toHaveURL(/\/memory$/);
+	expect(reads).toBe(1);
 });

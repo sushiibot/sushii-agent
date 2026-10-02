@@ -9,5 +9,5 @@ export function featureGate(feature: AppFeature): () => boolean {
 	$effect(() => {
 		if (features.off(feature)) void goto('/chat', { replaceState: true });
 	});
-	return () => !features.off(feature);
+	return () => features.has(feature);
 }

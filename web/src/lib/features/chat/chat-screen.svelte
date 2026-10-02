@@ -33,6 +33,7 @@
 		placeholder,
 		subtitle: subtitleOverride,
 		headerActions,
+		commandActions,
 		backgroundActivity,
 		delegatedActivity,
 		readOnly,
@@ -107,6 +108,8 @@
 		subtitle?: Snippet;
 		/** Header buttons before the command menu. */
 		headerActions?: Snippet;
+		/** Conversation actions in the existing three-dot menu, before chat commands. */
+		commandActions?: Snippet;
 		backgroundActivity?: Snippet;
 		delegatedActivity?: Snippet<[string]>;
 		/** Shown instead of the composer, for a conversation that can't take messages. */
@@ -378,6 +381,7 @@
 	{#if shownSheet === 'commands'}
 		<div class="flex flex-col gap-2 px-3 pt-1 pb-3">
 			<h2 class="px-2 pt-1 text-lg font-semibold">Chat commands</h2>
+			{@render commandActions?.()}
 			{#if commandsOffline}
 				<p
 					role="status"

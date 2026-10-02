@@ -4,7 +4,7 @@ import type { RunKind, RunSummary } from './types';
 export function kindLabel(run: Pick<RunSummary, 'kind' | 'jobName' | 'agentName'>): string {
 	switch (run.kind) {
 		case 'chat':
-			return 'Chat';
+			return 'Chat turn';
 		case 'flush':
 			return 'Memory save';
 		case 'rotate':
@@ -30,13 +30,45 @@ export const RUN_FILTERS: readonly {
 	label: string;
 	/** What the list holds, for its empty state. */
 	noun: string;
+	description: string;
 	kinds?: RunKind[];
 }[] = [
-	{ value: 'all', label: 'All', noun: 'runs' },
-	{ value: 'chat', label: 'Chat', noun: 'chat turns', kinds: ['chat'] },
-	{ value: 'job', label: 'Scheduled', noun: 'scheduled runs', kinds: ['job'] },
-	{ value: 'subagent', label: 'Background', noun: 'background runs', kinds: ['subagent'] },
-	{ value: 'agent', label: 'Agents', noun: 'agent runs', kinds: ['agent'] }
+	{
+		value: 'all',
+		label: 'All',
+		noun: 'runs',
+		description:
+			'Includes chat replies, scheduled tasks, delegated work, memory saves and session changes.'
+	},
+	{
+		value: 'chat',
+		label: 'Chat',
+		noun: 'chat turns',
+		description:
+			'Each chat run is one response to a message, including its tool calls. A conversation contains many runs.',
+		kinds: ['chat']
+	},
+	{
+		value: 'job',
+		label: 'Scheduled',
+		noun: 'scheduled runs',
+		description: 'Tasks started by a schedule, with the schedule name on each record.',
+		kinds: ['job']
+	},
+	{
+		value: 'subagent',
+		label: 'Background',
+		noun: 'background runs',
+		description: 'Work delegated by another run. Open a record to see the run that started it.',
+		kinds: ['subagent']
+	},
+	{
+		value: 'agent',
+		label: 'Agents',
+		noun: 'agent runs',
+		description: 'Separate agent tasks, with the agent name on each record.',
+		kinds: ['agent']
+	}
 ];
 
 export function filterKinds(filter: RunFilter): RunKind[] | undefined {

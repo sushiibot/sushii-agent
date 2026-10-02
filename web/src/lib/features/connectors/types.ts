@@ -4,7 +4,7 @@ export interface McpTool {
 	/** As the server names it; third-party text, shown as plain text. */
 	name: string;
 	description: string;
-	/** Changed since the snapshot you accepted. */
+	/** Changed since the saved tracking snapshot. */
 	change?: 'added' | 'removed' | 'changed';
 }
 

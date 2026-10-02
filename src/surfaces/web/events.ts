@@ -30,7 +30,15 @@ export const HOME_RECENT_HOURS = 72;
 export const HOME_RUNS_MAX = 20;
 
 /** Slices the bot turns on with `WEB_FEATURES`. A route whose feature is off answers 404. */
-export const WEB_FEATURES = ['runs', 'history', 'home', 'alerts', 'connectors', 'threads'] as const;
+export const WEB_FEATURES = [
+	'runs',
+	'history',
+	'home',
+	'alerts',
+	'connectors',
+	'threads',
+	'memory'
+] as const;
 export type WebFeature = (typeof WEB_FEATURES)[number];
 
 /** Where the app loads an upload's bytes. */

@@ -17,6 +17,13 @@
 		<span class="flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
 			<StatePill of={run.status} />
 			<span class="[overflow-wrap:anywhere]">{kindLabel(run)}</span>
+			{#if run.kind === 'chat'}
+				<span
+					>{run.conversationId && run.conversationId !== 'main'
+						? 'Topic conversation'
+						: 'General chat'}</span
+				>
+			{/if}
 			<span aria-hidden="true">·</span>
 			<span class="tabular-nums">{ago(run.startedAt, now)}</span>
 		</span>

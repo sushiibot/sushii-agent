@@ -2,6 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import { features } from '$lib/core/features.svelte';
 	import { backTo } from '$lib/core/nav/back';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { needsYou } from '$lib/features/home';
@@ -43,6 +44,12 @@
 	online={pwa.online}
 	runHref={(runId) => resolve('/runs/[id]', { id: runId })}
 	historyHref={(date) => resolve('/history/[date]', { date })}
+	conversationHref={(conversationId) =>
+		conversationId === 'main'
+			? resolve('/chat')
+			: features.has('threads')
+				? resolve('/chats/[id]', { id: conversationId })
+				: undefined}
 	onretry={() => void view.remote.refetch()}
 	onloadmore={() => void view.loadMore()}
 />

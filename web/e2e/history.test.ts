@@ -28,7 +28,7 @@ test('the day list groups days by month and opens a day', async ({ page, context
 	await expect(page.getByRole('heading', { name: 'History', level: 1 })).toBeVisible();
 	await expect(rows(page)).toHaveCount(10);
 	await expect(rows(page).first()).toContainText('Today');
-	await expect(rows(page).first()).toContainText('3 sessions · 9 runs');
+	await expect(rows(page).first()).toContainText('3 recaps · 9 runs');
 	await expect(rows(page).first()).toContainText('$0.54 cost');
 	await expect(rows(page).nth(1)).toContainText('$0.34 cost · partial');
 	await expect(rows(page).nth(3)).toContainText('Cost unavailable');
@@ -52,6 +52,11 @@ test("a day shows the agent's recaps as safe markdown and that day's runs", asyn
 	const planted = page.getByRole('article').filter({ hasText: 'A planted image' });
 	await expect(planted).toContainText('<b>raw html</b>');
 	await expect(planted.locator('img, b')).toHaveCount(0);
+	await expect(
+		page.getByRole('link', { name: /Back up projects to the home server/ })
+	).toBeHidden();
+	await page.getByRole('tab', { name: /^Runs/ }).click();
+	await expect(page.getByRole('heading', { name: 'Invoice from Eastside Auto' })).toBeHidden();
 	const run = page.getByRole('link', { name: /Back up projects to the home server/ });
 	await expect(run).toContainText('Failed');
 	await run.click();
@@ -197,7 +202,11 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		const day = await today(page);
 		for (const path of ['/history', `/history/${day}`, '/history/search?q=eastside']) {
 			await page.goto(path);
-			await expect(page.getByRole('main').getByRole('link').first()).toBeVisible();
+			if (path === `/history/${day}`) {
+				await expect(page.getByRole('tabpanel', { name: 'Recaps', exact: true })).toBeVisible();
+			} else {
+				await expect(page.getByRole('main').getByRole('link').first()).toBeVisible();
+			}
 			expect(await axe(page), path).toEqual([]);
 			expect(await smallTargets(page), path).toEqual([]);
 			for (const width of [412, 320]) {
@@ -205,6 +214,16 @@ for (const colorScheme of ['light', 'dark'] as const) {
 				expect(await horizontalOverflow(page), `${path} at ${width}px`).toEqual([]);
 			}
 			await page.setViewportSize({ width: 412, height: 915 });
+			if (path === `/history/${day}`) {
+				await page.getByRole('tab', { name: /^Runs/ }).click();
+				expect(await axe(page), `${path} runs`).toEqual([]);
+				expect(await smallTargets(page), `${path} runs`).toEqual([]);
+				for (const width of [412, 320]) {
+					await page.setViewportSize({ width, height: 800 });
+					expect(await horizontalOverflow(page), `${path} runs at ${width}px`).toEqual([]);
+				}
+				await page.setViewportSize({ width: 412, height: 915 });
+			}
 		}
 	});
 }

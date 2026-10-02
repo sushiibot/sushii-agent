@@ -31,6 +31,7 @@ import { ulid } from "./ulid.ts";
 import { ChatExportReader, chatExportHandlers } from "./chatExport.ts";
 import { UPLOADS_DIR } from "./inboundImages.ts";
 import { notifyRunChanges, runsHandlers } from "./runsRpc.ts";
+import { memoryHandlers } from "./memoryFiles.ts";
 import { historyHandlers } from "./historyFiles.ts";
 import { HistorySearch, historySearchHandlers } from "./historySearch.ts";
 
@@ -268,6 +269,7 @@ async function main(): Promise<void> {
       ...chatExportHandlers({ principalId: config.principalId, reader: new ChatExportReader({ agentDir: config.agentDir }) }),
       // Session roots come from the host's own agent dir (process env set by the deploy), never from a run record.
       ...runsHandlers({ principalId: config.principalId, stateDir: config.stateDir, home: config.home, tz: config.tz, agentDirs: [config.agentDir] }),
+      ...memoryHandlers({ home: config.home, principalId: config.principalId }),
       ...historyHandlers({ principalId: config.principalId, home: config.home, stateDir: config.stateDir }),
       ...historySearchHandlers(new HistorySearch({ principalId: config.principalId, home: config.home })),
       ...authLogin.handlers(),

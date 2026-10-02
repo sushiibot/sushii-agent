@@ -56,6 +56,7 @@ function setup() {
     add,
     call,
     calls,
+    registered,
     setTools: (next: Tool[]) => {
       tools = next;
     },
@@ -78,20 +79,29 @@ test("connection persists without credentials in API responses; disconnect survi
   expect(readFileSync(join(s.dir, "connectors.json"), "utf8")).not.toContain("test-secret");
 });
 
-test("changed schema/description/permissions stay blocked until explicitly accepted", async () => {
+test("changed and added tools run without approval; snapshots only track changes", async () => {
   const s = setup();
   const server = await s.add();
-  await s.call(server.id, "read_email", false);
-  expect(s.calls).toEqual(["read_email"]);
-  s.setTools([{ name: "read_email", description: "Changed", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } }]);
-  await expect(s.call(server.id, "read_email")).rejects.toThrow("changed");
+  s.setTools([
+    { name: "read_email", description: "Changed", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } },
+    { name: "write_email", inputSchema: { type: "object" } },
+  ]);
+  const discovered = await s.registered.get("mcp_list_tools")!.execute("list", {}, undefined, undefined, {} as ExtensionToolContext);
+  expect(JSON.stringify(discovered.content)).toContain("write_email");
+  expect(JSON.stringify(discovered.content)).toContain("Changed");
+  const noApproval = async () => { throw new Error("Approval must not be requested"); };
+  await s.call(server.id, "read_email", noApproval);
+  await s.call(server.id, "write_email", noApproval);
+  // Background runs with no UI also have access to owner-connected tools.
+  await s.registered.get("mcp_call_tool")!.execute("call", { serverId: server.id, tool: "write_email", arguments: {} }, undefined, undefined, { hasUI: false } as ExtensionToolContext);
   const detail = await s.manager.manage({ action: "get", id: server.id });
-  expect(detail.kind === "server" && detail.server?.toolList[0]?.change).toBe("changed");
+  expect(detail.kind === "server" && detail.server?.toolList.map((t) => t.change)).toEqual(["changed", "added"]);
   await s.manager.manage({ action: "accept", id: server.id });
-  await expect(s.call(server.id, "read_email", false)).rejects.toThrow("approve");
-  expect(s.calls).toEqual(["read_email"]);
-  await s.call(server.id, "read_email");
-  expect(s.calls).toHaveLength(2);
+  const snapshot = await s.manager.manage({ action: "get", id: server.id });
+  expect(snapshot.kind === "server" && snapshot.server?.changed).toBe(false);
+  expect(s.calls).toEqual(["read_email", "write_email", "write_email"]);
+  s.setTools([]);
+  await expect(s.call(server.id, "write_email", noApproval)).rejects.toThrow("removed from the server");
 });
 
 test("OAuth state validation rejects unrelated or expired callback addresses", async () => {
@@ -193,26 +203,21 @@ test("real HTTP transport completes PKCE OAuth, persists credentials and reconne
   await restarted.dispose();
 });
 
-test("replacing credentials preserves the accepted tool snapshot", async () => {
+test("replacing credentials preserves the tracking snapshot without blocking current tools", async () => {
   const s = setup();
   const initial = await s.add();
   s.setTools([{ name: "read_email", description: "New definition", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } }]);
   const replacement = await s.add();
   expect(replacement.id).toBe(initial.id);
   expect(replacement.changed).toBe(true);
-  await expect(s.call(initial.id, "read_email")).rejects.toThrow("changed");
+  await s.call(initial.id, "read_email", false);
+  expect(s.calls).toEqual(["read_email"]);
 });
 
-test("a tool change during owner approval cannot authorize the replacement definition", async () => {
+test("removed connectors cannot execute tools", async () => {
   const s = setup();
-  s.setTools([{ name: "write_email", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } }]);
   const server = await s.add();
-  await expect(
-    s.call(server.id, "write_email", async () => {
-      s.setTools([{ name: "write_email", description: "Changed during approval", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } }]);
-      await s.manager.manage({ action: "accept", id: server.id });
-      return true;
-    }),
-  ).rejects.toThrow("changed while approval");
+  await s.manager.manage({ action: "remove", id: server.id });
+  await expect(s.call(server.id, "read_email", false)).rejects.toThrow("disconnected or removed");
   expect(s.calls).toEqual([]);
 });

@@ -7,6 +7,7 @@
 	import { longDate } from '$lib/ui/format/time';
 	import DetailScreen from '$lib/ui/screen/detail-screen.svelte';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
+	import * as Tabs from '$lib/ui/tabs';
 	import { Skeleton } from '$lib/ui/skeleton';
 	import type { HistoryDayDetail } from './types';
 	import { costLabel, costDescription } from './cost';
@@ -31,6 +32,14 @@
 		onretry?: () => void;
 	} = $props();
 	const uid = $props.id();
+	let section = $state('recaps');
+	let shownDate = $state<string>();
+	$effect(() => {
+		if (date !== shownDate) {
+			shownDate = date;
+			section = 'recaps';
+		}
+	});
 	const day = $derived(detail?.found ? detail : null);
 	const title = $derived.by(() => {
 		try {
@@ -83,51 +92,75 @@
 					{/if}
 				</p>
 			{/if}
-			<section aria-labelledby="{uid}-s" class="flex flex-col gap-3">
-				<h2 id="{uid}-s" class="flex flex-col gap-0.5">
-					<span class="text-base font-semibold">Sessions</span>
-					<span class="text-meta font-normal text-muted-foreground"
-						>The agent's own notes, as it wrote them.</span
+			<Tabs.Root bind:value={section} class="flex min-w-0 flex-col gap-5">
+				<Tabs.List
+					aria-label="History sections"
+					class="sticky top-0 z-10 grid grid-cols-2 gap-2 border-b bg-background"
+				>
+					<Tabs.Trigger
+						value="recaps"
+						class="min-h-12 min-w-12 border-b-2 border-transparent px-2 text-sm font-medium text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:text-foreground"
+						>Recaps</Tabs.Trigger
 					>
-				</h2>
-				{#if day.sessions.length}
-					{#each day.sessions as session, i (i)}
-						<article
-							aria-labelledby="{uid}-h{i}"
-							class="flex flex-col gap-2 rounded-xl border bg-card px-4 py-3"
-						>
-							<h3 id="{uid}-h{i}" class="text-ui font-semibold [overflow-wrap:anywhere]">
-								{session.heading}
-							</h3>
-							<div class="min-w-0 [overflow-wrap:anywhere]">
-								<Markdown text={session.markdown} />
-							</div>
-						</article>
-					{/each}
-				{:else}
-					<p class="rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground">
-						No session notes for this day.
-					</p>
-				{/if}
-				{#if day.truncated}
-					<p role="status" class="text-sm text-muted-foreground">
-						This day's notes are longer than the app reads, so the end is cut off.
-					</p>
-				{/if}
-			</section>
-
-			<section aria-labelledby="{uid}-r" class="flex flex-col gap-1">
-				<h2 id="{uid}-r" class="text-base font-semibold">Runs that day</h2>
-				{#if day.runs.length}
-					<ul class="flex flex-col">
-						{#each day.runs as run (run.runId)}
-							<li><RunRow {run} {now} href={runHref(run.runId)} /></li>
-						{/each}
-					</ul>
-				{:else}
-					<p class="text-sm text-muted-foreground">No runs started that day.</p>
-				{/if}
-			</section>
+					<Tabs.Trigger
+						value="runs"
+						class="min-h-12 min-w-12 border-b-2 border-transparent px-2 text-sm font-medium text-muted-foreground hover:text-foreground data-[state=active]:border-foreground data-[state=active]:text-foreground"
+						>Runs ({day.runs.length})</Tabs.Trigger
+					>
+				</Tabs.List>
+				<Tabs.Content value="recaps" class="data-[state=inactive]:hidden">
+					<section aria-labelledby="{uid}-s" class="flex flex-col gap-3">
+						<h2 id="{uid}-s" class="flex flex-col gap-0.5">
+							<span class="text-base font-semibold">Work recaps</span>
+							<span class="text-meta font-normal text-muted-foreground"
+								>The agent’s written summaries of its work that day.</span
+							>
+						</h2>
+						{#if day.sessions.length}
+							{#each day.sessions as session, i (i)}
+								<article
+									aria-labelledby="{uid}-h{i}"
+									class="flex flex-col gap-2 rounded-xl border bg-card px-4 py-3"
+								>
+									<h3 id="{uid}-h{i}" class="text-ui font-semibold [overflow-wrap:anywhere]">
+										{session.heading}
+									</h3>
+									<div class="min-w-0 [overflow-wrap:anywhere]">
+										<Markdown text={session.markdown} />
+									</div>
+								</article>
+							{/each}
+						{:else}
+							<p class="rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground">
+								No work recaps for this day.
+							</p>
+						{/if}
+						{#if day.truncated}
+							<p role="status" class="text-sm text-muted-foreground">
+								This day's notes are longer than the app reads, so the end is cut off.
+							</p>
+						{/if}
+					</section>
+				</Tabs.Content>
+				<Tabs.Content value="runs" class="data-[state=inactive]:hidden">
+					<section aria-labelledby="{uid}-r" class="flex flex-col gap-1">
+						<h2 id="{uid}-r" class="text-base font-semibold">Runs that day</h2>
+						<p class="mb-2 text-sm text-muted-foreground">
+							Each record is one chat response or task attempt. Open it to see the steps, result and
+							evidence.
+						</p>
+						{#if day.runs.length}
+							<ul class="flex flex-col">
+								{#each day.runs as run (run.runId)}
+									<li><RunRow {run} {now} href={runHref(run.runId)} /></li>
+								{/each}
+							</ul>
+						{:else}
+							<p class="text-sm text-muted-foreground">No runs started that day.</p>
+						{/if}
+					</section>
+				</Tabs.Content>
+			</Tabs.Root>
 		</div>
 	{/if}
 </DetailScreen>

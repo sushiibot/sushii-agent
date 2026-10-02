@@ -3,6 +3,7 @@
 	import { BitsConfig } from 'bits-ui';
 	import { cn } from '$lib/utils';
 	import { setDrawer } from './drawer';
+	import { drawerSwipe } from './swipe';
 	import type { NavItem } from './types';
 
 	let {
@@ -30,6 +31,10 @@
 	const uid = $props.id();
 	const sheets = `${uid}-sheets`;
 	let drawer = $state<HTMLDialogElement | null>(null);
+	let shell = $state<HTMLElement | null>(null);
+	$effect(() => {
+		if (shell && drawer) return drawerSwipe(shell, drawer);
+	});
 
 	const badgeTotal = $derived.by(() => {
 		const values = Object.values(badges);
@@ -103,6 +108,7 @@
 
 <div
 	data-shell
+	bind:this={shell}
 	class="group/shell @container relative h-[calc(100%-var(--kb))] overflow-hidden bg-background pt-(--safe-top) text-foreground"
 >
 	<div class="flex h-full flex-col @3xl:flex-row">

@@ -1,4 +1,4 @@
-// View models for Memory. The bot has no memory routes yet; this is what they will need to serve.
+// Memory file browser and optional write-history view models.
 import type { DiffLine } from '$lib/ui/diff/diff-view.svelte';
 
 export type { DiffLine };
@@ -6,7 +6,7 @@ export type { DiffLine };
 export interface MemoryFileSummary {
 	/** URL-safe id; the path can hold slashes. */
 	id: string;
-	/** Relative to the workspace's memory folder. */
+	/** Relative to the workspace home. */
 	path: string;
 	/** One line on what the file holds. */
 	about: string;
@@ -15,6 +15,7 @@ export interface MemoryFileSummary {
 }
 
 export interface MemoryFile extends MemoryFileSummary {
+	truncated?: boolean;
 	/** The file as the agent wrote it, markdown. Untrusted: render it only through Markdown. */
 	content: string;
 }
@@ -38,6 +39,8 @@ export interface MemoryWriteRecord {
 }
 
 export interface MemoryOverview {
+	/** The workspace reached its file scan or content limit. */
+	truncated?: boolean;
 	files: MemoryFileSummary[];
 	/** Newest first. */
 	writes: MemoryWriteRecord[];

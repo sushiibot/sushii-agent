@@ -36,13 +36,32 @@
 		onretry?: () => void;
 	} = $props();
 
-	const sections = $derived.by((): ListSection<Item>[] => [
-		{
-			label: 'Recent changes',
-			items: (data?.writes ?? []).slice(0, recent).map((w) => ({ kind: 'write', w }))
-		},
-		{ label: 'Files', items: (data?.files ?? []).map((f) => ({ kind: 'file', f })) }
-	]);
+	let category = $state<'long-term' | 'daily' | 'changes'>('long-term');
+	let search = $state('');
+	const daily = (f: MemoryFileSummary) => /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(f.path);
+	const sections = $derived.by((): ListSection<Item>[] => {
+		if (category === 'changes')
+			return [
+				{
+					label: 'Recent changes',
+					items: (data?.writes ?? []).slice(0, recent).map((w) => ({ kind: 'write', w }))
+				}
+			];
+		const files = (data?.files ?? []).filter(
+			(f) =>
+				(category === 'daily' ? daily(f) : !daily(f)) &&
+				`${f.path} ${f.about}`.toLowerCase().includes(search.toLowerCase())
+		);
+		files.sort((a, b) =>
+			category === 'daily' ? b.path.localeCompare(a.path) : a.path.localeCompare(b.path)
+		);
+		return [
+			{
+				label: category === 'daily' ? 'Daily notes' : 'Long-term files',
+				items: files.map((f) => ({ kind: 'file', f }))
+			}
+		];
+	});
 </script>
 
 {#snippet banner()}
@@ -84,8 +103,33 @@
 	{/if}
 {/snippet}
 
+{#snippet lead()}
+	<div class="sticky top-0 z-10 flex flex-col gap-3 bg-background pb-3">
+		<div class="flex gap-2" aria-label="Memory sections">
+			{#each [{ id: 'long-term' as const, label: 'Long-term' }, { id: 'daily' as const, label: 'Daily notes' }, ...(data?.writes.length ? [{ id: 'changes' as const, label: 'Changes' }] : [])] as tab (tab.id)}
+				<button
+					class="min-h-12 flex-1 rounded-md px-3 text-ui font-medium hover:bg-muted"
+					class:bg-muted={category === tab.id}
+					aria-pressed={category === tab.id}
+					onclick={() => (category = tab.id)}>{tab.label}</button
+				>
+			{/each}
+		</div>
+		<p class="text-sm text-muted-foreground">
+			{category === 'long-term'
+				? 'Saved facts and preferences the agent keeps across conversations. Open a file to read its current contents.'
+				: category === 'daily'
+					? 'The agent’s memory notes for each day. Work recaps and run records live in History.'
+					: 'Recent recorded changes to saved memory.'}
+		</p>
+		{#if data?.truncated}<p role="status" class="text-sm text-muted-foreground">
+				Some files could not be shown in full because the memory browsing limit was reached.
+			</p>{/if}
+	</div>
+{/snippet}
+
 {#snippet after()}
-	{#if data && data.writes.length > recent}
+	{#if category === 'changes' && data && data.writes.length > recent}
 		<a
 			href={writesHref}
 			class="flex h-12 items-center justify-center rounded-md border text-sm font-medium hover:bg-muted"
@@ -106,10 +150,17 @@
 		skeleton,
 		empty: {
 			title: 'Nothing remembered yet',
-			body: 'When the agent saves something for later, the file and the change show up here, with what wrote it.'
+			body: search
+				? 'No files match your search. Try another file name.'
+				: category === 'daily'
+					? 'Daily notes appear here when the agent saves them.'
+					: 'Saved facts and preferences appear here when the agent remembers them.'
 		}
 	}}
 	{sections}
+	{lead}
+	bind:search
+	searchLabel="Find a memory file"
 	key={(i) => (i.kind === 'write' ? `w:${i.w.id}` : `f:${i.f.id}`)}
 	{row}
 	{after}

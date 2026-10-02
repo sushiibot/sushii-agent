@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
+	import { features } from '$lib/core/features.svelte';
 	import { keepScroll } from '$lib/core/nav/scroll';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { HistoryScreen, historyStore } from '$lib/features/history';
@@ -33,6 +34,7 @@
 	online={pwa.online}
 	dayHref={(date) => resolve('/history/[date]', { date })}
 	searchHref={resolve('/history/search')}
+	memoryHref={features.has('memory') ? resolve('/memory') : undefined}
 	onretry={() => void days.refetch()}
 	onloadolder={() => void history.loadOlder()}
 />

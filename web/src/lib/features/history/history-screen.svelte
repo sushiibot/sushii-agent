@@ -23,6 +23,7 @@
 		online = true,
 		dayHref = (date) => `/history/${date}`,
 		searchHref = '/history/search',
+		memoryHref,
 		onretry,
 		onloadolder
 	}: {
@@ -36,6 +37,7 @@
 		online?: boolean;
 		dayHref?: (date: string) => string;
 		searchHref?: string;
+		memoryHref?: string;
 		onretry?: () => void;
 		onloadolder?: () => void;
 	} = $props();
@@ -62,6 +64,13 @@
 {/snippet}
 
 {#snippet lead()}
+	<p class="text-sm text-muted-foreground">
+		Work history by day: the agent’s written recaps and the runs behind them.
+	</p>
+	{#if memoryHref}
+		<Button variant="outline" href={memoryHref} class="self-start">View saved memory</Button>
+		<p class="text-sm text-muted-foreground">Saved facts and daily memory notes are in Memory.</p>
+	{/if}
 	<a
 		href={searchHref}
 		class="flex h-12 items-center gap-2.5 rounded-lg border border-input px-3 text-base text-muted-foreground hover:bg-muted/60 dark:bg-input/30"
@@ -93,7 +102,7 @@
 			<span class="text-sm text-muted-foreground">
 				{day.sessions || day.runs
 					? [
-							day.sessions && count(day.sessions, 'session', 'sessions'),
+							day.sessions && count(day.sessions, 'recap', 'recaps'),
 							day.runs && count(day.runs, 'run', 'runs')
 						]
 							.filter(Boolean)

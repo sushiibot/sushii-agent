@@ -1,6 +1,6 @@
 ---
 name: session-history
-description: Look up your own past runs and conversations in ~/history with rg and cat (ws-runs only for raw tool output). Use when asked what you did earlier ("what did I do yesterday", "what did we decide about X last week"), what a subagent or scheduled job found, or when debugging one of your own past runs.
+description: Look up your own past runs and conversations in ~/history with rg and cat (ws-runs only for raw tool output). Use for recall beyond the current conversation, including past preferences, facts and decisions, or when asked what you did earlier ("what did I do yesterday", "what did we decide about X last week"), what a subagent or scheduled job found, or when debugging one of your own past runs.
 ---
 
 # Session history
@@ -39,6 +39,32 @@ versioned and only the workspace writes it, so don't edit it.
   (`rg -A20 "X" ~/history/*.md`). Their Decisions sections are the condensed record.
 - "What did that subagent find?": open the parent run's file and follow its `Subagent:` link, or
   use the runId the delegate result gave you: `ls ~/history/*/*-<runId>.md`.
+
+## Recall from source transcripts
+
+When an answer depends on an earlier conversation, search before answering from a recap or memory.
+Recaps help locate evidence; the transcript establishes what was actually said.
+
+1. Search names, exact phrases and topic synonyms. Use bounded matches with line numbers:
+   `rg -n -i -F -e "topic" -e "other wording" ~/history`.
+2. Read the matching exchange and its surrounding messages:
+   `sed -n '40,100p' ~/history/YYYY-MM/DD-<runId>.md`.
+   Check whether a statement came from the user, the agent, or a tool.
+3. If the question concerns a current preference or decision, search for later corrections.
+   Give the most recent explicit decision, and explain any unresolved conflict.
+4. Answer with the relevant date and source file or run ID. Distinguish a direct record from an inference.
+   If the search finds no evidence, say what you searched; do not invent a recollection.
+
+Keep large histories outside the prompt. Read relevant slices instead of printing the entire directory.
+A failed keyword search does not prove absence. Try related wording and daily recaps to find candidates.
+For questions spanning many days, split the search by date or topic. Delegate bounded reading tasks
+when useful, asking each reader for source paths, dates and supporting exchanges. Combine the evidence,
+check disputed claims against their transcripts, and stop when the question is answered.
+
+This workflow adapts the external-context idea from
+[Recursive Language Models](https://arxiv.org/abs/2512.24601): inspect long records programmatically,
+then reason over selected pieces. It uses the existing filesystem and delegation tools. It is not
+an implementation of the paper's recursive REPL runtime, and has no measured recall improvement yet.
 
 ## ws-runs: raw output and run trees
 

@@ -14,7 +14,7 @@
 	import Evidence from './components/evidence.svelte';
 	import RunRow from './components/run-row.svelte';
 	import StepRow from './components/step-row.svelte';
-	import { kindLabel } from './format';
+	import { kindLabel, RUN_FILTERS } from './format';
 	import type { RunDetail, RunStep } from './types';
 
 	let {
@@ -30,6 +30,7 @@
 		openSteps = [],
 		runHref = (id) => `/runs/${id}`,
 		historyHref = (date) => `/history/${date}`,
+		conversationHref,
 		onretry,
 		onloadmore
 	}: {
@@ -48,6 +49,7 @@
 		openSteps?: string[];
 		runHref?: (runId: string) => string;
 		historyHref?: (date: string) => string;
+		conversationHref?: (conversationId: string) => string | undefined;
 		onretry?: () => void;
 		onloadmore?: () => void;
 	} = $props();
@@ -64,6 +66,9 @@
 		}
 	});
 	const run = $derived(detail?.run);
+	const chatHref = $derived(
+		run?.kind === 'chat' ? conversationHref?.(run.conversationId ?? 'main') : undefined
+	);
 	const outcome = $derived.by(() => {
 		if (!run) return '';
 		switch (run.status) {
@@ -196,6 +201,14 @@
 					{/each}
 				</Tabs.List>
 				<Tabs.Content value="overview" class="flex flex-col gap-5 data-[state=inactive]:hidden">
+					{#if run.kind === 'chat'}
+						<p class="text-sm text-muted-foreground">
+							{RUN_FILTERS.find((f) => f.value === 'chat')?.description}
+						</p>
+						{#if chatHref}<Button variant="outline" href={chatHref} class="self-start"
+								>Open conversation<ArrowUpRight /></Button
+							>{/if}
+					{/if}
 					<dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
 						{#each facts as [k, v] (k)}
 							<dt class="text-muted-foreground">{k}</dt>

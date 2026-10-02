@@ -221,7 +221,7 @@ bunx tsc --noEmit          # type-check
 ## MCP connections
 
 The personal workspace supports remote MCP servers through the web app's Connectors screen.
-The agent can list accepted tools and call them during a chat turn.
+The agent can list current tools and call them during a chat turn.
 Other chat surfaces and scheduled jobs do not receive these tools.
 
 1. Add `connectors` to the bot's `WEB_FEATURES` configuration.
@@ -244,8 +244,8 @@ Disconnect disables agent access and retains credentials for reconnection.
 Remove erases the saved connection and its credentials.
 Remove does not revoke the token at the provider.
 
-The agent blocks new or changed tool definitions until the owner accepts the current tool list.
-Tools without a read-only annotation require owner approval before each call.
+Connecting a server authorizes the agent to use its tools, including new or changed definitions.
+Tool snapshots show changes for tracking. They do not block calls or require per-call approval.
 The annotation comes from the MCP server. Use a read-only token to enforce read-only access.
 Connections support Streamable HTTP, bearer tokens, and OAuth with dynamic client registration.
 Local servers, stdio, legacy SSE, and OAuth clients that need manual registration are outside this UI's scope.

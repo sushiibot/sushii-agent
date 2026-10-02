@@ -44,6 +44,7 @@ export interface ReadRouteDeps {
   features: readonly WebFeature[];
   workspaceEnabled: boolean;
   now?: () => number;
+  memory?: Pick<WorkspaceLink, "memoryRead">;
   connectors?: Pick<WorkspaceLink, "connectors">;
 }
 
@@ -277,6 +278,16 @@ export function createReadRoutes(deps: ReadRouteDeps): ReadRoutes {
 
   return {
     async handle(req, path) {
+      if (path === "/api/memory" || path.startsWith("/api/memory/")) {
+        if (!has("memory") || !deps.memory) return notFound();
+        if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+        const file = /^\/api\/memory\/files\/([A-Za-z0-9_-]{1,1024})$/.exec(path);
+        if (path !== "/api/memory" && !file) return notFound();
+        return answer("memory/read", async () => {
+          const result = await fromWorkspace(() => deps.memory!.memoryRead(file?.[1]));
+          return result === null ? notFound() : cappedJson(result);
+        });
+      }
       if (path === "/api/connectors" || path.startsWith("/api/connectors/")) {
         if (!has("connectors") || !deps.connectors) return notFound();
         let request: unknown;

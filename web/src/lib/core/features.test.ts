@@ -14,11 +14,11 @@ test('a bot feature is never off while /api/me is unknown, and off once it says 
 
 test('a client feature shows only through the override, and is off without it', () => {
 	const off = new Features(never, null, new Set());
-	expect(off.has('memory')).toBe(false);
-	expect(off.off('memory')).toBe(true);
-	const on = new Features(never, null, parseOverride('memory, threads'));
-	expect(on.has('memory')).toBe(true);
-	expect(on.off('memory')).toBe(false);
+	expect(off.has('browser')).toBe(false);
+	expect(off.off('browser')).toBe(true);
+	const on = new Features(never, null, parseOverride('browser, threads'));
+	expect(on.has('browser')).toBe(true);
+	expect(on.off('browser')).toBe(false);
 	expect(on.has('skills')).toBe(false);
 });
 

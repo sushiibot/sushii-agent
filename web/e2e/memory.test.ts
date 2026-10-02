@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { checkScreen, fixtureApp, openDrawer } from './helpers';
 
-test('Memory lists recent changes and files, each opening its own screen', async ({
+test('Memory separates saved files, daily notes and recorded changes', async ({
 	page,
 	context
 }) => {
@@ -9,13 +9,20 @@ test('Memory lists recent changes and files, each opening its own screen', async
 	await page.goto('/chat');
 	await (await openDrawer(page)).getByRole('link', { name: /Memory/ }).click();
 	await expect(page.getByRole('heading', { name: 'Memory', level: 1 })).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Recent changes' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Long-term files' })).toBeVisible();
+	await page.getByRole('button', { name: 'Daily notes', exact: true }).click();
+	await expect(page.getByRole('link', { name: /memory\/2026-09-29\.md/ })).toBeVisible();
+	await expect(page.getByRole('link', { name: /MEMORY\.md.*The index/ })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Long-term', exact: true }).click();
+	await page.getByRole('searchbox', { name: 'Find a memory file' }).fill('MEMORY.md');
+	await expect(page.getByRole('link', { name: /USER\.md/ })).toHaveCount(0);
 	await page.getByRole('link', { name: /MEMORY\.md.*The index/ }).click();
 	await expect(page).toHaveURL(/\/memory\/files\/memory-md$/);
 	await expect(page.getByRole('region', { name: 'What the file says' })).toContainText(
 		'Eastside Auto'
 	);
 	await page.goBack();
+	await page.getByRole('button', { name: 'Changes', exact: true }).click();
 	await page.getByRole('link', { name: 'All 6 changes' }).click();
 	await expect(page.getByRole('heading', { name: 'Memory changes', level: 1 })).toBeVisible();
 });
@@ -59,7 +66,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.emulateMedia({ colorScheme });
 		await fixtureApp(context);
 		for (const [path, ready] of [
-			['/memory', 'Recent changes'],
+			['/memory', 'Long-term files'],
 			['/memory/writes', 'Memory changes'],
 			['/memory/writes/w-thursday', 'Changed: no meetings'],
 			['/memory/files/user-md', 'Changes to this file']

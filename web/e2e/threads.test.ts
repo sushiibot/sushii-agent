@@ -74,7 +74,8 @@ test('archiving stays in the conversation and keeps the thread visible below cur
 }) => {
 	await fixtureApp(context);
 	await page.goto('/chats/oct-trip');
-	await page.getByRole('button', { name: 'Archive', exact: true }).click();
+	await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
+	await page.getByRole('button', { name: 'Archive thread', exact: true }).click();
 	const sheet = page.getByRole('dialog', { name: 'Archive thread' });
 	await expect(sheet).not.toContainText('Report to Main');
 	await sheet.getByRole('button', { name: 'Archive thread', exact: true }).click();
@@ -135,7 +136,9 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.goto('/chats/oct-trip');
 		await expect(page.getByText('Brief from Main')).toBeVisible();
 		await checkScreen(page);
-		await page.getByRole('button', { name: 'Archive' }).click();
+		await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
+		await checkScreen(page);
+		await page.getByRole('button', { name: 'Archive thread', exact: true }).click();
 		await expect(page.getByRole('dialog', { name: 'Archive thread' })).toBeVisible();
 		await checkScreen(page);
 	});
@@ -147,7 +150,8 @@ test('thread settings saves a name and preserves the conversation across a reloa
 }) => {
 	await fixtureApp(context);
 	await page.goto('/chats/oct-trip');
-	await page.getByRole('button', { name: 'Thread settings', exact: true }).click();
+	await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
+	await page.getByRole('button', { name: 'Rename thread', exact: true }).click();
 	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
 	const name = sheet.getByRole('textbox', { name: 'Thread name' });
 	await expect(name).toHaveValue('October trip');
@@ -196,7 +200,8 @@ test('a failed rename keeps the sheet and its edited name available for retry', 
 		} else await route.fallback();
 	});
 	await page.goto('/chats/oct-trip');
-	await page.getByRole('button', { name: 'Thread settings', exact: true }).click();
+	await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
+	await page.getByRole('button', { name: 'Rename thread', exact: true }).click();
 	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
 	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Japan trip');
 	await sheet.getByRole('button', { name: 'Save name' }).click();

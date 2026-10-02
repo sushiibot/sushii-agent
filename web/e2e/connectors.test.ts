@@ -1,19 +1,23 @@
 import { expect, test } from '@playwright/test';
 import { checkScreen, fixtureApp } from './helpers';
 
-test('connectors list servers, and a changed tool list waits to be accepted', async ({
+test('connector tool changes are informational and the tracking snapshot is optional', async ({
 	page,
 	context
 }) => {
 	await fixtureApp(context);
 	await page.goto('/connectors');
-	await expect(page.getByRole('region', { name: 'Needs attention' })).toContainText('Code host');
+	await expect(page.getByRole('region', { name: 'Connected' })).toContainText('Code host');
 	await page.getByRole('link', { name: /Code host/ }).click();
 	await expect(page.getByText('New on the server')).toBeVisible();
 	await expect(page.getByText('Gone from the server')).toBeVisible();
-	await page.getByRole('button', { name: 'Accept the new tool list' }).click();
-	await expect(page.getByText('Snapshot of 5 tools saved by you.')).toBeVisible();
+	await expect(
+		page.getByText('Added and changed tools are available without approval.', { exact: false })
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Save tracking snapshot' }).click();
 	await expect(page.getByText('Gone from the server')).toHaveCount(0);
+	await page.getByRole('tab', { name: 'History', exact: true }).click();
+	await expect(page.getByText('Snapshot of 5 tools saved by you.')).toBeVisible();
 });
 
 test('adding a server by URL walks address, sign-in and paste-back', async ({ page, context }) => {
@@ -69,12 +73,22 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await fixtureApp(context);
 		for (const [path, ready] of [
 			['/connectors', 'Needs attention'],
-			['/connectors/code-host', 'Used by'],
+			['/connectors/code-host', 'Tools'],
 			['/connectors/add', 'Server address']
 		]) {
 			await page.goto(path);
-			await expect(page.getByText(ready).first()).toBeVisible();
+			if (path === '/connectors/code-host') {
+				await expect(page.getByRole('tab', { name: ready, exact: true })).toBeVisible();
+			} else {
+				await expect(page.getByText(ready).first()).toBeVisible();
+			}
 			await checkScreen(page);
+			if (path === '/connectors/code-host') {
+				for (const label of ['History', 'Used by']) {
+					await page.getByRole('tab', { name: label, exact: true }).click();
+					await checkScreen(page);
+				}
+			}
 		}
 	});
 }
@@ -98,4 +112,25 @@ test('Fastmail token connection can disconnect, reconnect and remove its credent
 	await page.getByRole('button', { name: 'Remove connection', exact: true }).click();
 	await expect(page).toHaveURL(/\/connectors$/);
 	await expect(page.getByRole('link', { name: /api.fastmail.com/ })).toHaveCount(0);
+});
+
+test('connection tabs reach history and usage without scrolling through tools', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/connectors/code-host');
+	const tools = page.getByRole('tabpanel', { name: 'Tools', exact: true });
+	await expect(tools).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Save tracking snapshot' })).toBeVisible();
+	await page.getByRole('tab', { name: 'History', exact: true }).click();
+	await expect(tools).toBeHidden();
+	await expect(page.getByRole('heading', { name: 'Connection history' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Save tracking snapshot' })).toBeHidden();
+	await page.getByRole('tab', { name: 'Used by', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Runs using this connection' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toBeVisible();
+	await page.getByRole('tab', { name: 'Tools', exact: true }).click();
+	await expect(tools).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Save tracking snapshot' })).toBeVisible();
 });

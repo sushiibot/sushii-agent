@@ -51,7 +51,8 @@ test("topic conversations stream independently, survive restart and resume after
   await textbox(page).fill(`Resumed topic #${resumed}`);
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(bubble(page, `re-${resumed}`)).toContainText("Done.");
-  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  await page.getByRole("button", { name: "Chat commands", exact: true }).click();
+  await page.getByRole("button", { name: "Archive thread", exact: true }).click();
   const close = page.getByRole("dialog", { name: "Archive thread" });
   await close
     .getByRole("button", { name: "Archive thread", exact: true })

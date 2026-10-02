@@ -29,9 +29,9 @@
 	const sections = $derived([
 		{
 			label: 'Needs attention',
-			items: servers.filter((s) => s.status !== 'connected' || s.changed)
+			items: servers.filter((s) => s.status !== 'connected')
 		},
-		{ label: 'Connected', items: servers.filter((s) => s.status === 'connected' && !s.changed) }
+		{ label: 'Connected', items: servers.filter((s) => s.status === 'connected') }
 	]);
 </script>
 
@@ -68,7 +68,7 @@
 				<span class="text-ui font-medium">{s.name}</span>
 				{#if s.status === 'error'}<StatePill of="failed" label="Not working" />
 				{:else if s.status === 'signed-out'}<StatePill of="waiting" label="Sign in again" />
-				{:else if s.changed}<StatePill of="waiting" label="Tools changed" />{/if}
+				{:else if s.changed}<StatePill of="quiet" label="Tools changed" />{/if}
 			</span>
 			<span class="font-mono text-meta [overflow-wrap:anywhere] text-muted-foreground">{s.url}</span
 			>

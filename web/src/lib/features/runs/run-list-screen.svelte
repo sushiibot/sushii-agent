@@ -57,6 +57,10 @@
 {/snippet}
 
 {#snippet lead()}
+	<p class="text-sm text-muted-foreground">
+		A run is one attempt by the agent to respond or complete a task. Open it for the steps, result
+		and evidence.
+	</p>
 	{#if onfilter}
 		<RadioGroup.Root
 			value={filter}
@@ -70,6 +74,7 @@
 			{/each}
 		</RadioGroup.Root>
 	{/if}
+	<p class="text-sm text-muted-foreground">{shown.description}</p>
 {/snippet}
 
 {#snippet skeleton()}
@@ -113,7 +118,7 @@
 	title="Runs"
 	{back}
 	{banner}
-	lead={onfilter ? lead : undefined}
+	{lead}
 	state={{
 		remote,
 		offline: !online,

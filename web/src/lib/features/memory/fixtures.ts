@@ -65,7 +65,7 @@ export function memoryFiles(now: number): MemoryFile[] {
 		},
 		{
 			id: 'daily-2026-09-29-md',
-			path: 'daily/2026-09-29.md',
+			path: 'memory/2026-09-29.md',
 			about: "Yesterday's notes",
 			updatedAt: iso(now, 26 * 60),
 			lines: 2,
@@ -138,7 +138,7 @@ export function memoryWrites(now: number): MemoryWriteRecord[] {
 		{
 			id: WRITES.daily,
 			fileId: 'daily-2026-09-29-md',
-			path: 'daily/2026-09-29.md',
+			path: 'memory/2026-09-29.md',
 			summary: 'Daily note: flight booked, seat not chosen',
 			at: iso(now, 26 * 60),
 			commit: 'c2290fe',

@@ -6,7 +6,6 @@ import { WEB_FEATURES, type WebFeature } from './realtime/events';
  * through the device override; a backend adds its id to WEB_FEATURES when it ships.
  */
 export const CLIENT_FEATURES = [
-	'memory',
 	'skills',
 	'schedules',
 	'browser',
