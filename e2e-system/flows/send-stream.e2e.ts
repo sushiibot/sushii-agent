@@ -38,7 +38,8 @@ test("a sent message reaches the workspace and the streamed reply renders as mar
   const tag = nonce();
   await send(page, `E2E-THINK #${tag}`);
   await expect(visible).toHaveText("Waiting for the model…");
-  await expect(visible).toHaveText("Thinking…");
+  await expect(visible.locator("[data-thinking-emoji]")).toBeVisible();
+  await expect(visible.locator(".typing-status")).not.toHaveText("Thinking…");
   await expect(typing.locator(".sr-only")).toHaveText("Thinking…");
   await expect(page.getByText("Private reasoning must never appear in chat.", { exact: true })).toHaveCount(0);
   await expect(bubble(page, `re-${tag}`)).toContainText("Thoughtful reply.");

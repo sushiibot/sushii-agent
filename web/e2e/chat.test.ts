@@ -1869,11 +1869,31 @@ for (const width of [412, 1280]) {
 				modelActivity: 'thinking'
 			}
 		});
-		await expect(visibleStatus).toHaveText('Thinking…');
+		await expect(visibleStatus.locator('[data-thinking-emoji]')).toBeVisible();
+		const firstPhrase = await visibleStatus.textContent();
+		await page.clock.runFor(8000);
+		await expect(visibleStatus).not.toHaveText(firstPhrase!);
 		await expect(page.locator('[data-typing] .sr-only')).toHaveText('Thinking…');
 		await page.emulateMedia({ reducedMotion: 'reduce' });
 		await expect(visibleStatus.locator('.typing-status')).toHaveCSS('animation-name', 'none');
+		const stillPhrase = await visibleStatus.textContent();
+		await page.clock.runFor(16000);
+		await expect(visibleStatus).toHaveText(stillPhrase!);
 		await page.screenshot({ path: `/tmp/chat-thinking-${width}.png` });
+		await push(page, 'snapshot', {
+			turnId: 'compact',
+			view: {
+				turnId: 'compact',
+				startedAt: Date.now(),
+				text: '',
+				lines: [],
+				toolCount: 0,
+				modelActivity: 'waiting'
+			}
+		});
+		await expect(visibleStatus).toHaveText('Waiting for the model…');
+		await expect(visibleStatus.locator('[data-thinking-emoji]')).toHaveCount(0);
+		await expect(page.locator('[data-typing] .sr-only')).toHaveText('Waiting for the model…');
 		await push(page, 'delta', {
 			turnId: 'compact',
 			offset: 0,

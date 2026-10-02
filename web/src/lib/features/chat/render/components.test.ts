@@ -270,8 +270,20 @@ describe('compact inline activity', () => {
 			turn: { state: 'thinking', steps: [], label: 'Thinking…' }
 		});
 		expect(text).toContain('Thinking…');
+		expect(text).toContain('🍣');
+		expect(text).toContain('Rolling sushi…');
 		expect(els.filter((e) => e.tag === 'details')).toHaveLength(0);
 		expect(els.some((e) => e.attrs.role === 'status')).toBe(true);
+	});
+
+	test('waiting and tool progress keep their plain status without thinking phrases', async () => {
+		for (const label of ['Waiting for the model…', 'Working…', 'Resetting context…']) {
+			const { text } = await dom(WorkingRow, { turn: { state: 'working', steps: [], label } });
+			expect(text).toContain(label);
+			expect(text).not.toContain('🍣');
+			expect(text).not.toContain('Rolling sushi');
+			expect(text).not.toContain('Thinking…');
+		}
 	});
 
 	test('an approval without execution evidence never claims the tool finished', async () => {
