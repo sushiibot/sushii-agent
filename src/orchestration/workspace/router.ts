@@ -85,10 +85,12 @@ export interface OwnerRouterDeps<M extends InboundMessage> {
   offline?: "fallback" | "reject";
 }
 
-/** The receipt for how the workspace took a message; none for a duplicate or context. */
+/** The receipt for how the workspace took a message; none for a duplicate or context.
+ *  `queued` keeps the surface's row pending: the queue behind the running turn delivers it. */
 export function modeAck(mode: ChatMessageMode): AckKind | null {
   if (mode === "prompt") return "accepted";
   if (mode === "steer") return "steer";
+  if (mode === "queued") return "queued";
   return null;
 }
 

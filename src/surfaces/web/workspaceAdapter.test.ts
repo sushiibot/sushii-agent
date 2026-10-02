@@ -558,3 +558,41 @@ test("commentary and tool positions survive final delivery, history reload and p
   const history = historyPage(h.log, { limit: 30 }, { maxBytes: 100_000 });
   expect(history.items).toMatchObject([{ type: "assistant", text: "The config is valid.", activityText: "Checking the config.The config is valid.", tools: [{ name: "read", textOffset: 20, ok: true }] }]);
 });
+
+describe("web adapter queue receipts", () => {
+  test("an ack of queued leaves the row pending and still emits its status; every other ack routes it", async () => {
+    const h = setup();
+    const inbound = new WebInboundStore(h.db);
+    inbound.insert({ clientId: "QUEUED1", text: "later", uploadIds: [], seq: 1, createdAt: Date.now() });
+    const message: InboundMessage = { origin: WEB, id: "QUEUED1", text: "later", author: { id: "u", name: "drk" }, isVoice: false, attachments: [] };
+    await h.adapter.ack(message, "queued");
+    expect(inbound.get("QUEUED1")).toMatchObject({ state: "pending", routedAt: null });
+    expect(h.log.list(["status"]).map((e) => e.data)).toEqual([{ clientId: "QUEUED1", state: "queued" }]);
+    // Delivered at the turn's end: the receipt now marks it routed, as every other kind does.
+    await h.adapter.ack(message, "accepted");
+    expect(inbound.get("QUEUED1")).toMatchObject({ state: "routed", routedAt: expect.any(Number) });
+    expect(h.log.list(["status"]).map((e) => e.data)).toEqual([
+      { clientId: "QUEUED1", state: "queued" },
+      { clientId: "QUEUED1", state: "accepted" },
+    ]);
+  });
+
+  test("onTurnsIdle fires when the last open turn ends, and never while one is still open", async () => {
+    const h = setup();
+    let idle = 0;
+    h.adapter.onTurnsIdle = () => void idle++;
+    const view = (turnId: string) => ({ turnId, startedAt: 0, lines: [], toolCount: 0, text: "" });
+    await h.adapter.progressCreate(null, view("t1"));
+    await h.adapter.progressCreate(null, view("t2"));
+    expect(h.adapter.openTurns()).toHaveLength(2);
+    await h.adapter.progressFinalize(null, { id: "t1" }, { outcome: "done", summary: null });
+    expect(idle).toBe(0);
+    expect(h.adapter.openTurns()).toHaveLength(1);
+    await h.adapter.progressFinalize(null, { id: "t2" }, { outcome: "done", summary: null });
+    expect(idle).toBe(1);
+    expect(h.adapter.openTurns()).toHaveLength(0);
+    // A repeated final with nothing open still gives the queued rows their chance to drain.
+    await h.adapter.progressFinalize(null, { id: "t2" }, { outcome: "done", summary: null });
+    expect(idle).toBe(2);
+  });
+});

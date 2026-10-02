@@ -74,7 +74,9 @@ export const chatMessageParams = z.object({
   fileUploads: z.boolean().optional(),
 });
 export type ChatMessageParams = z.infer<typeof chatMessageParams>;
-export type ChatMessageMode = "prompt" | "steer" | "duplicate" | "context";
+/** `queued`: the workspace took the message but holds it until its current turn ends; the bot keeps
+ *  its row pending and settles it when the turn ends (or a re-drive finds the workspace saw it). */
+export type ChatMessageMode = "prompt" | "steer" | "duplicate" | "context" | "queued";
 export interface ChatMessageResult {
   accepted: true;
   mode: ChatMessageMode;

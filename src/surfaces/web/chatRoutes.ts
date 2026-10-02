@@ -122,6 +122,9 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   let redriving = false;
   const notice = (n: RouterNotice) => void chatLog.append("notice", n);
 
+  // The last open turn just ended: that is when rows queued behind it are routed, in seq order.
+  adapter.onTurnsIdle = () => redriveUnrouted();
+
   /** Routes a persisted message through the owner router. A receipt (or a consuming notice) marks it
    *  routed; a workspaceOffline notice leaves it for the client to resend. */
   function drive(row: { clientId: string; text: string; uploadIds: string[] }, actor: SurfaceActor): void {
@@ -176,16 +179,22 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   }
 
   /** Routes every stored, never-routed message in the order it was sent. The workspace dedupes by clientId,
-   *  so one it already took answers as a duplicate and is marked routed. */
+   *  so one it already took answers as a duplicate and is marked routed. Gated on no open turn: a row
+   *  queued behind a running turn waits for its end (the adapter calls back then), never re-routes mid-turn. */
   function redriveUnrouted(): void {
     redriveWanted = true;
     const actor = lastActor;
-    if (redriving || !actor || !online() || shutdown.signal.aborted) return;
+    if (redriving || !actor || !online() || adapter.openTurns().length > 0 || shutdown.signal.aborted) return;
     redriving = true;
     redriveWanted = false;
     void (async () => {
       for (const row of inbound.unrouted(now() - INBOUND_RETENTION_MS)) {
         if (!online() || shutdown.signal.aborted) break;
+        // A turn started while this pass ran: the rest stay pending, in order, for its end.
+        if (adapter.openTurns().length > 0) {
+          redriveWanted = true;
+          break;
+        }
         drive(row, actor);
         await routing.get(row.clientId);
       }
@@ -196,6 +205,25 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
         // A reconnect while this pass ran may have left new pending rows behind it.
         if (redriveWanted) redriveUnrouted();
       });
+  }
+
+  /** A message sent while a turn runs is held by the bot, not the device: it is acked `queued`, which
+   *  leaves the row pending, and routed when the turn ends (or the owner steers it). True when held. */
+  function queueBehindTurn(row: { clientId: string; text: string }, actor: SurfaceActor): boolean {
+    // Already out with the workspace: its receipt settles it, so it is not queued behind the turn.
+    if (routing.has(row.clientId)) return true;
+    if (!online() || adapter.openTurns().length === 0) return false;
+    const message: InboundMessage = {
+      origin,
+      id: row.clientId,
+      text: row.text,
+      author: { id: actor.userId, name: actor.name },
+      isVoice: false,
+      attachments: [],
+      actor,
+    };
+    adapter.ack(message, "queued").catch((err) => log.error({ err, clientId: row.clientId }, "acking a queued web message failed"));
+    return true;
   }
 
   async function postMessage(req: Request, actor: SurfaceActor): Promise<Response> {
@@ -209,7 +237,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (existing.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse, 410);
       // A resend of a refused message is the owner's retry: it goes back to pending and is routed again.
       if (existing.state === "rejected") inbound.markPending(existing.clientId);
-      if (existing.state !== "routed") drive(existing, actor);
+      if (existing.state !== "routed" && !queueBehindTurn(existing, actor)) drive(existing, actor);
       return json({ seq: existing.seq, routed: existing.state === "routed" } satisfies PostMessageResponse, 202);
     }
     if (uploadIds.length && !deps.uploads) return json({ error: "uploads are not available" }, 400);
@@ -233,6 +261,18 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       throw err;
     }
     if (row.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse, 410);
+    if (row.state !== "routed" && !queueBehindTurn(row, actor)) drive(row, actor);
+    return json({ seq: row.seq, routed: row.state === "routed" } satisfies PostMessageResponse, 202);
+  }
+
+  /** The owner tapped a queued message: route it now, mid-turn, steering the running turn. */
+  async function postSteer(clientId: string, actor: SurfaceActor): Promise<Response> {
+    if (!CLIENT_ID_RE.test(clientId)) return json({ error: "not found" }, 404);
+    const row = inbound.get(clientId);
+    if (!row) return json({ error: "not found" }, 404);
+    if (row.state === "discarded") return json({ discarded: true } satisfies DiscardMessageResponse, 410);
+    // Same retry semantics as a resend: a refused row goes back to pending, then routes.
+    if (row.state === "rejected") inbound.markPending(clientId);
     if (row.state !== "routed") drive(row, actor);
     return json({ seq: row.seq, routed: row.state === "routed" } satisfies PostMessageResponse, 202);
   }
@@ -387,6 +427,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (sub === "history") return method === "GET" ? getHistory(req) : methodNotAllowed();
       const message = /^messages\/([^/]+)$/.exec(sub);
       if (message) return method === "DELETE" ? deleteMessage(decodeSegment(message[1]!) ?? "") : methodNotAllowed();
+      const steer = /^messages\/([^/]+)\/steer$/.exec(sub);
+      if (steer) return method === "POST" ? postSteer(decodeSegment(steer[1]!) ?? "", actor) : methodNotAllowed();
       if (method !== "POST") return methodNotAllowed();
       if (sub === "messages") return postMessage(req, actor);
       if (sub === "stop") return postStop(req, actor);

@@ -892,3 +892,114 @@ test("location replies require gateway identity, same-origin, strict bounded inp
   expect(JSON.stringify(h.log.list(["approval", "approval_resolved"]))).not.toContain("42.123456");
   h.db.close();
 });
+
+describe("the server-side queue: a send while a turn runs is held by the bot", () => {
+  const turn = (turnId: string) => ({ turnId, startedAt: 0, lines: [], toolCount: 0, text: "" });
+  const statuses = (h: ReturnType<typeof setup>) => h.log.list(["status"]).map((e) => e.data);
+
+  test("POST during a turn: 202 routed:false, acked queued, the row stays pending", async () => {
+    const h = setup();
+    await h.adapter.progressCreate(null, turn("t1"));
+    const res = await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "later" });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ seq: expect.any(Number), routed: false });
+    await h.routes.idle();
+    expect(h.link.sent).toHaveLength(0);
+    expect(h.inbound.get(CLIENT)).toMatchObject({ state: "pending", routedAt: null });
+    expect(statuses(h)).toEqual([{ clientId: CLIENT, state: "queued" }]);
+    // A resend of the held message does not route it either, and does not queue-ack twice.
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "later" });
+    await h.routes.idle();
+    expect(h.link.sent).toHaveLength(0);
+    expect(statuses(h)).toEqual([{ clientId: CLIENT, state: "queued" }]);
+  });
+
+  test("a reconnect mid-turn does not re-route queued rows; the turn's end does, in typed order", async () => {
+    const h = setup();
+    await h.adapter.progressCreate(null, turn("t1"));
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "first" });
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT2, text: "second" });
+    // The link reconnects while the turn still runs: the queued rows stay put.
+    h.routes.workspaceConnected();
+    await h.routes.idle();
+    expect(h.link.sent).toHaveLength(0);
+    expect(h.inbound.get(CLIENT)!.state).toBe("pending");
+    // The last open turn ends: both route now, oldest first.
+    await h.adapter.progressFinalize(null, { id: "t1" }, { outcome: "done", summary: null });
+    await until(() => h.link.sent.length === 2);
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.text)).toEqual(["first", "second"]);
+    expect(h.inbound.get(CLIENT)!.state).toBe("routed");
+    expect(h.inbound.get(CLIENT2)!.state).toBe("routed");
+    expect(statuses(h)).toEqual([
+      { clientId: CLIENT, state: "queued" },
+      { clientId: CLIENT2, state: "queued" },
+      { clientId: CLIENT, state: "accepted" },
+      { clientId: CLIENT2, state: "accepted" },
+    ]);
+  });
+
+  test("steer: the route drives the row mid-turn, and the steer ack settles it", async () => {
+    const h = setup();
+    h.link.sendMessage = async (i) => {
+      h.link.sent.push(i);
+      return { accepted: true, mode: "steer" };
+    };
+    await h.adapter.progressCreate(null, turn("t1"));
+    await post(h.handler, "/api/chat/messages", { clientId: CLIENT, text: "steer me" });
+    expect(h.link.sent).toHaveLength(0);
+    expect(await (await post(h.handler, `/api/chat/messages/${CLIENT}/steer`, {})).json()).toEqual({ seq: expect.any(Number), routed: false });
+    await h.routes.idle();
+    expect(h.link.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(h.inbound.get(CLIENT)!.state).toBe("routed");
+    expect(statuses(h)).toEqual([
+      { clientId: CLIENT, state: "queued" },
+      { clientId: CLIENT, state: "steer" },
+    ]);
+    // Unknown or malformed ids are never found; only POST steers.
+    expect((await post(h.handler, "/api/chat/messages/01J9Z3W8K2M4N6P8Q0R2S4T6ZZ/steer", {})).status).toBe(404);
+    expect((await post(h.handler, "/api/chat/messages/nope/steer", {})).status).toBe(404);
+    expect((await call(h.handler, `/api/chat/messages/${CLIENT}/steer`, { method: "GET" })).status).toBe(405);
+  });
+
+  test("a bot restart re-routes a queued row when the link reconnects", async () => {
+    const first = setup();
+    await first.adapter.progressCreate(null, turn("t1"));
+    await post(first.handler, "/api/chat/messages", { clientId: CLIENT, text: "held" });
+    await first.routes.idle();
+    expect(first.link.sent).toHaveLength(0);
+
+    const workspace = new FakeLink();
+    const second = setup({ db: first.db, link: workspace });
+    // The restart lost the turn, so the reconnect's re-drive delivers what was queued behind it.
+    await readFrames(await call(second.handler, "/api/chat/stream"), 1);
+    second.routes.workspaceConnected();
+    await second.routes.idle();
+    expect(workspace.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(second.inbound.get(CLIENT)!.state).toBe("routed");
+    expect(statuses(second)).toEqual([
+      { clientId: CLIENT, state: "queued" },
+      { clientId: CLIENT, state: "accepted" },
+    ]);
+  });
+
+  test("a queued row the workspace already took settles on its duplicate receipt", async () => {
+    const first = setup();
+    await first.adapter.progressCreate(null, turn("t1"));
+    await post(first.handler, "/api/chat/messages", { clientId: CLIENT, text: "held" });
+    await first.routes.idle();
+
+    const workspace = new FakeLink();
+    workspace.seen.add(CLIENT); // the workspace took it before the restart and remembers the id
+    const second = setup({ db: first.db, link: workspace });
+    await readFrames(await call(second.handler, "/api/chat/stream"), 1);
+    second.routes.workspaceConnected();
+    await second.routes.idle();
+    expect(workspace.sent.map((m) => m.messageId)).toEqual([CLIENT]);
+    expect(second.inbound.get(CLIENT)!.state).toBe("routed");
+    expect(statuses(second)).toEqual([
+      { clientId: CLIENT, state: "queued" },
+      { clientId: CLIENT, state: "accepted" },
+    ]);
+  });
+});
