@@ -126,9 +126,6 @@ export class ChatStore {
 	#failed = new Set<string>();
 	/** Posted entries whose resend failed with a retryable error, so the retry timer covers them. */
 	#retrying = new Set<string>();
-	/** Held entries waiting for the running turn to end, delivered one at a time, oldest first. */
-	#holdChain: Promise<void> = Promise.resolve();
-	#heldQueued = new Set<string>();
 	#greeted: Promise<void>;
 	#draftRestored = false;
 	#greet: () => void = () => {};
@@ -219,7 +216,7 @@ export class ChatStore {
 					};
 				}),
 				at: e.at,
-				delivery: e.failed ? 'failed' : e.holdForTurn ? 'queued-run' : 'sending'
+				delivery: e.failed ? 'failed' : 'sending'
 			});
 			if (e.failed) this.#failed.add(e.clientId);
 		}
@@ -534,35 +531,22 @@ export class ChatStore {
 		}
 	}
 
-	#deliver(entry: OutboxEntry, force = false): Promise<void> {
+	#deliver(entry: OutboxEntry): Promise<void> {
 		const id = entry.clientId;
 		const running = this.#sending.get(id);
 		if (running || !this.#live(id)) return running ?? Promise.resolve();
-		const send = this.#send(entry, force).finally(() => this.#sending.delete(id));
+		const send = this.#send(entry).finally(() => this.#sending.delete(id));
 		this.#sending.set(id, send);
 		return send;
 	}
 
-	async #send(entry: OutboxEntry, force = false) {
+	/** Always posts: whether the message waits is the bot's decision, not the device's. A turn that runs
+	 *  while it goes out comes back as `status: queued`, which marks it `queued-run`. */
+	async #send(entry: OutboxEntry) {
 		const id = entry.clientId;
 		this.#failed.delete(id);
 		if (entry.failed) {
 			entry.failed = false;
-			void this.#outbox.put(entry).catch(() => {});
-		}
-		// Queue by default: while a turn runs the message waits here, posted when the turn ends —
-		// unless the owner steers it now with an explicit Send now.
-		if (!force && !entry.posted && this.running) {
-			if (!entry.holdForTurn) {
-				entry.holdForTurn = true;
-				void this.#outbox.put(entry).catch(() => {});
-			}
-			setDelivery(this.#s, id, 'queued-run');
-			this.#commit();
-			return;
-		}
-		if (entry.holdForTurn) {
-			entry.holdForTurn = false;
 			void this.#outbox.put(entry).catch(() => {});
 		}
 		setDelivery(this.#s, id, 'sending');
@@ -679,40 +663,32 @@ export class ChatStore {
 		}, RETRY_MS);
 	}
 
-	/** A 202'd entry already waits in the bot, so it resends only when the workspace returns or its resend failed.
-	 *  Entries held for a running turn are skipped until it ends, then go out in the order they were typed. */
+	/** A 202'd entry already waits in the bot, so it resends only when the workspace returns or its resend failed. */
 	#flushOutbox(resendPosted: boolean) {
 		if (this.#buffer) return;
-		const running = this.running;
 		for (const entry of this.#pending.values()) {
 			const id = entry.clientId;
-			if (this.#failed.has(id) || this.#sending.has(id) || this.#heldQueued.has(id)) continue;
-			if (entry.holdForTurn && running) continue;
+			if (this.#failed.has(id) || this.#sending.has(id)) continue;
 			if (entry.posted && !resendPosted && !this.#retrying.has(id)) continue;
-			if (entry.holdForTurn) {
-				// Released: chained so held messages post one at a time, oldest first.
-				this.#heldQueued.add(id);
-				this.#holdChain = this.#holdChain.then(() => {
-					this.#heldQueued.delete(id);
-					// Skip if Send now already posted it while it waited its turn.
-					return entry.holdForTurn && this.#live(id) ? this.#deliver(entry) : undefined;
-				});
-				continue;
-			}
 			void this.#deliver(entry);
 		}
 	}
 
-	/** Posts a held message right away, steering the running turn with it, queue order aside. */
-	steerNow(messageId: string) {
+	/** Routes a queued message immediately, steering the running turn with it instead of waiting. */
+	async steerNow(messageId: string) {
 		const clientId = this.#clientIdOf(messageId);
-		const entry = clientId && this.#pending.get(clientId);
-		if (!entry) return;
-		if (entry.holdForTurn) {
-			entry.holdForTurn = false;
-			void this.#outbox.put(entry).catch(() => {});
+		if (!clientId) return;
+		try {
+			const res = await this.#api.steerMessage(clientId);
+			// It was already routed before this ask — the turn ended first — so settle it here.
+			if (res.routed && this.#pending.has(clientId)) {
+				this.#effect({ type: 'delivered', clientId });
+				setDelivery(this.#s, clientId, 'sent');
+				this.#commit();
+			}
+		} catch {
+			this.showToast("Couldn't send it now. Try again.");
 		}
-		void this.#deliver(entry, true);
 	}
 
 	/** Re-sends a failed message with the same client id, so the bot can dedupe it. */
