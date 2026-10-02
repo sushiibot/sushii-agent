@@ -496,18 +496,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     });
   }
 
-  /** Owner-only ops notice (startup). Best-effort — a failed DM never
-   *  affects the bot; owner DMs are 1:1 so config.ownerDiscordId is the whole address. Sent silently
-   *  (SuppressNotifications) — these are routine status pings, not something to buzz the owner for. */
-  async function notifyOwner(text: string): Promise<void> {
-    if (!config.ownerDiscordId) return;
-    const user = await client.users.fetch(config.ownerDiscordId).catch(() => null);
-    if (!user) return;
-    await user
-      .send({ content: text, flags: MessageFlags.SuppressNotifications })
-      .catch((err) => logger.warn({ err }, "failed to send owner ops DM"));
-  }
-
   // ── MessageCreate ────────────────────────────────────────────────────────────
   client.on(Events.MessageCreate, async (message: Message) => {
     if (!message.guildId) {
@@ -975,7 +963,6 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     const dmCursorAtReady = dmCursor.get();
     logger.info({ tag: c.user.tag }, "Logged in");
     logger.info({ guilds: Object.keys(config.guildConfig) }, "Watching guilds");
-    void notifyOwner(`🟢 sushii-agent online — version \`${process.env["APP_VERSION"] ?? "unknown"}\``);
     await registerWikiSyncCommands(c).catch((err) => logger.error({ err }, "failed to register wiki-sync commands"));
     await catchUpOwnerDmsOnReady(dmCursorAtReady).catch((err) => logger.error({ err }, "owner DM catch-up failed"));
     handledBeforeCatchUp = null;
