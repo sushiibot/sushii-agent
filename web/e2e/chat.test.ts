@@ -823,10 +823,11 @@ test('the commands sheet closes on back and leaves Main in place', async ({ page
 	await page.getByRole('button', { name: /Reset context/ }).click();
 	await page.getByRole('button', { name: 'Reset context' }).click();
 	await expect.poll(() => posts('/api/chat/command').at(0)?.body).toEqual({ command: 'new' });
-	await expect(page.getByText('Resetting context…')).toBeVisible();
+	await expect(page.locator('[data-typing]')).toBeVisible();
+	await expect(page.locator('[data-typing]')).toContainText('Resetting context…');
 	await push(page, 'session', { kind: 'new' }, 1);
 	await expect(page.getByText('Context reset', { exact: true })).toBeVisible();
-	await expect(page.getByText('Resetting context…')).toBeHidden();
+	await expect(page.locator('[data-typing]')).toBeHidden();
 });
 
 test('a forbidden stream says the device is not the owner', async ({ page, context }) => {
