@@ -76,15 +76,16 @@ describe("chat/deliver auth url", () => {
 });
 
 describe("web conversation id", () => {
-  test("only main", () => {
+  test("Main and safe topic conversation ids", () => {
     expect(webConversationId.safeParse("main").success).toBe(true);
-    for (const id of ["Main", "main ", "", "schedule", "123456789012345678"]) expect(webConversationId.safeParse(id).success).toBe(false);
+    for (const id of ["main ", "", "../other", "with/slash", "a".repeat(81)]) expect(webConversationId.safeParse(id).success).toBe(false);
   });
 
-  test("web origin needs surface web and conversation main", () => {
+  test("web origin needs surface web and a safe conversation id", () => {
     expect(webChatOrigin.safeParse({ surface: "web", conversationId: "main" }).success).toBe(true);
     expect(webChatOrigin.safeParse({ surface: "discord", conversationId: "main" }).success).toBe(false);
-    expect(webChatOrigin.safeParse({ surface: "web", conversationId: "other" }).success).toBe(false);
+    expect(webChatOrigin.safeParse({ surface: "web", conversationId: "other" }).success).toBe(true);
+    expect(webChatOrigin.safeParse({ surface: "web", conversationId: "../other" }).success).toBe(false);
   });
 });
 

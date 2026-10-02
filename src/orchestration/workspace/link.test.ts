@@ -731,8 +731,8 @@ describe("stop through the core", () => {
     expect(order).toEqual(["accepted"]);
     expect(await link.stopTurn(TEST, "gone", OWNER_TEST)).toEqual({ status: "ok", aborted: true, final: { outcome: "stopped", summary: null } });
     expect(rpc.calls.map((c) => c.params)).toEqual([
-      { principalId: P, turnId: "t1" },
-      { principalId: P, turnId: "gone" },
+      { principalId: P, turnId: "t1", origin: TEST },
+      { principalId: P, turnId: "gone", origin: TEST },
     ]);
   });
 

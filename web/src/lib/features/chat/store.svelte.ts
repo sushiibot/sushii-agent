@@ -72,6 +72,8 @@ interface Photo extends PhotoDraft {
 }
 
 export interface ChatStoreDeps {
+	/** This hub serves only this conversation, including its approvals. */
+	approvals?: boolean;
 	hub?: Hub;
 	api?: ChatApi;
 	outbox?: KeyValue<OutboxEntry>;
@@ -141,12 +143,15 @@ export class ChatStore {
 		readonly conversationId: ConversationId,
 		deps: ChatStoreDeps = {}
 	) {
+		this.#ownsApprovals = deps.approvals ?? false;
 		this.#hub = deps.hub ?? appHub;
 		this.#api = deps.api ?? httpChatApi;
 		this.#outbox = deps.outbox ?? outbox;
 		this.#drafts = deps.drafts ?? drafts;
 		this.#greeted = new Promise((r) => (this.#greet = r));
 	}
+
+	readonly #ownsApprovals: boolean;
 
 	#openTurnList() {
 		// Reads `items` so the derived map follows every commit.
@@ -162,8 +167,11 @@ export class ChatStore {
 			this.#hub.subscribe(
 				{
 					conversation: this.conversationId,
-					// The approval tray lives in Main until a Home screen owns it.
-					globals: this.conversationId === 'main' ? ['approval', 'approval_resolved'] : []
+					// A topic opts in only when it owns a separate, scoped stream.
+					globals:
+						this.conversationId === 'main' || this.#ownsApprovals
+							? ['approval', 'approval_resolved']
+							: []
 				},
 				(batch) => this.#onBatch(batch)
 			),

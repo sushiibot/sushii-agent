@@ -1,4 +1,5 @@
 import { BrowserLocationRequests } from "../../orchestration/workspace/location.ts";
+import { WebThreads } from "./threadRoutes.ts";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceLink } from "../../orchestration/workspace/link.ts";
 import type { WorkspaceTools } from "../../orchestration/workspace/tools.ts";
@@ -37,6 +38,7 @@ export interface WebChat {
   location: BrowserLocationRequests;
   routes: ChatRoutes;
   home: HomeRoutes;
+  threads: WebThreads;
   log: SqliteChatLog;
   /** Starts pruning and workspace-state fan-out; call once the gateway is serving. Returns a stop. */
   start(): () => void;
@@ -80,6 +82,12 @@ export function createWebChat(deps: WebChatDeps): WebChat {
     ...(deps.uploads ? { uploads: deps.uploads } : {}),
   });
 
+  const threads = new WebThreads({
+    db: deps.db, main: { log: chatLog, adapter, routes }, link: deps.link,
+    chat: { link: deps.link, tools: deps.tools, workspaceEnabled: deps.workspaceEnabled, ...(deps.uploads ? { uploads: deps.uploads } : {}) },
+    adapter: { push: { send: sendPush }, ...(deps.breakGlass ? { breakGlass: deps.breakGlass } : {}), ...(deps.uploads ? { uploads: deps.uploads } : {}) },
+  });
+
   const home = createHomeRoutes({ log: chatLog, adapter, store: homeStore, link: deps.link, workspaceEnabled: deps.workspaceEnabled, features });
 
   const importer = createPiChatImporter({ db: deps.db, log: chatLog, source: deps.link });
@@ -102,16 +110,18 @@ export function createWebChat(deps: WebChatDeps): WebChat {
       chatLog.prune(now);
       inbound.prune(now);
       homeStore.prune(now);
+      void threads.prune().catch(err => log.warn({ err }, "topic maintenance failed"));
     } catch (err) {
       log.warn({ err }, "web chat prune failed");
     }
   }
 
   return {
-    adapter,
+    adapter: threads.surface(),
     location,
     routes,
     home,
+    threads,
     log: chatLog,
     start() {
       prune();
@@ -121,9 +131,12 @@ export function createWebChat(deps: WebChatDeps): WebChat {
       const indexTimer = setInterval(() => void catchUpIndex(), INDEX_CATCH_UP_EVERY_MS);
       indexTimer.unref?.();
       const off = deps.link.onConnectionChange((connected) => {
-        chatLog.publish({ type: "workspace", data: { state: connected && deps.workspaceEnabled ? "online" : "offline" } });
+        const ev = { type: "workspace" as const, data: { state: connected && deps.workspaceEnabled ? "online" as const : "offline" as const } };
+        chatLog.publish(ev);
+        threads.publish(ev);
         if (connected) {
           routes.workspaceConnected();
+          threads.workspaceConnected();
           if (deps.workspaceEnabled) void importer.run().then(catchUpIndex);
         }
       });
@@ -141,6 +154,7 @@ export function createWebChat(deps: WebChatDeps): WebChat {
         off();
         offRuns();
         routes.closeStreams();
+        threads.closeStreams();
         adapter.close();
       };
     },

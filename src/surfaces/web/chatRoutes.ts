@@ -70,6 +70,7 @@ export interface ChatRouteDeps {
   workspaceEnabled: boolean;
   uploads?: WebUploadPort;
   location?: BrowserLocationRequests;
+  origin?: ChatOrigin;
   now?: () => number;
   sse?: { heartbeatMs: number; maxLifetimeMs: number };
   historyMaxBytes?: number;
@@ -106,6 +107,7 @@ const seenBody = z.object({ seq: z.number().int().min(0) }).strict();
 
 export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   const { log: chatLog, inbound, adapter, presence, link, tools } = deps;
+  const origin = deps.origin ?? WEB_ORIGIN;
   const now = deps.now ?? Date.now;
   const sseTimes = deps.sse ?? { heartbeatMs: SSE_HEARTBEAT_MS, maxLifetimeMs: SSE_MAX_LIFETIME_MS };
   const historyMax = deps.historyMaxBytes ?? HISTORY_RESPONSE_MAX;
@@ -132,7 +134,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
         return ref ? [{ url: uploadUrl(id), name: ref.name, contentType: ref.contentType }] : [];
       });
       const message: InboundMessage = {
-        origin: WEB_ORIGIN,
+        origin,
         id: row.clientId,
         text: row.text,
         author: { id: actor.userId, name: actor.name },
@@ -148,8 +150,8 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
           if (res.mode === "duplicate" && input.messageId === row.clientId) await adapter.ack(message, "accepted");
           return res;
         },
-        abort: (turnId?: string) => link.abort(turnId),
-        newSession: () => link.newSession(),
+        abort: (turnId?: string) => link.abort(turnId, origin),
+        newSession: () => link.newSession(origin),
         recordOffline: (u, r, o) => link.recordOffline(u, r, o),
         interceptReply: (m) => link.interceptReply(m),
         isOwner: (a) => link.isOwner(a),
@@ -157,7 +159,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
         startLogin: (o) => link.startLogin(o),
         completeLogin: (i) => link.completeLogin(i),
         cancelLogin: () => link.cancelLogin(),
-        command: (c, a) => link.command(c, a),
+        command: (c, a) => link.command(c, a, origin),
       };
       await handleOwnerMessage(message, {
         workspaceEnabled: deps.workspaceEnabled,
@@ -199,6 +201,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
   async function postMessage(req: Request, actor: SurfaceActor): Promise<Response> {
     const body = await parseBody(req, messageBody, MESSAGE_BODY_MAX);
     if (body instanceof Response) return body;
+    if (inbound.claimedElsewhere(body.clientId)) return json({ error: "This message id belongs to another conversation." }, 409);
     const uploadIds = [...new Set(body.uploadIds ?? [])];
     const existing = inbound.get(body.clientId);
     if (existing) {
@@ -263,13 +266,13 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     void (async () => {
       if (!online()) return notice({ type: "nothingToStop" });
       if (body.turnId) {
-        const res = await link.stopTurn(WEB_ORIGIN, body.turnId, actor);
+        const res = await link.stopTurn(origin, body.turnId, actor);
         if (res.status === "failed") notice({ type: "stopFailed", error: res.error });
-        else if (res.status === "ok" && res.final) await adapter.progressFinalize(null, { id: body.turnId }, res.final);
+        else if (res.status === "ok" && res.final) await adapter.progressFinalize(origin, { id: body.turnId }, res.final);
         return;
       }
       try {
-        if (!(await link.abort()).aborted) notice({ type: "nothingToStop" });
+        if (!(await link.abort(undefined, origin)).aborted) notice({ type: "nothingToStop" });
       } catch (err) {
         notice({ type: "stopFailed", error: errorText(err) });
       }
@@ -286,7 +289,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (body.command === "new") {
         if (!link.isConnected()) return notice({ type: "newWhileOffline" });
         try {
-          await link.newSession();
+          await link.newSession(origin);
           chatLog.append("session", { kind: "new" });
           notice({ type: "newSessionStarted" });
         } catch (err) {
@@ -296,7 +299,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       }
       if (!link.isConnected()) return notice({ type: "commandOffline" });
       try {
-        const res = await link.command("compact");
+        const res = await link.command("compact", undefined, origin);
         chatLog.append("session", { kind: "compacted" });
         notice({ type: "commandResult", text: res.text });
       } catch (err) {
@@ -315,7 +318,7 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
     if (!ask) return json({ error: "unknown ask" }, 404);
     const text = "text" in body ? body.text : ask.data.choices[body.index];
     if (text === undefined) return json({ status: "inactive" } satisfies PostAskResponse);
-    const res = await link.answerAsk(WEB_ORIGIN, askId, { text }, actor);
+    const res = await link.answerAsk(origin, askId, { text }, actor);
     if (res.status === "forbidden") return forbidden();
     if (res.status === "answered" || res.status === "duplicate") chatLog.append("ask_resolved", { askId, answer: res.answer }, askId);
     // The workspace no longer waits on it, so it must not come back as answerable on the next open.

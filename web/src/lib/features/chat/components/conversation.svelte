@@ -108,7 +108,7 @@
 				icon: Share2,
 				onclick: () => onshare(message)
 			});
-		if (onbranch)
+		if (onbranch && !message.streaming)
 			out.push({
 				id: 'branch',
 				label: 'Start a thread from here',

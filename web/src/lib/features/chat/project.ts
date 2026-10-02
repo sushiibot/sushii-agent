@@ -105,6 +105,7 @@ export function toMessages(
 				out.push({
 					id: item.id,
 					role: 'assistant',
+					sourceId: item.key ?? item.id.replace(/^h:/, ''),
 					parts,
 					streaming: item.streaming && !!item.text,
 					uploads: item.files

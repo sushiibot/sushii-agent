@@ -159,6 +159,7 @@ async function main() {
   });
   const webServer = await startWebGateway(process.env, db, {
     chat: webChat.routes,
+    threads: webChat.threads,
     home: webChat.home,
     uploads,
     reads: { db, link: workspace.link, connectors: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
@@ -307,7 +308,7 @@ async function main() {
     }
     await webStopped;
     // A message still being routed marks itself routed in the DB; bounded, inside docker's 10s grace.
-    if (webServer) await webChat.routes.drain();
+    if (webServer) await Promise.all([webChat.routes.drain(), webChat.threads.drain()]);
     // Before the DB closes, so no late workspace delivery writes to it.
     workspace.server.stop();
     closeDb();

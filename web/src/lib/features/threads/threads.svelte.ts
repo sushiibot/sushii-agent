@@ -1,7 +1,8 @@
+import { hub } from '$lib/core/realtime/hub.svelte';
 import { Remote } from '$lib/core/remote.svelte';
 import { chatStore, type ChatStore } from '$lib/features/chat';
 import { httpThreadsApi, type ThreadsApi } from './api';
-import { readOnlyThreadChat, type ThreadChatDeps } from './thread-chat';
+import { liveThreadChat, readOnlyThreadChat, type ThreadChatDeps } from './thread-chat';
 import type { ChatsData, ThreadDetail, ThreadReport } from './types';
 
 const errorText = (err: unknown) =>
@@ -17,14 +18,32 @@ export class ThreadsStore {
 	#api: ThreadsApi;
 	#chatDeps: ThreadChatDeps;
 	#threads = new Map<string, Remote<ThreadDetail | null>>();
-	/** Messages can be sent in threads; false until the stream carries thread ids. */
+	/** Messages can be sent unless a read-only prototype adapter is supplied. */
 	readonly canSend: boolean;
 
-	constructor(api: ThreadsApi = httpThreadsApi, chatDeps: ThreadChatDeps = readOnlyThreadChat) {
+	constructor(api: ThreadsApi = httpThreadsApi, chatDeps: ThreadChatDeps = liveThreadChat) {
 		this.#api = api;
 		this.#chatDeps = chatDeps;
 		this.canSend = chatDeps !== readOnlyThreadChat;
 		this.list = new Remote(() => api.list(), { refetchOnFocus: true });
+		if (chatDeps === liveThreadChat) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const changed = new Set<string>();
+			hub.subscribe({ types: ['threads'] }, (batch) => {
+				for (const ev of batch) if (ev.type === 'threads') changed.add(ev.data.id);
+				if (!changed.size || timer) return;
+				timer = setTimeout(() => {
+					timer = undefined;
+					if (this.list.status !== 'idle') void this.list.refetch();
+					for (const id of changed) {
+						const remote = this.#threads.get(id);
+						if (remote) void remote.refetch();
+					}
+					changed.clear();
+				}, 150);
+			});
+			hub.start();
+		}
 	}
 
 	/** One thread's detail, kept for the app's life so back and forth doesn't reload it. */

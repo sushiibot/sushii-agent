@@ -11,6 +11,7 @@ export const RPC_METHODS = {
   chatAbort: "chat/abort",
   chatNew: "chat/new",
   chatAck: "chat/ack",
+  topicsManage: "topics/manage",
   // Owner commands the workspace answers itself (!compact, !model, !tasks) → { text }.
   chatCommand: "chat/command",
   // Workspace → bot: deliver is a request (bot replies {} then later sends chat/ack); event is a notification.
@@ -49,6 +50,16 @@ export const RPC_METHODS = {
 export const chatOrigin = z.object({ surface: z.string(), conversationId: z.string() });
 export type ChatOrigin = z.infer<typeof chatOrigin>;
 
+export const TOPIC_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
+export const topicsManageParams = z.object({
+  principalId: z.string(), id: z.string().regex(TOPIC_ID_RE).refine(id => id !== "main"),
+  action: z.enum(["create", "close", "reopen"]),
+  title: z.string().trim().min(1).max(120).optional(),
+  brief: z.string().max(16000).optional(),
+}).strict();
+export const topicsManageResult = z.object({ ok: z.literal(true) }).strict();
+
+
 export const chatMessageParams = z.object({
   origin: chatOrigin,
   principalId: z.string(),
@@ -69,13 +80,13 @@ export interface ChatMessageResult {
 }
 
 // With turnId, only that turn is aborted; a stale Stop from a finished turn is a no-op.
-export const chatAbortParams = z.object({ principalId: z.string(), turnId: z.string().optional() });
+export const chatAbortParams = z.object({ principalId: z.string(), turnId: z.string().optional(), origin: chatOrigin.optional() });
 export type ChatAbortParams = z.infer<typeof chatAbortParams>;
 export interface ChatAbortResult {
   aborted: boolean;
 }
 
-export const chatNewParams = z.object({ principalId: z.string() });
+export const chatNewParams = z.object({ principalId: z.string(), origin: chatOrigin.optional() });
 export type ChatNewParams = z.infer<typeof chatNewParams>;
 export interface ChatNewResult {
   sessionFile: string;
@@ -83,7 +94,7 @@ export interface ChatNewResult {
 
 export const CHAT_COMMANDS = ["compact", "model", "tasks"] as const;
 export type ChatCommand = (typeof CHAT_COMMANDS)[number];
-export const chatCommandParams = z.object({ principalId: z.string(), command: z.enum(CHAT_COMMANDS), args: z.string().max(200).optional() });
+export const chatCommandParams = z.object({ principalId: z.string(), command: z.enum(CHAT_COMMANDS), args: z.string().max(200).optional(), origin: chatOrigin.optional() });
 export type ChatCommandParams = z.infer<typeof chatCommandParams>;
 export interface ChatCommandResult {
   text: string;
@@ -165,9 +176,9 @@ export function isHttpsUrl(s: string): boolean {
 }
 
 // ── Web chat (M1). ──
-// The only conversation the web surface has; any other conversationId from the workspace is rejected.
+// Main and topic conversations. The surface adapter also checks that a topic exists.
 export const WEB_CONVERSATION_ID = "main";
-export const webConversationId = z.enum([WEB_CONVERSATION_ID]);
+export const webConversationId = z.string().regex(TOPIC_ID_RE);
 export const webChatOrigin = z.object({ surface: z.literal("web"), conversationId: webConversationId });
 export type WebChatOrigin = z.infer<typeof webChatOrigin>;
 
@@ -643,6 +654,7 @@ export const toolCallParams = z.object({
   agentId: z.string().min(1).max(ID_MAX), // "main" | <runId>
   agentName: z.string().max(ID_MAX),
   parentRunId: z.string().max(ID_MAX).optional(),
+  origin: chatOrigin.optional(),
 });
 export type ToolCallParams = z.infer<typeof toolCallParams>;
 export type ToolCallResult = { ok: true; result: string } | { ok: false; error: string; denied?: boolean };

@@ -23,6 +23,8 @@ import {
   type HistorySearchResult,
   type RunsGetResult,
   type RunsListResult,
+  topicsManageParams,
+  topicsManageResult,
   chatDeliverParams,
   chatExportResult,
   runsChangedParams,
@@ -370,6 +372,10 @@ export class WorkspaceLink {
     return this.read(RPC_METHODS.connectors, connectorsParams, connectorsResult, { request }, 60_000);
   }
 
+  async topicManage(q: { id: string; action: "create" | "close" | "reopen"; title?: string; brief?: string }): Promise<void> {
+    await this.read(RPC_METHODS.topicsManage, topicsManageParams, topicsManageResult, q, NEW_SESSION_TIMEOUT_MS);
+  }
+
   async modelsGet(): Promise<ModelsResult> {
     return this.read(RPC_METHODS.modelsGet, modelsGetParams, modelsResult, {}, CONTROL_TIMEOUT_MS);
   }
@@ -420,8 +426,8 @@ export class WorkspaceLink {
   }
 
   /** With a turnId, the workspace aborts only that turn and answers aborted:false once it has ended. */
-  async abort(turnId?: string): Promise<{ aborted: boolean }> {
-    const params = { principalId: this.opts.principalId, ...(turnId ? { turnId } : {}) };
+  async abort(turnId?: string, origin?: ChatOrigin): Promise<{ aborted: boolean }> {
+    const params = { principalId: this.opts.principalId, ...(turnId ? { turnId } : {}), ...(origin ? { origin } : {}) };
     return (await this.request(RPC_METHODS.chatAbort, params, CONTROL_TIMEOUT_MS)) as { aborted: boolean };
   }
 
@@ -436,13 +442,13 @@ export class WorkspaceLink {
     this.persistProgress();
   }
 
-  async newSession(): Promise<{ sessionFile: string }> {
-    return (await this.request(RPC_METHODS.chatNew, { principalId: this.opts.principalId }, NEW_SESSION_TIMEOUT_MS)) as { sessionFile: string };
+  async newSession(origin?: ChatOrigin): Promise<{ sessionFile: string }> {
+    return (await this.request(RPC_METHODS.chatNew, { principalId: this.opts.principalId, ...(origin ? { origin } : {}) }, NEW_SESSION_TIMEOUT_MS)) as { sessionFile: string };
   }
 
   /** An owner command the workspace answers itself; `!compact` includes a memory flush, hence the long timeout. */
-  async command(command: ChatCommand, args?: string): Promise<ChatCommandResult> {
-    const params: ChatCommandParams = { principalId: this.opts.principalId, command, ...(args ? { args } : {}) };
+  async command(command: ChatCommand, args?: string, origin?: ChatOrigin): Promise<ChatCommandResult> {
+    const params: ChatCommandParams = { principalId: this.opts.principalId, command, ...(args ? { args } : {}), ...(origin ? { origin } : {}) };
     return (await this.request(RPC_METHODS.chatCommand, params, NEW_SESSION_TIMEOUT_MS)) as ChatCommandResult;
   }
 
@@ -473,7 +479,7 @@ export class WorkspaceLink {
     const tracked = this.hasTurn(turnId);
     let aborted: boolean;
     try {
-      aborted = (await this.abort(turnId)).aborted;
+      aborted = (await this.abort(turnId, origin)).aborted;
     } catch (err) {
       log.warn({ err, turnId, surface: origin.surface }, "stop failed");
       return { status: "failed", error: errorText(err) };
@@ -952,7 +958,7 @@ export class WorkspaceLink {
       case "turn_start": {
         // One main turn runs at a time: a restored view ended while the bot was down, and any other one's
         // turn_end was lost.
-        for (const turn of [...this.turns.values()]) if (turn.turnId !== p.turnId) this.finishTurn(turn, turn.restored ? "interrupted" : "done");
+        for (const turn of [...this.turns.values()]) if (turn.turnId !== p.turnId && (turn.origin?.surface ?? "") === (origin?.surface ?? "") && (turn.origin?.conversationId ?? "") === (origin?.conversationId ?? "")) this.finishTurn(turn, turn.restored ? "interrupted" : "done");
         const turn = this.turnFor(p.turnId, origin);
         const target = this.tryTarget(turn, origin);
         if (!turn.message && target?.adapter.turnStarted) this.openView(turn, () => target.adapter.turnStarted!(target.origin, this.view(turn)));

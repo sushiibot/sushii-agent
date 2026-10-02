@@ -106,6 +106,7 @@ export interface SubagentHostOptions {
 
 /** Where a delegate tool is mounted: main (depth 0) or a nested child. */
 export interface DelegateParent {
+  currentTurn?: () => ParentTurn | null;
   depth: number;
   /** The run in progress on the parent session; the children's parentRunId. */
   currentRunId: () => string | null;
@@ -167,6 +168,7 @@ export class SubagentHost {
   private readonly defsBySpawn = new Map<string, AgentDef>();
   private readonly activeFiles = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
+  private readonly pendingOrigins = new Map<Promise<unknown>, ChatOrigin | undefined>();
   private readonly models = new Map<string, ReturnType<typeof createOpenRouterModel>>();
   private readonly prices = new Map<string, Promise<TokenPrice | null>>();
   private readonly manager: SubagentManager;
@@ -244,8 +246,10 @@ export class SubagentHost {
   }
 
   /** A child still running, or a background result main hasn't taken yet. */
-  isBusy(): boolean {
-    return this.pending.size > 0 || this.results.list().length > 0;
+  isBusy(origin?: ChatOrigin): boolean {
+    if (!origin) return this.pending.size > 0 || this.results.list().length > 0;
+    const same = (o: ChatOrigin | undefined) => o?.surface === origin.surface && o.conversationId === origin.conversationId;
+    return [...this.pendingOrigins.values()].some(same) || this.results.list().some(r => same(r.origin));
   }
 
   /** Whether a session at `depth` gets the delegate tool. */
@@ -313,7 +317,7 @@ export class SubagentHost {
     const taskId = args.taskId?.trim().toLowerCase();
     if (taskId !== undefined && !TASK_ID.test(taskId)) throw new Error("delegate: `taskId` must be a TASKS.md id (t-…) or a project slug");
     const depth = call.parent.depth + 1;
-    const turn = this.opts.currentTurn?.() ?? null;
+    const turn = call.parent.currentTurn ? call.parent.currentTurn() : this.opts.currentTurn?.() ?? null;
 
     // Reserved before any await: two continues of one run in the same assistant message must not share its file.
     const reserved = args.continue ? this.reserveContinue(args.continue) : null;
@@ -386,7 +390,8 @@ export class SubagentHost {
       .then((outcome) => this.deliverBackground(spawn, outcome))
       .catch((err) => log.error({ err, runId: spawn.runId }, "background subagent failed"));
     this.pending.add(tracked);
-    void tracked.finally(() => this.pending.delete(tracked));
+    this.pendingOrigins.set(tracked, spawn.origin);
+    void tracked.finally(() => { this.pending.delete(tracked); this.pendingOrigins.delete(tracked); });
     return {
       runId: spawn.runId,
       status: "running",
@@ -678,7 +683,7 @@ export class SubagentHost {
     if (spawn.def.writer && !wt) throw new Error(`subagent ${spawn.def.name}: its working directory ${cwd} is not a worktree under projects/`);
     this.watch.attach({ runId: spawn.runId, writer: spawn.def.writer, allowedProjectPaths: wt?.projectPaths ?? [], onTamper: (r) => this.onTamper(spawn, r) });
 
-    const stubs = this.opts.toolStubs?.binding({ agentId: spawn.runId, agentName: spawn.def.name, parentRunId: spawn.parentRunId });
+    const stubs = this.opts.toolStubs?.binding({ agentId: spawn.runId, agentName: spawn.def.name, parentRunId: spawn.parentRunId, ...(spawn.turn?.origin ? { origin: spawn.turn.origin } : {}) });
     const nested = this.offersDelegate(spawn.depth);
     const loader = new DefaultResourceLoader({
       cwd,
@@ -701,7 +706,7 @@ export class SubagentHost {
         },
         // Rooted in the child's scratch dir, so its compaction handoff never lands in drk's daily notes.
         { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: scratch, log: memoryLog }) },
-        ...(nested ? [{ name: "sushii-delegate", factory: this.extension({ depth: spawn.depth, currentRunId: () => spawn.runId }) }] : []),
+        ...(nested ? [{ name: "sushii-delegate", factory: this.extension({ depth: spawn.depth, currentRunId: () => spawn.runId, currentTurn: () => spawn.turn }) }] : []),
       ],
     });
 

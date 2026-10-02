@@ -44,6 +44,8 @@ export interface AlertLine {
 }
 
 export interface ChatMessage {
+	/** Stable server key used when branching from a reply. */
+	sourceId?: string;
 	id: string;
 	role: 'user' | 'assistant';
 	parts: MessagePart[];

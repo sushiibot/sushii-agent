@@ -62,6 +62,22 @@ export async function fixtureRoutes(
 		const m = (re: RegExp) => re.exec(path);
 		let hit: RegExpExecArray | null;
 
+		if ((hit = m(/^\/threads\/([^/]+)\/chat\/(.*)$/))) {
+			const id = hit[1];
+			const sub = hit[2];
+			if (sub === 'history')
+				return answer(route, 'threads', async () => ({
+					items: (await threads.get(id))?.history ?? [],
+					before: null
+				}));
+			if (sub === 'stream')
+				return route.fulfill({
+					contentType: 'text/event-stream',
+					body: `event: hello\ndata: ${JSON.stringify({ headSeq: 0, workspace: 'online', openTurns: [], pending: { approvals: [], asks: [] } })}\n\n`
+				});
+			if (sub === 'messages') return route.fulfill({ status: 202, json: { seq: 1, routed: true } });
+			return route.fulfill({ status: 204 });
+		}
 		if (path === '/chats') return answer(route, 'threads', () => threads.list());
 		if (path === '/threads' && post) return answer(route, 'threads', () => threads.branch(body));
 		if ((hit = m(/^\/threads\/([^/]+)\/(close|reopen)$/)))

@@ -80,6 +80,8 @@ export function pageQuery(types: readonly string[], opts: { before?: HistoryPosi
 }
 
 export class SqliteChatLog implements ChatLog {
+  readonly conversationId: string;
+  private readonly scope: string;
   private readonly sinks = new Set<ChatSink>();
   private batch: ChatEnvelope[] | null = null;
   private readonly now: () => number;
@@ -99,22 +101,24 @@ export class SqliteChatLog implements ChatLog {
 
   constructor(
     private readonly db: Database,
-    opts: { now?: () => number; maxRows?: number; retentionMs?: number; index?: ChatTextIndex } = {},
+    opts: { now?: () => number; maxRows?: number; retentionMs?: number; index?: ChatTextIndex; conversationId?: string } = {},
   ) {
+    this.conversationId = opts.conversationId ?? "main";
+    this.scope = `conversation_id = '${this.conversationId.replaceAll("'", "''")}'`;
     this.now = opts.now ?? Date.now;
     this.index = opts.index;
     this.maxRows = opts.maxRows ?? EVENTS_MAX_ROWS;
     this.retentionMs = opts.retentionMs ?? EVENTS_RETENTION_MS;
     this.q = {
-      byKey: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = ? AND key = ?"),
-      insert: db.query("INSERT INTO web_events (type, key, data, created_at, sort_seq) VALUES (?, ?, ?, ?, ?) RETURNING seq"),
-      after: db.query("SELECT seq, type, key, data, created_at FROM web_events WHERE seq > ? ORDER BY seq"),
+      byKey: this.db.query(`SELECT seq, type, key, data, created_at FROM web_events WHERE ${this.scope} AND type = ? AND key = ?`),
+      insert: this.db.query(`INSERT INTO web_events (conversation_id, type, key, data, created_at, sort_seq) VALUES ('${this.conversationId.replaceAll("'", "''")}', ?, ?, ?, ?, ?) RETURNING seq`),
+      after: this.db.query(`SELECT seq, type, key, data, created_at FROM web_events WHERE ${this.scope} AND seq > ? ORDER BY seq`),
       // Imported rows sit at seq <= 0, below anything a stream can resume from.
-      min: db.query("SELECT min(seq) AS m FROM web_events WHERE seq > 0"),
-      head: db.query("SELECT seq FROM sqlite_sequence WHERE name = 'web_events'"),
-      prunedThrough: db.query("SELECT value FROM kv WHERE key = ?"),
-      anchor: db.query("INSERT OR IGNORE INTO web_turn_anchors (turn_id, anchor_seq, created_at) VALUES (?, ?, ?)"),
-      anchorOf: db.query("SELECT anchor_seq AS a FROM web_turn_anchors WHERE turn_id = ?"),
+      min: this.db.query("SELECT min(seq) AS m FROM web_events WHERE seq > 0"),
+      head: this.db.query("SELECT seq FROM sqlite_sequence WHERE name = 'web_events'"),
+      prunedThrough: this.db.query("SELECT value FROM kv WHERE key = ?"),
+      anchor: this.db.query("INSERT OR IGNORE INTO web_turn_anchors (turn_id, anchor_seq, created_at) VALUES (?, ?, ?)"),
+      anchorOf: this.db.query("SELECT anchor_seq AS a FROM web_turn_anchors WHERE turn_id = ?"),
     };
   }
 
@@ -185,21 +189,21 @@ export class SqliteChatLog implements ChatLog {
 
   /** The highest seq a prune has deleted; rows the cap exempts can sit below it, so `min(seq)` can't tell. */
   prunedThrough(): number {
-    return Number(this.q.prunedThrough.get(PRUNED_THROUGH_KEY)?.value ?? 0);
+    return Number(this.q.prunedThrough.get(`${PRUNED_THROUGH_KEY}:${this.conversationId}`)?.value ?? (this.conversationId === "main" ? this.q.prunedThrough.get(PRUNED_THROUGH_KEY)?.value : undefined) ?? 0);
   }
 
   /** Approvals created since `approvalsSince` with no decision, and the newest `asks` unanswered asks. */
   pending(opts: { approvalsSince: number; asks: number }): PendingState {
     const approvals = this.db
       .query(
-        `SELECT seq, type, key, data, created_at FROM web_events e WHERE e.type = 'approval' AND e.created_at >= ?
-         AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key) ORDER BY seq`,
+        `SELECT seq, type, key, data, created_at FROM web_events e WHERE e.${this.scope} AND e.type = 'approval' AND e.created_at >= ?
+         AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.conversation_id = e.conversation_id AND r.type = 'approval_resolved' AND r.key = e.key) ORDER BY seq`,
       )
       .all(opts.approvalsSince) as Row[];
     const asks = this.db
       .query(
-        `SELECT seq, type, key, data, created_at FROM web_events e WHERE e.type = 'ask' AND json_extract(e.data, '$.askId') != ''
-         AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'ask_resolved' AND r.key = json_extract(e.data, '$.askId')) ORDER BY seq DESC LIMIT ?`,
+        `SELECT seq, type, key, data, created_at FROM web_events e WHERE e.${this.scope} AND e.type = 'ask' AND json_extract(e.data, '$.askId') != ''
+         AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.conversation_id = e.conversation_id AND r.type = 'ask_resolved' AND r.key = json_extract(e.data, '$.askId')) ORDER BY seq DESC LIMIT ?`,
       )
       .all(opts.asks) as Row[];
     const at = (r: Row) => new Date(r.created_at).toISOString();
@@ -219,7 +223,7 @@ export class SqliteChatLog implements ChatLog {
    *  died with it, so none of them can be decided any more. Returns how many it cancelled. */
   cancelUnresolvedApprovals(): number {
     const rows = this.db
-      .query(`SELECT key FROM web_events e WHERE e.type = 'approval' AND e.key IS NOT NULL AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.type = 'approval_resolved' AND r.key = e.key) ORDER BY seq`)
+      .query(`SELECT key FROM web_events e WHERE e.${this.scope} AND e.type = 'approval' AND e.key IS NOT NULL AND NOT EXISTS (SELECT 1 FROM web_events r WHERE r.conversation_id = e.conversation_id AND r.type = 'approval_resolved' AND r.key = e.key) ORDER BY seq`)
       .all() as { key: string }[];
     this.transaction(() => {
       for (const { key } of rows) this.append("approval_resolved", { nonce: key, decision: "cancelled" }, key);
@@ -229,7 +233,7 @@ export class SqliteChatLog implements ChatLog {
 
   findAsk(askId: string): StoredEvent<"ask"> | null {
     const row = this.db
-      .query("SELECT seq, type, key, data, created_at FROM web_events WHERE type = 'ask' AND json_extract(data, '$.askId') = ? ORDER BY seq DESC LIMIT 1")
+      .query(`SELECT seq, type, key, data, created_at FROM web_events WHERE ${this.scope} AND type = 'ask' AND json_extract(data, '$.askId') = ? ORDER BY seq DESC LIMIT 1`)
       .get(askId) as Row | null;
     return row ? (toStored(row) as StoredEvent<"ask">) : null;
   }
@@ -245,14 +249,16 @@ export class SqliteChatLog implements ChatLog {
 
   /** The newest `limit` events of `types` in history order below the `before` position, newest first. */
   page<T extends DurableEventType>(types: readonly T[], opts: { before?: HistoryPosition; limit: number }): (StoredEvent<T> & { order: number })[] {
-    const { sql, params } = pageQuery(types, opts);
+    const query = pageQuery(types, opts);
+    const sql = query.sql.replace("WHERE type", `WHERE ${this.scope} AND type`).replace("INDEXED BY idx_web_events_order", "INDEXED BY idx_web_events_conversation_order");
+    const params = query.params;
     return (this.db.query(sql).all(...params) as (Row & { ord: number })[]).map((r) => ({ ...(toStored(r) as StoredEvent<T>), order: r.ord }));
   }
 
   list<T extends DurableEventType>(types: readonly T[], opts: { keys?: readonly string[]; since?: number } = {}): StoredEvent<T>[] {
     if (!types.length || (opts.keys && !opts.keys.length)) return [];
     const params: (string | number)[] = [...types];
-    let sql = `SELECT seq, type, key, data, created_at FROM web_events WHERE type IN (${types.map(() => "?").join(",")})`;
+    let sql = `SELECT seq, type, key, data, created_at FROM web_events WHERE ${this.scope} AND type IN (${types.map(() => "?").join(",")})`;
     if (opts.keys) {
       sql += ` AND key IN (${opts.keys.map(() => "?").join(",")})`;
       params.push(...opts.keys);
@@ -267,7 +273,7 @@ export class SqliteChatLog implements ChatLog {
 
   /** The oldest live row's time, or null when there is none. Imported rows don't count. */
   firstLiveAt(): number | null {
-    return (this.db.query("SELECT min(created_at) AS m FROM web_events WHERE seq > 0").get() as { m: number | null }).m;
+    return (this.db.query(`SELECT min(created_at) AS m FROM web_events WHERE ${this.scope} AND seq > 0`).get() as { m: number | null }).m;
   }
 
   /** Stores rows below every seq already held, in the order given (newest first), without fanning them out.
@@ -278,7 +284,7 @@ export class SqliteChatLog implements ChatLog {
       let stored = 0;
       for (const r of rows) {
         if (this.q.byKey.get(r.type, r.key)) continue;
-        this.db.run("INSERT INTO web_events (seq, type, key, data, created_at) VALUES (?, ?, ?, ?, ?)", [next--, r.type, r.key, JSON.stringify(r.data), r.createdAt]);
+        this.db.run("INSERT INTO web_events (seq, type, key, data, created_at, conversation_id) VALUES (?, ?, ?, ?, ?, ?)", [next--, r.type, r.key, JSON.stringify(r.data), r.createdAt, this.conversationId]);
         stored++;
       }
       return stored;
@@ -287,14 +293,14 @@ export class SqliteChatLog implements ChatLog {
 
   prune(now: number): void {
     this.db.transaction(() => {
-      const aged = this.db.query(`DELETE FROM web_events WHERE created_at < ? AND ${PRUNABLE} RETURNING seq`).all(now - this.retentionMs) as { seq: number }[];
+      const aged = this.db.query(`DELETE FROM web_events WHERE ${this.scope} AND created_at < ? AND ${PRUNABLE} RETURNING seq`).all(now - this.retentionMs) as { seq: number }[];
       const evicted = this.db
-        .query(`DELETE FROM web_events WHERE seq IN (SELECT seq FROM web_events WHERE ${PRUNABLE} ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
+        .query(`DELETE FROM web_events WHERE ${this.scope} AND seq IN (SELECT seq FROM web_events WHERE ${this.scope} AND ${PRUNABLE} ORDER BY seq DESC LIMIT -1 OFFSET ?) RETURNING seq`)
         .all(this.maxRows) as { seq: number }[];
       this.db.run("DELETE FROM web_turn_anchors WHERE created_at < ?", [now - this.retentionMs]);
       const through = Math.max(this.prunedThrough(), ...aged.map((r) => r.seq), ...evicted.map((r) => r.seq));
       if (through > this.prunedThrough()) {
-        this.db.run("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [PRUNED_THROUGH_KEY, String(through)]);
+        this.db.run("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [`${PRUNED_THROUGH_KEY}:${this.conversationId}`, String(through)]);
       }
     })();
   }

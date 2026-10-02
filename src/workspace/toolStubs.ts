@@ -1,5 +1,5 @@
 import type { AgentSession, AgentToolResult, ExtensionAPI, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { RPC_METHODS, type ToolCallParams, type ToolCallResult, type ToolCancelParams, type ToolManifestEntry } from "../orchestration/contracts.ts";
+import { RPC_METHODS, type ToolCallParams, type ToolCallResult, type ToolCancelParams, type ToolManifestEntry, type ChatOrigin } from "../orchestration/contracts.ts";
 import { ConnectionClosedError, NotConnectedError, RequestTimeoutError } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { ulid } from "./ulid.ts";
@@ -38,6 +38,7 @@ export interface StubAgentContext {
   agentId: string;
   agentName: string;
   parentRunId?: string;
+  origin?: ChatOrigin;
 }
 
 export const MAIN_AGENT: StubAgentContext = { agentId: "main", agentName: "main" };
@@ -136,6 +137,7 @@ export class ToolStubs {
       agentId: ctx.agentId,
       agentName: ctx.agentName,
       ...(ctx.parentRunId ? { parentRunId: ctx.parentRunId } : {}),
+      ...(ctx.origin ? { origin: ctx.origin } : {}),
     };
     if (signal?.aborted) throw new Error(`${name} was aborted before it was sent`);
     const pending = this.opts.request(RPC_METHODS.toolCall, params, toolTimeoutMs(entry.approval));

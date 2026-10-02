@@ -42,7 +42,7 @@ export class BrowserLocationRequests {
   async request(conn: ConnectionInfo, p: ToolCallParams): Promise<ToolCallResult> {
     const args = requestArgs.safeParse(p.args);
     if (!args.success) return { ok: false, error: "invalid location request arguments" };
-    if (p.agentId !== "main" || p.parentRunId) return { ok: false, error: "location is only available in the main personal conversation" };
+    if (p.agentId !== "main" || p.parentRunId || (p.origin?.surface === "web" && p.origin.conversationId !== WEB_CONVERSATION_ID)) return { ok: false, error: "location is only available in the main personal conversation" };
     if (this.pending.size >= 1) return { ok: false, error: "a location request is already pending" };
     const nonce = randomBytes(12).toString("base64url");
     const view: ApprovalView = { tool: LOCATION_TOOL, agentId: p.agentId, agentName: p.agentName, fields: [{ key: "reason", value: args.data.reason, kind: "body" }, { key: "conversation", value: WEB_CONVERSATION_ID, kind: "body" }] };

@@ -30,7 +30,7 @@ export const HOME_RECENT_HOURS = 72;
 export const HOME_RUNS_MAX = 20;
 
 /** Slices the bot turns on with `WEB_FEATURES`. A route whose feature is off answers 404. */
-export const WEB_FEATURES = ['runs', 'history', 'home', 'alerts', 'connectors'] as const;
+export const WEB_FEATURES = ['runs', 'history', 'home', 'alerts', 'connectors', 'threads'] as const;
 export type WebFeature = (typeof WEB_FEATURES)[number];
 
 /** Where the app loads an upload's bytes. */
@@ -296,6 +296,8 @@ export interface ChatEventMap {
 	/** A scheduled job's message reached Home's inbox; `key` is its outbox key. */
 	inbox: { key: string };
 	/** A background run started or ended; refetch what shows it. */
+	/** Refetch topic metadata and the Chats list; conversation content stays on its own stream. */
+	threads: { id: string };
 	run: {
 		runId: string;
 		kind: RunKind;
@@ -325,7 +327,15 @@ export const DURABLE_EVENTS = [
 	'alert_cleared'
 ] as const;
 /** Fanned out to open streams only, never stored. */
-export const EPHEMERAL_EVENTS = ['snapshot', 'delta', 'tool', 'workspace', 'run', 'inbox'] as const;
+export const EPHEMERAL_EVENTS = [
+	'snapshot',
+	'delta',
+	'tool',
+	'workspace',
+	'run',
+	'inbox',
+	'threads'
+] as const;
 
 export type FirstFrameEventType = (typeof FIRST_FRAME_EVENTS)[number];
 export type DurableEventType = (typeof DURABLE_EVENTS)[number];

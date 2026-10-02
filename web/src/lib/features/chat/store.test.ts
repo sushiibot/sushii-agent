@@ -107,6 +107,48 @@ test('a store created after the hub said hello still shows the approvals waiting
 	store.destroy();
 });
 
+test('a scoped topic receives pending approvals while a topic on Main does not', async () => {
+	const view = { tool: 'send_email', agentId: 'main', agentName: 'Topic', fields: [] };
+	const transport: ChatTransport = {
+		connect(_after, on, onState) {
+			setTimeout(() => {
+				onState('open');
+				on({
+					type: 'hello',
+					data: {
+						headSeq: 5,
+						workspace: 'online',
+						openTurns: [],
+						pending: { approvals: [{ seq: 4, at: 'x', nonce: 'topic-nonce', view }], asks: [] }
+					}
+				});
+			}, 0);
+			return () => {};
+		}
+	};
+	const api = {
+		history: async () => ({ ok: true as const, page: { items: [], before: null } })
+	} as unknown as ChatApi;
+	const topic = new ChatStore('thread:trip', {
+		hub: createHub({ transport, carries: 'thread:trip' }),
+		approvals: true,
+		api,
+		outbox: memory(),
+		drafts: memory()
+	});
+	const shared = new ChatStore('thread:other', {
+		hub: createHub({ transport }),
+		api,
+		outbox: memory(),
+		drafts: memory()
+	});
+	await Promise.all([topic.start(), shared.start()]);
+	expect(topic.approvals.map((a) => a.nonce)).toEqual(['topic-nonce']);
+	expect(shared.approvals).toEqual([]);
+	topic.destroy();
+	shared.destroy();
+});
+
 /** A stream that greets at head 5, then sends a job alert at seq 6 when told to. */
 function alertStream() {
 	let push: (ev: ChatEnvelope) => void = () => {};

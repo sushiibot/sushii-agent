@@ -155,6 +155,10 @@ export function createPiChatSessionFactory(
     connectors?: ConnectorManager;
     /** The Main turn in progress, stamped on each main run so the bot can join its replies and files. */
     mainTurnId?: () => string | undefined;
+    sessionDir?: string;
+    agentName?: string;
+    origin?: import("../orchestration/contracts.ts").ChatOrigin;
+    parentTurn?: () => import("./subagents/turnTracker.ts").ParentTurn | null;
   } = {},
 ): ChatSessionFactory {
   const runs = opts.runs ?? new RunLog(config.stateDir);
@@ -213,7 +217,7 @@ export function createPiChatSessionFactory(
     });
 
     const cwd = config.home;
-    const sessionDir = chatSessionDir(config.agentDir);
+    const sessionDir = opts.sessionDir ?? chatSessionDir(config.agentDir);
     const sessionManager = sessionFile ? SessionManager.open(sessionFile, sessionDir, cwd) : SessionManager.create(cwd, sessionDir);
 
     // The extension's handlers only run once createAgentSession has returned and set this.
@@ -231,7 +235,7 @@ export function createPiChatSessionFactory(
       },
       log,
     });
-    const stubs = opts.toolStubs?.binding();
+    const stubs = opts.toolStubs?.binding({ agentId: "main", agentName: opts.agentName ?? "main", ...(opts.origin ? { origin: opts.origin } : {}) });
     const observerRef: { current: RunObserver | null } = { current: null };
     const pushTools = opts.github ? [GITHUB_PUSH_TOOL] : [];
     const connectorTools = opts.connectors ? CONNECTOR_TOOLS : [];
@@ -271,7 +275,7 @@ export function createPiChatSessionFactory(
         // After every blocking guard (a blocked call never releases its write lease), and before the
         // compaction handoff so main's memory lease is held when the handoff writes.
         ...(opts.subagents && delegate.length
-          ? [{ name: "sushii-delegate", factory: opts.subagents.extension({ depth: 0, currentRunId: () => observerRef.current?.currentRunId() ?? null }) }]
+          ? [{ name: "sushii-delegate", factory: opts.subagents.extension({ depth: 0, ...(opts.parentTurn ? { currentTurn: opts.parentTurn } : {}), currentRunId: () => observerRef.current?.currentRunId() ?? null }) }]
           : []),
         { name: "sushii-compaction-handoff", factory: createCompactionHandoffExtension({ home: config.home, log: memoryLog }) },
         { name: "sushii-hygiene", factory: createHygieneExtension({ thresholdTokens: economy.hygieneTokens, state: hygieneState, log: economyLog }) },
@@ -361,7 +365,7 @@ export function createPiChatSessionFactory(
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
     sessionOverrides.set(session, { session, overrides });
-    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: "main", defaultModel: config.model, turnId: opts.mainTurnId });
+    const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: opts.agentName ?? "main", defaultModel: config.model, turnId: opts.mainTurnId });
     observerRef.current = observer;
     runObservers.set(session, observer);
     return { session, sessionFile: file, currentRunId: () => observer.currentRunId() };

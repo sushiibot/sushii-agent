@@ -348,7 +348,7 @@ export class WorkspaceTools {
     let woken = false;
     for (;;) {
       try {
-        return this.opts.surfaces.resolve(null);
+        return this.opts.surfaces.resolve(p.origin ?? null);
       } catch (err) {
         if (!(err instanceof SurfaceUnavailableError)) {
           this.settle(nonce, "expired");

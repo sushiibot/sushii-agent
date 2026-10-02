@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { NotConnectedError, OrchestrationClient } from "../orchestration/transport/client.ts";
 import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, economyOf, loadWorkspaceConfig, taskRulesOf, type WorkspaceConfig } from "./config.ts";
+import { TopicSessions } from "./topicSessions.ts";
 import { PersonalSession } from "./personalSession.ts";
 import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
 import { ModelChoice } from "./modelChoice.ts";
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
   };
   // Late-bound: background results only arrive after personal.start().
   let personalRef: PersonalSession | null = null;
+  let topicsRef: TopicSessions | null = null;
   const subagents = new SubagentHost({
     config,
     runs,
@@ -106,18 +108,18 @@ async function main(): Promise<void> {
     github,
     notify,
     currentTurn: () => turns.current(),
-    wake: (r, consumed) => personalRef?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
+    wake: (r, consumed) => (topicsRef ?? personalRef)?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
   });
   watchRef = subagents.watch;
   const connectors = new ConnectorManager(config.agentDir);
   await connectors.start();
-  const personal = new PersonalSession({
+  const personalOptions = {
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,
     tz: config.tz,
     uploads: { dir: join(config.home, UPLOADS_DIR) },
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, mainTurnId: () => personalTurn?.currentTurnId() }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, parentTurn: () => { const turnId = personalTurn?.currentTurnId(); return turnId ? turns.get(turnId) : null; }, mainTurnId: () => personalTurn?.currentTurnId() }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -157,7 +159,8 @@ async function main(): Promise<void> {
       notify,
       isConnected: () => client?.connected ?? false,
     },
-  });
+  } satisfies import("./personalSession.ts").PersonalSessionOptions;
+  const personal = new PersonalSession(personalOptions);
   personalTurn = personal;
   const authLogin = new AuthLogin({
     principalId: config.principalId,
@@ -169,6 +172,30 @@ async function main(): Promise<void> {
   reauth = new ReauthNotifier({ stateDir: config.stateDir, deliver: (d) => personal.deliverOutOfBand(d), suppressed: () => authLogin.isPending });
   await personal.start();
   personalRef = personal;
+  const commands = commandHandlers({
+    principalId: config.principalId,
+    compact: () => personal.compactNow(),
+    choice,
+    currentModel: () => (personal.chatSession ? sessionModelLabel(personal.chatSession) : null),
+    fallbackUntil: () => selector.coolingDownUntil,
+    tasks: (arg) => renderTasksCommand(config.home, taskRulesOf(config), new Date(), arg),
+  });
+  const topics = new TopicSessions({
+    principalId: config.principalId, stateDir: config.stateDir, main: personal,
+    command: p => commands["chat/command"]!(p),
+    create: id => {
+      let topic: PersonalSession;
+      topic = new PersonalSession({
+        ...personalOptions,
+        stateDir: join(config.stateDir, "topics", id),
+        factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, parentTurn: () => { const turnId = topic.currentTurnId(); return turnId ? { turnId, origin: { surface: "web", conversationId: id } } : null; }, origin: { surface: "web", conversationId: id }, sessionDir: join(config.agentDir, "topics", id), agentName: `topic:${id}`, mainTurnId: () => topic.currentTurnId() }),
+        context: { ...personalOptions.context, busy: () => subagents.isBusy({ surface: "web", conversationId: id }) },
+      });
+      return topic;
+    },
+  });
+  topicsRef = topics;
+  await topics.restore();
   subagents.redeliverPending();
   const scheduler = new Scheduler({
     stateDir: config.stateDir,
@@ -177,7 +204,7 @@ async function main(): Promise<void> {
     log: getLogger("workspace.scheduler"),
     onJobAlert: (alert) => personal.deliverAlert(jobAlertWire(alert), jobAlertText(alert)),
   });
-  const consolidation = createConsolidationJob(config, { runs, selector, live: personal });
+  const consolidation = createConsolidationJob(config, { runs, selector, live: topics });
   // Its memory and task writes are main-side: the subagents' protected watch must not undo them.
   // Two idle waits and a model call can each take 10 min, so the default max runtime would flag a normal slow run.
   scheduler.register({ ...consolidation, maxRunMs: 60 * 60_000, run: (ctx) => subagents.whileMainWrites(() => consolidation.run(ctx), ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks"]) });
@@ -207,10 +234,10 @@ async function main(): Promise<void> {
         ask: (question, choices, parse) => personal.askOwner(question, choices, parse),
         write: async (fn, message) => {
           // Between turns when possible: the agent may be editing TASKS.md; the edit itself is synchronous.
-          if (!(await waitIdle(personal, 30 * 60_000))) log.warn("applying the stale review while the chat session is busy");
+          if (!(await waitIdle(topics, 30 * 60_000))) log.warn("applying the stale review while the chat session is busy");
           await subagents.whileMainWrites(async () => fn(), ["TASKS.md", "tasks"]);
           await commitHome(message, { home: config.home, paths: TASK_PATHS });
-          personal.requestContextReload();
+          topics.requestContextReload();
         },
         warn: (obj, msg) => log.warn(obj, msg),
       }),
@@ -227,7 +254,7 @@ async function main(): Promise<void> {
     kind: "pi-workspace",
     secret: config.orchSecret,
     principalId: config.principalId,
-    state: () => personal.state,
+    state: () => topics.state,
     handlers: {
       ...personal.handlers(),
       ...connectors.handlers(config.principalId),
@@ -237,18 +264,12 @@ async function main(): Promise<void> {
       ...historyHandlers({ principalId: config.principalId, home: config.home, stateDir: config.stateDir }),
       ...historySearchHandlers(new HistorySearch({ principalId: config.principalId, home: config.home })),
       ...authLogin.handlers(),
-      ...commandHandlers({
-        principalId: config.principalId,
-        compact: () => personal.compactNow(),
-        choice,
-        currentModel: () => (personal.chatSession ? sessionModelLabel(personal.chatSession) : null),
-        fallbackUntil: () => selector.coolingDownUntil,
-        tasks: (arg) => renderTasksCommand(config.home, taskRulesOf(config), new Date(), arg),
-      }),
+      ...commands,
+      ...topics.handlers(),
     },
     onRegistered: (result) => {
       toolStubs.update(result?.tools ?? []);
-      personal.onRegistered(result?.features ?? []);
+      topics.onRegistered(result?.features ?? []);
     },
   });
 
@@ -257,7 +278,7 @@ async function main(): Promise<void> {
     client?.close();
     // Children first: they record their runs and persist background results while main can still take them.
     await subagents.dispose();
-    await Promise.all([scheduler.stop(), personal.dispose(), connectors.dispose()]);
+    await Promise.all([scheduler.stop(), personal.dispose(), topics.dispose(), connectors.dispose()]);
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);
   };

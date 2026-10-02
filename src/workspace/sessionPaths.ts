@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 export const SESSION_DIRS = {
   chat: "chat",
   subagents: "subagents",
+  topics: "topics",
   jobs: "job-sessions",
 } as const;
 

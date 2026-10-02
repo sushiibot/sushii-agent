@@ -45,6 +45,7 @@ export interface WebHandlerDeps {
   uploads?: DiskUploadStore;
   /** The /api/chat routes; absent when the chat surface is not wired. */
   chat?: ChatRoutes;
+  threads?: import("./threadRoutes.ts").WebThreads;
   /** The /api/home routes; they answer 404 unless WEB_FEATURES has `home`. */
   home?: HomeRoutes;
   /** /api/runs, /api/history and /api/search; absent: they answer 404. */
@@ -107,6 +108,11 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
       if (site !== null && site !== "same-origin") return forbidden();
     } else if (!isSameOrigin(req)) return forbidden();
 
+    if (path === "/api/chats" || path === "/api/threads" || path.startsWith("/api/threads/")) {
+      if (!deps.threads || !config.features?.includes("threads")) return json({ error: "not found" }, 404);
+      try { return (await deps.threads.handle(req, path, actor, server)) ?? json({ error: "not found" }, 404); }
+      catch (err) { logger.warn({ err }, "thread request failed"); return json({ error: err instanceof Error ? err.message : "Thread request failed" }, 409); }
+    }
     if (chat) {
       const res = await chat.handle(req, path, actor, server);
       if (res) return res;
@@ -212,6 +218,7 @@ export function internalErrorResponse(err: unknown): Response {
 export interface WebServerOptions {
   uploads?: DiskUploadStore;
   chat?: ChatRoutes;
+  threads?: import("./threadRoutes.ts").WebThreads;
   home?: HomeRoutes;
   /** Sources for the read-only routes; the gateway gates them on its WEB_FEATURES. */
   reads?: Omit<ReadRouteDeps, "features">;
@@ -242,6 +249,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     pushSender,
     ...(opts.uploads ? { uploads: opts.uploads } : {}),
     ...(opts.chat ? { chat: opts.chat } : {}),
+    ...(opts.threads ? { threads: opts.threads } : {}),
     ...(opts.home ? { home: opts.home } : {}),
     ...(opts.reads ? { reads: createReadRoutes({ ...opts.reads, features: config.features ?? [] }) } : {}),
     ...(opts.dictation ? { dictation: opts.dictation } : {}),

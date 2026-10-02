@@ -35,6 +35,14 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	context
 }) => {
 	await fixtureApp(context);
+	await context.route('**/api/models', (route) =>
+		route.fulfill({
+			json: {
+				current: 'sol',
+				models: [{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' }]
+			}
+		})
+	);
 	await page.goto('/chats');
 	await page.getByRole('link', { name: /October trip/ }).click();
 	await expect(page.getByRole('heading', { name: 'October trip', level: 1 })).toBeVisible();
@@ -46,6 +54,11 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	await page.goBack();
 	await expect(sheet).toBeHidden();
 	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+	await page.getByRole('button', { name: /^Model: .*Change model$/ }).click();
+	const model = page.getByRole('dialog', { name: /^Model/ });
+	await expect(model).toBeVisible();
+	await page.goBack();
+	await expect(model).toBeHidden();
 });
 
 test('closing a thread archives it and leaves a report in Main', async ({ page, context }) => {
@@ -73,9 +86,7 @@ test('a reply in Main starts a thread from a visible button', async ({ page, con
 	await sheet.getByRole('button', { name: 'Start thread' }).click();
 	await expect(page).toHaveURL(/\/chats\/hotel-choice$/);
 	await expect(page.getByRole('heading', { name: 'Hotel choice', level: 1 })).toBeVisible();
-	// Until the agent runs threads, a thread can't take messages, so nothing can reach Main.
-	await expect(page.getByText("the agent can't take messages in threads yet")).toBeVisible();
-	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveCount(0);
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
 test('an idle thread archived by itself is read only until reopened', async ({ page, context }) => {
@@ -84,7 +95,7 @@ test('an idle thread archived by itself is read only until reopened', async ({ p
 	await expect(page.getByText(/after a week with nothing new\. Read only\./)).toBeVisible();
 	await page.getByRole('button', { name: 'Reopen' }).click();
 	await expect(page.getByText(/after a week with nothing new/)).toHaveCount(0);
-	await expect(page.getByText("the agent can't take messages in threads yet")).toBeVisible();
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
 });
 
 test('a list that fails to load says so and retries', async ({ page, context }) => {

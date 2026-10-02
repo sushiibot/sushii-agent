@@ -38,8 +38,9 @@
 		<div class="flex flex-col gap-1">
 			<h2 class="text-lg font-semibold">Start a thread</h2>
 			<p class="text-sm text-muted-foreground">
-				A thread is its own conversation that shares memory with Main. The agent writes it a short
-				brief from Main, so it doesn't start from the whole history.
+				A thread is its own conversation that shares memory with Main.
+				{#if quote}It starts with the selected reply from Main.{:else}Give it a name, then send your
+					first message.{/if}
 			</p>
 		</div>
 		{#if quote}
@@ -51,7 +52,13 @@
 		{/if}
 		<div class="flex flex-col gap-2">
 			<label for="{uid}-title" class="text-sm font-medium">Thread name</label>
-			<Input id="{uid}-title" bind:value={title} class="h-12 text-base" data-autofocus />
+			<Input
+				id="{uid}-title"
+				bind:value={title}
+				maxlength={120}
+				class="h-12 text-base"
+				data-autofocus
+			/>
 		</div>
 		{#if error}
 			<p role="alert" class="text-sm text-failed">Couldn't start the thread. {error}</p>

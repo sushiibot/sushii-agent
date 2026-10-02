@@ -123,7 +123,7 @@
 			.slice(0, 280);
 
 	function openBranch(m: ChatMessage) {
-		branchFrom = { id: m.id, quote: plain(m) };
+		branchFrom = { id: m.sourceId ?? m.id, quote: plain(m) };
 		threadTitle = '';
 		threads?.clearError();
 		branch.openWith();

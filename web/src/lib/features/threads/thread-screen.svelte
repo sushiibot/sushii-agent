@@ -63,7 +63,7 @@
 	const threadSheet = $derived(
 		sheet === 'thread-memory' || sheet === 'thread-close' ? sheet : undefined
 	);
-	const CHAT_SHEETS: readonly string[] = ['commands', 'new', 'viewer', 'usage'];
+	const CHAT_SHEETS: readonly string[] = ['commands', 'new', 'viewer', 'model'];
 	const chatSheet = $derived(
 		sheet && CHAT_SHEETS.includes(sheet) ? (sheet as ChatProps['sheet']) : undefined
 	);
@@ -106,8 +106,9 @@
 		>
 			<BookMarked class="size-3.5 shrink-0" aria-hidden="true" />
 			<span class="truncate"
-				>Shares memory with Main · {thread.writes}
-				{thread.writes === 1 ? 'write' : 'writes'}</span
+				>{thread.memoryTracking === false
+					? 'Shares memory with Main'
+					: `Shares memory with Main · ${thread.writes} ${thread.writes === 1 ? 'write' : 'writes'}`}</span
 			>
 		</button>
 	{/if}
@@ -198,8 +199,9 @@
 			<div class="flex flex-col gap-1">
 				<h2 class="text-lg font-semibold">Shares memory with Main</h2>
 				<p class="text-sm text-muted-foreground">
-					This thread has its own conversation but reads and writes the same memory as Main. Its
-					writes are tagged with the thread, so you can check or undo them.
+					This thread has its own conversation but reads and writes the same memory as Main.
+					{#if thread?.memoryTracking !== false}Its writes are tagged with the thread, so you can
+						check or undo them.{:else}Memory changes stay available after you close the thread.{/if}
 				</p>
 			</div>
 			{#if detail.writes.length}
@@ -208,17 +210,19 @@
 					{detail.writes.length === 1 ? 'write' : 'writes'} from this thread
 				</h3>
 				{@render writeList(detail.writes)}
-			{:else}
+			{:else if thread?.memoryTracking !== false}
 				<p class="text-sm text-muted-foreground">Nothing written to memory from this thread yet.</p>
 			{/if}
-			<Button variant="outline" size="lg" href={memoryHref}>All memory changes</Button>
+			{#if thread?.memoryTracking !== false}<Button variant="outline" size="lg" href={memoryHref}
+					>All memory changes</Button
+				>{/if}
 		</div>
 	{:else if shown === 'thread-close' && detail}
 		<div class="flex flex-col gap-4 px-5 pt-2 pb-5">
 			<div class="flex flex-col gap-1">
 				<h2 class="text-lg font-semibold">Close {detail.summary.title}?</h2>
 				<p class="text-sm text-muted-foreground">
-					The thread is archived and stays searchable. You can reopen it later.
+					The thread is archived and stays available in Chats. You can reopen it later.
 				</p>
 			</div>
 			{#if detail.closing.writes.length}

@@ -1,11 +1,10 @@
-// A thread's conversation before the stream carries thread ids: its history comes from the
-// thread's own record, nothing streams, and sending is refused, so it can never reach Main.
+// Each live topic uses a scoped stream. Prototype fixtures can use a read-only adapter.
 import { HttpError } from '$lib/core/http';
 import type { ChatEnvelope } from '$lib/core/realtime/events';
 import { createHub } from '$lib/core/realtime/hub.svelte';
-import type { ChatTransport } from '$lib/core/realtime/transport';
+import { fetchSse, type ChatTransport } from '$lib/core/realtime/transport';
 import { memoryKeyValue, type Draft, type OutboxEntry } from '$lib/core/storage/outbox';
-import type { ChatApi, ChatStoreDeps } from '$lib/features/chat';
+import { createHttpChatApi, type ChatApi, type ChatStoreDeps } from '$lib/features/chat';
 import type { ThreadDetail } from './types';
 
 const NOT_YET = "Threads can't take messages yet.";
@@ -54,3 +53,15 @@ export const readOnlyThreadChat: ThreadChatDeps = (detail) => ({
 	outbox: memoryKeyValue<OutboxEntry>((e) => e.clientId),
 	drafts: memoryKeyValue<Draft>((d) => d.id)
 });
+
+export const liveThreadChat: ThreadChatDeps = (detail) => {
+	const base = `/threads/${encodeURIComponent(detail.summary.id)}/chat`;
+	return {
+		approvals: true,
+		hub: createHub({
+			transport: fetchSse({ url: `/api${base}/stream` }),
+			carries: `thread:${detail.summary.id}`
+		}),
+		api: createHttpChatApi(base)
+	};
+};

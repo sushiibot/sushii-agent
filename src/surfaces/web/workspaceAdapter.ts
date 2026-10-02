@@ -108,6 +108,17 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     this.capabilities = { streaming: true, tables: true, richButtons: true, reactions: false, maxMessageChars: 100_000, fileUploads: deps.uploads !== undefined };
   }
 
+  private pushPayload(event: PushEvent): PushPayload {
+    const p = pushFor(event);
+    const id = this.deps.log.conversationId;
+    return id === "main" ? p : { ...p, url: `/chats/${encodeURIComponent(id)}`, tag: `${p.tag}:${id}` };
+  }
+
+  private checkOrigin(origin: ChatOrigin | null): void {
+    checkOrigin(origin);
+    if ((origin?.conversationId ?? "main") !== this.deps.log.conversationId) throw new DeliveryRejectedError("wrong web conversation");
+  }
+
   openTurns(): TurnView[] {
     return [...this.turns.values()].map((t) => this.view(t));
   }
@@ -150,7 +161,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   // ── Deliveries: each resolves only after its event is committed, which is what lets the link ack ──
 
   async sendReply(origin: ChatOrigin | null, reply: ReplyView, attempt: SendAttempt): Promise<void> {
-    checkOrigin(origin);
+    this.checkOrigin(origin);
     const key = outboxKey(attempt);
     // The last plain try goes to the chat, so a failing inbox never keeps a message unseen.
     if (reply.kind === "proactive" && reply.job && this.deps.home && this.deps.features?.includes("home") && !attempt.plain) return this.fileMessage(key, reply.text, reply.job);
@@ -181,7 +192,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   /** An askId is unique among stored asks, since the answer route finds the ask by it. A reused or
    *  oversized one is stored without it: the question shows, with no buttons to answer. */
   async askPrompt(origin: ChatOrigin | null, ask: AskView, attempt: SendAttempt): Promise<void> {
-    checkOrigin(origin);
+    this.checkOrigin(origin);
     const key = outboxKey(attempt);
     if (this.deps.log.find("ask", key)) return;
     this.spend();
@@ -199,7 +210,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   }
 
   async authPrompt(origin: ChatOrigin | null, view: AuthPromptView, attempt: SendAttempt): Promise<void> {
-    checkOrigin(origin);
+    this.checkOrigin(origin);
     const key = outboxKey(attempt);
     if (this.deps.log.find("auth", key) || this.deps.log.find("proactive", key)) return;
     this.spend();
@@ -216,7 +227,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
 
   /** The alert event, its web_alerts row and any alert_cleared commit together, before the link acks. */
   async alertPrompt(origin: ChatOrigin | null, wire: JobAlertWire, text: string, attempt: SendAttempt): Promise<void> {
-    checkOrigin(origin);
+    this.checkOrigin(origin);
     const key = outboxKey(attempt);
     if (this.deps.log.find("alert", key)) return;
     // The link parsed it already; parsed again here so every field is within its cap before storage and push.
@@ -244,7 +255,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   }
 
   async progressCreate(origin: ChatOrigin | null, view: ProgressView): Promise<WebHandle> {
-    checkOrigin(origin);
+    this.checkOrigin(origin);
     const turn = this.track({ turnId: view.turnId, startedAt: view.startedAt, lines: [], toolCount: 0, text: view.text.slice(0, TURN_TEXT_MAX), lastSnapshotAt: 0, snapshotTimer: null });
     this.applyLines(turn, view);
     this.snapshot(turn);
@@ -272,7 +283,8 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     this.scheduleSnapshot(turn);
   }
 
-  async progressFinalize(_origin: ChatOrigin | null, handle: WebHandle | null, final: ProgressFinal): Promise<void> {
+  async progressFinalize(origin: ChatOrigin | null, handle: WebHandle | null, final: ProgressFinal): Promise<void> {
+    this.checkOrigin(origin);
     const turnId = handle?.id ?? final.turnId ?? "";
     if (!turnId || turnId.length > ID_MAX) {
       log.warn({ outcome: final.outcome }, "dropping a turn final with no usable turnId");
@@ -282,14 +294,16 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
   }
 
   /** A view from before a restart comes back empty; the next snapshot and the final reply fill it in. */
-  async progressReopen(_origin: ChatOrigin | null, id: string): Promise<WebHandle | null> {
+  async progressReopen(origin: ChatOrigin | null, id: string): Promise<WebHandle | null> {
+    this.checkOrigin(origin);
     if (!this.turns.has(id)) this.track({ turnId: id, startedAt: this.now(), lines: [], toolCount: 0, text: "", lastSnapshotAt: 0, snapshotTimer: null });
     return { id };
   }
 
   // The only source of approval events.
 
-  async approvalPrompt(_origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<WebHandle> {
+  async approvalPrompt(origin: ChatOrigin | null, view: ApprovalView, nonce: string): Promise<WebHandle> {
+    this.checkOrigin(origin);
     const { replyCode: _code, ...shown } = view;
     const { seq, created } = this.deps.log.appendResult("approval", { nonce, view: shown }, nonce);
     if (created) void this.notifyApproval(seq, nonce, view.tool);
@@ -392,7 +406,7 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     try {
       if (!(await this.deps.presence.shouldPush(seq))) return null;
       if (!this.deps.push) return 0;
-      return (await this.deps.push.send(pushFor(event))).sent;
+      return (await this.deps.push.send(this.pushPayload(event))).sent;
     } catch (err) {
       log.warn({ err }, "web push failed");
       return 0;

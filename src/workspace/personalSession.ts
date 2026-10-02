@@ -705,6 +705,20 @@ export class PersonalSession {
     return this.queued === 1 && this.inFlight.size === 0 && this.pendingContext.length === 0 && this.pendingNew === 1 && !this.opts.context?.busy?.();
   }
 
+  /** Saves a topic's memory before archiving without replacing its conversation. */
+  prepareArchive(): Promise<void> {
+    if (!this.isIdle() || this.opts.context?.busy?.()) return Promise.reject(new Error("stop the topic's work before closing it"));
+    return this.enqueue(async () => {
+      const session = this.requireSession();
+      if (session.isStreaming || this.run) throw new Error("the topic is still working");
+      const release = this.asks.hold("topic closing");
+      try {
+        await this.flushBeforeNew(session, Date.now() + NEW_BUDGET_MS, NEW_BUDGET_MS);
+        if (this.opts.memory) await this.opts.memory.reload(session);
+      } finally { release(); }
+    });
+  }
+
   /** `!compact`: after the turn in progress, flush memory, compact with the anchored summary, reload the context files. */
   compactNow(): Promise<{ tokensBefore: number; tokensAfter: number | null } | { error: string }> {
     const ctx = this.opts.context;
@@ -892,6 +906,9 @@ export class PersonalSession {
       await memory.reload(session);
     }).catch((err) => log.warn({ err }, "pre-compaction memory flush failed"));
   }
+
+  ownsDelivery(outboxId: string): boolean { return this.outbox.unacked().some(e => e.outboxId === outboxId); }
+  hasUnackedDeliveries(): boolean { return this.outbox.unacked().length > 0; }
 
   handleAck(outboxId: string): Record<string, never> {
     if (!this.outbox.ack(outboxId)) log.debug({ outboxId }, "ack for an unknown or already-acked outbox entry");

@@ -299,6 +299,7 @@ export const webEvents = sqliteTable(
   "web_events",
   {
     seq: integer("seq").primaryKey({ autoIncrement: true }),
+    conversationId: text("conversation_id").notNull().default("main"),
     type: text("type").notNull(),
     // Idempotency key (clientId, outboxId, nonce, …); null for events that are never retried.
     key: text("key"),
@@ -308,9 +309,10 @@ export const webEvents = sqliteTable(
     sortSeq: integer("sort_seq"),
   },
   (table) => [
-    uniqueIndex("uq_web_events_type_key").on(table.type, table.key),
+    uniqueIndex("uq_web_events_type_key").on(table.conversationId, table.type, table.key),
     index("idx_web_events_created").on(table.createdAt),
     index("idx_web_events_order").on(sql`coalesce(${table.sortSeq}, ${table.seq})`, table.seq),
+    index("idx_web_events_conversation_order").on(table.conversationId, sql`coalesce(${table.sortSeq}, ${table.seq})`, table.seq),
   ],
 );
 
@@ -327,6 +329,7 @@ export const webInbound = sqliteTable(
   "web_inbound",
   {
     clientId: text("client_id").primaryKey(),
+    conversationId: text("conversation_id").notNull().default("main"),
     text: text("text").notNull(),
     uploadIds: text("upload_ids").notNull(),
     seq: integer("seq").notNull(),
@@ -384,3 +387,14 @@ export const webInbox = sqliteTable(
   },
   (table) => [index("idx_web_inbox_done").on(table.doneAt, table.at)],
 );
+
+export const webThreads = sqliteTable("web_threads", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  brief: text("brief").notNull(),
+  createdAt: integer("created_at").notNull(),
+  archivedAt: integer("archived_at"),
+  archivedBy: text("archived_by"),
+  report: text("report"),
+  reportDelivered: integer("report_delivered").notNull().default(0),
+});

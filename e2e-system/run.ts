@@ -190,7 +190,7 @@ async function preflight(): Promise<void> {
 }
 
 // ── control server: what flows use to reach into the stack ────────────────────────────────────────
-function controlServer(bot: Proc, llmURL: string) {
+function controlServer(bot: Proc, ws: Proc, llmURL: string) {
   return Bun.serve({
     port: ports.control,
     hostname: addrs.local,
@@ -215,6 +215,14 @@ function controlServer(bot: Proc, llmURL: string) {
       }
       if (req.method === "POST" && url.pathname === "/link/request") {
         return fetch("http://link/request", { method: "POST", body: await req.text(), unix: LINK_SOCKET } as RequestInit);
+      }
+      if (req.method === "POST" && url.pathname === "/workspace/restart") {
+        await stop(ws);
+        if (tornDown) return new Response("tearing down", { status: 503 });
+        const offset = logSize("bot");
+        start(ws);
+        await waitFor("workspace re-registration", ws, registeredSince(offset));
+        return Response.json({ ok: true, pid: ws.child?.pid });
       }
       if (req.method === "POST" && url.pathname === "/bot/restart") {
         await stop(bot);
@@ -357,7 +365,7 @@ async function main(): Promise<number> {
       VAPID_PUBLIC_KEY: vapid.publicKey,
       VAPID_PRIVATE_KEY: vapid.privateKey,
       VAPID_SUBJECT: "mailto:e2e@example.invalid",
-      WEB_FEATURES: "runs,history,home,alerts",
+      WEB_FEATURES: "runs,history,home,alerts,threads",
       E2E_PUSH_CAPTURE: PUSH_CAPTURE,
       E2E_LINK_SOCKET: LINK_SOCKET,
     },
@@ -395,7 +403,7 @@ async function main(): Promise<number> {
     if (!alive(ws)) throw new Error(`workspace exited\n--- ws.log ---\n${tail("ws")}`);
     return registeredSince(offset)();
   });
-  control = controlServer(bot, llmURL);
+  control = controlServer(bot, ws, llmURL);
   console.log("[e2e] stack ready; running flows");
 
   return runToExit([join(HERE, "node_modules", ".bin", "playwright"), "test", ...process.argv.slice(2)], HERE, callerEnv({ E2E_TMP: TMP, E2E_WS_HOME: P.wsHome, E2E_WS_STATE: P.wsState, E2E_PW_OUT: P.pwOut }));

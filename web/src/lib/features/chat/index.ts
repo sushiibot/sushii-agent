@@ -13,7 +13,7 @@ export {
 	type ModelsResponse,
 	type ModelsStore
 } from './models.svelte';
-export { httpChatApi } from './api';
+export { httpChatApi, createHttpChatApi } from './api';
 export { locationOutcome } from './location';
 export type { ChatApi } from './api';
 export type { ChatStore, ChatStoreDeps } from './store.svelte';

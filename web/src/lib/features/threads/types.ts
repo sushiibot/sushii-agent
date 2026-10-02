@@ -1,5 +1,4 @@
-// View models for the Chats list and thread chats. The bot has no thread routes yet; these are
-// what it will need to serve (see the fixtures for every field in use).
+// View models served by the bot's topic routes and the development fixtures.
 import type { WebHistoryItem } from '$lib/core/realtime/events';
 import type { MemoryWrite, ThreadReport } from '$lib/features/chat';
 
@@ -19,6 +18,8 @@ export interface ThreadSummary {
 	unread?: number;
 	/** Memory writes made from this thread. */
 	writes: number;
+	/** False when the backend does not attribute individual memory edits. */
+	memoryTracking?: boolean;
 	/** Set once archived; `idle` when it archived itself. */
 	archived?: { at: string; by: 'you' | 'idle' };
 }

@@ -122,15 +122,14 @@ describe("chat index sync", () => {
       const db = new Database(":memory:");
       migrate(drizzle({ client: db, schema }), { migrationsFolder: scratch });
       expect(db.query("SELECT name FROM sqlite_master WHERE name = 'web_chat_fts'").all()).toEqual([]);
-      const old = new SqliteChatLog(db, { now: () => T0 });
-      const u = old.append("user", user("u1", "early axolotl"), "u1");
-      old.append("notice", { type: "commandResult", text: "axolotl notice" });
-      old.prepend([{ type: "reply", key: "pi:1", data: reply("pi:1", "imported axolotl"), createdAt: T0 - 1000 }]);
+      // Seed the old schema directly; the current log requires the conversation migration.
+      const u = db.query("INSERT INTO web_events (type, key, data, created_at) VALUES ('user', 'u1', ?, ?) RETURNING seq").get(JSON.stringify(user("u1", "early axolotl")), T0) as { seq: number };
+      db.run("INSERT INTO web_events (seq, type, key, data, created_at) VALUES (0, 'reply', 'pi:1', ?, ?)", [JSON.stringify(reply("pi:1", "imported axolotl")), T0 - 1000]);
 
       applySchema(db);
       const { log, index } = setup(db, true);
       drain(index);
-      expect(ids(db, "axolotl")).toEqual([String(u), "0"]);
+      expect(ids(db, "axolotl")).toEqual([String(u.seq), "0"]);
       integrity(db);
       log.append("reply", reply("r2", "later axolotl"), "r2");
       expect(ids(db, "axolotl")).toHaveLength(3);

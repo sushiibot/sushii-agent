@@ -66,6 +66,14 @@ describe("manifest → stubs", () => {
   });
 });
 
+test("topic tool calls carry their origin to the approval surface", async () => {
+  const { s, calls } = stubs();
+  s.update([LINEAR]);
+  const origin = { surface: "web", conversationId: "trip" };
+  await run(byName(s, "file_linear_issue", { agentId: "main", agentName: "topic:trip", origin }), { title: "Trip", description: "", repo_label: "sushii-agent" });
+  expect(calls[0]?.params.origin).toEqual(origin);
+});
+
 describe("bindings", () => {
   function fakePi(fail: () => Error | null = () => null) {
     const tools = new Map<string, ToolDefinition>();

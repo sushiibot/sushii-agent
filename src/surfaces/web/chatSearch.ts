@@ -44,13 +44,13 @@ export class ChatIndex {
       return this.db.transaction(() => {
         const high = this.kv(HIGH_KEY) ?? 0;
         const up = this.db
-          .query(`SELECT seq, data FROM web_events WHERE seq > ? AND type IN (${CHAT_TYPES_SQL}) ORDER BY seq LIMIT ?`)
+          .query(`SELECT seq, data FROM web_events WHERE conversation_id = 'main' AND seq > ? AND type IN (${CHAT_TYPES_SQL}) ORDER BY seq LIMIT ?`)
           .all(high, batch) as { seq: number; data: string }[];
         this.index(up);
         if (up.length) this.setKv(HIGH_KEY, up[up.length - 1]!.seq);
         const low = this.kv(LOW_KEY) ?? 1;
         const down = this.db
-          .query(`SELECT seq, data FROM web_events WHERE seq < ? AND seq <= 0 AND type IN (${CHAT_TYPES_SQL}) ORDER BY seq DESC LIMIT ?`)
+          .query(`SELECT seq, data FROM web_events WHERE conversation_id = 'main' AND seq < ? AND seq <= 0 AND type IN (${CHAT_TYPES_SQL}) ORDER BY seq DESC LIMIT ?`)
           .all(low, batch) as { seq: number; data: string }[];
         this.index(down);
         if (down.length) this.setKv(LOW_KEY, down[down.length - 1]!.seq);
@@ -121,7 +121,7 @@ export function searchChat(db: Database, query: string, limit: number): { hits: 
     if (!ids.length) break;
     below = ids[ids.length - 1]!.id;
     const found = db
-      .query(`SELECT seq, type, data, created_at FROM web_events WHERE seq IN (${ids.map(() => "?").join(",")}) AND type IN (${CHAT_TYPES_SQL}) ORDER BY seq DESC`)
+      .query(`SELECT seq, type, data, created_at FROM web_events WHERE conversation_id = 'main' AND seq IN (${ids.map(() => "?").join(",")}) AND type IN (${CHAT_TYPES_SQL}) ORDER BY seq DESC`)
       .all(...ids.map((r) => r.id)) as Row[];
     rows.push(...found);
     if (ids.length < want) break;

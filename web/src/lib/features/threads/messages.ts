@@ -40,10 +40,17 @@ export function withReports(main: readonly ChatMessage[], reports: readonly Thre
 	if (!reports.length) return main as ChatMessage[];
 	return [
 		...main,
-		...reports.map((data): ChatMessage => ({
-			id: `report-${data.sessionId}`,
-			role: 'assistant',
-			parts: [{ type: 'data-thread-report', data }]
-		}))
+		...reports
+			.filter(
+				(r) =>
+					!main.some((m) =>
+						m.parts.some((p) => p.type === 'text' && p.text.includes(`Thread closed · ${r.title}`))
+					)
+			)
+			.map((data): ChatMessage => ({
+				id: `report-${data.sessionId}`,
+				role: 'assistant',
+				parts: [{ type: 'data-thread-report', data }]
+			}))
 	];
 }

@@ -79,6 +79,7 @@
 	memoryHref={resolve('/memory/writes')}
 	chat={store
 		? {
+				approvals: store.approvals,
 				messages: threadMessages(detail!, store.messages),
 				history: store.history,
 				hasOlder: store.hasOlder,
@@ -102,7 +103,13 @@
 				onmodelquery: (q) => models.setQuery(q),
 				onpickmodel: (alias, role) =>
 					void models.pick(alias, role).then((ok) => ok && closeSheet()),
-				connection: pwa.online ? undefined : { kind: 'offline' },
+				connection: !pwa.online
+					? { kind: 'offline' }
+					: store.workspace === 'offline'
+						? { kind: 'agent-offline' }
+						: store.reset
+							? { kind: 'reset' }
+							: undefined,
 				toast: store.toast,
 				announce: store.announce,
 				viewer,
@@ -129,7 +136,9 @@
 				onretryhistory: () => store.retryHistory(),
 				onretrysend: (m) => store.retry(m),
 				ondeletesend: (m) => void store.discard(m),
-				onanswer: (askId, answer) => store.answer(askId, answer)
+				onanswer: (askId, answer) => store.answer(askId, answer),
+				onapprove: (nonce) => void store.decide(nonce, 'approve'),
+				ondeny: (nonce) => void store.decide(nonce, 'deny')
 			}
 		: undefined}
 	onopensheet={(s) => {

@@ -2,8 +2,7 @@ import type { ChatEnvelope, ChatEventType, WorkspaceState } from './events';
 import { fetchSse, type ChatTransport, type TransportState } from './transport';
 
 /**
- * Main, or a thread. Only Main is on the wire so far: every conversation event is Main's, and a
- * thread's store runs on its own hub until the envelope carries a conversation id.
+ * Main, or a thread. Each stream serves one conversation; topics run on their own hubs.
  */
 export type ConversationId = 'main' | `thread:${string}`;
 
