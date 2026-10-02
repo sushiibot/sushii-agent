@@ -11,6 +11,7 @@ type ListCache = {
 	older: RunSummary[];
 	before: string | null;
 	truncated: boolean;
+	olderError: string | null;
 };
 
 /** A run's detail with the steps paged in so far. */
@@ -117,7 +118,8 @@ export class RunsStore {
 				head: this.list.data,
 				older: this.older,
 				before: this.before,
-				truncated: this.truncated
+				truncated: this.truncated,
+				olderError: this.olderError
 			});
 		}
 		this.#viewVersion++;
@@ -128,7 +130,7 @@ export class RunsStore {
 		this.before = saved?.before ?? null;
 		this.truncated = saved?.truncated ?? false;
 		this.olderLoading = false;
-		this.olderError = null;
+		this.olderError = saved?.olderError ?? null;
 		void this.list.refetch();
 	}
 

@@ -74,17 +74,17 @@
 	<p role="status" class="sr-only">Loading the server…</p>
 {/snippet}
 
-{#snippet footer()}
+{#snippet trackingSnapshot()}
 	{#if server?.changed}
-		<div class="flex flex-col gap-2 border-t px-4 py-3">
+		<div class="mt-6 flex flex-col gap-2 border-t pt-4">
 			{#if error}<p role="alert" class="text-sm text-failed">Couldn't save it. {error}</p>{/if}
-			<Button size="lg" variant="outline" disabled={busy || !online} onclick={onaccept}>
+			<Button class="self-start" variant="outline" disabled={busy || !online} onclick={onaccept}>
 				{#if busy}<LoaderCircle
 						class="animate-spin motion-reduce:animate-none"
 						aria-hidden="true"
 					/>Saving…{:else}<Check />Save tracking snapshot{/if}
 			</Button>
-			<p class="text-center text-meta text-muted-foreground">
+			<p class="text-meta text-muted-foreground">
 				Optional: reset the tool comparison. Current tools are already available to the agent.
 			</p>
 		</div>
@@ -95,9 +95,10 @@
 	title={server?.name ?? 'Server'}
 	{back}
 	{banner}
-	footer={server?.changed && section === 'tools' ? footer : undefined}
+	scrollable={!server}
 	state={{
-		remote: server === null ? { status: 'ready' } : remote,
+		remote:
+			server === null || (server && remote.status === 'loading') ? { status: 'ready' } : remote,
 		isEmpty: server === null,
 		empty: { title: 'No such server', body: 'It may have been removed.' },
 		offline: !online,
@@ -232,6 +233,7 @@
 									{/each}
 								</ul>
 							</section>
+							{@render trackingSnapshot()}
 						</div>
 					{:else if tabValue === 'history'}
 						<div class="px-4 pt-4 pb-12">

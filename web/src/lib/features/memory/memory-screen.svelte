@@ -109,30 +109,32 @@
 {/snippet}
 
 {#snippet lead()}
-	<label class="relative block">
-		<span class="sr-only">Find a memory file</span>
-		<Search
-			class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-			aria-hidden="true"
-		/>
-		<Input
-			type="search"
-			bind:value={search}
-			placeholder="Find a memory file"
-			class="h-12 pl-9 text-base"
-		/>
-	</label>
-	{#if data?.truncated}<p role="status" class="text-sm text-muted-foreground">
-			Some files could not be shown in full because the memory browsing limit was reached.
-		</p>{/if}
+	<div class="flex flex-col gap-3 px-4 pt-4 pb-3">
+		<label class="relative block">
+			<span class="sr-only">Find a memory file</span>
+			<Search
+				class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+				aria-hidden="true"
+			/>
+			<Input
+				type="search"
+				bind:value={search}
+				placeholder="Find a memory file"
+				class="h-12 pl-9 text-base"
+			/>
+		</label>
+		{#if data?.truncated}<p role="status" class="text-sm text-muted-foreground">
+				Some files could not be shown in full because the memory browsing limit was reached.
+			</p>{/if}
+	</div>
 {/snippet}
 
-<Screen title="Memory" {back} {banner}>
-	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col px-4 pt-4">
+<Screen title="Memory" {back} {banner} scrollable={false}>
+	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col">
 		<SwipeableTabs {tabs} bind:value={category} label="Memory sections" {lead}>
 			{#snippet children(value)}
 				{@const items = itemsFor(value)}
-				<div class="flex flex-col gap-5 pb-10">
+				<div class="flex flex-col gap-5 px-4 pt-4 pb-12">
 					<p class="text-sm text-muted-foreground">
 						{value === 'long-term'
 							? 'Saved facts and preferences the agent keeps across conversations. Open a file to read its current contents.'
@@ -141,7 +143,7 @@
 								: 'Recent recorded changes to saved memory.'}
 					</p>
 					<ScreenState
-						{remote}
+						remote={data && remote.status === 'loading' ? { status: 'ready' } : remote}
 						offline={!online}
 						errorTitle="Couldn't load memory."
 						{onretry}

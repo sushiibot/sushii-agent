@@ -54,8 +54,12 @@ export async function horizontalOverflow(page: Page) {
 		const scroller = document.scrollingElement;
 		if (scroller && scroller.scrollWidth > scroller.clientWidth) offenders.push('document scrolls');
 		for (const el of document.body.querySelectorAll('*')) {
-			// Pager tracks and inactive panels intentionally sit beyond a clipped viewport.
-			if (el.matches('[data-tab-track]') || el.closest('[data-tab-panel][aria-hidden=true]'))
+			// Pager tracks, inactive panels and scrollable tab labels intentionally sit inside clipped viewports.
+			if (
+				el.matches('[data-tab-track]') ||
+				el.closest('[data-tab-panel][aria-hidden=true]') ||
+				el.closest('[data-tab-strip]')
+			)
 				continue;
 			const style = getComputedStyle(el);
 			const r = el.getBoundingClientRect();

@@ -50,10 +50,15 @@
 	} = $props();
 
 	const uid = $props.id();
-	type Snapshot = { runs: RunSummary[]; hasOlder: boolean; truncated: boolean };
+	type Snapshot = {
+		runs: RunSummary[];
+		hasOlder: boolean;
+		truncated: boolean;
+		olderError: string | null;
+	};
 	let snapshots = $state<Record<string, Snapshot>>({});
 	$effect(() => {
-		if (remote.status === 'ready') snapshots[filter] = { runs, hasOlder, truncated };
+		if (remote.status === 'ready') snapshots[filter] = { runs, hasOlder, truncated, olderError };
 	});
 	const tabs = $derived(
 		(onfilter ? RUN_FILTERS : [RUN_FILTERS[0]]).map((f) => ({ value: f.value, label: f.label }))
@@ -66,7 +71,7 @@
 		return (snapshots.all?.runs ?? []).filter((r) => !kinds || kinds.includes(r.kind));
 	}
 	function panelRemote(value: string): RemoteLike {
-		if (value === filter && remote.status === 'error') return remote;
+		if (value === filter && remote.status === 'error' && !snapshots[value]) return remote;
 		if (
 			snapshots[value] ||
 			(value === filter && remote.status === 'ready') ||
@@ -82,10 +87,12 @@
 {/snippet}
 
 {#snippet lead()}
-	<p class="text-sm text-muted-foreground">
-		A run is one attempt by the agent to respond or complete a task. Open it for the steps, result
-		and evidence.
-	</p>
+	<div class="px-4 pt-4 pb-3">
+		<p class="text-sm text-muted-foreground">
+			A run is one attempt by the agent to respond or complete a task. Open it for the steps, result
+			and evidence.
+		</p>
+	</div>
 {/snippet}
 
 {#snippet skeleton()}
@@ -106,25 +113,29 @@
 {/snippet}
 
 {#snippet after(value: string)}
-	{@const older = value === filter ? hasOlder : snapshots[value]?.hasOlder}
-	{@const limited = value === filter ? truncated : snapshots[value]?.truncated}
+	{@const current = value === filter}
+	{@const saved = snapshots[value]}
+	{@const older = current ? hasOlder : saved?.hasOlder}
+	{@const limited = current ? truncated : saved?.truncated}
+	{@const loading = current && olderLoading}
+	{@const error = current ? olderError : saved?.olderError}
 	{#if older}
-		<Button variant="outline" disabled={olderLoading} onclick={() => onloadolder?.()}>
-			{#if olderLoading}<LoaderCircle
+		<Button variant="outline" disabled={loading || !current} onclick={() => onloadolder?.()}>
+			{#if loading}<LoaderCircle
 					class="animate-spin motion-reduce:animate-none"
 					aria-hidden="true"
 				/>Loading older runs…{:else}<ChevronDown />Show older runs{/if}
 		</Button>
-		{#if olderError}<p role="alert" class="text-sm text-failed">
-				Couldn't load older runs. {olderError}
+		{#if error}<p role="alert" class="text-sm text-failed">
+				Couldn't load older runs. {error}
 			</p>{/if}
 	{:else if limited}<p class="px-1 text-sm text-muted-foreground">
 			Older runs are in <a href={historyHref} class="underline underline-offset-4">History</a>.
 		</p>{/if}
 {/snippet}
 
-<Screen title="Runs" {back} {banner}>
-	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col px-4 pt-4">
+<Screen title="Runs" {back} {banner} scrollable={false}>
+	<div class="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col">
 		<SwipeableTabs
 			{tabs}
 			value={filter}
@@ -135,11 +146,11 @@
 			{#snippet children(value)}
 				{@const shown = RUN_FILTERS.find((f) => f.value === value) ?? RUN_FILTERS[0]}
 				{@const sections = byDay(panelRuns(value), runTime, now)}
-				<div class="flex flex-col gap-5 pb-10">
+				<div class="flex flex-col gap-5 px-4 pt-4 pb-12">
 					<p class="text-sm text-muted-foreground">{shown.description}</p>
 					{#if value === filter && remote.status === 'loading' && snapshots[value]}<p
 							role="status"
-							class="text-sm text-muted-foreground"
+							class="sr-only"
 						>
 							Updating runs…
 						</p>{/if}
@@ -178,6 +189,12 @@
 						{/each}
 						{@render after(value)}
 					</ScreenState>
+					{#if value === filter && remote.status === 'error' && snapshots[value]}
+						<div role="alert" class="flex flex-col items-start gap-2">
+							<p class="text-sm text-failed">Couldn't refresh runs. {remote.error}</p>
+							<Button variant="outline" onclick={onretry}>Retry refresh</Button>
+						</div>
+					{/if}
 				</div>
 			{/snippet}
 		</SwipeableTabs>

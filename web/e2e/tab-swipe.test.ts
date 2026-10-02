@@ -395,3 +395,176 @@ test('pager tabs support arrow, Home and End keys and reduced motion settles imm
 	});
 	expect(position).toBeLessThan(1);
 });
+
+test('returning to Runs keeps cached rows stationary during a delayed refresh', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	let delayAll = false;
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	await context.route('**/api/runs*', async (route) => {
+		const url = new URL(route.request().url());
+		if (delayAll && url.pathname === '/api/runs' && !url.searchParams.has('kind')) await gate;
+		await route.fallback();
+	});
+	try {
+		await page.goto('/runs');
+		await expectSettled(page, 'All');
+		const all = page.locator('[data-tab-panel="all"]');
+		const first = all.getByRole('link').first();
+		await expect(first).toBeVisible();
+		const before = await first.boundingBox();
+		const chatReady = page.waitForResponse((response) => {
+			const url = new URL(response.url());
+			return url.pathname === '/api/runs' && url.searchParams.get('kind') === 'chat';
+		});
+		await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+		await chatReady;
+		await expectSettled(page, 'Chat');
+		delayAll = true;
+		await page.getByRole('tab', { name: 'All', exact: true }).click();
+		await expectSettled(page, 'All');
+		await expect
+			.poll(async () => Math.abs((await first.boundingBox())!.y - before!.y))
+			.toBeLessThan(1);
+		const refreshed = page.waitForResponse(
+			(response) => new URL(response.url()).pathname === '/api/runs'
+		);
+		release();
+		await refreshed;
+		await expect
+			.poll(async () => Math.abs((await first.boundingBox())!.y - before!.y))
+			.toBeLessThan(1);
+		expect(await page.getByRole('main').evaluate((main) => main.scrollTop)).toBe(0);
+	} finally {
+		release();
+	}
+});
+
+test('a swipe does not fetch a Runs filter before its pane has arrived', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	const filters: string[] = [];
+	page.on('request', (request) => {
+		const url = new URL(request.url());
+		if (url.pathname === '/api/runs') filters.push(url.searchParams.get('kind') ?? 'all');
+	});
+	await page.goto('/runs');
+	await expectSettled(page, 'All');
+	await expect(page.getByRole('tabpanel').getByRole('link').first()).toBeVisible();
+	const drag = await heldDrag(page, 230);
+	await page.waitForTimeout(150);
+	expect(filters).toEqual(['all']);
+	await drag.finish();
+	await expectSettled(page, 'Chat');
+	await expect.poll(() => filters).toEqual(['all', 'chat']);
+});
+
+test('MCP tabs keep the same viewport and a single vertical scroll owner', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/connectors/code-host');
+	await expectSettled(page, 'Tools');
+	await expect(page.getByRole('button', { name: 'Save tracking snapshot' })).toBeVisible();
+	const before = await page.locator('[data-tab-pager]').boundingBox();
+	await page.getByRole('tab', { name: 'History', exact: true }).click();
+	await expectSettled(page, 'History');
+	const after = await page.locator('[data-tab-pager]').boundingBox();
+	expect(Math.abs(after!.y - before!.y)).toBeLessThan(1);
+	expect(Math.abs(after!.height - before!.height)).toBeLessThan(1);
+	expect(await page.getByRole('main').evaluate((main) => getComputedStyle(main).overflowY)).toBe(
+		'hidden'
+	);
+});
+
+test('refreshing run data during a held swipe keeps the pager mounted and stationary', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	let refreshing = false;
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => (release = resolve));
+	await context.route('**/api/runs/*', async (route) => {
+		if (refreshing) await gate;
+		await route.fallback();
+	});
+	await page.goto(EXPENSES);
+	await expectSettled(page, 'Overview');
+	const drag = await heldDrag(page, 130);
+	try {
+		await expect
+			.poll(async () => {
+				const pane = await panel(page, 'Overview').boundingBox();
+				const viewport = await page.locator('[data-tab-pager]').boundingBox();
+				return Math.abs(viewport!.x - pane!.x - 130);
+			})
+			.toBeLessThan(1);
+		const heldX = await panel(page, 'Overview').evaluate((el) => el.getBoundingClientRect().x);
+		refreshing = true;
+		const response = page.waitForResponse((response) =>
+			new URL(response.url()).pathname.startsWith('/api/runs/')
+		);
+		const request = page.waitForRequest((request) =>
+			new URL(request.url()).pathname.startsWith('/api/runs/')
+		);
+		await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+		await request;
+		await expect(page.locator('[data-tab-pager]')).toHaveCount(1);
+		await expect
+			.poll(() =>
+				panel(page, 'Overview').evaluate(
+					(el, previousX) => Math.abs(el.getBoundingClientRect().x - previousX),
+					heldX
+				)
+			)
+			.toBeLessThan(1);
+		release();
+		await response;
+		await expect
+			.poll(() =>
+				panel(page, 'Overview').evaluate(
+					(el, previousX) => Math.abs(el.getBoundingClientRect().x - previousX),
+					heldX
+				)
+			)
+			.toBeLessThan(1);
+	} finally {
+		release();
+		await drag.finish();
+	}
+});
+
+test('narrow Runs tabs keep full labels and keyboard selection reveals the last tab', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.setViewportSize({ width: 320, height: 915 });
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await page.goto('/runs');
+	await expectSettled(page, 'All');
+	const tabs = page.getByRole('tablist', { name: 'Type of run' });
+	expect(
+		await tabs
+			.getByRole('tab')
+			.evaluateAll((buttons) => buttons.every((button) => button.scrollWidth <= button.clientWidth))
+	).toBe(true);
+	await tabs.getByRole('tab', { name: 'All', exact: true }).focus();
+	await page.keyboard.press('End');
+	await expectSettled(page, 'Agents');
+	const last = await tabs.getByRole('tab', { name: 'Agents', exact: true }).boundingBox();
+	expect(last!.x).toBeGreaterThanOrEqual(0);
+	expect(last!.x + last!.width).toBeLessThanOrEqual(320.5);
+	expect(
+		await page.evaluate(
+			() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+		)
+	).toBe(true);
+});

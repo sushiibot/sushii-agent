@@ -65,11 +65,12 @@
 {/snippet}
 
 <DetailScreen
+	scrollable={!day}
 	{title}
 	{back}
 	{banner}
 	state={{
-		remote,
+		remote: day && remote.status === 'loading' ? { status: 'ready' } : remote,
 		offline: !online,
 		errorTitle: "Couldn't load this day.",
 		onretry,

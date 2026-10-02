@@ -64,7 +64,7 @@ function setup(all: RunSummary[], page = 3) {
 	const stream = fakeTransport();
 	const store = new RunsStore(api, createHub({ transport: stream.transport }));
 	store.start();
-	return { store, stream, calls, all };
+	return { store, stream, calls, all, api };
 }
 
 const shown = (s: RunsStore) => [...(s.list.data?.runs ?? []), ...s.older].map((r) => r.title);
@@ -144,4 +144,21 @@ test('returning to a paginated filter preserves its cursor and accepts new runs 
 		'run 1'
 	]);
 	expect(store.before).toBeNull();
+});
+
+test('older-page errors belong to their filter and survive revisiting it', async () => {
+	const { store, api } = setup([1, 2, 3, 4, 5, 6].map((n) => run(n)));
+	const list = api.list;
+	api.list = (options) =>
+		options.before ? Promise.reject(new Error('Older page unavailable')) : list(options);
+	await store.list.refetch();
+	await store.loadOlder();
+	expect(store.olderError).toBe('Older page unavailable');
+	store.setFilter('chat');
+	await Bun.sleep(10);
+	expect(store.olderError).toBeNull();
+	store.setFilter('all');
+	await Bun.sleep(10);
+	expect(store.olderError).toBe('Older page unavailable');
+	expect(store.before).toBe(id(4));
 });

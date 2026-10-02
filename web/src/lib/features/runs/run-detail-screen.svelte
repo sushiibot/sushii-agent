@@ -140,11 +140,12 @@
 {/snippet}
 
 <DetailScreen
+	scrollable={!detail}
 	title="Run"
 	{back}
 	{banner}
 	state={{
-		remote,
+		remote: detail && remote.status === 'loading' ? { status: 'ready' } : remote,
 		offline: !online,
 		errorTitle: "Couldn't load this run.",
 		onretry,
@@ -282,7 +283,12 @@
 									{/if}
 								{/if}
 								{#if hasMore}
-									<Button variant="outline" disabled={moreLoading} onclick={() => onloadmore?.()}>
+									<Button
+										variant="outline"
+										class="self-start"
+										disabled={moreLoading}
+										onclick={() => onloadmore?.()}
+									>
 										{#if moreLoading}
 											<LoaderCircle
 												class="animate-spin motion-reduce:animate-none"

@@ -14,6 +14,7 @@
 		toast,
 		footer,
 		stickToBottom = false,
+		scrollable = true,
 		scroller = $bindable(null),
 		children
 	}: {
@@ -27,6 +28,8 @@
 		/** A transient line above the footer. */
 		toast?: Snippet;
 		footer?: Snippet;
+		/** Disable when the content owns its vertical scroll, such as a tab pager. */
+		scrollable?: boolean;
 		/** Keep the newest content in view, for chats. */
 		stickToBottom?: boolean;
 		/** The scrolling region, for callers that track the reader's position. */
@@ -88,7 +91,8 @@
 <main
 	bind:this={scroller}
 	class={cn(
-		'@container min-h-0 flex-1 overflow-x-clip overflow-y-auto overscroll-contain',
+		'@container min-h-0 flex-1 overflow-x-clip overscroll-contain',
+		scrollable ? 'overflow-y-auto' : 'overflow-y-hidden',
 		stickToBottom && 'flex flex-col-reverse'
 	)}
 >

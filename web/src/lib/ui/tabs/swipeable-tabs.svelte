@@ -37,6 +37,9 @@
 	let reducedMotion = false;
 	let rtl = false;
 	let dragging = false;
+	let userTransition = false;
+	let publishedValue: string | undefined;
+	let disposed = false;
 	let tabGeometry: { left: number; width: number }[] = [];
 	const active = $derived(tabs.findIndex((tab) => tab.value === value));
 	const controls =
@@ -44,15 +47,49 @@
 	const overlays =
 		'dialog[open], [role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 
-	function choose(next: string, notify = true) {
+	function choose(next: string) {
 		if (next === value) return;
 		value = next;
-		if (notify) onchange?.(next);
 	}
 
-	function select(carousel: EmblaCarouselType) {
-		const tab = tabs[carousel.selectedScrollSnap()];
-		if (tab) choose(tab.value, dragging);
+	function aligned(carousel: EmblaCarouselType) {
+		const slide = carousel.slideNodes()[carousel.selectedScrollSnap()];
+		return (
+			slide &&
+			Math.abs(
+				slide.getBoundingClientRect().left - carousel.rootNode().getBoundingClientRect().left
+			) < 0.5
+		);
+	}
+
+	function settle() {
+		paintIndicator();
+		// A jump can emit settle before Embla updates its selected index. Also leave data/state
+		// changes until the visible track has finished moving, rather than its release-time select.
+		queueMicrotask(() => {
+			if (disposed || dragging || !api || !userTransition || !aligned(api)) return;
+			const tab = tabs[api.selectedScrollSnap()];
+			if (!tab) return;
+			userTransition = false;
+			choose(tab.value);
+			if (tab.value !== publishedValue) {
+				publishedValue = tab.value;
+				onchange?.(tab.value);
+			}
+		});
+	}
+
+	function revealSelectedTab() {
+		const scroller = tablist?.parentElement;
+		const selected = tablist?.querySelector<HTMLButtonElement>(
+			'[role="tab"][aria-selected="true"]'
+		);
+		if (!scroller || !selected || scroller.scrollWidth <= scroller.clientWidth) return;
+		const container = scroller.getBoundingClientRect();
+		const button = selected.getBoundingClientRect();
+		// Scroll only the tab strip. scrollIntoView can move ancestors and the active pane.
+		if (button.left < container.left) scroller.scrollLeft += button.left - container.left;
+		else if (button.right > container.right) scroller.scrollLeft += button.right - container.right;
 	}
 
 	function measure() {
@@ -82,8 +119,10 @@
 	function activate(index: number) {
 		const tab = tabs[index];
 		if (!tab) return;
+		userTransition = true;
 		choose(tab.value);
 		api?.scrollTo(index, reducedMotion);
+		if (api && aligned(api)) settle();
 	}
 
 	function keydown(event: KeyboardEvent, index: number) {
@@ -96,7 +135,9 @@
 		else return;
 		event.preventDefault();
 		activate(next);
-		tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+		tablist
+			.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+			[next]?.focus({ preventScroll: true });
 	}
 
 	function allowDrag(carousel: EmblaCarouselType, event: MouseEvent | TouchEvent) {
@@ -141,10 +182,12 @@
 		rtl = view.getComputedStyle(viewport).direction === 'rtl';
 		const pointerDown = () => {
 			dragging = true;
+			userTransition = true;
 		};
 		const pointerUp = (carousel: EmblaCarouselType) => {
 			dragging = false;
 			if (reducedMotion) carousel.scrollTo(carousel.selectedScrollSnap(), true);
+			if (aligned(carousel)) settle();
 		};
 		const cancelSelectionDrag = () => {
 			if (
@@ -155,13 +198,25 @@
 				viewport.dispatchEvent(new Event('touchcancel'));
 		};
 		viewport.addEventListener('touchmove', cancelSelectionDrag, { capture: true, passive: true });
+		const reInit = (carousel: EmblaCarouselType) => {
+			// A tap updates accessible selection immediately but publishes only on arrival.
+			// Preserve that pending tap across rotation; unfinished drags retain the old value.
+			const pendingTap = userTransition && value !== publishedValue;
+			dragging = false;
+			userTransition = pendingTap;
+			const index = tabs.findIndex((tab) => tab.value === value);
+			if (index < 0 && tabs[0]) choose(tabs[0].value);
+			carousel.scrollTo(Math.max(0, index), true);
+			measure();
+			if (pendingTap) settle();
+			else publishedValue = value;
+		};
 		const init = (event: Event) => {
 			api = (event as CustomEvent<EmblaCarouselType>).detail;
 			api
-				.on('select', select)
 				.on('scroll', paintIndicator)
-				.on('settle', paintIndicator)
-				.on('reInit', measure)
+				.on('settle', settle)
+				.on('reInit', reInit)
 				.on('pointerDown', pointerDown)
 				.on('pointerUp', pointerUp);
 			measure();
@@ -178,15 +233,26 @@
 				startIndex: Math.max(0, active),
 				direction: rtl ? 'rtl' : 'ltr',
 				watchDrag: allowDrag,
+				watchResize: false,
 				watchFocus: false
 			},
 			plugins: []
 		});
-		const resize = new ResizeObserver(measure);
+		let width = viewport.getBoundingClientRect().width;
+		const resize = new ResizeObserver(() => {
+			measure();
+			const nextWidth = viewport.getBoundingClientRect().width;
+			// Text, pane height and keyboard changes must not rebuild an in-flight track.
+			if (Math.abs(nextWidth - width) >= 0.5) {
+				width = nextWidth;
+				api?.reInit({ startIndex: Math.max(0, active) });
+			}
+		});
 		resize.observe(tablist);
 		resize.observe(viewport);
 		return {
 			destroy() {
+				disposed = true;
 				resize.disconnect();
 				media.removeEventListener('change', motionChange);
 				viewport.removeEventListener('touchmove', cancelSelectionDrag, true);
@@ -198,16 +264,19 @@
 
 	$effect(() => {
 		const index = active;
-		if (api && index >= 0 && api.selectedScrollSnap() !== index) api.scrollTo(index, reducedMotion);
+		if (api && index >= 0 && api.selectedScrollSnap() !== index) {
+			userTransition = false;
+			publishedValue = value;
+			api.scrollTo(index, reducedMotion);
+		} else if (!userTransition) publishedValue = value;
 	});
 	$effect(() => {
 		tabs;
 		value;
 		void tick().then(() => {
+			if (disposed) return;
 			measure();
-			tablist
-				?.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')
-				?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+			revealSelectedTab();
 		});
 	});
 </script>
@@ -215,13 +284,13 @@
 <div class={cn('flex min-h-0 min-w-0 flex-1 flex-col', className)}>
 	<div class="min-w-0 shrink-0 bg-background">
 		{@render lead?.()}
-		<div class="min-w-0 overflow-x-auto overscroll-contain border-b">
+		<div data-tab-strip class="min-w-0 overflow-x-auto overscroll-contain border-b">
 			<div
 				bind:this={tablist}
 				role="tablist"
 				aria-label={label}
 				aria-orientation="horizontal"
-				class="relative mx-auto flex w-full max-w-2xl min-w-0 gap-1 px-2"
+				class="relative mx-auto flex w-max min-w-full gap-2 px-4"
 			>
 				{#each tabs as tab, index (tab.value)}
 					<button
@@ -234,7 +303,7 @@
 						onclick={() => activate(index)}
 						onkeydown={(event) => keydown(event, index)}
 						class={cn(
-							'min-h-12 min-w-12 flex-1 truncate px-1 text-sm font-medium text-muted-foreground hover:text-foreground',
+							'min-h-12 min-w-12 flex-1 shrink-0 basis-auto px-2 text-sm font-medium whitespace-nowrap text-muted-foreground hover:text-foreground',
 							value === tab.value && 'text-foreground'
 						)}>{tab.label}</button
 					>

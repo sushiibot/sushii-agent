@@ -123,7 +123,12 @@ test('connection tabs reach history and usage without scrolling through tools', 
 	const tools = page.getByRole('tabpanel', { name: 'Tools', exact: true });
 	await expect(tools).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Save tracking snapshot' })).toBeVisible();
+	const viewport = page.locator('[data-tab-pager]');
+	const toolsBox = await viewport.boundingBox();
+	await expect(page.getByRole('main')).toHaveCSS('overflow-y', 'hidden');
+	await expect(tools.getByRole('button', { name: 'Save tracking snapshot' })).toHaveCount(1);
 	await page.getByRole('tab', { name: 'History', exact: true }).click();
+	expect((await viewport.boundingBox())!.height).toBe(toolsBox!.height);
 	await expect(tools).toBeHidden();
 	await expect(page.getByRole('heading', { name: 'Connection history' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Save tracking snapshot' })).toBeHidden();
