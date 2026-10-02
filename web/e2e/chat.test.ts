@@ -153,7 +153,7 @@ test('a send shows at once, carries a ULID, and settles on the status event', as
 	await push(page, 'status', { clientId: body.clientId, state: 'accepted' }, 2);
 	await expect(bubble(page, 'Book the car service')).toContainText('Sent');
 	await expect(page.locator('[data-message-id]').filter({ hasText: 'Book' })).toHaveCount(1);
-	await expect(page.getByText('Thinking…')).toBeVisible();
+	await expect(page.locator('[data-typing] [aria-hidden=true]')).toContainText(/Sushii.*…/);
 
 	await push(page, 'tool', { turnId: 't1', name: 'search_mail', summary: 'Searching mail' });
 	await expect(page.getByText('Searching mail').first()).toBeVisible();
@@ -1782,6 +1782,7 @@ test('location cancellation ignores a late browser fix', async ({ page, context 
 for (const width of [412, 1280]) {
 	test(`inline activity and approvals stay compact at ${width}px`, async ({ page, context }) => {
 		await chatServer(context);
+		await page.clock.install();
 		await page.setViewportSize({ width, height: width === 412 ? 915 : 900 });
 		await open(page);
 		await push(page, 'snapshot', {
@@ -1791,6 +1792,13 @@ for (const width of [412, 1280]) {
 		await expect(page.locator('[data-typing]')).toBeVisible();
 		await expect(page.locator('[data-typing]')).not.toContainText('Used');
 		await page.screenshot({ path: `/tmp/chat-typing-${width}.png` });
+		const visibleStatus = page.locator('[data-typing] [aria-hidden=true]');
+		const firstPhrase = await visibleStatus.textContent();
+		await page.clock.runFor(8000);
+		await expect(visibleStatus).not.toHaveText(firstPhrase!);
+		const secondPhrase = await visibleStatus.textContent();
+		await page.clock.runFor(8000);
+		await expect(visibleStatus).not.toHaveText(secondPhrase!);
 		await push(page, 'delta', {
 			turnId: 'compact',
 			offset: 0,
