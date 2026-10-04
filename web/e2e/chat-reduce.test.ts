@@ -918,3 +918,30 @@ test('an unmatched approval is placed before later activity instead of following
 		'data-turn'
 	]);
 });
+
+test('session boundaries preserve rotation kinds and snapshots through live reduction and history', () => {
+	const boundary = {
+		kind: 'rotated' as const,
+		summary: 'Continue the Osaka trip.',
+		memory: {
+			files: [
+				{ path: 'USER.md', content: 'Likes tea.', change: 'changed' as const, truncated: false }
+			],
+			truncated: false
+		},
+		context: { files: [], truncated: false }
+	};
+	const live = createState();
+	applyEvent(live, { type: 'session', data: boundary, seq: 1 }, 1000);
+	const replay = createState();
+	mergeHistory(replay, [{ type: 'divider', id: '1', at: '2026-10-04T12:00:00Z', ...boundary }]);
+	const part = (s: ChatState) =>
+		toMessages(s.items)
+			.flatMap((m) => m.parts)
+			.find((p) => p.type === 'data-divider');
+	expect(part(live)).toEqual({
+		type: 'data-divider',
+		data: { ...boundary, summaryTruncated: undefined, initialContext: undefined }
+	});
+	expect(part(replay)).toEqual(part(live));
+});

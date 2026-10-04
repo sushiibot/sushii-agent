@@ -556,7 +556,7 @@ describe("stop and commands", () => {
     expect((await post(h.handler, "/api/chat/stop", {})).status).toBe(202);
     expect((await post(h.handler, "/api/chat/command", { command: "compact" })).status).toBe(202);
     await Bun.sleep(5);
-    expect(h.log.list(["session"]).map((e) => e.data)).toEqual([{ kind: "compacted" }]);
+    expect(h.log.list(["session"])).toEqual([]); // The workspace emits only successful boundaries.
     expect(h.log.list(["notice"]).map((e) => e.data)).toEqual([{ type: "commandResult", text: "compacted" }]);
     h.link.connected = false;
     await post(h.handler, "/api/chat/command", { command: "new" });

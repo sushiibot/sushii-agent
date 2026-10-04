@@ -134,6 +134,23 @@ describe("web adapter deliveries", () => {
     expect(h.log.find("proactive", "p2")).toBeNull();
   });
 
+  test("context boundaries persist once before acknowledgement and replay their snapshots through history", async () => {
+    const h = setup();
+    const boundary = { kind: "rotated" as const, summary: "## Next\nBook the hotel.", memory: { files: [{ path: "USER.md", content: "Likes tea.", change: "changed" as const, truncated: false }], truncated: false }, context: { files: [{ path: "USER.md", content: "Likes tea.", truncated: false }], truncated: false } };
+    let storedAtAck = false;
+    h.rpc.onAck = () => { storedAtAck = !!h.log.find("session", "boundary-1"); };
+    const entry = deliver({ kind: "session", text: "", session: boundary, outboxId: "boundary-1" });
+    await h.link.deliver(entry);
+    expect(storedAtAck).toBe(true);
+    await h.link.deliver(entry);
+    // Also idempotent if the bot crashes after storage, before recording that it saw the outbox.
+    await h.adapter.sessionChanged(null, boundary, { plain: false, ledger: { isSent: () => false, markSent: () => {} }, outboxId: "boundary-1" });
+    expect(h.log.list(["session"])).toHaveLength(1);
+    const page = historyPage(h.log, { limit: 100 }, { maxBytes: 1_000_000 });
+    expect(page.items).toContainEqual(expect.objectContaining({ type: "divider", ...boundary }));
+    expect(h.events.filter(e => e.type === "reply")).toHaveLength(0);
+  });
+
   test("a reply is committed before the outbox is acked", async () => {
     const h = setup();
     let committedAtAck: unknown = null;

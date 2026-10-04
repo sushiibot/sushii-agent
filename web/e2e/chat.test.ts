@@ -2120,3 +2120,92 @@ test('another-device decision with a long command reflows at 320px', async ({ pa
 		)
 	).toBe(true);
 });
+
+for (const width of [390, 1280]) {
+	test(`context dividers expose saved memory and loaded context at ${width}px`, async ({
+		page,
+		context
+	}) => {
+		await page.setViewportSize({ width, height: 915 });
+		const { opts } = await chatServer(context, {
+			history: [
+				{
+					type: 'divider',
+					id: 'reset',
+					at: '2026-10-04T12:00:00Z',
+					kind: 'new',
+					memory: { files: [], truncated: false },
+					context: {
+						files: [{ path: 'USER.md', content: 'Prefers tea.', truncated: false }],
+						truncated: false
+					}
+				},
+				{
+					type: 'divider',
+					id: 'rotate',
+					at: '2026-10-04T12:01:00Z',
+					kind: 'rotated',
+					summary: '## Next\nBook the Osaka hotel.',
+					memory: {
+						files: [
+							{
+								path: 'memory/travel.md',
+								content: 'Stay near the station.',
+								change: 'added',
+								truncated: false
+							}
+						],
+						truncated: false
+					},
+					context: {
+						files: [{ path: 'MEMORY.md', content: 'Osaka trip planned.', truncated: false }],
+						truncated: false
+					}
+				},
+				{ type: 'divider', id: 'legacy', at: '2026-10-04T12:02:00Z', kind: 'compacted' }
+			]
+		});
+		await open(page);
+		const continued = page
+			.locator('[data-context-divider]')
+			.filter({ hasText: 'Conversation continued' });
+		await continued.locator(':scope > summary').click();
+		await expect(continued.getByText('Book the Osaka hotel.')).toBeVisible();
+		await continued.locator('summary').filter({ hasText: 'memory/travel.md' }).click();
+		await expect(continued.getByText('Stay near the station.')).toBeVisible();
+		await continued.locator('summary').filter({ hasText: 'MEMORY.md' }).click();
+		await expect(continued.getByText('Osaka trip planned.')).toBeVisible();
+		await continued.locator(':scope > summary').click();
+		const reset = page.locator('[data-context-divider]').filter({ hasText: 'Context reset' });
+		await reset.locator(':scope > summary').focus();
+		await page.keyboard.press('Enter');
+		await expect(reset.getByText('No shared-memory files changed', { exact: false })).toBeVisible();
+		await expect(
+			reset.getByText('Its previous recap stays in history.', { exact: false })
+		).toBeVisible();
+		await reset.locator(':scope > summary').click();
+		const old = page
+			.locator('[data-context-divider]')
+			.filter({ hasText: 'Conversation compacted' });
+		await old.locator(':scope > summary').click();
+		await expect(old.getByText('Details were not recorded for this event.')).toBeVisible();
+		await old.locator(':scope > summary').click();
+		const boundary = {
+			kind: 'compacted' as const,
+			summary: '## Decisions\nKeep the station-area hotel.',
+			memory: { files: [], truncated: false }
+		};
+		await push(page, 'session', boundary, 1);
+		await expect(page.locator('[data-context-divider]')).toHaveCount(4);
+		const live = page.locator('[data-context-divider]').last();
+		await live.locator(':scope > summary').click();
+		await expect(live.getByText('Keep the station-area hotel.')).toBeVisible();
+		expect(await horizontalOverflow(page)).toEqual([]);
+		opts.history.push({ type: 'divider', id: 'live', at: '2026-10-04T12:03:00Z', ...boundary });
+		await page.reload();
+		const replay = page.locator('[data-context-divider]').last();
+		await replay.locator(':scope > summary').click();
+		await expect(replay.getByText('Keep the station-area hotel.')).toBeVisible();
+		await expect(page.locator('[data-context-divider]')).toHaveCount(4);
+	});
+}

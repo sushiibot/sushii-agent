@@ -1,3 +1,4 @@
+import { relative } from "node:path";
 import { threadAwareness, threadContextTools } from "./threadContext.ts";
 import { createGitHubPushTool, GITHUB_PUSH_TOOL } from "./githubPush.ts";
 import { CONNECTOR_TOOLS, type ConnectorManager } from "./connectors.ts";
@@ -69,7 +70,7 @@ export function currentRunId(session: ChatSession): string | null {
 }
 
 /** In-memory settings overrides per live session, re-applied after a reload drops them. */
-const sessionOverrides = new WeakMap<object, { session: AgentSession; overrides: Settings }>();
+const sessionOverrides = new WeakMap<object, { session: AgentSession; overrides: Settings; context: () => readonly { path: string; content: string }[] }>();
 
 /** Re-reads the home context files (and Pi's settings/resources) into `session`'s system prompt. */
 export async function reloadContext(session: ChatSession): Promise<void> {
@@ -81,6 +82,11 @@ export async function reloadContext(session: ChatSession): Promise<void> {
   } finally {
     entry.session.settingsManager.applyOverrides(entry.overrides);
   }
+}
+
+/** Files actually loaded in this session, including the rendered task context. */
+export function loadedContextFiles(session: ChatSession): readonly { path: string; content: string }[] {
+  return sessionOverrides.get(session)?.context() ?? [];
 }
 
 /** Tokens past which Pi auto-compacts `session` on its current model (shouldCompact in Pi's compaction.js). */
@@ -370,7 +376,7 @@ export function createPiChatSessionFactory(
 
     const file = sessionManager.getSessionFile();
     if (!file) throw new Error("pi chat session has no persisted file");
-    sessionOverrides.set(session, { session, overrides });
+    sessionOverrides.set(session, { session, overrides, context: () => loader.getAgentsFiles().agentsFiles.map(f => ({ ...f, path: relative(config.home, f.path) })).filter(f => f.path && !f.path.startsWith("..") && !f.path.startsWith("/")) });
     const observer = observeRuns(session, { recorder: runs, sessionFile: file, agentName: opts.agentName ?? "main", defaultModel: config.model, turnId: opts.mainTurnId, conversationId: opts.origin?.conversationId ?? "main" });
     observerRef.current = observer;
     runObservers.set(session, observer);

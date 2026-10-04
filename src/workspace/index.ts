@@ -8,7 +8,7 @@ import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, economyOf, loadWorkspaceConfig, taskRulesOf, type WorkspaceConfig } from "./config.ts";
 import { TopicSessions } from "./topicSessions.ts";
 import { PersonalSession } from "./personalSession.ts";
-import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
+import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, loadedContextFiles, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
 import { ModelChoice } from "./modelChoice.ts";
 import { commandHandlers } from "./commands.ts";
 import { readModelCosts } from "./modelCosts.ts";
@@ -119,6 +119,7 @@ async function main(): Promise<void> {
   const connectors = new ConnectorManager(config.agentDir);
   await connectors.start();
   const personalOptions = {
+    boundaryReport: { home: config.home, context: loadedContextFiles },
     principalId: config.principalId,
     model: config.model,
     stateDir: config.stateDir,

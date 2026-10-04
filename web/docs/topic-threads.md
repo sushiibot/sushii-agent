@@ -98,6 +98,26 @@ The `WORKSPACE_*` economy configuration applies to Main and threads equally.
 Idle rotation replaces the model context, while the thread and stored history persist.
 The separate seven-day archive rule changes thread organization; it does not delete the thread or its memory.
 
+## Context dividers
+
+Main and threads show a tappable divider after successful compaction, idle rotation, or context reset.
+A new thread also shows its starting context.
+The expanded divider shows the summary or recap carried forward, changed shared-memory files, and loaded workspace context when recorded.
+
+The workspace delivers automatic boundaries through its durable outbox.
+The web gateway stores each boundary once, before acknowledgement.
+History and stream replay preserve the recorded snapshot across reloads and restarts.
+Failed or aborted compaction does not produce a divider.
+
+Memory snapshots show shared-file changes since the conversation's previous boundary.
+These changes can include writes from other conversations; the snapshot does not attribute individual edits.
+File contents describe their state at the boundary, rather than a later live version.
+Large previews show truncation notices.
+
+A reset loads fresh workspace context without the previous conversation's recap.
+That recap remains in history.
+Older dividers with no recorded snapshot remain expandable and explain which details are unavailable.
+
 ## Shared memory
 
 Conversations have separate context windows. Shared files contain facts and decisions that must carry between conversations.

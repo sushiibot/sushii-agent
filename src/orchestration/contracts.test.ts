@@ -417,7 +417,7 @@ describe("chat/deliver kind alert", () => {
 describe("register result features", () => {
   test("optional, a short list of short names", () => {
     ok(workspaceRegisterResult, { ok: true, tools: [] });
-    expect(workspaceRegisterResult.parse({ ok: true, tools: [], features: [...WORKSPACE_FEATURES] }).features).toEqual(["alert"]);
+    expect(workspaceRegisterResult.parse({ ok: true, tools: [], features: [...WORKSPACE_FEATURES] }).features).toEqual(["alert", "session"]);
     ok(workspaceRegisterResult, { ok: true, tools: [], features: ["alert", "something-newer"] });
     bad(workspaceRegisterResult, { ok: true, tools: [], features: Array(17).fill("alert") });
     bad(workspaceRegisterResult, { ok: true, tools: [], features: ["x".repeat(33)] });

@@ -277,6 +277,24 @@ export interface HomeAlert {
 
 // ── SSE events ──
 
+/** Snapshot captured at a context boundary; later memory edits do not change it. */
+export interface SessionBoundary {
+	kind: 'new' | 'rotated' | 'compacted';
+	summary?: string;
+	summaryTruncated?: boolean;
+	memory?: {
+		files: {
+			path: string;
+			content: string;
+			truncated: boolean;
+			change: 'added' | 'changed' | 'removed';
+		}[];
+		truncated: boolean;
+	};
+	context?: { files: { path: string; content: string; truncated: boolean }[]; truncated: boolean };
+	initialContext?: string;
+}
+
 /** Payload of each SSE event, by event name. */
 export interface ChatEventMap {
 	hello: {
@@ -314,7 +332,7 @@ export interface ChatEventMap {
 	/** `clientId` is the owner message this notice answers, and settles it, except `messageRejected`,
 	 *  which fails it until a retry. It is never set on `workspaceOffline`, which asks the client to resend. */
 	notice: RouterNotice & { clientId?: string };
-	session: { kind: 'new' | 'compacted' };
+	session: SessionBoundary;
 	snapshot: { turnId: string; view: ProgressView };
 	/** Apply only when `offset` equals the local text length; otherwise wait for a snapshot. */
 	delta: { turnId: string; offset: number; text: string };
@@ -438,13 +456,7 @@ export type WebHistoryItem =
 			/** Null: no longer waiting, and never answered. */
 			answer?: string | null;
 	  }
-	| {
-			type: 'divider';
-			id: string;
-			at: string;
-			kind: 'new' | 'rotated' | 'compacted';
-			summary?: string;
-	  }
+	| ({ type: 'divider'; id: string; at: string } & SessionBoundary)
 	| {
 			/** Only ever from the bot's approval log. `decision` is null while still pending. */
 			type: 'approval';

@@ -112,7 +112,7 @@ function toItem(
     }
     default: {
       const d = (ev as StoredEvent<"session">).data;
-      return { type: "divider", id, at, kind: d.kind === "new" ? "new" : "compacted" };
+      return { type: "divider", id, at, ...d };
     }
   }
 }

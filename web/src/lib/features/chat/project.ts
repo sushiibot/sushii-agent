@@ -294,7 +294,19 @@ export function toMessages(
 				out.push({
 					id: item.id,
 					role: 'assistant',
-					parts: [{ type: 'data-divider', data: { kind: item.divider, summary: item.summary } }]
+					parts: [
+						{
+							type: 'data-divider',
+							data: {
+								kind: item.divider,
+								summary: item.summary,
+								summaryTruncated: item.summaryTruncated,
+								memory: item.memory,
+								context: item.context,
+								initialContext: item.initialContext
+							}
+						}
+					]
 				});
 				break;
 			case 'line':

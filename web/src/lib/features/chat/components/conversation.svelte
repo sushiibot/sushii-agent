@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ContextDivider from './context-divider.svelte';
 	import type { Snippet } from 'svelte';
 	import Split from '@lucide/svelte/icons/split';
 	import Bell from '@lucide/svelte/icons/bell';
@@ -14,7 +15,6 @@
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
-	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Copy from '@lucide/svelte/icons/copy';
 	import Share2 from '@lucide/svelte/icons/share-2';
 	import { Button } from '$lib/ui/button';
@@ -240,38 +240,7 @@
 					{:else if part.type === 'data-files'}
 						<FilesBlock files={part.data.files} dropped={part.data.dropped} onopen={onopenfile} />
 					{:else if part.type === 'data-divider'}
-						{@const label = {
-							new: 'Context reset',
-							rotated: 'Conversation continued',
-							compacted: 'Conversation compacted'
-						}[part.data.kind]}
-						{#if part.data.summary}
-							<details open={openTurn === message.id} class="group/div w-full text-sm">
-								<summary
-									class="flex min-h-12 cursor-pointer list-none items-center gap-3 text-muted-foreground [&::-webkit-details-marker]:hidden"
-								>
-									<span class="h-px flex-1 bg-border"></span>
-									<span class="flex items-center gap-1 font-medium"
-										>{label}<ChevronDown
-											class="size-3.5 transition-transform group-open/div:rotate-180 motion-reduce:transition-none"
-											aria-hidden="true"
-										/></span
-									>
-									<span class="h-px flex-1 bg-border"></span>
-								</summary>
-								<p class="rounded-lg bg-muted px-3 py-2.5 text-sm leading-relaxed">
-									{part.data.summary}
-								</p>
-							</details>
-						{:else}
-							<p
-								class="flex w-full items-center gap-3 py-2 text-sm font-medium text-muted-foreground"
-							>
-								<span class="h-px flex-1 bg-border"></span>{label}<span
-									class="h-px flex-1 bg-border"
-								></span>
-							</p>
-						{/if}
+						<ContextDivider boundary={part.data} open={openTurn === message.id} />
 					{:else if part.type === 'data-history-gap'}
 						<p
 							class="flex w-full items-center justify-between gap-3 rounded-lg border border-dashed py-1 pr-1 pl-3 text-sm text-muted-foreground"

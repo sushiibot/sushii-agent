@@ -322,3 +322,15 @@ test("rename rejects invalid names and keeps the old name if workspace persisten
   );
   expect((await (await h.call(base))!.json()).summary.title).toBe("Trip");
 });
+
+
+test("new topic context and lifecycle boundaries stay in the topic history", async () => {
+  const h = setup();
+  const { id } = await h.create();
+  const topic = h.threads.channel(id).log;
+  expect(topic.list(["session"])[0]?.data).toMatchObject({ kind: "new", initialContext: expect.stringContaining("Topic: Trip") });
+  const adapter = h.threads.surface();
+  await adapter.sessionChanged?.({ surface: "web", conversationId: id }, { kind: "compacted", summary: "Keep planning the trip." }, { outboxId: "boundary-thread", plain: false, ledger: { isSent: () => false, markSent: () => {} } });
+  expect(topic.list(["session"]).at(-1)?.data).toMatchObject({ kind: "compacted", summary: "Keep planning the trip." });
+  expect(h.log.list(["session"])).toHaveLength(0);
+});

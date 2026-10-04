@@ -1,3 +1,4 @@
+import type { SessionBoundary } from "../sessionContracts.ts";
 import type { ChatOrigin, ChatUsage, DeliverFile, DeliverJob, JobAlertWire, ToolCallResult } from "../contracts.ts";
 
 /** What a chat surface can render. The core consults these instead of assuming Discord's feature set. */
@@ -189,6 +190,8 @@ export interface InboundSurface<M extends InboundMessage = InboundMessage> {
  * A send that fails because the surface can't reach the principal at all throws SurfaceUnavailableError.
  */
 export interface SurfaceAdapter<M extends InboundMessage = InboundMessage, H extends SurfaceMessageHandle = SurfaceMessageHandle> extends InboundSurface<M> {
+  /** Durable context boundary, separate from an assistant reply. */
+  sessionChanged?(origin: ChatOrigin | null, boundary: SessionBoundary, attempt: SendAttempt): Promise<void>;
   readonly surface: string;
   readonly capabilities: SurfaceCapabilities;
   sendReply(origin: ChatOrigin | null, reply: ReplyView, attempt: SendAttempt): Promise<void>;

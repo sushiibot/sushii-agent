@@ -142,6 +142,7 @@ export class WebThreads {
       "alertPrompt",
       "progressCreate",
       "turnStarted",
+      "sessionChanged",
       "progressFinalize",
       "progressReopen",
       "approvalPrompt",
@@ -352,6 +353,7 @@ export class WebThreads {
         "INSERT INTO web_threads (id, title, brief, created_at) VALUES (?, ?, ?, ?)",
         [id, body.data.title, JSON.stringify(brief), Date.now()],
       );
+      this.channel(id).log.append("session", { kind: "new", initialContext: `Topic: ${body.data.title}\nInitial context:\n${JSON.stringify(brief)}\nThis is an ongoing topic conversation. Continue its existing workstream across visits. Shared workspace files are available; other conversations have separate transcripts.` });
       this.changed(id);
       return json(this.summary(this.row(id)!), 201);
     }

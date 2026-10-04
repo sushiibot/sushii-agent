@@ -7,7 +7,7 @@ import { DEFAULT_ECONOMY, type WorkspaceConfig } from "./config.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { FLUSH_MARKER, memoryCatalogSignature, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
-import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, recapSession, reloadContext } from "./piChatSession.ts";
+import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, loadedContextFiles, recapSession, reloadContext } from "./piChatSession.ts";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import type { ChatDeliverParams } from "../orchestration/contracts.ts";
 
@@ -94,20 +94,26 @@ function factoryOptions(cfg: WorkspaceConfig, conversationId: string) {
   };
 }
 
-async function host(conversationId: string) {
+async function host(conversationId: string, report = false, keepRecentTokens?: number) {
   const cfg = config();
+  if (keepRecentTokens !== undefined) cfg.economy = { ...DEFAULT_ECONOMY, keepRecentTokens };
   await scaffoldHome(cfg.home);
   let now = Date.now();
   const delivered: ChatDeliverParams[] = [];
+  const boundaries: ChatDeliverParams[] = [];
   const transport: ChatTransport = {
     request: async (method, params) => {
-      if (method === "chat/deliver") delivered.push(params as ChatDeliverParams);
+      if (method === "chat/deliver") {
+        const entry = params as ChatDeliverParams;
+        (entry.kind === "session" ? boundaries : delivered).push(entry);
+      }
       return {};
     },
     notify: () => {},
   };
   const personal = new PersonalSession({
     principalId: "drk",
+    ...(report ? { boundaryReport: { home: cfg.home, context: loadedContextFiles } } : {}),
     model: cfg.model,
     stateDir: conversationId === "main" ? cfg.stateDir : join(cfg.stateDir, "topics", conversationId),
     conversationId,
@@ -133,8 +139,9 @@ async function host(conversationId: string) {
     },
   });
   await personal.start();
+  personal.onRegistered(["session"]);
   const log = async () => (await runnerGit(cfg.home).raw(["log", "--format=%s"])).trim().split("\n");
-  return { personal, delivered, home: cfg.home, log, advance: (ms: number) => { now += ms; } };
+  return { personal, delivered, boundaries, home: cfg.home, log, advance: (ms: number) => { now += ms; } };
 }
 
 describe.each(["main", "long-lived-topic"])("memory upkeep on a real Pi %s session", (conversationId) => {
@@ -224,8 +231,8 @@ describe.each(["main", "long-lived-topic"])("memory upkeep on a real Pi %s sessi
   }, 20_000);
 
   test("an open conversation rotates after its idle TTL, saves memory and carries its recap forward", async () => {
-    const { personal, delivered, home, log, advance } =
-      await host(conversationId);
+    const { personal, delivered, boundaries, home, log, advance } =
+      await host(conversationId, true);
     script({
       text: "Keep working on the Osaka trip.",
       promptTokens: 120_000,
@@ -261,6 +268,11 @@ describe.each(["main", "long-lived-topic"])("memory upkeep on a real Pi %s sessi
       recapped: true,
     });
     expect(personal.currentSessionFile).not.toBe(before);
+    await until(() => boundaries.length === 1);
+    expect(boundaries[0].session).toMatchObject({ kind: "rotated", summary: "## Goals\n- Plan the Osaka trip.\n## Next\n- Book the hotel." });
+    expect(boundaries[0].session?.memory?.files).toContainEqual(expect.objectContaining({ path: "USER.md", change: "changed" }));
+    expect(boundaries[0].session?.context?.files.find(f => f.path === "USER.md")?.content).toContain("Plans an Osaka trip");
+    expect(boundaries[0].origin).toEqual({ surface: "web", conversationId });
     expect(readFileSync(join(home, "USER.md"), "utf8")).toContain(
       "Plans an Osaka trip",
     );
@@ -275,6 +287,28 @@ describe.each(["main", "long-lived-topic"])("memory upkeep on a real Pi %s sessi
       "Book the hotel",
     );
     expect(delivered[1].origin).toEqual({ surface: "web", conversationId });
+    await personal.dispose();
+  }, 20_000);
+
+  test("compaction and reset deliver durable boundary snapshots without assistant replies", async () => {
+    const { personal, delivered, boundaries } = await host(conversationId, true, 1);
+    script({ text: "Book the hotel." }, { text: "Use the station area." });
+    await personal.handleMessage(user("boundary-1", "Plan Osaka."));
+    await until(() => personal.isIdle());
+    await personal.handleMessage(user("boundary-2", "Where?"));
+    await until(() => personal.isIdle());
+    script({ text: "## Goals\n- Plan Osaka; book a hotel near the station." }, { text: "## Prefix\n- Station area." });
+    await (personal as unknown as { session: AgentSession }).session.compact();
+    await until(() => boundaries.length === 1);
+    expect(boundaries[0].session?.kind).toBe("compacted");
+    expect(boundaries[0].session?.summary).toContain("Plan Osaka");
+    script({ text: "NO_REPLY" }, { text: "Previous work is recorded." });
+    await personal.handleNew();
+    await until(() => boundaries.length === 2);
+    expect(boundaries[1].session?.kind).toBe("new");
+    expect(boundaries[1].session?.summary).toBeUndefined();
+    expect(boundaries[1].session?.context?.files.length).toBeGreaterThan(0);
+    expect(delivered.map(d => d.text)).toEqual(["Book the hotel.", "Use the station area."]);
     await personal.dispose();
   }, 20_000);
 

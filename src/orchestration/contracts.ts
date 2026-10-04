@@ -1,3 +1,4 @@
+import { sessionBoundary } from "./sessionContracts.ts";
 // Wire contracts between the bot and the personal-agent workspace.
 import { z } from "zod";
 
@@ -553,12 +554,12 @@ export type JobAlertWire = z.infer<typeof jobAlert>;
 export const deliverJob = z.object({ name: z.string().min(1).max(JOB_NAME_MAX), runId: runId.optional() });
 export type DeliverJob = z.infer<typeof deliverJob>;
 
-export const CHAT_DELIVER_KINDS = ["reply", "proactive", "ask", "auth", "alert"] as const;
+export const CHAT_DELIVER_KINDS = ["reply", "proactive", "ask", "auth", "alert", "session"] as const;
 export type ChatDeliverKind = (typeof CHAT_DELIVER_KINDS)[number];
 
 /** Delivery kinds a bot may advertise in its register result. The workspace sends `alert` only when listed;
  *  otherwise it rewrites queued alerts to `proactive` (dropping `alert`, which the refine below rejects). */
-export const WORKSPACE_FEATURES = ["alert"] as const;
+export const WORKSPACE_FEATURES = ["alert", "session"] as const;
 export type WorkspaceFeature = (typeof WORKSPACE_FEATURES)[number];
 
 export const deliverFile = z.object({
@@ -577,6 +578,7 @@ export const chatDeliverParams = z
     outboxId: z.string(),
     principalId: z.string(),
     kind: z.enum(CHAT_DELIVER_KINDS),
+    session: sessionBoundary.optional(),
     text: z.string(),
     replyTo: z.string().optional(),
     turnId: z.string().optional(),
@@ -599,6 +601,7 @@ export const chatDeliverParams = z
     // kind "proactive": the scheduled job that sent it, so a surface with an inbox can file it there.
     job: deliverJob.optional(),
   })
+  .refine((p) => (p.kind === "session") === (p.session !== undefined), { message: 'kind "session" needs session, and only it may carry one', path: ["session"] })
   .refine((p) => (p.kind === "alert") === (p.alert !== undefined), { message: 'kind "alert" needs alert, and only it may carry one', path: ["alert"] })
   .refine((p) => p.job === undefined || p.kind === "proactive", { message: 'only kind "proactive" may carry job', path: ["job"] });
 export type ChatDeliverParams = z.infer<typeof chatDeliverParams>;

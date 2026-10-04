@@ -10,6 +10,7 @@ import type {
 	JobAlert,
 	PendingState,
 	RouterNotice,
+	SessionBoundary,
 	ToolLine,
 	UploadRef,
 	WebHistoryItem,
@@ -106,7 +107,10 @@ export type ChatItem =
 				| 'approved-elsewhere'
 				| 'denied-elsewhere';
 	  }
-	| { kind: 'divider'; id: string; divider: 'new' | 'rotated' | 'compacted'; summary?: string }
+	| ({ kind: 'divider'; id: string; divider: SessionBoundary['kind'] } & Omit<
+			SessionBoundary,
+			'kind'
+	  >)
 	| { kind: 'line'; id: string; text: string }
 	| { kind: 'auth'; id: string; url: string; instructions: string }
 	/** A scheduled job's alert, shown as a system line. */
@@ -673,7 +677,12 @@ export function applyEvent(s: ChatState, ev: ChatEnvelope, now = Date.now()): Ef
 			s.items.push({
 				kind: 'divider',
 				id: uid(s, 'divider'),
-				divider: ev.data.kind === 'new' ? 'new' : 'compacted'
+				divider: ev.data.kind,
+				summary: ev.data.summary,
+				summaryTruncated: ev.data.summaryTruncated,
+				memory: ev.data.memory,
+				context: ev.data.context,
+				initialContext: ev.data.initialContext
 			});
 			break;
 		}
@@ -764,7 +773,7 @@ function fromHistory(s: ChatState, h: WebHistoryItem): ChatItem | null {
 				answer: h.answer ?? undefined
 			};
 		case 'divider':
-			return { kind: 'divider', id: `h:${h.id}`, divider: h.kind, summary: h.summary };
+			return { ...h, kind: 'divider', id: `h:${h.id}`, divider: h.kind };
 		case 'alert':
 			if (s.keys.has(`l:${h.outboxId}`)) return null;
 			s.keys.add(`l:${h.outboxId}`);

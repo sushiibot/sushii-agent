@@ -1,3 +1,4 @@
+import type { SessionBoundary } from "../../orchestration/sessionContracts.ts";
 import { ID_MAX, jobAlert, webChatOrigin, type ChatOrigin, type DeliverFile, type DeliverJob, type JobAlertWire, type ToolCallResult } from "../../orchestration/contracts.ts";
 import { MAX_OPEN_TURNS } from "../../orchestration/workspace/link.ts";
 import { realTimers, type Timers } from "../../orchestration/workspace/progress.ts";
@@ -263,6 +264,11 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     if (!created || change === "stale") return;
     if (alert.kind !== "recovered") void this.notify(seq, { kind: "alert", alert: { job: alert.job, kind: alert.kind, ...(alert.error ? { error: alert.error } : {}) } });
     else if (change === "cleared") void this.notify(seq, { kind: "alertRecovered", job: alert.job });
+  }
+
+  async sessionChanged(origin: ChatOrigin | null, boundary: SessionBoundary, attempt: SendAttempt): Promise<void> {
+    this.checkOrigin(origin);
+    this.deps.log.append("session", boundary, outboxKey(attempt));
   }
 
   progressEditGap(): number {

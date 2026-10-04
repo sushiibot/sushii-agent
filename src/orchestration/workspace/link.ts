@@ -886,6 +886,12 @@ export class WorkspaceLink {
         this.onAuthDelivery(p);
         const toolCount = p.kind === "reply" && p.turnId ? this.closeTurnForReply(p.turnId) : null;
         const { adapter, origin } = this.surfaceFor(p.origin);
+        if (p.kind === "session" && p.session) {
+          await adapter.sessionChanged?.(origin, p.session, { outboxId: p.outboxId, plain: false, ledger: { isSent: () => false, markSent: () => {} } });
+          this.opts.store.markOutboxSeen(p.outboxId, p.principalId, this.now());
+          await this.ackDelivery(p.outboxId);
+          return;
+        }
         const delivery = deliveryView(p, toolCount);
         if (delivery.type === "ask" && delivery.view.askId !== null && delivery.view.choices.length) {
           this.askChoices.set(delivery.view.askId, delivery.view.choices);

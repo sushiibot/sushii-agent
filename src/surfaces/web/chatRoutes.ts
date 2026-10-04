@@ -330,7 +330,6 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
         if (!link.isConnected()) return notice({ type: "newWhileOffline" });
         try {
           await link.newSession(origin);
-          chatLog.append("session", { kind: "new" });
           notice({ type: "newSessionStarted" });
         } catch (err) {
           notice({ type: "newSessionFailed", error: errorText(err) });
@@ -340,7 +339,6 @@ export function createChatRoutes(deps: ChatRouteDeps): ChatRoutes {
       if (!link.isConnected()) return notice({ type: "commandOffline" });
       try {
         const res = await link.command("compact", undefined, origin);
-        chatLog.append("session", { kind: "compacted" });
         notice({ type: "commandResult", text: res.text });
       } catch (err) {
         notice({ type: "commandFailed", error: errorText(err) });

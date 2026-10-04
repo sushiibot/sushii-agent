@@ -198,7 +198,7 @@ describe("alert delivery", () => {
 describe("register and runs/changed", () => {
   test("the bot advertises alert to its own principal only", () => {
     const h = bot(freshDb());
-    expect(h.rpc.handler!.features!(CONN)).toEqual(["alert"]);
+    expect(h.rpc.handler!.features!(CONN)).toEqual(["alert", "session"]);
     expect(h.rpc.handler!.features!({ ...CONN, principalId: "someone" })).toEqual([]);
   });
 

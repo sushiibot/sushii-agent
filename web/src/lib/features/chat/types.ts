@@ -1,4 +1,4 @@
-import type { UploadRef } from '$lib/core/realtime/events';
+import type { SessionBoundary, UploadRef } from '$lib/core/realtime/events';
 
 // Mirrors AI SDK UIMessage parts so the real app can render SDK messages with the same components.
 export type ToolPartState =
@@ -29,7 +29,7 @@ export type MessagePart =
 	| { type: 'data-approval'; data: { tool: string; outcome: ApprovalOutcome; nonce?: string } }
 	| { type: 'data-ask'; data: AskView }
 	| { type: 'data-files'; data: { files: FileRef[]; dropped?: string } }
-	| { type: 'data-divider'; data: { kind: 'new' | 'rotated' | 'compacted'; summary?: string } }
+	| { type: 'data-divider'; data: SessionBoundary }
 	| { type: 'data-history-gap' }
 	| { type: 'data-line'; data: { text: string } }
 	| { type: 'data-alert'; data: AlertLine }

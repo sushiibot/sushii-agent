@@ -1,3 +1,5 @@
+import { SessionBoundaryRecorder } from "./sessionBoundary.ts";
+import { SESSION_TEXT_MAX, type SessionBoundary } from "../orchestration/sessionContracts.ts";
 import { existsSync } from "node:fs";
 import type { AgentSession, AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -184,6 +186,8 @@ interface HiddenPrompt {
 }
 
 export interface PersonalSessionOptions {
+  /** Enables inspectable context boundaries with shared-memory snapshots. */
+  boundaryReport?: { home: string; context(session: ChatSession): readonly { path: string; content: string }[] };
   principalId: string;
   model: string;
   stateDir: string;
@@ -273,6 +277,9 @@ type SettleOutcome = "reply" | "notice" | "aborted" | "suppressed" | "silent";
 export class PersonalSession {
   private readonly opts: PersonalSessionOptions;
   private readonly outbox: Outbox;
+  private readonly boundaryRecorder?: SessionBoundaryRecorder;
+  private boundaryChain: Promise<void> = Promise.resolve();
+  private pendingBoundaries = 0;
   private readonly inbox: DurableInbox;
   private recoveredInputs: readonly DurableInput[] = [];
   private recovering: Promise<void> | null = null;
@@ -343,6 +350,7 @@ export class PersonalSession {
   private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: PersonalSessionOptions) {
+    if (opts.boundaryReport) this.boundaryRecorder = new SessionBoundaryRecorder(opts.boundaryReport.home, opts.stateDir);
     this.opts = opts;
     this.outbox = new Outbox(opts.stateDir);
     this.inbox = new DurableInbox(opts.stateDir, 500, { store: opts.durableState, conversationId: opts.conversationId });
@@ -375,6 +383,7 @@ export class PersonalSession {
       !this.resetting &&
       this.pendingNew === 0 &&
       this.queued === 0 &&
+      this.pendingBoundaries === 0 &&
       this.inFlight.size === 0 &&
       this.recoveredInputs.length === 0 &&
       this.pendingContext.length === 0 &&
@@ -419,6 +428,7 @@ export class PersonalSession {
 
   /** Reopens the chat session recorded in state.json, or creates one and records it. */
   async start(): Promise<void> {
+    await this.boundaryRecorder?.initialize().catch(err => log.warn({ err }, "initializing context boundary memory snapshot failed"));
     await this.inbox.open();
     this.recoveredInputs = await this.inbox.pending();
     const exists = this.opts.fileExists ?? existsSync;
@@ -645,6 +655,7 @@ export class PersonalSession {
         const text = recap === null ? null : recapMessage(recap, dailyFileRel(recappedAt, this.opts.tz ?? "UTC"));
         if (text !== null) await this.seedRecap(session, text).catch((err) => log.warn({ err }, "seeding the recap failed"));
         writeWorkspaceState(this.opts.stateDir, { chatSessionFile: sessionFile, recap: text === null ? undefined : { sessionFile, text } });
+        await this.publishBoundary(session, { kind: reason === "new" ? "new" : "rotated", ...(recap !== null ? { summary: recap.slice(0, SESSION_TEXT_MAX), summaryTruncated: recap.length > SESSION_TEXT_MAX } : {}) });
         if (reason === "new") {
           log.info({ sessionFile }, "started a new chat session");
           return { sessionFile, rotated: null };
@@ -672,6 +683,23 @@ export class PersonalSession {
       this.pendingNew--;
       release();
     });
+  }
+
+  private publishBoundary(session: ChatSession, boundary: SessionBoundary): Promise<void> {
+    if (!this.opts.boundaryReport || this.closing) return Promise.resolve();
+    this.pendingBoundaries++;
+    const origin = { surface: "web" as const, conversationId: this.opts.conversationId ?? "main" };
+    const context = this.opts.boundaryReport.context(session);
+    this.boundaryChain = this.boundaryChain.then(async () => {
+      const details = await this.boundaryRecorder?.capture(context).catch(err => {
+        log.warn({ err }, "context boundary details unavailable");
+        return undefined;
+      });
+      const entry: ChatDeliverParams = { principalId: this.opts.principalId, origin, outboxId: this.newId(), kind: "session", text: "", session: { ...boundary, ...details } };
+      this.outbox.append(entry);
+      this.send(entry);
+    }).catch(err => log.warn({ err }, "recording context boundary failed")).finally(() => { this.pendingBoundaries--; });
+    return this.boundaryChain;
   }
 
   private emitSummary(s: SessionSummaryRecord): void {
@@ -1030,6 +1058,7 @@ export class PersonalSession {
 
   async dispose(): Promise<void> {
     this.closing = true;
+    await this.boundaryChain;
     if (this.resendTimer) clearInterval(this.resendTimer);
     this.resendTimer = null;
     if (this.idleTimer) clearInterval(this.idleTimer);
@@ -1269,6 +1298,7 @@ export class PersonalSession {
       if (event.result && !event.aborted) {
         this.flushedThisCycle = false;
         this.emitSummary({ reason: "compaction", sessionFile: this.sessionFile, text: event.result.summary, at: new Date() });
+        this.publishBoundary(session, { kind: "compacted", summary: event.result.summary.slice(0, SESSION_TEXT_MAX), summaryTruncated: event.result.summary.length > SESSION_TEXT_MAX });
       }
       this.releaseCompactionWaiters();
       if (this.reloadDue) this.scheduleReload();
@@ -1585,6 +1615,7 @@ export class PersonalSession {
   }
 
   private send(entry: OutboxEntry): void {
+    if (entry.kind === "session" && !this.botFeatures?.includes("session")) return;
     if (entry.kind === "alert") {
       // Unregistered: whether the bot takes alerts is unknown, and the register resends everything anyway.
       if (this.botFeatures === null) return;
