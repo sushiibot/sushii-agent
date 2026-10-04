@@ -74,6 +74,30 @@ New completed turns retain tool lines, assistant activity text, and text offsets
 
 Projects are optional grouping and shared-context containers, not mandatory conversation folders. This change does not convert existing task project records or repository clones into thread containers, and does not add project navigation.
 
+## Context upkeep
+
+Threads use the same `PersonalSession` lifecycle and Pi session factory as Main.
+An open thread saves memory during ordinary turns; archive status does not control those writes.
+The agent selects facts and decisions to save, so memory is not a copy of every message.
+Changed memory files receive a Git commit after each turn.
+
+Before compaction, reset, or idle rotation, the session flushes useful context to shared memory.
+If the flush fails or times out, a handoff preserves conversation details.
+Archiving adds a final memory flush and keeps the transcript.
+
+| Feature               | Default behavior for Main and threads                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| Tool-output hygiene   | Clears old tool output after 150,000 context tokens.                                            |
+| Automatic compaction  | Summarizes older context at 200,000 tokens, capped at 75% of the model window.                  |
+| Recent context        | Keeps 8,000 tokens of recent context during compaction.                                         |
+| Idle context rotation | Rotates above 100,000 tokens after 25 idle minutes on ChatGPT or 8 on OpenRouter.               |
+| Rotation continuity   | Saves memory and puts a recap into the replacement session. The conversation ID stays the same. |
+| Manual controls       | Stop, reset, and compaction operate on the selected conversation.                               |
+
+The `WORKSPACE_*` economy configuration applies to Main and threads equally.
+Idle rotation replaces the model context, while the thread and stored history persist.
+The separate seven-day archive rule changes thread organization; it does not delete the thread or its memory.
+
 ## Shared memory
 
 Conversations have separate context windows. Shared files contain facts and decisions that must carry between conversations.
@@ -89,3 +113,5 @@ Topic conversations are available automatically when the web gateway is enabled.
 
 Run the normal repository and web checks. Run `bun run e2e:system threads.e2e.ts` for the real topic flow.
 The system flows cover branching, streaming, history isolation, workspace restart, archiving, resuming, independent Stop, and topic approvals.
+`src/workspace/memory.pi.test.ts` runs the same real-session memory and context checks for Main and a topic.
+These checks cover memory writes, reset, the compaction trigger, hidden flushes, compaction handoffs, and idle rotation with a recap.

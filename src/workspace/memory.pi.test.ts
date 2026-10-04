@@ -7,7 +7,7 @@ import { DEFAULT_ECONOMY, type WorkspaceConfig } from "./config.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
 import { FLUSH_MARKER, memoryCatalogSignature, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
-import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
+import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, recapSession, reloadContext } from "./piChatSession.ts";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import type { ChatDeliverParams } from "../orchestration/contracts.ts";
 
@@ -78,17 +78,26 @@ function config(): WorkspaceConfig {
 
 const lastUserText = (i: number) => JSON.stringify(bodies[i].messages.filter((m) => m.role === "user").at(-1)?.content);
 
-async function until(cond: () => boolean, ms = 5000): Promise<void> {
+async function until(cond: () => boolean | Promise<boolean>, ms = 5000): Promise<void> {
   const end = Date.now() + ms;
-  while (!cond()) {
+  while (!(await cond())) {
     if (Date.now() > end) throw new Error("condition not met in time");
     await new Promise((r) => setTimeout(r, 5));
   }
 }
 
-async function host() {
+function factoryOptions(cfg: WorkspaceConfig, conversationId: string) {
+  return conversationId === "main" ? {} : {
+    origin: { surface: "web" as const, conversationId },
+    sessionDir: join(cfg.agentDir, "topics", conversationId),
+    agentName: `topic:${conversationId}`,
+  };
+}
+
+async function host(conversationId: string) {
   const cfg = config();
   await scaffoldHome(cfg.home);
+  let now = Date.now();
   const delivered: ChatDeliverParams[] = [];
   const transport: ChatTransport = {
     request: async (method, params) => {
@@ -100,8 +109,17 @@ async function host() {
   const personal = new PersonalSession({
     principalId: "drk",
     model: cfg.model,
-    stateDir: cfg.stateDir,
-    factory: createPiChatSessionFactory(cfg),
+    stateDir: conversationId === "main" ? cfg.stateDir : join(cfg.stateDir, "topics", conversationId),
+    conversationId,
+    clock: () => now,
+    factory: createPiChatSessionFactory(cfg, factoryOptions(cfg, conversationId)),
+    context: {
+      compact: compactSession,
+      recap: async (session, signal) => (await recapSession(session, signal))?.text ?? null,
+      idleRotateMs: session => idleRotateMs(session, cfg),
+      rotateTokens: DEFAULT_ECONOMY.idleRotateTokens,
+      checkEveryMs: null,
+    },
     transport,
     textDeltaMs: null,
     memory: {
@@ -116,21 +134,21 @@ async function host() {
   });
   await personal.start();
   const log = async () => (await runnerGit(cfg.home).raw(["log", "--format=%s"])).trim().split("\n");
-  return { personal, delivered, home: cfg.home, log };
+  return { personal, delivered, home: cfg.home, log, advance: (ms: number) => { now += ms; } };
 }
 
-const user = (messageId: string, text: string) => ({
-  principalId: "drk",
-  origin: { surface: "discord", conversationId: "dm" },
-  messageId,
-  text,
-  kind: "user" as const,
-  author: { id: "1", name: "drk" },
-});
+describe.each(["main", "long-lived-topic"])("memory upkeep on a real Pi %s session", (conversationId) => {
+  const user = (messageId: string, text: string) => ({
+    principalId: "drk",
+    origin: { surface: "web", conversationId },
+    messageId,
+    text,
+    kind: "user" as const,
+    author: { id: "1", name: "drk" },
+  });
 
-describe("memory upkeep on a real Pi session", () => {
   test("a topic and catalog survive reset; catalog changes refresh the live orientation", async () => {
-    const { personal, delivered, home } = await host();
+    const { personal, delivered, home, log } = await host(conversationId);
     const topic = "# Backend\nupdated: 2026-10-04\nverified: unverified\nUse the local backend. (src: 2026-10-04)\n";
     const catalog = "# Catalog\n- [Backend](memory/topics/backend.md) — Backend decision. Read when: choosing a backend.\n";
     script(
@@ -144,6 +162,7 @@ describe("memory upkeep on a real Pi session", () => {
     await until(() => live.systemPrompt.includes("choosing a backend"));
     expect(live.systemPrompt).not.toContain("Use the local backend.");
     await until(() => personal.isIdle());
+    await until(async () => (await log()).some(message => message.startsWith("memory: turn ")));
     script({ text: "NO_REPLY" });
     await personal.handleNew();
     const fresh = (personal as unknown as { session: AgentSession }).session;
@@ -156,13 +175,13 @@ describe("memory upkeep on a real Pi session", () => {
   }, 20_000);
 
   test("the compaction trigger sits at the configured token count, not near the window's edge", async () => {
-    const { session } = await createPiChatSessionFactory(config())({ sessionFile: null });
+    const { session } = await createPiChatSessionFactory(config(), factoryOptions(config(), conversationId))({ sessionFile: null });
     expect(compactionTrigger(session)).toBe(DEFAULT_ECONOMY.compactTokens);
     session.dispose();
   });
 
   test("chat/new flushes through Pi's tools, delivers nothing for it, commits, and starts a new session", async () => {
-    const { personal, delivered, home, log } = await host();
+    const { personal, delivered, home, log } = await host(conversationId);
     script({ text: "noted" });
     await personal.handleMessage(user("m1", "I like tea"));
     await until(() => delivered.length === 1);
@@ -180,7 +199,7 @@ describe("memory upkeep on a real Pi session", () => {
   }, 20_000);
 
   test("near the trigger a turn is followed by a hidden flush, a commit and a context reload", async () => {
-    const { personal, delivered, home, log } = await host();
+    const { personal, delivered, home, log } = await host(conversationId);
     expect(readFileSync(join(home, "USER.md"), "utf8")).not.toContain("Likes tea");
     // The reply's usage puts the context inside the flush band, below Pi's own trigger.
     script({ text: "big answer", promptTokens: 180_000 });
@@ -204,8 +223,63 @@ describe("memory upkeep on a real Pi session", () => {
     await personal.dispose();
   }, 20_000);
 
+  test("an open conversation rotates after its idle TTL, saves memory and carries its recap forward", async () => {
+    const { personal, delivered, home, log, advance } =
+      await host(conversationId);
+    script({
+      text: "Keep working on the Osaka trip.",
+      promptTokens: 120_000,
+    });
+    await personal.handleMessage(user("ttl-1", "Plan the Osaka trip."));
+    await until(() => personal.isIdle());
+    const before = personal.currentSessionFile;
+    advance(8 * 60_000 + 1);
+    script(
+      {
+        tool: {
+          name: "edit",
+          args: {
+            path: "USER.md",
+            edits: [
+              {
+                oldText: "# USER.md",
+                newText:
+                  "# USER.md\n- Plans an Osaka trip. (src: 2026-10-04)",
+              },
+            ],
+          },
+        },
+      },
+      { text: "NO_REPLY" },
+      {
+        text: "## Goals\n- Plan the Osaka trip.\n## Next\n- Book the hotel.",
+      },
+    );
+    const rotation = await personal.checkIdle();
+    expect(rotation).toMatchObject({
+      previousSessionFile: before,
+      recapped: true,
+    });
+    expect(personal.currentSessionFile).not.toBe(before);
+    expect(readFileSync(join(home, "USER.md"), "utf8")).toContain(
+      "Plans an Osaka trip",
+    );
+    expect(await log()).toContain("memory: flush before session rotation");
+    expect(delivered.map((d) => d.text)).toEqual([
+      "Keep working on the Osaka trip.",
+    ]);
+    script({ text: "Next, book the hotel." });
+    await personal.handleMessage(user("ttl-2", "Continue."));
+    await until(() => delivered.length === 2);
+    expect(JSON.stringify(bodies.at(-1)?.messages)).toContain(
+      "Book the hotel",
+    );
+    expect(delivered[1].origin).toEqual({ surface: "web", conversationId });
+    await personal.dispose();
+  }, 20_000);
+
   test("the memory guard blocks a secret write made by a real tool call", async () => {
-    const { personal, delivered, home } = await host();
+    const { personal, delivered, home } = await host(conversationId);
     script({ tool: { name: "write", args: { path: "MEMORY.md", content: "- key sk-abcdefghijklmnopqrstuv\n" } } }, { text: "couldn't save that" });
     await personal.handleMessage(user("m1", "remember my key"));
     await until(() => delivered.length === 1);
@@ -217,7 +291,7 @@ describe("memory upkeep on a real Pi session", () => {
   test("a compaction with no flush this cycle leaves a handoff in today's daily note", async () => {
     const cfg = { ...config(), economy: { ...DEFAULT_ECONOMY, keepRecentTokens: 1 } };
     await scaffoldHome(cfg.home);
-    const { session } = await createPiChatSessionFactory(cfg)({ sessionFile: null });
+    const { session } = await createPiChatSessionFactory(cfg, factoryOptions(cfg, conversationId))({ sessionFile: null });
     script({ text: "Sure, the plan is drafted. Open: book the hotel." }, { text: "and more" }, { text: "## Summary\ncompacted" }, { text: "## Prefix\ncompacted" });
     await (session as AgentSession).prompt("[discord:1 2026-09-29 13:00 UTC]\nplan the Osaka trip");
     await (session as AgentSession).prompt("[discord:2 2026-09-29 13:01 UTC]\nanything else?");
