@@ -97,22 +97,32 @@ test('PCM streams in both directions, interruption stops playback, mute and end 
 			})
 		);
 	transcript('Check my ');
-	await expect(captions).toContainText('Transcribing…');
+	await expect(captions.locator('[data-message-text]')).toHaveClass(/italic/);
+	await expect(page.getByText('Say hi to your agent.', { exact: true })).toBeHidden();
 	transcript('calender');
 	await expect(captions).toContainText('Check my calender');
 	transcript('Check my calendar', { interim: true, replace: true });
-	await expect(captions).toContainText('You · Transcribing…: Check my calendar');
+	await expect(captions).toContainText('Check my calendar');
 	await expect(captions).not.toContainText('calender');
 	connection.send(JSON.stringify({ type: 'turn_done' }));
 	transcript('Check my calendar.', { final: true, replace: true });
-	await expect(captions).toContainText('You: Check my calendar.');
+	await expect(captions).toContainText('Check my calendar.');
 	await expect(captions).not.toContainText('calender');
-	await expect(captions).not.toContainText('Transcribing…');
+	await expect(captions.locator('[data-message-text]')).not.toHaveClass(/italic/);
+	await expect(captions.locator('[data-message-text]')).toHaveClass(/bg-primary/);
+	await expect(captions.getByText('Voice', { exact: true })).toBeVisible();
 	transcript('Find my', { interim: true, itemId: 'turn-2' });
 	transcript('Find my notes', { interim: true, itemId: 'turn-2' });
 	await expect(captions).toContainText('Find my notes');
 	transcript('Find my notes.', { final: true, itemId: 'turn-2' });
-	await expect(captions).toContainText('You: Find my notes.');
+	await expect(captions).toContainText('Find my notes.');
+	connection.send(
+		JSON.stringify({ type: 'transcript', role: 'assistant', text: 'I will check.', final: false })
+	);
+	await expect(captions.getByText('I will check.', { exact: true })).toHaveClass(/italic/);
+	connection.send(JSON.stringify({ type: 'turn_done' }));
+	await expect(captions.getByText('I will check.', { exact: true })).not.toHaveClass(/italic/);
+	await expect(captions.getByText('Voice', { exact: true })).toHaveCount(2);
 	await page.getByRole('button', { name: 'Show voice captions' }).click();
 	await expect(captions).toBeHidden();
 	await page.getByRole('button', { name: 'Show voice captions' }).click();

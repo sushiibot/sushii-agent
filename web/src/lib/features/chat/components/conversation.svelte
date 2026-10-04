@@ -21,7 +21,7 @@
 	import { cn } from '$lib/utils';
 	import AskCard from './ask-card.svelte';
 	import FilesBlock from './files-block.svelte';
-	import Markdown from '../render/markdown.svelte';
+	import MessageText from './message-text.svelte';
 	import WorkingRow from './working-row.svelte';
 	import ToolRow from './tool-row.svelte';
 	import ToolActivityGroup from './tool-activity-group.svelte';
@@ -168,28 +168,14 @@
 				)}
 			>
 				{#each groupToolActivity(message.parts) as { part, index: i } (i)}
-					{#if part.type === 'text' && message.role === 'assistant'}
-						<div data-message-text>
-							<Markdown
-								text={part.text}
-								streaming={message.streaming && i === lastText}
-								files={message.uploads}
-							/>
-						</div>
-					{:else if part.type === 'text'}
-						<p
-							data-message-text
-							class={cn(
-								'[overflow-wrap:anywhere] whitespace-pre-wrap',
-								owner
-									? 'max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-body leading-snug text-primary-foreground [@media(hover:hover)]:max-w-full'
-									: 'text-body leading-relaxed',
-								message.streaming &&
-									"min-h-[4.5lh] after:ml-0.5 after:inline-block after:h-[1.1em] after:w-0.5 after:translate-y-[3px] after:animate-pulse after:bg-foreground after:content-[''] motion-reduce:after:animate-none"
-							)}
-						>
-							{part.text}
-						</p>
+					{#if part.type === 'text'}
+						<MessageText
+							text={part.text}
+							{owner}
+							markdown={!owner}
+							streaming={message.streaming && (owner || i === lastText)}
+							files={message.uploads}
+						/>
 					{:else if part.type === 'data-auth'}
 						<p class="text-body leading-relaxed [overflow-wrap:anywhere]">
 							{part.data.instructions}

@@ -65,6 +65,7 @@
 		voice,
 		voiceStatus,
 		voiceCaptions,
+		voiceHasContent = false,
 		connection,
 		commandsOffline = false,
 		toast,
@@ -151,6 +152,7 @@
 		voice?: Snippet;
 		voiceStatus?: Snippet;
 		voiceCaptions?: Snippet;
+		voiceHasContent?: boolean;
 		connection?: ConnectionState | 'forbidden';
 		commandsOffline?: boolean;
 		toast?: string | null;
@@ -212,7 +214,7 @@
 	const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
 	let copyNote = $state('');
 	let copied = $state<string | undefined>();
-	const empty = $derived(history !== 'loading' && messages.length === 0);
+	const empty = $derived(history !== 'loading' && messages.length === 0 && !voiceHasContent);
 
 	$effect(() => {
 		if (history !== 'loading') {

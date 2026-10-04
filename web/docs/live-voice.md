@@ -6,8 +6,9 @@ The setup sheet closes when the call connects. A compact bar below the header sh
 time, microphone control, caption toggle, and **End call**. Chat messages, tools, and approvals stay visible.
 You can interrupt spoken replies. Open the phone button to review settings; **Back to chat** keeps the call open.
 
-Captions show your speech and the spoken reply while the call runs. Partial text displays **Transcribing…**
-and can change before the provider finalizes it. Providers control transcript timing; some text arrives only after a pause.
+Captions show your speech and the spoken reply while the call runs. Captions reuse the chat message layout, with a **Voice** label and microphone or speaker icon below each message.
+Partial text is muted and italic, and returns to normal styling when the provider finalizes it.
+The empty-thread greeting disappears once voice text arrives. Providers control transcript timing; some text arrives only after a pause.
 The adapters accept input transcript deltas, interim revisions, and completed text where the provider sends them.
 Captions show the latest exchange and do not replace durable chat messages.
 **End call**, navigation, a hidden page, or the 15-minute limit ends the call and releases the microphone.

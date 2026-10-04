@@ -134,6 +134,7 @@
 			userText={voice.userText}
 			userFinal={voice.userFinal}
 			assistantText={voice.assistantText}
+			assistantFinal={voice.assistantFinal}
 		/>{/if}
 {/snippet}
 
@@ -186,6 +187,7 @@
 				voice: voiceControls,
 				voiceStatus,
 				voiceCaptions,
+				voiceHasContent: voice.state !== 'idle' && !!(voice.userText || voice.assistantText),
 				usage: store.usage,
 				models: models.remote.data ?? null,
 				modelPicking: models.picking,

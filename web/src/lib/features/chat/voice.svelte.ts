@@ -14,6 +14,7 @@ export class Voice {
 	#userCommitted = '';
 	#userItem: string | undefined;
 	assistantText = $state('');
+	assistantFinal = $state(false);
 	seconds = $state(0);
 	#socket: WebSocket | null = null;
 	#stream: MediaStream | null = null;
@@ -51,7 +52,7 @@ export class Voice {
 		if (!model) return;
 		this.error = null;
 		this.userText = this.assistantText = '';
-		this.userFinal = false;
+		this.userFinal = this.assistantFinal = false;
 		this.#userCommitted = '';
 		this.#userItem = undefined;
 		this.seconds = 0;
@@ -160,6 +161,7 @@ export class Voice {
 				this.#userFresh = true;
 				this.#clearAudio();
 				this.assistantText = '';
+				this.assistantFinal = false;
 				this.#assistantFresh = true;
 				this.state = 'listening';
 				break;
@@ -184,9 +186,11 @@ export class Voice {
 					if (this.#assistantFresh) this.assistantText = '';
 					this.#assistantFresh = false;
 					this.assistantText = (this.assistantText + event.text!).slice(-24000);
+					this.assistantFinal = event.final === true;
 				}
 				break;
 			case 'turn_done':
+				this.assistantFinal = true;
 				this.#userFresh = this.#assistantFresh = true;
 				break;
 			case 'agent':
