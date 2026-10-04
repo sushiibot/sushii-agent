@@ -161,7 +161,8 @@ async function main() {
     home: webChat.home,
     uploads,
     reads: { db, link: workspace.link, connectors: workspace.link, memory: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
-    ...(config.transcriptionEnabled ? { dictation: createDictationRoutes({ transcribe: transcribeAudio }) } : {}),
+    // Web dictation is always available; VOICE_TRANSCRIPTION only controls Discord voice messages.
+    dictation: createDictationRoutes({ transcribe: transcribeAudio }),
   });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) {

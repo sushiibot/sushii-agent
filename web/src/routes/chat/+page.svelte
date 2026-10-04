@@ -4,7 +4,6 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { features } from '$lib/core/features.svelte';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
@@ -183,9 +182,7 @@
 	modelSearchError={models.searchError}
 	onmodelrole={(r) => (modelRole = r)}
 	onmodelquery={(q) => models.setQuery(q)}
-	dictation={features.dictation || dictation.state !== 'idle'
-		? { state: dictation.state, seconds: dictation.seconds, error: dictation.error }
-		: null}
+	dictation={{ state: dictation.state, seconds: dictation.seconds, error: dictation.error }}
 	ondictate={() => dictation.toggle()}
 	onpickmodel={(alias, role) => void models.pick(alias, role).then((ok) => ok && closeSheet())}
 	{connection}

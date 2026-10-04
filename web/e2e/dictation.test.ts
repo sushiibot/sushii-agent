@@ -54,12 +54,31 @@ test('no words says so and leaves the draft alone', async ({ page, context }) =>
 	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('');
 });
 
-test('a bot without dictation shows no mic', async ({ page, context }) => {
-	await fixtureApp(context, { override: '' });
-	await page.goto('/chat');
-	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Dictate' })).toHaveCount(0);
-});
+for (const capability of ['missing', 'disabled', 'failed', 'loading'] as const) {
+	test(`dictation works when the capability response is ${capability}`, async ({
+		page,
+		context
+	}) => {
+		const posts = await withDictation(context, 'Always available.');
+		await context.route('**/api/me', (route) => {
+			if (capability === 'failed') return route.fulfill({ status: 503 });
+			if (capability === 'loading') return;
+			return route.fulfill({
+				json: {
+					login: 'drk@example.com',
+					...(capability === 'disabled' ? { dictation: false } : {})
+				}
+			});
+		});
+		await page.goto('/chat');
+		await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
+		await page.getByRole('button', { name: 'Dictate' }).click();
+		await page.getByRole('button', { name: 'Stop dictating' }).click();
+		await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('Always available.');
+		await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
+		expect(posts).toHaveLength(1);
+	});
+}
 
 test('leaving the app mid-recording ends the take and transcribes it, with the mic released', async ({
 	page,
