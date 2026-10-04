@@ -83,7 +83,11 @@ function toolCall(name: string, args: object): Response {
 function reply(msgs: Msg[], userText: string, lastUser: Msg | undefined): Response {
   const last = msgs[msgs.length - 1];
   const tag = /#([a-z0-9]{4,16})\b/.exec(userText)?.[1];
-  if (last?.role === "tool") return stream([`Tool finished. Result: ${textOf(last.content).slice(0, 160).replace(/\n/g, " ")}`], 50, tag);
+  if (last?.role === "tool") {
+    if (userText.includes("E2E-BROWSER")) return stream(["Browser is open. ", "Browser task finished."], 50, tag, 0, false, 1);
+    return stream([`Tool finished. Result: ${textOf(last.content).slice(0, 160).replace(/\n/g, " ")}`], 50, tag);
+  }
+  if (userText.includes("E2E-BROWSER")) return toolCall("browser", { args: ["open", `http://${addrs.local}:${ports.llm}/browser-preview`] });
   // 400 is outside Pi's retryable errors, so the run fails at once.
   if (userText.includes("E2E-JOBFAIL")) return Response.json({ error: { message: "E2E-JOBFAIL scripted failure", code: 400 } }, { status: 400 });
   if (userText.includes("E2E-NOREPLY")) return stream(["NO_REPLY"], 10, undefined);
@@ -114,6 +118,7 @@ Bun.serve({
   idleTimeout: 120,
   async fetch(req) {
     const url = new URL(req.url);
+    if (url.pathname === "/browser-preview") return new Response("<!doctype html><html><title>Browser preview test</title><body><h1>Browser preview test</h1><button>Continue</button></body></html>", { headers: { "content-type": "text/html" } });
     if (req.method === "POST" && url.pathname === "/__release") {
       const tag = url.searchParams.get("tag") ?? "";
       const release = held.get(tag);

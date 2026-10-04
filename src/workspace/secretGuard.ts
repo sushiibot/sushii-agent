@@ -160,6 +160,7 @@ export function checkBashCommand(command: string, paths: GuardedPaths): string |
 }
 
 export function checkToolCall(toolName: string, input: Record<string, unknown>, paths: GuardedPaths): string | null {
+  if (toolName === "browser" && Array.isArray(input.args)) return checkBashCommand(input.args.filter((a): a is string => typeof a === "string").join(" "), paths);
   if (toolName === "bash") return typeof input.command === "string" ? checkBashCommand(input.command, paths) : null;
   if (PATH_TOOLS.has(toolName)) return checkPath(toolName, input, paths);
   return null;

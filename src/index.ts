@@ -1,3 +1,4 @@
+import { createBrowserRoutes } from "./surfaces/web/browserRoutes.ts";
 import type { Client } from "discord.js";
 import { otelSDK } from "./telemetry.ts";
 import { initDb, closeDb, getDb } from "./db/index.ts";
@@ -163,6 +164,7 @@ async function main() {
     threads: webChat.threads,
     home: webChat.home,
     uploads,
+    browser: createBrowserRoutes(workspace.link),
     reads: { db, link: workspace.link, connectors: workspace.link, memory: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
     // Web dictation is always available; VOICE_TRANSCRIPTION only controls Discord voice messages.
     dictation: createDictationRoutes({ transcribe: transcribeAudio }),

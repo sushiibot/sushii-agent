@@ -1,3 +1,4 @@
+import type { BrowserRoutes } from "./browserRoutes.ts";
 // The peer-IP check trusts that only the Serve host sends from WEB_TRUSTED_PEERS. Anything with host
 // networking or the docker socket on that host counts as the host and can impersonate the owner.
 import type { Database } from "bun:sqlite";
@@ -55,6 +56,7 @@ export interface WebHandlerDeps {
   /** POST /api/dictation; optional in test gateways; always wired in production. */
   dictation?: DictationRoutes;
   voice?: VoiceRoutes;
+  browser?: BrowserRoutes;
 }
 
 /** The slice of Bun's server a route may use: lifting the idle timeout for a stream. */
@@ -126,6 +128,10 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     }
     if (dictation) {
       const res = await dictation.handle(req, path, server);
+      if (res) return res;
+    }
+    if (deps.browser) {
+      const res = await deps.browser.handle(req, path, server);
       if (res) return res;
     }
     if (deps.voice) {
@@ -231,6 +237,7 @@ export interface WebServerOptions {
   reads?: ReadRouteDeps;
   dictation?: DictationRoutes;
   voice?: VoiceRoutes;
+  browser?: BrowserRoutes;
 }
 
 export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<VoiceSocketData>> {
@@ -262,6 +269,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     ...(opts.reads ? { reads: createReadRoutes(opts.reads) } : {}),
     ...(opts.dictation ? { dictation: opts.dictation } : {}),
     ...(opts.voice ? { voice: opts.voice } : {}),
+    ...(opts.browser ? { browser: opts.browser } : {}),
   });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
@@ -282,11 +290,11 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     },
     websocket: {
       maxPayloadLength: 32000,
-      backpressureLimit: 256 * 1024,
+      backpressureLimit: 1024 * 1024,
       closeOnBackpressureLimit: true,
-      open: (socket) => socket.data.voice.open(socket),
-      message: (socket, message) => socket.data.voice.message(message),
-      close: (socket) => socket.data.voice.close(),
+      open: (socket) => "voice" in socket.data ? socket.data.voice.open(socket) : socket.data.browser.open(socket),
+      message: (socket, message) => "voice" in socket.data ? socket.data.voice.message(message) : socket.data.browser.message(socket, message),
+      close: (socket) => "voice" in socket.data ? socket.data.voice.close() : socket.data.browser.close(),
     },
     error: internalErrorResponse,
   });

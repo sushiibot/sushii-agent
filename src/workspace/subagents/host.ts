@@ -1,3 +1,4 @@
+import type { BrowserManager, BrowserBinding } from "../browser.ts";
 import { autoCompactionSettings } from "../contextEconomy.ts";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -91,6 +92,7 @@ export interface SubagentHostOptions {
   toolStubs?: ToolStubs;
   /** Repo-scoped GitHub App credentials for writer bash calls. */
   github?: Pick<GitHubCredentials, "envFor">;
+  browsers?: BrowserManager;
   /** The main turn in progress; child progress nests under it. */
   currentTurn?: () => ParentTurn | null;
   /** Sends chat/event notifications to the bot. */
@@ -731,6 +733,7 @@ export class SubagentHost {
     });
 
     let session: AgentSession;
+    let browser: BrowserBinding | undefined;
     try {
       await loader.reload();
       const settingsManager = SettingsManager.create(cwd, config.agentDir);
@@ -740,8 +743,10 @@ export class SubagentHost {
       settingsManager.getCacheWarmingMode = () => "off";
       // Bash writes wherever the process can, so only a writer (confined to its worktree by the watch) gets it.
       const builtins = spawn.def.writer ? spawn.def.tools : spawn.def.tools.filter((t) => t !== "bash");
-      const extra = [...(nested ? [DELEGATE_TOOL] : [])];
-      const customTools = builtins.includes("bash") ? [await createWorkspaceBashTool(cwd, () => spawn.runId, this.opts.github)] : [];
+      browser = builtins.includes("bash") ? this.opts.browsers?.bind(spawn.turn?.origin?.conversationId ?? this.opts.runs.getRun(spawn.runId)?.conversationId ?? "main", () => spawn.runId) : undefined;
+      const extra = [...(nested ? [DELEGATE_TOOL] : []), ...(browser ? ["browser"] : [])];
+      const rawBash = builtins.includes("bash") ? await createWorkspaceBashTool(cwd, () => spawn.runId, this.opts.github, browser) : undefined;
+      const customTools = [...(rawBash ? [browser ? browser.wrapBash(rawBash) : rawBash] : []), ...(browser ? [browser.tool()] : [])];
       ({ session } = await createAgentSession({
         cwd,
         agentDir: config.agentDir,
@@ -764,13 +769,20 @@ export class SubagentHost {
       throw err;
     }
 
-    const unsubscribe = session.subscribe((event) => this.onChildEvent(spawn, event));
+    const unsubscribe = session.subscribe((event) => {
+      this.onChildEvent(spawn, event);
+      if (event.type === "agent_settled") void browser?.finish().catch((err) => log.warn({ err }, "child browser cleanup failed"));
+    });
+    const browserHeartbeat = browser ? setInterval(() => { if (session.isStreaming) browser?.touch(); }, 60_000) : undefined;
+    browserHeartbeat?.unref();
     const dispose = session.dispose.bind(session);
     session.dispose = () => {
       try {
         unsubscribe();
         return dispose();
       } finally {
+        clearInterval(browserHeartbeat);
+        void browser?.finish().catch((err) => log.warn({ err }, "child browser cleanup failed"));
         stubs?.release();
       }
     };

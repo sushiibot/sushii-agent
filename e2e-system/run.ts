@@ -395,6 +395,7 @@ async function main(): Promise<number> {
       WORKSPACE_TZ: "UTC",
       WORKSPACE_HEARTBEAT_EVERY: "off",
       WORKSPACE_STATE_DIR: P.wsState,
+      ...(process.env["E2E_BROWSER_EXECUTABLE_PATH"] ? { AGENT_BROWSER_EXECUTABLE_PATH: process.env["E2E_BROWSER_EXECUTABLE_PATH"], AGENT_BROWSER_ARGS: "--no-sandbox,--disable-dev-shm-usage" } : {}),
       PI_CODING_AGENT_DIR: P.piAgent,
     },
   };

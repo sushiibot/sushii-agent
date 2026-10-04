@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { BrowserPreview, BrowserPreviewPanel } from '$lib/features/browser';
 	import { BackgroundAgents } from '$lib/features/runs';
 	import { onMount, tick, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -27,6 +28,17 @@
 	const store = chatStore();
 	const threads = threadsStore();
 	const branch = routedSheet('branch');
+	const browserSheet = routedSheet('browser-preview');
+	const browser = new BrowserPreview('main');
+	$effect(() => {
+		const preview = browser;
+		return untrack(() => preview.start());
+	});
+	$effect(() => {
+		const preview = browser;
+		const expanded = browserSheet.open;
+		untrack(() => preview.setExpanded(expanded));
+	});
 	const voiceSheet = routedSheet('voice');
 	const voice = new Voice();
 	let voiceActive = $state(false);
@@ -162,6 +174,22 @@
 		{turnId}
 	/>{/snippet}
 
+{#snippet browserPreview()}
+	<BrowserPreviewPanel
+		status={browser.status}
+		frame={browser.frame}
+		hidden={browser.hidden}
+		expanded={browserSheet.open}
+		reconnecting={browser.reconnecting}
+		stale={browser.stale}
+		onhide={() => browser.hide()}
+		onshow={() => browser.show()}
+		onexpand={() => browserSheet.openWith()}
+		onclose={() => browserSheet.close()}
+		onframe={(seq) => browser.ack(seq)}
+	/>
+{/snippet}
+
 {#snippet voiceStatus()}
 	<VoiceCallBar
 		state={voice.state}
@@ -232,6 +260,7 @@
 	ondictate={() => dictation.toggle()}
 	voice={voiceControls}
 	{voiceStatus}
+	{browserPreview}
 	{voiceCaptions}
 	voiceHasContent={voice.state !== 'idle' && !!(voice.userText || voice.assistantText)}
 	onpickmodel={(alias, role) => void models.pick(alias, role).then((ok) => ok && closeSheet())}

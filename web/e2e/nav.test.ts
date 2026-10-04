@@ -177,7 +177,8 @@ test('a live deep link renders while /api/me is unavailable', async ({ page, con
 for (const [path, api] of [
 	['/skills/x/versions', /^\/api\/skills/],
 	['/schedules/x', /^\/api\/schedules/],
-	['/browser', /^\/api\/browser/],
+	// Chat now polls the live preview status; the standalone screen's fixture APIs stay gated.
+	['/browser', /^\/api\/browser(?:$|\/(?!status(?:$|\/)|connect(?:$|\/)))/],
 	['/briefing', /^\/api\/briefing/]
 ] as const) {
 	test(`${path} without its fixture preview goes to chat without requesting preview data`, async ({

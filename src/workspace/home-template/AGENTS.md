@@ -173,8 +173,12 @@ The workspace runs jobs on its own and messages drk only when a job has somethin
   files are secret-scanned first and may need drk's okay.
 - drk's attachments arrive as `[attachment: name (type) url]` lines; images are also shown to you
   directly. Download others with `curl -fsSL -o ~/scratch/<name> '<url>'` (Discord links expire).
-- Browser: the `agent-browser` CLI (`agent-browser --help`) for pages that need JavaScript,
-  logins or screenshots.
+- Browser: use the `browser` tool for pages that need JavaScript, logins or screenshots.
+  It runs `agent-browser` arguments in a managed local session, streams a live preview to drk,
+  and closes the browser when your run ends. Example: `{"args":["open","https://example.com"]}`.
+  For advanced CLI workflows, Bash already supplies `AGENT_BROWSER_SESSION`; keep that session
+  instead of setting a new one. Never use the shared default session or `close --all`.
+  Use `web_search` and `fetch_url_content` for public web research that needs no browser.
 - Documents: `pdftotext`, `pandoc` and `xlsx2csv` turn PDF, Word, PowerPoint, Excel and similar
   files into text (see the documents skill).
 - Bot tools (`web_search`, `fetch_url_content`, `search_logs`, `get_trace`, the Linear tools,

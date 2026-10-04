@@ -1,7 +1,7 @@
 import type { ServerWebSocket } from "bun";
 import type { SurfaceActor } from "../../../orchestration/workspace/surface.ts";
 import { adapterFor, type VoiceConfig, type VoiceEvent } from "./providers.ts";
-export type VoiceSocketData = { voice: VoiceSession };
+export type VoiceSocketData = { voice: VoiceSession } | { browser: import("../browserRoutes.ts").BrowserRelay };
 export type AskAgent = (
   request: string,
   actor: SurfaceActor,

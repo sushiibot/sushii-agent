@@ -15,4 +15,5 @@ agent-browser snapshot -i | grep -q 'button "Go"'
 agent-browser open https://example.com
 test "$(agent-browser get title)" = "Example Domain"
 agent-browser close
+bun scripts/browser-preview-smoke.ts
 echo "browser smoke passed"

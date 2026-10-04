@@ -1,3 +1,4 @@
+import { BrowserManager, localBrowserDriver } from "./browser.ts";
 import { runsStopParams, RPC_METHODS } from "../orchestration/contracts.ts";
 // First: initialises OTel (when OTEL_EXPORTER_OTLP_ENDPOINT is set) before anything creates spans.
 import { otelSDK } from "../telemetry.ts";
@@ -94,6 +95,8 @@ async function main(): Promise<void> {
   // After the selector (its ChatGPT switch follows the deployed provider, not a pinned choice), before any
   // session or runner reads the config: a saved `!model` choice rewrites its model fields.
   const choice = new ModelChoice(config, config.stateDir);
+  const browsers = new BrowserManager(config.stateDir, localBrowserDriver(config.home));
+  await browsers.recover();
   const turns = new MainTurnTracker();
   // Late-bound: main runs start only after the session exists.
   let personalTurn: PersonalSession | null = null;
@@ -111,6 +114,7 @@ async function main(): Promise<void> {
     selector,
     toolStubs,
     github,
+    browsers,
     notify,
     currentTurn: () => turns.current(),
     wake: (r, consumed) => (topicsRef ?? personalRef)?.wake({ id: r.runId, text: r.text, origin: r.origin, onConsumed: consumed }),
@@ -127,7 +131,7 @@ async function main(): Promise<void> {
     conversationId: "main",
     tz: config.tz,
     uploads: { dir: join(config.home, UPLOADS_DIR) },
-    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, parentTurn: () => { const turnId = personalTurn?.currentTurnId(); return turnId ? turns.get(turnId) : null; }, mainTurnId: () => personalTurn?.currentTurnId() }),
+    factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, browsers, parentTurn: () => { const turnId = personalTurn?.currentTurnId(); return turnId ? turns.get(turnId) : null; }, mainTurnId: () => personalTurn?.currentTurnId() }),
     memory: {
       compactionTrigger,
       reload: reloadContext,
@@ -203,7 +207,7 @@ async function main(): Promise<void> {
         ...personalOptions,
         stateDir: join(config.stateDir, "topics", id),
         conversationId: id,
-        factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, parentTurn: () => { const turnId = topic.currentTurnId(); return turnId ? { turnId, origin: { surface: "web", conversationId: id } } : null; }, origin: { surface: "web", conversationId: id }, sessionDir: join(config.agentDir, "topics", id), agentName: `topic:${id}`, mainTurnId: () => topic.currentTurnId() }),
+        factory: createPiChatSessionFactory(config, { runs, toolStubs, selector, subagents, choice, github, connectors, browsers, parentTurn: () => { const turnId = topic.currentTurnId(); return turnId ? { turnId, origin: { surface: "web", conversationId: id } } : null; }, origin: { surface: "web", conversationId: id }, sessionDir: join(config.agentDir, "topics", id), agentName: `topic:${id}`, mainTurnId: () => topic.currentTurnId() }),
         context: { ...personalOptions.context, busy: () => subagents.isBusy({ surface: "web", conversationId: id }) },
       });
       return topic;
@@ -272,6 +276,7 @@ async function main(): Promise<void> {
     state: () => topics.state,
     handlers: {
       ...personal.handlers(),
+      ...browsers.handlers(config.principalId),
       ...connectors.handlers(config.principalId),
       ...chatExportHandlers({ principalId: config.principalId, reader: new ChatExportReader({ agentDir: config.agentDir }) }),
       // Session roots come from the host's own agent dir (process env set by the deploy), never from a run record.
@@ -300,6 +305,7 @@ async function main(): Promise<void> {
     // Children first: they record their runs and persist background results while main can still take them.
     await subagents.dispose();
     await Promise.all([scheduler.stop(), personal.dispose(), topics.dispose(), connectors.dispose()]);
+    await browsers.dispose();
     await durableState.close();
     await otelSDK?.shutdown().catch(() => {});
     process.exit(0);

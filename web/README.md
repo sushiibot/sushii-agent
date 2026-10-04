@@ -35,6 +35,13 @@ Voice chat is available in the owner web chat and topic conversations.
 It supports Qwen, Gemini, and OpenAI adapters with tool handoff to the existing agent.
 See [Live voice](docs/live-voice.md) for API credentials, costs, lifecycle, and protocol details.
 
+## Browser preview
+
+Main and topic chats show the local browser screen above the conversation.
+The preview supports hide, show, full-screen viewing, zoom, and automatic cleanup.
+See [Browser preview](docs/browser-preview.md) for lifecycle, transport, and verification.
+The standalone Browser takeover screen remains a development preview.
+
 ## MCP connections
 
 Connectors is available automatically in the owner web app.

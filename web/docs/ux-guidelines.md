@@ -171,6 +171,8 @@ await expect(page.getByRole('button', { name: /new messages/i })).toBeVisible();
 
 - **Keep the call button in the top-right header.** After connection, close setup and show a compact call bar below the header. Keep mute, captions, and End call visible. Implementation: `VoiceControl` and `VoiceCallBar`. Check: `pw`, `shot` at 320px and desktop widths.
 - **Keep chat, tool activity, and approvals visible during calls.** Show microphone and playback state separately from background agent work. Opening settings must keep the call running. Check: `pw` with a working agent and an open call.
+
+- **Show live browser previews below the call bar, above chat.** Keep the inline image compact. Hide stops frame delivery and leaves a Show control; it keeps browser work running. Expand opens a full-screen viewer with fit and zoom. Back closes that viewer. Finished previews collapse after five seconds; an expanded viewer retains the final frame until dismissed. Check: `pw`, `shot` at 320px and desktop widths (`e2e/browser-preview.test.ts`).
 - **Show provider captions in the existing chat message layout as text arrives. Use muted italic text until finalized, and keep an icon with “Voice” below spoken messages after finalization.** Replace revised snapshots and final corrections without duplicate words. Provider timing may delay text until a pause. Hide the empty-thread greeting once voice text arrives. Keep token updates out of live announcements. Implementation: shared `MessageText`, `VoiceCaptions`, and the provider adapters. Check: protocol tests and `pw` with revisions and delayed final text.
 
 ### Tool activity

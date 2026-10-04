@@ -64,6 +64,7 @@
 		ondictate,
 		voice,
 		voiceStatus,
+		browserPreview,
 		voiceCaptions,
 		voiceHasContent = false,
 		connection,
@@ -151,6 +152,7 @@
 		ondictate?: () => void;
 		voice?: Snippet;
 		voiceStatus?: Snippet;
+		browserPreview?: Snippet;
 		voiceCaptions?: Snippet;
 		voiceHasContent?: boolean;
 		connection?: ConnectionState | 'forbidden';
@@ -486,7 +488,7 @@
 
 {#snippet banner()}
 	{#if connection}<ConnectionBanner state={connection} />{/if}
-	{#if !readOnly}{@render voiceStatus?.()}{/if}
+	{#if !readOnly}{@render voiceStatus?.()}{@render browserPreview?.()}{/if}
 {/snippet}
 
 {#snippet toastBody()}

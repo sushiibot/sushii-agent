@@ -1,3 +1,4 @@
+import type { BrowserManager, BrowserBinding } from "./browser.ts";
 import { relative } from "node:path";
 import { threadAwareness, threadContextTools } from "./threadContext.ts";
 import { createGitHubPushTool, GITHUB_PUSH_TOOL } from "./githubPush.ts";
@@ -53,10 +54,10 @@ const WORKSPACE_TOOLS = ["read", "edit", "write", "grep", "find", "ls", "bash", 
 
 /** Pi's bash under the agent env allowlist, minus PI_* (PI_CODING_AGENT_DIR and PI_SESSION_FILE point at the agent dir).
  *  `WS_RUN_ID` is the run in progress at spawn time, so `ws-runs` can default to it. */
-export function createWorkspaceBashTool(cwd: string, currentRunId: () => string | null = () => null, github?: Pick<GitHubCredentials, "envFor">) {
+export function createWorkspaceBashTool(cwd: string, currentRunId: () => string | null = () => null, github?: Pick<GitHubCredentials, "envFor">, browser?: BrowserBinding) {
   const extraEnv = (): Record<string, string> => {
     const runId = currentRunId();
-    return runId ? { WS_RUN_ID: runId } : {};
+    return { ...(runId ? { WS_RUN_ID: runId } : {}), ...browser?.env() };
   };
   const prepareEnv = github ? (command: string, dir: string) => github.envFor(command, dir) : undefined;
   return createAgentBashTool(cwd, extraEnv, { dropPrefixes: ["PI_"], exposeSessionEnvironment: false, prepareEnv });
@@ -160,6 +161,7 @@ export function createPiChatSessionFactory(
     choice?: ModelChoice;
     github?: GitHubCredentials;
     connectors?: ConnectorManager;
+    browsers?: BrowserManager;
     /** The Main turn in progress, stamped on each main run so the bot can join its replies and files. */
     mainTurnId?: () => string | undefined;
     sessionDir?: string;
@@ -246,6 +248,8 @@ export function createPiChatSessionFactory(
     });
     const stubs = opts.toolStubs?.binding({ agentId: "main", agentName: opts.agentName ?? "main", ...(opts.origin ? { origin: opts.origin } : {}) });
     const observerRef: { current: RunObserver | null } = { current: null };
+    const browser = opts.browsers?.bind(opts.origin?.conversationId ?? "main", () => observerRef.current?.currentRunId() ?? null);
+    const browserTools = browser ? ["browser"] : [];
     const pushTools = opts.github ? [GITHUB_PUSH_TOOL] : [];
     const connectorTools = opts.connectors ? CONNECTOR_TOOLS : [];
     const delegate = opts.subagents?.offersDelegate(0) ? ["delegate"] : [];
@@ -334,7 +338,8 @@ export function createPiChatSessionFactory(
     // settings.json, out of applyOverrides' reach; an instance override also survives session.reload().
     settingsManager.getCacheWarmingMode = () => "off";
 
-    const bashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null, opts.github);
+    const rawBashTool = await createWorkspaceBashTool(cwd, () => observerRef.current?.currentRunId() ?? null, opts.github, browser);
+    const bashTool = browser ? browser.wrapBash(rawBashTool) : rawBashTool;
     const sendFileTool = createSendFileTool({ cwd, home: config.home, agentDir: config.agentDir, stateDir: config.stateDir }, () => sessionRef.current);
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
     try {
@@ -347,13 +352,13 @@ export function createPiChatSessionFactory(
         settingsManager,
         // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
         // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
-        tools: [...WORKSPACE_TOOLS, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
-        customTools: [bashTool, sendFileTool, ...topicTools, ...(opts.github ? [createGitHubPushTool(cwd, opts.github)] : [])],
+        tools: [...WORKSPACE_TOOLS, ...browserTools, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
+        customTools: [bashTool, sendFileTool, ...(browser ? [browser.tool()] : []), ...topicTools, ...(opts.github ? [createGitHubPushTool(cwd, opts.github)] : [])],
         excludeTools: ["ask_question"],
         sessionManager,
       }));
       sessionRef.current = session;
-      assertExactTools(session, [...WORKSPACE_TOOLS, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.offered() ?? [])]);
+      assertExactTools(session, [...WORKSPACE_TOOLS, ...browserTools, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.registeredNames() ?? [])], "workspace", [...WORKSPACE_TOOLS, ...browserTools, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs?.offered() ?? [])]);
       stubs?.assertOwned(session, "workspace");
       // Pi keeps this binding across session.reload(), so each new session binds once.
       if (ui) await session.bindExtensions({ uiContext: ui, mode: "rpc" });
@@ -363,11 +368,19 @@ export function createPiChatSessionFactory(
       unsubscribeChoice?.();
       throw err;
     }
+    const unsubscribeBrowser = browser ? session.subscribe((event) => {
+      if (event.type === "agent_settled") void browser.finish().catch((err) => log.warn({ err }, "browser cleanup failed"));
+    }) : undefined;
+    const browserHeartbeat = browser ? setInterval(() => { if (session.isStreaming) browser.touch(); }, 60_000) : undefined;
+    browserHeartbeat?.unref();
     const dispose = session.dispose.bind(session);
     session.dispose = () => {
       try {
         return dispose();
       } finally {
+        unsubscribeBrowser?.();
+        clearInterval(browserHeartbeat);
+        void browser?.finish().catch((err) => log.warn({ err }, "browser cleanup failed"));
         stubs?.release();
         unsubscribeChoice?.();
       }

@@ -1,3 +1,4 @@
+import { BROWSER_READ, browserReadParams, browserReadResult, type BrowserReadResult } from "../browserContracts.ts";
 import { memoryParams, memoryOverview, memoryDetail } from "../memoryContracts.ts";
 import { runsStopParams, runsStopResult } from "../contracts.ts";
 import { connectorsParams, connectorsResult, type ConnectorRequest, type ConnectorsResult } from "../contracts.ts";
@@ -357,6 +358,10 @@ export class WorkspaceLink {
 
   async runsGet(q: Omit<z.input<typeof runsGetParams>, "principalId">): Promise<RunsGetResult> {
     return this.read(RPC_METHODS.runsGet, runsGetParams, runsGetResult, q, RUNS_TIMEOUT_MS);
+  }
+
+  async browserRead(conversationId: string, frames = false): Promise<BrowserReadResult> {
+    return this.read(BROWSER_READ, browserReadParams, browserReadResult, { conversationId, frames }, 5000);
   }
 
   async memoryRead(id?: string) {
