@@ -63,6 +63,8 @@
 		dictation = null,
 		ondictate,
 		voice,
+		voiceStatus,
+		voiceCaptions,
 		connection,
 		commandsOffline = false,
 		toast,
@@ -147,6 +149,8 @@
 		dictation?: ComponentProps<typeof Composer>['dictation'];
 		ondictate?: () => void;
 		voice?: Snippet;
+		voiceStatus?: Snippet;
+		voiceCaptions?: Snippet;
 		connection?: ConnectionState | 'forbidden';
 		commandsOffline?: boolean;
 		toast?: string | null;
@@ -480,6 +484,7 @@
 
 {#snippet banner()}
 	{#if connection}<ConnectionBanner state={connection} />{/if}
+	{#if !readOnly}{@render voiceStatus?.()}{/if}
 {/snippet}
 
 {#snippet toastBody()}
@@ -554,6 +559,7 @@
 					>
 				</p>
 			</div>
+			{@render voiceCaptions?.()}
 		</div>
 	{:else}
 		<div class="mx-auto max-w-2xl">
@@ -607,6 +613,7 @@
 				{ondeny}
 			/>
 		</div>
+		{@render voiceCaptions?.()}
 	{/if}
 	<p role="status" class="sr-only">{announce}</p>
 	<p role="status" class="sr-only">{copyNote}</p>

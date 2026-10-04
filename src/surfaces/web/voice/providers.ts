@@ -75,6 +75,9 @@ export type VoiceEvent =
       role: "user" | "assistant";
       text: string;
       final: boolean;
+      replace?: boolean;
+      interim?: boolean;
+      itemId?: string;
     }
   | { type: "interrupted" }
   | { type: "speech_end" }
@@ -188,15 +191,24 @@ export function adapterFor(c: VoiceConfig): VoiceAdapter {
                 p.inlineData.mimeType?.match(/rate=(\d+)/)?.[1] ?? 24000,
               ),
             });
+        const interim = s?.interimInputTranscription;
+        if (typeof interim?.text === "string")
+          out.push({
+            type: "transcript",
+            role: "user",
+            text: interim.text,
+            final: false,
+            interim: true,
+          });
         for (const [role, t] of [
           ["user", s?.inputTranscription],
           ["assistant", s?.outputTranscription],
         ] as const)
-          if (t?.text)
+          if (typeof t?.text === "string" || t?.finished === true)
             out.push({
               type: "transcript",
               role,
-              text: t.text,
+              text: t.text ?? "",
               final: t.finished === true,
             });
         if (s?.turnComplete)
@@ -320,6 +332,34 @@ export function adapterFor(c: VoiceConfig): VoiceAdapter {
           return [{ type: "speech_end" }];
         case "response.created":
           return [{ type: "response_started", id: m.response?.id ?? "" }];
+        case "conversation.item.input_audio_transcription.delta":
+          return [
+            {
+              type: "transcript",
+              role: "user",
+              text:
+                typeof m.text === "string"
+                  ? m.text + (m.stash ?? "")
+                  : (m.delta ?? ""),
+              final: false,
+              ...(typeof m.text === "string"
+                ? { replace: true, interim: true }
+                : {}),
+              itemId: m.item_id,
+            },
+          ];
+        case "conversation.item.input_audio_transcription.text":
+          return [
+            {
+              type: "transcript",
+              role: "user",
+              text: (m.text ?? m.transcript ?? "") + (m.stash ?? ""),
+              final: false,
+              replace: true,
+              interim: true,
+              itemId: m.item_id,
+            },
+          ];
         case "conversation.item.input_audio_transcription.completed":
           return [
             {
@@ -327,6 +367,8 @@ export function adapterFor(c: VoiceConfig): VoiceAdapter {
               role: "user",
               text: m.transcript,
               final: true,
+              replace: true,
+              itemId: m.item_id,
             },
           ];
         case "response.audio_transcript.delta":

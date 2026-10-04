@@ -66,7 +66,12 @@ test('PCM streams in both directions, interruption stops playback, mute and end 
 	await page.goto('/chat');
 	await page.getByRole('button', { name: 'Voice chat', exact: true }).click();
 	await page.getByRole('button', { name: 'Start voice chat' }).click();
-	await expect(page.getByRole('button', { name: 'Mute microphone' })).toBeEnabled();
+	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeHidden();
+	await expect(
+		page
+			.getByRole('region', { name: 'Voice call', exact: true })
+			.getByRole('button', { name: 'Mute microphone' })
+	).toBeEnabled();
 	await expect.poll(() => packets.some((m) => m.type === 'audio')).toBe(true);
 	connection.send(
 		JSON.stringify({
@@ -75,14 +80,52 @@ test('PCM streams in both directions, interruption stops playback, mute and end 
 			sampleRate: 24000
 		})
 	);
-	await expect(page.getByText('Speaking — interrupt anytime', { exact: false })).toBeVisible();
+	await expect(page.getByText('Speaking', { exact: false })).toBeVisible();
 	connection.send(JSON.stringify({ type: 'interrupted' }));
 	await expect(page.getByText('Listening', { exact: false })).toBeVisible();
+	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeHidden();
+	const captions = page.getByRole('region', { name: 'Voice captions', exact: true });
+	const transcript = (text: string, extra = {}) =>
+		connection.send(
+			JSON.stringify({
+				type: 'transcript',
+				role: 'user',
+				text,
+				final: false,
+				itemId: 'turn-1',
+				...extra
+			})
+		);
+	transcript('Check my ');
+	await expect(captions).toContainText('Transcribing…');
+	transcript('calender');
+	await expect(captions).toContainText('Check my calender');
+	transcript('Check my calendar', { interim: true, replace: true });
+	await expect(captions).toContainText('You · Transcribing…: Check my calendar');
+	await expect(captions).not.toContainText('calender');
+	connection.send(JSON.stringify({ type: 'turn_done' }));
+	transcript('Check my calendar.', { final: true, replace: true });
+	await expect(captions).toContainText('You: Check my calendar.');
+	await expect(captions).not.toContainText('calender');
+	await expect(captions).not.toContainText('Transcribing…');
+	transcript('Find my', { interim: true, itemId: 'turn-2' });
+	transcript('Find my notes', { interim: true, itemId: 'turn-2' });
+	await expect(captions).toContainText('Find my notes');
+	transcript('Find my notes.', { final: true, itemId: 'turn-2' });
+	await expect(captions).toContainText('You: Find my notes.');
+	await page.getByRole('button', { name: 'Show voice captions' }).click();
+	await expect(captions).toBeHidden();
+	await page.getByRole('button', { name: 'Show voice captions' }).click();
+	await expect(captions).toBeVisible();
+
 	connection.send(JSON.stringify({ type: 'agent', state: 'working' }));
 	await expect(
-		page.getByText('Sushii is working — you can keep talking', { exact: false })
+		page.getByText('Sushii is working · tools and approvals appear in chat', { exact: false })
 	).toBeVisible();
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await page.screenshot({ path: '/tmp/voice-captions-desktop.png' });
 	await page.setViewportSize({ width: 320, height: 740 });
+	await page.screenshot({ path: '/tmp/voice-captions-mobile.png' });
 	await checkScreen(page);
 	await page.getByRole('button', { name: 'Mute microphone' }).click();
 	expect(
@@ -90,10 +133,16 @@ test('PCM streams in both directions, interruption stops playback, mute and end 
 			() => (window as unknown as { voiceTrack: MediaStreamTrack }).voiceTrack.enabled
 		)
 	).toBe(false);
+	await page.getByRole('banner').getByRole('button', { name: 'Voice chat:', exact: false }).click();
+	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeVisible();
 	await page.getByRole('button', { name: 'Back to chat' }).click();
 	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeHidden();
 	await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled();
-	await expect(page.getByRole('banner').getByRole('button', { name: 'End call' })).toBeVisible();
+	await expect(
+		page
+			.getByRole('region', { name: 'Voice call', exact: true })
+			.getByRole('button', { name: 'End call' })
+	).toBeVisible();
 	await checkScreen(page);
 	await page.getByRole('button', { name: 'End call' }).click();
 	await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
@@ -111,10 +160,16 @@ test('leaving the app ends the call and releases the microphone', async ({ page,
 	await page.goto('/chat');
 	await page.getByRole('button', { name: 'Voice chat', exact: true }).click();
 	await page.getByRole('button', { name: 'Start voice chat' }).click();
-	await expect(page.getByRole('button', { name: 'Mute microphone' })).toBeEnabled();
+	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeHidden();
+	await expect(
+		page
+			.getByRole('region', { name: 'Voice call', exact: true })
+			.getByRole('button', { name: 'Mute microphone' })
+	).toBeEnabled();
 	await page.evaluate(() => {
 		Object.defineProperty(document, 'hidden', { value: true, configurable: true });
 		document.dispatchEvent(new Event('visibilitychange'));
 	});
-	await expect(page.getByRole('button', { name: 'Start voice chat' })).toBeEnabled();
+	await expect(page.getByRole('region', { name: 'Voice call', exact: true })).toBeHidden();
+	await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
 });

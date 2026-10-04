@@ -113,3 +113,113 @@ test("Gemini Live maps setup, PCM, transcription, interruptions and automatic to
     }),
   ).toEqual([{ type: "interrupted" }]);
 });
+test("input transcript deltas, revised snapshots and final text preserve their semantics", () => {
+  for (const config of [configs[0]!, configs[2]!]) {
+    const adapter = adapterFor(config);
+    expect(
+      adapter.events({
+        type: "conversation.item.input_audio_transcription.delta",
+        item_id: "u1",
+        delta: "Check my ",
+      }),
+    ).toEqual([
+      {
+        type: "transcript",
+        role: "user",
+        text: "Check my ",
+        final: false,
+        itemId: "u1",
+      },
+    ]);
+    expect(
+      adapter.events({
+        type: "conversation.item.input_audio_transcription.text",
+        item_id: "u1",
+        text: "Check my calendar",
+      }),
+    ).toEqual([
+      {
+        type: "transcript",
+        role: "user",
+        text: "Check my calendar",
+        final: false,
+        replace: true,
+        interim: true,
+        itemId: "u1",
+      },
+    ]);
+    expect(
+      adapter.events({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: "u1",
+        transcript: "Check my calendar.",
+      }),
+    ).toEqual([
+      {
+        type: "transcript",
+        role: "user",
+        text: "Check my calendar.",
+        final: true,
+        replace: true,
+        itemId: "u1",
+      },
+    ]);
+  }
+  const gemini = adapterFor(configs[1]!);
+  expect(
+    gemini.events({
+      serverContent: {
+        interimInputTranscription: { text: "Check my calender" },
+      },
+    }),
+  ).toEqual([
+    {
+      type: "transcript",
+      role: "user",
+      text: "Check my calender",
+      final: false,
+      interim: true,
+    },
+  ]);
+  expect(
+    gemini.events({
+      serverContent: {
+        inputTranscription: { text: "Check my calendar", finished: false },
+      },
+    }),
+  ).toEqual([
+    {
+      type: "transcript",
+      role: "user",
+      text: "Check my calendar",
+      final: false,
+    },
+  ]);
+  expect(
+    gemini.events({
+      serverContent: { inputTranscription: { finished: true } },
+    }),
+  ).toEqual([{ type: "transcript", role: "user", text: "", final: true }]);
+});
+
+test("Qwen text and stash form one revised snapshot rather than an appended delta", () => {
+  const a = adapterFor(configs[0]!);
+  for (const type of [
+    "conversation.item.input_audio_transcription.delta",
+    "conversation.item.input_audio_transcription.text",
+  ]) {
+    expect(
+      a.events({ type, item_id: "u", text: "Check my ", stash: "calendar" }),
+    ).toEqual([
+      {
+        type: "transcript",
+        role: "user",
+        text: "Check my calendar",
+        final: false,
+        replace: true,
+        interim: true,
+        itemId: "u",
+      },
+    ]);
+  }
+});

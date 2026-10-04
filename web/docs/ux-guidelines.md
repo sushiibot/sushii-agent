@@ -167,6 +167,12 @@ expect(Math.abs(after - before.top)).toBeLessThanOrEqual(1);
 await expect(page.getByRole('button', { name: /new messages/i })).toBeVisible();
 ```
 
+### Live voice
+
+- **Keep the call button in the top-right header.** After connection, close setup and show a compact call bar below the header. Keep mute, captions, and End call visible. Implementation: `VoiceControl` and `VoiceCallBar`. Check: `pw`, `shot` at 320px and desktop widths.
+- **Keep chat, tool activity, and approvals visible during calls.** Show microphone and playback state separately from background agent work. Opening settings must keep the call running. Check: `pw` with a working agent and an open call.
+- **Show provider captions as text arrives, and label partial speech “Transcribing…”.** Replace revised snapshots and final corrections without duplicate words. Provider timing may delay text until a pause. Keep token updates out of live announcements. Implementation: `VoiceCaptions` and the provider adapters. Check: protocol tests and `pw` with revisions and delayed final text.
+
 ### Tool activity
 
 - **The agent shows a compact typing indicator within 300ms of receiving a message, until text or activity arrives.** Why: silence reads as a missed message, while an oversized status block wastes space. Check: `pw` with delayed replies.

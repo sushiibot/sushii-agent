@@ -1,13 +1,13 @@
 <script lang="ts">
 	import Phone from '@lucide/svelte/icons/phone';
 	import PhoneCall from '@lucide/svelte/icons/phone-call';
-	import PhoneOff from '@lucide/svelte/icons/phone-off';
 	import { onDestroy } from 'svelte';
 	import { Button } from '$lib/ui/button';
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
 	import VoicePanel from './components/voice-panel.svelte';
-	import { Voice } from './voice.svelte';
+	import type { Voice } from './voice.svelte';
 	let {
+		voice,
 		conversation = 'main',
 		open,
 		onopen,
@@ -15,6 +15,7 @@
 		onstarting,
 		onactive
 	}: {
+		voice: Voice;
 		conversation?: string;
 		open: boolean;
 		onopen: () => void;
@@ -22,7 +23,13 @@
 		onstarting?: () => void;
 		onactive?: (active: boolean) => void;
 	} = $props();
-	const voice = new Voice();
+	let closeOnReady = $state(false);
+	$effect(() => {
+		if (closeOnReady && (voice.state === 'listening' || voice.state === 'speaking')) {
+			closeOnReady = false;
+			if (open) onclose();
+		}
+	});
 	$effect(() => {
 		onactive?.(voice.state !== 'idle');
 	});
@@ -56,15 +63,6 @@
 			aria-hidden="true"
 		/>{/if}
 </Button>
-{#if voice.state !== 'idle'}
-	<Button
-		variant="ghost"
-		class="size-12 px-0"
-		aria-label="End call"
-		title="End call"
-		onclick={() => voice.stop()}><PhoneOff class="size-5" aria-hidden="true" /></Button
-	>
-{/if}
 <RoutedSheet {open} label="Voice chat" {onclose}>
 	<VoicePanel
 		models={voice.models}
@@ -80,6 +78,7 @@
 		onprovider={(id) => (voice.provider = id)}
 		onstart={() => {
 			onstarting?.();
+			closeOnReady = true;
 			void voice.start(conversation);
 		}}
 		onstop={() => voice.stop()}

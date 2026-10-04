@@ -14,6 +14,9 @@
 		modelsStore,
 		Dictation,
 		VoiceControl,
+		Voice,
+		VoiceCallBar,
+		VoiceCaptions,
 		type ChatSheet,
 		type ChatMessage,
 		type FileRef
@@ -25,6 +28,7 @@
 	const threads = threadsStore();
 	const branch = routedSheet('branch');
 	const voiceSheet = routedSheet('voice');
+	const voice = new Voice();
 	let voiceActive = $state(false);
 	let branchFrom = $state<{ id: string; quote: string } | null>(null);
 	let threadTitle = $state('');
@@ -158,8 +162,31 @@
 		{turnId}
 	/>{/snippet}
 
+{#snippet voiceStatus()}
+	<VoiceCallBar
+		state={voice.state}
+		muted={voice.muted}
+		seconds={voice.seconds}
+		agentWorking={voice.agentWorking}
+		captionsVisible={voice.captionsVisible}
+		error={voice.error}
+		onmute={() => voice.mute()}
+		onstop={() => voice.stop()}
+		oncaptions={() => (voice.captionsVisible = !voice.captionsVisible)}
+		ondetails={() => voiceSheet.openWith()}
+	/>
+{/snippet}
+{#snippet voiceCaptions()}
+	{#if voice.captionsVisible && voice.state !== 'idle'}<VoiceCaptions
+			userText={voice.userText}
+			userFinal={voice.userFinal}
+			assistantText={voice.assistantText}
+		/>{/if}
+{/snippet}
+
 {#snippet voiceControls()}
 	<VoiceControl
+		{voice}
 		open={voiceSheet.open}
 		onopen={() => voiceSheet.openWith()}
 		onclose={() => voiceSheet.close()}
@@ -203,6 +230,8 @@
 	}}
 	ondictate={() => dictation.toggle()}
 	voice={voiceControls}
+	{voiceStatus}
+	{voiceCaptions}
 	onpickmodel={(alias, role) => void models.pick(alias, role).then((ok) => ok && closeSheet())}
 	{connection}
 	commandsOffline={s.workspace === 'offline'}

@@ -2,7 +2,14 @@
 
 Use the **Voice chat** phone button at the top right in the owner web app.
 Choose a configured provider, then select **Start voice chat** and allow microphone access.
-You can interrupt spoken replies. **Back to chat** keeps the call open so you can review approvals.
+The setup sheet closes when the call connects. A compact bar below the header shows the call state,
+time, microphone control, caption toggle, and **End call**. Chat messages, tools, and approvals stay visible.
+You can interrupt spoken replies. Open the phone button to review settings; **Back to chat** keeps the call open.
+
+Captions show your speech and the spoken reply while the call runs. Partial text displays **Transcribing…**
+and can change before the provider finalizes it. Providers control transcript timing; some text arrives only after a pause.
+The adapters accept input transcript deltas, interim revisions, and completed text where the provider sends them.
+Captions show the latest exchange and do not replace durable chat messages.
 **End call**, navigation, a hidden page, or the 15-minute limit ends the call and releases the microphone.
 Dictate remains available outside calls. During a call, the live session owns the microphone.
 

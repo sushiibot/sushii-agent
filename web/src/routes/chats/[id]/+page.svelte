@@ -11,6 +11,9 @@
 		modelsStore,
 		Dictation,
 		VoiceControl,
+		Voice,
+		VoiceCallBar,
+		VoiceCaptions,
 		type ChatSheet,
 		type FileRef
 	} from '$lib/features/chat';
@@ -28,6 +31,7 @@
 	const detail = $derived(remote.data);
 	const store = $derived(detail ? threads.chat(detail) : null);
 	const voiceSheet = routedSheet('voice');
+	const voice = new Voice();
 	let voiceActive = $state(false);
 	const dictation = new Dictation((text) => {
 		if (!store) return;
@@ -111,8 +115,31 @@
 		{turnId}
 	/>{/snippet}
 
+{#snippet voiceStatus()}
+	<VoiceCallBar
+		state={voice.state}
+		muted={voice.muted}
+		seconds={voice.seconds}
+		agentWorking={voice.agentWorking}
+		captionsVisible={voice.captionsVisible}
+		error={voice.error}
+		onmute={() => voice.mute()}
+		onstop={() => voice.stop()}
+		oncaptions={() => (voice.captionsVisible = !voice.captionsVisible)}
+		ondetails={() => voiceSheet.openWith()}
+	/>
+{/snippet}
+{#snippet voiceCaptions()}
+	{#if voice.captionsVisible && voice.state !== 'idle'}<VoiceCaptions
+			userText={voice.userText}
+			userFinal={voice.userFinal}
+			assistantText={voice.assistantText}
+		/>{/if}
+{/snippet}
+
 {#snippet voiceControls()}
 	<VoiceControl
+		{voice}
 		conversation={id}
 		open={voiceSheet.open}
 		onopen={() => voiceSheet.openWith()}
@@ -157,6 +184,8 @@
 				},
 				ondictate: () => dictation.toggle(),
 				voice: voiceControls,
+				voiceStatus,
+				voiceCaptions,
 				usage: store.usage,
 				models: models.remote.data ?? null,
 				modelPicking: models.picking,

@@ -9,6 +9,10 @@ export class Voice {
 	muted = $state(false);
 	agentWorking = $state(false);
 	userText = $state('');
+	userFinal = $state(false);
+	captionsVisible = $state(true);
+	#userCommitted = '';
+	#userItem: string | undefined;
 	assistantText = $state('');
 	seconds = $state(0);
 	#socket: WebSocket | null = null;
@@ -47,6 +51,9 @@ export class Voice {
 		if (!model) return;
 		this.error = null;
 		this.userText = this.assistantText = '';
+		this.userFinal = false;
+		this.#userCommitted = '';
+		this.#userItem = undefined;
 		this.seconds = 0;
 		this.#userFresh = this.#assistantFresh = true;
 		this.muted = false;
@@ -130,6 +137,9 @@ export class Voice {
 		role?: string;
 		text?: string;
 		final?: boolean;
+		replace?: boolean;
+		interim?: boolean;
+		itemId?: string;
 		audio?: string;
 		sampleRate?: number;
 		message?: string;
@@ -147,15 +157,29 @@ export class Voice {
 				this.#play(event.audio!, event.sampleRate!);
 				break;
 			case 'interrupted':
+				this.#userFresh = true;
 				this.#clearAudio();
 				this.assistantText = '';
+				this.#assistantFresh = true;
 				this.state = 'listening';
 				break;
 			case 'transcript':
 				if (event.role === 'user') {
-					if (this.#userFresh) this.userText = '';
+					const fresh = event.itemId ? event.itemId !== this.#userItem : this.#userFresh;
+					if (fresh) this.#userCommitted = '';
+					this.#userItem = event.itemId;
 					this.#userFresh = false;
-					this.userText = event.final ? event.text! : (this.userText + event.text!).slice(-12000);
+					if (event.interim) {
+						this.userText = ((event.replace ? '' : this.#userCommitted) + (event.text ?? '')).slice(
+							-12000
+						);
+					} else {
+						this.#userCommitted = event.replace
+							? (event.text ?? '').slice(-12000)
+							: (this.#userCommitted + (event.text ?? '')).slice(-12000);
+						this.userText = this.#userCommitted;
+					}
+					this.userFinal = event.final === true;
 				} else {
 					if (this.#assistantFresh) this.assistantText = '';
 					this.#assistantFresh = false;
