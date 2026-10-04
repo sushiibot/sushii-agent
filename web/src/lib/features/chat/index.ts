@@ -5,6 +5,7 @@ export { default as AskCard } from './components/ask-card.svelte';
 export { default as Markdown } from './render/markdown.svelte';
 export { chatApi, chatStore, configureChat } from './store.svelte';
 export { Dictation, type DictationState, type Transcribe } from './dictation.svelte';
+export { default as VoiceControl } from './voice-control.svelte';
 export {
 	configureModels,
 	createFixtureModelsApi,

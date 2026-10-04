@@ -62,6 +62,7 @@
 		onmodelquery,
 		dictation = null,
 		ondictate,
+		voice,
 		connection,
 		commandsOffline = false,
 		toast,
@@ -145,6 +146,7 @@
 		/** Speech to text in the composer; null hides the mic. */
 		dictation?: ComponentProps<typeof Composer>['dictation'];
 		ondictate?: () => void;
+		voice?: Snippet;
 		connection?: ConnectionState | 'forbidden';
 		commandsOffline?: boolean;
 		toast?: string | null;
@@ -518,6 +520,7 @@
 				{dictation}
 				{ondictate}
 			/>
+			{@render voice?.()}
 		</div>
 	{/if}
 {/snippet}

@@ -45,6 +45,8 @@ import { SLACK_BEHAVIOR_INSTRUCTIONS } from "./surfaces/slack/prompt.ts";
 import type { App as SlackApp } from "@slack/bolt";
 import { transcribeAudio } from "./agent/transcribe.ts";
 import { createDictationRoutes } from "./surfaces/web/dictationRoutes.ts";
+import { createVoiceRoutes } from "./surfaces/web/voice/routes.ts";
+import { createVoiceAgent } from "./surfaces/web/voice/agent.ts";
 import { startWebGateway } from "./surfaces/web/server.ts";
 import { createWebChat } from "./surfaces/web/chat.ts";
 import { createUploadReadHandler } from "./surfaces/web/uploadRoutes.ts";
@@ -155,6 +157,7 @@ async function main() {
     breakGlass: (nonce) => discordWorkspace.breakGlass(nonce),
     uploads,
   });
+  const webVoice = createVoiceRoutes(process.env, createVoiceAgent(webChat.threads));
   const webServer = await startWebGateway(process.env, db, {
     chat: webChat.routes,
     threads: webChat.threads,
@@ -163,6 +166,7 @@ async function main() {
     reads: { db, link: workspace.link, connectors: workspace.link, memory: workspace.link, workspaceEnabled: config.dmWorkspaceEnabled },
     // Web dictation is always available; VOICE_TRANSCRIPTION only controls Discord voice messages.
     dictation: createDictationRoutes({ transcribe: transcribeAudio }),
+    voice: webVoice,
   });
   const stopWebChat = webServer ? webChat.start() : undefined;
   if (webServer) {
@@ -290,6 +294,7 @@ async function main() {
     client.destroy();
     mcpServer.stop();
     // Open chat streams never end on their own, so a graceful stop would wait out its whole bound.
+    webVoice.close();
     stopWebChat?.();
     // Graceful so in-flight push writes finish before the DB closes, but bounded to stay inside docker's 10s stop grace.
     const webStopped = webServer

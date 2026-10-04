@@ -59,7 +59,12 @@
 		fallback?: string | null;
 		onmodel?: () => void;
 		/** Speech to text: shown when set; the transcript lands in the box. */
-		dictation?: { state: DictationState; seconds: number; error: string | null } | null;
+		dictation?: {
+			state: DictationState;
+			seconds: number;
+			error: string | null;
+			disabled?: boolean;
+		} | null;
 		ondictate?: () => void;
 		/** A muted line under the box, such as the last reply's usage. */
 		status?: Snippet;
@@ -368,7 +373,7 @@
 									: d.state === 'starting'
 										? 'Starting the microphone…'
 										: 'Dictate',
-						disabled: d.state === 'starting' || d.state === 'transcribing',
+						disabled: d.disabled || d.state === 'starting' || d.state === 'transcribing',
 						onclick: () => ondictate?.(),
 						icon: micIcon,
 						tone: d.state === 'recording' ? 'strong' : 'muted'

@@ -93,6 +93,12 @@ interface LiveTurn {
 }
 
 export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle> {
+  private readonly replyListeners = new Set<(reply: ReplyView) => void>();
+  /** Voice waits for its own persisted reply, matched by replyTo, without consuming chat events. */
+  subscribeReply(listener: (reply: ReplyView) => void): () => void {
+    this.replyListeners.add(listener);
+    return () => { this.replyListeners.delete(listener); };
+  }
   readonly surface = WEB_SURFACE;
   readonly capabilities: SurfaceCapabilities;
   private readonly turns = new Map<string, LiveTurn>();
@@ -180,7 +186,12 @@ export class WebWorkspaceAdapter implements SurfaceAdapter<WebInbound, WebHandle
     const data = { key, text, files, ...(turnId ? { turnId } : {}), ...(reply.usage ? { usage: reply.usage } : {}) };
     const anchor = turnId ? this.deps.log.turnAnchor(turnId) : null;
     const { seq, created } = this.deps.log.appendResult(reply.kind, data, key, anchor ?? undefined);
-    if (created) void this.notify(seq, { kind: reply.kind, text });
+    if (created) {
+      void this.notify(seq, { kind: reply.kind, text });
+      for (const listener of this.replyListeners) {
+        try { listener({ ...reply, text }); } catch (err) { log.warn({ err }, "reply listener failed"); }
+      }
+    }
   }
 
   /** A job's message goes to Home's inbox instead of the chat; the agent's own session still has a note of it. */

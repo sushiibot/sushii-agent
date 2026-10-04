@@ -13,6 +13,7 @@
 		chatStore,
 		modelsStore,
 		Dictation,
+		VoiceControl,
 		type ChatSheet,
 		type ChatMessage,
 		type FileRef
@@ -23,6 +24,8 @@
 	const store = chatStore();
 	const threads = threadsStore();
 	const branch = routedSheet('branch');
+	const voiceSheet = routedSheet('voice');
+	let voiceActive = $state(false);
 	let branchFrom = $state<{ id: string; quote: string } | null>(null);
 	let threadTitle = $state('');
 	const s = store;
@@ -155,6 +158,16 @@
 		{turnId}
 	/>{/snippet}
 
+{#snippet voiceControls()}
+	<VoiceControl
+		open={voiceSheet.open}
+		onopen={() => voiceSheet.openWith()}
+		onclose={() => voiceSheet.close()}
+		onstarting={() => dictation.cancel()}
+		onactive={(active) => (voiceActive = active)}
+	/>
+{/snippet}
+
 <ChatScreen
 	title="Sushii"
 	{backgroundActivity}
@@ -182,8 +195,14 @@
 	modelSearchError={models.searchError}
 	onmodelrole={(r) => (modelRole = r)}
 	onmodelquery={(q) => models.setQuery(q)}
-	dictation={{ state: dictation.state, seconds: dictation.seconds, error: dictation.error }}
+	dictation={{
+		state: dictation.state,
+		seconds: dictation.seconds,
+		error: dictation.error,
+		disabled: voiceActive
+	}}
 	ondictate={() => dictation.toggle()}
+	voice={voiceControls}
 	onpickmodel={(alias, role) => void models.pick(alias, role).then((ok) => ok && closeSheet())}
 	{connection}
 	commandsOffline={s.workspace === 'offline'}

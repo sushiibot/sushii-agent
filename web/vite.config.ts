@@ -84,7 +84,7 @@ export default defineConfig(() => {
 			}
 		},
 		server: {
-			proxy: { '/api': 'http://localhost:8790' }
+			proxy: { '/api': { target: 'http://localhost:8790', ws: true } }
 		},
 
 		plugins: [

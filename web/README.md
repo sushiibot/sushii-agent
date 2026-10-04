@@ -29,6 +29,12 @@ icons, and the monochrome notification badge. The maskable icon keeps the charac
 inside the central safe area on a cream background. Generation prompts are saved
 in `brand-src/prompts.json`.
 
+## Live voice
+
+Voice chat is available in the owner web chat and topic conversations.
+It supports Qwen, Gemini, and OpenAI adapters with tool handoff to the existing agent.
+See [Live voice](docs/live-voice.md) for API credentials, costs, lifecycle, and protocol details.
+
 ## MCP connections
 
 Connectors is available automatically in the owner web app.

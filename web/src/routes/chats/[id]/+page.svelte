@@ -7,7 +7,13 @@
 	import { backTo } from '$lib/core/nav/back';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
-	import { modelsStore, type ChatSheet, type FileRef } from '$lib/features/chat';
+	import {
+		modelsStore,
+		Dictation,
+		VoiceControl,
+		type ChatSheet,
+		type FileRef
+	} from '$lib/features/chat';
 	import {
 		ThreadScreen,
 		threadMessages,
@@ -21,6 +27,17 @@
 	const remote = $derived(threads.thread(id));
 	const detail = $derived(remote.data);
 	const store = $derived(detail ? threads.chat(detail) : null);
+	const voiceSheet = routedSheet('voice');
+	let voiceActive = $state(false);
+	const dictation = new Dictation((text) => {
+		if (!store) return;
+		const draft = store.draft.trimEnd();
+		store.setDraft(draft ? `${draft} ${text}` : text);
+	});
+	$effect(() => {
+		id;
+		return () => dictation.cancel();
+	});
 	let viewer = $state<FileRef | undefined>();
 	let now = $state(Date.now());
 
@@ -94,6 +111,17 @@
 		{turnId}
 	/>{/snippet}
 
+{#snippet voiceControls()}
+	<VoiceControl
+		conversation={id}
+		open={voiceSheet.open}
+		onopen={() => voiceSheet.openWith()}
+		onclose={() => voiceSheet.close()}
+		onstarting={() => dictation.cancel()}
+		onactive={(active) => (voiceActive = active)}
+	/>
+{/snippet}
+
 <ThreadScreen
 	{remote}
 	{detail}
@@ -121,6 +149,14 @@
 				draft: store.draft,
 				photos: store.photos,
 				quotaFull: store.quotaFull,
+				dictation: {
+					state: dictation.state,
+					seconds: dictation.seconds,
+					error: dictation.error,
+					disabled: voiceActive
+				},
+				ondictate: () => dictation.toggle(),
+				voice: voiceControls,
 				usage: store.usage,
 				models: models.remote.data ?? null,
 				modelPicking: models.picking,

@@ -196,3 +196,13 @@ export interface ChatTray {
 }
 
 export type DictationState = 'idle' | 'starting' | 'recording' | 'transcribing';
+
+export interface VoiceModel {
+	id: string;
+	name: string;
+	model: string;
+	inputRate: number;
+	audioInputUsd: number;
+	audioOutputUsd: number;
+	configured: boolean;
+}

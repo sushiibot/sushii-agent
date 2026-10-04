@@ -11,6 +11,8 @@ import type { ChatRoutes } from "./chatRoutes.ts";
 import { WEB_FEATURES, type MeResponse } from "./events.ts";
 import type { HomeRoutes } from "./homeRoutes.ts";
 import type { DictationRoutes } from "./dictationRoutes.ts";
+import type { VoiceRoutes } from "./voice/routes.ts";
+import type { VoiceSocketData } from "./voice/session.ts";
 import { createReadRoutes, type ReadRouteDeps, type ReadRoutes } from "./readRoutes.ts";
 import { createPeerMatcher, isLoopback, type PeerMatcher } from "./peers.ts";
 import {
@@ -50,12 +52,13 @@ export interface WebHandlerDeps {
   home?: HomeRoutes;
   /** /api/runs, /api/history and /api/search; absent: they answer 404. */
   reads?: ReadRoutes;
-  /** POST /api/dictation; absent while transcription is off, and /api/me says so. */
+  /** POST /api/dictation; optional in test gateways; always wired in production. */
   dictation?: DictationRoutes;
+  voice?: VoiceRoutes;
 }
 
 /** The slice of Bun's server a route may use: lifting the idle timeout for a stream. */
-export type RequestTimeouts = { timeout(req: Request, seconds: number): void };
+export type RequestTimeouts = { timeout(req: Request, seconds: number): void; upgrade?(req: Request, data: VoiceSocketData): boolean };
 
 export type WebHandler = (req: Request, peerIp: string | null | undefined, server?: RequestTimeouts) => Promise<Response>;
 
@@ -123,6 +126,10 @@ export function createWebHandler(deps: WebHandlerDeps): WebHandler {
     }
     if (dictation) {
       const res = await dictation.handle(req, path, server);
+      if (res) return res;
+    }
+    if (deps.voice) {
+      const res = await deps.voice.handle(req, path, actor, server);
       if (res) return res;
     }
 
@@ -223,9 +230,10 @@ export interface WebServerOptions {
   /** Sources for the live read-only routes. */
   reads?: ReadRouteDeps;
   dictation?: DictationRoutes;
+  voice?: VoiceRoutes;
 }
 
-export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined>> {
+export async function startWebServer(config: WebConfig, db: Database, opts: WebServerOptions = {}): Promise<Server<VoiceSocketData>> {
   let pushStore: PushSubscriptionStore | undefined;
   let pushSender: PushSender | undefined;
   let push = config.push;
@@ -253,17 +261,33 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
     ...(opts.home ? { home: opts.home } : {}),
     ...(opts.reads ? { reads: createReadRoutes(opts.reads) } : {}),
     ...(opts.dictation ? { dictation: opts.dictation } : {}),
+    ...(opts.voice ? { voice: opts.voice } : {}),
   });
   if (config.devLogin && isLoopback(config.bindAddr)) {
     logger.warn({ devLogin: config.devLogin }, "WEB_DEV_LOGIN is active: requests without an identity header are treated as this login");
   }
-  const server = Bun.serve({
+  const server = Bun.serve<VoiceSocketData>({
     port: config.port,
     hostname: config.bindAddr,
     development: false,
     idleTimeout: 30,
     maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
-    fetch: (req, srv) => handler(req, srv.requestIP(req)?.address, srv),
+    async fetch(req, srv) {
+      let upgraded = false;
+      const response = await handler(req, srv.requestIP(req)?.address, {
+        timeout: (request, seconds) => srv.timeout(request, seconds),
+        upgrade: (request, data) => (upgraded = srv.upgrade(request, { data })),
+      });
+      return upgraded ? undefined : response;
+    },
+    websocket: {
+      maxPayloadLength: 32000,
+      backpressureLimit: 256 * 1024,
+      closeOnBackpressureLimit: true,
+      open: (socket) => socket.data.voice.open(socket),
+      message: (socket, message) => socket.data.voice.message(message),
+      close: (socket) => socket.data.voice.close(),
+    },
     error: internalErrorResponse,
   });
   setActivePushSender(pushSender);
@@ -273,7 +297,7 @@ export async function startWebServer(config: WebConfig, db: Database, opts: WebS
 }
 
 /** Never throws, so a bad web config disables only the web surface. */
-export async function startWebGateway(env: Record<string, string | undefined>, db: Database, opts: WebServerOptions = {}): Promise<Server<undefined> | undefined> {
+export async function startWebGateway(env: Record<string, string | undefined>, db: Database, opts: WebServerOptions = {}): Promise<Server<VoiceSocketData> | undefined> {
   let config: WebConfig | undefined;
   try {
     config = parseWebConfig(env);
