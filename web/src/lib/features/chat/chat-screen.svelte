@@ -468,6 +468,7 @@
 {#snippet actions()}
 	{@render headerActions?.()}
 	{#if !readOnly}
+		{@render voice?.()}
 		<Button
 			variant="ghost"
 			class="size-12 px-0"
@@ -520,7 +521,6 @@
 				{dictation}
 				{ondictate}
 			/>
-			{@render voice?.()}
 		</div>
 	{/if}
 {/snippet}

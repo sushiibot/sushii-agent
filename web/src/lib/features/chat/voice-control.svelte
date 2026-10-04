@@ -1,5 +1,7 @@
 <script lang="ts">
-	import Headphones from '@lucide/svelte/icons/headphones';
+	import Phone from '@lucide/svelte/icons/phone';
+	import PhoneCall from '@lucide/svelte/icons/phone-call';
+	import PhoneOff from '@lucide/svelte/icons/phone-off';
 	import { onDestroy } from 'svelte';
 	import { Button } from '$lib/ui/button';
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
@@ -34,20 +36,35 @@
 	onDestroy(() => voice.stop());
 </script>
 
-<div class="flex items-center justify-between gap-2 px-2">
-	<Button variant="ghost" onclick={onopen}>
-		<Headphones class="size-4" aria-hidden="true" />
-		{voice.state === 'idle'
-			? 'Voice chat'
-			: voice.agentWorking
-				? 'Voice · working'
-				: voice.muted
-					? 'Voice · muted'
-					: 'Voice · call active'}
-	</Button>
-	{#if voice.state !== 'idle'}<Button variant="ghost" onclick={() => voice.stop()}>End call</Button
-		>{/if}
-</div>
+<Button
+	variant={voice.state === 'idle' ? 'ghost' : 'secondary'}
+	class="size-12 px-0"
+	aria-label={voice.state === 'idle'
+		? 'Voice chat'
+		: voice.agentWorking
+			? 'Voice chat: Sushii is working'
+			: voice.muted
+				? 'Voice chat: microphone muted'
+				: 'Voice chat: call active'}
+	title={voice.state === 'idle' ? 'Voice chat' : 'Open voice call'}
+	aria-haspopup="dialog"
+	aria-expanded={open}
+	onclick={onopen}
+>
+	{#if voice.state === 'idle'}<Phone class="size-5" aria-hidden="true" />{:else}<PhoneCall
+			class="size-5"
+			aria-hidden="true"
+		/>{/if}
+</Button>
+{#if voice.state !== 'idle'}
+	<Button
+		variant="ghost"
+		class="size-12 px-0"
+		aria-label="End call"
+		title="End call"
+		onclick={() => voice.stop()}><PhoneOff class="size-5" aria-hidden="true" /></Button
+	>
+{/if}
 <RoutedSheet {open} label="Voice chat" {onclose}>
 	<VoicePanel
 		models={voice.models}

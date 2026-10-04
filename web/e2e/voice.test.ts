@@ -32,6 +32,9 @@ test('voice keeps Dictate available and explains missing server credentials', as
 	await withVoice(context, false);
 	await page.goto('/chat');
 	await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
+	await expect(
+		page.getByRole('banner').getByRole('button', { name: 'Voice chat', exact: true })
+	).toBeVisible();
 	await page.getByRole('button', { name: 'Voice chat', exact: true }).click();
 	await expect(
 		page.getByText('Voice needs a provider API key on the server.', { exact: false })
@@ -90,6 +93,8 @@ test('PCM streams in both directions, interruption stops playback, mute and end 
 	await page.getByRole('button', { name: 'Back to chat' }).click();
 	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeHidden();
 	await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled();
+	await expect(page.getByRole('banner').getByRole('button', { name: 'End call' })).toBeVisible();
+	await checkScreen(page);
 	await page.getByRole('button', { name: 'End call' }).click();
 	await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
 	expect(

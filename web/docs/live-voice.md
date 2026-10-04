@@ -1,6 +1,6 @@
 # Live voice
 
-Use **Voice chat** below the message composer in the owner web app.
+Use the **Voice chat** phone button at the top right in the owner web app.
 Choose a configured provider, then select **Start voice chat** and allow microphone access.
 You can interrupt spoken replies. **Back to chat** keeps the call open so you can review approvals.
 **End call**, navigation, a hidden page, or the 15-minute limit ends the call and releases the microphone.
