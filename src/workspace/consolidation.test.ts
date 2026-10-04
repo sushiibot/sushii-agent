@@ -212,6 +212,17 @@ describe("apply", () => {
     expect(second.chunks.map((c) => c.file)).toEqual(["2026-09-28.md", "2026-09-29.md"]);
     expect(first.chunks[0]!.text + second.chunks[0]!.text).toBe(NOTE);
   });
+
+  test("consolidation neither consumes nor rewrites canonical topic documents", async () => {
+    const catalog = "- [Backend](memory/topics/backend.md) — Read when: selecting a backend.\n";
+    const topic = "# Backend\nupdated: 2026-09-29\nverified: unverified\nA decision and its rationale.\n";
+    writeFileSync(join(home, "memory/catalog.md"), catalog);
+    writeFileSync(join(home, "memory/topics/backend.md"), topic);
+    expect(pendingNotes(home, {}, 100_000).chunks.map((c) => c.file)).toEqual(["2026-09-28.md"]);
+    await runConsolidation(deps(reply(USER, GOOD_MEMORY)));
+    expect(read("memory/catalog.md")).toBe(catalog);
+    expect(read("memory/topics/backend.md")).toBe(topic);
+  });
 });
 
 describe("validation failures leave memory untouched and log the proposal", () => {

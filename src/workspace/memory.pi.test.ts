@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_ECONOMY, type WorkspaceConfig } from "./config.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
-import { FLUSH_MARKER, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
+import { FLUSH_MARKER, memoryCatalogSignature, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { PersonalSession, type ChatTransport } from "./personalSession.ts";
 import { compactionTrigger, createPiChatSessionFactory, reloadContext } from "./piChatSession.ts";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
@@ -109,6 +109,7 @@ async function host() {
       reload: reloadContext,
       commit: (m) => commitHome(m, { home: cfg.home, paths: MEMORY_PATHS }),
       signature: () => memoryFilesSignature(cfg.home),
+      contextSignature: () => memoryCatalogSignature(cfg.home),
       handoff: (session, outcome) => writeResetHandoff(cfg.home, session.messages, outcome),
       flushRanThisCycle: sessionFlushRanThisCycle,
     },
@@ -128,6 +129,32 @@ const user = (messageId: string, text: string) => ({
 });
 
 describe("memory upkeep on a real Pi session", () => {
+  test("a topic and catalog survive reset; catalog changes refresh the live orientation", async () => {
+    const { personal, delivered, home } = await host();
+    const topic = "# Backend\nupdated: 2026-10-04\nverified: unverified\nUse the local backend. (src: 2026-10-04)\n";
+    const catalog = "# Catalog\n- [Backend](memory/topics/backend.md) — Backend decision. Read when: choosing a backend.\n";
+    script(
+      { tool: { name: "write", args: { path: "memory/topics/backend.md", content: topic } } },
+      { tool: { name: "edit", args: { path: "memory/catalog.md", edits: [{ oldText: readFileSync(join(home, "memory/catalog.md"), "utf8"), newText: catalog }] } } },
+      { text: "saved" },
+    );
+    await personal.handleMessage(user("topic-1", "Record the backend decision with its rationale."));
+    await until(() => delivered.length === 1);
+    const live = (personal as unknown as { session: AgentSession }).session;
+    await until(() => live.systemPrompt.includes("choosing a backend"));
+    expect(live.systemPrompt).not.toContain("Use the local backend.");
+    await until(() => personal.isIdle());
+    script({ text: "NO_REPLY" });
+    await personal.handleNew();
+    const fresh = (personal as unknown as { session: AgentSession }).session;
+    expect(fresh.systemPrompt).toContain("choosing a backend");
+    expect(fresh.systemPrompt).not.toContain("Use the local backend.");
+    expect(readFileSync(join(home, "memory/topics/backend.md"), "utf8")).toBe(topic);
+    const tracked = (await runnerGit(home).raw(["show", "HEAD:memory/topics/backend.md"]));
+    expect(tracked).toBe(topic);
+    await personal.dispose();
+  }, 20_000);
+
   test("the compaction trigger sits at the configured token count, not near the window's edge", async () => {
     const { session } = await createPiChatSessionFactory(config())({ sessionFile: null });
     expect(compactionTrigger(session)).toBe(DEFAULT_ECONOMY.compactTokens);

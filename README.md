@@ -193,7 +193,11 @@ If the workspace is down, DMs fall back to the in-process loop. Guild, thread, S
 traffic stays in-process.
 
 - **Home** (`/data/home`, git-versioned): `AGENTS.md`, `SOUL.md`, `USER.md`, `MEMORY.md`, `TASKS.md`
-  are loaded into every session; `memory/`, `tasks/<project>.md` and `DREAMS.md` are read on demand.
+  and `memory/catalog.md` are loaded into every chat session. The catalog has a 4000-character cap.
+  Durable decisions and research live in `memory/topics/<slug>.md`, with sources and verification dates.
+  Topic bodies, daily notes, `tasks/<project>.md` and `DREAMS.md` are read on demand.
+  The agent consults relevant notes before substantial work and updates changed guidance before its final reply.
+  Catalog edits refresh the live prompt after a turn settles. Topic files use the existing memory guards and Git commits.
   Unedited template files upgrade themselves on start.
 - **Models:** ChatGPT sign-in first (main, subagents, jobs and the auto-mode judge share one
   backend), OpenRouter when the subscription is out.

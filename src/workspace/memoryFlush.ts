@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionFactory, SessionBeforeCompactEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { redact } from "./secretPatterns.ts";
@@ -20,8 +20,10 @@ const FLUSH_WHY: Record<FlushReason, string> = {
 
 export function flushPrompt(reason: FlushReason): string {
   return (
-    `${FLUSH_MARKER} ${FLUSH_WHY[reason]} Write anything durable from this session to MEMORY.md / USER.md / ` +
-    "today's memory/ log per AGENTS.md. Never save exact coordinates from request_current_location: they are one-time task context, not durable memory. Reply NO_REPLY."
+    `${FLUSH_MARKER} ${FLUSH_WHY[reason]} Save durable facts per AGENTS.md. ` +
+    "Update relevant memory/topics/ documents and memory/catalog.md for decisions, rationale and reusable research. " +
+    "Keep USER.md / MEMORY.md concise; use today's daily note for working history. " +
+    "Never save exact coordinates from request_current_location: they are one-time task context, not durable memory. Reply NO_REPLY."
   );
 }
 
@@ -57,6 +59,15 @@ export function flushMarginTokens(trigger: number): number {
 }
 
 const MEMORY_FILES = ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md"];
+
+/** The small orientation file changes independently of daily logs and topic bodies. */
+export function memoryCatalogSignature(home: string): string {
+  try {
+    return readFileSync(join(home, "memory/catalog.md"), "utf8");
+  } catch {
+    return "";
+  }
+}
 
 /** A cheap fingerprint (name, size, mtime) of the tracked memory files; any write changes it. */
 export function memoryFilesSignature(home: string): string {

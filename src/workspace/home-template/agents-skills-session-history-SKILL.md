@@ -42,6 +42,9 @@ versioned and only the workspace writes it, so don't edit it.
 
 ## Recall from source transcripts
 
+For current guidance, consult matching documents from `memory/catalog.md` first.
+Topic notes route you to decisions and their rationale. Historical claims still require the original exchange.
+
 When an answer depends on an earlier conversation, search before answering from a recap or memory.
 Recaps help locate evidence; the transcript establishes what was actually said.
 

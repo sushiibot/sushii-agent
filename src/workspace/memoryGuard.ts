@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionFactory, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import { MEMORY_MD_CAP, USER_MD_CAP } from "./home.ts";
+import { MEMORY_CATALOG_CAP, MEMORY_MD_CAP, USER_MD_CAP } from "./home.ts";
 import { containsSecret } from "./secretPatterns.ts";
 
 export { containsSecret };
@@ -66,6 +66,7 @@ export function memoryTarget(raw: string, opts: MemoryGuardOptions): MemoryTarge
   for (const [name, cap] of Object.entries(MEMORY_FILES)) {
     if (real === join(home, name)) return { path: real, cap };
   }
+  if (real === join(home, "memory/catalog.md")) return { path: real, cap: MEMORY_CATALOG_CAP };
   if (real.startsWith(`${join(home, "memory")}/`)) return { path: real, cap: undefined };
   return null;
 }

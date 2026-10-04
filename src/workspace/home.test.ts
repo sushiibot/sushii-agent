@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runnerGit } from "../agentRuntime/runnerGit.ts";
 import { loadAgentDefs } from "./subagents/agentDefs.ts";
-import { MEMORY_MD_CAP, MEMORY_PATHS, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
+import { MEMORY_CATALOG_CAP, MEMORY_MD_CAP, MEMORY_PATHS, USER_MD_CAP, capContent, commitHome, homeAgentsFilesOverride, loadHomeContextFiles, readHomeTemplate, scaffoldHome } from "./home.ts";
 import { UPGRADABLE_TEMPLATES, sha256, upgradeHomeTemplates } from "./homeUpgrade.ts";
 import { SHIPPED_TEMPLATE_HASHES } from "./homeTemplateHashes.ts";
 
@@ -42,10 +42,10 @@ describe("scaffoldHome", () => {
   test("creates the layout, git-inits and commits the scaffold", async () => {
     const result = await scaffoldHome(home);
 
-    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks/README.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".agents/skills/documents/SKILL.md", ".gitignore"]) {
+    for (const f of ["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "DREAMS.md", "memory/catalog.md", "TASKS.md", "tasks/README.md", ".agents/skills/README.md", ".agents/skills/session-history/SKILL.md", ".agents/skills/documents/SKILL.md", ".gitignore"]) {
       expect(existsSync(join(home, f))).toBe(true);
     }
-    for (const d of ["memory", "tasks/archive", "projects", "scratch", ".agents/skills"]) expect(existsSync(join(home, d))).toBe(true);
+    for (const d of ["memory/topics", "tasks/archive", "projects", "scratch", ".agents/skills"]) expect(existsSync(join(home, d))).toBe(true);
     expect(result.initialized).toBe(true);
     expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe(readHomeTemplate("AGENTS.md"));
 
@@ -69,6 +69,7 @@ describe("scaffoldHome", () => {
       "SOUL.md",
       "TASKS.md",
       "USER.md",
+      "memory/catalog.md",
       "schedule.md",
       "tasks/README.md",
     ]);
@@ -194,6 +195,17 @@ describe("scaffoldHome", () => {
 });
 
 describe("home context files", () => {
+  test("loads the bounded catalog and leaves topic bodies on disk", async () => {
+    await scaffoldHome(home);
+    const catalog = join(home, "memory/catalog.md");
+    writeFileSync(join(home, "memory/topics/decision.md"), "detail that stays outside orientation");
+    writeFileSync(catalog, "c".repeat(MEMORY_CATALOG_CAP + 10));
+    const files = loadHomeContextFiles(home);
+    expect(files.find((f) => f.path === catalog)!.content).toContain(`[truncated at ${MEMORY_CATALOG_CAP} chars`);
+    expect(files.some((f) => f.content.includes("detail that stays"))).toBe(false);
+    writeFileSync(catalog, "- [Decision](memory/topics/decision.md) — Read when: choosing the backend.\n");
+    expect(loadHomeContextFiles(home).find((f) => f.path === catalog)!.content).toContain("choosing the backend");
+  });
   test("SOUL, USER, MEMORY in order; missing files skipped", async () => {
     writeFileSync(join(home, "MEMORY.md"), "mem");
     writeFileSync(join(home, "SOUL.md"), "soul");
@@ -233,7 +245,7 @@ describe("home context files", () => {
       });
       await loader.reload();
       const files = loader.getAgentsFiles().agentsFiles;
-      expect(files.map((f) => f.path)).toEqual(["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "TASKS.md"].map((f) => join(home, f)));
+      expect(files.map((f) => f.path)).toEqual(["AGENTS.md", "SOUL.md", "USER.md", "MEMORY.md", "memory/catalog.md", "TASKS.md"].map((f) => join(home, f)));
       expect(files[2]!.content).toContain(`[truncated at ${USER_MD_CAP} chars — curate this file]`);
 
       writeFileSync(join(home, "USER.md"), "- fresh fact (src: migrated)\n");
@@ -288,7 +300,7 @@ describe("template upgrade", () => {
   });
 
   test("memory and tasks are never upgradable; no current template is listed as an old one", () => {
-    for (const p of ["USER.md", "MEMORY.md", "DREAMS.md", "TASKS.md", "tasks/README.md"]) expect(Object.keys(UPGRADABLE_TEMPLATES)).not.toContain(p);
+    for (const p of ["USER.md", "MEMORY.md", "DREAMS.md", "memory/catalog.md", "TASKS.md", "tasks/README.md"]) expect(Object.keys(UPGRADABLE_TEMPLATES)).not.toContain(p);
     for (const [homePath, file] of Object.entries(UPGRADABLE_TEMPLATES)) {
       expect(SHIPPED_TEMPLATE_HASHES[file]).toBeDefined();
       expect(SHIPPED_TEMPLATE_HASHES[file]).not.toContain(sha256(readHomeTemplate(homePath)));
@@ -297,6 +309,23 @@ describe("template upgrade", () => {
 });
 
 describe("commitHome", () => {
+  test("an existing home gains topic tracking without overwriting its catalog", async () => {
+    await scaffoldHome(home);
+    const catalog = join(home, "memory/catalog.md");
+    writeFileSync(catalog, "my catalog\n");
+    const ignore = join(home, ".gitignore");
+    writeFileSync(ignore, readFileSync(ignore, "utf8").replace("!/memory/topics/\n/memory/topics/*\n!/memory/topics/*.md\n", ""));
+    await scaffoldHome(home);
+    await scaffoldHome(home);
+    expect(readFileSync(catalog, "utf8")).toBe("my catalog\n");
+    expect(readFileSync(ignore, "utf8").split("\n").filter((l) => l === "!/memory/topics/")).toHaveLength(1);
+    writeFileSync(join(home, "memory/topics/backend.md"), "# Backend\nverified: unverified\n");
+    writeFileSync(join(home, "memory/topics/private.txt"), "not a topic");
+    writeFileSync(join(home, "memory/topics/.env"), "not versioned");
+    expect((await commitHome("memory: topic", { home, paths: MEMORY_PATHS })).committed).toBe(true);
+    const tracked = (await runnerGit(home).raw(["ls-files", "memory/"])).trim().split("\n");
+    expect(tracked).toEqual(["memory/catalog.md", "memory/topics/backend.md"]);
+  });
   test("no-op when nothing tracked changed, even with an empty memory/ dir", async () => {
     await scaffoldHome(home);
     expect(await commitHome("nothing", { home })).toEqual({ committed: false });
@@ -329,7 +358,7 @@ describe("commitHome", () => {
     writeFileSync(join(home, "memory", "b.md"), `${body}\nmore`);
     expect((await commitHome("move", { home })).committed).toBe(true);
     const git = runnerGit(home);
-    expect((await git.raw(["ls-tree", "-r", "--name-only", "HEAD", "memory/"])).trim()).toBe("memory/b.md");
+    expect((await git.raw(["ls-tree", "-r", "--name-only", "HEAD", "memory/"])).trim().split("\n")).toEqual(["memory/b.md", "memory/catalog.md"]);
     expect((await git.raw(["status", "--porcelain"])).trim()).toBe("");
   });
 

@@ -59,3 +59,17 @@ test("large contents are explicitly truncated", async () => {
   expect(detail?.file.truncated).toBe(true);
   expect(detail?.file.content.length).toBe(MEMORY_FILE_MAX);
 });
+
+test("catalog and topic documents are browsable through the existing memory API", async () => {
+  const { home, read } = await setup();
+  await mkdir(join(home, "memory/topics"));
+  await writeFile(join(home, "memory/catalog.md"), "map");
+  await writeFile(join(home, "memory/topics/backend.md"), "# Backend\nverified: unverified\n");
+  const overview = memoryOverview.parse(await read({ principalId: "owner" }));
+  expect(overview.files.map((f) => [f.path, f.about])).toEqual([
+    ["memory/catalog.md", "Map of durable topic notes"],
+    ["memory/topics/backend.md", "Durable decisions and reference notes"],
+  ]);
+  const detail = memoryDetail.parse(await read({ principalId: "owner", id: overview.files[1]!.id }));
+  expect(detail?.file.content).toContain("verified: unverified");
+});

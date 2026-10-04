@@ -17,6 +17,19 @@ afterEach(() => rmSync(home, { recursive: true, force: true }));
 const opts = () => ({ home, cwd: home });
 const edit = (path: string, oldText: string, newText: string) => ({ path, edits: [{ oldText, newText }] });
 
+test("catalog caps and topic protections apply through the memory guard", () => {
+  mkdirSync(join(home, "memory/topics"));
+  writeFileSync(join(home, "memory/catalog.md"), "c".repeat(4000));
+  expect(checkMemoryWrite("edit", edit("memory/catalog.md", "c", "cc"), opts())).toBe("cap:catalog.md:4000:4001");
+  expect(checkMemoryWrite("write", { path: "memory/catalog.md", content: "curated" }, opts())).toBeNull();
+  for (const path of ["memory/catalog.md", "memory/topics/backend.md"]) {
+    expect(checkMemoryWrite("write", { path, content: "ghp_abcdefghijklmnopqrstuvwxyz0123" }, opts())).toBe("secret");
+    expect(checkMemoryWrite("write", { path, content: "safe" }, { ...opts(), readOnly: true })).toBe("read-only");
+  }
+  writeFileSync(join(home, "memory/topics/backend.md"), "ghp_abcdefghijklmnopqrstuvwxyz0123");
+  expect(scanMemoryForSecrets(home)).toContain("memory/topics/backend.md");
+});
+
 describe("containsSecret", () => {
   test("flags tokens, keys and JWTs; passes ordinary notes", () => {
     expect(containsSecret("key sk-abcdefghijklmnopqrstuv")).toBe(true);

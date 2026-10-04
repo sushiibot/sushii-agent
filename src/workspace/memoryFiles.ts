@@ -21,6 +21,8 @@ function describeMemory(path: string): string {
     case "DREAMS.md":
       return "Memory review and consolidation log";
     default:
+      if (path === "memory/catalog.md") return "Map of durable topic notes";
+      if (path.startsWith("memory/topics/")) return "Durable decisions and reference notes";
       return /^memory\/\d{4}-\d{2}-\d{2}\.md$/.test(path) ? "Daily memory notes" : "Saved memory notes";
   }
 }

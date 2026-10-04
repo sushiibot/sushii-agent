@@ -14,7 +14,7 @@ import { commandHandlers } from "./commands.ts";
 import { readModelCosts } from "./modelCosts.ts";
 import { TASK_PATHS, renderTasksCommand, runTaskReview } from "./tasks.ts";
 import { MEMORY_PATHS, commitHome, scaffoldHome } from "./home.ts";
-import { memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
+import { memoryCatalogSignature, memoryFilesSignature, sessionFlushRanThisCycle, writeResetHandoff } from "./memoryFlush.ts";
 import { scanMemoryForSecrets } from "./memoryGuard.ts";
 import { RunLog, recordRotation } from "./runLog.ts";
 import { HistoryWriter, recordHistory } from "./history.ts";
@@ -136,6 +136,7 @@ async function main(): Promise<void> {
         return commitHome(message, { home: config.home, paths: MEMORY_PATHS });
       },
       signature: () => memoryFilesSignature(config.home),
+      contextSignature: () => memoryCatalogSignature(config.home),
       handoff: (session, outcome) => {
         const end = subagents.watch.mainWrite(["memory"]);
         try {

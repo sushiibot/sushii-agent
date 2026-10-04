@@ -23,7 +23,7 @@ export const UPGRADABLE_TEMPLATES: Record<string, string> = {
 
 const TEMPLATE_DIR = join(import.meta.dir, "home-template");
 // Lines the scaffold appends to an existing .gitignore for files added to the template later.
-const APPENDED_ALLOW = /^!\/(?:schedule\.md|TASKS\.md|tasks\/)$/;
+const APPENDED_ALLOW = /^!\/(?:schedule\.md|TASKS\.md|tasks\/|memory\/topics\/|memory\/topics\/\*\.md)$/;
 
 export const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 

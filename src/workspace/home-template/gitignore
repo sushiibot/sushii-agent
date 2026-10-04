@@ -13,6 +13,9 @@
 !/memory/
 /memory/*
 !/memory/*.md
+!/memory/topics/
+/memory/topics/*
+!/memory/topics/*.md
 !/.agents/
 *.env
 .env*

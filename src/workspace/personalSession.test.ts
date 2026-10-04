@@ -1355,6 +1355,22 @@ describe("PersonalSession origin echo", () => {
 });
 
 describe("PersonalSession memory upkeep", () => {
+  test("catalog changes refresh orientation after settle; unchanged catalogs do not reload", async () => {
+    let catalog = "old";
+    const memory = memoryFake({ contextSignature: () => catalog });
+    const { host, sessions } = setup({ memory: memory.hooks });
+    await host.start();
+    await host.handleMessage(msg("catalog-1", "record the decision"));
+    catalog = "new";
+    await tick();
+    expect(memory.calls).not.toContain("reload");
+    sessions[0].finish("saved");
+    await until(() => memory.calls.includes("reload"));
+    await host.handleMessage(msg("catalog-2", "use that decision"));
+    sessions[0].finish("done");
+    await tick();
+    expect(memory.calls.filter((c) => c === "reload")).toHaveLength(1);
+  });
   function memoryFake(over: Partial<MemoryHooks> = {}) {
     const calls: string[] = [];
     let signature = "sig-0";

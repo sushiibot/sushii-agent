@@ -124,6 +124,8 @@ export interface MemoryHooks {
   commit(message: string): Promise<unknown>;
   /** A fingerprint of the memory files, to skip the commit after a turn that changed none. */
   signature(): string;
+  /** Fingerprint of the catalog loaded in the prompt; changes request a reload after the turn settles. */
+  contextSignature?(): string;
   /** Appends the deterministic handoff note for a chat/new whose flush didn't complete. */
   handoff?(session: ChatSession, outcome: FlushOutcome): void;
   /** Whether `session` completed a flush since its last compaction; seeds the once-per-cycle guard on attach. */
@@ -323,6 +325,7 @@ export class PersonalSession {
   // Once per compaction cycle: cleared by a completed compaction or a session swap.
   private flushedThisCycle = false;
   private memorySignature: string | null = null;
+  private memoryContextSignature: string | undefined;
   private turnCommit: Promise<void> = Promise.resolve();
   // Tasks on the serial chain not yet finished.
   private queued = 0;
@@ -395,7 +398,9 @@ export class PersonalSession {
       // Still busy: the next settle or compaction_end schedules it again.
       if (session.isStreaming || session.isCompacting || this.run) return;
       this.reloadDue = false;
+      const signature = this.opts.memory?.contextSignature?.();
       await reload(session);
+      this.memoryContextSignature = signature;
     }).catch((err) => log.warn({ err }, "context reload after consolidation failed"));
   }
 
@@ -922,6 +927,7 @@ export class PersonalSession {
     const memory = this.opts.memory;
     if (!memory) return;
     if (memory.signature() !== this.memorySignature) this.turnCommit = this.commitMemory(`memory: turn ${turnId}`);
+    if (memory.contextSignature && memory.contextSignature() !== this.memoryContextSignature) this.requestContextReload();
     if (this.flushedThisCycle || this.resetting || session.isCompacting) return;
     const usage = session.getContextUsage();
     const trigger = memory.compactionTrigger(session);
@@ -1234,6 +1240,7 @@ export class PersonalSession {
   private attach(session: ChatSession, sessionFile: string): void {
     const gen = ++this.generation;
     this.reloadDue = false;
+    this.memoryContextSignature = this.opts.memory?.contextSignature?.();
     this.flushedThisCycle = this.opts.memory?.flushRanThisCycle?.(session) ?? false;
     this.lastFlushDoneAt = -1;
     this.session = session;

@@ -16,6 +16,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   "SOUL.md": "SOUL.md",
   "USER.md": "USER.md",
   "MEMORY.md": "MEMORY.md",
+  "memory/catalog.md": "memory-catalog.md",
   "DREAMS.md": "DREAMS.md",
   "schedule.md": "schedule.md",
   "TASKS.md": "TASKS.md",
@@ -30,7 +31,7 @@ const TEMPLATE_FILES: Record<string, string> = {
   ".gitignore": "gitignore",
 };
 
-const HOME_DIRS = ["memory", "tasks/archive", ".agents/skills", ".agents/agents", "projects", "scratch"];
+const HOME_DIRS = ["memory/topics", "tasks/archive", ".agents/skills", ".agents/agents", "projects", "scratch"];
 
 /** The only paths the workspace itself ever stages in the home repo. */
 export const HOME_TRACKED_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "TASKS.md", "tasks/", "SOUL.md", "AGENTS.md", "schedule.md", ".agents/"];
@@ -40,12 +41,14 @@ export const MEMORY_PATHS = ["USER.md", "MEMORY.md", "DREAMS.md", "memory/", "TA
 
 export const USER_MD_CAP = 4000;
 export const MEMORY_MD_CAP = 8000;
+export const MEMORY_CATALOG_CAP = 4000;
 
 /** Loaded after Pi's own discovery (which already picks up `~/AGENTS.md`), in this order. */
 const CONTEXT_FILES: { name: string; cap?: number }[] = [
   { name: "SOUL.md" },
   { name: "USER.md", cap: USER_MD_CAP },
   { name: "MEMORY.md", cap: MEMORY_MD_CAP },
+  { name: "memory/catalog.md", cap: MEMORY_CATALOG_CAP },
 ];
 
 const GIT_NAME = "sushii-workspace";
@@ -80,6 +83,8 @@ export async function scaffoldHome(home: string, opts: { templateHashes?: Record
   allowInGitignore(home, "/schedule.md");
   allowInGitignore(home, "/TASKS.md");
   allowInGitignore(home, "/tasks/");
+  allowInGitignore(home, "/memory/topics/");
+  allowInGitignore(home, "/memory/topics/*.md");
 
   // Keyed on HEAD, not .git, so a first run that died between init and the initial commit is finished here.
   const initialized = await serialized(async () => {

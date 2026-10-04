@@ -217,7 +217,8 @@ export const MARKERS = {
 export function buildPrompt(input: { user: string; memory: string; notes: NoteChunk[]; today: string }): string {
   const rules = [
     `USER.md holds facts about drk: preferences, routines, people, standing context. Cap: ${USER_MD_CAP} characters.`,
-    `MEMORY.md holds everything else worth keeping: decisions, ongoing projects, how-tos. Cap: ${MEMORY_MD_CAP} characters. Stay under both caps.`,
+    `MEMORY.md holds brief standing context and pointers to durable topic notes. Cap: ${MEMORY_MD_CAP} characters. Stay under both caps.`,
+    "Preserve links to canonical topic notes. Do not replace those links with detailed copies of their content.",
     "Every entry is one bullet line starting with `- ` and ending in a source tag: `(src: YYYY-MM-DD, <surface>:<id>)`, `(src: YYYY-MM-DD)` or `(src: migrated)`.",
     "Never add a fact that isn't present in the inputs.",
     "Keep every surviving entry's source tag exactly as written. When you merge entries, keep the tag of the most recent one.",
