@@ -1,9 +1,35 @@
 <script lang="ts">
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import X from '@lucide/svelte/icons/x';
+	import { Button } from '$lib/ui/button';
+	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
 	import type { SessionBoundary } from '$lib/core/realtime/events';
 	import Markdown from '../render/markdown.svelte';
 
-	let { boundary, open = false }: { boundary: SessionBoundary; open?: boolean } = $props();
+	let {
+		boundary,
+		open = false,
+		onopen,
+		onclose
+	}: {
+		boundary: SessionBoundary;
+		open?: boolean;
+		onopen?: () => void;
+		onclose?: () => void;
+	} = $props();
+	let localOpen = $state(false);
+	let trigger = $state<HTMLButtonElement | null>(null);
+	const shown = $derived(open || localOpen);
+	function close() {
+		localOpen = false;
+		if (onclose) onclose();
+		else open = false;
+	}
+	function show() {
+		if (onopen) onopen();
+		else localOpen = true;
+	}
 	const label = $derived(
 		{
 			new: boundary.initialContext ? 'Conversation started' : 'Context reset',
@@ -13,20 +39,31 @@
 	);
 </script>
 
-<details {open} class="group/div w-full text-sm" data-context-divider>
-	<summary
-		class="flex min-h-12 cursor-pointer list-none items-center gap-3 rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"
+<button
+	bind:this={trigger}
+	type="button"
+	data-context-divider
+	aria-haspopup="dialog"
+	aria-expanded={shown}
+	onclick={show}
+	class="flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-md text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+>
+	<span class="h-px flex-1 bg-border"></span>
+	<span class="flex items-center gap-1 font-medium">
+		{label}<ChevronRight class="size-3.5 shrink-0" aria-hidden="true" />
+	</span>
+	<span class="h-px flex-1 bg-border"></span>
+</button>
+<RoutedSheet open={shown} {label} returnFocus={trigger} onclose={close}>
+	<div
+		class="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b bg-background px-5 py-2"
 	>
-		<span class="h-px flex-1 bg-border"></span>
-		<span class="flex items-center gap-1 font-medium">
-			{label}<ChevronDown
-				class="size-3.5 shrink-0 transition-transform group-open/div:rotate-180 motion-reduce:transition-none"
-				aria-hidden="true"
-			/>
-		</span>
-		<span class="h-px flex-1 bg-border"></span>
-	</summary>
-	<div class="space-y-6 rounded-lg bg-muted px-4 py-4 [overflow-wrap:anywhere]">
+		<h2 class="font-semibold">{label}</h2>
+		<Button variant="ghost" size="icon" class="size-12" aria-label="Close" onclick={close}>
+			<X aria-hidden="true" />
+		</Button>
+	</div>
+	<div class="space-y-6 px-5 py-5 text-sm [overflow-wrap:anywhere]" data-context-details>
 		<p class="text-muted-foreground">
 			{#if boundary.initialContext}
 				This conversation starts with the topic context below and shared workspace memory.
@@ -123,4 +160,4 @@
 			<p class="text-muted-foreground">A shared-memory snapshot was not recorded for this event.</p>
 		{/if}
 	</div>
-</details>
+</RoutedSheet>

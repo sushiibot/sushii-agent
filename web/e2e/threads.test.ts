@@ -278,3 +278,40 @@ test('refreshing thread metadata preserves an open name draft and archive confir
 	await sheet.getByRole('button', { name: 'Keep current' }).click();
 	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('My unsaved name');
 });
+
+test('thread context details use a sheet that Back closes without leaving the thread', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await context.route('**/api/threads/oct-trip/chat/history*', (route) =>
+		route.fulfill({
+			json: {
+				items: [
+					{
+						type: 'divider',
+						id: 'topic-compaction',
+						at: new Date().toISOString(),
+						kind: 'compacted',
+						summary: 'Keep the October hotel shortlist.',
+						memory: { files: [], truncated: false }
+					}
+				],
+				before: null
+			}
+		})
+	);
+	await page.goto('/chats/oct-trip');
+	const divider = page.getByRole('button', { name: 'Conversation compacted' });
+	await divider.click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation compacted' });
+	await expect(sheet).toContainText('Keep the October hotel shortlist.');
+	await page.goBack();
+	await expect(sheet).toBeHidden();
+	await expect(divider).toBeFocused();
+	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+	await page.goForward();
+	await expect(sheet).toBeVisible();
+	await sheet.getByRole('button', { name: 'Close', exact: true }).click();
+	await expect(sheet).toBeHidden();
+});

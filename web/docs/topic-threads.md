@@ -102,7 +102,7 @@ The separate seven-day archive rule changes thread organization; it does not del
 
 Main and threads show a tappable divider after successful compaction, idle rotation, or context reset.
 A new thread also shows its starting context.
-The expanded divider shows the summary or recap carried forward, changed shared-memory files, and loaded workspace context when recorded.
+The divider opens a detail sheet that shows the summary or recap carried forward, changed shared-memory files, and loaded workspace context when recorded.
 
 The workspace delivers automatic boundaries through its durable outbox.
 The web gateway stores each boundary once, before acknowledgement.
@@ -116,7 +116,10 @@ Large previews show truncation notices.
 
 A reset loads fresh workspace context without the previous conversation's recap.
 That recap remains in history.
-Older dividers with no recorded snapshot remain expandable and explain which details are unavailable.
+The sheet scrolls independently and keeps its Close button visible.
+Closing it returns to the same place in the conversation.
+
+Older dividers with no recorded snapshot remain tappable and explain which details are unavailable.
 
 ## Shared memory
 

@@ -52,7 +52,8 @@
 		commands: routedSheet('commands'),
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
-		model: routedSheet('model')
+		model: routedSheet('model'),
+		'context-boundary': routedSheet('context-boundary')
 	};
 	const models = modelsStore();
 	let modelRole = $state<'main' | 'fallback'>('main');
@@ -130,12 +131,12 @@
 		});
 	});
 
-	function openSheet(next: ChatSheet) {
+	function openSheet(next: ChatSheet, arg?: string) {
 		if (next === 'model') {
 			models.refresh();
 			modelRole = 'main';
 		}
-		sheets[next].openWith();
+		sheets[next].openWith(arg);
 	}
 
 	function closeSheet() {
@@ -225,6 +226,7 @@
 {/snippet}
 
 <ChatScreen
+	contextBoundaryId={sheets['context-boundary'].arg}
 	title="Sushii"
 	{backgroundActivity}
 	{delegatedActivity}

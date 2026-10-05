@@ -9,6 +9,7 @@
 		label,
 		onclose,
 		desktop = true,
+		returnFocus,
 		children
 	}: {
 		open: boolean;
@@ -18,6 +19,8 @@
 		/** Show at desktop widths too, as a centred dialog. Off only for a sheet whose content has
 		 *  a desktop home of its own; such a sheet closes itself there. */
 		desktop?: boolean;
+		/** Restore focus without moving the conversation after this sheet closes. */
+		returnFocus?: HTMLElement | null;
 		children: Snippet;
 	} = $props();
 
@@ -61,6 +64,12 @@
 			data-routed-sheet
 			aria-label={label}
 			onOpenAutoFocus={focusFirst}
+			onCloseAutoFocus={(e) => {
+				if (returnFocus) {
+					e.preventDefault();
+					returnFocus.focus({ preventScroll: true });
+				}
+			}}
 			class={cn(
 				'fixed inset-x-0 bottom-(--kb) z-20 flex max-h-[88%] flex-col overflow-y-auto overscroll-contain rounded-t-3xl bg-background pb-(--safe-bottom) text-foreground shadow-[0_-12px_40px_-12px_rgb(0_0_0/0.4)] outline-none kb:pb-0',
 				'duration-(--duration-medium) ease-(--ease-standard) motion-reduce:animate-none! data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-bottom-10 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-bottom-full',

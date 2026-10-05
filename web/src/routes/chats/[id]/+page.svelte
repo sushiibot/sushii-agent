@@ -86,6 +86,7 @@
 		'new',
 		'viewer',
 		'model',
+		'context-boundary',
 		'thread-memory',
 		'thread-close',
 		'thread-settings'
@@ -240,12 +241,13 @@
 				toast: store.toast,
 				announce: store.announce,
 				viewer,
-				onopensheet: (s) => {
+				contextBoundaryId: sheets['context-boundary'].arg,
+				onopensheet: (s, arg) => {
 					if (s === 'model') {
 						models.refresh();
 						modelRole = 'main';
 					}
-					sheets[s].openWith();
+					sheets[s].openWith(arg);
 				},
 				onclosesheet: closeSheet,
 				onopenfile: (f) => {

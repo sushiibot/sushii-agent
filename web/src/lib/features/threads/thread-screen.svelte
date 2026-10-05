@@ -69,7 +69,7 @@
 	const threadSheet = $derived(
 		sheet === 'thread-memory' || sheet === 'thread-close' ? sheet : undefined
 	);
-	const CHAT_SHEETS: readonly string[] = ['commands', 'new', 'viewer', 'model'];
+	const CHAT_SHEETS: readonly string[] = ['commands', 'new', 'viewer', 'model', 'context-boundary'];
 	const chatSheet = $derived(
 		sheet && CHAT_SHEETS.includes(sheet) ? (sheet as ChatProps['sheet']) : undefined
 	);

@@ -37,6 +37,9 @@
 		after,
 		openTurn,
 		openStep,
+		contextBoundaryId,
+		onopenboundary,
+		oncloseboundary,
 		focusAsk,
 		onopenfile,
 		onretrysend,
@@ -61,6 +64,9 @@
 		/** Message id whose working row or divider starts expanded. */
 		openTurn?: string;
 		openStep?: string;
+		contextBoundaryId?: string;
+		onopenboundary?: (messageId: string) => void;
+		oncloseboundary?: () => void;
 		focusAsk?: string;
 		onopenfile?: (file: FileRef) => void;
 		onretrysend?: (messageId: string) => void;
@@ -240,7 +246,12 @@
 					{:else if part.type === 'data-files'}
 						<FilesBlock files={part.data.files} dropped={part.data.dropped} onopen={onopenfile} />
 					{:else if part.type === 'data-divider'}
-						<ContextDivider boundary={part.data} open={openTurn === message.id} />
+						<ContextDivider
+							boundary={part.data}
+							open={contextBoundaryId === message.id || openTurn === message.id}
+							onopen={onopenboundary ? () => onopenboundary?.(message.id) : undefined}
+							onclose={oncloseboundary}
+						/>
 					{:else if part.type === 'data-history-gap'}
 						<p
 							class="flex w-full items-center justify-between gap-3 rounded-lg border border-dashed py-1 pr-1 pl-3 text-sm text-muted-foreground"

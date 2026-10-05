@@ -2129,6 +2129,7 @@ for (const width of [390, 1280]) {
 		await page.setViewportSize({ width, height: 915 });
 		const { opts } = await chatServer(context, {
 			history: [
+				...longHistory(30),
 				{
 					type: 'divider',
 					id: 'reset',
@@ -2169,43 +2170,80 @@ for (const width of [390, 1280]) {
 		const continued = page
 			.locator('[data-context-divider]')
 			.filter({ hasText: 'Conversation continued' });
-		await continued.locator(':scope > summary').click();
-		await expect(continued.getByText('Book the Osaka hotel.')).toBeVisible();
-		await continued.locator('summary').filter({ hasText: 'memory/travel.md' }).click();
-		await expect(continued.getByText('Stay near the station.')).toBeVisible();
-		await continued.locator('summary').filter({ hasText: 'MEMORY.md' }).click();
-		await expect(continued.getByText('Osaka trip planned.')).toBeVisible();
-		await continued.locator(':scope > summary').click();
+		await continued.click();
+		const dialog = page.getByRole('dialog');
+		const timeline = page.locator('main');
+		const timelineBefore = await timeline.evaluate((el) => ({
+			top: el.scrollTop,
+			height: el.scrollHeight
+		}));
+		await expect(dialog.getByText('Book the Osaka hotel.')).toBeVisible();
+		await dialog.locator('summary').filter({ hasText: 'memory/travel.md' }).click();
+		await expect(dialog.getByText('Stay near the station.')).toBeVisible();
+		await dialog.locator('summary').filter({ hasText: 'MEMORY.md' }).click();
+		await expect(dialog.getByText('Osaka trip planned.')).toBeVisible();
+		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+		await expect(dialog).not.toBeVisible();
+		await expect(continued).toBeFocused();
+		expect(
+			await timeline.evaluate((el) => ({ top: el.scrollTop, height: el.scrollHeight }))
+		).toEqual(timelineBefore);
 		const reset = page.locator('[data-context-divider]').filter({ hasText: 'Context reset' });
-		await reset.locator(':scope > summary').focus();
+		await reset.focus();
 		await page.keyboard.press('Enter');
-		await expect(reset.getByText('No shared-memory files changed', { exact: false })).toBeVisible();
 		await expect(
-			reset.getByText('Its previous recap stays in history.', { exact: false })
+			dialog.getByText('No shared-memory files changed', { exact: false })
 		).toBeVisible();
-		await reset.locator(':scope > summary').click();
+		await expect(
+			dialog.getByText('Its previous recap stays in history.', { exact: false })
+		).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(dialog).not.toBeVisible();
+		await expect(reset).toBeFocused();
 		const old = page
 			.locator('[data-context-divider]')
 			.filter({ hasText: 'Conversation compacted' });
-		await old.locator(':scope > summary').click();
-		await expect(old.getByText('Details were not recorded for this event.')).toBeVisible();
-		await old.locator(':scope > summary').click();
+		await old.click();
+		await expect(dialog.getByText('Details were not recorded for this event.')).toBeVisible();
+		await page.goBack();
+		await expect(dialog).not.toBeVisible();
+		await expect(old).toBeFocused();
 		const boundary = {
 			kind: 'compacted' as const,
-			summary: '## Decisions\nKeep the station-area hotel.',
+			summary:
+				'## Decisions\nKeep the station-area hotel.\n\n' +
+				'Long recap paragraph with enough detail to scroll independently.\n\n'.repeat(100),
 			memory: { files: [], truncated: false }
 		};
 		await push(page, 'session', boundary, 1);
 		await expect(page.locator('[data-context-divider]')).toHaveCount(4);
 		const live = page.locator('[data-context-divider]').last();
-		await live.locator(':scope > summary').click();
-		await expect(live.getByText('Keep the station-area hotel.')).toBeVisible();
+		await live.click();
+		const beforeLong = await timeline.evaluate((el) => ({
+			top: el.scrollTop,
+			height: el.scrollHeight
+		}));
+		await expect(dialog.getByText('Keep the station-area hotel.')).toBeVisible();
+		await dialog.evaluate((el) => {
+			el.scrollTop = el.scrollHeight;
+		});
+		await expect.poll(() => dialog.evaluate((el) => el.scrollTop)).toBeGreaterThan(500);
+		const close = dialog.getByRole('button', { name: 'Close', exact: true });
+		const box = await close.boundingBox();
+		expect(box!.y).toBeGreaterThanOrEqual(0);
+		expect(box!.y + box!.height).toBeLessThan(915);
+		await close.click();
+		await expect(dialog).not.toBeVisible();
+		await expect(live).toBeFocused();
+		expect(
+			await timeline.evaluate((el) => ({ top: el.scrollTop, height: el.scrollHeight }))
+		).toEqual(beforeLong);
 		expect(await horizontalOverflow(page)).toEqual([]);
 		opts.history.push({ type: 'divider', id: 'live', at: '2026-10-04T12:03:00Z', ...boundary });
 		await page.reload();
 		const replay = page.locator('[data-context-divider]').last();
-		await replay.locator(':scope > summary').click();
-		await expect(replay.getByText('Keep the station-area hotel.')).toBeVisible();
+		await replay.click();
+		await expect(dialog.getByText('Keep the station-area hotel.')).toBeVisible();
 		await expect(page.locator('[data-context-divider]')).toHaveCount(4);
 	});
 }

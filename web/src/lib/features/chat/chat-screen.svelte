@@ -75,6 +75,7 @@
 		announce = '',
 		focusAsk,
 		sheet,
+		contextBoundaryId,
 		viewer,
 		newMessages: initialNewMessages = false,
 		openTurn,
@@ -164,6 +165,7 @@
 		announce?: string;
 		focusAsk?: string;
 		sheet?: ChatSheet;
+		contextBoundaryId?: string;
 		viewer?: FileRef;
 		/** Start with the pill shown, as if the reader had scrolled up while something arrived. */
 		newMessages?: boolean;
@@ -383,7 +385,8 @@
 		commands: 'Chat commands',
 		new: 'Reset conversation context',
 		viewer: 'Image',
-		model: 'Model and context'
+		model: 'Model and context',
+		'context-boundary': 'Conversation context'
 	};
 </script>
 
@@ -598,6 +601,9 @@
 				{focusAsk}
 				{openTurn}
 				{openStep}
+				contextBoundaryId={sheet === 'context-boundary' ? contextBoundaryId : undefined}
+				onopenboundary={onopensheet ? (id) => onopensheet?.('context-boundary', id) : undefined}
+				oncloseboundary={onclosesheet}
 				onopenfile={(f) => onopenfile?.(f)}
 				onretrysend={(id) => onretrysend?.(id)}
 				onsteersend={(id) => onsteersend?.(id)}
@@ -623,6 +629,8 @@
 	<p role="status" class="sr-only">{copyNote}</p>
 </Screen>
 
-<RoutedSheet open={!!sheet} label={shownSheet ? sheetLabels[shownSheet] : ''} onclose={closeSheet}
-	>{@render sheetBody()}</RoutedSheet
+<RoutedSheet
+	open={!!sheet && sheet !== 'context-boundary'}
+	label={shownSheet ? sheetLabels[shownSheet] : ''}
+	onclose={closeSheet}>{@render sheetBody()}</RoutedSheet
 >
