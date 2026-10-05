@@ -61,15 +61,15 @@
 		chat.
 	</p>
 	<div class="flex flex-col gap-2">
-		<label for="voice-provider" class="text-sm font-medium">Voice provider</label>
+		<label for="voice-provider" class="text-sm font-medium">Voice model</label>
 		<select
 			id="voice-provider"
-			class="h-12 w-full rounded-lg border bg-background px-3 text-sm"
+			class="h-12 w-full rounded-lg border bg-background px-3 text-base"
 			value={provider}
 			disabled={active || loading}
 			onchange={(event) => onprovider(event.currentTarget.value)}
 		>
-			{#if !provider}<option value="">Choose a configured provider</option>{/if}
+			{#if !provider}<option value="">Choose a configured model</option>{/if}
 			{#each models as model}
 				<option value={model.id} disabled={!model.configured}
 					>{model.name}{model.configured ? '' : ' (not configured)'}</option
@@ -77,15 +77,14 @@
 			{/each}
 		</select>
 		{#if selected}
+			<p class="text-sm text-muted-foreground">{selected.description}</p>
 			<p class="text-xs text-muted-foreground">
 				Audio: ${selected.audioInputUsd} input / ${selected.audioOutputUsd} output per million tokens.
 				Text, transcription and agent usage may add costs.
 			</p>
 		{/if}
 	</div>
-	{#if loading}<p role="status" class="text-sm text-muted-foreground">
-			Loading voice providers…
-		</p>{/if}
+	{#if loading}<p role="status" class="text-sm text-muted-foreground">Loading voice models…</p>{/if}
 	{#if !loading && !models.some((m) => m.configured)}
 		<p class="text-sm text-muted-foreground">
 			Voice needs a provider API key on the server. Dictation is still available in the composer.

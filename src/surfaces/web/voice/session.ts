@@ -1,7 +1,9 @@
 import type { ServerWebSocket } from "bun";
 import type { SurfaceActor } from "../../../orchestration/workspace/surface.ts";
 import { adapterFor, type VoiceConfig, type VoiceEvent } from "./providers.ts";
-export type VoiceSocketData = { voice: VoiceSession } | { browser: import("../browserRoutes.ts").BrowserRelay };
+export type VoiceSocketData =
+  | { voice: VoiceSession }
+  | { browser: import("../browserRoutes.ts").BrowserRelay };
 export type AskAgent = (
   request: string,
   actor: SurfaceActor,
@@ -207,7 +209,7 @@ export class VoiceSession {
   private queueToolResult(messages: unknown[]) {
     const first = messages[0];
     this.send(first);
-    if (this.config.id === "gemini") this.responseActive = true;
+    if (this.config.provider === "gemini") this.responseActive = true;
     if (messages.length > 1) {
       this.pending.push(messages.slice(1));
       this.flush();

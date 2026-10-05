@@ -25,7 +25,9 @@ function harness() {
   let calls = 0;
   let ended = false;
   const session = new VoiceSession(
-    voiceConfigs({ OPENAI_REALTIME_API_KEY: "test" })[2]!,
+    voiceConfigs({ OPENAI_REALTIME_API_KEY: "test" }).find(
+      (c) => c.id === "openai",
+    )!,
     mintWebActor("owner@example.com"),
     "main",
     async () => {

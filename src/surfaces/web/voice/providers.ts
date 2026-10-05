@@ -1,8 +1,10 @@
 /** Provider-specific protocols stay here; the browser only speaks our PCM/event protocol. */
 export type VoiceProvider = "qwen" | "gemini" | "openai";
 export interface VoiceModel {
-  id: VoiceProvider;
+  id: string;
+  provider: VoiceProvider;
   name: string;
+  description: string;
   model: string;
   inputRate: number;
   audioInputUsd: number;
@@ -23,22 +25,83 @@ export function voiceConfigs(
   const region = env.DASHSCOPE_REGION ?? "ap-southeast-1";
   if (!["ap-southeast-1", "cn-beijing"].includes(region))
     throw new Error("Invalid DASHSCOPE_REGION");
-  return [
+  const qwenModels = [
     {
+      // Preserve the original selection ID and default.
       id: "qwen",
-      name: "Qwen Omni Flash",
+      name: "Qwen Omni 3.8 Flash Realtime",
       model: "qwen3.8-omni-flash-realtime",
-      inputRate: 16000,
+      description:
+        "Multimodal realtime model. This app uses microphone audio only.",
       audioInputUsd: region === "cn-beijing" ? 0.848 : 0.93,
       audioOutputUsd: region === "cn-beijing" ? 1.696 : 1.87,
-      key: env.DASHSCOPE_API_KEY ?? "",
-      configured: !!env.DASHSCOPE_API_KEY && !!workspace,
-      url: `wss://${workspace}.${region}.maas.aliyuncs.com/api-ws/v1/realtime`,
       voice: env.QWEN_VOICE ?? "Tina",
     },
     {
+      id: "qwen-omni-3.5-flash",
+      name: "Qwen Omni 3.5 Flash Realtime",
+      model: "qwen3.5-omni-flash-realtime",
+      description:
+        "Multimodal realtime model. This app uses microphone audio only.",
+      audioInputUsd: region === "cn-beijing" ? 3.71 : 4.5,
+      audioOutputUsd: region === "cn-beijing" ? 14.71 : 17.7,
+      voice: env.QWEN_OMNI_35_VOICE ?? "Ethan",
+    },
+    {
+      id: "qwen-omni-3.5-plus",
+      name: "Qwen Omni 3.5 Plus Realtime",
+      model: "qwen3.5-omni-plus-realtime",
+      description:
+        "Multimodal realtime model. This app uses microphone audio only.",
+      audioInputUsd: region === "cn-beijing" ? 11 : 16.5,
+      audioOutputUsd: region === "cn-beijing" ? 41.26 : 62,
+      voice: env.QWEN_OMNI_35_VOICE ?? "Ethan",
+    },
+    {
+      id: "qwen-audio-3.1-plus",
+      name: "Qwen Audio 3.1 Plus Realtime",
+      model: "qwen-audio-3.1-realtime-plus",
+      description:
+        "Dedicated full-duplex speech model. Accepts audio and text.",
+      audioInputUsd: region === "cn-beijing" ? 5.501 : 6.4,
+      audioOutputUsd: region === "cn-beijing" ? 20.628 : 24,
+      voice: env.QWEN_AUDIO_31_VOICE ?? "longanqian_v3.1",
+    },
+    {
+      id: "qwen-audio-3.0-plus",
+      name: "Qwen Audio 3.0 Plus Realtime",
+      model: "qwen-audio-3.0-realtime-plus",
+      description:
+        "Dedicated full-duplex speech model. Accepts audio and text.",
+      audioInputUsd: region === "cn-beijing" ? 5.501 : 6.4,
+      audioOutputUsd: region === "cn-beijing" ? 20.628 : 24,
+      voice: env.QWEN_AUDIO_30_VOICE ?? "longanqian",
+    },
+    {
+      id: "qwen-audio-3.0-flash",
+      name: "Qwen Audio 3.0 Flash Realtime",
+      model: "qwen-audio-3.0-realtime-flash",
+      description:
+        "Dedicated full-duplex speech model focused on response speed. Accepts audio and text.",
+      audioInputUsd: region === "cn-beijing" ? 0.848 : 0.93,
+      audioOutputUsd: region === "cn-beijing" ? 1.696 : 1.87,
+      voice: env.QWEN_AUDIO_30_VOICE ?? "longanqian",
+    },
+  ];
+  return [
+    ...qwenModels.map((model): VoiceConfig => ({
+      ...model,
+      provider: "qwen",
+      inputRate: 16000,
+      key: env.DASHSCOPE_API_KEY ?? "",
+      configured: !!env.DASHSCOPE_API_KEY && !!workspace,
+      url: `wss://${workspace}.${region}.maas.aliyuncs.com/api-ws/v1/realtime`,
+    })),
+    {
       id: "gemini",
-      name: "Gemini Live",
+      provider: "gemini",
+      name: "Gemini 3.8 Live",
+      description: "Realtime voice model. This app uses microphone audio only.",
       model: "gemini-3.8-live",
       inputRate: 16000,
       audioInputUsd: 3,
@@ -50,7 +113,9 @@ export function voiceConfigs(
     },
     {
       id: "openai",
-      name: "OpenAI Realtime Mini",
+      provider: "openai",
+      name: "OpenAI Realtime 2.1 Mini",
+      description: "Realtime voice model. This app uses microphone audio only.",
       model: "gpt-realtime-2.1-mini",
       inputRate: 24000,
       audioInputUsd: 10,
@@ -110,7 +175,7 @@ export interface VoiceAdapter {
   events(message: Json): VoiceEvent[];
 }
 export function adapterFor(c: VoiceConfig): VoiceAdapter {
-  if (c.id === "gemini")
+  if (c.provider === "gemini")
     return {
       url: `${c.url}?key=${encodeURIComponent(c.key)}`,
       headers: {},
@@ -230,7 +295,9 @@ export function adapterFor(c: VoiceConfig): VoiceAdapter {
         return out;
       },
     };
-  const openai = c.id === "openai";
+  const openai = c.provider === "openai";
+  const qwenAudio = c.model.startsWith("qwen-audio-");
+  const qwenLegacyOmni = c.model.startsWith("qwen3.5-omni-");
   return {
     url: `${c.url}?model=${encodeURIComponent(c.model)}`,
     headers: { Authorization: `Bearer ${c.key}` },
@@ -260,33 +327,60 @@ export function adapterFor(c: VoiceConfig): VoiceAdapter {
             },
             tools: [{ type: "function", ...tool }],
           }
-        : {
-            modalities: ["text", "audio"],
-            instructions,
-            input_audio_transcription: { model: "qwen3-asr-flash-realtime" },
-            audio: {
-              input: {
-                format: {
-                  type: "pcm",
-                  sample_rate: 16000,
-                  sample_format: "s16le",
-                  channels: 1,
-                  packing: "interleaved",
-                  channel_layout: "mono",
-                },
-              },
-              output: {
+        : qwenAudio
+          ? {
+              modalities: ["text", "audio"],
+              instructions,
+              voice: c.voice,
+              turn_detection: { type: "smart_turn" },
+              tools: [{ type: "function", function: tool }],
+            }
+          : qwenLegacyOmni
+            ? {
+                modalities: ["text", "audio"],
+                instructions,
                 voice: c.voice,
-                format: { type: "pcm", sample_rate: 24000 },
+                input_audio_format: "pcm",
+                output_audio_format: "pcm",
+                input_audio_transcription: {
+                  model: "qwen3-asr-flash-realtime",
+                },
+                turn_detection: {
+                  type: "semantic_vad",
+                  threshold: 0.5,
+                  silence_duration_ms: 650,
+                },
+                tools: [{ type: "function", function: tool }],
+              }
+            : {
+                modalities: ["text", "audio"],
+                instructions,
+                input_audio_transcription: {
+                  model: "qwen3-asr-flash-realtime",
+                },
+                audio: {
+                  input: {
+                    format: {
+                      type: "pcm",
+                      sample_rate: 16000,
+                      sample_format: "s16le",
+                      channels: 1,
+                      packing: "interleaved",
+                      channel_layout: "mono",
+                    },
+                  },
+                  output: {
+                    voice: c.voice,
+                    format: { type: "pcm", sample_rate: 24000 },
+                  },
+                },
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  silence_duration_ms: 650,
+                },
+                tools: [{ type: "function", function: tool }],
               },
-            },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.5,
-              silence_duration_ms: 650,
-            },
-            tools: [{ type: "function", ...tool }],
-          },
     }),
     audio: (audio) => ({ type: "input_audio_buffer.append", audio }),
     toolResult: (call_id, output) => [
@@ -369,6 +463,17 @@ export function adapterFor(c: VoiceConfig): VoiceAdapter {
               final: true,
               replace: true,
               itemId: m.item_id,
+            },
+          ];
+        case "response.audio_transcript.done":
+        case "response.output_audio_transcript.done":
+          return [
+            {
+              type: "transcript",
+              role: "assistant",
+              text: m.transcript ?? "",
+              final: true,
+              replace: true,
             },
           ];
         case "response.audio_transcript.delta":

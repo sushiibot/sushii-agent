@@ -6,9 +6,18 @@ const configs = voiceConfigs({
   GEMINI_API_KEY: "g-secret",
   OPENAI_REALTIME_API_KEY: "o-secret",
 });
-test("catalog defaults to cheapest configured model and never exposes credentials", () => {
+test("catalog preserves its default selection and never exposes credentials", () => {
   const models = publicModels(configs);
-  expect(models.map((m) => m.id)).toEqual(["qwen", "gemini", "openai"]);
+  expect(models.map((m) => m.id)).toEqual([
+    "qwen",
+    "qwen-omni-3.5-flash",
+    "qwen-omni-3.5-plus",
+    "qwen-audio-3.1-plus",
+    "qwen-audio-3.0-plus",
+    "qwen-audio-3.0-flash",
+    "gemini",
+    "openai",
+  ]);
   expect(models.every((m) => m.configured)).toBe(true);
   expect(JSON.stringify(models)).not.toContain("secret");
   expect(voiceConfigs({})[0]!.configured).toBe(false);
@@ -23,7 +32,7 @@ test("Qwen 3.8 uses its workspace endpoint, nested PCM format and function calls
   const setup = a.setup() as any;
   expect(setup.session.audio.input.format.sample_rate).toBe(16000);
   expect(setup.session.audio.output.format.sample_rate).toBe(24000);
-  expect(setup.session.tools[0].name).toBe("ask_sushii");
+  expect(setup.session.tools[0].function.name).toBe("ask_sushii");
   expect(
     a.events({
       type: "response.function_call_arguments.done",
@@ -44,7 +53,7 @@ test("Qwen 3.8 uses its workspace endpoint, nested PCM format and function calls
   ]);
 });
 test("OpenAI uses the GA protocol and normalizes audio, transcripts and tools", () => {
-  const a = adapterFor(configs[2]!);
+  const a = adapterFor(configs.find((c) => c.id === "openai")!);
   const setup = a.setup() as any;
   expect(setup.session.type).toBe("realtime");
   expect(setup.session.output_modalities).toEqual(["audio"]);
@@ -71,7 +80,7 @@ test("OpenAI uses the GA protocol and normalizes audio, transcripts and tools", 
   ]);
 });
 test("Gemini Live maps setup, PCM, transcription, interruptions and automatic tool continuation", () => {
-  const a = adapterFor(configs[1]!);
+  const a = adapterFor(configs.find((c) => c.id === "gemini")!);
   const setup = a.setup() as any;
   expect(setup.setup.model).toBe("models/gemini-3.8-live");
   expect(setup.setup.tools[0].functionDeclarations[0].parameters.type).toBe(
@@ -114,7 +123,7 @@ test("Gemini Live maps setup, PCM, transcription, interruptions and automatic to
   ).toEqual([{ type: "interrupted" }]);
 });
 test("input transcript deltas, revised snapshots and final text preserve their semantics", () => {
-  for (const config of [configs[0]!, configs[2]!]) {
+  for (const config of [configs[0]!, configs.find((c) => c.id === "openai")!]) {
     const adapter = adapterFor(config);
     expect(
       adapter.events({
@@ -165,7 +174,7 @@ test("input transcript deltas, revised snapshots and final text preserve their s
       },
     ]);
   }
-  const gemini = adapterFor(configs[1]!);
+  const gemini = adapterFor(configs.find((c) => c.id === "gemini")!);
   expect(
     gemini.events({
       serverContent: {
@@ -219,6 +228,107 @@ test("Qwen text and stash form one revised snapshot rather than an appended delt
         replace: true,
         interim: true,
         itemId: "u",
+      },
+    ]);
+  }
+});
+
+test("every Qwen selection uses matching session fields and supports tool handoff", () => {
+  const qwen = configs.filter((c) => c.provider === "qwen");
+  expect(qwen).toHaveLength(6);
+  expect(new Set(configs.map((c) => c.id)).size).toBe(configs.length);
+  for (const config of qwen) {
+    const adapter = adapterFor(config);
+    expect(new URL(adapter.url).searchParams.get("model")).toBe(config.model);
+    const session = (adapter.setup() as any).session;
+    if (config.model.startsWith("qwen-audio-")) {
+      expect(session.voice).toBe(config.voice);
+      expect(session.turn_detection).toEqual({ type: "smart_turn" });
+      expect(session.tools[0].function.name).toBe("ask_sushii");
+      expect(session.audio).toBeUndefined();
+    } else if (config.model.startsWith("qwen3.5-")) {
+      expect(session.voice).toBe("Ethan");
+      expect(session.input_audio_format).toBe("pcm");
+      expect(session.turn_detection.type).toBe("semantic_vad");
+      expect(session.tools[0].function.name).toBe("ask_sushii");
+      expect(session.audio).toBeUndefined();
+    } else {
+      expect(session.audio.output.voice).toBe("Tina");
+      expect(session.tools[0].function.name).toBe("ask_sushii");
+    }
+    expect(adapter.toolResult("call", "done")[1]).toEqual({
+      type: "response.create",
+    });
+    expect(
+      adapter.events({ type: "input_audio_buffer.speech_started" }),
+    ).toEqual([{ type: "interrupted" }]);
+    expect(
+      adapter.events({
+        type: "response.function_call_arguments.done",
+        call_id: "call",
+        name: "ask_sushii",
+        arguments: '{"request":"help"}',
+      }),
+    ).toEqual([
+      {
+        type: "tool",
+        id: "call",
+        name: "ask_sushii",
+        args: { request: "help" },
+      },
+    ]);
+  }
+});
+test("Qwen models share credentials but use separate voice settings and regional prices", () => {
+  const beijing = voiceConfigs({
+    DASHSCOPE_REGION: "cn-beijing",
+    DASHSCOPE_API_KEY: "key",
+    DASHSCOPE_WORKSPACE_ID: "workspace",
+    QWEN_VOICE: "Tina",
+    QWEN_OMNI_35_VOICE: "Ethan",
+    QWEN_AUDIO_31_VOICE: "beth_v3.1",
+    QWEN_AUDIO_30_VOICE: "longanlingxin",
+  }).filter((c) => c.provider === "qwen");
+  expect(
+    beijing.every((c) => c.configured && c.url.includes("cn-beijing")),
+  ).toBe(true);
+  expect(beijing.map((c) => [c.audioInputUsd, c.audioOutputUsd])).toEqual([
+    [0.848, 1.696],
+    [3.71, 14.71],
+    [11, 41.26],
+    [5.501, 20.628],
+    [5.501, 20.628],
+    [0.848, 1.696],
+  ]);
+  expect(beijing.map((c) => c.voice)).toEqual([
+    "Tina",
+    "Ethan",
+    "Ethan",
+    "beth_v3.1",
+    "longanlingxin",
+    "longanlingxin",
+  ]);
+  expect(
+    voiceConfigs({})
+      .filter((c) => c.provider === "qwen")
+      .every((c) => !c.configured),
+  ).toBe(true);
+});
+
+test("completed assistant transcripts replace streamed text, including done-only speech responses", () => {
+  for (const config of configs.filter((c) => c.provider !== "gemini")) {
+    expect(
+      adapterFor(config).events({
+        type: "response.audio_transcript.done",
+        transcript: "I will check.",
+      }),
+    ).toEqual([
+      {
+        type: "transcript",
+        role: "assistant",
+        text: "I will check.",
+        final: true,
+        replace: true,
       },
     ]);
   }

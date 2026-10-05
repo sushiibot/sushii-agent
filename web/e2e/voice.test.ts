@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
-import { checkScreen, fixtureApp } from './helpers';
+import { axe, checkScreen, fixtureApp } from './helpers';
 test.use({
 	launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] },
 	permissions: ['microphone']
@@ -12,13 +12,64 @@ async function withVoice(context: BrowserContext, configured = true) {
 				models: [
 					{
 						id: 'qwen',
-						name: 'Qwen Omni Flash',
+						name: 'Qwen Omni 3.8 Flash Realtime',
+						provider: 'qwen',
+						description: 'Multimodal realtime model. This app uses microphone audio only.',
 						model: 'qwen3.8-omni-flash-realtime',
 						inputRate: 16000,
 						audioInputUsd: 0.93,
 						audioOutputUsd: 1.87,
 						configured
-					}
+					},
+					...[
+						[
+							'qwen-omni-3.5-flash',
+							'Qwen Omni 3.5 Flash Realtime',
+							'qwen3.5-omni-flash-realtime',
+							4.5,
+							17.7
+						],
+						[
+							'qwen-omni-3.5-plus',
+							'Qwen Omni 3.5 Plus Realtime',
+							'qwen3.5-omni-plus-realtime',
+							16.5,
+							62
+						],
+						[
+							'qwen-audio-3.1-plus',
+							'Qwen Audio 3.1 Plus Realtime',
+							'qwen-audio-3.1-realtime-plus',
+							6.4,
+							24
+						],
+						[
+							'qwen-audio-3.0-plus',
+							'Qwen Audio 3.0 Plus Realtime',
+							'qwen-audio-3.0-realtime-plus',
+							6.4,
+							24
+						],
+						[
+							'qwen-audio-3.0-flash',
+							'Qwen Audio 3.0 Flash Realtime',
+							'qwen-audio-3.0-realtime-flash',
+							0.93,
+							1.87
+						]
+					].map(([id, name, model, audioInputUsd, audioOutputUsd]) => ({
+						id,
+						name,
+						model,
+						audioInputUsd,
+						audioOutputUsd,
+						configured,
+						provider: 'qwen',
+						inputRate: 16000,
+						description: String(id).startsWith('qwen-audio-')
+							? 'Dedicated full-duplex speech model. Accepts audio and text.'
+							: 'Multimodal realtime model. This app uses microphone audio only.'
+					}))
 				],
 				defaultProvider: configured ? 'qwen' : null
 			}
@@ -120,6 +171,15 @@ test('PCM streams in both directions, interruption stops playback, mute and end 
 		JSON.stringify({ type: 'transcript', role: 'assistant', text: 'I will check.', final: false })
 	);
 	await expect(captions.getByText('I will check.', { exact: true })).toHaveClass(/italic/);
+	connection.send(
+		JSON.stringify({
+			type: 'transcript',
+			role: 'assistant',
+			text: 'I will check.',
+			final: true,
+			replace: true
+		})
+	);
 	connection.send(JSON.stringify({ type: 'turn_done' }));
 	await expect(captions.getByText('I will check.', { exact: true })).not.toHaveClass(/italic/);
 	await expect(captions.getByText('Voice', { exact: true })).toHaveCount(2);
@@ -182,4 +242,42 @@ test('leaving the app ends the call and releases the microphone', async ({ page,
 	});
 	await expect(page.getByRole('region', { name: 'Voice call', exact: true })).toBeHidden();
 	await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled();
+});
+
+test('voice model choices explain Audio and Omni and connect the selected model', async ({
+	page,
+	context
+}) => {
+	await withVoice(context);
+	let selectedUrl = '';
+	await page.routeWebSocket('**/api/voice/connect**', (ws) => {
+		selectedUrl = ws.url();
+		ws.send(JSON.stringify({ type: 'ready', inputRate: 16000 }));
+	});
+	await page.goto('/chat');
+	await page.getByRole('button', { name: 'Voice chat', exact: true }).click();
+	const picker = page.getByLabel('Voice model', { exact: true });
+	await expect(picker.locator('option')).toHaveCount(6);
+	await expect(picker).toHaveValue('qwen');
+	await expect(page.getByText('Multimodal realtime model.', { exact: false })).toBeVisible();
+	await picker.selectOption('qwen-audio-3.1-plus');
+	await expect(
+		page.getByText('Dedicated full-duplex speech model.', { exact: false })
+	).toBeVisible();
+	await expect(page.getByText('Audio: $6.4 input / $24 output', { exact: false })).toBeVisible();
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await expect(await axe(page)).toEqual([]);
+	await page.screenshot({ path: '/tmp/voice-models-desktop.png' });
+	await page.setViewportSize({ width: 320, height: 740 });
+	await checkScreen(page);
+	await page.setViewportSize({ width: 320, height: 740 });
+	await expect(await axe(page)).toEqual([]);
+	await page.screenshot({ path: '/tmp/voice-models-mobile.png' });
+	await page.getByRole('button', { name: 'Start voice chat' }).click();
+	await expect.poll(() => selectedUrl).toContain('provider=qwen-audio-3.1-plus');
+	await expect(page.getByRole('dialog', { name: 'Voice chat' })).toBeHidden();
+	await page
+		.getByRole('region', { name: 'Voice call', exact: true })
+		.getByRole('button', { name: 'End call' })
+		.click();
 });

@@ -35,13 +35,13 @@ export class Voice {
 		this.error = null;
 		try {
 			const res = await fetch('/api/voice/models');
-			if (!res.ok) throw new Error("Couldn't load voice providers. Try again.");
+			if (!res.ok) throw new Error("Couldn't load voice models. Try again.");
 			const body = await res.json();
 			this.models = body.models;
 			if (!this.models.some((m) => m.id === this.provider && m.configured))
 				this.provider = body.defaultProvider ?? '';
 		} catch (error) {
-			this.error = error instanceof Error ? error.message : "Couldn't load voice providers.";
+			this.error = error instanceof Error ? error.message : "Couldn't load voice models.";
 		} finally {
 			this.loading = false;
 		}
@@ -185,7 +185,9 @@ export class Voice {
 				} else {
 					if (this.#assistantFresh) this.assistantText = '';
 					this.#assistantFresh = false;
-					this.assistantText = (this.assistantText + event.text!).slice(-24000);
+					this.assistantText = (
+						(event.replace ? '' : this.assistantText) + (event.text ?? '')
+					).slice(-24000);
 					this.assistantFinal = event.final === true;
 				}
 				break;

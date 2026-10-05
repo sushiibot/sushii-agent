@@ -199,6 +199,8 @@ export type DictationState = 'idle' | 'starting' | 'recording' | 'transcribing';
 
 export interface VoiceModel {
 	id: string;
+	provider: string;
+	description: string;
 	name: string;
 	model: string;
 	inputRate: number;
