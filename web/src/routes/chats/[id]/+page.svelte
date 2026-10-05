@@ -80,12 +80,29 @@
 		return m.remote.watch();
 	});
 
+	const contextRevision = $derived(
+		`${store?.running}:${JSON.stringify(store?.usage)}:${store?.items.findLast((i) => i.kind === 'divider')?.id}:${store?.items.findLast((i) => i.kind === 'assistant')?.id}`
+	);
+	$effect(() => {
+		contextRevision;
+		untrack(() => models.refresh());
+	});
+	$effect(() => {
+		const m = models;
+		const timer = setInterval(() => {
+			if (!document.hidden && (store?.running || sheet === 'model' || sheet === 'context'))
+				m.refresh();
+		}, 15_000);
+		return () => clearInterval(timer);
+	});
+
 	type AnySheet = ChatSheet | Exclude<ThreadSheet, 'branch'>;
 	const ids: AnySheet[] = [
 		'commands',
 		'new',
 		'viewer',
 		'model',
+		'context',
 		'context-boundary',
 		'thread-memory',
 		'thread-close',
@@ -97,13 +114,9 @@
 	>;
 	const sheet = $derived(ids.find((s) => sheets[s].open));
 	$effect(() => {
-		if (sheet !== 'model') return;
+		if (sheet !== 'model' && sheet !== 'context') return;
 		const m = models;
 		untrack(() => m.refresh());
-		const timer = setInterval(() => {
-			if (!document.hidden) m.refresh();
-		}, 15_000);
-		return () => clearInterval(timer);
 	});
 	const closeSheet = () => {
 		if (sheet) sheets[sheet].close();
@@ -257,7 +270,10 @@
 				ondraft: (v) => store.setDraft(v),
 				onsend: () => void store.send(store.draft),
 				onstop: () => store.stopTurn(),
-				oncommand: (c) => store.command(c),
+				oncommand: async (c) => {
+					await store.command(c);
+					models.refresh();
+				},
 				onattach: (files) => void store.attach(files),
 				onremovephoto: (p) => store.removePhoto(p),
 				onretryphoto: (p) => store.retryPhoto(p),

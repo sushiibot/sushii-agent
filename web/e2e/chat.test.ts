@@ -634,65 +634,70 @@ test('streaming while scrolled up moves nothing and shows the New messages pill'
 	await expect(pill).toBeHidden();
 });
 
-test("the model chip's ring shows the last reply's context, holds still while streaming, and opens its details", async ({
+test('current context is independent of reply usage and refreshes immediately after compaction', async ({
 	page,
 	context
 }) => {
-	await chatServer(context, {
-		history: [
-			{
-				type: 'assistant',
-				id: 'u1',
-				at: 'x',
-				text: 'Earlier answer',
-				tools: [],
-				files: [],
-				usage: {
-					model: 'openrouter/deepseek/deepseek-v4.1-flash',
-					inputTokens: 1200,
-					outputTokens: 80,
-					contextPct: 12.4,
-					costUsd: 0.002
+	await chatServer(context, { history: [withUsage] });
+	let tokens = 172000;
+	let estimated = false;
+	await context.route('**/api/models', (route) =>
+		route.fulfill({
+			json: {
+				current: 'sol',
+				models: [{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' }],
+				context: {
+					tokens,
+					window: 200000,
+					percent: tokens / 2000,
+					estimated,
+					compactAt: 150000,
+					model: 'active/model',
+					status: 'ready'
 				}
 			}
-		]
-	});
+		})
+	);
 	await open(page);
-	const chip = page.getByRole('button', { name: 'Model: sol, context 12% used. Change model' });
-	await expect(chip).toBeVisible();
-	const top = await chip.evaluate((e) => e.getBoundingClientRect().top);
+	await expect(page.getByRole('button', { name: 'Model: sol. Change model' })).toBeVisible();
+	const chip = page.getByRole('button', { name: 'Context: 86% used. Open context' });
+	await chip.click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation context' });
+	await expect(sheet).toContainText('172,000 of 200,000 tokens');
+	await expect(sheet).toContainText('150,000 tokens (75%');
+	await expect(sheet).not.toContainText('1,200');
+	tokens = 12000;
+	estimated = true;
+	await push(page, 'session', { kind: 'compacted', summary: 'Kept the current decisions.' }, 1);
+	await expect(sheet).toContainText('About 12,000 of 200,000 tokens');
+	await expect(sheet.getByRole('meter', { name: 'Context used' })).toHaveAttribute(
+		'aria-valuenow',
+		'6'
+	);
+	await expect(sheet).toContainText('Estimated from the current context');
+	await sheet.getByRole('button', { name: 'Close', exact: true }).click();
+	await expect(
+		page.getByRole('button', { name: 'Context: about 6% used. Open context' })
+	).toBeVisible();
 
-	await push(page, 'delta', { turnId: 't2', offset: 0, text: 'Streaming a new answer' });
-	await expect(page.getByText('Streaming a new answer')).toBeVisible();
-	expect(await chip.evaluate((e) => e.getBoundingClientRect().top)).toBe(top);
-
-	const usage = {
-		model: 'anthropic/claude-sonnet-5',
-		inputTokens: 5000,
-		outputTokens: 321,
-		cacheRead: 4096,
-		contextPct: 86,
-		costUsd: 0.0312
-	};
+	await page.reload();
+	await expect(
+		page.getByRole('button', { name: 'Context: about 6% used. Open context' })
+	).toBeVisible();
+	tokens = 14000;
+	estimated = false;
 	await push(
 		page,
 		'reply',
-		{ key: 'r2', turnId: 't2', text: 'Streaming a new answer', usage, files: [] },
-		1
+		{
+			key: 'r2',
+			text: 'Done',
+			usage: { model: 'm', inputTokens: 100, outputTokens: 2, contextPct: 99 },
+			files: []
+		},
+		2
 	);
-	const next = page.getByRole('button', { name: 'Model: sol, context 86% used. Change model' });
-	await next.click();
-	const sheet = page.getByRole('dialog', { name: 'Model and context' });
-	await expect(sheet.getByRole('meter', { name: 'Context used' })).toHaveAttribute(
-		'aria-valuenow',
-		'86'
-	);
-	await expect(sheet).toContainText('anthropic/claude-sonnet-5');
-	await expect(sheet).toContainText('5,000');
-	await expect(sheet).toContainText('4,096');
-	await expect(sheet).not.toContainText('Cache write');
-	await page.goBack();
-	await expect(page.getByRole('dialog')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Context: 7% used. Open context' })).toBeVisible();
 });
 
 for (const width of [412, 1280]) {
@@ -722,7 +727,7 @@ for (const width of [412, 1280]) {
 		await page.setViewportSize({ width, height: width === 412 ? 915 : 900 });
 		await open(page);
 		await page.getByRole('button', { name: /^Model: .*Change model$/ }).click();
-		const sheet = page.getByRole('dialog', { name: 'Model and context' });
+		const sheet = page.getByRole('dialog', { name: 'Model' });
 		const cost = sheet.getByRole('region', { name: 'Cost', exact: true });
 		await expect(cost).toContainText('This session');
 		await expect(cost).toContainText('$0.042');
@@ -750,31 +755,30 @@ for (const width of [412, 1280]) {
 	});
 }
 
-test('Compact now in the model sheet runs the compact command', async ({ page, context }) => {
-	const { posts } = await chatServer(context, { history: [withUsage] });
-	await open(page);
-	await page.getByRole('button', { name: /^Model: sol/ }).click();
-	await page
-		.getByRole('dialog', { name: 'Model and context' })
-		.getByRole('button', { name: 'Compact now' })
-		.click();
-	await expect.poll(() => posts('/api/chat/command').at(0)?.body).toEqual({ command: 'compact' });
-});
-
-test('no ring before any reply has usage, and its arrival moves nothing', async ({
+test('Compact now in the context sheet runs the compact command and keeps details open', async ({
 	page,
 	context
 }) => {
-	await chatServer(context);
+	const { posts } = await chatServer(context, { history: [withUsage] });
 	await open(page);
-	const chip = page.getByRole('button', { name: 'Model: sol. Change model' });
-	await expect(chip).toBeVisible();
-	const send = page.getByRole('button', { name: 'Send message' });
-	const before = (await send.boundingBox())!.y;
-	const usage = { model: 'm', inputTokens: 1, outputTokens: 1, contextPct: 3 };
-	await push(page, 'reply', { key: 'r1', text: 'Hi', usage, files: [] }, 1);
-	await expect(page.getByRole('button', { name: /context 3% used/ })).toBeVisible();
-	expect((await send.boundingBox())!.y).toBe(before);
+	await page.getByRole('button', { name: /Open context$/ }).click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation context' });
+	await sheet.getByRole('button', { name: 'Compact now' }).click();
+	await expect.poll(() => posts('/api/chat/command').at(0)?.body).toEqual({ command: 'compact' });
+	await expect(sheet).toBeVisible();
+});
+
+test('old reply context does not pretend to be current context when the agent has no snapshot', async ({
+	page,
+	context
+}) => {
+	await chatServer(context, { history: [withUsage] });
+	await open(page);
+	await page.getByRole('button', { name: 'Context usage unavailable. Open context' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation context' });
+	await expect(sheet).toContainText('Unavailable');
+	await expect(sheet.getByRole('meter')).toHaveCount(0);
+	await expect(sheet).not.toContainText('12%');
 });
 
 const withUsage = {
@@ -800,7 +804,7 @@ test('at desktop width the model and commands sheets show, and Escape takes thei
 	await open(page);
 	const sheetState = () => page.evaluate(() => JSON.stringify(history.state ?? {}));
 	for (const [button, dialog] of [
-		[/^Model: sol/, 'Model and context'],
+		[/^Model: sol/, 'Model'],
 		['Chat commands', 'Chat commands']
 	] as const) {
 		await page.getByRole('button', { name: button }).click();
@@ -821,12 +825,12 @@ test('Escape and Close in the same frame close the sheet once and stay on the pa
 	await page.goto('/settings');
 	await open(page);
 	await page.getByRole('button', { name: /^Model: sol/ }).click();
-	const dialog = page.getByRole('dialog', { name: 'Model and context' });
+	const dialog = page.getByRole('dialog', { name: 'Model' });
 	await expect(dialog).toBeVisible();
 	await page.evaluate(() => {
 		const sheet = document.querySelector<HTMLElement>('[role=dialog]')!;
 		const close = [...sheet.querySelectorAll('button')].find(
-			(b) => b.textContent?.trim() === 'Close'
+			(b) => b.getAttribute('aria-label') === 'Close'
 		)!;
 		sheet.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		close.click();

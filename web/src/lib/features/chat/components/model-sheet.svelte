@@ -1,13 +1,13 @@
 <script lang="ts">
 	import Check from '@lucide/svelte/icons/check';
-	import FoldVertical from '@lucide/svelte/icons/fold-vertical';
+	import X from '@lucide/svelte/icons/x';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Search from '@lucide/svelte/icons/search';
 	import type { ChatUsage, ModelFacts, ModelsResponse } from '$lib/core/realtime/events';
 	import { Button } from '$lib/ui/button';
 	import { Input } from '$lib/ui/input';
 	import { cn } from '$lib/utils';
-	import { aggregateCost, contextTone, modelName, usageRows } from '../render/usage';
+	import { aggregateCost, modelName, usageRows } from '../render/usage';
 
 	type Role = 'main' | 'fallback';
 	type Row = { key: string; title: string; detail: string; current: boolean };
@@ -23,15 +23,13 @@
 		searchError = null,
 		picking = null,
 		error = null,
-		compactDisabled = false,
 		onrole,
 		onquery,
 		onpick,
-		oncompact,
 		onclose
 	}: {
 		models: ModelsResponse | null;
-		/** The last reply's usage, for the context section. */
+		/** Historical reply usage, separate from current conversation context. */
 		usage: ChatUsage | null;
 		now: number;
 		role?: Role;
@@ -42,17 +40,13 @@
 		/** The alias being switched to. */
 		picking?: string | null;
 		error?: string | null;
-		compactDisabled?: boolean;
 		onrole?: (role: Role) => void;
 		onquery?: (query: string) => void;
 		onpick?: (alias: string, role: Role) => void;
-		oncompact?: () => void;
 		onclose?: () => void;
 	} = $props();
 
 	const uid = $props.id();
-	const pct = $derived(usage?.contextPct === undefined ? null : Math.round(usage.contextPct));
-	const tone = $derived(contextTone(pct));
 	const cooling = $derived(
 		models?.fallbackUntil && Date.parse(models.fallbackUntil) > now ? models.fallbackUntil : null
 	);
@@ -137,70 +131,15 @@
 	</ul>
 {/snippet}
 
-<div class="flex flex-col gap-4 px-3 pt-1 pb-3">
-	<h2 class="px-2 pt-1 text-lg font-semibold">Model and context</h2>
-	<section aria-labelledby="{uid}-cost" class="flex flex-col gap-1 px-2">
-		<h3 id="{uid}-cost" class="text-sm font-medium">Cost</h3>
-		<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-			<dt class="text-muted-foreground">This session</dt>
-			<dd class="text-right tabular-nums">
-				{aggregateCost(models?.cost?.session, models?.cost?.truncated)}
-			</dd>
-			<dt
-				class="text-muted-foreground"
-				title={models?.cost ? `${models.cost.date} · ${models.cost.timeZone}` : undefined}
-			>
-				Today
-			</dt>
-			<dd class="text-right tabular-nums">
-				{aggregateCost(models?.cost?.today, models?.cost?.truncated)}
-			</dd>
-		</dl>
-		<p class="text-meta text-muted-foreground">
-			Recorded USD, including delegated work.
-			{#if models?.cost?.truncated}Older runs are outside this total.{/if}
-			{#if models?.cost?.session?.unpricedRuns || models?.cost?.today.unpricedRuns}Unpriced and
-				subscription usage is excluded.{/if}
-		</p>
-	</section>
-
-	{#if pct !== null && usage}
-		<section aria-labelledby="{uid}-ctx" class="flex flex-col gap-2 px-2">
-			<div class="flex items-baseline justify-between gap-3">
-				<h3 id="{uid}-ctx" class="text-sm font-medium">Context</h3>
-				<span class="text-sm text-muted-foreground tabular-nums">{pct}% used</span>
-			</div>
-			<div
-				role="meter"
-				aria-label="Context used"
-				aria-valuemin={0}
-				aria-valuemax={100}
-				aria-valuenow={pct}
-				class="h-2 overflow-hidden rounded-full bg-muted"
-			>
-				<div
-					class={cn(
-						'h-full rounded-full',
-						tone === 'failed' ? 'bg-failed' : tone === 'waiting' ? 'bg-waiting' : 'bg-foreground/70'
-					)}
-					style:width="{Math.min(100, pct)}%"
-				></div>
-			</div>
-			<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-				{#each usageRows(usage).filter(([k]) => k !== 'Context used') as [k, v] (k)}
-					<dt class="text-muted-foreground">{k}</dt>
-					<dd class="text-right [overflow-wrap:anywhere] tabular-nums">{v}</dd>
-				{/each}
-			</dl>
-			<p class="text-sm text-muted-foreground">
-				For the last reply. The agent compacts on its own when it gets full.
-			</p>
-			<Button variant="outline" disabled={compactDisabled} onclick={() => oncompact?.()}
-				><FoldVertical />Compact now</Button
-			>
-		</section>
-	{/if}
-
+<div
+	class="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b bg-background px-5 py-2"
+>
+	<h2 class="font-semibold">Model</h2>
+	<Button variant="ghost" size="icon" class="size-12" aria-label="Close" onclick={onclose}
+		><X aria-hidden="true" /></Button
+	>
+</div>
+<div class="flex flex-col gap-4 px-3 py-5">
 	{#if !models}
 		<p role="status" class="px-2 text-sm text-muted-foreground">
 			The agent can't say which models it has right now. Try again once it's back.
@@ -270,5 +209,40 @@
 			{@render rows(found, 'Search results')}
 		{/if}
 	{/if}
-	<Button size="lg" variant="ghost" onclick={() => onclose?.()}>Close</Button>
+	<section aria-labelledby="{uid}-cost" class="flex flex-col gap-1 px-2">
+		<h3 id="{uid}-cost" class="text-sm font-medium">Cost</h3>
+		<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+			<dt class="text-muted-foreground">This session</dt>
+			<dd class="text-right tabular-nums">
+				{aggregateCost(models?.cost?.session, models?.cost?.truncated)}
+			</dd>
+			<dt
+				class="text-muted-foreground"
+				title={models?.cost ? `${models.cost.date} · ${models.cost.timeZone}` : undefined}
+			>
+				Today
+			</dt>
+			<dd class="text-right tabular-nums">
+				{aggregateCost(models?.cost?.today, models?.cost?.truncated)}
+			</dd>
+		</dl>
+		<p class="text-meta text-muted-foreground">
+			Recorded USD, including delegated work.
+			{#if models?.cost?.truncated}Older runs are outside this total.{/if}
+			{#if models?.cost?.session?.unpricedRuns || models?.cost?.today.unpricedRuns}Unpriced and
+				subscription usage is excluded.{/if}
+		</p>
+	</section>
+
+	{#if usage}
+		<details class="mx-2 border-t pt-2">
+			<summary class="min-h-12 cursor-pointer py-3 font-medium">Last reply usage</summary>
+			<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+				{#each usageRows(usage).filter(([k]) => k !== 'Context used') as [k, v] (k)}
+					<dt class="text-muted-foreground">{k}</dt>
+					<dd class="text-right [overflow-wrap:anywhere] tabular-nums">{v}</dd>
+				{/each}
+			</dl>
+		</details>
+	{/if}
 </div>

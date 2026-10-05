@@ -113,8 +113,9 @@ export class ModelsStore {
 		this.error = null;
 		try {
 			const cost = this.remote.data?.cost;
+			const context = this.remote.data?.context;
 			const choice = await this.#api.set(alias, role);
-			this.remote.data = { ...choice, ...(cost ? { cost } : {}) };
+			this.remote.data = { ...choice, ...(cost ? { cost } : {}), ...(context ? { context } : {}) };
 			return true;
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : 'Something went wrong.';
@@ -149,6 +150,15 @@ export function createFixtureModelsApi(): ModelsApi {
 		current,
 		fallback,
 		fallbackUntil: null,
+		context: {
+			tokens: 36000,
+			window: 1050000,
+			percent: 3.43,
+			estimated: false,
+			compactAt: 200000,
+			model: 'chatgpt/gpt-6.1-sol',
+			status: 'ready'
+		},
 		cost: {
 			session: { usd: 0.042, recordedRuns: 3, unpricedRuns: 1 },
 			today: { usd: 1.28, recordedRuns: 12, unpricedRuns: 2 },

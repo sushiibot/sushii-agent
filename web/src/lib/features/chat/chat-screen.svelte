@@ -21,6 +21,7 @@
 	import type { PendingApproval } from './types';
 	import Composer from './components/composer.svelte';
 	import ModelSheet from './components/model-sheet.svelte';
+	import ContextSheet from './components/context-sheet.svelte';
 	import Conversation from './components/conversation.svelte';
 	import { messagePlainText } from './render/plain-text';
 	import { modelName } from './render/usage';
@@ -332,6 +333,17 @@
 		toBottom();
 	}
 
+	let compacting = $state(false);
+	async function compactContext() {
+		if (compacting) return;
+		compacting = true;
+		try {
+			await oncommand?.('compact');
+		} finally {
+			compacting = false;
+		}
+	}
+
 	async function runCommand(c: 'new' | 'compact' | 'stop') {
 		closeSheet();
 		if (c === 'stop') await onstop?.();
@@ -385,7 +397,8 @@
 		commands: 'Chat commands',
 		new: 'Reset conversation context',
 		viewer: 'Image',
-		model: 'Model and context',
+		model: 'Model',
+		context: 'Conversation context',
 		'context-boundary': 'Conversation context'
 	};
 </script>
@@ -466,11 +479,17 @@
 			searchError={modelSearchError}
 			picking={modelPicking}
 			error={modelError}
-			compactDisabled={commandsOffline || running}
 			onrole={(r) => onmodelrole?.(r)}
 			onquery={(q) => onmodelquery?.(q)}
 			onpick={(alias, role) => onpickmodel?.(alias, role)}
-			oncompact={() => runCommand('compact')}
+			onclose={closeSheet}
+		/>
+	{:else if shownSheet === 'context'}
+		<ContextSheet
+			context={models?.context}
+			disabled={commandsOffline || running || !models}
+			{compacting}
+			oncompact={compactContext}
 			onclose={closeSheet}
 		/>
 	{/if}
@@ -527,7 +546,9 @@
 				onremovephoto={(id) => onremovephoto?.(id)}
 				onretryphoto={(id) => onretryphoto?.(id)}
 				model={models ? modelName(models.current ?? 'Default') : null}
-				context={usage?.contextPct ?? null}
+				context={models?.context?.percent ?? null}
+				contextEstimated={models?.context?.estimated ?? false}
+				oncontext={models ? () => onopensheet?.('context') : undefined}
 				fallback={answeringFallback}
 				onmodel={() => onopensheet?.('model')}
 				{dictation}

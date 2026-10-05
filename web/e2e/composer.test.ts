@@ -55,13 +55,7 @@ test('an agent too old to list models shows no model, but the context ring still
 		usage: { model: 'm', inputTokens: 10, outputTokens: 2, contextPct: 41 },
 		files: []
 	});
-	await page.getByRole('button', { name: 'Context, context 41% used. Change model' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Model and context' });
-	await expect(sheet.getByRole('meter', { name: 'Context used' })).toHaveAttribute(
-		'aria-valuenow',
-		'41'
-	);
-	await expect(sheet).toContainText("can't say which models it has");
+	await expect(page.getByRole('button', { name: /Open context$/ })).toHaveCount(0);
 });
 
 for (const colorScheme of ['light', 'dark'] as const) {
@@ -181,7 +175,7 @@ test('search finds any tool-capable OpenRouter model, and picking it as the fall
 			name: 'Model: gpt-6-luna, standing in for sol while ChatGPT is unavailable. Change model'
 		})
 		.click();
-	const sheet = page.getByRole('dialog', { name: 'Model and context' });
+	const sheet = page.getByRole('dialog', { name: 'Model' });
 	await expect(sheet.getByRole('status').first()).toContainText('ChatGPT is unavailable until');
 	await sheet.getByRole('button', { name: 'Fallback', exact: true }).click();
 	await expect(sheet.getByRole('button', { name: /^sol/ })).toHaveCount(0);

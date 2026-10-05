@@ -43,6 +43,15 @@ describe("workspace commands", () => {
     expect(scopes).toHaveLength(2);
     expect(await commandHandlers(deps({ catalog: async () => [] }).d)[RPC_METHODS.modelsGet]!({ principalId: "drk" })).not.toHaveProperty("cost");
   });
+  test("models/get reads live context for its conversation and clears unavailable context", async () => {
+    const scopes: (string | undefined)[] = [];
+    const snapshot = { tokens: 12000, window: 200000, percent: 6, estimated: true, compactAt: 150000, model: "test", status: "ready" as const };
+    const { d } = deps({ catalog: async () => [], context: scope => { scopes.push(scope); return scope === "ux" ? snapshot : null; } });
+    const get = commandHandlers(d)[RPC_METHODS.modelsGet]!;
+    expect(await get({ principalId: "drk", conversationId: "ux" })).toMatchObject({ context: snapshot });
+    expect(await get({ principalId: "drk" })).toMatchObject({ context: null });
+    expect(scopes).toEqual(["ux", undefined]);
+  });
   test("!compact reports tokens before and after, or why it didn't", async () => {
     const { d } = deps();
     expect(await runCommand({ principalId: "drk", command: "compact" }, d)).toEqual({ text: "🗜️ Compacted: 152,300 → ~41,200 tokens." });

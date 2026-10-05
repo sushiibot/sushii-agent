@@ -9,7 +9,7 @@ import { getLogger } from "../logger.ts";
 import { WorkspaceConfigError, economyOf, loadWorkspaceConfig, taskRulesOf, type WorkspaceConfig } from "./config.ts";
 import { TopicSessions } from "./topicSessions.ts";
 import { PersonalSession } from "./personalSession.ts";
-import { compactSession, compactionTrigger, createPiChatSessionFactory, idleRotateMs, loadedContextFiles, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
+import { compactSession, conversationContext, compactionTrigger, createPiChatSessionFactory, idleRotateMs, loadedContextFiles, recapSession, reloadContext, sessionModelLabel } from "./piChatSession.ts";
 import { ModelChoice } from "./modelChoice.ts";
 import { commandHandlers } from "./commands.ts";
 import { readModelCosts } from "./modelCosts.ts";
@@ -191,6 +191,7 @@ async function main(): Promise<void> {
     choice,
     currentModel: () => (personal.chatSession ? sessionModelLabel(personal.chatSession) : null),
     fallbackUntil: () => selector.coolingDownUntil,
+    context: conversationId => conversationContext(topicsRef ? topicsRef.chatSessionFor(conversationId) : personal.chatSession),
     costs: conversationId => readModelCosts({
       stateDir: config.stateDir,
       timeZone: config.tz,

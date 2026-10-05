@@ -98,6 +98,23 @@ The `WORKSPACE_*` economy configuration applies to Main and threads equally.
 Idle rotation replaces the model context, while the thread and stored history persist.
 The separate seven-day archive rule changes thread organization; it does not delete the thread or its memory.
 
+## Current context
+
+The composer has separate controls for model settings and current context.
+The context control shows this conversation's usage, independent of older reply details.
+Its sheet shows token count, window size, and the active automatic compaction threshold.
+
+The workspace reads the active session through the conversation-scoped models API.
+After compaction, it estimates the retained messages, instructions, and tools until the next model response updates usage.
+The interface marks estimates with `~` and never substitutes a pre-compaction reply count.
+An unavailable snapshot shows no percentage.
+Reading an unopened or archived thread does not start a model session.
+
+Replies and context boundaries refresh the snapshot immediately.
+Running conversations and open menus also refresh every 15 seconds.
+The snapshot refreshes when the app regains focus.
+Manual compaction keeps the context sheet open to show its result.
+
 ## Context dividers
 
 Main and threads show a tappable divider after successful compaction, idle rotation, or context reset.

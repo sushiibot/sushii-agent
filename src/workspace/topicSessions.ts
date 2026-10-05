@@ -33,7 +33,7 @@ export type TopicSession = Pick<
   | "ownsDelivery"
   | "hasUnackedDeliveries"
   | "requestContextReload"
-> & { readonly currentSessionFile?: string };
+> & { readonly currentSessionFile?: string; readonly chatSession?: PersonalSession["chatSession"] };
 
 interface TopicRecord {
   id: string;
@@ -93,6 +93,11 @@ export class TopicSessions {
     const id = this.id({ surface: "web", conversationId });
     if (!id) return this.opts.main.currentSessionFile || null;
     return this.sessions.get(id)?.currentSessionFile || readWorkspaceState(join(this.opts.stateDir, "topics", id))?.chatSessionFile || null;
+  }
+  /** Read context without starting a model session or reopening an archived topic. */
+  chatSessionFor(conversationId = "main"): PersonalSession["chatSession"] {
+    const id = this.id({ surface: "web", conversationId });
+    return (id ? this.sessions.get(id) : this.opts.main)?.chatSession ?? null;
   }
   async session(origin?: ChatOrigin): Promise<TopicSession> {
     await this.changing;

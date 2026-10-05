@@ -627,7 +627,19 @@ export interface HomeOpenedBody {
  * GET /api/models: the owner's model choice. POST /api/models {alias} switches it from the next turn and
  * answers the same shape. 501/503/504/502 as WorkspaceUnavailableResponse.
  */
+export interface ConversationContext {
+	tokens: number;
+	window: number;
+	percent: number;
+	estimated: boolean;
+	compactAt: number | null;
+	model: string | null;
+	status: 'ready' | 'updating' | 'compacting';
+}
+
 export interface ModelsResponse {
+	/** Current conversation context, independently of historical reply usage. */
+	context?: ConversationContext | null;
 	/** The chosen alias, or an OpenRouter id picked outside the list; null on a default no entry matches. */
 	current: string | null;
 	models: ({ alias: string; backend: 'chatgpt' | 'openrouter'; id: string } & ModelFacts)[];

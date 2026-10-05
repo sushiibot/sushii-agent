@@ -4,6 +4,8 @@ import { threadAwareness, threadContextTools } from "./threadContext.ts";
 import { createGitHubPushTool, GITHUB_PUSH_TOOL } from "./githubPush.ts";
 import { CONNECTOR_TOOLS, type ConnectorManager } from "./connectors.ts";
 import { assertExactTools, createAgentBashTool, createOpenRouterModel } from "../agentRuntime/piShared.ts";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import type { ConversationContext } from "../orchestration/contracts.ts";
 import type { AgentSession, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getLogger } from "../logger.ts";
 import type { ChatSession, ChatSessionFactory } from "./personalSession.ts";
@@ -97,6 +99,21 @@ export function compactionTrigger(session: ChatSession): number | null {
   if (!entry || !model || !(model.contextWindow > 0)) return null;
   const settings = entry.session.settingsManager.getCompactionSettings(model);
   return settings.enabled ? model.contextWindow - settings.reserveTokens : null;
+}
+
+/** Reads the active conversation, including a fresh estimate before post-compaction usage arrives. */
+export function conversationContext(session: ChatSession | null): ConversationContext | null {
+  const usage = session?.getContextUsage();
+  if (!session || !usage || !(usage.contextWindow > 0)) return null;
+  const estimated = usage.tokens === null || !session.messages.some(m => m.role === "assistant");
+  const active = sessionOverrides.get(session)?.session;
+  const setupTokens = active ? Math.ceil((active.systemPrompt.length + JSON.stringify(active.agent.state.tools).length) / 4) : 0;
+  const tokens = estimated ? setupTokens + session.messages.reduce((sum, message) => sum + estimateTokens(message), 0) : usage.tokens!;
+  return {
+    tokens, window: usage.contextWindow, percent: tokens / usage.contextWindow * 100,
+    estimated, compactAt: compactionTrigger(session), model: sessionModelLabel(session),
+    status: session.isCompacting ? "compacting" : session.isStreaming ? "updating" : "ready",
+  };
 }
 
 function piSession(session: ChatSession, what: string): AgentSession {

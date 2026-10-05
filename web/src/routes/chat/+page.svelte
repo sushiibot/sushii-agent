@@ -53,6 +53,7 @@
 		new: routedSheet('new'),
 		viewer: routedSheet('viewer'),
 		model: routedSheet('model'),
+		context: routedSheet('context'),
 		'context-boundary': routedSheet('context-boundary')
 	};
 	const models = modelsStore();
@@ -66,10 +67,21 @@
 	const sheet = $derived((Object.keys(sheets) as ChatSheet[]).find((s) => sheets[s].open));
 	const focusAsk = $derived(page.url.searchParams.get('ask') ?? undefined);
 	$effect(() => {
-		if (sheet !== 'model') return;
+		if (sheet !== 'model' && sheet !== 'context') return;
 		untrack(() => models.refresh());
+	});
+
+	const contextRevision = $derived(
+		`${s?.running}:${JSON.stringify(s?.usage)}:${s?.items.findLast((i) => i.kind === 'divider')?.id}:${s?.items.findLast((i) => i.kind === 'assistant')?.id}`
+	);
+	$effect(() => {
+		contextRevision;
+		untrack(() => models.refresh());
+	});
+	$effect(() => {
+		const m = models;
 		const timer = setInterval(() => {
-			if (!document.hidden) models.refresh();
+			if (!document.hidden && (s.running || sheet === 'model' || sheet === 'context')) m.refresh();
 		}, 15_000);
 		return () => clearInterval(timer);
 	});
@@ -285,7 +297,10 @@
 	ondraft={(v) => s.setDraft(v)}
 	onsend={() => void s.send(s.draft)}
 	onstop={() => s.stopTurn()}
-	oncommand={(c) => s.command(c)}
+	oncommand={async (c) => {
+		await s.command(c);
+		models.refresh();
+	}}
 	onattach={(files) => void s.attach(files)}
 	onremovephoto={(id) => s.removePhoto(id)}
 	onretryphoto={(id) => s.retryPhoto(id)}

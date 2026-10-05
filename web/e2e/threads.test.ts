@@ -315,3 +315,35 @@ test('thread context details use a sheet that Back closes without leaving the th
 	await sheet.getByRole('button', { name: 'Close', exact: true }).click();
 	await expect(sheet).toBeHidden();
 });
+
+test('context usage belongs to the selected thread rather than Main or its last reply', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await context.route('**/api/models?conversationId=oct-trip', (route) =>
+		route.fulfill({
+			json: {
+				current: 'sol',
+				models: [{ alias: 'sol', backend: 'chatgpt', id: 'gpt-6.1-sol' }],
+				context: {
+					tokens: 8000,
+					window: 200000,
+					percent: 4,
+					estimated: true,
+					compactAt: 150000,
+					model: 'topic/model',
+					status: 'ready'
+				}
+			}
+		})
+	);
+	await page.goto('/chats/oct-trip');
+	await page.getByRole('button', { name: 'Context: about 4% used. Open context' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation context' });
+	await expect(sheet).toContainText('About 8,000 of 200,000 tokens');
+	await expect(sheet).toContainText('topic/model');
+	await page.goBack();
+	await expect(sheet).toBeHidden();
+	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+});

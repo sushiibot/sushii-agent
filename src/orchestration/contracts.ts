@@ -152,6 +152,17 @@ const modelFacts = {
   priceOut: z.number().nonnegative().nullable().optional(),
   image: z.boolean().optional(),
 };
+export const conversationContext = z.object({
+  tokens: z.number().nonnegative(),
+  window: z.number().positive(),
+  percent: z.number().nonnegative(),
+  estimated: z.boolean(),
+  compactAt: z.number().positive().nullable(),
+  model: z.string().nullable(),
+  status: z.enum(["ready", "updating", "compacting"]),
+});
+export type ConversationContext = z.infer<typeof conversationContext>;
+
 export const modelsResult = z.object({
   /** The chosen alias, or an OpenRouter id picked outside the list; null while on a default no entry matches. */
   current: z.string().max(ID_MAX).nullable(),
@@ -163,6 +174,7 @@ export const modelsResult = z.object({
   /** While set, ChatGPT is cooling down after a limit or sign-in failure and the fallback answers. */
   fallbackUntil: z.string().max(40).nullable().optional(),
   cost: modelCosts.optional(),
+  context: conversationContext.nullable().optional(),
 });
 export type ModelsResult = z.infer<typeof modelsResult>;
 export const modelsSearchResult = z.object({
