@@ -32,7 +32,7 @@ test('the model chip shows the current model, and picking another switches it', 
 	await page.goto('/chat');
 	const chip = page.getByRole('button', { name: 'Model: sol. Change model' });
 	await chip.click();
-	const sheet = page.getByRole('dialog', { name: 'Model' });
+	const sheet = page.getByRole('dialog', { name: 'Model and context' });
 	await expect(sheet.getByRole('button', { name: /^sol/ })).toHaveAttribute('aria-pressed', 'true');
 	await expect(sheet).toContainText('openai/gpt-6-luna');
 	await sheet.getByRole('button', { name: /^or-luna/ }).click();
@@ -112,7 +112,7 @@ test('a model the list no longer has says so and reloads the list', async ({ pag
 	});
 	await page.goto('/chat');
 	await page.getByRole('button', { name: /^Model:/ }).click();
-	const sheet = page.getByRole('dialog', { name: 'Model' });
+	const sheet = page.getByRole('dialog', { name: 'Model and context' });
 	await sheet.getByRole('button', { name: /^or-luna/ }).click();
 	await expect(sheet.getByRole('alert')).toContainText("can't use that model");
 	await expect(sheet.getByRole('button', { name: /^or-luna/ })).toHaveCount(0);
@@ -175,7 +175,7 @@ test('search finds any tool-capable OpenRouter model, and picking it as the fall
 			name: 'Model: gpt-6-luna, standing in for sol while ChatGPT is unavailable. Change model'
 		})
 		.click();
-	const sheet = page.getByRole('dialog', { name: 'Model' });
+	const sheet = page.getByRole('dialog', { name: 'Model and context' });
 	await expect(sheet.getByRole('status').first()).toContainText('ChatGPT is unavailable until');
 	await sheet.getByRole('button', { name: 'Fallback', exact: true }).click();
 	await expect(sheet.getByRole('button', { name: /^sol/ })).toHaveCount(0);

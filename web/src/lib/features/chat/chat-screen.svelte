@@ -21,7 +21,6 @@
 	import type { PendingApproval } from './types';
 	import Composer from './components/composer.svelte';
 	import ModelSheet from './components/model-sheet.svelte';
-	import ContextSheet from './components/context-sheet.svelte';
 	import Conversation from './components/conversation.svelte';
 	import { messagePlainText } from './render/plain-text';
 	import { modelName } from './render/usage';
@@ -397,8 +396,8 @@
 		commands: 'Chat commands',
 		new: 'Reset conversation context',
 		viewer: 'Image',
-		model: 'Model',
-		context: 'Conversation context',
+		model: 'Model and context',
+		context: 'Model and context',
 		'context-boundary': 'Conversation context'
 	};
 </script>
@@ -467,7 +466,7 @@
 				<Button variant="ghost" class="flex-1" onclick={closeSheet}>Close</Button>
 			</div>
 		</div>
-	{:else if shownSheet === 'model'}
+	{:else if shownSheet === 'model' || shownSheet === 'context'}
 		<ModelSheet
 			{models}
 			{usage}
@@ -483,14 +482,9 @@
 			onquery={(q) => onmodelquery?.(q)}
 			onpick={(alias, role) => onpickmodel?.(alias, role)}
 			onclose={closeSheet}
-		/>
-	{:else if shownSheet === 'context'}
-		<ContextSheet
-			context={models?.context}
-			disabled={commandsOffline || running || !models}
-			{compacting}
 			oncompact={compactContext}
-			onclose={closeSheet}
+			compactDisabled={commandsOffline || running || !models}
+			{compacting}
 		/>
 	{/if}
 {/snippet}
@@ -548,7 +542,6 @@
 				model={models ? modelName(models.current ?? 'Default') : null}
 				context={models?.context?.percent ?? null}
 				contextEstimated={models?.context?.estimated ?? false}
-				oncontext={models ? () => onopensheet?.('context') : undefined}
 				fallback={answeringFallback}
 				onmodel={() => onopensheet?.('model')}
 				{dictation}

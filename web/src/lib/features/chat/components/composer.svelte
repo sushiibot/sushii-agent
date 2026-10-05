@@ -31,7 +31,6 @@
 		model,
 		context = null,
 		contextEstimated = false,
-		oncontext,
 		fallback = null,
 		onmodel,
 		dictation = null,
@@ -58,7 +57,6 @@
 		/** Current conversation context, independent of the last reply. */
 		context?: number | null;
 		contextEstimated?: boolean;
-		oncontext?: () => void;
 		/** The model answering in its place while ChatGPT is cooling down; the chip shows it, with a dot. */
 		fallback?: string | null;
 		onmodel?: () => void;
@@ -299,12 +297,48 @@
 					aria-label={(fallback
 						? `Model: ${fallback}, standing in for ${model} while ChatGPT is unavailable`
 						: `Model: ${model}`) + '. Change model'}
+					aria-describedby={`${uid}-context`}
+					title={context == null
+						? 'Model and context · usage unavailable'
+						: `Model and context · ${contextEstimated ? '~' : ''}${Math.round(context)}% used`}
 					onclick={onmodel}
 					class="group/chip flex h-12 min-w-0 items-center outline-none"
 				>
 					<span
 						class="flex h-9 min-w-0 items-center gap-1.5 rounded-full bg-muted pr-3.5 pl-2.5 text-sm text-foreground transition-colors group-hover/chip:bg-muted/70 group-focus-visible/chip:ring-3 group-focus-visible/chip:ring-ring/50"
 					>
+						<svg
+							data-context-ring
+							viewBox="0 0 16 16"
+							class="size-4 shrink-0 -rotate-90 text-foreground/70"
+							aria-hidden="true"
+						>
+							<circle
+								cx="8"
+								cy="8"
+								r="6"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-dasharray={context == null ? '2 2' : undefined}
+								class="opacity-25"
+							/>
+							{#if context != null}
+								<circle
+									cx="8"
+									cy="8"
+									r="6"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-dasharray="{(Math.max(0, Math.min(100, context)) / 100) *
+										2 *
+										Math.PI *
+										6} {2 * Math.PI * 6}"
+								/>
+							{/if}
+						</svg>
 						<span class="truncate">{fallback ?? model ?? 'Context'}</span>
 						{#if fallback}
 							<span class="size-1.5 shrink-0 rounded-full bg-waiting" aria-hidden="true"></span>
@@ -312,21 +346,11 @@
 						<ChevronDown class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
 					</span>
 				</button>
-			{/if}
-			{#if oncontext}
-				<button
-					type="button"
-					aria-haspopup="dialog"
-					aria-label={context == null
-						? 'Context usage unavailable. Open context'
-						: `Context: ${contextEstimated ? 'about ' : ''}${Math.round(context)}% used. Open context`}
-					onclick={oncontext}
-					class="h-12 shrink-0 rounded-md px-1 text-meta text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+				<span id="{uid}-context" class="sr-only"
+					>{context == null
+						? 'Current context usage unavailable'
+						: `Current context: ${contextEstimated ? 'about ' : ''}${Math.round(context)}% used`}</span
 				>
-					{context == null
-						? 'Context —'
-						: `Context ${contextEstimated ? '~' : ''}${Math.round(context)}%`}
-				</button>
 			{/if}
 			<div class="ml-auto flex shrink-0 items-center gap-0.5">
 				{#if dictation}

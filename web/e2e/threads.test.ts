@@ -339,10 +339,10 @@ test('context usage belongs to the selected thread rather than Main or its last 
 		})
 	);
 	await page.goto('/chats/oct-trip');
-	await page.getByRole('button', { name: 'Context: about 4% used. Open context' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Conversation context' });
+	await page.getByRole('button', { name: 'Model: sol. Change model' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Model and context' });
 	await expect(sheet).toContainText('About 8,000 of 200,000 tokens');
-	await expect(sheet).toContainText('topic/model');
+	await expect(sheet).toContainText('Active model: model');
 	await page.goBack();
 	await expect(sheet).toBeHidden();
 	await expect(page).toHaveURL(/\/chats\/oct-trip$/);

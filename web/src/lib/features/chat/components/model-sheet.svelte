@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
+	import FoldVertical from '@lucide/svelte/icons/fold-vertical';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Search from '@lucide/svelte/icons/search';
 	import type { ChatUsage, ModelFacts, ModelsResponse } from '$lib/core/realtime/events';
@@ -26,7 +27,10 @@
 		onrole,
 		onquery,
 		onpick,
-		onclose
+		onclose,
+		oncompact,
+		compactDisabled = false,
+		compacting = false
 	}: {
 		models: ModelsResponse | null;
 		/** Historical reply usage, separate from current conversation context. */
@@ -44,9 +48,16 @@
 		onquery?: (query: string) => void;
 		onpick?: (alias: string, role: Role) => void;
 		onclose?: () => void;
+		oncompact?: () => void;
+		compactDisabled?: boolean;
+		compacting?: boolean;
 	} = $props();
 
 	const uid = $props.id();
+	const context = $derived(models?.context);
+	const pct = $derived(context ? Math.round(context.percent) : null);
+	const working = $derived(compacting || context?.status === 'compacting');
+	const count = (n: number) => Math.round(n).toLocaleString();
 	const cooling = $derived(
 		models?.fallbackUntil && Date.parse(models.fallbackUntil) > now ? models.fallbackUntil : null
 	);
@@ -134,12 +145,90 @@
 <div
 	class="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b bg-background px-5 py-2"
 >
-	<h2 class="font-semibold">Model</h2>
+	<h2 class="font-semibold">Model and context</h2>
 	<Button variant="ghost" size="icon" class="size-12" aria-label="Close" onclick={onclose}
 		><X aria-hidden="true" /></Button
 	>
 </div>
 <div class="flex flex-col gap-4 px-3 py-5">
+	<section aria-label="Current context" class="space-y-2 px-2">
+		<div class="flex items-baseline justify-between gap-3">
+			<h3 class="font-medium">Current context</h3>
+			<span class="font-medium tabular-nums"
+				>{context ? `${context.estimated ? '~' : ''}${pct}% used` : 'Unavailable'}</span
+			>
+		</div>
+		{#if context}
+			<div
+				role="meter"
+				aria-label="Context used"
+				aria-valuemin={0}
+				aria-valuemax={100}
+				aria-valuenow={Math.min(100, pct ?? 0)}
+				class="h-2 overflow-hidden rounded-full bg-muted"
+			>
+				<div
+					class="h-full rounded-full bg-foreground/70"
+					style:width="{Math.min(100, context.percent)}%"
+				></div>
+			</div>
+			<p class="tabular-nums">
+				{context.estimated ? 'About ' : ''}{count(context.tokens)} of {count(context.window)} tokens
+			</p>
+			<p class="text-muted-foreground">
+				Active model: {modelName(context.model ?? models?.current ?? 'Default')}
+			</p>
+			{#if working}<p role="status" class="text-muted-foreground">Compacting context…</p>
+			{:else if context.estimated}<p class="text-muted-foreground">
+					Estimated from the current context. The next model response updates the count.
+				</p>
+			{:else if context.status === 'updating'}<p class="text-muted-foreground">
+					Usage updates as the agent works.
+				</p>{/if}
+		{:else}
+			<p class="text-muted-foreground">
+				The agent hasn't reported current context. Older reply counts stay in message details.
+			</p>
+		{/if}
+		{#if context?.compactAt}
+			<p class="text-meta text-muted-foreground">
+				Auto compacts at about {count(context.compactAt)} tokens ({Math.round(
+					(context.compactAt / context.window) * 100
+				)}%).
+			</p>
+		{/if}
+		<Button
+			variant="outline"
+			disabled={compactDisabled || working || context?.status === 'updating'}
+			onclick={oncompact}><FoldVertical />{working ? 'Compacting…' : 'Compact now'}</Button
+		>
+	</section>
+	<section aria-labelledby="{uid}-cost" class="flex flex-col gap-1 px-2">
+		<h3 id="{uid}-cost" class="text-sm font-medium">Cost</h3>
+		<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+			<dt class="text-muted-foreground">This session</dt>
+			<dd class="text-right tabular-nums">
+				{aggregateCost(models?.cost?.session, models?.cost?.truncated)}
+			</dd>
+			<dt
+				class="text-muted-foreground"
+				title={models?.cost ? `${models.cost.date} · ${models.cost.timeZone}` : undefined}
+			>
+				Today
+			</dt>
+			<dd class="text-right tabular-nums">
+				{aggregateCost(models?.cost?.today, models?.cost?.truncated)}
+			</dd>
+		</dl>
+		<p class="text-meta text-muted-foreground">
+			Recorded USD, including delegated work.
+			{#if models?.cost?.truncated}Older runs are outside this total.{/if}
+			{#if models?.cost?.session?.unpricedRuns || models?.cost?.today.unpricedRuns}Unpriced and
+				subscription usage is excluded.{/if}
+		</p>
+	</section>
+
+	<h3 class="mx-2 border-t pt-4 text-sm font-medium">Choose a model</h3>
 	{#if !models}
 		<p role="status" class="px-2 text-sm text-muted-foreground">
 			The agent can't say which models it has right now. Try again once it's back.
@@ -209,30 +298,14 @@
 			{@render rows(found, 'Search results')}
 		{/if}
 	{/if}
-	<section aria-labelledby="{uid}-cost" class="flex flex-col gap-1 px-2">
-		<h3 id="{uid}-cost" class="text-sm font-medium">Cost</h3>
-		<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-			<dt class="text-muted-foreground">This session</dt>
-			<dd class="text-right tabular-nums">
-				{aggregateCost(models?.cost?.session, models?.cost?.truncated)}
-			</dd>
-			<dt
-				class="text-muted-foreground"
-				title={models?.cost ? `${models.cost.date} · ${models.cost.timeZone}` : undefined}
-			>
-				Today
-			</dt>
-			<dd class="text-right tabular-nums">
-				{aggregateCost(models?.cost?.today, models?.cost?.truncated)}
-			</dd>
-		</dl>
-		<p class="text-meta text-muted-foreground">
-			Recorded USD, including delegated work.
-			{#if models?.cost?.truncated}Older runs are outside this total.{/if}
-			{#if models?.cost?.session?.unpricedRuns || models?.cost?.today.unpricedRuns}Unpriced and
-				subscription usage is excluded.{/if}
+
+	<details class="mx-2 border-t pt-2">
+		<summary class="min-h-12 cursor-pointer py-3 font-medium">How context works</summary>
+		<p class="pb-3 text-sm text-muted-foreground">
+			Context is what the agent carries into its next reply. Compaction summarizes older messages
+			and keeps recent messages. Your history and shared memory stay available.
 		</p>
-	</section>
+	</details>
 
 	{#if usage}
 		<details class="mx-2 border-t pt-2">
