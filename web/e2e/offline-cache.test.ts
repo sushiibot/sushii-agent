@@ -48,7 +48,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await context.setOffline(true);
 		await page.reload();
 		await expect(
-			page.getByText("You're offline. Browsing saved threads from the last 7 days.")
+			page.getByText("You're offline. Browsing saved threads on this device.")
 		).toBeVisible();
 		await page.getByRole('link', { name: /October trip/ }).click();
 		await expect(page.getByRole('heading', { name: 'October trip', level: 1 })).toBeVisible();
@@ -73,7 +73,7 @@ test('network fallback does not hide a live permission refusal', async ({ page, 
 	await expect.poll(() => cachedPaths(page)).not.toContain('/threads/oct-trip');
 });
 
-test('expired snapshots cannot be opened when the gateway is unreachable', async ({
+test('old snapshots remain available when the gateway is unreachable', async ({
 	page,
 	context
 }) => {
@@ -87,7 +87,7 @@ test('expired snapshots cannot be opened when the gateway is unreachable', async
 					(p) => p.includes('/threads/') && p.includes('/chat/history?')
 				).length
 		)
-		.toBe(5);
+		.toBe(7);
 	await page.evaluate(async () => {
 		const db = await new Promise<IDBDatabase>((resolve) => {
 			const r = indexedDB.open('agent-offline', 1);
@@ -107,7 +107,6 @@ test('expired snapshots cannot be opened when the gateway is unreachable', async
 	});
 	await context.route('**/api/**', (route) => route.abort('internetdisconnected'));
 	await page.reload();
-	await expect(page.getByText("Can't reach the agent. Check your connection.")).toBeVisible();
-	await expect(page.getByText('Picking up the trip here.')).toBeHidden();
-	await expect.poll(() => cachedPaths(page)).not.toContain('/threads/oct-trip');
+	await expect(page.getByText('Picking up the trip here.')).toBeVisible();
+	await expect.poll(() => cachedPaths(page)).toContain('/threads/oct-trip');
 });

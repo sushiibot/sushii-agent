@@ -38,7 +38,7 @@ export async function send(
 	method: string,
 	path: string,
 	body?: unknown,
-	opts: { signal?: AbortSignal } = {}
+	opts: { signal?: AbortSignal; cachePriority?: number } = {}
 ): Promise<Response> {
 	let res: Response;
 	const startedEpoch = cacheEpoch;
@@ -80,7 +80,7 @@ export async function send(
 		const text = await res.clone().text();
 		try {
 			JSON.parse(text);
-			await saveResponse(path, text);
+			await saveResponse(path, text, opts.cachePriority);
 		} catch {
 			// Invalid responses must not replace a usable snapshot.
 		}
@@ -100,7 +100,7 @@ export async function request<T>(
 	method: string,
 	path: string,
 	body?: unknown,
-	opts: { signal?: AbortSignal } = {}
+	opts: { signal?: AbortSignal; cachePriority?: number } = {}
 ): Promise<T> {
 	return json<T>(await send(method, path, body, opts));
 }

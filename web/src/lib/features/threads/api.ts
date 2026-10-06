@@ -1,5 +1,4 @@
 import { HttpError, request } from '$lib/core/http';
-import { OFFLINE_MAX_THREADS } from '$lib/core/storage/offline-cache';
 import { offlineBrowsing } from '$lib/core/storage/offline.svelte';
 import { enc, featureHttp } from '$lib/core/feature-http';
 import type { ChatsData, ThreadDetail, ThreadSummary } from './types';
@@ -51,9 +50,7 @@ async function warmThreads(data: ChatsData) {
 	if (warming) return;
 	warming = true;
 	const recent = data.threads
-		.filter((t) => t.state !== 'archived')
 		.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity))
-		.slice(0, OFFLINE_MAX_THREADS)
 		.filter((t) => {
 			const saved = warmed.get(t.id);
 			return saved?.activity !== t.lastActivity || Date.now() - saved.at > 5 * 60_000;
@@ -65,8 +62,9 @@ async function warmThreads(data: ChatsData) {
 					if (typeof navigator !== 'undefined' && !navigator.onLine) break;
 					try {
 						const base = `/threads/${enc(thread.id)}`;
-						await request('GET', base);
-						await request('GET', `${base}/chat/history?limit=40`);
+						const opts = { cachePriority: Date.parse(thread.lastActivity) || 0 };
+						await request('GET', base, undefined, opts);
+						await request('GET', `${base}/chat/history?limit=40`, undefined, opts);
 						if (offlineBrowsing.unreachable) break;
 						warmed.set(thread.id, { activity: thread.lastActivity, at: Date.now() });
 					} catch (err) {

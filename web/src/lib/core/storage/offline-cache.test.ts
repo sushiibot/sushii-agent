@@ -3,15 +3,15 @@ import {
 	cacheGroup,
 	retainedResponses,
 	OFFLINE_MAX_BYTES,
-	OFFLINE_TTL_MS,
 	type CachedResponse
 } from './offline-cache';
-const row = (path: string, savedAt: number, bytes = 10): CachedResponse => ({
+const row = (path: string, savedAt: number, bytes = 10, usedAt?: number): CachedResponse => ({
 	path,
 	group: cacheGroup(path)!,
 	text: '{}',
 	savedAt,
-	bytes
+	bytes,
+	usedAt
 });
 test('only thread metadata and conversation history can be cached', () => {
 	for (const path of [
@@ -31,31 +31,23 @@ test('only thread metadata and conversation history can be cached', () => {
 	])
 		expect(cacheGroup(path)).toBeNull();
 });
-test('TTL uses saved time and does not extend when browsing offline', () => {
-	const now = OFFLINE_TTL_MS + 10;
-	expect(
-		retainedResponses([row('/chats', 10), row('/threads/a', 11)], now).map((r) => r.path)
-	).toEqual(['/threads/a']);
+test('all threads and old snapshots remain cached while they fit', () => {
+	const rows = Array.from({ length: 100 }, (_, i) => row(`/threads/${i}`, 0));
+	expect(retainedResponses(rows)).toEqual(rows);
 });
-test('retains 20 recent conversations and removes every page of the oldest', () => {
-	const rows = Array.from({ length: 21 }, (_, i) => row(`/threads/${i}`, i + 1));
-	rows.push(
-		row('/threads/0/chat/history?limit=40', 1),
-		row('/chats', 22),
-		row('/chat/history?limit=40', 22)
-	);
-	const kept = retainedResponses(rows, 23);
-	expect(kept.some((r) => r.group === 'thread:0')).toBe(false);
-	expect(new Set(kept.filter((r) => r.group.startsWith('thread:')).map((r) => r.group)).size).toBe(
-		20
-	);
-	expect(kept.filter((r) => !r.group.startsWith('thread:')).length).toBe(2);
-});
-test('byte budget evicts whole old conversations before newer ones', () => {
+test('size pressure evicts old pages individually, without a per-thread limit', () => {
 	const rows = [
-		row('/threads/a', 1, OFFLINE_MAX_BYTES / 2),
-		row('/threads/a/chat/history?limit=40', 2, 100),
+		row('/threads/a', 2, OFFLINE_MAX_BYTES / 2),
+		row('/threads/a/chat/history?limit=40', 1, 100),
 		row('/threads/b', 3, OFFLINE_MAX_BYTES / 2)
 	];
-	expect(retainedResponses(rows, 4).map((r) => r.path)).toEqual(['/threads/b']);
+	expect(retainedResponses(rows).map((r) => r.path)).toEqual(['/threads/a', '/threads/b']);
+});
+test('recently read pages outlive older background downloads', () => {
+	const rows = [
+		row('/threads/a', 1, OFFLINE_MAX_BYTES / 2, 100),
+		row('/threads/b', 90, OFFLINE_MAX_BYTES / 2, 2),
+		row('/chats', 100, 10)
+	];
+	expect(retainedResponses(rows).map((r) => r.path)).toEqual(['/threads/a', '/chats']);
 });

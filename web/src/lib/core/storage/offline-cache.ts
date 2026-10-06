@@ -1,7 +1,5 @@
 /** Text snapshots only. Drafts, queued messages and the versioned PWA shell use separate storage. */
-export const OFFLINE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const OFFLINE_MAX_BYTES = 50 * 1024 * 1024;
-export const OFFLINE_MAX_THREADS = 20;
 
 export interface CachedResponse {
 	path: string;
@@ -9,6 +7,8 @@ export interface CachedResponse {
 	text: string;
 	bytes: number;
 	savedAt: number;
+	/** Missing on older snapshots; fall back to their download time. */
+	usedAt?: number;
 }
 
 export function cacheGroup(path: string): string | null {
@@ -18,29 +18,17 @@ export function cacheGroup(path: string): string | null {
 	return thread ? `thread:${thread[1]}` : null;
 }
 
-/** Evict whole conversations, so old pagination never survives its thread metadata. */
-export function retainedResponses(rows: CachedResponse[], now = Date.now()): CachedResponse[] {
-	const fresh = rows.filter((r) => now - r.savedAt < OFFLINE_TTL_MS);
-	const groups = new Map<string, number>();
-	for (const row of fresh) groups.set(row.group, Math.max(groups.get(row.group) ?? 0, row.savedAt));
-	const threads = [...groups.keys()]
-		.filter((g) => g.startsWith('thread:'))
-		.sort((a, b) => groups.get(b)! - groups.get(a)!)
-		.slice(0, OFFLINE_MAX_THREADS);
-	let kept = fresh.filter((r) => !r.group.startsWith('thread:') || threads.includes(r.group));
-	const oldest = [...new Set(kept.map((r) => r.group))].sort(
-		(a, b) => groups.get(a)! - groups.get(b)!
-	);
-	let bytes = kept.reduce((n, r) => n + r.bytes, 0);
-	for (const group of oldest) {
+/** Storage is the only retention limit. Evict individual least recently used responses. */
+export function retainedResponses(rows: CachedResponse[]): CachedResponse[] {
+	let bytes = rows.reduce((n, r) => n + r.bytes, 0);
+	const oldest = [...rows].sort((a, b) => (a.usedAt ?? a.savedAt) - (b.usedAt ?? b.savedAt));
+	const removed = new Set<string>();
+	for (const row of oldest) {
 		if (bytes <= OFFLINE_MAX_BYTES) break;
-		kept = kept.filter((r) => {
-			if (r.group !== group) return true;
-			bytes -= r.bytes;
-			return false;
-		});
+		removed.add(row.path);
+		bytes -= row.bytes;
 	}
-	return kept;
+	return rows.filter((r) => !removed.has(r.path));
 }
 
 let database: Promise<IDBDatabase> | undefined;
@@ -74,7 +62,7 @@ async function update(change: (rows: CachedResponse[]) => CachedResponse[]) {
 	});
 }
 
-export async function saveResponse(path: string, text: string) {
+export async function saveResponse(path: string, text: string, priority = Date.now()) {
 	const group = cacheGroup(path);
 	if (!group) return;
 	const bytes = new TextEncoder().encode(path + text).byteLength;
@@ -82,7 +70,14 @@ export async function saveResponse(path: string, text: string) {
 	try {
 		await update((rows) => [
 			...rows.filter((r) => r.path !== path),
-			{ path, group, text, bytes, savedAt: Date.now() }
+			{
+				path,
+				group,
+				text,
+				bytes,
+				savedAt: Date.now(),
+				usedAt: Math.max(priority, rows.find((r) => r.path === path)?.usedAt ?? 0)
+			}
 		]);
 	} catch {
 		// Private mode, storage pressure or a full device must never break a live request.
@@ -92,7 +87,9 @@ export async function saveResponse(path: string, text: string) {
 export async function cachedResponse(path: string): Promise<Response | null> {
 	if (!cacheGroup(path)) return null;
 	try {
-		const rows = await update((rows) => rows);
+		const rows = await update((rows) =>
+			rows.map((row) => (row.path === path ? { ...row, usedAt: Date.now() } : row))
+		);
 		const row = rows.find((r) => r.path === path);
 		if (!row) return null;
 		let text = row.text;

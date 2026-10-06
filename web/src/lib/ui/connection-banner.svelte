@@ -42,7 +42,7 @@
 		<WifiOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
 		<span
 			>{state.savedThreads
-				? "You're offline. Browsing saved threads from the last 7 days."
+				? "You're offline. Browsing saved threads on this device."
 				: "You're offline. The app reconnects on its own when the network is back."}</span
 		>
 	{:else if state.kind === 'reconnecting'}
