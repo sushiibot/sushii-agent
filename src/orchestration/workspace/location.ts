@@ -44,7 +44,7 @@ export class BrowserLocationRequests {
     if (!args.success) return { ok: false, error: "invalid location request arguments" };
     if (this.pending.size >= 1) return { ok: false, error: "a location request is already pending" };
     const nonce = randomBytes(12).toString("base64url");
-    const view: ApprovalView = { tool: LOCATION_TOOL, agentId: p.agentId, agentName: p.agentName, fields: [{ key: "reason", value: args.data.reason, kind: "body" }, { key: "conversation", value: p.origin?.conversationId ?? WEB_CONVERSATION_ID, kind: "body" }] };
+    const view: ApprovalView = { conversationId: p.origin?.conversationId ?? WEB_CONVERSATION_ID, tool: LOCATION_TOOL, agentId: p.agentId, agentName: p.agentName, fields: [{ key: "reason", value: args.data.reason, kind: "body" }, { key: "conversation", value: p.origin?.conversationId ?? WEB_CONVERSATION_ID, kind: "body" }] };
     let resolve!: (r: ToolCallResult) => void;
     const result = new Promise<ToolCallResult>((r) => { resolve = r; });
     const pending: Pending = { conn, callId: p.callId, view, resolve, timer: setTimeout(() => this.settle(nonce, { ok: false, error: "location request timed out: no responding browser within 90 seconds; ask for a city/area instead" }, "timeout"), this.opts.timeoutMs ?? LOCATION_TIMEOUT_MS) };

@@ -76,8 +76,10 @@
 			{#if frame.shell}
 				<Shell
 					nav={navFor(frame.features ?? allOn)}
-					active={frame.tab ?? 'chat'}
-					badges={frame.badges}><frame.screen {...frame.props} /></Shell
+					active={['chat', 'home', 'inbox'].includes(frame.tab ?? 'chat') ? 'chats' : frame.tab}
+					home="chats"
+					badges={{ ...frame.badges, chats: frame.badges?.home ?? frame.badges?.inbox }}
+					><frame.screen {...frame.props} /></Shell
 				>
 			{:else}
 				<frame.screen {...frame.props} />

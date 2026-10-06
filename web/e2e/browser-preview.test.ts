@@ -97,7 +97,11 @@ test('hide survives navigation and reconnection, but a different task opens its 
 	await page.getByRole('navigation').getByRole('link', { name: 'Settings' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
 	await page.getByRole('button', { name: /^Menu/ }).click();
-	await page.getByRole('navigation').getByRole('link', { name: 'Chat', exact: true }).click();
+	await page
+		.getByRole('navigation')
+		.getByRole('link', { name: /^Conversations/ })
+		.click();
+	await page.getByRole('link', { name: /^Main chat/ }).click();
 	await expect(region.getByRole('button', { name: 'Show', exact: true })).toBeVisible();
 	await expect(region.getByRole('img')).toBeHidden();
 	stream.set({ id: 'task-browser-2', url: 'https://two.example/download' });

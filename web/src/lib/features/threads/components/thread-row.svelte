@@ -13,6 +13,7 @@
 		main,
 		href,
 		now,
+		showActivity = true,
 		onoptions
 	}: {
 		/** A thread's row, or Main's when `main` is set. */
@@ -20,11 +21,12 @@
 		main?: MainSummary;
 		href: string;
 		now: number;
+		showActivity?: boolean;
 		onoptions?: () => void;
 	} = $props();
 
 	const row = $derived(main ?? thread!);
-	const title = $derived(main ? 'Chat' : thread!.title);
+	const title = $derived(main ? 'Main chat' : thread!.title);
 	const archived = $derived(!main && thread?.state === 'archived');
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let origin = { x: 0, y: 0 };
@@ -80,9 +82,9 @@
 				<span class={cn('truncate', main ? 'text-base font-semibold' : 'text-ui font-medium')}
 					>{title}</span
 				>
-				<span class="shrink-0 text-meta text-muted-foreground tabular-nums"
-					>{ago(row.lastActivity, now)}</span
-				>
+				{#if showActivity}<span class="shrink-0 text-meta text-muted-foreground tabular-nums"
+						>{ago(row.lastActivity, now)}</span
+					>{/if}
 			</span>
 			<span class="flex items-center gap-2">
 				<span class="line-clamp-1 flex-1 text-sm [overflow-wrap:anywhere] text-muted-foreground"

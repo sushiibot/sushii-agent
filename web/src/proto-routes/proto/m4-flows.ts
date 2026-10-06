@@ -1,7 +1,8 @@
 // M4 flows: the Conversations list and thread chats, on the threads feature's fixtures.
 import { ChatScreen, type ChatMessage } from '$lib/features/chat';
-import { ChatsScreen, ThreadScreen, threadMessages } from '$lib/features/threads';
+import { ThreadScreen, threadMessages } from '$lib/features/threads';
 import * as t from '$lib/features/threads/fixtures';
+import WithInbox from './components/with-inbox.svelte';
 import WithBranch from './components/with-branch.svelte';
 import type { Flow, Frame } from './flows';
 
@@ -90,8 +91,8 @@ const mainProps = (messages: ChatMessage[], props: Record<string, unknown> = {})
 const chatsFrames: Frame[] = [
 	{
 		id: 'cs-1',
-		label: 'Conversations: Main pinned, grouped by activity',
-		screen: ChatsScreen,
+		label: 'Conversations: Main pinned, inbox above threads',
+		screen: WithInbox,
 		props: list(),
 		...tabs,
 		next: 'Search',
@@ -100,7 +101,7 @@ const chatsFrames: Frame[] = [
 	{
 		id: 'cs-2',
 		label: 'Searching',
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list({ query: 'trip' }),
 		...tabs,
 		tabBar: false,
@@ -109,7 +110,7 @@ const chatsFrames: Frame[] = [
 	{
 		id: 'cs-3',
 		label: 'Archived threads, at the end of the list',
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list(),
 		...tabs,
 		scrollTo: 600,
@@ -119,7 +120,7 @@ const chatsFrames: Frame[] = [
 	{
 		id: 'cs-4',
 		label: 'No threads yet',
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list({ data: t.emptyChatsData(NOW) }),
 		...tabs,
 		branch: 'Before the first thread'
@@ -127,7 +128,7 @@ const chatsFrames: Frame[] = [
 	{
 		id: 'cs-5',
 		label: 'Loading, slowly',
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list({ remote: { status: 'loading', slow: true }, data: undefined }),
 		...tabs,
 		branch: 'Slow network'
@@ -135,7 +136,7 @@ const chatsFrames: Frame[] = [
 	{
 		id: 'cs-6',
 		label: "Couldn't load",
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list({
 			remote: { status: 'error', error: "The agent's server didn't answer." },
 			data: undefined
@@ -146,7 +147,7 @@ const chatsFrames: Frame[] = [
 	{
 		id: 'cs-7',
 		label: 'Offline',
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list({ online: false }),
 		...tabs,
 		branch: 'Phone offline'
@@ -243,7 +244,7 @@ const closeFrames: Frame[] = [
 	{
 		id: 'cl-2',
 		label: 'Archived stays visible below current threads',
-		screen: ChatsScreen,
+		screen: WithInbox,
 		props: list({
 			data: {
 				...chats,

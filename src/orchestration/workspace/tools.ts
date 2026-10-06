@@ -314,7 +314,7 @@ export class WorkspaceTools {
     if (!posting) return this.settledBeforePosting(await decided, p);
     posting.surface = adapter.surface;
     const code = adapter.capabilities.richButtons ? undefined : this.attachCode(nonce, adapter.surface);
-    const view: ApprovalView = { tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code } : {}) };
+    const view: ApprovalView = { ...(p.origin?.conversationId ? { conversationId: p.origin.conversationId } : {}), tool: p.name, agentId: p.agentId, agentName: p.agentName, fields, ...(code ? { replyCode: code } : {}) };
     let prompt: SurfaceMessageHandle;
     let resolve: (decision: ApprovalDecision, result?: ToolCallResult) => Promise<void>;
     try {

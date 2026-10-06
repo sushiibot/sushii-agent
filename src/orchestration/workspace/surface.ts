@@ -105,6 +105,7 @@ export interface SendAttempt {
 export type ApprovalField = { key: string; value: string; kind: "single"; max: number } | { key: string; value: string; kind: "body" };
 
 export interface ApprovalView {
+  conversationId?: string;
   tool: string;
   /** Self-reported by the workspace, so advisory. */
   agentId: string;

@@ -87,6 +87,7 @@ export type ApprovalField =
 	| { key: string; value: string; kind: 'body' };
 
 export interface ApprovalView {
+	conversationId?: string;
 	tool: string;
 	agentId: string;
 	agentName: string;

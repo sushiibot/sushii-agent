@@ -1,6 +1,14 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { fakeBackend, type Scenario } from './fake-backend';
-import { axe, horizontalOverflow, push, smallTargets, stubStream, openDrawer } from './helpers';
+import {
+	expandConversationInboxes,
+	axe,
+	horizontalOverflow,
+	push,
+	smallTargets,
+	stubStream,
+	openDrawer
+} from './helpers';
 
 type Call = { method: string; path: string; body: unknown };
 
@@ -34,6 +42,7 @@ async function homeServer(
 		decide?: number;
 	} = {}
 ) {
+	await expandConversationInboxes(context);
 	const calls: Call[] = [];
 	await stubStream(context);
 	await context.addInitScript(
@@ -71,28 +80,30 @@ async function homeServer(
 const busy = () => ({ approvals: [approval('n1')], asks: [ask('a1')] });
 const sheet = (page: Page) => page.getByRole('dialog');
 
-async function groupLabels(page: Page) {
-	return page.locator('main h2').allTextContents();
-}
-
 test('groups what needs you in order and counts waiting items on the menu', async ({
 	page,
 	context
 }) => {
 	await homeServer(context, { pending: busy() });
 	await page.goto('/inbox');
-	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Conversations', level: 1 })).toBeVisible();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
-	expect((await groupLabels(page)).map((t) => t.replace(/\s+/g, ' ').trim())).toEqual([
-		'Waiting on you 2',
-		'Failed 2',
-		'Running 1',
-		'Updates 2'
-	]);
+	await expect(page.getByRole('region', { name: 'Needs you', exact: true })).toContainText(
+		'Approve send_email'
+	);
+	await expect(page.getByRole('region', { name: 'Needs you', exact: true })).toContainText(
+		'Which day works'
+	);
+	await expect(page.locator('details[data-inbox="main"]')).toContainText('nightly-sync failed');
+	await expect(page.locator('details[data-inbox="other-activity"]')).toContainText(
+		'Compare flight prices'
+	);
 	const menu = page.getByRole('button', { name: /^Menu/ });
 	await expect(menu).toHaveAccessibleName('Menu, 4 need you');
 	await menu.click();
-	const inboxLink = page.getByRole('dialog', { name: 'Menu' }).getByRole('link', { name: /Inbox/ });
+	const inboxLink = page
+		.getByRole('dialog', { name: 'Menu' })
+		.getByRole('link', { name: /Conversations/ });
 	await expect(inboxLink).toContainText('4 need you');
 	await expect(inboxLink).toHaveAttribute('aria-current', 'page');
 	await page.keyboard.press('Escape');
@@ -105,7 +116,7 @@ test('a quiet day says nothing needs you, with a way into the chat', async ({ pa
 	await homeServer(context, { fixtures: 'empty' });
 	await page.goto('/inbox');
 	await expect(page.getByText('Nothing needs you')).toBeVisible();
-	await page.getByRole('button', { name: 'Open chat' }).click();
+	await page.getByRole('link', { name: /^Main chat/ }).click();
 	await expect(page).toHaveURL(/\/chat$/);
 });
 
@@ -146,9 +157,12 @@ test('a failed server part keeps approvals on screen and retries', async ({ page
 test('a server error with nothing loaded shows an error and Retry', async ({ page, context }) => {
 	const { backend } = await homeServer(context, { fixtures: 'error', streamStatus: 503 });
 	await page.goto('/inbox');
-	await expect(page.getByText("Couldn't load Home.")).toBeVisible();
+	await expect(page.getByText("Couldn't load your inbox.")).toBeVisible();
 	backend.set('home', 'normal');
-	await page.getByRole('button', { name: 'Try again' }).click();
+	await page
+		.getByLabel('Inbox for Main chat', { exact: true })
+		.getByRole('button', { name: 'Try again' })
+		.click();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
 });
 
@@ -186,7 +200,7 @@ test('an approval peeks in a sheet with the real tray, held for a moment, and ba
 	await expect(approve).toBeEnabled({ timeout: 2000 });
 	await page.goBack();
 	await expect(dialog).toBeHidden();
-	await expect(page).toHaveURL(/\/inbox$/);
+	await expect(page).toHaveURL(/\/chats$/);
 	expect(posts('/api/chat/approvals/')).toEqual([]);
 });
 
@@ -256,7 +270,7 @@ test('Ask the agent steps back to the chat under the inbox, with the alert quote
 }) => {
 	await homeServer(context);
 	await page.goto('/chat');
-	await (await openDrawer(page)).getByRole('link', { name: 'Inbox' }).click();
+	await (await openDrawer(page)).getByRole('link', { name: 'Conversations' }).click();
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await sheet(page).getByRole('button', { name: 'Ask the agent' }).click();
 	await expect(page).toHaveURL(/\/chat$/);
@@ -264,7 +278,7 @@ test('Ask the agent steps back to the chat under the inbox, with the alert quote
 		/^> Scheduled job nightly-sync failed\n> rsync/
 	);
 	await page.goForward();
-	await expect(page).toHaveURL(/\/inbox$/);
+	await expect(page).toHaveURL(/\/chats$/);
 	await expect(sheet(page)).toBeHidden();
 });
 
@@ -291,7 +305,7 @@ for (const [link, item, text] of [
 		await page.goto(link);
 		await expect(sheet(page)).toBeVisible();
 		await expect(sheet(page).getByText(text).first()).toBeVisible();
-		await expect(page).toHaveURL(/\/inbox$/);
+		await expect(page).toHaveURL(/\/chats$/);
 	});
 }
 
@@ -412,7 +426,7 @@ test('a cold link to a job alert that has cleared says Already handled', async (
 	await homeServer(context, { fixtures: 'empty' });
 	await page.goto('/inbox?item=job%3Anightly-sync');
 	await expect(sheet(page).getByRole('heading', { name: 'Already handled' })).toBeVisible();
-	await expect(page).toHaveURL(/\/inbox$/);
+	await expect(page).toHaveURL(/\/chats$/);
 });
 
 test('opening a run tells the bot once, and it stays in the inbox as read on every device', async ({
@@ -454,7 +468,7 @@ test("a job's message opens in full, Reply quotes it into the chat, and it stays
 	await expect(page.getByRole('textbox')).toHaveValue(
 		/^> From heartbeat:\n> Your passport renewal is due \*\*Friday\*\*/
 	);
-	await (await openDrawer(page)).getByRole('link', { name: 'Inbox' }).click();
+	await (await openDrawer(page)).getByRole('link', { name: 'Conversations' }).click();
 	await expect(page.getByRole('button', { name: /Read: Your passport renewal/ })).toBeVisible();
 });
 

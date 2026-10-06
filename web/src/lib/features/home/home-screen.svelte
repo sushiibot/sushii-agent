@@ -18,6 +18,11 @@
 	import type { HomeData, HomeGroup, HomeGroups, HomeItem, HomePeek } from './types';
 
 	let {
+		embedded = false,
+		sheetOnly = false,
+		hideSheet = false,
+		compact = false,
+		itemContext,
 		groups,
 		remote,
 		partError = null,
@@ -42,6 +47,11 @@
 		onopenchat,
 		onreload
 	}: {
+		embedded?: boolean;
+		sheetOnly?: boolean;
+		hideSheet?: boolean;
+		compact?: boolean;
+		itemContext?: (item: HomeItem) => string;
 		groups: HomeGroups;
 		/** Loading until the stream greets or the server part arrives. */
 		remote: RemoteLike;
@@ -82,7 +92,7 @@
 	};
 	const sections = $derived(
 		order.map((g): ListSection<HomeItem> => ({
-			label: status[g].label,
+			label: compact ? undefined : status[g].label,
 			icon: status[g].icon,
 			iconClass: iconTone[g],
 			count: true,
@@ -146,6 +156,7 @@
 {/snippet}
 
 {#snippet row(item: HomeItem)}
+	{#if itemContext}<p class="px-3 pt-2 text-meta text-muted-foreground">{itemContext(item)}</p>{/if}
 	<HomeRow
 		{item}
 		{now}
@@ -177,48 +188,62 @@
 	{/if}
 {/snippet}
 
-<ListScreen
-	title="Inbox"
-	{banner}
-	toast={undo || updateReady ? toast : undefined}
-	state={{
-		remote,
-		offline:
-			connection !== undefined && connection !== 'forbidden' && connection.kind === 'app-offline',
-		errorTitle: "Couldn't load Home.",
-		onretry,
-		skeleton,
-		empty: {
-			title: 'Nothing needs you',
-			body: 'Approvals, questions and failed runs show up here when the agent needs you.',
-			action: onopenchat ? { label: 'Open chat', onclick: onopenchat } : undefined
-		}
-	}}
-	{sections}
-	isEmpty={total === 0 && !partError && !partLoading && !workspaceNote}
-	key={(item) => item.id}
-	{row}
-	{after}
-/>
+{#if embedded && (undo || updateReady)}
+	<div
+		role="status"
+		class="flex items-center gap-3 rounded-xl bg-foreground px-4 py-2 text-sm text-background"
+	>
+		{@render toast()}
+	</div>
+{/if}
 
-<RoutedSheet
-	open={!!peek}
-	label={shownPeek ? peekTitle(shownPeek) : ''}
-	onclose={() => onclose?.()}
->
-	{#if shownPeek}
-		<Peek
-			peek={shownPeek}
-			{now}
-			{onclose}
-			{ondecide}
-			{onanswer}
-			{ondismiss}
-			{ondone}
-			{onreply}
-			{onopenrun}
-			{onopenchat}
-			{onaskagent}
-		/>
-	{/if}
-</RoutedSheet>
+{#if !sheetOnly}
+	<ListScreen
+		{embedded}
+		title="Inbox"
+		{banner}
+		toast={undo || updateReady ? toast : undefined}
+		state={{
+			remote,
+			offline:
+				connection !== undefined && connection !== 'forbidden' && connection.kind === 'app-offline',
+			errorTitle: "Couldn't load your inbox.",
+			onretry,
+			skeleton,
+			empty: {
+				title: 'Nothing needs you',
+				body: 'Approvals, questions and failed runs show up here when the agent needs you.',
+				action: !embedded && onopenchat ? { label: 'Open chat', onclick: onopenchat } : undefined
+			}
+		}}
+		{sections}
+		isEmpty={total === 0 && !partError && !partLoading && !workspaceNote}
+		key={(item) => item.id}
+		{row}
+		{after}
+	/>
+{/if}
+
+{#if !hideSheet}
+	<RoutedSheet
+		open={!!peek}
+		label={shownPeek ? peekTitle(shownPeek) : ''}
+		onclose={() => onclose?.()}
+	>
+		{#if shownPeek}
+			<Peek
+				peek={shownPeek}
+				{now}
+				{onclose}
+				{ondecide}
+				{onanswer}
+				{ondismiss}
+				{ondone}
+				{onreply}
+				{onopenrun}
+				{onopenchat}
+				{onaskagent}
+			/>
+		{/if}
+	</RoutedSheet>
+{/if}

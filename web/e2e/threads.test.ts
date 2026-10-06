@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { homeData, emailApproval } from '../src/lib/features/home/fixtures';
 import { checkScreen, fixtureApp, openDrawer } from './helpers';
 
 const reply = {
@@ -10,7 +11,10 @@ const reply = {
 	files: []
 };
 
-test('Chats pins Main and groups threads by what they need', async ({ page, context }) => {
+test('Conversations pins Main, groups inbox items by conversation and keeps search', async ({
+	page,
+	context
+}) => {
 	await fixtureApp(context);
 	await page.goto('/chats');
 	await expect(page.getByRole('heading', { name: 'Conversations', level: 1 })).toBeVisible();
@@ -20,17 +24,61 @@ test('Chats pins Main and groups threads by what they need', async ({ page, cont
 		'page'
 	);
 	await page.keyboard.press('Escape');
-	await expect(page.getByRole('region', { name: 'Chat' })).toContainText(
-		'Your general-purpose conversation'
-	);
-	for (const h of ['Needs you', 'Running', 'Recent', 'Archived']) {
+	await expect(page.getByRole('region', { name: 'Main chat' })).toContainText('Pinned');
+	for (const h of ['Threads', 'Archived']) {
 		await expect(page.getByRole('heading', { name: new RegExp(`^${h}`) })).toBeVisible();
 	}
 	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('Couch delivery');
+	await expect(page.locator('details[data-inbox="main"]')).not.toHaveAttribute('open');
+	await page.locator('details[data-inbox="main"] > summary').click();
+	await expect(page.locator('details[data-inbox="main"]')).toContainText('nightly-sync failed');
+	await expect(page.locator('details[data-inbox="other-activity"]')).not.toHaveAttribute('open');
 	await page.getByRole('searchbox').fill('lease');
 	await expect(page.getByRole('heading', { name: '1 matching' })).toBeVisible();
 	await page.getByRole('link', { name: /Lease renewal/ }).click();
 	await expect(page).toHaveURL(/\/chats\/lease$/);
+});
+
+test('decisions rise to the top and topic work stays with its recorded conversation', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	const data = homeData(Date.now());
+	data.workspace.failedRuns[0].conversationId = 'oct-trip';
+	await context.route('**/api/home', (route) =>
+		route.fulfill({
+			json: { ...data, waiting: { approvals: [], asks: [], auth: data.auth }, openTurns: [] }
+		})
+	);
+	await context.addInitScript(
+		(view) => {
+			const stream = (
+				window as unknown as { __sse: { hello: { pending: { approvals: unknown[] } } } }
+			).__sse;
+			stream.hello.pending.approvals.push({
+				seq: 3,
+				at: new Date().toISOString(),
+				nonce: 'topic-approval',
+				view
+			});
+		},
+		{ ...emailApproval.view, conversationId: 'oct-trip' }
+	);
+	await page.goto('/chats');
+	const attention = page.getByRole('region', { name: 'Needs you', exact: true });
+	await expect(attention).toContainText('October trip');
+	await expect(attention.getByRole('button', { name: /Approve send_email/ })).toBeVisible();
+	const main = page.getByRole('region', { name: 'Main chat', exact: true });
+	expect((await attention.boundingBox())!.y).toBeLessThan((await main.boundingBox())!.y);
+	const topicInbox = page.locator('details[data-inbox="oct-trip"]');
+	await expect(topicInbox).not.toHaveAttribute('open');
+	await topicInbox.locator('summary').click();
+	await expect(topicInbox).toContainText('Compare flight prices for the October trip');
+	await expect(page.locator('details[data-inbox="other-activity"]')).not.toContainText(
+		'Compare flight prices'
+	);
+	await expect(main).not.toContainText('Compare flight prices');
 });
 
 test('a thread says it shares memory with Main, and back closes its sheet', async ({

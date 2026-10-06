@@ -41,10 +41,11 @@
 		nav={navFor(features.has)}
 		active={activeNav(page.route.id)}
 		navigationKey={page.url.pathname + page.url.search}
-		badges={{ inbox: home.needsYouCount || home.unreadCount > 0 }}
+		home="chats"
+		badges={{ chats: home.needsYouCount || home.unreadCount > 0 }}
 		onhome={(e) => {
-			// Back to the chat entry already under this one, rather than stacking a second.
-			if (!previousPathIs('/chat')) return;
+			// Back to the conversations entry already under this one, rather than stacking a second.
+			if (!previousPathIs('/chats')) return;
 			e.preventDefault();
 			history.back();
 		}}>{@render children()}</Shell

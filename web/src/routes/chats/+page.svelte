@@ -1,4 +1,5 @@
 <script lang="ts">
+	import InboxPanel from './inbox-panel.svelte';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -46,27 +47,34 @@
 
 <svelte:head><title>Conversations · sushii</title></svelte:head>
 
-<ChatsScreen
-	remote={list}
-	data={list.data}
-	{now}
-	bind:query
-	online={pwa.online && !offlineBrowsing.unreachable}
-	updateReady={!!pwa.waiting}
-	mainHref={resolve('/chat')}
-	threadHref={(id) => resolve('/chats/[id]', { id })}
-	onretry={() => void list.refetch()}
-	onnew={() => {
-		threads.clearError();
-		sheet.openWith();
-	}}
-	onreload={() => pwa.reload()}
-	onoptions={(thread) => {
-		selected = thread;
-		threads.clearError();
-		settings.openWith(thread.id);
-	}}
-/>
+<InboxPanel threads={list.data?.threads ?? []}>
+	{#snippet children(inbox, attention)}
+		<ChatsScreen
+			{inbox}
+			{attention}
+			remote={list}
+			data={list.data}
+			{now}
+			bind:query
+			online={pwa.online && !offlineBrowsing.unreachable}
+			updateReady={!!pwa.waiting}
+			mainHref={resolve('/chat')}
+			threadHref={(id) => resolve('/chats/[id]', { id })}
+			onretry={() => void list.refetch()}
+			onnew={() => {
+				threads.clearError();
+				sheet.openWith();
+			}}
+			onreload={() => pwa.reload()}
+			onoptions={(thread) => {
+				selected = thread;
+				threads.clearError();
+				settings.openWith(thread.id);
+			}}
+		/>
+	{/snippet}
+</InboxPanel>
+
 <BranchSheet
 	open={sheet.open}
 	bind:title

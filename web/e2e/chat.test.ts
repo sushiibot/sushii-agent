@@ -1791,8 +1791,8 @@ test('a job alert shows once in the chat, live or reloaded, with its error as pl
 	await expect(page.getByText('Scheduled job nightly-sync is working again')).toBeVisible();
 	await expect(line).toHaveCount(1);
 	await page.getByRole('link', { name: 'Details' }).click();
-	await expect(page).toHaveURL(/\/inbox$/);
-	await expect(page.getByRole('heading', { name: 'Inbox', level: 1 })).toBeVisible();
+	await expect(page).toHaveURL(/\/chats$/);
+	await expect(page.getByRole('heading', { name: 'Conversations', level: 1 })).toBeVisible();
 });
 
 test('location only reads the user browser after explicit share and sends one correlated fix', async ({

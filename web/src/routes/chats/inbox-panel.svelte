@@ -1,4 +1,10 @@
+<script lang="ts" module>
+	const expandedInboxes = new Set<string>();
+</script>
+
 <script lang="ts">
+	import type { Snippet } from 'svelte';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount, tick, untrack } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -10,6 +16,8 @@
 	import { hub } from '$lib/core/realtime/hub.svelte';
 	import { chatStore } from '$lib/features/chat';
 	import {
+		conversationInbox,
+		inboxConversation,
 		deepLinkItem,
 		HomeScreen,
 		messagePreview,
@@ -18,6 +26,14 @@
 		type HomePeek
 	} from '$lib/features/home';
 	import type { ConnectionState } from '$lib/ui/connection-banner.svelte';
+
+	let {
+		threads,
+		children
+	}: {
+		threads: { id: string; title: string }[];
+		children: Snippet<[Snippet<[string, string]>, Snippet]>;
+	} = $props();
 
 	const home = needsYou();
 	home.open();
@@ -105,7 +121,7 @@
 		const open = () => {
 			if (done) return;
 			done = true;
-			replaceState(resolve('/inbox'), {});
+			replaceState(resolve('/chats'), {});
 			sheet.openWith(target);
 		};
 		const timer = setTimeout(open, DEEP_LINK_WAIT_MS);
@@ -174,9 +190,97 @@
 	}
 </script>
 
-<svelte:head><title>Inbox · sushii</title></svelte:head>
+{#snippet inbox(id: string, title: string)}
+	{@const groups = conversationInbox(
+		{ ...home.groups, waiting: [] },
+		id,
+		threads.map((thread) => thread.id)
+	)}
+	{@const total = Object.values(groups).reduce((count, items) => count + items.length, 0)}
+	{@const needs = groups.waiting.length + groups.failed.length}
+	{#if total || id === 'main'}
+		<details
+			open={expandedInboxes.has(id) ||
+				(id === 'main' &&
+					(remote.status === 'error' ||
+						!!remote.slow ||
+						(greeted && !!data.error) ||
+						(data.data?.workspace.state !== undefined && data.data.workspace.state !== 'online')))}
+			ontoggle={(event) => {
+				if (event.currentTarget.open) expandedInboxes.add(id);
+				else expandedInboxes.delete(id);
+			}}
+			data-inbox={id}
+			aria-label="Inbox for {title}"
+			class="group/inbox min-w-0"
+		>
+			<summary
+				class="flex min-h-12 cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-sm text-muted-foreground hover:bg-muted/60"
+			>
+				<ChevronDown
+					class="size-4 shrink-0 transition-transform group-open/inbox:rotate-180"
+					aria-hidden="true"
+				/>
+				<span
+					>{id === 'other-activity' ? 'Other activity' : 'Inbox'}{total
+						? ` · ${total}`
+						: ' · No updates'}</span
+				>
+				{#if needs}<span class="ml-auto font-medium text-waiting">{needs} need you</span>{/if}
+			</summary>
+			<div class="px-2 pt-2 pb-3">
+				<HomeScreen
+					embedded
+					hideSheet
+					{groups}
+					remote={id === 'main' ? remote : { status: 'ready' }}
+					{now}
+					partError={id === 'main' && greeted && data.status === 'error' ? data.error : null}
+					partLoading={id === 'main' && greeted && data.status === 'loading' && data.slow}
+					workspace={id === 'main' ? (data.data?.workspace.state ?? 'online') : 'online'}
+					onopen={(id) => {
+						home.clearResult(id);
+						sheet.openWith(id);
+					}}
+					onretry={() => void data.refetch()}
+					ondone={done}
+				/>
+			</div>
+		</details>
+	{/if}
+{/snippet}
+
+{#snippet attention()}
+	{#if home.groups.waiting.length}
+		<section aria-label="Needs you" class="flex flex-col gap-2">
+			<h2 class="px-1 text-base font-semibold">Needs you</h2>
+			<HomeScreen
+				embedded
+				hideSheet
+				compact
+				groups={{ waiting: home.groups.waiting, failed: [], running: [], review: [] }}
+				remote={{ status: 'ready' }}
+				{now}
+				itemContext={(item) => {
+					const id = inboxConversation(item, home.groups);
+					return id === 'main'
+						? 'Main chat'
+						: (threads.find((thread) => thread.id === id)?.title ?? 'Other activity');
+				}}
+				onopen={(id) => {
+					home.clearResult(id);
+					sheet.openWith(id);
+				}}
+			/>
+		</section>
+	{/if}
+{/snippet}
+
+{@render children(inbox, attention)}
 
 <HomeScreen
+	embedded
+	sheetOnly
 	groups={home.groups}
 	{remote}
 	partError={greeted && data.status === 'error' ? data.error : null}

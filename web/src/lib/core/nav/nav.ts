@@ -3,8 +3,6 @@ import BookMarked from '@lucide/svelte/icons/book-marked';
 import CalendarClock from '@lucide/svelte/icons/calendar-clock';
 import Globe from '@lucide/svelte/icons/globe';
 import History from '@lucide/svelte/icons/history';
-import Inbox from '@lucide/svelte/icons/inbox';
-import MessageSquare from '@lucide/svelte/icons/message-square';
 import MessagesSquare from '@lucide/svelte/icons/messages-square';
 import Plug from '@lucide/svelte/icons/plug';
 import Settings from '@lucide/svelte/icons/settings';
@@ -22,8 +20,6 @@ export interface NavEntry extends NavItem {
 export type FeatureCheck = (feature: ClientFeature | undefined) => boolean;
 export const allOn: FeatureCheck = () => true;
 
-const chat: NavEntry = { id: 'chat', href: '/chat', label: 'Chat', icon: MessageSquare };
-const inbox: NavEntry = { id: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox };
 const chats: NavEntry = {
 	id: 'chats',
 	href: '/chats',
@@ -109,7 +105,7 @@ export function moreFor(on: FeatureCheck): NavEntry[] {
 
 /** The drawer and the desktop sidebar, top to bottom; Settings comes last. */
 export function navFor(on: FeatureCheck): NavEntry[] {
-	return [chat, inbox, chats, ...moreFor(on)];
+	return [chats, ...moreFor(on)];
 }
 
 const pathOf = (routeId: string) => routeId.replace(/\/\([^)]+\)/g, '') || '/';
@@ -119,5 +115,6 @@ const sectionOf = (path: string) => path.match(/^\/[^/]+/)?.[0];
 export function activeNav(routeId: string | null): string | undefined {
 	if (!routeId) return undefined;
 	const section = sectionOf(pathOf(routeId));
-	return [chat, inbox, chats, ...moreEntries].find((e) => e.href === section)?.id;
+	if (section === '/chat' || section === '/inbox') return 'chats';
+	return [chats, ...moreEntries].find((e) => e.href === section)?.id;
 }

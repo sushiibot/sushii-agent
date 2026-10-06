@@ -1,4 +1,6 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
+	import Pin from '@lucide/svelte/icons/pin';
 	import Archive from '@lucide/svelte/icons/archive';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { Button } from '$lib/ui/button';
@@ -7,11 +9,12 @@
 	import ListScreen, { type ListSection } from '$lib/ui/screen/list-screen.svelte';
 	import type { RemoteLike } from '$lib/ui/screen/screen-state.svelte';
 	import { Skeleton } from '$lib/ui/skeleton';
-	import { status } from '$lib/ui/status/status';
 	import ThreadRow from './components/thread-row.svelte';
-	import type { ChatsData, ThreadState, ThreadSummary } from './types';
+	import type { ChatsData, ThreadSummary } from './types';
 
 	let {
+		inbox,
+		attention,
 		remote,
 		data,
 		now,
@@ -25,6 +28,8 @@
 		onoptions,
 		onreload
 	}: {
+		inbox?: Snippet<[string, string]>;
+		attention?: Snippet;
 		remote: RemoteLike;
 		data?: ChatsData;
 		now: number;
@@ -49,11 +54,6 @@
 	const active = $derived(threads.filter((t) => t.state !== 'archived'));
 	const archived = $derived(threads.filter((t) => t.state === 'archived'));
 
-	const groups: [ThreadState, string][] = [
-		['needs-you', 'Needs you'],
-		['running', 'Running'],
-		['idle', 'Recent']
-	];
 	const sections = $derived.by((): ListSection<ThreadSummary>[] => {
 		if (q) {
 			const hits = threads.filter(
@@ -62,12 +62,7 @@
 			return [{ label: `${hits.length} matching`, items: hits }];
 		}
 		return [
-			...groups.map(([state, label]) => ({
-				label,
-				icon: state === 'needs-you' ? status.waiting.icon : undefined,
-				iconClass: 'text-waiting',
-				items: active.filter((t) => t.state === state)
-			})),
+			{ label: 'Threads', count: true, items: active },
 			{ label: 'Archived', icon: Archive, count: true, items: archived }
 		];
 	});
@@ -80,7 +75,9 @@
 
 {#snippet actions()}
 	{#if onnew}
-		<Button variant="ghost" size="lg" onclick={onnew}><Plus />New conversation</Button>
+		<Button variant="ghost" size="lg" aria-label="New conversation" onclick={onnew}
+			><Plus /><span class="hidden @sm:inline">New conversation</span></Button
+		>
 	{/if}
 {/snippet}
 
@@ -100,14 +97,23 @@
 {/snippet}
 
 {#snippet lead()}
-	{#if data && !q}
-		<section aria-label="Chat" class="rounded-xl border bg-card px-1 py-1">
-			<ThreadRow main={data.main} href={mainHref} {now} />
-			<p class="px-3 pb-2 text-meta text-muted-foreground">
-				Your general-purpose conversation. Return to a conversation for its topic.
-			</p>
-		</section>
-	{/if}
+	{@render attention?.()}
+	<section aria-label="Main chat" class="rounded-xl border bg-card px-1 py-1">
+		<div class="flex items-center gap-1.5 px-3 pt-2 text-meta text-muted-foreground">
+			<Pin class="size-3.5" aria-hidden="true" />Pinned
+		</div>
+		<ThreadRow
+			main={data?.main ?? {
+				state: 'idle',
+				preview: 'Your general-purpose conversation',
+				lastActivity: new Date(now).toISOString()
+			}}
+			showActivity={!!data?.main}
+			href={mainHref}
+			{now}
+		/>
+		{@render inbox?.('main', 'Main chat')}
+	</section>
 {/snippet}
 
 {#snippet row(t: ThreadSummary)}
@@ -117,6 +123,7 @@
 		{now}
 		onoptions={onoptions ? () => onoptions?.(t) : undefined}
 	/>
+	{@render inbox?.(t.id, t.title)}
 {/snippet}
 
 {#snippet after()}
@@ -128,7 +135,12 @@
 	{/if}
 {/snippet}
 
+{#snippet tail()}
+	{@render inbox?.('other-activity', 'Other activity')}
+{/snippet}
+
 <ListScreen
+	{tail}
 	title="Conversations"
 	{banner}
 	{actions}
@@ -148,7 +160,7 @@
 				}
 			: {
 					title: 'No conversations yet',
-					body: 'Main is above. When a topic keeps coming back, start a conversation from a reply in Main, or here.',
+					body: 'Use Main chat above, or start a thread for a specific topic.',
 					...(onnew ? { action: { label: 'Start a conversation', onclick: onnew } } : {})
 				}
 	}}

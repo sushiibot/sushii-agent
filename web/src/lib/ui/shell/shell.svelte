@@ -98,7 +98,8 @@
 					e.preventDefault();
 					drawer?.close();
 				}
-				if (item.id === home && item.id !== active) onhome?.(e);
+				if (item.id === home && (navigationKey ? item.href !== navigationKey : item.id !== active))
+					onhome?.(e);
 			}}
 			class={cn(
 				'flex h-12 shrink-0 items-center gap-3 rounded-md px-2 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground',

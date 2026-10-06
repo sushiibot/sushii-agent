@@ -83,12 +83,13 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
 
     // The push's link, cold: the inbox loads, finds the job and opens it in its sheet.
     await page.goto("/inbox");
+    await page.locator('details[data-inbox="main"] > summary').click();
     const row = page.getByRole("button", { name: new RegExp(`${JOB} failed`) });
     await expect(row).toBeVisible();
     await page.goto(`/inbox?item=job:${JOB}`);
     const sheet = page.getByRole("dialog");
     await expect(sheet.getByText("E2E-JOBFAIL").first()).toBeVisible();
-    await expect(page).toHaveURL(/\/inbox$/);
+    await expect(page).toHaveURL(/\/chats$/);
 
     schedule("E2E-NOREPLY check something");
     await requestRun();

@@ -239,3 +239,15 @@ export async function openDrawer(page: Page) {
 	await expect(menu).toBeVisible();
 	return menu;
 }
+
+/** Inbox action tests expand each conversation's disclosure, including rows arriving on refresh. */
+export async function expandConversationInboxes(context: BrowserContext) {
+	await context.addInitScript(() => {
+		const expand = () => {
+			for (const details of document.querySelectorAll<HTMLDetailsElement>('details[data-inbox]')) {
+				if (!details.open) details.open = true;
+			}
+		};
+		new MutationObserver(expand).observe(document, { childList: true, subtree: true });
+	});
+}

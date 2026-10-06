@@ -1,16 +1,7 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { axe, horizontalOverflow, smallTargets, stubStream, fixtureApp } from './helpers';
 
-const LIVE_NAV = [
-	'Chat',
-	'Inbox',
-	'Conversations',
-	'Work',
-	'History',
-	'Memory',
-	'Connectors',
-	'Settings'
-];
+const LIVE_NAV = ['Conversations', 'Work', 'History', 'Memory', 'Connectors', 'Settings'];
 
 /** Live navigation never depends on /api/me; overrides enable only fixture previews. */
 async function server(context: BrowserContext, opts: { override?: string; me?: 'hang' } = {}) {
@@ -46,7 +37,10 @@ test('the app opens on chat and all live screens appear in the drawer by default
 	await expect(page).toHaveURL(/\/chat$/);
 	const menu = await drawer(page);
 	await expect(menu.getByRole('link')).toHaveText(LIVE_NAV);
-	await expect(menu.getByRole('link', { name: 'Chat' })).toHaveAttribute('aria-current', 'page');
+	await expect(menu.getByRole('link', { name: 'Conversations' })).toHaveAttribute(
+		'aria-current',
+		'page'
+	);
 });
 
 test('the fixture override adds preview screens alongside every live screen', async ({
@@ -56,8 +50,6 @@ test('the fixture override adds preview screens alongside every live screen', as
 	await server(context, { override: 'all' });
 	await page.goto('/chat');
 	const all = [
-		'Chat',
-		'Inbox',
 		'Conversations',
 		'Briefing',
 		'Work',
@@ -216,21 +208,23 @@ for (const colorScheme of ['light', 'dark'] as const) {
 	});
 }
 
-test('Main from the drawer steps back to the chat underneath instead of stacking another', async ({
+test('main chat and inbox links share the Conversations drawer destination', async ({
 	page,
 	context
 }) => {
-	await server(context);
+	await fixtureApp(context);
 	await page.goto('/chat');
-	await (await drawer(page)).getByRole('link', { name: 'Inbox' }).click();
-	await expect(page).toHaveURL(/\/inbox$/);
-	await (await drawer(page)).getByRole('link', { name: 'Chat' }).click();
+	const menu = await drawer(page);
+	await expect(menu.getByRole('link', { name: /^Conversations/ })).toHaveAttribute(
+		'aria-current',
+		'page'
+	);
+	await menu.getByRole('link', { name: /^Conversations/ }).click();
+	await expect(page).toHaveURL(/\/chats$/);
+	await page.getByRole('link', { name: /^Main chat/ }).click();
 	await expect(page).toHaveURL(/\/chat$/);
-	await page.goForward();
-	await expect(page).toHaveURL(/\/inbox$/);
 	await page.goBack();
-	await page.goBack();
-	await expect(page).not.toHaveURL(/\/chat$/);
+	await expect(page).toHaveURL(/\/chats$/);
 });
 
 test('widening past the sidebar breakpoint closes an open drawer, so the page stays usable', async ({

@@ -91,7 +91,7 @@ test("the inbox, a run, a History day and search open in the app on the workspac
   const home = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/home");
   await page.goto("/inbox");
   expect((await home).status()).toBe(200);
-  await expect(page.getByRole("heading", { name: "Inbox", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conversations", level: 1 })).toBeVisible();
   await expect(page.getByText(/Couldn't load|Can't reach the agent|couldn't be read/)).toHaveCount(0);
   await page.getByRole("button", { name: /^Menu/ }).click();
   await page.getByRole("dialog", { name: "Menu" }).getByRole("link", { name: /Work/ }).click();

@@ -24,6 +24,7 @@
 	type StateProps = ComponentProps<typeof ScreenState>;
 
 	let {
+		embedded = false,
 		title,
 		subtitle,
 		back,
@@ -38,10 +39,13 @@
 		searchInput = $bindable(null),
 		lead,
 		after,
+		tail,
 		isEmpty: emptyOverride,
 		key,
 		row
 	}: Omit<ScreenProps, 'children' | 'stickToBottom' | 'scroller'> & {
+		/** Render inside an existing screen without a header or scroll container. */
+		embedded?: boolean;
 		state: Omit<StateProps, 'children' | 'isEmpty'>;
 		sections: ListSection<T>[];
 		/** Shows a search field when bound. */
@@ -52,6 +56,8 @@
 		lead?: Snippet;
 		/** Under the sections once loaded, such as a "load older" button or a note. */
 		after?: Snippet;
+		/** Content below the list in every loading and empty state. */
+		tail?: Snippet;
 		/** Overrides "every section is empty", for lists with more to show than their rows. */
 		isEmpty?: boolean;
 		key: (item: T) => string;
@@ -62,8 +68,12 @@
 	const isEmpty = $derived(emptyOverride ?? sections.every((s) => s.items.length === 0));
 </script>
 
-<Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer}>
-	<div class="mx-auto flex max-w-2xl flex-col gap-5 px-4 pt-4 pb-10">
+{#snippet content()}
+	<div
+		class={embedded
+			? 'flex flex-col gap-5'
+			: 'mx-auto flex max-w-2xl flex-col gap-5 px-4 pt-4 pb-10'}
+	>
 		{#if search !== undefined}
 			<SearchField label={searchLabel} bind:value={search} bind:ref={searchInput} />
 		{/if}
@@ -100,5 +110,14 @@
 			{/each}
 			{@render after?.()}
 		</ScreenState>
+		{@render tail?.()}
 	</div>
-</Screen>
+{/snippet}
+
+{#if embedded}
+	{@render content()}
+{:else}
+	<Screen {title} {subtitle} {back} {actions} {banner} {toast} {footer}>
+		{@render content()}
+	</Screen>
+{/if}
