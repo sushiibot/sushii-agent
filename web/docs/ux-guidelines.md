@@ -341,6 +341,8 @@ Verification covers row positions before and after delayed refreshes. It also co
 
 ## UX writing
 
+- **Chat toasts appear below the header and take up their own space.** Use `Screen` with `toastPosition="top"` for update prompts and transient chat feedback. Keep messages, approvals, and the composer unobscured. Check: `pw` (`e2e/app.test.ts`, `e2e/location-flow.test.ts`).
+
 - **Plain verbs that name the action: "Approve and send", "Retry send", not "Submit" or "OK".** Why: the button should say what happens. Check: `review`.
 - **Say "you" and "the agent"; no "we", no chirpy filler, no emoji in UI chrome.** Why: it's a tool, not a mascot. Check: `review`.
 - **Errors say what happened and the next step, in one sentence each.** Why: users act on errors, they don't study them. Check: `review`.

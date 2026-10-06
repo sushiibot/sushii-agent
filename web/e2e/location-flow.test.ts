@@ -84,6 +84,13 @@ for (const conversation of ['main', 'oct-trip'] as const) {
 		await expect(
 			page.getByText("This device isn't signed in as the owner.", { exact: true })
 		).toHaveCount(0);
+		const toast = page
+			.getByRole('status')
+			.filter({ hasText: 'Location shared for this question.' });
+		await expect(toast).toBeVisible();
+		const toastBox = await toast.boundingBox();
+		const mainBox = await page.locator('main').boundingBox();
+		expect(toastBox!.y + toastBox!.height).toBeLessThanOrEqual(mainBox!.y);
 		expect(
 			await page.evaluate(() => (window as unknown as { locationReads: number }).locationReads)
 		).toBe(1);

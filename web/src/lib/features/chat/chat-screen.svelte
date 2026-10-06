@@ -559,6 +559,7 @@
 	{banner}
 	{footer}
 	toast={toast || updateReady ? toastBody : undefined}
+	toastPosition="top"
 	stickToBottom={!empty}
 	bind:scroller
 >

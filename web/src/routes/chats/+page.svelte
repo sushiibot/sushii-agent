@@ -59,7 +59,7 @@
 		threads.clearError();
 		sheet.openWith();
 	}}
-	onreload={() => pwa.applyUpdate()}
+	onreload={() => pwa.reload()}
 	onoptions={(thread) => {
 		selected = thread;
 		threads.clearError();

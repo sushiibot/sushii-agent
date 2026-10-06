@@ -205,5 +205,5 @@
 	onopenrun={(id) => void leaveTo(resolve('/runs/[id]', { id }))}
 	onopenchat={openChat}
 	onaskagent={askAgent}
-	onreload={() => pwa.applyUpdate()}
+	onreload={() => pwa.reload()}
 />

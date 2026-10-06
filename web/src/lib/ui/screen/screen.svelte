@@ -12,6 +12,7 @@
 		actions,
 		banner,
 		toast,
+		toastPosition = 'bottom',
 		footer,
 		stickToBottom = false,
 		scrollable = true,
@@ -25,8 +26,9 @@
 		actions?: Snippet;
 		/** Under the header, outside the scroll. */
 		banner?: Snippet;
-		/** A transient line above the footer. */
+		/** A transient line above the footer, or below the header for chat. */
 		toast?: Snippet;
+		toastPosition?: 'top' | 'bottom';
 		footer?: Snippet;
 		/** Disable when the content owns its vertical scroll, such as a tab pager. */
 		scrollable?: boolean;
@@ -85,6 +87,16 @@
 	</div>
 	<div class="ml-auto flex shrink-0 items-center gap-1">{@render actions?.()}</div>
 </header>
+{#if toast && toastPosition === 'top'}
+	<div class="shrink-0 px-3 pt-3 @3xl:px-6">
+		<div
+			role="status"
+			class="flex items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm [overflow-wrap:anywhere] text-background shadow-lg"
+		>
+			{@render toast()}
+		</div>
+	</div>
+{/if}
 {@render banner?.()}
 
 <!-- column-reverse keeps a chat pinned to its newest message without scripting. -->
@@ -100,7 +112,7 @@
 </main>
 
 <div class="relative shrink-0 bg-background pb-(--safe-bottom) @3xl:pb-0 kb:pb-0">
-	{#if toast}
+	{#if toast && toastPosition === 'bottom'}
 		<div
 			role="status"
 			class="absolute inset-x-3 bottom-full mb-3 flex items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm [overflow-wrap:anywhere] text-background shadow-lg @3xl:right-auto @3xl:left-6 @3xl:w-96"

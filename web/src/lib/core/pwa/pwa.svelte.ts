@@ -22,7 +22,7 @@ class Pwa {
 	/** 'failed' when this device's push subscription couldn't be re-sent to the agent. */
 	pushSync = $state<'pending' | 'ok' | 'failed'>('pending');
 	#started = false;
-	#reloadRequested = false;
+	#reloadPending = false;
 	#syncing: Promise<void> | null = null;
 
 	get canInstall() {
@@ -68,21 +68,40 @@ class Pwa {
 		}
 	}
 
+	/** Activates a waiting worker, then reloads even if controllerchange never arrives. */
 	applyUpdate() {
-		if (!this.waiting) return;
-		// Another window may already have activated it, and then no controllerchange is coming.
-		if (this.waiting.state === 'activated') {
+		if (this.#reloadPending) return;
+		const worker = this.waiting;
+		if (!worker || worker.state === 'activated' || worker.state === 'redundant') {
 			location.reload();
 			return;
 		}
-		this.#reloadRequested = true;
-		this.waiting.postMessage({ type: 'SKIP_WAITING' });
+		this.#reloadPending = true;
+		const reload = () => {
+			if (!this.#reloadPending) return;
+			this.#reloadPending = false;
+			clearTimeout(timeout);
+			worker.removeEventListener('statechange', activated);
+			navigator.serviceWorker.removeEventListener('controllerchange', reload);
+			location.reload();
+		};
+		const activated = () => {
+			if (worker.state === 'activated' || worker.state === 'redundant') reload();
+		};
+		// A stale worker must not turn the visible Reload button into a no-op.
+		const timeout = setTimeout(reload, 5000);
+		worker.addEventListener('statechange', activated);
+		navigator.serviceWorker.addEventListener('controllerchange', reload);
+		try {
+			worker.postMessage({ type: 'SKIP_WAITING' });
+		} catch {
+			reload();
+		}
 	}
 
 	/** Applies a waiting update if there is one, otherwise just reloads. */
 	reload() {
-		if (this.waiting) this.applyUpdate();
-		else location.reload();
+		this.applyUpdate();
 	}
 
 	/** Re-sends the push subscription; concurrent callers share one attempt. */
@@ -138,12 +157,6 @@ class Pwa {
 		// A navigation can start an update before register() resolves.
 		track(reg.installing);
 		reg.addEventListener('updatefound', () => track(reg.installing));
-
-		navigator.serviceWorker.addEventListener('controllerchange', () => {
-			if (!this.#reloadRequested) return;
-			this.#reloadRequested = false;
-			location.reload();
-		});
 
 		// An installed app can stay open for days; look for a new build whenever it comes back.
 		document.addEventListener('visibilitychange', () => {

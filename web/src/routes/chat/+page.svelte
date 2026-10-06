@@ -313,7 +313,7 @@
 	onapprove={(nonce, location) => void s.decide(nonce, 'approve', location)}
 	ondeny={(nonce) => void s.decide(nonce, 'deny')}
 	oninstall={() => pwa.install()}
-	onreload={() => pwa.applyUpdate()}
+	onreload={() => pwa.reload()}
 />
 <ClearNotifications store={s} />
 

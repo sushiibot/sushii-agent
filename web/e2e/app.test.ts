@@ -137,6 +137,50 @@ test.afterEach(async ({ page }) => {
 
 const toggleOf = (page: Page) => page.getByRole('switch', { name: /notify this device/i });
 
+for (const outcome of ['activated', 'stalled', 'throws', 'controllerchange'] as const) {
+	test(`chat Reload refreshes when the waiting worker ${outcome}`, async ({ page, context }) => {
+		await mockApi(context);
+		await page.addInitScript((outcome) => {
+			const worker = Object.assign(new EventTarget(), {
+				state: 'installed',
+				postMessage(message: { type: string }) {
+					if (message.type !== 'SKIP_WAITING') return;
+					sessionStorage.setItem('update-requested', 'yes');
+					if (outcome === 'throws') throw new Error('Worker is gone');
+					if (outcome === 'activated') {
+						worker.state = 'activated';
+						worker.dispatchEvent(new Event('statechange'));
+					}
+					if (outcome === 'controllerchange') {
+						navigator.serviceWorker.dispatchEvent(new Event('controllerchange'));
+					}
+				}
+			});
+			const reg = Object.assign(new EventTarget(), {
+				waiting: sessionStorage.getItem('update-requested') ? null : worker,
+				installing: null,
+				pushManager: { getSubscription: async () => null }
+			});
+			Object.defineProperty(navigator.serviceWorker, 'controller', { value: {} });
+			navigator.serviceWorker.register = async () => reg as unknown as ServiceWorkerRegistration;
+			navigator.serviceWorker.getRegistration = async () =>
+				reg as unknown as ServiceWorkerRegistration;
+		}, outcome);
+		await page.goto('/chat');
+		const toast = page.getByRole('status').filter({ hasText: 'Update ready' });
+		await expect(toast).toBeVisible();
+		const box = await toast.boundingBox();
+		const main = await page.locator('main').boundingBox();
+		expect(box!.y + box!.height).toBeLessThanOrEqual(main!.y);
+		await Promise.all([
+			page.waitForEvent('framenavigated', { predicate: (frame) => frame === page.mainFrame() }),
+			toast.getByRole('button', { name: 'Reload' }).click()
+		]);
+		await expect(toast).toHaveCount(0);
+		expect(await page.evaluate(() => sessionStorage.getItem('update-requested'))).toBe('yes');
+	});
+}
+
 test('settings shows the signed-in login', async ({ page, context }) => {
 	await mockApi(context);
 	await stubPush(page);
