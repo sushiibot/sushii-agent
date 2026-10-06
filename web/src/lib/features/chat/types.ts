@@ -138,6 +138,8 @@ export interface TurnStep {
 }
 
 export interface Turn {
+	/** Tool activity can render separately from this status row. */
+	toolRunning?: boolean;
 	state: 'working' | 'thinking' | 'done' | 'stopping' | 'stopped';
 	steps: TurnStep[];
 	elapsed?: string;

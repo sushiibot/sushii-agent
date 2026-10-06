@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Bot from '@lucide/svelte/icons/bot';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
-	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { untrack } from 'svelte';
 	import { backgroundWork } from './background.svelte';
 	import { request } from '$lib/core/http';
@@ -10,7 +10,8 @@
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
 	import { duration } from '$lib/ui/format/time';
 	import StepRow from './components/step-row.svelte';
-	import type { RunSummary, RunDetail } from './types';
+	import type { RunSummary } from './types';
+	import type { ActivityDetail } from './activity';
 
 	let {
 		conversationId = 'main',
@@ -26,7 +27,7 @@
 	const work = $derived(backgroundWork(conversationId));
 	const runs = $derived(work.runs);
 	let selected = $state<RunSummary | null>(null);
-	let detail = $state<RunDetail | null>(null);
+	let detail = $state<ActivityDetail | null>(null);
 	let error = $state<string | null>(null);
 	let stopping = $state(false);
 	let now = $state(Date.now());
@@ -105,7 +106,7 @@
 	{#if compact}
 		<details class="border-t px-4 text-sm" data-background-work>
 			<summary class="flex min-h-12 cursor-pointer items-center gap-2 text-muted-foreground">
-				<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+				<Bot class="size-4" aria-hidden="true" />
 				Background work · {shown.length} running
 			</summary>
 			{#each shown as run (run.runId)}
@@ -154,18 +155,43 @@
 <RoutedSheet open={sheetOpen} label="Agent activity" onclose={() => sheet.close()}>
 	<div class="flex flex-col gap-3 px-5 pb-5">
 		{#if selected}
-			<h2 class="text-lg font-semibold">{selected.title}</h2>
+			<h2 class="text-lg font-semibold">Agent activity</h2>
 			<p class="text-sm text-muted-foreground">
 				{selected.agentName}{selected.repo ? ` · ${selected.repo}` : ''} · {detail?.run.status ??
 					selected.status}
 			</p>
+			<details class="group/task min-w-0" data-task-brief>
+				<summary
+					class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 text-ui font-medium [&::-webkit-details-marker]:hidden"
+				>
+					Task brief
+					<ChevronDown
+						class="size-4 shrink-0 text-muted-foreground transition-transform group-open/task:rotate-180 motion-reduce:transition-none"
+						aria-hidden="true"
+					/>
+				</summary>
+				<!-- The brief scrolls inside the sheet; keyboard users must be able to focus it. -->
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+				<p
+					tabindex="0"
+					role="region"
+					aria-label="Task brief"
+					class="max-h-48 overflow-y-auto pb-2 text-ui leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap"
+				>
+					{detail?.taskBrief ?? selected.title}
+				</p>
+			</details>
 			{#if error}<p role="alert" class="text-sm text-failed">{error}</p>{/if}
 			{#if detail}
 				<p class="text-meta text-muted-foreground">
 					Recent activity · open full run details for earlier history.
 				</p>
 				<div class="flex max-h-80 flex-col overflow-y-auto">
-					{#each detail.steps.toReversed() as step (step.id)}<StepRow {step} />{/each}
+					{#each detail.steps
+						.toReversed()
+						.filter((step) => !(step.type === 'user' && step.text === detail?.taskBrief)) as step (step.id)}<StepRow
+							{step}
+						/>{/each}
 				</div>
 				{#if detail.run.resultSummary}<p class="text-sm">{detail.run.resultSummary}</p>{/if}
 			{:else if !error}<p role="status" class="text-sm text-muted-foreground">

@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext } from '@playwright/test';
-import { fixtureApp, push } from './helpers';
+import { axe, fixtureApp, push } from './helpers';
 import type { RunDetailResponse, RunSummary } from '../src/lib/core/realtime/events';
 test.beforeEach(async ({ page }) => {
 	page.on('pageerror', (error) =>
@@ -25,7 +25,8 @@ const reply = {
 async function agents(
 	context: BrowserContext,
 	history: unknown[] = [reply],
-	mainOutsideRecent = false
+	mainOutsideRecent = false,
+	taskBrief?: string
 ) {
 	await fixtureApp(context, { history });
 	const listCalls: string[] = [],
@@ -38,7 +39,7 @@ async function agents(
 			kind: 'subagent',
 			agentName: 'coder',
 			repo: 'sushiibot-sushii-agent',
-			title: 'Implement thread UX changes',
+			title: taskBrief ? `${taskBrief.slice(0, 240)}…` : 'Implement thread UX changes',
 			status: 'running',
 			startedAt: at
 		},
@@ -87,6 +88,7 @@ async function agents(
 			children: [],
 			session: 'ok',
 			steps: [
+				...(taskBrief ? [{ id: 'brief', type: 'user' as const, at, text: taskBrief }] : []),
 				{
 					id: 'step1',
 					type: 'assistant',
@@ -264,4 +266,81 @@ test('cards and the activity sheet follow later pages and retain the latest acti
 	await expect.poll(() => cursors.includes('step101')).toBe(true);
 	await expect(card).toContainText('Later activity beyond the first page.');
 	expect(cursors.filter((cursor) => cursor === null)).toHaveLength(1);
+});
+
+for (const width of [320, 412, 1280]) {
+	for (const theme of ['light', 'dark'] as const) {
+		test(`a long task stays below the activity heading at ${width}px in ${theme}`, async ({
+			page,
+			context
+		}) => {
+			const brief =
+				'Replace the Roosvicee concentrate photo with a ready-to-drink carton. ' +
+				'Read the repository instructions and check image sources. '.repeat(12) +
+				'Keep all other drink photos unchanged.';
+			await agents(context, [reply], false, brief);
+			await page.setViewportSize({ width, height: 915 });
+			await page.emulateMedia({ colorScheme: theme });
+			await page.goto('/chat');
+			await page.locator('[data-delegated-agents]').getByRole('button').click();
+			const sheet = page.getByRole('dialog', { name: 'Agent activity' });
+			await expect(
+				sheet.getByRole('heading', { name: 'Agent activity', exact: true })
+			).toBeVisible();
+			await expect(sheet.locator('[data-task-brief] p')).not.toBeVisible();
+			await expect(sheet.getByRole('button', { name: 'Stop agent' })).toBeVisible();
+			expect((await sheet.getByRole('heading').boundingBox())!.height).toBeLessThan(40);
+			expect(await axe(page)).toEqual([]);
+			await page.screenshot({ path: `/tmp/agent-activity-${width}-${theme}.png` });
+			await sheet.locator('[data-task-brief] summary').click();
+			await expect(sheet.locator('[data-task-brief] p')).toHaveText(brief);
+			expect(await axe(page)).toEqual([]);
+			expect(
+				await page.evaluate(
+					() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+				)
+			).toBe(true);
+			await expect(sheet.getByRole('button', { name: 'Stop agent' })).toBeVisible();
+		});
+	}
+}
+
+test('delegation shows tool progress once and background navigation does not spin', async ({
+	page,
+	context
+}) => {
+	await agents(context, []);
+	await page.goto('/chat');
+	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
+	await push(page, 'snapshot', {
+		turnId: TURN,
+		view: {
+			turnId: TURN,
+			startedAt: Date.now(),
+			lines: [
+				{ id: 'search-call', name: 'web_search', summary: 'Find drink image', state: 'ok' },
+				{ id: 'delegate-call', name: 'delegate', summary: 'Replace drink photo', state: 'run' }
+			],
+			toolCount: 2,
+			text: ''
+		}
+	});
+	await expect(page.locator('[data-tool-activity] > summary')).toContainText('Running');
+	await expect(page.locator('[data-typing]')).toHaveCount(0);
+	await expect(page.locator('[data-background-work]')).toContainText('1 running');
+	await expect(page.locator('[data-background-work] .animate-spin')).toHaveCount(0);
+	await expect(page.locator('[data-delegated-agents]')).toBeVisible();
+	await push(
+		page,
+		'tool',
+		{
+			turnId: TURN,
+			id: 'delegate-call',
+			name: 'delegate',
+			summary: 'Replace drink photo',
+			ok: true
+		},
+		1
+	);
+	await expect(page.locator('[data-typing]')).toBeVisible();
 });

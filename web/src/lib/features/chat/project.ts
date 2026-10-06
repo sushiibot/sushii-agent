@@ -268,7 +268,14 @@ export function toMessages(
 					insertInteractions(turn.steps.length);
 					if (offset < text.length) parts.push({ type: 'text', text: text.slice(offset) });
 					if (turn.state !== 'done')
-						parts.push({ type: 'data-turn', data: { ...turn, steps: [] } });
+						parts.push({
+							type: 'data-turn',
+							data: {
+								...turn,
+								steps: [],
+								toolRunning: turn.steps.some((step) => step.state === 'running')
+							}
+						});
 				} else if (item.text) parts.push({ type: 'text', text: item.text });
 				if (item.files.length) {
 					parts.push({ type: 'data-files', data: { files: item.files.map((f) => fileRef(f)) } });

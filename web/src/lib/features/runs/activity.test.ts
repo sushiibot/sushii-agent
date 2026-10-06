@@ -131,3 +131,22 @@ describe('shared incremental background activity', () => {
 		expect(latestActivity(done.steps)).toBe('read file');
 	});
 });
+
+test('the initial full task survives recent-step eviction and empty refreshes', async () => {
+	const brief: RunStep = {
+		type: 'user',
+		id: 'brief',
+		at: run.startedAt,
+		text: 'The complete task, beyond the shortened run title.'
+	};
+	const cache = new RunActivityCache(async (_id, after) =>
+		after
+			? page([], null)
+			: page([brief, ...Array.from({ length: 110 }, (_, i) => step(i + 1))], null)
+	);
+	const detail = await cache.read(run.runId);
+	expect(detail.steps).toHaveLength(100);
+	expect(detail.steps.some((s) => s.id === 'brief')).toBe(false);
+	expect(detail.taskBrief).toBe(brief.text);
+	expect((await cache.read(run.runId)).taskBrief).toBe(brief.text);
+});

@@ -26,7 +26,14 @@
 		turn.state === 'working' || turn.state === 'thinking' || turn.state === 'stopping'
 	);
 	const status = $derived(turn.state === 'stopping' ? 'Stopping…' : (turn.label ?? 'Working…'));
-	const themed = $derived(busy && status === 'Thinking…');
+	const toolRunning = $derived(
+		turn.toolRunning || turn.steps.some((step) => step.state === 'running')
+	);
+	// The active tool already provides progress; retain stopping and specific turn states.
+	const showStatus = $derived(
+		busy && (!toolRunning || turn.state === 'stopping' || (turn.label && turn.label !== 'Working…'))
+	);
+	const themed = $derived(showStatus && status === 'Thinking…');
 	let phase = $state(0);
 	let reducedMotion = $state(true);
 	const phrase = $derived(phrases[phase]);
@@ -60,7 +67,7 @@
 			open={openStep === part.data.id}
 		/>{/if}
 {/each}
-{#if busy}
+{#if showStatus}
 	<p
 		role="status"
 		data-typing

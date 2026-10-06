@@ -1,19 +1,21 @@
 import type { RunDetail, RunStep } from './types';
 
+export type ActivityDetail = RunDetail & { taskBrief?: string };
+
 const PAGES_PER_POLL = 3;
 const RECENT_STEPS = 100;
 type Entry = {
-	detail?: RunDetail;
+	detail?: ActivityDetail;
 	cursor?: string;
 	beforeFirst?: string;
-	pending?: Promise<RunDetail>;
+	pending?: Promise<ActivityDetail>;
 };
 
 /** Incremental activity shared by conversation cards and their sheet; full history stays on the run page. */
 export class RunActivityCache {
 	#runs = new Map<string, Entry>();
 	constructor(private readonly fetchPage: (runId: string, after?: string) => Promise<RunDetail>) {}
-	read(runId: string): Promise<RunDetail> {
+	read(runId: string): Promise<ActivityDetail> {
 		const entry = this.#runs.get(runId) ?? {};
 		this.#runs.set(runId, entry);
 		if (entry.pending) return entry.pending;
@@ -27,7 +29,10 @@ export class RunActivityCache {
 				];
 				if (merged.length > RECENT_STEPS) entry.beforeFirst = merged.at(-RECENT_STEPS - 1)?.id;
 				const steps = merged.slice(-RECENT_STEPS);
-				entry.detail = { ...page, steps };
+				// Keep the initial task accessible after its user step falls out of recent activity.
+				const taskBrief =
+					entry.detail?.taskBrief ?? page.steps.find((step) => step.type === 'user')?.text;
+				entry.detail = { ...page, steps, taskBrief };
 				// `after=null` means caught up, not reset. Keep the last step as the cursor for the next poll.
 				const next = page.after ?? page.steps.at(-1)?.id ?? entry.cursor;
 				const previous = entry.cursor;
