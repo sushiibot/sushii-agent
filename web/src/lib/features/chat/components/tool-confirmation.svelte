@@ -5,6 +5,7 @@
 	import ToolIcon from './tool-icon.svelte';
 	import ToolRow from './tool-row.svelte';
 	import { toolCategory } from '../tool-activity';
+	import { splitGitHubPush } from '../render/ask-question';
 	import { confirmationOutcome } from '../tool-confirmation';
 	import type { AskView, ToolConfirmation } from '../types';
 	let {
@@ -19,6 +20,9 @@
 	const live = $derived(ask.state === 'pending' || ask.state === 'answering');
 	const outcome = $derived(confirmationOutcome(ask));
 	const approved = $derived(outcome.startsWith('approved'));
+	const push = $derived(
+		confirmation.tool === 'github_push' ? splitGitHubPush(confirmation.input) : undefined
+	);
 	const category = $derived(toolCategory(confirmation.tool));
 	const uid = $props.id();
 	function choiceLabel(choice: string) {
@@ -40,13 +44,26 @@
 		<header class="flex min-h-8 items-center gap-2">
 			<ToolIcon kind={category.kind} />
 			<h3 id="{uid}-title" class="min-w-0 flex-1 font-semibold">
-				Allow {category.label.toLowerCase()}?
+				{push ? 'Push to GitHub?' : `Allow ${category.label.toLowerCase()}?`}
 			</h3>
 			<ShieldCheck class="size-4 shrink-0 text-approval" aria-hidden="true" />
 			<span class="text-meta text-muted-foreground">Approval needed</span>
 		</header>
-		<pre
-			class="my-2 max-h-32 overflow-auto rounded-lg bg-muted px-3 py-2 font-mono text-code [overflow-wrap:anywhere] whitespace-pre-wrap">{confirmation.input}</pre>
+		{#if push}
+			<div class="my-3 flex min-w-0 flex-col gap-2 [overflow-wrap:anywhere]">
+				<p class="font-medium">{push.destination}</p>
+				<p class="text-body">{push.summary}</p>
+				<details class="group/commit">
+					<summary class="flex min-h-12 cursor-pointer items-center text-meta text-muted-foreground"
+						>Commit {push.commit.slice(0, 7)}</summary
+					>
+					<p class="pb-2 font-mono text-code">{push.commit}</p>
+				</details>
+			</div>
+		{:else}
+			<pre
+				class="my-2 max-h-32 overflow-auto rounded-lg bg-muted px-3 py-2 font-mono text-code [overflow-wrap:anywhere] whitespace-pre-wrap">{confirmation.input}</pre>
+		{/if}
 		{#if confirmation.reason}<p class="my-2 text-meta text-muted-foreground">
 				{confirmation.reason}
 			</p>{/if}

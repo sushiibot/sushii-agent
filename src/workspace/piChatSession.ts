@@ -370,7 +370,7 @@ export function createPiChatSessionFactory(
         // Pi filters customTools by this allowlist: "bash" here is the env-allowlisted override.
         // Pi freezes this at creation, so it names every tool the bot may offer later, registered or not.
         tools: [...WORKSPACE_TOOLS, ...browserTools, ...topicToolNames, ...pushTools, ...connectorTools, ...delegate, ...(stubs ? KNOWN_PROXIED_TOOLS : [])],
-        customTools: [bashTool, sendFileTool, ...(browser ? [browser.tool()] : []), ...topicTools, ...(opts.github ? [createGitHubPushTool(cwd, opts.github)] : [])],
+        customTools: [bashTool, sendFileTool, ...(browser ? [browser.tool()] : []), ...topicTools, ...(opts.github ? [createGitHubPushTool(cwd, opts.github, config.agentDir)] : [])],
         excludeTools: ["ask_question"],
         sessionManager,
       }));

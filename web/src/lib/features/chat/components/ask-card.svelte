@@ -84,7 +84,9 @@
 			class="flex min-h-12 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden"
 		>
 			<ToolIcon kind={toolCategory(parts.action.tool).kind} />
-			<span class="min-w-0 flex-1 truncate">Tool question</span>
+			<span class="min-w-0 flex-1 truncate"
+				>{parts.action.tool === 'github_push' ? 'GitHub push' : 'Tool question'}</span
+			>
 			<span class="text-meta">{ask.answer ? `Answered ${ask.answer}` : 'Question closed'}</span>
 			<ChevronDown
 				class="size-3.5 shrink-0 transition-transform group-open/question:rotate-180 motion-reduce:transition-none"
@@ -100,7 +102,7 @@
 		aria-labelledby="{uid}-q"
 		data-surface="ask"
 		class={cn(
-			'flex min-w-0 flex-col gap-3 text-body leading-relaxed [overflow-wrap:anywhere]',
+			'flex min-w-0 flex-col gap-3 rounded-xl border bg-muted/30 p-3 text-body leading-relaxed [overflow-wrap:anywhere]',
 			focused && '-mx-2 rounded-xl px-2 py-2 ring-2 ring-brand/60'
 		)}
 	>

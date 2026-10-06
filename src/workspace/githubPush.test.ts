@@ -45,3 +45,41 @@ test("direct push requires owner approval of the repository, ref and commit; den
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("remembered push permission persists for exactly one repo and branch and can be revoked", async () => {
+  const home = mkdtempSync(join(tmpdir(), "github-push-policy-"));
+  try {
+    const dir = join(home, "projects", "notes");
+    mkdirSync(dir, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
+    git("init", "-b", "main");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "Update notes");
+    git("remote", "add", "origin", "https://github.com/owner/notes.git");
+    const { ChatAsks, createHeadlessUIContext } = await import("./uiContext.ts");
+    let approve = false;
+    const prompts: import("./uiContext.ts").AskRequest[] = [];
+    const asks = new ChatAsks({ deliver: (ask) => { prompts.push(ask); queueMicrotask(() => asks.answer(`wsask:${ask.askId}`, approve ? "Yes" : "No")); } });
+    const ctx = { hasUI: true, ui: createHeadlessUIContext(asks) } as ExtensionToolContext;
+    const makeTool = () => createGitHubPushTool(home, { envFor: async () => ({}) });
+    const execute = (branch = "main", approval?: string) => makeTool().execute("push-id", { path: dir, branch, approval }, undefined, undefined, ctx);
+    await expect(execute("main", "remember")).rejects.toThrow("approve");
+    await expect(execute()).rejects.toThrow("approve");
+    approve = true;
+    // An absent credential stops before the actual network push, after owner authorization.
+    await expect(execute("main", "remember")).rejects.toThrow("credentials");
+    expect(prompts.at(-1)?.toolConfirmation).toMatchObject({ tool: "github_push", toolCallId: "push-id" });
+    expect(prompts.at(-1)?.toolConfirmation?.reason).toContain("future ordinary pushes");
+    const count = prompts.length;
+    await expect(execute()).rejects.toThrow("credentials");
+    expect(prompts.length).toBe(count);
+    await expect(makeTool().execute("headless", { path: dir, branch: "main" }, undefined, undefined, { hasUI: false } as ExtensionToolContext)).rejects.toThrow("credentials");
+    expect(prompts.length).toBe(count);
+    approve = false;
+    await expect(execute("other")).rejects.toThrow("approve");
+    git("remote", "set-url", "origin", "https://github.com/owner/other.git");
+    await expect(execute()).rejects.toThrow("approve");
+    git("remote", "set-url", "origin", "https://github.com/owner/notes.git");
+    await execute("main", "forget");
+    await expect(execute()).rejects.toThrow("approve");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

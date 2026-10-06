@@ -102,12 +102,19 @@ describe("auto mode", () => {
     },
   );
 
-  test("the self-protection floor still blocks edits to the agent's own configuration", async () => {
+  test.each(["pi-verdict.json", "github-push.json", "github-push.json.tmp"])("the self-protection floor blocks edits to %s", async (file) => {
     const h = harness({ completions: [verdict("allow")] });
-    expect(await h.call("write", { path: "/tmp/nonexistent-agent-dir/config/pi-verdict.json", content: "{}" })).toMatchObject({ block: true });
+    expect(await h.call("write", { path: `/tmp/nonexistent-agent-dir/config/${file}`, content: "{}" })).toMatchObject({ block: true });
     expect(h.prompts).toHaveLength(0);
     expect(h.confirms).toHaveLength(0);
     expect(h.logs[0]!.obj).toMatchObject({ verdict: "deny", source: "rule" });
+  });
+
+  test("Bash cannot write saved push permission instead of asking the owner", async () => {
+    const h = harness({ completions: [verdict("allow")] });
+    expect(await h.call("bash", { command: "echo '[]' > /tmp/nonexistent-agent-dir/config/github-push.json" })).toMatchObject({ block: true });
+    expect(h.prompts).toHaveLength(0);
+    expect(h.confirms).toHaveLength(0);
   });
 
   test("a benign bash call is allowed by the judge without asking", async () => {

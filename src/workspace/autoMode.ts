@@ -8,6 +8,7 @@ import {
   type CompletionFn,
 } from "../../vendor/pi-verdict/extensions/pi-verdict.ts";
 import { type BackendSelector, CHATGPT_PROVIDER, publicAuthError } from "./chatgptFallback.ts";
+import { githubPushPolicyPath } from "./githubPushPolicy.ts";
 import { confirmToolCall } from "./uiContext.ts";
 
 /**
@@ -45,7 +46,7 @@ Your ENTIRE response MUST begin with <verdict>. Format:
 
 /** Tools the judge never sees: Pi's read-only built-ins, the bot-proxied lookups, and bot tools the bot gates itself. */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  // This tool pins its push to a mandatory owner approval.
+  // This tool gates its own push with owner approval or a saved repo/branch permission.
   "github_push",
   "mcp_list_tools",
   // The owner authorizes MCP tool access by connecting the server.
@@ -249,6 +250,10 @@ function blocked(tool: string, reason: string): ToolCallEventResult {
 /** The tool_call gate. Read-only tools pass untouched; every other call goes through pi-verdict. */
 export function createAutoModeExtension(opts: AutoModeOptions): ExtensionFactory {
   const prot = buildProtectedSet(opts.agentDir, null);
+  // Saved permissions can only be written by the owner-confirmed push tool.
+  const policy = githubPushPolicyPath(opts.agentDir);
+  prot.exact.push(policy, `${policy}.tmp`);
+  prot.bashPatterns.push(/github-push\.json/);
   const runId = () => opts.currentRunId?.() ?? null;
   const record = (a: Omit<AutoModeAudit, "runId">) => {
     const line: AutoModeAudit = { ...a, reason: clip(a.reason, LOG_REASON_MAX), runId: runId() };

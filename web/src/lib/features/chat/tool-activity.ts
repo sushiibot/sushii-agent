@@ -3,6 +3,7 @@ import type { MessagePart, TurnStep } from './types';
 export type ToolKind =
 	'read' | 'search' | 'bash' | 'edit' | 'browse' | 'database' | 'agent' | 'other';
 export function toolCategory(tool: string): { kind: ToolKind; label: string; key: string } {
+	if (tool === 'github_push') return { kind: 'other', label: 'GitHub push', key: tool };
 	const name = tool.toLowerCase().split(/\.|__/).at(-1)!;
 	let kind: ToolKind = 'other';
 	if (/^(read($|_)|cat$)/.test(name)) kind = 'read';

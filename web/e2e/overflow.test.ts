@@ -337,3 +337,72 @@ test('an ordinary ask keeps the not-a-permission note', async ({ page, context }
 	).toBeVisible();
 	await expect(card.getByText('Yes lets this one command run.')).toHaveCount(0);
 });
+
+for (const width of [320, 412, 1280]) {
+	for (const theme of ['light', 'dark'] as const) {
+		test(`GitHub push approval card and resolved history at ${width}px in ${theme}`, async ({
+			page,
+			context
+		}) => {
+			await server(context);
+			await page.setViewportSize({ width, height: 915 });
+			await page.emulateMedia({ colorScheme: theme });
+			await open(page);
+			await push(
+				page,
+				'ask',
+				{
+					key: 'push-ask',
+					askId: 'push-ask',
+					question: 'Allow push?',
+					choices: ['Yes', 'No'],
+					toolConfirmation: {
+						tool: 'github_push',
+						input: `drklee3/travel-notes → main\n${'6d118917'.padEnd(40, 'a')}\n2026-amsterdam: add local packaging photos for all nine drinks`,
+						reason:
+							'Approve this push and allow future ordinary pushes to this repository and branch without asking.'
+					}
+				},
+				1
+			);
+			const card = page.locator('[data-surface="tool-confirmation"]');
+			await expect(card.getByRole('heading', { name: 'Push to GitHub?' })).toBeVisible();
+			await expect(card).toContainText('drklee3/travel-notes → main');
+			await expect(card).toContainText('future ordinary pushes');
+			await expectNoSideScroll(page, 'GitHub push approval');
+			expect(await axe(page)).toEqual([]);
+			await page.screenshot({ path: `/tmp/github-push-${width}-${theme}.png` });
+			await card.getByRole('button', { name: 'Approve', exact: true }).click();
+			await push(page, 'ask_resolved', { askId: 'push-ask', answer: 'Yes' }, 2);
+			await expect(card.locator('summary')).toContainText('Approved');
+			await expect(card.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+			await expectNoSideScroll(page, 'resolved GitHub push approval');
+		});
+	}
+}
+
+test('the old GitHub push prompt collapses after an answer without implying execution', async ({
+	page,
+	context
+}) => {
+	await server(context, [
+		{
+			type: 'ask',
+			id: 'a1',
+			at: 'x',
+			outboxId: 'o1',
+			askId: 'k1',
+			question: `Approve GitHub push\ndrklee3/travel-notes → main\n${'a'.repeat(40)}\nUpdate travel notes`,
+			choices: ['Yes', 'No'],
+			answer: 'Yes'
+		}
+	]);
+	await open(page);
+	const card = page.locator('[data-surface="ask"]');
+	await expect(card.locator('summary')).toContainText('GitHub push');
+	await expect(card.locator('summary')).toContainText('Answered Yes');
+	await expect(card.getByText('Update travel notes', { exact: false })).not.toBeVisible();
+	await card.locator('summary').click();
+	await expect(card).toContainText('Update travel notes');
+	await expect(card).not.toContainText('Finished');
+});
