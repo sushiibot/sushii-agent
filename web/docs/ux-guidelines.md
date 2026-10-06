@@ -132,7 +132,7 @@ Apply these rules to Runs, History, Memory, connections, and future data screens
 - **Failed sends stay in place with Retry and Delete, keep their text, and never vanish.** Why: silent loss is the worst chat bug. Check: `pw`: fail the POST; the bubble shows Failed and Retry resends the same client id.
 - **Messages carry a client-generated id so a retry or a reconnect never duplicates them.** Why: retries after a timeout are the usual source of doubles. Check: `review` of the send path.
 - **Sends while offline queue locally and show "Queued, sends when you're back online".** Why: the phone drops off the tailnet often. Check: `pw` with `context.setOffline(true)`.
-- **The composer grows up to about 6 lines, then scrolls inside itself. Enter inserts a newline on touch devices; the Send button sends.** Why: a mobile keyboard's Enter is not a send intent. Check: `phone`.
+- **The composer grows up to about 6 lines, then scrolls inside itself. Enter inserts a newline on touch devices; the Send button sends. Desktop Enter sends, and Shift+Enter inserts a newline. Enter during input-method composition never sends.** Use primary pointer and hover capabilities, not screen width, to choose the shortcut. Why: a mobile keyboard's Enter is not a send intent. Check: `phone`, `pw` (`e2e/composer-keyboard.test.ts`).
 
 ### Streaming and scroll
 

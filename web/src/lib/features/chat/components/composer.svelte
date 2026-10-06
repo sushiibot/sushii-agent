@@ -113,9 +113,17 @@
 		e.preventDefault();
 		if (canSend) onsend?.();
 	}
-	// Enter sends; Shift+Enter inserts a newline.
+	// Touch devices keep Enter for newlines, regardless of viewport width.
+	// On desktop, Enter sends and Shift+Enter inserts a newline.
 	function keydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey && canSend) {
+		if (
+			e.key === 'Enter' &&
+			!e.shiftKey &&
+			!e.isComposing &&
+			e.keyCode !== 229 &&
+			matchMedia('(hover: hover) and (pointer: fine)').matches &&
+			canSend
+		) {
 			e.preventDefault();
 			onsend?.();
 		}
