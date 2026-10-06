@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	const expandedInboxes = new Set<string>();
+	const inboxDisclosure = $state({ expanded: false });
 </script>
 
 <script lang="ts">
@@ -10,13 +10,14 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { returnTo } from '$lib/core/nav/back';
-	import { routedSheet } from '$lib/core/nav/sheet';
+	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { closeShownNotifications } from '$lib/core/pwa/notifications';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
+	import { threadsStore } from '$lib/features/threads';
 	import { chatStore } from '$lib/features/chat';
 	import {
-		conversationInbox,
+		DiscussionPicker,
 		inboxConversation,
 		deepLinkItem,
 		HomeScreen,
@@ -32,12 +33,22 @@
 		children
 	}: {
 		threads: { id: string; title: string }[];
-		children: Snippet<[Snippet<[string, string]>, Snippet]>;
+		children: Snippet<[Snippet, Snippet]>;
 	} = $props();
 
 	const home = needsYou();
 	home.open();
 	const sheet = routedSheet('peek');
+	const conversations = threadsStore();
+	let discussing = $state<HomeItem>();
+	let discussionBusy = $state(false);
+	let discussionError = $state<string | null>(null);
+	$effect(() => {
+		if (!sheet.open) {
+			discussing = undefined;
+			discussionError = null;
+		}
+	});
 	const DEEP_LINK_WAIT_MS = 5000;
 
 	let now = $state(Date.now());
@@ -173,81 +184,120 @@
 		if (sheet.arg === id) sheet.close();
 	}
 
-	function reply(item: HomeItem) {
-		if (item.kind !== 'message') return;
-		const quote = item.message.text.split('\n').map((l) => `> ${l}`);
-		chatStore().setDraft(`> From ${item.message.job}:\n${quote.join('\n')}\n\n`);
-		void openChat();
+	function discuss(item: HomeItem) {
+		discussing = item;
+		discussionError = null;
 	}
 
-	function askAgent(item: HomeItem) {
-		if (item.kind !== 'alert') return;
-		const a = item.alert;
-		const what = a.kind === 'stuck' ? 'is stuck' : 'failed';
-		const quote = [`> Scheduled job ${a.job} ${what}`, ...(a.error ? [`> ${a.error}`] : [])];
-		chatStore().setDraft(`${quote.join('\n')}\n\n`);
-		void openChat();
+	function discussionQuote(item: HomeItem): string {
+		if (item.kind === 'message')
+			return `> From ${item.message.job}:\n${item.message.text
+				.split('\n')
+				.map((line) => `> ${line}`)
+				.join('\n')}\n\n`;
+		if (item.kind === 'alert')
+			return [
+				`> Scheduled job ${item.alert.job} ${item.alert.kind === 'stuck' ? 'is stuck' : 'failed'}`,
+				...(item.alert.error ? item.alert.error.split('\n').map((line) => `> ${line}`) : []),
+				'',
+				''
+			].join('\n');
+		return '';
+	}
+
+	async function chooseConversation(id: string, createTitle?: string) {
+		if (!discussing || discussionBusy) return;
+		const item = discussing;
+		discussionBusy = true;
+		discussionError = null;
+		try {
+			if (createTitle) {
+				const created = await conversations.branch('', createTitle);
+				if (!created) throw new Error(conversations.error ?? "Couldn't create the conversation.");
+				id = created;
+			}
+			let store = chatStore();
+			if (id !== 'main') {
+				const detail = conversations.thread(id);
+				await detail.ensure();
+				if (!detail.data)
+					throw new Error(detail.error ?? "Couldn't open the conversation. Try again.");
+				store = conversations.chat(detail.data);
+			}
+			await store.start();
+			if (!sheet.open || discussing?.id !== item.id) return;
+			const quote = discussionQuote(item);
+			store.setDraft(store.draft ? `${store.draft}\n\n${quote}` : quote);
+			await leaveSheet(sheet);
+			if (id === 'main') await returnTo(resolve('/chat'));
+			else await goto(resolve('/chats/[id]', { id }));
+		} catch (error) {
+			discussionError =
+				error instanceof Error ? error.message : "Couldn't open the conversation. Try again.";
+		} finally {
+			discussionBusy = false;
+		}
 	}
 </script>
 
-{#snippet inbox(id: string, title: string)}
-	{@const groups = conversationInbox(
-		{ ...home.groups, waiting: [] },
-		id,
-		threads.map((thread) => thread.id)
-	)}
+{#snippet inbox()}
+	{@const groups = { ...home.groups, waiting: [] }}
 	{@const total = Object.values(groups).reduce((count, items) => count + items.length, 0)}
-	{@const needs = groups.waiting.length + groups.failed.length}
-	{#if total || id === 'main'}
-		<details
-			open={expandedInboxes.has(id) ||
-				(id === 'main' &&
-					(remote.status === 'error' ||
-						!!remote.slow ||
-						(greeted && !!data.error) ||
-						(data.data?.workspace.state !== undefined && data.data.workspace.state !== 'online')))}
-			ontoggle={(event) => {
-				if (event.currentTarget.open) expandedInboxes.add(id);
-				else expandedInboxes.delete(id);
-			}}
-			data-inbox={id}
-			aria-label="Inbox for {title}"
-			class="group/inbox min-w-0"
+	<details
+		open={inboxDisclosure.expanded ||
+			remote.status === 'error' ||
+			!!remote.slow ||
+			(greeted && !!data.error) ||
+			(data.data?.workspace.state !== undefined && data.data.workspace.state !== 'online')}
+		ontoggle={(event) => {
+			inboxDisclosure.expanded = event.currentTarget.open;
+		}}
+		data-inbox="shared"
+		aria-label="Inbox"
+		class="group/inbox min-w-0"
+	>
+		<summary
+			class="flex min-h-12 cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-sm text-muted-foreground hover:bg-muted/60"
 		>
-			<summary
-				class="flex min-h-12 cursor-pointer list-none items-center gap-2 rounded-lg px-3 text-sm text-muted-foreground hover:bg-muted/60"
-			>
-				<ChevronDown
-					class="size-4 shrink-0 transition-transform group-open/inbox:rotate-180"
-					aria-hidden="true"
-				/>
-				<span
-					>{id === 'other-activity' ? 'Other activity' : 'Inbox'}{total
-						? ` · ${total}`
-						: ' · No updates'}</span
-				>
-				{#if needs}<span class="ml-auto font-medium text-waiting">{needs} need you</span>{/if}
-			</summary>
-			<div class="px-2 pt-2 pb-3">
-				<HomeScreen
-					embedded
-					hideSheet
-					{groups}
-					remote={id === 'main' ? remote : { status: 'ready' }}
-					{now}
-					partError={id === 'main' && greeted && data.status === 'error' ? data.error : null}
-					partLoading={id === 'main' && greeted && data.status === 'loading' && data.slow}
-					workspace={id === 'main' ? (data.data?.workspace.state ?? 'online') : 'online'}
-					onopen={(id) => {
-						home.clearResult(id);
-						sheet.openWith(id);
-					}}
-					onretry={() => void data.refetch()}
-					ondone={done}
-				/>
-			</div>
-		</details>
-	{/if}
+			<ChevronDown
+				class="size-4 shrink-0 transition-transform group-open/inbox:rotate-180"
+				aria-hidden="true"
+			/>
+			<span>Inbox{total ? ` · ${total}` : ' · No updates'}</span>
+		</summary>
+		<div class="px-2 pt-2 pb-3">
+			<HomeScreen
+				embedded
+				hideSheet
+				{groups}
+				{remote}
+				{now}
+				partError={greeted && data.status === 'error' ? data.error : null}
+				partLoading={greeted && data.status === 'loading' && data.slow}
+				workspace={data.data?.workspace.state ?? 'online'}
+				onopen={(id) => {
+					home.clearResult(id);
+					sheet.openWith(id);
+				}}
+				onretry={() => void data.refetch()}
+				ondone={done}
+			/>
+		</div>
+	</details>
+{/snippet}
+
+{#snippet discussion()}
+	<DiscussionPicker
+		conversations={threads}
+		busy={discussionBusy}
+		error={discussionError}
+		onchoose={(id) => void chooseConversation(id)}
+		oncreate={(title) => void chooseConversation('', title)}
+		onback={() => {
+			discussing = undefined;
+			discussionError = null;
+		}}
+	/>
 {/snippet}
 
 {#snippet attention()}
@@ -289,6 +339,8 @@
 	{connection}
 	{now}
 	{peek}
+	peekContent={discussing ? discussion : undefined}
+	peekLabel={discussing ? 'Discuss in a conversation' : undefined}
 	updateReady={!!pwa.waiting}
 	onopen={(id) => {
 		home.clearResult(id);
@@ -303,11 +355,11 @@
 		sheet.close();
 	}}
 	ondone={done}
-	onreply={reply}
+	onreply={discuss}
 	undo={home.undoable}
 	onundo={() => void home.undo()}
 	onopenrun={(id) => void leaveTo(resolve('/runs/[id]', { id }))}
 	onopenchat={openChat}
-	onaskagent={askAgent}
+	onaskagent={discuss}
 	onreload={() => pwa.reload()}
 />

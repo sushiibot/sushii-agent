@@ -2,7 +2,7 @@ import type { HomeGroups, HomeItem } from './types';
 
 export const UNASSIGNED_CONVERSATION = 'other-activity';
 
-/** Main-only stream records stay with Main; runs and approvals retain their recorded origin. */
+/** Source context for action requests; scheduled inbox items are independent of chat delivery. */
 export function inboxConversation(item: HomeItem, groups: HomeGroups): string {
 	if (item.kind === 'run') return item.run.conversationId ?? UNASSIGNED_CONVERSATION;
 	if (item.kind === 'approval') {
@@ -15,20 +15,6 @@ export function inboxConversation(item: HomeItem, groups: HomeGroups): string {
 			? (run.run.conversationId ?? UNASSIGNED_CONVERSATION)
 			: UNASSIGNED_CONVERSATION;
 	}
+	if (item.kind === 'message' || item.kind === 'alert') return UNASSIGNED_CONVERSATION;
 	return 'main';
-}
-
-export function conversationInbox(groups: HomeGroups, id: string, threadIds: string[]): HomeGroups {
-	const belongs = (item: HomeItem) => {
-		const origin = inboxConversation(item, groups);
-		return id === UNASSIGNED_CONVERSATION
-			? origin !== 'main' && !threadIds.includes(origin)
-			: origin === id;
-	};
-	return {
-		waiting: groups.waiting.filter(belongs),
-		failed: groups.failed.filter(belongs),
-		running: groups.running.filter(belongs),
-		review: groups.review.filter(belongs)
-	};
 }

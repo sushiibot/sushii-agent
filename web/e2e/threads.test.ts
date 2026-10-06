@@ -11,7 +11,7 @@ const reply = {
 	files: []
 };
 
-test('Conversations pins Main, groups inbox items by conversation and keeps search', async ({
+test('Conversations keeps Main first, a shared inbox and working thread search', async ({
 	page,
 	context
 }) => {
@@ -24,22 +24,20 @@ test('Conversations pins Main, groups inbox items by conversation and keeps sear
 		'page'
 	);
 	await page.keyboard.press('Escape');
-	await expect(page.getByRole('region', { name: 'Main chat' })).toContainText('Pinned');
+	await expect(page.getByRole('region', { name: 'Main chat' })).not.toContainText('Pinned');
 	for (const h of ['Threads', 'Archived']) {
 		await expect(page.getByRole('heading', { name: new RegExp(`^${h}`) })).toBeVisible();
 	}
 	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('Couch delivery');
-	await expect(page.locator('details[data-inbox="main"]')).not.toHaveAttribute('open');
-	await page.locator('details[data-inbox="main"] > summary').click();
-	await expect(page.locator('details[data-inbox="main"]')).toContainText('nightly-sync failed');
-	await expect(page.locator('details[data-inbox="other-activity"]')).not.toHaveAttribute('open');
+	await page.locator('details[data-inbox="shared"] > summary').click();
+	await expect(page.locator('details[data-inbox="shared"]')).toContainText('nightly-sync failed');
 	await page.getByRole('searchbox').fill('lease');
 	await expect(page.getByRole('heading', { name: '1 matching' })).toBeVisible();
 	await page.getByRole('link', { name: /Lease renewal/ }).click();
 	await expect(page).toHaveURL(/\/chats\/lease$/);
 });
 
-test('decisions rise to the top and topic work stays with its recorded conversation', async ({
+test('decisions name their source while topic work and heartbeats share one inbox', async ({
 	page,
 	context
 }) => {
@@ -71,14 +69,13 @@ test('decisions rise to the top and topic work stays with its recorded conversat
 	await expect(attention.getByRole('button', { name: /Approve send_email/ })).toBeVisible();
 	const main = page.getByRole('region', { name: 'Main chat', exact: true });
 	expect((await attention.boundingBox())!.y).toBeLessThan((await main.boundingBox())!.y);
-	const topicInbox = page.locator('details[data-inbox="oct-trip"]');
-	await expect(topicInbox).not.toHaveAttribute('open');
-	await topicInbox.locator('summary').click();
-	await expect(topicInbox).toContainText('Compare flight prices for the October trip');
-	await expect(page.locator('details[data-inbox="other-activity"]')).not.toContainText(
-		'Compare flight prices'
-	);
+	const inbox = page.locator('details[data-inbox="shared"]');
+	await inbox.locator('summary').click();
+	await expect(inbox).toContainText('Compare flight prices for the October trip');
+	await expect(inbox).toContainText('Your passport renewal is due Friday');
 	await expect(main).not.toContainText('Compare flight prices');
+	await expect(main).not.toContainText('Your passport renewal');
+	await expect(page.locator('details[data-inbox]')).toHaveCount(1);
 });
 
 test('a thread says it shares memory with Main, and back closes its sheet', async ({
@@ -175,6 +172,13 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await fixtureApp(context);
 		await page.goto('/chats');
 		await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
+		await checkScreen(page);
+		await page.locator('details[data-inbox="shared"] > summary').click();
+		await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
+		await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
+		const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
+		await checkScreen(page);
+		await picker.getByRole('button', { name: 'New conversation', exact: true }).click();
 		await checkScreen(page);
 		await page.goto('/chats/oct-trip');
 		await expect(page.getByText('Brief from Main')).toBeVisible();
@@ -403,4 +407,81 @@ test('context usage belongs to the selected thread rather than Main or its last 
 	await page.goBack();
 	await expect(sheet).toBeHidden();
 	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+});
+
+test('Discuss puts a heartbeat in the selected topic draft, preserves text and does not send', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	const sent: string[] = [];
+	page.on('request', (request) => {
+		if (
+			request.method() === 'POST' &&
+			/\/api\/(?:chat|threads\/[^/]+\/chat)\/messages(?:\?|$)/.test(request.url())
+		)
+			sent.push(request.url());
+	});
+	await page.goto('/chats/oct-trip');
+	await page
+		.getByRole('textbox', { name: 'Message', exact: true })
+		.fill('Keep these travel notes.');
+	await page.getByRole('link', { name: 'Back to Conversations' }).click();
+	await page.locator('details[data-inbox="shared"] > summary').click();
+	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
+	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
+	const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
+	await picker.getByRole('searchbox', { name: 'Find a conversation' }).fill('October');
+	await picker.getByRole('button', { name: 'October trip', exact: true }).click();
+	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
+	await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue(
+		/^Keep these travel notes\.\n\n> From heartbeat:\n> Your passport renewal/
+	);
+	expect(sent).toEqual([]);
+});
+
+test('Discuss creates a named conversation with the heartbeat in an unsent draft', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await page.goto('/chats');
+	await page.locator('details[data-inbox="shared"] > summary').click();
+	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
+	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
+	const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
+	await picker.getByRole('button', { name: 'New conversation', exact: true }).click();
+	await picker.getByRole('textbox', { name: 'Conversation name' }).fill('Passport renewal');
+	await picker.getByRole('button', { name: 'Create conversation', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Passport renewal', level: 1 })).toBeVisible();
+	await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue(
+		/^> From heartbeat:\n> Your passport renewal/
+	);
+});
+
+test('Discuss can return to the item and recover from a conversation load failure', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	await context.route('**/api/threads/oct-trip', (route) =>
+		route.fulfill({ status: 500, json: { error: 'Temporarily unavailable' } })
+	);
+	await page.goto('/chats');
+	await page.locator('details[data-inbox="shared"] > summary').click();
+	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
+	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
+	const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
+	await picker.getByRole('button', { name: 'October trip', exact: true }).click();
+	await expect(picker.getByRole('alert')).toBeVisible();
+	await picker.getByRole('button', { name: 'Back to item' }).click();
+	await expect(
+		page.getByRole('dialog').getByRole('heading', { name: 'From heartbeat' })
+	).toBeVisible();
+	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
+	await picker.getByRole('button', { name: 'Main chat', exact: true }).click();
+	await expect(page).toHaveURL(/\/chat$/);
+	await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue(
+		/^> From heartbeat:/
+	);
 });

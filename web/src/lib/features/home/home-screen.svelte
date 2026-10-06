@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import type { LocationReply } from '$lib/features/chat';
 	import CloudOff from '@lucide/svelte/icons/cloud-off';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
@@ -31,6 +32,8 @@
 		connection,
 		now,
 		peek,
+		peekContent,
+		peekLabel,
 		updateReady = false,
 		onopen,
 		onclose,
@@ -64,6 +67,8 @@
 		now: number;
 		/** The open peek sheet; leave out when closed. */
 		peek?: HomePeek;
+		peekContent?: Snippet;
+		peekLabel?: string;
 		updateReady?: boolean;
 		onopen?: (id: string) => void;
 		onclose?: () => void;
@@ -227,10 +232,12 @@
 {#if !hideSheet}
 	<RoutedSheet
 		open={!!peek}
-		label={shownPeek ? peekTitle(shownPeek) : ''}
+		label={peekLabel ?? (shownPeek ? peekTitle(shownPeek) : '')}
 		onclose={() => onclose?.()}
 	>
-		{#if shownPeek}
+		{#if peekContent}
+			{@render peekContent()}
+		{:else if shownPeek}
 			<Peek
 				peek={shownPeek}
 				{now}

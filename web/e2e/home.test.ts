@@ -94,10 +94,8 @@ test('groups what needs you in order and counts waiting items on the menu', asyn
 	await expect(page.getByRole('region', { name: 'Needs you', exact: true })).toContainText(
 		'Which day works'
 	);
-	await expect(page.locator('details[data-inbox="main"]')).toContainText('nightly-sync failed');
-	await expect(page.locator('details[data-inbox="other-activity"]')).toContainText(
-		'Compare flight prices'
-	);
+	await expect(page.locator('details[data-inbox="shared"]')).toContainText('nightly-sync failed');
+	await expect(page.locator('details[data-inbox="shared"]')).toContainText('Compare flight prices');
 	const menu = page.getByRole('button', { name: /^Menu/ });
 	await expect(menu).toHaveAccessibleName('Menu, 4 need you');
 	await menu.click();
@@ -160,7 +158,7 @@ test('a server error with nothing loaded shows an error and Retry', async ({ pag
 	await expect(page.getByText("Couldn't load your inbox.")).toBeVisible();
 	backend.set('home', 'normal');
 	await page
-		.getByLabel('Inbox for Main chat', { exact: true })
+		.getByLabel('Inbox', { exact: true })
 		.getByRole('button', { name: 'Try again' })
 		.click();
 	await expect(page.getByText('nightly-sync failed')).toBeVisible();
@@ -273,6 +271,7 @@ test('Ask the agent steps back to the chat under the inbox, with the alert quote
 	await (await openDrawer(page)).getByRole('link', { name: 'Conversations' }).click();
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await sheet(page).getByRole('button', { name: 'Ask the agent' }).click();
+	await sheet(page).getByRole('button', { name: 'Main chat', exact: true }).click();
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue(
 		/^> Scheduled job nightly-sync failed\n> rsync/
@@ -290,6 +289,7 @@ test('from a cold inbox link, Ask the agent opens the chat in place of the inbox
 	await page.goto('/inbox');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await sheet(page).getByRole('button', { name: 'Ask the agent' }).click();
+	await sheet(page).getByRole('button', { name: 'Main chat', exact: true }).click();
 	await expect(page).toHaveURL(/\/chat$/);
 	await page.goBack();
 	await expect(page).not.toHaveURL(/\/(inbox|chat)/);
@@ -463,7 +463,8 @@ test("a job's message opens in full, Reply quotes it into the chat, and it stays
 	await expect
 		.poll(() => backend.calls.filter((c) => c.path === '/api/home/opened').map((c) => c.body))
 		.toEqual([{ id: 'msg:ob-heartbeat-1' }]);
-	await sheet(page).getByRole('button', { name: 'Reply in chat' }).click();
+	await sheet(page).getByRole('button', { name: 'Discuss', exact: true }).click();
+	await sheet(page).getByRole('button', { name: 'Main chat', exact: true }).click();
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(page.getByRole('textbox')).toHaveValue(
 		/^> From heartbeat:\n> Your passport renewal is due \*\*Friday\*\*/

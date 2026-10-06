@@ -91,7 +91,7 @@ const mainProps = (messages: ChatMessage[], props: Record<string, unknown> = {})
 const chatsFrames: Frame[] = [
 	{
 		id: 'cs-1',
-		label: 'Conversations: Main pinned, inbox above threads',
+		label: 'Conversations: Main first, shared inbox',
 		screen: WithInbox,
 		props: list(),
 		...tabs,

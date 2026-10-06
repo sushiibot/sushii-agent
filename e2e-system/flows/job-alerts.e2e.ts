@@ -83,7 +83,7 @@ test("a failing scheduled job shows on Home and pushes; its recovery clears it a
 
     // The push's link, cold: the inbox loads, finds the job and opens it in its sheet.
     await page.goto("/inbox");
-    await page.locator('details[data-inbox="main"] > summary').click();
+    await page.locator('details[data-inbox="shared"] > summary').click();
     const row = page.getByRole("button", { name: new RegExp(`${JOB} failed`) });
     await expect(row).toBeVisible();
     await page.goto(`/inbox?item=job:${JOB}`);

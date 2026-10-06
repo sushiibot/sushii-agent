@@ -1,30 +1,25 @@
 import { expect, test } from 'bun:test';
-import { conversationInbox, inboxConversation } from './conversation-inbox';
+import { inboxConversation } from './conversation-inbox';
 import { busyGroups } from './fixtures';
 import type { HomeItem } from './types';
 
 const now = Date.now();
 
-test('main stream items stay with Main; recorded topic runs stay with their topic', () => {
+test('scheduled heartbeat messages and alerts are independent of Main chat', () => {
 	const groups = busyGroups(now);
-	const run = groups.running.find((item) => item.kind === 'run')!;
-	if (run.kind !== 'run') throw new Error('Missing run fixture');
-	run.run.conversationId = 'trip';
-	expect(inboxConversation(run, groups)).toBe('trip');
-	expect(conversationInbox(groups, 'trip', ['trip']).running).toEqual([run]);
-	expect(conversationInbox(groups, 'main', ['trip']).running).not.toContain(run);
-	expect(
-		conversationInbox(groups, 'main', ['trip']).review.some((item) => item.kind === 'message')
-	).toBe(true);
+	const message = groups.review.find((item) => item.kind === 'message')!;
+	const alert = groups.failed.find((item) => item.kind === 'alert')!;
+	expect(inboxConversation(message, groups)).toBe('other-activity');
+	expect(inboxConversation(alert, groups)).toBe('other-activity');
 });
 
-test('unlinked and missing conversations remain available under Other activity', () => {
+test('recorded run origins remain available as source context', () => {
 	const groups = busyGroups(now);
 	const run = groups.running.find((item) => item.kind === 'run')!;
 	if (run.kind !== 'run') throw new Error('Missing run fixture');
-	expect(conversationInbox(groups, 'other-activity', []).running).toContain(run);
-	run.run.conversationId = 'removed-topic';
-	expect(conversationInbox(groups, 'other-activity', ['trip']).running).toContain(run);
+	expect(inboxConversation(run, groups)).toBe('other-activity');
+	run.run.conversationId = 'trip';
+	expect(inboxConversation(run, groups)).toBe('trip');
 });
 
 test('approval origin takes precedence over agent identity', () => {
@@ -47,6 +42,4 @@ test('approval origin takes precedence over agent identity', () => {
 	};
 	groups.waiting.push(approval);
 	expect(inboxConversation(approval, groups)).toBe('trip');
-	expect(conversationInbox(groups, 'main', ['trip']).waiting).not.toContain(approval);
-	expect(conversationInbox(groups, 'trip', ['trip']).waiting).toContain(approval);
 });

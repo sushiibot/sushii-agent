@@ -11,8 +11,5 @@ export type {
 	HomeSheet,
 	TurnItem
 } from './types';
-export {
-	conversationInbox,
-	inboxConversation,
-	UNASSIGNED_CONVERSATION
-} from './conversation-inbox';
+export { inboxConversation, UNASSIGNED_CONVERSATION } from './conversation-inbox';
+export { default as DiscussionPicker } from './components/discussion-picker.svelte';

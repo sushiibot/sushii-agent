@@ -1,27 +1,21 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
 	import { ChatsScreen } from '$lib/features/threads';
-	import { conversationInbox, HomeScreen } from '$lib/features/home';
+	import { HomeScreen } from '$lib/features/home';
 	import { busyGroups } from '$lib/features/home/fixtures';
 
 	let props: ComponentProps<typeof ChatsScreen> = $props();
 </script>
 
-{#snippet inbox(id: string, title: string)}
-	{@const groups = conversationInbox(
-		busyGroups(props.now),
-		id,
-		(props.data?.threads ?? []).map((thread) => thread.id)
-	)}
+{#snippet inbox()}
+	{@const groups = { ...busyGroups(props.now), waiting: [] }}
 	{@const total = Object.values(groups).reduce((count, items) => count + items.length, 0)}
-	{#if total || id === 'main'}
-		<details aria-label="Inbox for {title}">
-			<summary class="flex min-h-12 cursor-pointer items-center px-3 text-sm text-muted-foreground"
-				>Inbox · {total}</summary
-			>
-			<HomeScreen embedded hideSheet {groups} remote={{ status: 'ready' }} now={props.now} />
-		</details>
-	{/if}
+	<details aria-label="Inbox">
+		<summary class="flex min-h-12 cursor-pointer items-center px-3 text-sm text-muted-foreground"
+			>Inbox · {total}</summary
+		>
+		<HomeScreen embedded hideSheet {groups} remote={{ status: 'ready' }} now={props.now} />
+	</details>
 {/snippet}
 
 {#snippet attention()}

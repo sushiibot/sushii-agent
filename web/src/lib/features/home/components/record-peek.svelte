@@ -94,7 +94,7 @@
 		<p class="text-sm text-muted-foreground">Scheduled · {m.job} · {ago(m.at, now)}</p>
 		<div class="text-ui [overflow-wrap:anywhere]"><Markdown text={m.text} /></div>
 		<div class="flex flex-col gap-2">
-			<Button onclick={() => onreply?.(item)}><Reply />Reply in chat</Button>
+			<Button onclick={() => onreply?.(item)}><Reply />Discuss</Button>
 			<div class="flex gap-2">
 				{#if m.runId && onopenrun}
 					<Button variant="outline" class="flex-1" onclick={() => onopenrun(m.runId!)}

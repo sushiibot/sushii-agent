@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import Pin from '@lucide/svelte/icons/pin';
 	import Archive from '@lucide/svelte/icons/archive';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { Button } from '$lib/ui/button';
@@ -28,7 +27,7 @@
 		onoptions,
 		onreload
 	}: {
-		inbox?: Snippet<[string, string]>;
+		inbox?: Snippet;
 		attention?: Snippet;
 		remote: RemoteLike;
 		data?: ChatsData;
@@ -99,9 +98,6 @@
 {#snippet lead()}
 	{@render attention?.()}
 	<section aria-label="Main chat" class="rounded-xl border bg-card px-1 py-1">
-		<div class="flex items-center gap-1.5 px-3 pt-2 text-meta text-muted-foreground">
-			<Pin class="size-3.5" aria-hidden="true" />Pinned
-		</div>
 		<ThreadRow
 			main={data?.main ?? {
 				state: 'idle',
@@ -112,7 +108,6 @@
 			href={mainHref}
 			{now}
 		/>
-		{@render inbox?.('main', 'Main chat')}
 	</section>
 {/snippet}
 
@@ -123,7 +118,6 @@
 		{now}
 		onoptions={onoptions ? () => onoptions?.(t) : undefined}
 	/>
-	{@render inbox?.(t.id, t.title)}
 {/snippet}
 
 {#snippet after()}
@@ -136,7 +130,7 @@
 {/snippet}
 
 {#snippet tail()}
-	{@render inbox?.('other-activity', 'Other activity')}
+	{@render inbox?.()}
 {/snippet}
 
 <ListScreen

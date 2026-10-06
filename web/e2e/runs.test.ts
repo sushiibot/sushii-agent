@@ -281,7 +281,7 @@ test('View activity from a Home peek replaces the sheet, and the run stays in th
 }) => {
 	await server(context);
 	await page.goto('/inbox');
-	await page.locator('details[data-inbox="other-activity"] > summary').click();
+	await page.locator('details[data-inbox="shared"] > summary').click();
 	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
 	await page.getByRole('dialog').getByRole('button', { name: 'View activity' }).click();
 	await expect(page).toHaveURL(new RegExp(`/runs/${RUN.expenses}$`));
