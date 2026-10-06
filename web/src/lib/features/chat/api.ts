@@ -12,9 +12,11 @@ import type {
 	UploadResponse
 } from '$lib/core/realtime/events';
 
-export type HistoryResult = { ok: true; page: HistoryResponse } | { ok: false };
+export type HistoryResult = { ok: true; page: HistoryResponse; cached?: boolean } | { ok: false };
 
 export interface ChatApi {
+	/** Refresh the durable offline snapshot after a live message lands. */
+	refreshHistoryCache?(): Promise<void>;
 	history(q: { before?: string; limit: number }): Promise<HistoryResult>;
 	postMessage(body: PostMessageBody): Promise<PostMessageResponse>;
 	/** Asks the bot to never deliver a posted message. `unknown`: it never stored it. */
@@ -44,12 +46,19 @@ export function uploadMissingIds(err: unknown): string[] | null {
 
 export function createHttpChatApi(base = '/chat'): ChatApi {
 	return {
+		async refreshHistoryCache() {
+			await send('GET', `${base}/history?limit=40`);
+		},
 		async history({ before, limit }) {
 			const q = new URLSearchParams({ limit: String(limit) });
 			if (before) q.set('before', before);
 			try {
 				const res = await send('GET', `${base}/history?${q}`);
-				return { ok: true, page: await json<HistoryResponse>(res) };
+				return {
+					ok: true,
+					page: await json<HistoryResponse>(res),
+					cached: res.headers.has('x-offline-snapshot')
+				};
 			} catch {
 				return { ok: false };
 			}

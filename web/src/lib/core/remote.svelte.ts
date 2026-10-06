@@ -32,12 +32,18 @@ export class Remote<T> {
 	 */
 	watch(): () => void {
 		if (!this.#focus || typeof document === 'undefined') return () => {};
-		if (this.#watchers++ === 0) document.addEventListener('visibilitychange', this.#onVisible);
+		if (this.#watchers++ === 0) {
+			document.addEventListener('visibilitychange', this.#onVisible);
+			globalThis.addEventListener?.('online', this.#onVisible);
+		}
 		let stopped = false;
 		return () => {
 			if (stopped) return;
 			stopped = true;
-			if (--this.#watchers === 0) document.removeEventListener('visibilitychange', this.#onVisible);
+			if (--this.#watchers === 0) {
+				document.removeEventListener('visibilitychange', this.#onVisible);
+				globalThis.removeEventListener?.('online', this.#onVisible);
+			}
 		};
 	}
 
@@ -70,7 +76,10 @@ export class Remote<T> {
 	}
 
 	destroy() {
-		if (this.#watchers > 0) document.removeEventListener('visibilitychange', this.#onVisible);
+		if (this.#watchers > 0) {
+			document.removeEventListener('visibilitychange', this.#onVisible);
+			globalThis.removeEventListener?.('online', this.#onVisible);
+		}
 		this.#watchers = 0;
 	}
 }

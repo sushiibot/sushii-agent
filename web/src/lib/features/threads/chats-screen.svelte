@@ -74,7 +74,7 @@
 </script>
 
 {#snippet banner()}
-	{#if !online}<ConnectionBanner state={{ kind: 'app-offline' }} />{/if}
+	{#if !online}<ConnectionBanner state={{ kind: 'app-offline', savedThreads: true }} />{/if}
 {/snippet}
 {#snippet toast()}<UpdateToast onreload={() => onreload?.()} />{/snippet}
 

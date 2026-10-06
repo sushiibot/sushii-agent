@@ -377,9 +377,17 @@ test('going offline shows the banner', async ({ page, context }) => {
 	await page.goto('/chat');
 	await expect(page.getByText('Say hi to your agent.')).toBeVisible();
 	await context.setOffline(true);
-	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
+	await expect(
+		page.getByText(
+			'Offline. Messages send when you reconnect. Saved conversations are available on this device.'
+		)
+	).toBeVisible();
 	await context.setOffline(false);
-	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeHidden();
+	await expect(
+		page.getByText(
+			'Offline. Messages send when you reconnect. Saved conversations are available on this device.'
+		)
+	).toBeHidden();
 });
 
 test('the reflow check catches content wider than the screen', async ({ page, context }) => {

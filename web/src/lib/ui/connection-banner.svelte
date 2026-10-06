@@ -2,7 +2,7 @@
 	export type ConnectionState =
 		| { kind: 'offline' }
 		/** Offline on a screen that sends nothing, so there's no queue to mention. */
-		| { kind: 'app-offline' }
+		| { kind: 'app-offline'; savedThreads?: boolean }
 		| { kind: 'reconnecting'; elapsed?: string }
 		| { kind: 'agent-offline' }
 		| { kind: 'reset' };
@@ -35,10 +35,16 @@
 		<span>This device isn't signed in as the owner. Check Tailscale, then reopen the app.</span>
 	{:else if state.kind === 'offline'}
 		<WifiOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-		<span>Offline. Messages send when you reconnect.</span>
+		<span
+			>Offline. Messages send when you reconnect. Saved conversations are available on this device.</span
+		>
 	{:else if state.kind === 'app-offline'}
 		<WifiOff class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-		<span>You're offline. The app reconnects on its own when the network is back.</span>
+		<span
+			>{state.savedThreads
+				? "You're offline. Browsing saved threads from the last 7 days."
+				: "You're offline. The app reconnects on its own when the network is back."}</span
+		>
 	{:else if state.kind === 'reconnecting'}
 		<LoaderCircle
 			class="mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none"

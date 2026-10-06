@@ -138,6 +138,8 @@ export class ChatStore {
 	#draftTimer: ReturnType<typeof setTimeout> | null = null;
 	#started = false;
 	#cleanup: (() => void)[] = [];
+	#cacheTimer: ReturnType<typeof setTimeout> | undefined;
+	#offlineHistory = false;
 
 	constructor(
 		readonly conversationId: ConversationId,
@@ -243,7 +245,8 @@ export class ChatStore {
 			this.#toastTimer,
 			this.#timeoutTimer,
 			this.#seenTimer,
-			this.#draftTimer
+			this.#draftTimer,
+			this.#cacheTimer
 		]) {
 			if (t) clearTimeout(t);
 		}
@@ -258,6 +261,15 @@ export class ChatStore {
 			else queue.push(ev);
 		}
 		this.#applyAll(queue);
+		if (
+			this.#api.refreshHistoryCache &&
+			batch.some((e) => ['reply', 'proactive', 'user', 'session', 'turn_final'].includes(e.type))
+		) {
+			clearTimeout(this.#cacheTimer);
+			this.#cacheTimer = setTimeout(() => {
+				void this.#api.refreshHistoryCache?.().catch(() => {});
+			}, 500);
+		}
 	}
 
 	#applyAll(queue: readonly ChatEnvelope[]) {
@@ -339,7 +351,10 @@ export class ChatStore {
 	#onTransport(state: TransportState) {
 		// Any first outcome (hello, a failed open, forbidden, hidden) ends start()'s wait.
 		this.#greet();
-		if (state === 'open') this.#flushOutbox(false);
+		if (state === 'open') {
+			this.#flushOutbox(false);
+			if (this.#offlineHistory) void this.#loadHistory();
+		}
 	}
 
 	showToast(text: string) {
@@ -359,6 +374,7 @@ export class ChatStore {
 		this.#hub.flush();
 		const fx: Effect[] = [];
 		if (r.ok) {
+			this.#offlineHistory = !!r.cached;
 			fx.push(...mergeHistory(this.#s, r.page.items));
 			this.#before = r.page.before;
 			this.hasOlder = r.page.before !== null;

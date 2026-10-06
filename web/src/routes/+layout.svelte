@@ -8,6 +8,8 @@
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { markBooted } from '$lib/core/pwa/boot-recovery';
 	import { hub } from '$lib/core/realtime/hub.svelte';
+	import { send } from '$lib/core/http';
+	import { threadsStore } from '$lib/features/threads';
 	import { needsYou } from '$lib/features/home';
 	import Shell from '$lib/ui/shell/shell.svelte';
 
@@ -22,6 +24,10 @@
 	onMount(() => {
 		markBooted();
 		pwa.start();
+		void threadsStore().list.ensure();
+		if (page.url.pathname !== '/chat') {
+			void send('GET', '/chat/history?limit=40').catch(() => {});
+		}
 		return features.start();
 	});
 </script>

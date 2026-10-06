@@ -213,7 +213,11 @@ test('offline sends queue, survive a reload, and go out with the same id', async
 	const { posts, opts } = await chatServer(context, { messageStatus: 'abort' });
 	await open(page);
 	await context.setOffline(true);
-	await expect(page.getByText('Offline. Messages send when you reconnect.')).toBeVisible();
+	await expect(
+		page.getByText(
+			'Offline. Messages send when you reconnect. Saved conversations are available on this device.'
+		)
+	).toBeVisible();
 	await type(page, 'Queued while offline');
 	await expect(bubble(page, 'Queued while offline')).toContainText(
 		"Queued, sends when you're back online"

@@ -1,3 +1,12 @@
+import {
+	cacheGroup,
+	cachedResponse,
+	clearResponses,
+	forgetResponse,
+	saveResponse
+} from './storage/offline-cache';
+import { offlineBrowsing } from './storage/offline.svelte';
+
 /** status 0 means the request never got an answer (offline, timeout, aborted). */
 export class HttpError extends Error {
 	constructor(
@@ -22,6 +31,7 @@ export function messageFor(status: number): string {
 }
 
 const TIMEOUT_MS = 15_000;
+let cacheEpoch = 0;
 
 /** Sends a same-origin /api request; any non-2xx answer throws an HttpError. */
 export async function send(
@@ -31,6 +41,8 @@ export async function send(
 	opts: { signal?: AbortSignal } = {}
 ): Promise<Response> {
 	let res: Response;
+	const startedEpoch = cacheEpoch;
+	const cacheable = method === 'GET' && cacheGroup(path) !== null;
 	const timeout = AbortSignal.timeout(TIMEOUT_MS);
 	try {
 		res = await fetch(`/api${path}`, {
@@ -41,15 +53,37 @@ export async function send(
 			signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
 		});
 	} catch (err) {
+		if (cacheable && !opts.signal?.aborted) {
+			const cached = await cachedResponse(path);
+			if (cached) {
+				offlineBrowsing.unreachable = true;
+				return cached;
+			}
+		}
 		if (err instanceof DOMException && err.name === 'TimeoutError') {
 			throw new HttpError(0, "The agent didn't answer in time. Try again.");
 		}
 		throw new HttpError(0, "Can't reach the agent. Check your connection.");
 	}
 	if (!res.ok) {
+		if ([401, 403].includes(res.status)) {
+			cacheEpoch++;
+			await clearResponses();
+			offlineBrowsing.unreachable = false;
+		} else if (cacheable && res.status === 404) await forgetResponse(path);
 		// The gateway's 403 is a plain-text page, so an error body is only kept when it parses.
 		const errorBody: unknown = await res.json().catch(() => undefined);
 		throw new HttpError(res.status, messageFor(res.status), errorBody);
+	}
+	if (cacheable && startedEpoch === cacheEpoch) {
+		offlineBrowsing.unreachable = false;
+		const text = await res.clone().text();
+		try {
+			JSON.parse(text);
+			await saveResponse(path, text);
+		} catch {
+			// Invalid responses must not replace a usable snapshot.
+		}
 	}
 	return res;
 }

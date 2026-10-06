@@ -4,6 +4,7 @@
 	import { resolve } from '$app/paths';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
 	import { keepScroll } from '$lib/core/nav/scroll';
+	import { offlineBrowsing } from '$lib/core/storage/offline.svelte';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import {
 		BranchSheet,
@@ -50,7 +51,7 @@
 	data={list.data}
 	{now}
 	bind:query
-	online={pwa.online}
+	online={pwa.online && !offlineBrowsing.unreachable}
 	updateReady={!!pwa.waiting}
 	mainHref={resolve('/chat')}
 	threadHref={(id) => resolve('/chats/[id]', { id })}

@@ -101,3 +101,22 @@ Daily notes shows `memory/YYYY-MM-DD.md`; History holds work recaps and run reco
 The browser reads the real workspace files and offers file-name search. It does not
 expose editing or revert actions. File reads are capped at 256 KB and directory scans
 are capped at 500 files, with a visible notice when content is limited.
+
+## Offline conversations
+
+The PWA saves text snapshots in IndexedDB on this device. It automatically downloads
+metadata and the newest 40 history items for the 20 most recently active, unarchived
+threads. Opening other threads or older history pages also saves them. Main's newest
+history page is saved when the app opens, and live replies refresh the saved page.
+
+Snapshots expire 7 days after download. The cache holds at most 20 threads and
+50 MiB of UTF-8 response data; eviction removes whole conversations, oldest first.
+The app shell, drafts and queued messages use separate storage. Photos and file
+contents are not downloaded for offline use. Browser storage pressure can remove
+snapshots sooner. Clearing site data removes them.
+
+A network failure uses an unexpired snapshot and shows the offline notice, including
+when internet works but the tailnet gateway cannot be reached. Live API errors remain
+visible. A permission refusal clears snapshots, and a missing thread removes its cache.
+The offline Threads list shows only locally available conversations. Reconnection
+refreshes the list and any open conversation loaded from a snapshot.

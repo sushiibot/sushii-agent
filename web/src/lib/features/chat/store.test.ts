@@ -441,3 +441,53 @@ test('a confirmed decision removes pending controls without waiting for an SSE r
 	expect(store.trayPhase).toBe('ready');
 	store.destroy();
 });
+
+test('durable live replies refresh the offline history snapshot', async () => {
+	const { transport, push } = runningTurnStream();
+	const api = recordingApi([]);
+	let refreshed = 0;
+	api.refreshHistoryCache = async () => {
+		refreshed++;
+	};
+	const hub = createHub({ transport });
+	const store = new ChatStore('main', { hub, api, outbox: memory(), drafts: memory() });
+	await store.start();
+	push({ type: 'reply', seq: 6, data: { key: 'new-reply', text: 'Saved reply', files: [] } });
+	await Bun.sleep(650);
+	expect(refreshed).toBe(1);
+	store.destroy();
+	hub.stop();
+});
+
+test('reconnecting refreshes a conversation loaded from an offline snapshot', async () => {
+	let state: (s: 'open' | 'reconnecting') => void = () => {};
+	const transport: ChatTransport = {
+		connect(_after, on, onState) {
+			state = onState;
+			setTimeout(() => {
+				onState('reconnecting');
+				on({
+					type: 'hello',
+					data: { headSeq: 0, workspace: 'online', openTurns: [], pending: NONE }
+				});
+			}, 0);
+			return () => {};
+		}
+	};
+	const api = recordingApi([]);
+	let calls = 0;
+	api.history = async () => ({
+		ok: true,
+		cached: ++calls === 1,
+		page: { items: [], before: null }
+	});
+	const hub = createHub({ transport });
+	const store = new ChatStore('main', { hub, api, outbox: memory(), drafts: memory() });
+	await store.start();
+	expect(calls).toBe(1);
+	state('open');
+	await Bun.sleep(50);
+	expect(calls).toBe(2);
+	store.destroy();
+	hub.stop();
+});

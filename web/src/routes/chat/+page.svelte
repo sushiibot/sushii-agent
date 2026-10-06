@@ -6,6 +6,7 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
+	import { offlineBrowsing } from '$lib/core/storage/offline.svelte';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import { hub } from '$lib/core/realtime/hub.svelte';
 	import {
@@ -87,7 +88,7 @@
 	});
 
 	const connection = $derived.by((): ConnectionState | 'forbidden' | undefined => {
-		if (!pwa.online) return { kind: 'offline' };
+		if (!pwa.online || offlineBrowsing.unreachable) return { kind: 'offline' };
 		if (hub.connection === 'forbidden') return 'forbidden';
 		if (hub.connection === 'reconnecting' && hub.reconnectingSince !== null) {
 			const secs = Math.floor((now - hub.reconnectingSince) / 1000);

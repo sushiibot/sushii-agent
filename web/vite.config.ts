@@ -106,6 +106,8 @@ export default defineConfig(() => {
 					: {
 							compilerOptions: { runes },
 							adapter: adapter({ fallback: 'index.html' }),
+							// The cached root shell must also boot on nested offline URLs.
+							paths: { relative: false },
 							version: { name: version },
 							// Registered by the app so it can watch for a waiting update.
 							serviceWorker: { register: false }

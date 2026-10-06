@@ -7,6 +7,7 @@
 	import { page } from '$app/state';
 	import { backTo } from '$lib/core/nav/back';
 	import { leaveSheet, routedSheet } from '$lib/core/nav/sheet';
+	import { offlineBrowsing } from '$lib/core/storage/offline.svelte';
 	import { pwa } from '$lib/core/pwa/pwa.svelte';
 	import {
 		modelsStore,
@@ -60,6 +61,7 @@
 	$effect(() => {
 		const r = remote;
 		untrack(() => void r.ensure());
+		return r.watch();
 	});
 	$effect(() => {
 		const t = setInterval(() => (now = Date.now()), 30_000);
@@ -244,13 +246,14 @@
 				onmodelquery: (q) => models.setQuery(q),
 				onpickmodel: (alias, role) =>
 					void models.pick(alias, role).then((ok) => ok && closeSheet()),
-				connection: !pwa.online
-					? { kind: 'offline' }
-					: store.workspace === 'offline'
-						? { kind: 'agent-offline' }
-						: store.reset
-							? { kind: 'reset' }
-							: undefined,
+				connection:
+					!pwa.online || offlineBrowsing.unreachable
+						? { kind: 'offline' }
+						: store.workspace === 'offline'
+							? { kind: 'agent-offline' }
+							: store.reset
+								? { kind: 'reset' }
+								: undefined,
 				toast: store.toast,
 				announce: store.announce,
 				viewer,

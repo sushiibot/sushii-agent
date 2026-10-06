@@ -50,7 +50,7 @@ export class ThreadsStore {
 	thread(id: string): Remote<ThreadDetail | null> {
 		let remote = this.#threads.get(id);
 		if (!remote) {
-			remote = new Remote(() => this.#api.get(id));
+			remote = new Remote(() => this.#api.get(id), { refetchOnFocus: true });
 			this.#threads.set(id, remote);
 		}
 		return remote;
