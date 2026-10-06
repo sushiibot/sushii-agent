@@ -13,7 +13,7 @@
 	import Evidence from './components/evidence.svelte';
 	import RunRow from './components/run-row.svelte';
 	import StepRow from './components/step-row.svelte';
-	import { kindLabel, RUN_FILTERS } from './format';
+	import { kindLabel, activityTitle } from './format';
 	import type { RunDetail, RunStep } from './types';
 
 	let {
@@ -54,29 +54,33 @@
 	} = $props();
 
 	const uid = $props.id();
-	let section = $state('overview');
-	let fullTitle = $state(false);
+	let section = $state('timeline');
 	let shownRun = $state<string>();
 	$effect(() => {
 		if (run?.runId !== shownRun) {
 			shownRun = run?.runId;
-			fullTitle = false;
-			section = openSteps.length ? 'timeline' : 'overview';
+			section = 'timeline';
 		}
 	});
 	const run = $derived(detail?.run);
-	const chatHref = $derived(
-		run?.kind === 'chat' ? conversationHref?.(run.conversationId ?? 'main') : undefined
+	const activeChildren = $derived(
+		detail?.children.filter((child) => child.status === 'running').length ?? 0
 	);
+	const conversationId = $derived(
+		run?.conversationId ??
+			detail?.parent?.conversationId ??
+			(run?.kind === 'chat' || detail?.parent?.kind === 'chat' ? 'main' : undefined)
+	);
+	const chatHref = $derived(conversationId ? conversationHref?.(conversationId) : undefined);
 	const outcome = $derived.by(() => {
 		if (!run) return '';
 		switch (run.status) {
 			case 'running':
-				return 'Still running. Open Timeline for the steps so far; this page refreshes when you come back to it.';
+				return 'Still running. Follow the steps in Activity.';
 			case 'done':
-				return 'Finished. That means it ran to the end, not that it worked: check the evidence.';
+				return 'Execution finished. Review the result and recorded checks below.';
 			case 'failed':
-				return 'Failed. The host recorded an error before the run could finish.';
+				return 'Failed. An error ended this attempt before it finished.';
 			case 'timeout':
 				return 'Timed out. The host stopped it before it finished.';
 			case 'aborted':
@@ -85,11 +89,11 @@
 	});
 	const sessionNote = $derived(
 		detail?.session === 'missing'
-			? "This run's transcript is gone, so there are no steps to show."
+			? 'The transcript is gone, so there are no steps to show.'
 			: detail?.session === 'outside'
-				? "This run's transcript is outside the agent's folders, so it wasn't read."
+				? "The transcript is outside the agent's folders, so it wasn't read."
 				: detail?.session === 'not-session'
-					? "This run didn't happen in a session, so it has no steps."
+					? 'No transcript was recorded for this system event.'
 					: null
 	);
 	const facts = $derived.by((): [string, string][] => {
@@ -130,209 +134,195 @@
 	<div class="flex flex-col gap-4" aria-hidden="true">
 		<Skeleton class="h-6 w-4/5" />
 		<Skeleton class="h-4 w-1/3" />
-		<Skeleton class="h-20 w-full rounded-xl" />
-		{#each [0, 1, 2, 3] as i (i)}
-			<Skeleton class="h-10 w-full" />
-		{/each}
+		{#each [0, 1, 2, 3] as i (i)}<Skeleton class="h-10 w-full" />{/each}
 	</div>
-	<p role="status" class="sr-only">Loading the run…</p>
+	<p role="status" class="sr-only">Loading activity…</p>
 {/snippet}
 
 <TabbedScreen
 	wide
 	hasContent={!!detail}
-	title="Run"
+	title={run?.kind === 'chat'
+		? 'Reply activity'
+		: run?.kind === 'flush' || run?.kind === 'rotate'
+			? 'System activity'
+			: 'Task'}
 	{back}
 	{banner}
 	state={{
 		remote,
 		offline: !online,
-		errorTitle: "Couldn't load this run.",
+		errorTitle: "Couldn't load this activity.",
 		onretry,
 		skeleton,
 		isEmpty: detail === null,
 		empty: {
-			title: 'Run not found',
-			body: 'It may be older than the runs the agent keeps, or the link is wrong. Its day in History may still have notes.'
+			title: 'Activity not found',
+			body: 'The record may no longer be available, or the link is wrong. History may still have notes.'
 		}
 	}}
 	tabs={[
-		{ value: 'overview', label: 'Overview' },
-		{ value: 'timeline', label: 'Timeline' },
-		{ value: 'evidence', label: 'Evidence' },
-		{ value: 'related', label: 'Related' }
+		{ value: 'timeline', label: 'Activity' },
+		{ value: 'evidence', label: 'Results' },
+		{ value: 'overview', label: 'Details' }
 	]}
 	bind:value={section}
-	label="Run sections"
+	label="Activity sections"
 >
 	{#snippet lead()}
 		{#if detail && run}
-			<div class="flex flex-col gap-3">
-				<header class="flex flex-col gap-2">
-					{#if run.title.length > 160}
-						<button
-							type="button"
-							class="flex min-h-12 w-full items-start gap-2 text-left"
-							aria-label={fullTitle ? 'Collapse run title' : 'Show full run title'}
-							aria-expanded={fullTitle}
-							onclick={() => (fullTitle = !fullTitle)}
-						>
-							<span
-								class="min-w-0 flex-1 text-lg leading-snug font-semibold [overflow-wrap:anywhere]"
-								class:line-clamp-3={!fullTitle}>{run.title}</span
-							>
-							<ChevronDown
-								class="mt-1 size-4 shrink-0 transition-transform motion-reduce:transition-none {fullTitle
-									? 'rotate-180'
-									: ''}"
-								aria-hidden="true"
-							/>
-						</button>
-					{:else}
-						<p class="text-lg leading-snug font-semibold [overflow-wrap:anywhere]">{run.title}</p>
-					{/if}
-					<p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-						<StatePill of={run.status} />
-						<span>{kindLabel(run)}</span>
+			<div class="flex flex-col gap-2">
+				{#if run.kind !== 'chat'}<p
+						class="text-lg leading-snug font-semibold [overflow-wrap:anywhere]"
+					>
+						{activityTitle(run)}
+					</p>{/if}
+				<p class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+					<StatePill of={run.status} label={run.status === 'done' ? 'Finished' : undefined} />
+					<span>{kindLabel(run)}{run.repo ? ` · ${run.repo}` : ''}</span>
+				</p>
+				{#if activeChildren && run.status !== 'running'}
+					<p role="status" class="text-sm text-muted-foreground">
+						{activeChildren} delegated {activeChildren === 1 ? 'task is' : 'tasks are'} still running.
 					</p>
-				</header>
+				{/if}
+				{#if chatHref || detail.parent || detail.children.length}
+					<div class="flex flex-wrap gap-x-3">
+						{#if chatHref}<Button variant="link" href={chatHref} class="px-0"
+								>Open conversation<ArrowUpRight /></Button
+							>{/if}
+						{#if detail.children.length}<Button
+								variant="link"
+								class="px-0"
+								onclick={() => (section = 'overview')}
+								>Delegated tasks · {detail.children.length}<ChevronDown /></Button
+							>
+						{:else if detail.parent}<Button
+								variant="link"
+								class="px-0"
+								href={runHref(detail.parent.runId)}
+								>Parent {detail.parent.kind === 'chat' ? 'reply' : 'task'}<ArrowUpRight /></Button
+							>{/if}
+					</div>
+				{/if}
 			</div>
 		{/if}
 	{/snippet}
 	{#snippet children(tabValue)}
 		{#if detail && run}
-			{#if tabValue === 'overview'}
-				<div class="flex flex-col gap-5">
-					{#if run.kind === 'chat'}
-						<p class="text-sm text-muted-foreground">
-							{RUN_FILTERS.find((f) => f.value === 'chat')?.description}
-						</p>
-						{#if chatHref}<Button variant="outline" href={chatHref} class="self-start"
-								>Open conversation<ArrowUpRight /></Button
-							>{/if}
-					{/if}
-					<dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-						{#each facts as [k, v] (k)}
-							<dt class="text-muted-foreground">{k}</dt>
-							<dd class="min-w-0 [overflow-wrap:anywhere] tabular-nums">{v}</dd>
-						{/each}
-					</dl>
-					<section
-						aria-labelledby="{uid}-out"
-						class="flex flex-col gap-2 rounded-xl border bg-card px-4 py-3"
+			{#if tabValue === 'timeline'}
+				<section aria-labelledby="{uid}-tl" class="flex flex-col gap-3">
+					<h2
+						id="{uid}-tl"
+						class="flex items-baseline justify-between gap-3 text-base font-semibold"
 					>
-						<h2 id="{uid}-out" class="text-sm font-medium text-muted-foreground">
-							Outcome, as the host recorded it
-						</h2>
-						<p class="text-sm">{outcome}</p>
-						{#if run.resultSummary}
-							<p class="text-sm [overflow-wrap:anywhere]">
-								<span class="text-muted-foreground">The agent noted:</span>
-								{run.resultSummary}
-							</p>
-						{/if}
-					</section>
-
-					{#if day}
-						<Button variant="outline" href={historyHref(day)} class="self-start">
-							<FileText />Notes from that day<ArrowUpRight />
-						</Button>
+						Activity
+						{#if steps.length}<span class="text-meta font-normal text-muted-foreground tabular-nums"
+								>{steps.length}{hasMore ? '+' : ''} steps</span
+							>{/if}
+					</h2>
+					<p class="text-meta text-muted-foreground">
+						Oldest first · tool details expand in place.
+					</p>
+					{#if run.kind === 'chat'}<p class="text-sm text-muted-foreground">
+							One reply cycle within your conversation, including tools and follow-up instructions.
+						</p>{/if}
+					{#if sessionNote}<p class="text-sm text-muted-foreground">{sessionNote}</p>
+					{:else if !steps.length}<p class="text-sm text-muted-foreground">
+							No steps recorded yet.
+						</p>
+					{:else}
+						<ol class="flex flex-col" data-run-activity>
+							{#each steps as step (step.id)}<li>
+									<StepRow {step} open={openSteps.includes(step.id)} />
+								</li>{/each}
+						</ol>
 					{/if}
-				</div>
-			{:else if tabValue === 'timeline'}
-				<div>
-					<section aria-labelledby="{uid}-tl" class="flex flex-col gap-2">
-						<h2
-							id="{uid}-tl"
-							class="flex items-baseline justify-between gap-3 text-base font-semibold"
+					{#if hasMore}
+						<Button
+							variant="outline"
+							class="self-start"
+							disabled={moreLoading}
+							onclick={() => onloadmore?.()}
 						>
-							Timeline
-							{#if steps.length}
-								<span class="text-meta font-normal text-muted-foreground tabular-nums"
-									>{steps.length}{hasMore ? '+' : ''} steps</span
-								>
-							{/if}
-						</h2>
-						{#if sessionNote}
-							<p class="rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground">
-								{sessionNote}
-							</p>
-						{:else if !steps.length}
-							<p class="text-sm text-muted-foreground">No steps recorded yet.</p>
-						{:else}
-							<ol class="flex flex-col">
-								{#each steps as step (step.id)}
-									<li><StepRow {step} open={openSteps.includes(step.id)} /></li>
-								{/each}
-							</ol>
-							{#if run.status === 'running' && !hasMore}
-								<p role="status" class="flex items-center gap-2 px-2 text-sm text-muted-foreground">
-									<LoaderCircle
-										class="size-4 animate-spin motion-reduce:animate-none"
-										aria-hidden="true"
-									/>
-									The agent is still working on this run.
-								</p>
-							{/if}
-						{/if}
-						{#if hasMore}
-							<Button
-								variant="outline"
-								class="self-start"
-								disabled={moreLoading}
-								onclick={() => onloadmore?.()}
-							>
-								{#if moreLoading}
-									<LoaderCircle
-										class="animate-spin motion-reduce:animate-none"
-										aria-hidden="true"
-									/>Loading more steps…
-								{:else}
-									<ChevronDown />Show more steps
-								{/if}
-							</Button>
-							{#if moreError}
-								<p role="alert" class="text-sm text-failed">
-									Couldn't load more steps. {moreError}
-								</p>
-							{/if}
-						{/if}
-					</section>
-				</div>
+							{#if moreLoading}<LoaderCircle
+									class="animate-spin motion-reduce:animate-none"
+									aria-hidden="true"
+								/>Loading more steps…
+							{:else}<ChevronDown />Show more steps{/if}
+						</Button>
+						{#if moreError}<p role="alert" class="text-sm text-failed">
+								Couldn't load more steps. {moreError}
+							</p>{/if}
+					{/if}
+				</section>
 			{:else if tabValue === 'evidence'}
-				<div>
+				<div class="flex flex-col gap-6">
+					<section aria-labelledby="{uid}-out" class="flex flex-col gap-2">
+						<h2 id="{uid}-out" class="text-base font-semibold">Result</h2>
+						<p class="text-sm">{outcome}</p>
+						{#if run.resultSummary}<p
+								class="text-sm leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap"
+							>
+								{run.resultSummary}
+							</p>{/if}
+						{#if detail.children.some((child) => child.status === 'running')}<p
+								class="text-sm text-muted-foreground"
+							>
+								Delegated work is still running. Open Details to follow each task.
+							</p>{/if}
+					</section>
 					<Evidence evidence={detail.evidence} approvals={detail.approvals} files={detail.files} />
 				</div>
-			{:else if tabValue === 'related'}
-				<div>
+			{:else if tabValue === 'overview'}
+				<div class="flex flex-col gap-6">
+					<section aria-labelledby="{uid}-brief" class="flex flex-col gap-2">
+						<h2 id="{uid}-brief" class="text-base font-semibold">
+							{run.kind === 'chat'
+								? 'Request'
+								: run.kind === 'flush' || run.kind === 'rotate'
+									? 'System event'
+									: 'Task brief'}
+						</h2>
+						<p class="text-sm leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap">
+							{steps.find((step) => step.type === 'user')?.text ?? run.title}
+						</p>
+					</section>
 					{#if detail.parent || detail.children.length}
-						<section aria-labelledby="{uid}-rel" class="flex flex-col gap-1">
-							<h2 id="{uid}-rel" class="text-sm font-medium text-muted-foreground">Related runs</h2>
+						<section aria-labelledby="{uid}-agents" class="flex flex-col gap-2">
+							<h2 id="{uid}-agents" class="text-base font-semibold">Agents and delegation</h2>
 							<ul class="flex flex-col">
-								{#if detail.parent}
-									<li class="flex flex-col">
-										<span class="px-2 pt-1 text-meta text-muted-foreground">Started by</span>
-										<RunRow run={detail.parent} {now} href={runHref(detail.parent.runId)} />
-									</li>
-								{/if}
-								{#each detail.children as child (child.runId)}
-									<li class="flex flex-col">
-										<span class="px-2 pt-1 text-meta text-muted-foreground"
-											>Started in the background</span
-										>
-										<RunRow run={child} {now} href={runHref(child.runId)} />
-									</li>
-								{/each}
+								{#if detail.parent}<li class="flex flex-col">
+										<span class="px-2 text-meta text-muted-foreground"
+											>Parent {detail.parent.kind === 'chat' ? 'reply' : 'task'}</span
+										><RunRow run={detail.parent} {now} href={runHref(detail.parent.runId)} />
+									</li>{/if}
+								{#each detail.children as child (child.runId)}<li class="flex flex-col">
+										<span class="px-2 text-meta text-muted-foreground">Delegated task</span><RunRow
+											run={child}
+											{now}
+											href={runHref(child.runId)}
+										/>
+									</li>{/each}
 							</ul>
 						</section>
 					{/if}
-
-					{#if !detail.parent && !detail.children.length}
-						<h2 class="text-base font-semibold">Related runs</h2>
-						<p class="mt-2 text-sm text-muted-foreground">
-							This run has no parent or background runs.
+					<section aria-labelledby="{uid}-execution" class="flex flex-col gap-2">
+						<h2 id="{uid}-execution" class="text-base font-semibold">Execution details</h2>
+						<p class="text-sm text-muted-foreground">
+							This record covers one execution attempt. Follow-up replies remain in the
+							conversation.
 						</p>
-					{/if}
+						<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+							{#each facts as [k, v] (k)}<dt class="text-muted-foreground">{k}</dt>
+								<dd class="min-w-0 [overflow-wrap:anywhere] tabular-nums">{v}</dd>{/each}
+							<dt class="text-muted-foreground">Run ID</dt>
+							<dd class="min-w-0 font-mono text-code [overflow-wrap:anywhere]">{run.runId}</dd>
+						</dl>
+					</section>
+					{#if day}<Button variant="outline" href={historyHref(day)} class="self-start"
+							><FileText />Notes from that day<ArrowUpRight /></Button
+						>{/if}
 				</div>
 			{/if}
 		{/if}

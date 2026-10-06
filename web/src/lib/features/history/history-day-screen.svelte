@@ -71,7 +71,7 @@
 					{costLabel(day.cost)}
 					{#if day.cost?.unpricedRuns}
 						· {day.cost.unpricedRuns}
-						{day.cost.unpricedRuns === 1 ? 'run has' : 'runs have'} no recorded price
+						{day.cost.unpricedRuns === 1 ? 'execution has' : 'executions have'} no recorded price
 					{/if}
 				</p>
 			{/if}
@@ -97,7 +97,7 @@
 	}}
 	tabs={[
 		{ value: 'recaps', label: 'Recaps' },
-		{ value: 'runs', label: `Runs (${day?.runs.length ?? 0})` }
+		{ value: 'runs', label: `Activity (${day?.runs.length ?? 0})` }
 	]}
 	bind:value={section}
 	label="History sections"
@@ -142,7 +142,7 @@
 				</section>
 			{:else if tabValue === 'runs'}
 				<section aria-labelledby="{uid}-r" class="flex flex-col gap-1">
-					<h2 id="{uid}-r" class="text-base font-semibold">Runs that day</h2>
+					<h2 id="{uid}-r" class="text-base font-semibold">Activity that day</h2>
 					<p class="mb-2 text-sm text-muted-foreground">
 						Each record is one chat response or task attempt. Open it to see the steps, result and
 						evidence.
@@ -154,7 +154,7 @@
 							{/each}
 						</ul>
 					{:else}
-						<p class="text-sm text-muted-foreground">No runs started that day.</p>
+						<p class="text-sm text-muted-foreground">No activity started that day.</p>
 					{/if}
 				</section>
 			{/if}

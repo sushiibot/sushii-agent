@@ -80,7 +80,7 @@
 
 {#snippet actions()}
 	{#if onnew}
-		<Button variant="ghost" size="lg" onclick={onnew}><Plus />New thread</Button>
+		<Button variant="ghost" size="lg" onclick={onnew}><Plus />New conversation</Button>
 	{/if}
 {/snippet}
 
@@ -96,7 +96,7 @@
 			</div>
 		{/each}
 	</div>
-	<p role="status" class="sr-only">Loading threads…</p>
+	<p role="status" class="sr-only">Loading conversations…</p>
 {/snippet}
 
 {#snippet lead()}
@@ -104,7 +104,7 @@
 		<section aria-label="Chat" class="rounded-xl border bg-card px-1 py-1">
 			<ThreadRow main={data.main} href={mainHref} {now} />
 			<p class="px-3 pb-2 text-meta text-muted-foreground">
-				Your general-purpose conversation. Return to a thread for its topic.
+				Your general-purpose conversation. Return to a conversation for its topic.
 			</p>
 		</section>
 	{/if}
@@ -122,34 +122,34 @@
 {#snippet after()}
 	{#if data && !q}
 		<p class="px-1 text-meta text-muted-foreground">
-			Inactive threads move below into Archived after {data.archiveAfterDays} days. Send a message to
-			resume any thread. History stays available.
+			Inactive conversations move below into Archived after {data.archiveAfterDays} days. Send a message
+			to resume any conversation. History stays available.
 		</p>
 	{/if}
 {/snippet}
 
 <ListScreen
-	title="Threads"
+	title="Conversations"
 	{banner}
 	{actions}
 	toast={updateReady ? toast : undefined}
 	bind:search={query}
-	searchLabel="Search threads"
+	searchLabel="Search conversations"
 	state={{
 		remote,
 		offline: !online,
-		errorTitle: "Couldn't load your threads.",
+		errorTitle: "Couldn't load your conversations.",
 		onretry,
 		skeleton,
 		empty: q
 			? {
-					title: 'No threads match',
-					body: `No thread mentions “${query.trim()}”.`
+					title: 'No conversations match',
+					body: `No conversation mentions “${query.trim()}”.`
 				}
 			: {
-					title: 'No threads yet',
-					body: 'Main is above. When a topic keeps coming back, start a thread from a reply in Main, or here.',
-					...(onnew ? { action: { label: 'Start a thread', onclick: onnew } } : {})
+					title: 'No conversations yet',
+					body: 'Main is above. When a topic keeps coming back, start a conversation from a reply in Main, or here.',
+					...(onnew ? { action: { label: 'Start a conversation', onclick: onnew } } : {})
 				}
 	}}
 	{sections}

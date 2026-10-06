@@ -202,7 +202,7 @@
 	busy={threads.busy}
 	error={threads.error}
 	sendable={threads.canSend}
-	back={{ href: resolve('/chats'), label: 'Back to Threads', onclick: goBack }}
+	back={{ href: resolve('/chats'), label: 'Back to Conversations', onclick: goBack }}
 	writeHref={(w) => resolve('/memory/writes/[id]', { id: w })}
 	memoryHref={resolve('/memory/writes')}
 	chat={store

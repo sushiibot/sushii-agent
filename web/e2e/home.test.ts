@@ -244,7 +244,7 @@ test('a failed job peeks with its error, and Dismiss takes it off Home', async (
 	await page.goto('/inbox');
 	await page.getByRole('button', { name: /nightly-sync failed/ }).click();
 	await expect(sheet(page).getByText('rsync: connection to backup.lan timed out')).toBeVisible();
-	await expect(sheet(page).getByRole('button', { name: 'Open run' })).toBeVisible();
+	await expect(sheet(page).getByRole('button', { name: 'View activity' })).toBeVisible();
 	await sheet(page).getByRole('button', { name: 'Dismiss' }).click();
 	await expect(sheet(page)).toBeHidden();
 	await expect(page.getByText('nightly-sync failed')).toBeHidden();
@@ -422,7 +422,7 @@ test('opening a run tells the bot once, and it stays in the inbox as read on eve
 	const { backend } = await homeServer(context);
 	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
-	await sheet(page).getByRole('button', { name: 'Open run' }).click();
+	await sheet(page).getByRole('button', { name: 'View activity' }).click();
 	await expect(page).toHaveURL(/\/runs\//);
 	await expect
 		.poll(() => backend.calls.filter((c) => c.path === '/api/home/opened').map((c) => c.body))

@@ -120,7 +120,7 @@
 		if (onbranch && !message.streaming)
 			out.push({
 				id: 'branch',
-				label: 'Start a thread from here',
+				label: 'Start a conversation from here',
 				icon: Split,
 				onclick: () => onbranch(message)
 			});
@@ -303,26 +303,26 @@
 						</a>
 					{:else if part.type === 'data-thread-offer'}
 						<section
-							aria-label="Thread suggestion"
+							aria-label="Conversation suggestion"
 							class="flex flex-col gap-3 rounded-xl border border-brand/40 bg-card p-3.5 shadow-[0_6px_20px_-14px_rgb(0_0_0/0.35)]"
 						>
 							<p class="flex items-center gap-2 text-sm font-semibold">
 								<span class="grid size-7 place-items-center rounded-md bg-brand/12 text-brand">
 									<Split class="size-4" aria-hidden="true" />
 								</span>
-								Start a thread: {part.data.title}
+								Start a conversation: {part.data.title}
 							</p>
 							<p class="text-sm text-muted-foreground">{part.data.reason}</p>
 							{#if part.data.openedAs}
 								<a
 									href="/chats/{part.data.openedAs}"
 									class="inline-flex items-center gap-1 self-start text-sm font-medium text-brand hover:underline"
-									>Moved to the thread<ArrowUpRight class="size-3.5" aria-hidden="true" /></a
+									>Moved to the conversation<ArrowUpRight class="size-3.5" aria-hidden="true" /></a
 								>
 							{:else if onstartthread}
 								<div class="flex flex-wrap gap-2">
 									<Button size="lg" onclick={() => onstartthread(message.id)}
-										><Split />Start thread</Button
+										><Split />Start conversation</Button
 									>
 									<Button size="lg" variant="ghost" onclick={() => onkeephere?.(message.id)}
 										>Keep it here</Button
@@ -358,8 +358,8 @@
 							{/if}
 							<p class="border-t pt-3 text-xs text-muted-foreground">
 								{part.data.recentFromMain
-									? `The thread also got the last ${part.data.recentFromMain} messages from Main.`
-									: 'The thread starts from this brief only, not from Main’s history.'}
+									? `The conversation also got the last ${part.data.recentFromMain} messages from Main.`
+									: 'The conversation starts from this brief only, not from Main’s history.'}
 							</p>
 						</section>
 					{:else if part.type === 'data-thread-report'}
@@ -370,14 +370,15 @@
 							<Archive class="mt-0.5 size-4 shrink-0 text-review" aria-hidden="true" />
 							<span class="flex min-w-0 flex-col gap-0.5">
 								<span class="text-xs text-muted-foreground"
-									>Thread closed · <span class="font-medium text-foreground">{part.data.title}</span
+									>Conversation archived · <span class="font-medium text-foreground"
+										>{part.data.title}</span
 									></span
 								>
 								<span>{part.data.line}</span>
 							</span>
 							<ArrowUpRight
 								class="mt-0.5 ml-auto size-4 shrink-0 text-muted-foreground"
-								aria-label="View archived thread"
+								aria-label="View archived conversation"
 							/>
 						</a>
 					{:else if part.type === 'data-memory-write'}

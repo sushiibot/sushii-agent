@@ -73,7 +73,7 @@ test('Copy and Share sit under the reply; Copy takes the rendered text and says 
 
 	const reply = row(page, 'Booked Eastside');
 	await expect(reply.getByRole('button')).toHaveText(['', '', '']);
-	await expect(reply.getByRole('button', { name: 'Start a thread from here' })).toBeVisible();
+	await expect(reply.getByRole('button', { name: 'Start a conversation from here' })).toBeVisible();
 	await expect(reply).toHaveAccessibleName('Actions for the reply');
 	await expect(reply.getByRole('button', { name: 'Copy reply' })).toBeVisible();
 	await expect(reply.getByRole('button', { name: 'Share reply' })).toBeVisible();
@@ -110,7 +110,7 @@ test('no Share where the browser has none', async ({ page, context }) => {
 		row(page, 'Booked Eastside').getByRole('button', { name: 'Share reply' })
 	).toHaveCount(0);
 	await expect(
-		row(page, 'Booked Eastside').getByRole('button', { name: 'Start a thread from here' })
+		row(page, 'Booked Eastside').getByRole('button', { name: 'Start a conversation from here' })
 	).toBeVisible();
 });
 

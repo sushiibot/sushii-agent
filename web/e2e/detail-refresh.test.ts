@@ -10,8 +10,8 @@ test('failed detail refresh keeps the selected panel and expanded steps mounted 
 	await fixtureApp(context);
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto(`/runs/${RUN}`);
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
-	const panel = page.getByRole('tabpanel', { name: 'Timeline', exact: true });
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+	const panel = page.getByRole('tabpanel', { name: 'Activity', exact: true });
 	await expect
 		.poll(async () => {
 			const pane = await panel.boundingBox();
@@ -47,7 +47,7 @@ test('failed detail refresh keeps the selected panel and expanded steps mounted 
 	release();
 	await expect(panel.getByRole('alert')).toContainText("Couldn't refresh this page.");
 	await expect(page.getByRole('alert')).toHaveCount(1);
-	await expect(page.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute(
+	await expect(page.getByRole('tab', { name: 'Activity', exact: true })).toHaveAttribute(
 		'aria-selected',
 		'true'
 	);
@@ -65,7 +65,7 @@ test('failed detail refresh keeps the selected panel and expanded steps mounted 
 	await expect(page.getByRole('alert')).toHaveCount(0);
 	await expect(step).toHaveAttribute('aria-expanded', 'true');
 	expect(await mountedStep!.evaluate((el) => el.isConnected)).toBe(true);
-	await expect(page.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute(
+	await expect(page.getByRole('tab', { name: 'Activity', exact: true })).toHaveAttribute(
 		'aria-selected',
 		'true'
 	);

@@ -65,7 +65,7 @@
 
 {#snippet lead()}
 	<p class="text-sm text-muted-foreground">
-		Work history by day: the agent’s written recaps and the runs behind them.
+		Work history by day: the agent’s written recaps and the activity behind them.
 	</p>
 	{#if memoryHref}
 		<Button variant="outline" href={memoryHref} class="self-start">View saved memory</Button>
@@ -103,7 +103,7 @@
 				{day.sessions || day.runs
 					? [
 							day.sessions && count(day.sessions, 'recap', 'recaps'),
-							day.runs && count(day.runs, 'run', 'runs')
+							day.runs && count(day.runs, 'execution', 'executions')
 						]
 							.filter(Boolean)
 							.join(' · ')

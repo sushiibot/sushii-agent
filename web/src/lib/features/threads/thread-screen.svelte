@@ -133,14 +133,14 @@
 			variant="ghost"
 			size="lg"
 			class="justify-start"
-			onclick={() => onopensheet?.('thread-settings')}><Pencil />Rename thread</Button
+			onclick={() => onopensheet?.('thread-settings')}><Pencil />Rename conversation</Button
 		>
 		{#if !archived}
 			<Button
 				variant="ghost"
 				size="lg"
 				class="justify-start"
-				onclick={() => onopensheet?.('thread-close')}><Archive />Archive thread</Button
+				onclick={() => onopensheet?.('thread-close')}><Archive />Archive conversation</Button
 			>
 		{/if}
 	</div>
@@ -150,7 +150,7 @@
 	{#if !archived && !sendable}
 		<p class="flex items-center gap-3 px-4 py-3 text-sm text-muted-foreground">
 			<Archive class="size-4 shrink-0" aria-hidden="true" />
-			Read only for now: the agent can't take messages in threads yet.
+			Read only for now: the agent can't take messages in conversations yet.
 		</p>
 	{/if}
 {/snippet}
@@ -161,7 +161,7 @@
 		<Skeleton class="h-10 w-3/5 self-end rounded-2xl" />
 		<Skeleton class="h-16 w-4/5 rounded-2xl" />
 	</div>
-	<p role="status" class="sr-only">Loading the thread…</p>
+	<p role="status" class="sr-only">Loading the conversation…</p>
 {/snippet}
 
 {#if thread && chat}
@@ -177,16 +177,16 @@
 	/>
 {:else}
 	<DetailScreen
-		title={detail === null ? 'Thread' : 'Loading thread'}
+		title={detail === null ? 'Conversation' : 'Loading conversation'}
 		{back}
 		state={{
 			remote: detail === null ? { status: 'ready' } : remote,
 			isEmpty: detail === null,
 			empty: {
-				title: 'No such thread',
-				body: 'Return to Threads to choose another conversation.'
+				title: 'Conversation not found',
+				body: 'Return to Conversations to choose another conversation.'
 			},
-			errorTitle: "Couldn't load this thread.",
+			errorTitle: "Couldn't load this conversation.",
 			onretry,
 			skeleton
 		}}
@@ -197,7 +197,7 @@
 
 <RoutedSheet
 	open={!!threadSheet}
-	label={shown === 'thread-close' ? 'Archive thread' : 'Memory shared with Main'}
+	label={shown === 'thread-close' ? 'Archive conversation' : 'Memory shared with Main'}
 	onclose={() => onclosesheet?.()}
 >
 	{#if shown === 'thread-memory' && detail}
@@ -205,19 +205,22 @@
 			<div class="flex flex-col gap-1">
 				<h2 class="text-lg font-semibold">Shares memory with Main</h2>
 				<p class="text-sm text-muted-foreground">
-					This thread has its own conversation but reads and writes the same memory as Main.
-					{#if thread?.memoryTracking !== false}Its writes are tagged with the thread, so you can
-						check or undo them.{:else}Memory changes stay available after you archive the thread.{/if}
+					This conversation has its own history but reads and writes the same memory as Main.
+					{#if thread?.memoryTracking !== false}Its writes are tagged with the conversation, so you
+						can check or undo them.{:else}Memory changes stay available after you archive the
+						conversation.{/if}
 				</p>
 			</div>
 			{#if detail.writes.length}
 				<h3 class="text-sm font-medium">
 					{detail.writes.length}
-					{detail.writes.length === 1 ? 'write' : 'writes'} from this thread
+					{detail.writes.length === 1 ? 'write' : 'writes'} from this conversation
 				</h3>
 				{@render writeList(detail.writes)}
 			{:else if thread?.memoryTracking !== false}
-				<p class="text-sm text-muted-foreground">Nothing written to memory from this thread yet.</p>
+				<p class="text-sm text-muted-foreground">
+					Nothing written to memory from this conversation yet.
+				</p>
 			{/if}
 			{#if thread?.memoryTracking !== false}<Button variant="outline" size="lg" href={memoryHref}
 					>All memory changes</Button
@@ -228,8 +231,8 @@
 			<div class="flex flex-col gap-1">
 				<h2 class="text-lg font-semibold">Archive {detail.summary.title}?</h2>
 				<p class="text-sm text-muted-foreground">
-					Move this thread into the visible Archived section. Its history stays available; send a
-					message whenever you want to continue.
+					Move this conversation into the visible Archived section. Its history stays available;
+					send a message whenever you want to continue.
 				</p>
 			</div>
 			{#if error}<p role="alert" class="text-sm text-failed">Couldn't archive it. {error}</p>{/if}
@@ -238,7 +241,7 @@
 					{#if busy}<LoaderCircle
 							class="animate-spin motion-reduce:animate-none"
 							aria-hidden="true"
-						/>Archiving…{:else}<Archive />Archive thread{/if}
+						/>Archiving…{:else}<Archive />Archive conversation{/if}
 				</Button>
 				<Button size="lg" variant="ghost" onclick={() => onclosesheet?.()}>Keep current</Button>
 			</div>

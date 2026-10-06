@@ -330,11 +330,11 @@ const listProps = (props: Record<string, unknown> = {}) => ({
 const runListFrames: Frame[] = [
 	{
 		id: 'rl-1',
-		label: 'Runs by day',
+		label: 'Work by day',
 		screen: RunListScreen,
 		props: listProps(),
 		...detail('runs'),
-		next: 'Show older runs',
+		next: 'Show older activity',
 		hits: { 'show older': 'rl-2' }
 	},
 	{
@@ -363,9 +363,9 @@ const runListFrames: Frame[] = [
 	},
 	{
 		id: 'rl-5',
-		label: 'Runs not available yet',
+		label: 'Work not available yet',
 		screen: RunListScreen,
-		props: listProps({ remote: failed("Runs aren't available yet."), runs: [] }),
+		props: listProps({ remote: failed("Work activity isn't available yet."), runs: [] }),
 		...detail('runs'),
 		branch: 'Bot without the runs feature'
 	},
@@ -635,7 +635,7 @@ export const m23Flows: Flow[] = [
 		code: 'HM',
 		title: 'Home: needs you',
 		intro:
-			'Grouped by what blocks progress: waiting on you, failed, running, ready for review. Every row opens a peek sheet. Approvals peek with the same tray as the chat, held for 1s; questions with the same ask card. Failed jobs and runs peek as the agent’s own records, with Open run and Dismiss.',
+			'Grouped by what blocks progress: waiting on you, failed, running, ready for review. Every row opens a peek sheet. Approvals peek with the same tray as the chat, held for 1s; questions with the same ask card. Failed jobs and runs peek as the agent’s own records, with View activity and Dismiss.',
 		frames: homeFrames
 	},
 	{
@@ -649,17 +649,17 @@ export const m23Flows: Flow[] = [
 	{
 		id: 'runs',
 		code: 'RL',
-		title: 'Runs',
+		title: 'Work',
 		intro:
-			'Every chat turn, scheduled job and background run, by day, with the status the host recorded.',
+			'Delegated, scheduled and separate agent tasks by day. Replies and system events stay in the Activity log.',
 		frames: runListFrames
 	},
 	{
 		id: 'run',
 		code: 'RD',
-		title: 'Run detail',
+		title: 'Task activity',
 		intro:
-			'The outcome as the host recorded it, never a green tick: "done" means it finished, not that it worked. Evidence lists checks, changed code, files sent and memory writes. Tool steps start collapsed; file paths are text.',
+			'Activity shows chronological steps. Results brings together the recorded outcome, checks and outputs. Details holds the full request, agent delegation and execution metadata.',
 		frames: runDetailFrames
 	},
 	{

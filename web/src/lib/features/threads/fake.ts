@@ -7,7 +7,7 @@ import type { ChatsData, ThreadDetail, ThreadSummary } from './types';
 function failure(scenario: string): Error | null {
 	if (scenario === 'error') return new Error("The agent's server didn't answer.");
 	if (scenario === 'offline') return new Error("Can't reach the agent right now.");
-	if (scenario === 'unsupported') return new Error("Threads aren't available yet.");
+	if (scenario === 'unsupported') return new Error("Conversations aren't available yet.");
 	return null;
 }
 

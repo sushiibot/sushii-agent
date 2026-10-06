@@ -43,7 +43,7 @@ async function change(page: Page, direction: 'next' | 'previous') {
 }
 
 for (const [path, first, second] of [
-	['/runs/01K6B4D2F4H6K8M0P2R4T6V8X0', 'Overview', 'Timeline'],
+	['/runs/01K6B4D2F4H6K8M0P2R4T6V8X0', 'Activity', 'Results'],
 	['/connectors/code-host', 'Tools', 'History']
 ])
 	test(`touch swipes switch adjacent sections on ${path}`, async ({ page, context }) => {
@@ -66,7 +66,10 @@ test('history day swipes between recaps and runs', async ({ page, context }) => 
 	await page.getByRole('main').getByRole('listitem').first().getByRole('link').click();
 	await expect(page.getByRole('tab', { name: 'Recaps' })).toHaveAttribute('aria-selected', 'true');
 	await change(page, 'next');
-	await expect(page.getByRole('tab', { name: /^Runs/ })).toHaveAttribute('aria-selected', 'true');
+	await expect(page.getByRole('tab', { name: /^Activity/ })).toHaveAttribute(
+		'aria-selected',
+		'true'
+	);
 	await change(page, 'previous');
 	await expect(page.getByRole('tab', { name: 'Recaps' })).toHaveAttribute('aria-selected', 'true');
 });
@@ -74,7 +77,7 @@ test('history day swipes between recaps and runs', async ({ page, context }) => 
 test('Runs filters swipe on link rows without opening the row', async ({ page, context }) => {
 	await fixtureApp(context);
 	await page.goto('/runs');
-	await expect(page.getByRole('tab', { name: 'All', exact: true })).toHaveAttribute(
+	await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute(
 		'aria-selected',
 		'true'
 	);
@@ -90,13 +93,13 @@ test('Runs filters swipe on link rows without opening the row', async ({ page, c
 		[box!.x + box!.width - 50, box!.y + box!.height / 2],
 		[box!.x + 80, box!.y + box!.height / 2]
 	);
-	await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toHaveAttribute(
+	await expect(page.getByRole('tab', { name: 'Scheduled', exact: true })).toHaveAttribute(
 		'aria-selected',
 		'true'
 	);
 	await expect(page).toHaveURL(/\/runs(?:\?|$)/);
 	await change(page, 'previous');
-	await expect(page.getByRole('tab', { name: 'All', exact: true })).toHaveAttribute(
+	await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute(
 		'aria-selected',
 		'true'
 	);
@@ -139,7 +142,7 @@ test('vertical, diagonal, short drags and horizontal scrollers keep their behavi
 }) => {
 	await fixtureApp(context);
 	await page.goto('/runs/01K6B4D2F4H6K8M0P2R4T6V8X0');
-	const overview = page.getByRole('tab', { name: 'Overview', exact: true });
+	const overview = page.getByRole('tab', { name: 'Activity', exact: true });
 	await expect(overview).toHaveAttribute('aria-selected', 'true');
 	for (const [from, to] of [
 		[
@@ -158,8 +161,8 @@ test('vertical, diagonal, short drags and horizontal scrollers keep their behavi
 		await swipe(page, from, to);
 		await expect(overview).toHaveAttribute('aria-selected', 'true');
 	}
-	await page.getByRole('tab', { name: 'Evidence' }).click();
-	await expectSettled(page, 'Evidence');
+	await page.getByRole('tab', { name: 'Results' }).click();
+	await expectSettled(page, 'Results');
 	await page.getByRole('main').evaluate((main) => {
 		const pre = document.createElement('pre');
 		pre.style.cssText = 'width:100%;overflow-x:auto;height:100px';
@@ -173,19 +176,13 @@ test('vertical, diagonal, short drags and horizontal scrollers keep their behavi
 	});
 	const preBox = await page.locator('[role=tabpanel] > pre').boundingBox();
 	await swipe(page, [preBox!.x + 300, preBox!.y + 50], [preBox!.x + 100, preBox!.y + 50]);
-	await expect(page.getByRole('tab', { name: 'Evidence' })).toHaveAttribute(
-		'aria-selected',
-		'true'
-	);
+	await expect(page.getByRole('tab', { name: 'Results' })).toHaveAttribute('aria-selected', 'true');
 	await expect
 		.poll(() => page.locator('[role=tabpanel] > pre').evaluate((pre) => pre.scrollLeft))
 		.toBeGreaterThan(0);
 	await page.setViewportSize({ width: 1280, height: 915 });
 	await change(page, 'next');
-	await expect(page.getByRole('tab', { name: 'Evidence' })).toHaveAttribute(
-		'aria-selected',
-		'true'
-	);
+	await expect(page.getByRole('tab', { name: 'Results' })).toHaveAttribute('aria-selected', 'true');
 });
 
 const EXPENSES = '/runs/01K6B3A1C3E5G7J9M1P3R5T7V9';
@@ -204,7 +201,21 @@ async function heldDrag(page: Page, distance: number) {
 	const box = await page.locator('[data-tab-pager]').boundingBox();
 	expect(box).not.toBeNull();
 	const x = box!.x + box!.width * 0.75;
-	const y = box!.y + Math.min(box!.height - 24, 230);
+	// Activity now fills this area with tool controls. Start on a readable surface,
+	// preserving the rule that a swipe on a button must not navigate.
+	const y = await page.locator('[data-tab-pager]').evaluate((pager, x) => {
+		const box = pager.getBoundingClientRect();
+		for (let y = box.top + 30; y < box.bottom - 24; y += 16) {
+			const target = document.elementFromPoint(x, y);
+			if (
+				target &&
+				pager.contains(target) &&
+				!target.closest('button,input,textarea,select,summary,pre,code,[role=button],[role=tab]')
+			)
+				return y;
+		}
+		throw new Error('No readable surface for the held swipe');
+	}, x);
 	await session.send('Input.dispatchTouchEvent', {
 		type: 'touchStart',
 		touchPoints: [{ x, y }]
@@ -263,18 +274,18 @@ test('held touch tracks the finger, reveals the adjacent pane and moves the unde
 }) => {
 	await fixtureApp(context);
 	await page.goto(EXPENSES);
-	await expectSettled(page, 'Overview');
-	const start = await panel(page, 'Overview').boundingBox();
-	const first = await page.getByRole('tab', { name: 'Overview', exact: true }).boundingBox();
-	const second = await page.getByRole('tab', { name: 'Timeline', exact: true }).boundingBox();
+	await expectSettled(page, 'Activity');
+	const start = await panel(page, 'Activity').boundingBox();
+	const first = await page.getByRole('tab', { name: 'Activity', exact: true }).boundingBox();
+	const second = await page.getByRole('tab', { name: 'Results', exact: true }).boundingBox();
 	const drag = await heldDrag(page, 130);
 	try {
 		await expect
-			.poll(async () => start!.x - (await panel(page, 'Overview').boundingBox())!.x)
+			.poll(async () => start!.x - (await panel(page, 'Activity').boundingBox())!.x)
 			.toBeGreaterThan(115);
-		const current = await panel(page, 'Overview').boundingBox();
+		const current = await panel(page, 'Activity').boundingBox();
 		expect(start!.x - current!.x).toBeLessThan(145);
-		const neighbor = await panel(page, 'Timeline').boundingBox();
+		const neighbor = await panel(page, 'Results').boundingBox();
 		expect(neighbor!.x).toBeLessThan(start!.x + drag.width);
 		expect(neighbor!.x + neighbor!.width).toBeGreaterThan(start!.x);
 		const underline = await indicatorBox(page);
@@ -289,7 +300,7 @@ test('held touch tracks the finger, reveals the adjacent pane and moves the unde
 	} finally {
 		await drag.finish();
 	}
-	await expectSettled(page, 'Timeline');
+	await expectSettled(page, 'Results');
 });
 
 test('short slow drags settle back without changing the selected tab', async ({
@@ -298,12 +309,12 @@ test('short slow drags settle back without changing the selected tab', async ({
 }) => {
 	await fixtureApp(context);
 	await page.goto(EXPENSES);
-	await expectSettled(page, 'Overview');
+	await expectSettled(page, 'Activity');
 	const drag = await heldDrag(page, 35);
 	// Holding the last move removes fling velocity: distance alone must not commit this drag.
 	await page.waitForTimeout(180);
 	await drag.finish();
-	await expectSettled(page, 'Overview');
+	await expectSettled(page, 'Activity');
 });
 
 test('tapping a tab animates both content and underline to the same destination', async ({
@@ -313,19 +324,19 @@ test('tapping a tab animates both content and underline to the same destination'
 	await fixtureApp(context);
 	await page.emulateMedia({ reducedMotion: 'no-preference' });
 	await page.goto(EXPENSES);
-	await expectSettled(page, 'Overview');
+	await expectSettled(page, 'Activity');
 	const initial = await indicatorBox(page);
-	const target = await page.getByRole('tab', { name: 'Timeline', exact: true }).boundingBox();
+	const target = await page.getByRole('tab', { name: 'Results', exact: true }).boundingBox();
 	// Observe inside the page so round trips cannot miss a short animation.
 	const midway = await page
-		.getByRole('tab', { name: 'Timeline', exact: true })
+		.getByRole('tab', { name: 'Results', exact: true })
 		.evaluate(async (tab) => {
 			(tab as HTMLButtonElement).click();
 			await new Promise<void>((resolve) =>
 				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
 			);
 			const indicator = document.querySelector('[data-tab-indicator]')!.getBoundingClientRect();
-			const pane = document.querySelector('[data-tab-panel="overview"]')!.getBoundingClientRect();
+			const pane = document.querySelector('[data-tab-panel="timeline"]')!.getBoundingClientRect();
 			const viewport = document.querySelector('[data-tab-pager]')!.getBoundingClientRect();
 			return { x: indicator.x, paneX: pane.x, viewportX: viewport.x, width: viewport.width };
 		});
@@ -333,7 +344,7 @@ test('tapping a tab animates both content and underline to the same destination'
 	expect(midway.x).toBeLessThan(target!.x);
 	expect(midway.paneX).toBeLessThan(midway.viewportX);
 	expect(midway.paneX).toBeGreaterThan(midway.viewportX - midway.width);
-	await expectSettled(page, 'Timeline');
+	await expectSettled(page, 'Results');
 });
 
 test('panes retain separate vertical positions and expanded timeline steps', async ({
@@ -342,36 +353,36 @@ test('panes retain separate vertical positions and expanded timeline steps', asy
 }) => {
 	await fixtureApp(context);
 	await page.goto(EXPENSES);
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
-	await expectSettled(page, 'Timeline');
-	const step = panel(page, 'Timeline').getByRole('button', {
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+	await expectSettled(page, 'Activity');
+	const step = panel(page, 'Activity').getByRole('button', {
 		name: /^Succeeded bash .*python summarize/
 	});
 	await step.click();
 	await expect(step).toHaveAttribute('aria-expanded', 'true');
-	await panel(page, 'Timeline').evaluate((el) => {
+	await panel(page, 'Activity').evaluate((el) => {
 		const spacer = document.createElement('div');
 		spacer.style.height = '1600px';
 		el.append(spacer);
 		el.scrollTop = 160;
 	});
-	expect(await panel(page, 'Timeline').evaluate((el) => el.scrollTop)).toBe(160);
-	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
-	await expectSettled(page, 'Evidence');
-	expect(await panel(page, 'Evidence').evaluate((el) => el.scrollTop)).toBe(0);
-	await panel(page, 'Evidence').evaluate((el) => {
+	expect(await panel(page, 'Activity').evaluate((el) => el.scrollTop)).toBe(160);
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
+	await expectSettled(page, 'Results');
+	expect(await panel(page, 'Results').evaluate((el) => el.scrollTop)).toBe(0);
+	await panel(page, 'Results').evaluate((el) => {
 		const spacer = document.createElement('div');
 		spacer.style.height = '1600px';
 		el.append(spacer);
 		el.scrollTop = 90;
 	});
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
-	await expectSettled(page, 'Timeline');
-	expect(await panel(page, 'Timeline').evaluate((el) => el.scrollTop)).toBe(160);
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+	await expectSettled(page, 'Activity');
+	expect(await panel(page, 'Activity').evaluate((el) => el.scrollTop)).toBe(160);
 	await expect(step).toHaveAttribute('aria-expanded', 'true');
-	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
-	await expectSettled(page, 'Evidence');
-	expect(await panel(page, 'Evidence').evaluate((el) => el.scrollTop)).toBe(90);
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
+	await expectSettled(page, 'Results');
+	expect(await panel(page, 'Results').evaluate((el) => el.scrollTop)).toBe(90);
 });
 
 test('pager tabs support arrow, Home and End keys and reduced motion settles immediately', async ({
@@ -381,22 +392,22 @@ test('pager tabs support arrow, Home and End keys and reduced motion settles imm
 	await fixtureApp(context);
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto(EXPENSES);
-	const overview = page.getByRole('tab', { name: 'Overview', exact: true });
-	const timeline = page.getByRole('tab', { name: 'Timeline', exact: true });
+	const overview = page.getByRole('tab', { name: 'Activity', exact: true });
+	const timeline = page.getByRole('tab', { name: 'Results', exact: true });
 	await overview.focus();
 	await page.keyboard.press('ArrowRight');
 	await expect(timeline).toBeFocused();
-	await expectSettled(page, 'Timeline');
+	await expectSettled(page, 'Results');
 	await page.keyboard.press('End');
-	await expect(page.getByRole('tab', { name: 'Related', exact: true })).toBeFocused();
-	await expectSettled(page, 'Related');
+	await expect(page.getByRole('tab', { name: 'Details', exact: true })).toBeFocused();
+	await expectSettled(page, 'Details');
 	await page.keyboard.press('Home');
 	await expect(overview).toBeFocused();
-	await expectSettled(page, 'Overview');
+	await expectSettled(page, 'Activity');
 	const position = await timeline.evaluate(async (tab) => {
 		(tab as HTMLButtonElement).click();
 		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-		const pane = document.querySelector('[data-tab-panel="timeline"]')!.getBoundingClientRect();
+		const pane = document.querySelector('[data-tab-panel="evidence"]')!.getBoundingClientRect();
 		const viewport = document.querySelector('[data-tab-pager]')!.getBoundingClientRect();
 		return Math.abs(pane.x - viewport.x);
 	});
@@ -413,26 +424,31 @@ test('returning to Runs keeps cached rows stationary during a delayed refresh', 
 	const gate = new Promise<void>((resolve) => (release = resolve));
 	await context.route('**/api/runs*', async (route) => {
 		const url = new URL(route.request().url());
-		if (delayAll && url.pathname === '/api/runs' && !url.searchParams.has('kind')) await gate;
+		if (
+			delayAll &&
+			url.pathname === '/api/runs' &&
+			url.searchParams.get('kind') === 'job,subagent,agent'
+		)
+			await gate;
 		await route.fallback();
 	});
 	try {
 		await page.goto('/runs');
-		await expectSettled(page, 'All');
-		const all = page.locator('[data-tab-panel="all"]');
-		const first = all.getByRole('link').first();
+		await expectSettled(page, 'Tasks');
+		const all = page.locator('[data-tab-panel="work"]');
+		const first = all.getByRole('listitem').first().getByRole('link');
 		await expect(first).toBeVisible();
 		const before = await first.boundingBox();
 		const chatReady = page.waitForResponse((response) => {
 			const url = new URL(response.url());
-			return url.pathname === '/api/runs' && url.searchParams.get('kind') === 'chat';
+			return url.pathname === '/api/runs' && url.searchParams.get('kind') === 'job';
 		});
-		await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+		await page.getByRole('tab', { name: 'Scheduled', exact: true }).click();
 		await chatReady;
-		await expectSettled(page, 'Chat');
+		await expectSettled(page, 'Scheduled');
 		delayAll = true;
-		await page.getByRole('tab', { name: 'All', exact: true }).click();
-		await expectSettled(page, 'All');
+		await page.getByRole('tab', { name: 'Tasks', exact: true }).click();
+		await expectSettled(page, 'Tasks');
 		await expect
 			.poll(async () => Math.abs((await first.boundingBox())!.y - before!.y))
 			.toBeLessThan(1);
@@ -461,14 +477,14 @@ test('a swipe does not fetch a Runs filter before its pane has arrived', async (
 		if (url.pathname === '/api/runs') filters.push(url.searchParams.get('kind') ?? 'all');
 	});
 	await page.goto('/runs');
-	await expectSettled(page, 'All');
+	await expectSettled(page, 'Tasks');
 	await expect(page.getByRole('tabpanel').getByRole('link').first()).toBeVisible();
 	const drag = await heldDrag(page, 230);
 	await page.waitForTimeout(150);
-	expect(filters).toEqual(['all']);
+	expect(filters).toEqual(['job,subagent,agent']);
 	await drag.finish();
-	await expectSettled(page, 'Chat');
-	await expect.poll(() => filters).toEqual(['all', 'chat']);
+	await expectSettled(page, 'Scheduled');
+	await expect.poll(() => filters).toEqual(['job,subagent,agent', 'job']);
 });
 
 test('MCP tabs keep the same viewport and a single vertical scroll owner', async ({
@@ -503,17 +519,17 @@ test('refreshing run data during a held swipe keeps the pager mounted and statio
 		await route.fallback();
 	});
 	await page.goto(EXPENSES);
-	await expectSettled(page, 'Overview');
+	await expectSettled(page, 'Activity');
 	const drag = await heldDrag(page, 130);
 	try {
 		await expect
 			.poll(async () => {
-				const pane = await panel(page, 'Overview').boundingBox();
+				const pane = await panel(page, 'Activity').boundingBox();
 				const viewport = await page.locator('[data-tab-pager]').boundingBox();
 				return Math.abs(viewport!.x - pane!.x - 130);
 			})
 			.toBeLessThan(1);
-		const heldX = await panel(page, 'Overview').evaluate((el) => el.getBoundingClientRect().x);
+		const heldX = await panel(page, 'Activity').evaluate((el) => el.getBoundingClientRect().x);
 		refreshing = true;
 		const response = page.waitForResponse((response) =>
 			new URL(response.url()).pathname.startsWith('/api/runs/')
@@ -526,7 +542,7 @@ test('refreshing run data during a held swipe keeps the pager mounted and statio
 		await expect(page.locator('[data-tab-pager]')).toHaveCount(1);
 		await expect
 			.poll(() =>
-				panel(page, 'Overview').evaluate(
+				panel(page, 'Activity').evaluate(
 					(el, previousX) => Math.abs(el.getBoundingClientRect().x - previousX),
 					heldX
 				)
@@ -536,7 +552,7 @@ test('refreshing run data during a held swipe keeps the pager mounted and statio
 		await response;
 		await expect
 			.poll(() =>
-				panel(page, 'Overview').evaluate(
+				panel(page, 'Activity').evaluate(
 					(el, previousX) => Math.abs(el.getBoundingClientRect().x - previousX),
 					heldX
 				)
@@ -556,17 +572,17 @@ test('narrow Runs tabs keep full labels and keyboard selection reveals the last 
 	await page.setViewportSize({ width: 320, height: 915 });
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await page.goto('/runs');
-	await expectSettled(page, 'All');
-	const tabs = page.getByRole('tablist', { name: 'Type of run' });
+	await expectSettled(page, 'Tasks');
+	const tabs = page.getByRole('tablist', { name: 'Work filters' });
 	expect(
 		await tabs
 			.getByRole('tab')
 			.evaluateAll((buttons) => buttons.every((button) => button.scrollWidth <= button.clientWidth))
 	).toBe(true);
-	await tabs.getByRole('tab', { name: 'All', exact: true }).focus();
+	await tabs.getByRole('tab', { name: 'Tasks', exact: true }).focus();
 	await page.keyboard.press('End');
-	await expectSettled(page, 'Agents');
-	const last = await tabs.getByRole('tab', { name: 'Agents', exact: true }).boundingBox();
+	await expectSettled(page, 'Activity');
+	const last = await tabs.getByRole('tab', { name: 'Activity', exact: true }).boundingBox();
 	expect(last!.x).toBeGreaterThanOrEqual(0);
 	expect(last!.x + last!.width).toBeLessThanOrEqual(320.5);
 	expect(
@@ -577,8 +593,8 @@ test('narrow Runs tabs keep full labels and keyboard selection reveals the last 
 });
 
 for (const [path, first] of [
-	['/runs', 'All'],
-	[EXPENSES, 'Overview'],
+	['/runs', 'Tasks'],
+	[EXPENSES, 'Activity'],
 	['/history', 'Recaps'],
 	['/memory', 'Long-term'],
 	['/connectors/code-host', 'Tools']

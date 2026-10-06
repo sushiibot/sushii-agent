@@ -94,25 +94,27 @@ test("the inbox, a run, a History day and search open in the app on the workspac
   await expect(page.getByRole("heading", { name: "Inbox", level: 1 })).toBeVisible();
   await expect(page.getByText(/Couldn't load|Can't reach the agent|couldn't be read/)).toHaveCount(0);
   await page.getByRole("button", { name: /^Menu/ }).click();
-  await page.getByRole("dialog", { name: "Menu" }).getByRole("link", { name: /Runs/ }).click();
+  await page.getByRole("dialog", { name: "Menu" }).getByRole("link", { name: /Work/ }).click();
   await expect(page.getByRole("main").getByRole("listitem").filter({ hasText: "Run the nightly check" }).first()).toBeVisible();
 
   await page.goto(`/runs/${SEED.jobRunId}`);
-  await expect(page.getByText("Outcome, as the host recorded it")).toBeVisible();
-  await page.getByRole("tab", { name: "Evidence", exact: true }).click();
-  await expect(page.getByRole("tabpanel", { name: "Evidence", exact: true }).getByText("cd projects/app && bun test", { exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: "Timeline", exact: true }).click();
+  await page.getByRole("tab", { name: "Results", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Result", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Results", exact: true }).click();
+  await expect(page.getByRole("tabpanel", { name: "Results", exact: true }).getByText("cd projects/app && bun test", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Activity", exact: true }).click();
   await expect(page.getByText("E2E-RUNS nightly finished.")).toBeVisible();
-  await page.getByRole("tab", { name: "Related", exact: true }).click();
+  await page.getByRole("tab", { name: "Details", exact: true }).click();
   await page.getByRole("link", { name: /look around/ }).click();
   await expect(page).toHaveURL(new RegExp(`/runs/${SEED.childRunId}$`));
+  await page.getByRole("tab", { name: "Results", exact: true }).click();
   await expect(page.getByText("it broke")).toBeVisible();
 
   await page.goto(`/history/${SEED.date}`);
   await expect(page.getByText(`recap mentions ${SEED.needle} in the daily notes`)).toBeVisible();
-  await page.getByRole("tab", { name: /^Runs/ }).click();
+  await page.getByRole("tab", { name: /^Activity/ }).click();
   await expect(page.getByRole("tabpanel", { name: "Recaps", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: /^Runs/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: /^Activity/ })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("main").getByRole("link", { name: /Run the nightly check/ }).click();
   await expect(page).toHaveURL(new RegExp(`/runs/${SEED.jobRunId}$`));
 

@@ -28,7 +28,7 @@ test('the day list groups days by month and opens a day', async ({ page, context
 	await expect(page.getByRole('heading', { name: 'History', level: 1 })).toBeVisible();
 	await expect(rows(page)).toHaveCount(10);
 	await expect(rows(page).first()).toContainText('Today');
-	await expect(rows(page).first()).toContainText('3 recaps · 9 runs');
+	await expect(rows(page).first()).toContainText('3 recaps · 9 executions');
 	await expect(rows(page).first()).toContainText('$0.54 cost');
 	await expect(rows(page).nth(1)).toContainText('$0.34 cost · partial');
 	await expect(rows(page).nth(3)).toContainText('Cost unavailable');
@@ -55,7 +55,7 @@ test("a day shows the agent's recaps as safe markdown and that day's runs", asyn
 	await expect(
 		page.getByRole('link', { name: /Back up projects to the home server/ })
 	).toBeHidden();
-	await page.getByRole('tab', { name: /^Runs/ }).click();
+	await page.getByRole('tab', { name: /^Activity/ }).click();
 	await expect(page.getByRole('heading', { name: 'Invoice from Eastside Auto' })).toBeHidden();
 	const run = page.getByRole('link', { name: /Back up projects to the home server/ });
 	await expect(run).toContainText('Failed');
@@ -244,7 +244,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			}
 			await page.setViewportSize({ width: 412, height: 915 });
 			if (path === `/history/${day}`) {
-				await page.getByRole('tab', { name: /^Runs/ }).click();
+				await page.getByRole('tab', { name: /^Activity/ }).click();
 				expect(await axe(page), `${path} runs`).toEqual([]);
 				expect(await smallTargets(page), `${path} runs`).toEqual([]);
 				for (const width of [412, 320]) {

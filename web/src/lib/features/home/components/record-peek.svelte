@@ -78,7 +78,7 @@
 		{/if}
 		<div class="flex flex-col gap-2">
 			{#if a.runId && onopenrun}
-				<Button onclick={() => onopenrun(a.runId!)}>Open run<ArrowUpRight /></Button>
+				<Button onclick={() => onopenrun(a.runId!)}>View activity<ArrowUpRight /></Button>
 			{/if}
 			<div class="flex gap-2">
 				<Button variant="outline" class="flex-1" onclick={() => onaskagent?.(item)}
@@ -98,7 +98,7 @@
 			<div class="flex gap-2">
 				{#if m.runId && onopenrun}
 					<Button variant="outline" class="flex-1" onclick={() => onopenrun(m.runId!)}
-						>Open run<ArrowUpRight /></Button
+						>View activity<ArrowUpRight /></Button
 					>
 				{/if}
 				<Button variant="outline" class="flex-1" onclick={() => ondone?.(item.id)}
@@ -126,7 +126,9 @@
 		])}
 		<div class="flex gap-2">
 			{#if onopenrun}
-				<Button class="flex-1" onclick={() => onopenrun(r.runId)}>Open run<ArrowUpRight /></Button>
+				<Button class="flex-1" onclick={() => onopenrun(r.runId)}
+					>View activity<ArrowUpRight /></Button
+				>
 			{/if}
 			{#if item.group === 'failed'}
 				<Button variant="ghost" class="px-4" onclick={() => ondismiss?.(item.id)}

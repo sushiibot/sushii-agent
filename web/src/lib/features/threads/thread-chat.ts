@@ -7,7 +7,7 @@ import { memoryKeyValue, type Draft, type OutboxEntry } from '$lib/core/storage/
 import { createHttpChatApi, type ChatApi, type ChatStoreDeps } from '$lib/features/chat';
 import type { ThreadDetail } from './types';
 
-const NOT_YET = "Threads can't take messages yet.";
+const NOT_YET = "Conversations can't take messages yet.";
 
 const quietStream: ChatTransport = {
 	connect(_after, on, onState) {

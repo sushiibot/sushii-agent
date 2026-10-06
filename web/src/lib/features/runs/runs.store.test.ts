@@ -63,6 +63,7 @@ function setup(all: RunSummary[], page = 3) {
 	};
 	const stream = fakeTransport();
 	const store = new RunsStore(api, createHub({ transport: stream.transport }));
+	store.filter = 'all';
 	store.start();
 	return { store, stream, calls, all, api };
 }
@@ -161,4 +162,43 @@ test('older-page errors belong to their filter and survive revisiting it', async
 	await Bun.sleep(10);
 	expect(store.olderError).toBe('Older page unavailable');
 	expect(store.before).toBe(id(4));
+});
+
+test('completion refresh preserves loaded history and updates late tool results in place', async () => {
+	const { store, api, all } = setup([run(1, 'running')]);
+	let settled = false;
+	api.get = async (_id, q) => ({
+		run: all[0]!,
+		children: [],
+		session: 'ok',
+		approvals: [],
+		files: [],
+		steps: q?.after
+			? [
+					{
+						type: 'tool',
+						id: 'later',
+						at: all[0]!.startedAt,
+						name: 'bash',
+						args: 'bun test',
+						ok: settled ? true : null,
+						result: settled ? 'Passed' : ''
+					}
+				]
+			: [{ type: 'user', id: 'request', at: all[0]!.startedAt, text: 'Update photos' }],
+		after: q?.after ? null : 'request'
+	});
+	const view = store.run(id(1));
+	await view.remote.refetch();
+	await view.loadMore();
+	expect(view.more[0]?.id).toBe('later');
+	settled = true;
+	all[0] = { ...all[0]!, status: 'done' };
+	await view.remote.refetch();
+	expect([...(view.remote.data?.steps ?? []), ...view.more].map((step) => step.id)).toEqual([
+		'request',
+		'later'
+	]);
+	expect(view.more[0]).toMatchObject({ ok: true, result: 'Passed' });
+	expect(view.after).toBeNull();
 });

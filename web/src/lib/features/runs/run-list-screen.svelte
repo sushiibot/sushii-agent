@@ -24,7 +24,7 @@
 		online = true,
 		runHref = (id) => `/runs/${id}`,
 		historyHref = '/history',
-		filter = 'all',
+		filter = 'work',
 		onfilter,
 		onretry,
 		onloadolder
@@ -63,10 +63,11 @@
 		(onfilter ? RUN_FILTERS : [RUN_FILTERS[0]]).map((f) => ({ value: f.value, label: f.label }))
 	);
 	function panelRuns(value: string) {
-		if (value === filter && remote.status === 'ready') return runs;
+		const kinds = RUN_FILTERS.find((f) => f.value === value)?.kinds;
+		if (value === filter && remote.status === 'ready')
+			return runs.filter((r) => !kinds || kinds.includes(r.kind));
 		const saved = snapshots[value];
 		if (saved) return saved.runs;
-		const kinds = RUN_FILTERS.find((f) => f.value === value)?.kinds;
 		return (snapshots.all?.runs ?? []).filter((r) => !kinds || kinds.includes(r.kind));
 	}
 	function panelRemote(value: string): RemoteLike {
@@ -87,8 +88,8 @@
 
 {#snippet lead()}
 	<p class="text-sm text-muted-foreground">
-		A run is one attempt by the agent to respond or complete a task. Open it for the steps, result
-		and evidence.
+		Follow tasks here. Replies stay in their conversations; Activity holds the complete execution
+		log.
 	</p>
 {/snippet}
 
@@ -102,7 +103,7 @@
 			</div>
 		{/each}
 	</div>
-	<p role="status" class="sr-only">Loading runs…</p>
+	<p role="status" class="sr-only">Loading work…</p>
 {/snippet}
 
 {#snippet row(run: RunSummary)}
@@ -126,24 +127,24 @@
 			{#if loading}<LoaderCircle
 					class="animate-spin motion-reduce:animate-none"
 					aria-hidden="true"
-				/>Loading older runs…{:else}<ChevronDown />Show older runs{/if}
+				/>Loading older activity…{:else}<ChevronDown />Show older activity{/if}
 		</Button>
 		{#if error}<p role="alert" class="text-sm text-failed">
-				Couldn't load older runs. {error}
+				Couldn't load older activity. {error}
 			</p>{/if}
 	{:else if limited}<p class="px-1 text-sm text-muted-foreground">
-			Older runs are in <a href={historyHref} class="underline underline-offset-4">History</a>.
+			Older activity is in <a href={historyHref} class="underline underline-offset-4">History</a>.
 		</p>{/if}
 {/snippet}
 
 <TabbedScreen
-	title="Runs"
+	title="Work"
 	{back}
 	{banner}
 	{tabs}
 	value={filter}
 	onchange={(value) => onfilter?.(value as RunFilter)}
-	label="Type of run"
+	label="Work filters"
 	{lead}
 >
 	{#snippet children(value)}
@@ -155,24 +156,24 @@
 					role="status"
 					class="sr-only"
 				>
-					Updating runs…
+					Updating work…
 				</p>{/if}
 			<ScreenState
 				remote={panelRemote(value)}
 				offline={!online}
-				errorTitle="Couldn't load runs."
+				errorTitle="Couldn't load work."
 				{onretry}
 				{skeleton}
 				isEmpty={!sections.length}
-				empty={value === 'all'
+				empty={value === 'work'
 					? {
-							title: 'No runs yet',
-							body: 'Chat turns, scheduled jobs and background work show up here once they run.'
+							title: 'No tasks yet',
+							body: 'Delegated and scheduled tasks appear here. Your conversations stay in chat.'
 						}
 					: {
-							title: `No ${shown.noun} yet`,
-							body: 'They show up here once one runs.',
-							action: onfilter && { label: 'Show all runs', onclick: () => onfilter('all') }
+							title: value === 'all' ? 'No activity yet' : `No ${shown.noun} yet`,
+							body: 'Activity appears when the agent starts working.',
+							action: onfilter && { label: 'Show activity', onclick: () => onfilter('all') }
 						}}
 			>
 				{#each sections as group, i (group.label)}
@@ -191,7 +192,7 @@
 			</ScreenState>
 			{#if value === filter && remote.status === 'error' && snapshots[value]}
 				<div role="alert" class="flex flex-col items-start gap-2">
-					<p class="text-sm text-failed">Couldn't refresh runs. {remote.error}</p>
+					<p class="text-sm text-failed">Couldn't refresh work. {remote.error}</p>
 					<Button variant="outline" onclick={onretry}>Retry refresh</Button>
 				</div>
 			{/if}

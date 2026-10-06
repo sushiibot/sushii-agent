@@ -1,20 +1,30 @@
-import type { RunKind, RunSummary } from './types';
+import type { RunKind, RunStatus, RunSummary } from './types';
+
+export function executionLabel(status: RunStatus): string {
+	return {
+		running: 'Running',
+		done: 'Finished',
+		failed: 'Failed',
+		aborted: 'Stopped',
+		timeout: 'Timed out'
+	}[status];
+}
 
 /** What started the run, in plain words. */
 export function kindLabel(run: Pick<RunSummary, 'kind' | 'jobName' | 'agentName'>): string {
 	switch (run.kind) {
 		case 'chat':
-			return 'Chat turn';
+			return 'Reply';
 		case 'flush':
 			return 'Memory save';
 		case 'rotate':
-			return 'New session';
+			return 'Context refresh';
 		case 'job':
 			return run.jobName ? `Scheduled · ${run.jobName}` : 'Scheduled';
 		case 'subagent':
-			return `Background · ${run.agentName}`;
+			return `Delegated · ${run.agentName}`;
 		case 'agent':
-			return `Agent · ${run.agentName}`;
+			return `Task · ${run.agentName}`;
 	}
 }
 
@@ -22,9 +32,18 @@ export function runTime(run: RunSummary): number {
 	return Date.parse(run.startedAt);
 }
 
-export type RunFilter = 'all' | 'chat' | 'job' | 'subagent' | 'agent';
+/** A display title is separate from the original request, which stays in Details. */
+export function activityTitle(run: Pick<RunSummary, 'kind' | 'title' | 'agentName'>): string {
+	if (run.kind === 'chat') return 'Reply activity';
+	if (run.kind === 'flush') return 'Memory save';
+	if (run.kind === 'rotate') return 'Context refresh';
+	if (run.title.trim() && run.title.length <= 80) return run.title;
+	return run.kind === 'job' ? 'Scheduled task' : `${run.agentName} task`;
+}
 
-/** The Runs list's type filter. Memory saves and session rotations show only under All. */
+export type RunFilter = 'work' | 'all' | 'chat' | 'job' | 'subagent' | 'agent';
+
+/** Work starts with assignments; Activity includes reply cycles and system events. */
 export const RUN_FILTERS: readonly {
 	value: RunFilter;
 	label: string;
@@ -34,40 +53,46 @@ export const RUN_FILTERS: readonly {
 	kinds?: RunKind[];
 }[] = [
 	{
-		value: 'all',
-		label: 'All',
-		noun: 'runs',
-		description:
-			'Includes chat replies, scheduled tasks, delegated work, memory saves and session changes.'
-	},
-	{
-		value: 'chat',
-		label: 'Chat',
-		noun: 'chat turns',
-		description:
-			'Each chat run is one response to a message, including its tool calls. A conversation contains many runs.',
-		kinds: ['chat']
+		value: 'work',
+		label: 'Tasks',
+		noun: 'tasks',
+		description: 'Delegated tasks, separate agent assignments and scheduled work.',
+		kinds: ['job', 'subagent', 'agent']
 	},
 	{
 		value: 'job',
 		label: 'Scheduled',
-		noun: 'scheduled runs',
+		noun: 'scheduled tasks',
 		description: 'Tasks started by a schedule, with the schedule name on each record.',
 		kinds: ['job']
 	},
 	{
 		value: 'subagent',
-		label: 'Background',
-		noun: 'background runs',
-		description: 'Work delegated by another run. Open a record to see the run that started it.',
+		label: 'Delegated',
+		noun: 'delegated tasks',
+		description:
+			'Assignments from another agent. Open a task to see its conversation and parent activity.',
 		kinds: ['subagent']
 	},
 	{
 		value: 'agent',
 		label: 'Agents',
-		noun: 'agent runs',
+		noun: 'agent tasks',
 		description: 'Separate agent tasks, with the agent name on each record.',
 		kinds: ['agent']
+	},
+	{
+		value: 'chat',
+		label: 'Replies',
+		noun: 'replies',
+		description: 'Execution details for individual replies. Continue the conversation in chat.',
+		kinds: ['chat']
+	},
+	{
+		value: 'all',
+		label: 'Activity',
+		noun: 'activity',
+		description: 'The execution log: replies, tasks, memory saves and context refreshes.'
 	}
 ];
 

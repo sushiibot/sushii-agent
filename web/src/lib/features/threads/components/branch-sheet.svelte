@@ -27,7 +27,7 @@
 	const ready = $derived(title.trim().length > 0 && !busy);
 </script>
 
-<RoutedSheet {open} label="Start a thread" {onclose}>
+<RoutedSheet {open} label="Start a conversation" {onclose}>
 	<form
 		class="flex flex-col gap-4 px-5 pt-2 pb-5"
 		onsubmit={(e) => {
@@ -36,7 +36,7 @@
 		}}
 	>
 		<div class="flex flex-col gap-1">
-			<h2 class="text-lg font-semibold">Start a thread</h2>
+			<h2 class="text-lg font-semibold">Start a conversation</h2>
 			<p class="text-sm text-muted-foreground">
 				An ongoing conversation for a topic or workstream, with separate context and shared memory.
 				{#if quote}It starts with the selected reply from Main.{:else}Give it a name, then send your
@@ -49,7 +49,7 @@
 			</p>
 		{/if}
 		<div class="flex flex-col gap-2">
-			<label for="{uid}-title" class="text-sm font-medium">Thread name</label>
+			<label for="{uid}-title" class="text-sm font-medium">Conversation name</label>
 			<Input
 				id="{uid}-title"
 				bind:value={title}
@@ -59,14 +59,14 @@
 			/>
 		</div>
 		{#if error}
-			<p role="alert" class="text-sm text-failed">Couldn't start the thread. {error}</p>
+			<p role="alert" class="text-sm text-failed">Couldn't start the conversation. {error}</p>
 		{/if}
 		<div class="flex flex-col gap-2">
 			<Button size="lg" type="submit" disabled={!ready}>
 				{#if busy}<LoaderCircle
 						class="animate-spin motion-reduce:animate-none"
 						aria-hidden="true"
-					/>Starting the thread…{:else}<Split />Start thread{/if}
+					/>Starting the conversation…{:else}<Split />Start conversation{/if}
 			</Button>
 			<Button size="lg" variant="ghost" onclick={onclose}>Cancel</Button>
 		</div>

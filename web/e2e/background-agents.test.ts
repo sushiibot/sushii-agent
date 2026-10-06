@@ -129,7 +129,7 @@ test('delegated work stays on its originating turn after the parent finishes and
 	await push(page, 'turn_final', { turnId: TURN, outcome: 'done', summary: null }, 2);
 	await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeHidden();
 	await expect(card).toBeVisible();
-	await expect(page.locator('[data-background-work]')).toContainText('Background work · 1 running');
+	await expect(page.locator('[data-background-work]')).toContainText('Delegated tasks · 1 running');
 	await context.route('**/api/chat/history**', (route) =>
 		route.fulfill({ json: { items: [reply], before: null } })
 	);
@@ -154,7 +154,7 @@ test('task activity opens in a sheet, back closes it, and Stop targets only that
 	await expect(sheet).toBeVisible();
 	await expect(sheet).toContainText('Reading thread routes.');
 	await page.screenshot({ path: '/tmp/background-sheet-mobile.png' });
-	await expect(sheet.getByRole('link', { name: 'Full run details' })).toHaveAttribute(
+	await expect(sheet.getByRole('link', { name: 'Open task' })).toHaveAttribute(
 		'href',
 		`/runs/${MAIN}`
 	);
@@ -163,17 +163,17 @@ test('task activity opens in a sheet, back closes it, and Stop targets only that
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(card).toBeVisible();
 	await card.click();
-	await sheet.getByRole('link', { name: 'Full run details' }).click();
+	await sheet.getByRole('link', { name: 'Open task' }).click();
 	await expect(page).toHaveURL(new RegExp(`/runs/${MAIN}$`));
 	await page.goBack();
 	await expect(page).toHaveURL(/\/chat$/);
 	await expect(sheet).toBeHidden();
 	await expect(card).toBeVisible();
 	await card.click();
-	await sheet.getByRole('button', { name: 'Stop agent' }).click();
+	await sheet.getByRole('button', { name: 'Stop this agent' }).click();
 	await expect.poll(() => backend.stops).toEqual([MAIN]);
-	await expect(sheet).toContainText('aborted');
-	await expect(sheet.getByRole('button', { name: 'Stop agent' })).toBeHidden();
+	await expect(sheet).toContainText('Stopped');
+	await expect(sheet.getByRole('button', { name: 'Stop this agent' })).toBeHidden();
 	await expect(page.locator('[data-background-work]')).toBeHidden();
 	expect(backend.runs.find((r) => r.runId === TRIP)?.status).toBe('running');
 });
@@ -259,7 +259,7 @@ test('cards and the activity sheet follow later pages and retain the latest acti
 	await card.getByRole('button').click();
 	const sheet = page.getByRole('dialog', { name: 'Agent activity' });
 	await expect(sheet).toContainText('Later activity beyond the first page.');
-	await expect(sheet.getByRole('link', { name: 'Full run details' })).toHaveAttribute(
+	await expect(sheet.getByRole('link', { name: 'Open task' })).toHaveAttribute(
 		'href',
 		`/runs/${MAIN}`
 	);
@@ -288,7 +288,7 @@ for (const width of [320, 412, 1280]) {
 				sheet.getByRole('heading', { name: 'Agent activity', exact: true })
 			).toBeVisible();
 			await expect(sheet.locator('[data-task-brief] p')).not.toBeVisible();
-			await expect(sheet.getByRole('button', { name: 'Stop agent' })).toBeVisible();
+			await expect(sheet.getByRole('button', { name: 'Stop this agent' })).toBeVisible();
 			expect((await sheet.getByRole('heading').boundingBox())!.height).toBeLessThan(40);
 			expect(await axe(page)).toEqual([]);
 			await page.screenshot({ path: `/tmp/agent-activity-${width}-${theme}.png` });
@@ -300,7 +300,7 @@ for (const width of [320, 412, 1280]) {
 					() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
 				)
 			).toBe(true);
-			await expect(sheet.getByRole('button', { name: 'Stop agent' })).toBeVisible();
+			await expect(sheet.getByRole('button', { name: 'Stop this agent' })).toBeVisible();
 		});
 	}
 }

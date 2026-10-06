@@ -50,8 +50,8 @@ for (const desktop of [false, true]) {
 		await fixtureApp(context);
 		if (desktop) await page.setViewportSize({ width: 1280, height: 800 });
 		await page.goto('/chats');
-		await page.getByRole('button', { name: 'New thread' }).click();
-		const sheet = page.getByRole('dialog', { name: 'Start a thread' });
+		await page.getByRole('button', { name: 'New conversation' }).click();
+		const sheet = page.getByRole('dialog', { name: 'Start a conversation' });
 		await expect(sheet).toBeVisible();
 		// Capture geometry after entrance has completed, so exit distance is meaningful.
 		await sheet.evaluate(async (element) => {
@@ -74,9 +74,9 @@ test('starting a thread completes the sheet exit before changing routes', async 
 }) => {
 	await fixtureApp(context);
 	await page.goto('/chats');
-	await page.getByRole('button', { name: 'New thread' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Start a thread' });
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Motion continuity');
+	await page.getByRole('button', { name: 'New conversation' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Start a conversation' });
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('Motion continuity');
 	await sheet.evaluate((element) => {
 		(window as MotionWindow).__sheetExitFinished = false;
 		element.addEventListener('animationend', () => {
@@ -84,7 +84,7 @@ test('starting a thread completes the sheet exit before changing routes', async 
 				(window as MotionWindow).__sheetExitFinished = true;
 		});
 	});
-	await sheet.getByRole('button', { name: 'Start thread', exact: true }).click();
+	await sheet.getByRole('button', { name: 'Start conversation', exact: true }).click();
 	await expect(page).toHaveURL(/\/chats\/motion-continuity$/);
 	expect(await page.evaluate(() => (window as MotionWindow).__sheetExitFinished)).toBe(true);
 });
@@ -96,8 +96,8 @@ test('reduced motion dismisses without animating or delaying navigation', async 
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	await fixtureApp(context);
 	await page.goto('/chats');
-	await page.getByRole('button', { name: 'New thread' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Start a thread' });
+	await page.getByRole('button', { name: 'New conversation' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Start a conversation' });
 	await expect(sheet).toBeVisible();
 	expect(await sheet.evaluate((element) => element.getAnimations().length)).toBe(0);
 	expect(
@@ -105,8 +105,8 @@ test('reduced motion dismisses without animating or delaying navigation', async 
 			.locator('[data-slot="sheet-overlay"]')
 			.evaluate((element) => element.getAnimations().length)
 	).toBe(0);
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Reduced motion');
-	await sheet.getByRole('button', { name: 'Start thread', exact: true }).click();
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('Reduced motion');
+	await sheet.getByRole('button', { name: 'Start conversation', exact: true }).click();
 	await expect(page).toHaveURL(/\/chats\/reduced-motion$/);
 	await expect(sheet).toBeHidden();
 });

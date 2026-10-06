@@ -9,6 +9,7 @@
 	import { Button } from '$lib/ui/button';
 	import RoutedSheet from '$lib/ui/sheet/routed-sheet.svelte';
 	import { duration } from '$lib/ui/format/time';
+	import { activityTitle, executionLabel } from './format';
 	import StepRow from './components/step-row.svelte';
 	import type { RunSummary } from './types';
 	import type { ActivityDetail } from './activity';
@@ -107,7 +108,7 @@
 		<details class="border-t px-4 text-sm" data-background-work>
 			<summary class="flex min-h-12 cursor-pointer items-center gap-2 text-muted-foreground">
 				<Bot class="size-4" aria-hidden="true" />
-				Background work · {shown.length} running
+				Delegated tasks · {shown.length} running
 			</summary>
 			{#each shown as run (run.runId)}
 				<button
@@ -115,7 +116,7 @@
 					onclick={() => void inspect(run)}
 				>
 					<Bot class="size-4 shrink-0" aria-hidden="true" /><span class="min-w-0 flex-1 truncate"
-						>{run.title}</span
+						>{activityTitle(run)}</span
 					><ChevronRight class="size-4" aria-hidden="true" />
 				</button>
 			{/each}
@@ -129,13 +130,9 @@
 				>
 					<Bot class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 					<span class="flex min-w-0 flex-1 flex-col"
-						><span class="truncate font-medium">{run.title}</span><span
+						><span class="truncate font-medium">{activityTitle(run)}</span><span
 							class="truncate text-meta text-muted-foreground"
-							>{run.agentName}{run.repo ? ` · ${run.repo}` : ''} · {run.status === 'running'
-								? 'Running'
-								: run.status === 'done'
-									? 'Finished'
-									: run.status} · {duration(
+							>{run.agentName}{run.repo ? ` · ${run.repo}` : ''} · {executionLabel(run.status)} · {duration(
 								Math.max(
 									0,
 									Date.parse(run.endedAt ?? new Date(now).toISOString()) - Date.parse(run.startedAt)
@@ -157,8 +154,9 @@
 		{#if selected}
 			<h2 class="text-lg font-semibold">Agent activity</h2>
 			<p class="text-sm text-muted-foreground">
-				{selected.agentName}{selected.repo ? ` · ${selected.repo}` : ''} · {detail?.run.status ??
-					selected.status}
+				{selected.agentName}{selected.repo ? ` · ${selected.repo}` : ''} · {executionLabel(
+					detail?.run.status ?? selected.status
+				)}
 			</p>
 			<details class="group/task min-w-0" data-task-brief>
 				<summary
@@ -184,12 +182,10 @@
 			{#if error}<p role="alert" class="text-sm text-failed">{error}</p>{/if}
 			{#if detail}
 				<p class="text-meta text-muted-foreground">
-					Recent activity · open full run details for earlier history.
+					Recent activity · oldest first. Open task for the full history.
 				</p>
 				<div class="flex max-h-80 flex-col overflow-y-auto">
-					{#each detail.steps
-						.toReversed()
-						.filter((step) => !(step.type === 'user' && step.text === detail?.taskBrief)) as step (step.id)}<StepRow
+					{#each detail.steps.filter((step) => !(step.type === 'user' && step.text === detail?.taskBrief)) as step (step.id)}<StepRow
 							{step}
 						/>{/each}
 				</div>
@@ -201,12 +197,12 @@
 				<Button
 					variant="outline"
 					href="/runs/{selected.runId}"
-					onclick={(event) => void openFullRun(event)}>Full run details</Button
+					onclick={(event) => void openFullRun(event)}>Open task</Button
 				>
 				{#if (detail?.run.status ?? selected.status) === 'running'}<Button
 						variant="ghost"
 						disabled={stopping}
-						onclick={() => void stop()}>{stopping ? 'Stopping…' : 'Stop agent'}</Button
+						onclick={() => void stop()}>{stopping ? 'Stopping…' : 'Stop this agent'}</Button
 					>{/if}
 			</div>
 		{/if}

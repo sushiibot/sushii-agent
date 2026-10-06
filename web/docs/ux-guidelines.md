@@ -6,6 +6,22 @@ Every rule has a one-line why and a check. A rule without a check is a wish, so 
 
 The clickable prototype (`src/proto-routes/proto`, which renders the shipped feature screens from `src/lib/features` on their fixtures) sets the design direction. Where the prototype breaks a rule below, the rule wins; see [Known gaps](#known-gaps-in-the-prototype).
 
+## Conversations, work and activity
+
+A conversation contains messages and reply cycles. Main and topic conversations keep their identity across context refreshes.
+A task represents a delegated assignment, separate agent assignment or scheduled objective. An agent performs the task.
+A turn contains one reply cycle, its tool calls and any steering messages. A run records one execution attempt.
+A session holds the model context and transcript. A session change does not create a new visible conversation.
+
+- **Use Conversations for chat navigation and Work for task navigation.** Work opens on Tasks. Replies and system events appear in Activity. Check: `pw` (`e2e/runs.test.ts`, `e2e/nav.test.ts`).
+- **Use Activity, Results and Details for execution records.** Activity shows chronological steps. Results combines the recorded outcome, checks, outputs and approvals. Details contains the full request, delegation links and execution metadata. Check: `pw` (`e2e/runs.test.ts`).
+- **Keep the brief out of the fixed heading.** Short existing titles can identify tasks. Long prompts use a compact agent/task label. Check: `pw` at 320px and 412px.
+- **Keep chronological activity stable through completion.** Both the preview sheet and detail page show the oldest step first. Completion preserves the selected section and expanded steps. Check: `pw` (`e2e/runs.test.ts`, `e2e/background-agents.test.ts`).
+- **Label delegation separately from execution mode.** A subagent can run in the foreground or background. Parent and child links describe delegation. Check: `review`.
+- **Keep task identity explicit.** Do not group unrelated replies by title or elapsed time. Persistent objectives across replies require a stored task identifier. Check: `review`.
+
+Existing `/runs` URLs, API fields and run identifiers remain compatible. The UI vocabulary does not change the execution log format.
+
 ## Check key
 
 | Tag      | Meaning                                                                                |

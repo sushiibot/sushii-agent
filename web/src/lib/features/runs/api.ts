@@ -9,7 +9,7 @@ export interface RunsApi {
 	get(runId: string, q?: { after?: string }): Promise<RunDetail | null>;
 }
 
-const UNSUPPORTED = "Runs aren't available yet.";
+const UNSUPPORTED = "Work activity isn't available yet.";
 
 function query(params: Record<string, string | undefined>): string {
 	const q = new URLSearchParams();

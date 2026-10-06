@@ -11,15 +11,15 @@ test("topic conversations stream independently, survive restart and resume after
   await send(page, `Main question #${tag}`);
   await expect(bubble(page, `re-${tag}`)).toContainText("Done.");
   await page
-    .getByRole("button", { name: "Start a thread from here" })
+    .getByRole("button", { name: "Start a conversation from here" })
     .last()
     .click();
-  const branch = page.getByRole("dialog", { name: "Start a thread" });
+  const branch = page.getByRole("dialog", { name: "Start a conversation" });
   await branch
-    .getByRole("textbox", { name: "Thread name" })
+    .getByRole("textbox", { name: "Conversation name" })
     .fill(`Trip ${tag}`);
   await branch
-    .getByRole("button", { name: "Start thread", exact: true })
+    .getByRole("button", { name: "Start conversation", exact: true })
     .click();
   await expect(page).toHaveURL(/\/chats\/[^/]+$/);
   const topicUrl = page.url();
@@ -52,10 +52,10 @@ test("topic conversations stream independently, survive restart and resume after
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(bubble(page, `re-${resumed}`)).toContainText("Done.");
   await page.getByRole("button", { name: "Chat commands", exact: true }).click();
-  await page.getByRole("button", { name: "Archive thread", exact: true }).click();
-  const close = page.getByRole("dialog", { name: "Archive thread" });
+  await page.getByRole("button", { name: "Archive conversation", exact: true }).click();
+  const close = page.getByRole("dialog", { name: "Archive conversation" });
   await close
-    .getByRole("button", { name: "Archive thread", exact: true })
+    .getByRole("button", { name: "Archive conversation", exact: true })
     .click();
   await expect(page).toHaveURL(topicUrl);
   await expect(textbox(page)).toBeVisible();
@@ -77,13 +77,13 @@ test("Main keeps streaming when a simultaneous topic is stopped", async ({
   watch,
 }) => {
   await page.goto("/chats");
-  await page.getByRole("button", { name: "New thread" }).click();
-  const branch = page.getByRole("dialog", { name: "Start a thread" });
+  await page.getByRole("button", { name: "New conversation" }).click();
+  const branch = page.getByRole("dialog", { name: "Start a conversation" });
   await branch
-    .getByRole("textbox", { name: "Thread name" })
+    .getByRole("textbox", { name: "Conversation name" })
     .fill(`Independent ${nonce()}`);
   await branch
-    .getByRole("button", { name: "Start thread", exact: true })
+    .getByRole("button", { name: "Start conversation", exact: true })
     .click();
   await expect(page).toHaveURL(/\/chats\/[^/]+$/);
   const topicTag = nonce();
@@ -116,13 +116,13 @@ test("a topic approval stays in its conversation after reload and Deny reaches t
   watch,
 }) => {
   await page.goto("/chats");
-  await page.getByRole("button", { name: "New thread" }).click();
-  const branch = page.getByRole("dialog", { name: "Start a thread" });
+  await page.getByRole("button", { name: "New conversation" }).click();
+  const branch = page.getByRole("dialog", { name: "Start a conversation" });
   await branch
-    .getByRole("textbox", { name: "Thread name" })
+    .getByRole("textbox", { name: "Conversation name" })
     .fill(`Approval ${nonce()}`);
   await branch
-    .getByRole("button", { name: "Start thread", exact: true })
+    .getByRole("button", { name: "Start conversation", exact: true })
     .click();
   await expect(page).toHaveURL(/\/chats\/[^/]+$/);
   const tag = nonce();

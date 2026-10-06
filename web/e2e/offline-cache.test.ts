@@ -28,7 +28,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.emulateMedia({ colorScheme });
 		await fixtureApp(context);
 		await page.goto('/chats');
-		await expect(page.getByRole('heading', { name: 'Threads', level: 1 })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Conversations', level: 1 })).toBeVisible();
 		await expect
 			.poll(() => cachedPaths(page))
 			.toEqual(
@@ -48,7 +48,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await context.setOffline(true);
 		await page.reload();
 		await expect(
-			page.getByText("You're offline. Browsing saved threads on this device.")
+			page.getByText("You're offline. Browsing saved conversations on this device.")
 		).toBeVisible();
 		await page.getByRole('link', { name: /October trip/ }).click();
 		await expect(page.getByRole('heading', { name: 'October trip', level: 1 })).toBeVisible();

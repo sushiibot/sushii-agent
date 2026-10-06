@@ -44,10 +44,10 @@
 {/snippet}
 
 <section aria-labelledby="{uid}-h" class="flex flex-col gap-4">
-	<h2 id="{uid}-h" class="text-base font-semibold">Evidence</h2>
+	<h2 id="{uid}-h" class="text-base font-semibold">Checks and outputs</h2>
 	{#if nothing}
 		<p class="rounded-xl border border-dashed px-4 py-3 text-sm text-muted-foreground">
-			The transcript shows no checks, files or memory writes for this run.
+			The transcript shows no checks, files or memory writes for this attempt.
 		</p>
 	{/if}
 
@@ -125,7 +125,7 @@
 
 	{#if approvals.length}
 		<div class="flex flex-col gap-1.5" role="group" aria-labelledby="{uid}-appr">
-			{@render heading(`${uid}-appr`, 'Approvals asked during this run')}
+			{@render heading(`${uid}-appr`, 'Approvals during this attempt')}
 			<ul class="flex flex-col divide-y rounded-xl border">
 				{#each approvals as a (a.nonce)}
 					<li class="flex items-start justify-between gap-3 px-3 py-2.5">

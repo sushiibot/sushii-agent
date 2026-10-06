@@ -31,9 +31,22 @@ export class RunView {
 		this.#id = runId;
 		this.remote = new Remote(
 			async () => {
+				const loaded = (this.remote?.data?.steps.length ?? 0) + this.more.length;
 				const detail = await api.get(runId);
-				this.more = [];
-				this.after = detail?.after ?? null;
+				// Status/focus refreshes must retain the history the reader already opened.
+				// Refresh that range as well so pending tool results settle in place.
+				let cursor = detail?.after ?? null;
+				const more: RunStep[] = [];
+				while (cursor && (detail?.steps.length ?? 0) + more.length < loaded) {
+					const page = await api.get(runId, { after: cursor });
+					if (!page) throw new Error('The activity record is no longer available.');
+					more.push(...page.steps);
+					const next = page.after;
+					if (next === cursor) break;
+					cursor = next;
+				}
+				this.more = more;
+				this.after = cursor;
 				return detail;
 			},
 			{ refetchOnFocus: true }
@@ -72,7 +85,7 @@ export class RunsStore {
 	olderLoading = $state(false);
 	olderError = $state<string | null>(null);
 	/** Which kinds of run the list shows; kept for the app's life. */
-	filter = $state<RunFilter>('all');
+	filter = $state<RunFilter>('work');
 
 	#api: RunsApi;
 	#hub: Hub;

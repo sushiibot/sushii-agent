@@ -26,7 +26,7 @@
 	);
 </script>
 
-<svelte:head><title>Runs · sushii</title></svelte:head>
+<svelte:head><title>Work · sushii</title></svelte:head>
 
 <RunListScreen
 	remote={list}

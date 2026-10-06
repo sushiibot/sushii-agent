@@ -45,7 +45,7 @@
 	const ready = $derived(!!title.trim() && title.trim() !== thread?.title && !busy);
 </script>
 
-<RoutedSheet {open} label="Thread settings" {onclose}>
+<RoutedSheet {open} label="Conversation settings" {onclose}>
 	<form
 		class="flex flex-col gap-4 px-5 pt-2 pb-5"
 		onsubmit={(e) => {
@@ -53,7 +53,7 @@
 			if (ready && !confirmArchive) onrename?.(title.trim());
 		}}
 	>
-		<h2 class="text-lg font-semibold">Thread settings</h2>
+		<h2 class="text-lg font-semibold">Conversation settings</h2>
 		{#if confirmArchive}
 			<p class="text-body">Archive {thread?.title}?</p>
 			<p class="text-sm text-muted-foreground">
@@ -63,14 +63,14 @@
 				{#if busy}<LoaderCircle
 						class="animate-spin motion-reduce:animate-none"
 						aria-hidden="true"
-					/>{:else}<Archive />{/if}Archive thread
+					/>{:else}<Archive />{/if}Archive conversation
 			</Button>
 			<Button variant="ghost" size="lg" disabled={busy} onclick={() => (confirmArchive = false)}
 				>Keep current</Button
 			>
 		{:else}
 			<div class="flex flex-col gap-2">
-				<label for="{uid}-name" class="text-sm font-medium">Thread name</label>
+				<label for="{uid}-name" class="text-sm font-medium">Conversation name</label>
 				<Input
 					id="{uid}-name"
 					bind:value={title}
@@ -88,12 +88,12 @@
 			</Button>
 			{#if thread?.state !== 'archived' && onarchive}
 				<Button variant="outline" size="lg" disabled={busy} onclick={() => (confirmArchive = true)}
-					><Archive />Archive thread</Button
+					><Archive />Archive conversation</Button
 				>
 			{/if}
 		{/if}
 		{#if error}<p role="alert" class="text-sm text-failed">
-				Couldn't update the thread. {error}
+				Couldn't update the conversation. {error}
 			</p>{/if}
 		<Button variant="ghost" size="lg" disabled={busy} onclick={onclose}>Close</Button>
 	</form>

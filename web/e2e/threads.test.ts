@@ -13,9 +13,12 @@ const reply = {
 test('Chats pins Main and groups threads by what they need', async ({ page, context }) => {
 	await fixtureApp(context);
 	await page.goto('/chats');
-	await expect(page.getByRole('heading', { name: 'Threads', level: 1 })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Conversations', level: 1 })).toBeVisible();
 	const menu = await openDrawer(page);
-	await expect(menu.getByRole('link', { name: 'Threads' })).toHaveAttribute('aria-current', 'page');
+	await expect(menu.getByRole('link', { name: 'Conversations' })).toHaveAttribute(
+		'aria-current',
+		'page'
+	);
 	await page.keyboard.press('Escape');
 	await expect(page.getByRole('region', { name: 'Chat' })).toContainText(
 		'Your general-purpose conversation'
@@ -56,7 +59,7 @@ test('a thread says it shares memory with Main, and back closes its sheet', asyn
 	await expect(page.getByText('Picking up the trip here.')).toBeVisible();
 	await page.getByRole('button', { name: /Shares memory with Main · 2 writes/ }).click();
 	const sheet = page.getByRole('dialog', { name: 'Memory shared with Main' });
-	await expect(sheet).toContainText('2 writes from this thread');
+	await expect(sheet).toContainText('2 writes from this conversation');
 	await page.goBack();
 	await expect(sheet).toBeHidden();
 	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
@@ -75,10 +78,10 @@ test('archiving stays in the conversation and keeps the thread visible below cur
 	await fixtureApp(context);
 	await page.goto('/chats/oct-trip');
 	await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
-	await page.getByRole('button', { name: 'Archive thread', exact: true }).click();
-	const sheet = page.getByRole('dialog', { name: 'Archive thread' });
+	await page.getByRole('button', { name: 'Archive conversation', exact: true }).click();
+	const sheet = page.getByRole('dialog', { name: 'Archive conversation' });
 	await expect(sheet).not.toContainText('Report to Main');
-	await sheet.getByRole('button', { name: 'Archive thread', exact: true }).click();
+	await sheet.getByRole('button', { name: 'Archive conversation', exact: true }).click();
 	await expect(sheet).toBeHidden();
 	await expect(page).toHaveURL(/\/chats\/oct-trip$/);
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
@@ -89,11 +92,11 @@ test('archiving stays in the conversation and keeps the thread visible below cur
 test('a reply in Main starts a thread from a visible button', async ({ page, context }) => {
 	await fixtureApp(context, { history: [reply] });
 	await page.goto('/chat');
-	await page.getByRole('button', { name: 'Start a thread from here' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Start a thread' });
+	await page.getByRole('button', { name: 'Start a conversation from here' }).click();
+	const sheet = page.getByRole('dialog', { name: 'Start a conversation' });
 	await expect(sheet).toContainText('Three hotels fit');
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Hotel choice');
-	await sheet.getByRole('button', { name: 'Start thread' }).click();
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('Hotel choice');
+	await sheet.getByRole('button', { name: 'Start conversation' }).click();
 	await expect(page).toHaveURL(/\/chats\/hotel-choice$/);
 	await expect(page.getByRole('heading', { name: 'Hotel choice', level: 1 })).toBeVisible();
 	await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
@@ -109,7 +112,7 @@ test('an automatically archived thread remains directly sendable', async ({ page
 test('a list that fails to load says so and retries', async ({ page, context }) => {
 	const app = await fixtureApp(context, { fixtures: { threads: 'error' } });
 	await page.goto('/chats');
-	await expect(page.getByRole('alert')).toContainText("Couldn't load your threads.");
+	await expect(page.getByRole('alert')).toContainText("Couldn't load your conversations.");
 	app.set('threads', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
@@ -130,8 +133,8 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await checkScreen(page);
 		await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
 		await checkScreen(page);
-		await page.getByRole('button', { name: 'Archive thread', exact: true }).click();
-		await expect(page.getByRole('dialog', { name: 'Archive thread' })).toBeVisible();
+		await page.getByRole('button', { name: 'Archive conversation', exact: true }).click();
+		await expect(page.getByRole('dialog', { name: 'Archive conversation' })).toBeVisible();
 		await checkScreen(page);
 	});
 }
@@ -143,9 +146,9 @@ test('thread settings saves a name and preserves the conversation across a reloa
 	await fixtureApp(context);
 	await page.goto('/chats/oct-trip');
 	await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
-	await page.getByRole('button', { name: 'Rename thread', exact: true }).click();
-	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
-	const name = sheet.getByRole('textbox', { name: 'Thread name' });
+	await page.getByRole('button', { name: 'Rename conversation', exact: true }).click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation settings' });
+	const name = sheet.getByRole('textbox', { name: 'Conversation name' });
 	await expect(name).toHaveValue('October trip');
 	await expect(sheet.getByRole('button', { name: 'Save name' })).toBeDisabled();
 	await name.fill('  Japan trip  ');
@@ -166,14 +169,16 @@ test('row options rename archived threads and Back cancels unsaved changes', asy
 	await fixtureApp(context);
 	await page.goto('/chats');
 	await page.getByRole('button', { name: 'Options for Couch delivery' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
-	await expect(sheet.getByRole('button', { name: 'Archive thread' })).toHaveCount(0);
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Unsaved');
+	const sheet = page.getByRole('dialog', { name: 'Conversation settings' });
+	await expect(sheet.getByRole('button', { name: 'Archive conversation' })).toHaveCount(0);
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('Unsaved');
 	await page.goBack();
 	await expect(sheet).toBeHidden();
 	await page.getByRole('button', { name: 'Options for Couch delivery' }).click();
-	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('Couch delivery');
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Delivered couch');
+	await expect(sheet.getByRole('textbox', { name: 'Conversation name' })).toHaveValue(
+		'Couch delivery'
+	);
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('Delivered couch');
 	await sheet.getByRole('button', { name: 'Save name' }).click();
 	await expect(sheet).toBeHidden();
 	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('Delivered couch');
@@ -193,12 +198,12 @@ test('a failed rename keeps the sheet and its edited name available for retry', 
 	});
 	await page.goto('/chats/oct-trip');
 	await page.getByRole('button', { name: 'Chat commands', exact: true }).click();
-	await page.getByRole('button', { name: 'Rename thread', exact: true }).click();
-	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('Japan trip');
+	await page.getByRole('button', { name: 'Rename conversation', exact: true }).click();
+	const sheet = page.getByRole('dialog', { name: 'Conversation settings' });
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('Japan trip');
 	await sheet.getByRole('button', { name: 'Save name' }).click();
-	await expect(sheet.getByRole('alert')).toContainText("Couldn't update the thread");
-	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('Japan trip');
+	await expect(sheet.getByRole('alert')).toContainText("Couldn't update the conversation");
+	await expect(sheet.getByRole('textbox', { name: 'Conversation name' })).toHaveValue('Japan trip');
 	await sheet.getByRole('button', { name: 'Save name' }).click();
 	await expect(sheet).toBeHidden();
 	await expect(page.getByRole('heading', { name: 'Japan trip', level: 1 })).toBeVisible();
@@ -215,7 +220,7 @@ test('long press opens row options, while a scroll gesture and a short tap do no
 	await row.dispatchEvent('pointerdown', down);
 	await row.dispatchEvent('pointermove', { ...down, clientY: 330 });
 	await page.waitForTimeout(550);
-	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
+	const sheet = page.getByRole('dialog', { name: 'Conversation settings' });
 	await expect(sheet).toBeHidden();
 	await row.dispatchEvent('pointerup', down);
 	await row.dispatchEvent('pointerdown', down);
@@ -240,7 +245,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await fixtureApp(context);
 		await page.goto('/chats');
 		await page.getByRole('button', { name: 'Options for October trip' }).click();
-		await expect(page.getByRole('dialog', { name: 'Thread settings' })).toBeVisible();
+		await expect(page.getByRole('dialog', { name: 'Conversation settings' })).toBeVisible();
 		await checkScreen(page);
 	});
 }
@@ -252,8 +257,8 @@ test('refreshing thread metadata preserves an open name draft and archive confir
 	await fixtureApp(context);
 	await page.goto('/chats');
 	await page.getByRole('button', { name: 'Options for October trip' }).click();
-	const sheet = page.getByRole('dialog', { name: 'Thread settings' });
-	await sheet.getByRole('textbox', { name: 'Thread name' }).fill('My unsaved name');
+	const sheet = page.getByRole('dialog', { name: 'Conversation settings' });
+	await sheet.getByRole('textbox', { name: 'Conversation name' }).fill('My unsaved name');
 	async function remoteRename(title: string) {
 		await page.evaluate(async (title) => {
 			await fetch('/api/threads/oct-trip/rename', {
@@ -270,13 +275,17 @@ test('refreshing thread metadata preserves an open name draft and archive confir
 		await expect(page.getByRole('button', { name: `Options for ${title}` })).toBeAttached();
 	}
 	await remoteRename('Changed elsewhere');
-	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('My unsaved name');
-	await sheet.getByRole('button', { name: 'Archive thread', exact: true }).click();
+	await expect(sheet.getByRole('textbox', { name: 'Conversation name' })).toHaveValue(
+		'My unsaved name'
+	);
+	await sheet.getByRole('button', { name: 'Archive conversation', exact: true }).click();
 	await expect(sheet.getByText('Archive Changed elsewhere?', { exact: true })).toBeVisible();
 	await remoteRename('Changed again');
 	await expect(sheet.getByText('Archive Changed again?', { exact: true })).toBeVisible();
 	await sheet.getByRole('button', { name: 'Keep current' }).click();
-	await expect(sheet.getByRole('textbox', { name: 'Thread name' })).toHaveValue('My unsaved name');
+	await expect(sheet.getByRole('textbox', { name: 'Conversation name' })).toHaveValue(
+		'My unsaved name'
+	);
 });
 
 test('thread context details use a sheet that Back closes without leaving the thread', async ({

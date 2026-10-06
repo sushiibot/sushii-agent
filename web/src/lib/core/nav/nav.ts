@@ -24,7 +24,12 @@ export const allOn: FeatureCheck = () => true;
 
 const chat: NavEntry = { id: 'chat', href: '/chat', label: 'Chat', icon: MessageSquare };
 const inbox: NavEntry = { id: 'inbox', href: '/inbox', label: 'Inbox', icon: Inbox };
-const chats: NavEntry = { id: 'chats', href: '/chats', label: 'Threads', icon: MessagesSquare };
+const chats: NavEntry = {
+	id: 'chats',
+	href: '/chats',
+	label: 'Conversations',
+	icon: MessagesSquare
+};
 
 /** The More screen, top to bottom. */
 const moreEntries: NavEntry[] = [
@@ -39,9 +44,9 @@ const moreEntries: NavEntry[] = [
 	{
 		id: 'runs',
 		href: '/runs',
-		label: 'Runs',
+		label: 'Work',
 		icon: Activity,
-		description: 'Every chat turn, scheduled job and background run'
+		description: 'Tasks, delegated agents and execution activity'
 	},
 	{
 		id: 'history',

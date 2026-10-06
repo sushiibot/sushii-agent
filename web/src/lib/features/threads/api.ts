@@ -16,7 +16,7 @@ export interface ThreadsApi {
 	rename(id: string, title: string): Promise<ThreadSummary>;
 }
 
-const http = featureHttp("Threads aren't available yet.");
+const http = featureHttp("Conversations aren't available yet.");
 
 async function action<T>(path: string, body?: unknown): Promise<T> {
 	try {

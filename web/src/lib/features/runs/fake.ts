@@ -8,7 +8,7 @@ const PAGE = 10;
 function failure(scenario: string): Error | null {
 	if (scenario === 'error') return new Error("The agent's server didn't answer.");
 	if (scenario === 'offline') return new Error("Can't reach the agent right now.");
-	if (scenario === 'unsupported') return new Error("Runs aren't available yet.");
+	if (scenario === 'unsupported') return new Error("Work activity isn't available yet.");
 	return null;
 }
 

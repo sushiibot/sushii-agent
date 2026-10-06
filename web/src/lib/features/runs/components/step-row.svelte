@@ -105,7 +105,7 @@
 		{/if}
 		<div class="flex min-w-0 flex-1 flex-col gap-1">
 			<span class="text-meta text-muted-foreground">
-				{step.type === 'user' ? 'Task' : 'The agent wrote'} · {at}
+				{step.type === 'user' ? 'Instruction' : 'The agent wrote'} · {at}
 			</span>
 			<div
 				id="{uid}-text"

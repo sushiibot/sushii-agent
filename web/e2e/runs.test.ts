@@ -36,13 +36,13 @@ test('the list groups runs by day, each with its status and what started it', as
 	await page.clock.setFixedTime(now);
 	await server(context, undefined, { now: now.getTime() });
 	await page.goto('/runs');
-	await expect(page.getByRole('heading', { name: 'Runs', level: 1 })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Work', level: 1 })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
 	const sync = rows(page).filter({ hasText: 'Back up projects to the home server' }).first();
 	await expect(sync).toContainText('Failed');
 	await expect(sync).toContainText('Scheduled · nightly-sync');
 	await expect(rows(page).filter({ hasText: 'Sort new mail' })).toContainText('Running');
-	await expect(rows(page).filter({ hasText: 'Book the car service' })).toContainText('Stopped');
+	await expect(rows(page).filter({ hasText: 'Book the car service' })).toHaveCount(0);
 	await expect(rows(page).filter({ hasText: 'Compare flight prices' })).toContainText('Timed out');
 	await sync.getByRole('link').click();
 	await expect(page).toHaveURL(new RegExp(`/runs/${RUN.nightlySync}$`));
@@ -53,11 +53,12 @@ test('the list groups runs by day, each with its status and what started it', as
 test('older runs load under the first page, then point to History', async ({ page, context }) => {
 	await server(context);
 	await page.goto('/runs');
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(rows(page)).toHaveCount(10);
-	await page.getByRole('button', { name: 'Show older runs' }).click();
+	await page.getByRole('button', { name: 'Show older activity' }).click();
 	await expect(rows(page)).toHaveCount(13);
-	await expect(page.getByRole('button', { name: 'Show older runs' })).toBeHidden();
-	await expect(page.getByText('Older runs are in History.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Show older activity' })).toBeHidden();
+	await expect(page.getByText('Older activity is in History.')).toBeVisible();
 });
 
 test('the type filter asks the bot for one kind and shows only those runs', async ({
@@ -66,39 +67,38 @@ test('the type filter asks the bot for one kind and shows only those runs', asyn
 }) => {
 	await server(context);
 	await page.goto('/runs');
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(rows(page)).toHaveCount(10);
 	const asked = page.waitForRequest(
 		(r) => new URL(r.url()).searchParams.get('kind') === 'subagent'
 	);
-	await page.getByRole('tab', { name: 'Background' }).click();
+	await page.getByRole('tab', { name: 'Delegated' }).click();
 	await asked;
 	await expect(rows(page)).toHaveCount(2);
 	await expect(rows(page).filter({ hasText: 'Compare flight prices' })).toBeVisible();
 	await expect(rows(page).filter({ hasText: 'Book the car service' })).toBeHidden();
-	await expect(page.getByText('Work delegated by another run.')).toBeVisible();
-	await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+	await expect(page.getByText('Assignments from another agent.')).toBeVisible();
+	await page.getByRole('tab', { name: 'Replies', exact: true }).click();
 	await expect(
-		page.getByText('A conversation contains many runs.', { exact: false })
+		page.getByText('Continue the conversation in chat.', { exact: false })
 	).toBeVisible();
-	await expect(rows(page).first()).toContainText('Chat turn');
-	await expect(rows(page).first()).toContainText('General chat');
-	await page.getByRole('tab', { name: 'All' }).click();
+	await expect(rows(page).first()).toContainText('Reply');
+	await expect(rows(page).first()).toContainText('Main conversation');
+	await page.getByRole('tab', { name: 'Activity' }).click();
 	await expect(rows(page)).toHaveCount(10);
 });
 
 test('no runs yet says what will appear', async ({ page, context }) => {
 	await server(context, 'empty');
 	await page.goto('/runs');
-	await expect(page.getByText('No runs yet')).toBeVisible();
-	await expect(
-		page.getByText('Chat turns, scheduled jobs and background work show up here')
-	).toBeVisible();
+	await expect(page.getByText('No tasks yet')).toBeVisible();
+	await expect(page.getByText('Delegated and scheduled tasks appear here.')).toBeVisible();
 });
 
 test('a slow list shows a labelled skeleton', async ({ page, context }) => {
 	await server(context, 'slow');
 	await page.goto('/runs');
-	await expect(page.getByRole('status').filter({ hasText: 'Loading runs…' })).toBeAttached();
+	await expect(page.getByRole('status').filter({ hasText: 'Loading work…' })).toBeAttached();
 	await expect(rows(page).first()).toBeVisible({ timeout: 6000 });
 });
 
@@ -106,7 +106,7 @@ test('a list that fails to load says so and retries', async ({ page, context }) 
 	const backend = await server(context, 'unsupported');
 	await page.goto('/runs');
 	await expect(page.getByRole('alert')).toContainText(
-		"Couldn't load runs. Runs aren't available yet."
+		"Couldn't load work. Work activity isn't available yet."
 	);
 	backend.set('runs', 'normal');
 	await page.getByRole('button', { name: 'Try again' }).click();
@@ -135,9 +135,10 @@ test('an out-of-date page cursor asks for a reload instead of showing nothing', 
 }) => {
 	const backend = await server(context);
 	await page.goto('/runs');
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(rows(page)).toHaveCount(10);
 	backend.set('runs', 'stale');
-	await page.getByRole('button', { name: 'Show older runs' }).click();
+	await page.getByRole('button', { name: 'Show older activity' }).click();
 	await expect(page.getByText('The list changed since it loaded.')).toBeVisible();
 	await expect(rows(page)).toHaveCount(10);
 	expect(backend.calls.filter((c) => c.path === '/api/runs').at(-1)?.search).toMatch(
@@ -151,16 +152,17 @@ test("a run event changes the run's status on screen without a reload", async ({
 }) => {
 	const backend = await server(context);
 	await page.goto(`/runs/${RUN.triage}`);
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
 	await expect(page.getByText('Still running.')).toBeVisible();
 	backend.setRunStatus(RUN.triage, 'failed');
 	await push(page, 'run', { runId: RUN.triage, kind: 'subagent', status: 'failed' });
-	await expect(page.getByText('Failed. The host recorded an error')).toBeVisible();
+	await expect(page.getByText('Failed. An error ended this attempt')).toBeVisible();
 	await page.getByRole('link', { name: 'Back', exact: true }).click();
 	const triage = rows(page).filter({ hasText: 'Sort new mail' });
 	await expect(triage).toContainText('Failed');
 	backend.setRunStatus(RUN.triage, 'done');
 	await push(page, 'run', { runId: RUN.triage, kind: 'subagent', status: 'done' });
-	await expect(triage).toContainText('Done');
+	await expect(triage).toContainText('Finished');
 });
 
 test('offline, the list keeps what it had and shows the banner', async ({ page, context }) => {
@@ -180,13 +182,14 @@ test('a finished run shows the host status, evidence and a collapsed timeline', 
 	await server(context);
 	await page.goto(`/runs/${RUN.expenses}`);
 	await expect(page.getByText('Draft the quarterly expenses summary')).toBeVisible();
-	await expect(page.getByText('Outcome, as the host recorded it')).toBeVisible();
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Result', exact: true })).toBeVisible();
 	await expect(
-		page.getByText('Finished. That means it ran to the end, not that it worked')
+		page.getByText('Execution finished. Review the result and recorded checks below.')
 	).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Timeline', exact: true })).toBeHidden();
-	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
-	const evidence = page.getByRole('tabpanel', { name: 'Evidence', exact: true });
+	await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeHidden();
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
+	const evidence = page.getByRole('tabpanel', { name: 'Results', exact: true });
 	await expect(
 		evidence.getByText('cd projects/finance && bun test', { exact: true })
 	).toBeVisible();
@@ -195,19 +198,20 @@ test('a finished run shows the host status, evidence and a collapsed timeline', 
 		'href',
 		/^\/f\//
 	);
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	const step = page.getByRole('button', { name: /^Succeeded bash .*python summarize/ });
 	await expect(step).toHaveAttribute('aria-expanded', 'false');
 	await expect(page.getByText('Wrote q3-summary.md (1,412 words).')).toBeHidden();
 	await step.click();
 	await expect(step).toHaveAttribute('aria-expanded', 'true');
 	await expect(page.getByText('Wrote q3-summary.md (1,412 words).')).toBeVisible();
-	await page.getByRole('tab', { name: 'Related', exact: true }).click();
+	await page.getByRole('tab', { name: 'Details', exact: true }).click();
 	await page.getByRole('link', { name: /Compare flight prices/ }).click();
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(page.getByText('Timed out after 30 minutes.')).toBeVisible();
-	await page.getByRole('tab', { name: 'Related', exact: true }).click();
+	await page.getByRole('tab', { name: 'Details', exact: true }).click();
 	await page.getByRole('link', { name: /Draft the quarterly expenses summary/ }).click();
+	await page.getByRole('tab', { name: 'Details', exact: true }).click();
 	await expect(page.getByRole('link', { name: /Notes from that day/ })).toHaveAttribute(
 		'href',
 		/^\/history\/\d{4}-\d{2}-\d{2}$/
@@ -217,11 +221,12 @@ test('a finished run shows the host status, evidence and a collapsed timeline', 
 test('a failed run shows the failing step and its error', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.nightlySync}`);
-	await expect(page.getByText('Failed. The host recorded an error')).toBeVisible();
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
+	await expect(page.getByText('Failed. An error ended this attempt')).toBeVisible();
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(
 		page
-			.getByRole('tabpanel', { name: 'Timeline', exact: true })
+			.getByRole('tabpanel', { name: 'Activity', exact: true })
 			.getByText('Job failed: rsync exited with code 30 after 3 tries.')
 	).toBeVisible();
 	await page.getByRole('button', { name: /^Failed bash .*rsync/ }).click();
@@ -231,18 +236,19 @@ test('a failed run shows the failing step and its error', async ({ page, context
 test('a running run says it is still going', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.triage}`);
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
 	await expect(page.getByText('Still running.')).toBeVisible();
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
-	await expect(page.getByText('The agent is still working on this run.')).toBeVisible();
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+	await expect(page.getByText('Oldest first · tool details expand in place.')).toBeVisible();
 	await expect(page.getByRole('button', { name: /^No result label_mail/ })).toBeVisible();
 });
 
 test('a long run pages its steps', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.refactor}`);
-	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
+	await page.getByRole('tab', { name: 'Results', exact: true }).click();
 	await expect(page.getByText('No check ran after the last change.')).toBeVisible();
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(page.getByText('100+ steps', { exact: true })).toBeVisible();
 	await page.getByRole('button', { name: 'Show more steps' }).click();
 	await expect(page.getByText('162 steps', { exact: true })).toBeVisible();
@@ -252,9 +258,9 @@ test('a long run pages its steps', async ({ page, context }) => {
 test('a run without a transcript says why it has no steps', async ({ page, context }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.flush}`);
-	await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+	await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 	await expect(
-		page.getByText("This run's transcript is gone, so there are no steps to show.")
+		page.getByText('The transcript is gone, so there are no steps to show.')
 	).toBeVisible();
 });
 
@@ -264,19 +270,19 @@ test('an unknown run says it was not found instead of loading forever', async ({
 }) => {
 	await server(context);
 	await page.goto('/runs/01K6AAAAAAAAAAAAAAAAAAAAAA');
-	await expect(page.getByText('Run not found')).toBeVisible();
+	await expect(page.getByText('Activity not found')).toBeVisible();
 	await page.getByRole('link', { name: 'Back', exact: true }).click();
 	await expect(page).toHaveURL(/\/runs$/);
 });
 
-test('Open run from a Home peek replaces the sheet, and the run stays in the inbox as read', async ({
+test('View activity from a Home peek replaces the sheet, and the run stays in the inbox as read', async ({
 	page,
 	context
 }) => {
 	await server(context);
 	await page.goto('/inbox');
 	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
-	await page.getByRole('dialog').getByRole('button', { name: 'Open run' }).click();
+	await page.getByRole('dialog').getByRole('button', { name: 'View activity' }).click();
 	await expect(page).toHaveURL(new RegExp(`/runs/${RUN.expenses}$`));
 	await page.goBack();
 	await expect(page).toHaveURL(/\/inbox$/);
@@ -297,23 +303,26 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			await page.goto(path);
 			if (path === '/runs') await expect(rows(page).first()).toBeVisible();
 			else {
-				await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
-				await expect(page.getByRole('heading', { name: /Timeline/ })).toBeVisible();
+				await page.getByRole('tab', { name: 'Activity', exact: true }).click();
+				await expect(page.getByRole('heading', { name: /Activity/ })).toBeVisible();
 				await page
 					.getByRole('button', { name: /^(Succeeded|Failed) / })
 					.first()
 					.click();
 			}
 			if (path !== '/runs') {
-				for (const section of ['Overview', 'Evidence', 'Related']) {
+				for (const section of ['Results', 'Details']) {
 					await page.getByRole('tab', { name: section, exact: true }).click();
 					expect(await axe(page), `${path} ${section}`).toEqual([]);
 					expect(await smallTargets(page), `${path} ${section}`).toEqual([]);
+					await page.screenshot({
+						path: `/tmp/work-view-${path.endsWith(RUN.expenses) ? 'task' : 'long'}-${section}-${colorScheme}-mobile.png`
+					});
 					await page.setViewportSize({ width: 320, height: 800 });
 					expect(await horizontalOverflow(page), `${path} ${section} at 320px`).toEqual([]);
 					await page.setViewportSize({ width: 412, height: 915 });
 				}
-				await page.getByRole('tab', { name: 'Timeline', exact: true }).click();
+				await page.getByRole('tab', { name: 'Activity', exact: true }).click();
 			}
 			expect(await axe(page), path).toEqual([]);
 			expect(await smallTargets(page), path).toEqual([]);
@@ -322,33 +331,39 @@ for (const colorScheme of ['light', 'dark'] as const) {
 				expect(await horizontalOverflow(page), `${path} at ${width}px`).toEqual([]);
 			}
 			await page.setViewportSize({ width: 412, height: 915 });
+			await page.screenshot({
+				path: `/tmp/work-view-${path === '/runs' ? 'list' : path.endsWith(RUN.expenses) ? 'task' : 'long'}-${colorScheme}-mobile.png`
+			});
+			await page.setViewportSize({ width: 1280, height: 915 });
+			await page.screenshot({
+				path: `/tmp/work-view-${path === '/runs' ? 'list' : path.endsWith(RUN.expenses) ? 'task' : 'long'}-${colorScheme}-desktop.png`
+			});
 		});
 	}
 }
 
-test('run sections support keyboard navigation and preserve expanded steps', async ({
+test('activity sections support keyboard navigation and preserve expanded steps', async ({
 	page,
 	context
 }) => {
 	await server(context);
 	await page.goto(`/runs/${RUN.expenses}`);
-	const overview = page.getByRole('tab', { name: 'Overview', exact: true });
-	const timeline = page.getByRole('tab', { name: 'Timeline', exact: true });
-	await overview.focus();
-	await page.keyboard.press('ArrowRight');
-	await expect(timeline).toBeFocused();
-	await expect(timeline).toHaveAttribute('aria-selected', 'true');
+	const activity = page.getByRole('tab', { name: 'Activity', exact: true });
+	const results = page.getByRole('tab', { name: 'Results', exact: true });
 	const step = page.getByRole('button', { name: /^Succeeded bash .*python summarize/ });
 	await step.click();
-	await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
+	await activity.focus();
+	await page.keyboard.press('ArrowRight');
+	await expect(results).toBeFocused();
+	await expect(results).toHaveAttribute('aria-selected', 'true');
 	await expect(step).toBeHidden();
-	await timeline.click();
+	await activity.click();
 	await expect(step).toHaveAttribute('aria-expanded', 'true');
-	await timeline.focus();
+	await activity.focus();
 	await page.keyboard.press('End');
-	await expect(page.getByRole('tab', { name: 'Related', exact: true })).toBeFocused();
+	await expect(page.getByRole('tab', { name: 'Details', exact: true })).toBeFocused();
 	await page.keyboard.press('Home');
-	await expect(overview).toBeFocused();
+	await expect(activity).toBeFocused();
 });
 
 test('running status chips animate in list and detail, and respect reduced motion', async ({
@@ -370,7 +385,7 @@ test('running status chips animate in list and detail, and respect reduced motio
 	await expect(detailIcon).toHaveCSS('animation-name', 'none');
 });
 
-test('long run titles expand on request while sections stay within reach', async ({
+test('a long brief stays in Details while the heading and tabs remain compact', async ({
 	page,
 	context
 }) => {
@@ -379,18 +394,117 @@ test('long run titles expand on request while sections stay within reach', async
 	const title =
 		'Check whether anything needs attention right now: something due or overdue, a follow-up you promised, an open task that needs a nudge, or a change worth flagging. Read the project notes and recent daily entries before deciding what to do.';
 	await context.route(`**/api/runs/${RUN.expenses}`, (route) =>
-		route.fulfill({ json: { ...detail, run: { ...detail.run, title } } })
+		route.fulfill({
+			json: {
+				...detail,
+				run: { ...detail.run, title },
+				steps: detail.steps.map((step, index) => (index === 0 ? { ...step, text: title } : step))
+			}
+		})
 	);
 	await page.goto(`/runs/${RUN.expenses}`);
-	const disclosure = page.getByRole('button', { name: 'Show full run title' });
-	await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-	const initial = await disclosure.boundingBox();
-	const tabs = await page.getByRole('tablist', { name: 'Run sections' }).boundingBox();
-	expect(tabs!.y).toBeLessThan(260);
-	await disclosure.click();
-	const expanded = page.getByRole('button', { name: 'Collapse run title' });
-	await expect(expanded).toHaveAttribute('aria-expanded', 'true');
-	expect((await expanded.boundingBox())!.height).toBeGreaterThan(initial!.height);
-	await expanded.click();
-	await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+	await expect(page.getByText('writer task', { exact: true })).toBeVisible();
+	await expect(page.locator('[data-tab-panel="overview"]')).toHaveAttribute('aria-hidden', 'true');
+	const tabs = await page.getByRole('tablist', { name: 'Activity sections' }).boundingBox();
+	expect(tabs!.y).toBeLessThan(300);
+	await page.getByRole('tab', { name: 'Details', exact: true }).click();
+	await expect(
+		page.getByRole('tabpanel', { name: 'Details', exact: true }).getByText(title, { exact: true })
+	).toBeVisible();
+});
+
+test('Work defaults to tasks while reply cycles and maintenance stay in Activity', async ({
+	page,
+	context
+}) => {
+	const backend = await server(context);
+	await page.goto('/runs');
+	await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toHaveAttribute(
+		'aria-selected',
+		'true'
+	);
+	await expect(rows(page)).toHaveCount(8);
+	expect(backend.calls.find((call) => call.path === '/api/runs')?.search).toBe(
+		'?kind=job%2Csubagent%2Cagent'
+	);
+	await expect(rows(page).filter({ hasText: 'invoice from Eastside' })).toHaveCount(0);
+	await expect(rows(page).filter({ hasText: 'Memory save' })).toHaveCount(0);
+	await page.getByRole('tab', { name: 'Replies', exact: true }).click();
+	await expect(rows(page)).toHaveCount(3);
+	await rows(page).first().getByRole('link').click();
+	await expect(page.getByRole('heading', { name: 'Reply activity', level: 1 })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Open conversation' })).toHaveAttribute(
+		'href',
+		'/chat'
+	);
+	await page.getByRole('tab', { name: 'Details', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Request', exact: true })).toBeVisible();
+});
+
+test('completion preserves chronological activity and the selected section', async ({
+	page,
+	context
+}) => {
+	const backend = await server(context);
+	await page.goto(`/runs/${RUN.triage}`);
+	const activity = page.locator('[data-run-activity]');
+	await expect(activity).toBeVisible();
+	const before = await activity.locator('li').allTextContents();
+	await page.getByRole('button', { name: /^Succeeded search_mail/ }).click();
+	backend.setRunStatus(RUN.triage, 'done');
+	await push(page, 'run', { runId: RUN.triage, kind: 'job', status: 'done' });
+	await expect(page.getByRole('tab', { name: 'Activity', exact: true })).toHaveAttribute(
+		'aria-selected',
+		'true'
+	);
+	await expect(page.getByRole('button', { name: /^Succeeded search_mail/ })).toHaveAttribute(
+		'aria-expanded',
+		'true'
+	);
+	expect(await activity.locator('li').allTextContents()).toEqual(before);
+});
+
+test('a finished reply keeps ongoing delegation visible', async ({ page, context }) => {
+	await server(context);
+	const detail = runDetailPage(Date.now(), RUN.expenses)!;
+	await context.route(`**/api/runs/${RUN.expenses}`, (route) =>
+		route.fulfill({
+			json: {
+				...detail,
+				children: detail.children.map((child) => ({ ...child, status: 'running' }))
+			}
+		})
+	);
+	await page.goto(`/runs/${RUN.expenses}`);
+	await expect(
+		page.getByRole('status').filter({ hasText: '1 delegated task is still running.' })
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Delegated tasks · 1' }).click();
+	await expect(page.getByRole('tab', { name: 'Details', exact: true })).toHaveAttribute(
+		'aria-selected',
+		'true'
+	);
+	await expect(page.getByRole('link', { name: /Compare flight prices/ })).toContainText('Running');
+});
+
+test('refreshing a long activity preserves loaded pages and expanded tools', async ({
+	page,
+	context
+}) => {
+	await server(context);
+	await page.goto(`/runs/${RUN.refactor}`);
+	await page.getByRole('button', { name: 'Show more steps' }).click();
+	const activity = page.locator('[data-run-activity]');
+	await expect(activity.locator('li')).toHaveCount(162);
+	const step = activity.locator('li').nth(149).getByRole('button');
+	await step.click();
+	await expect(step).toHaveAttribute('aria-expanded', 'true');
+	const refreshed = page.waitForResponse((response) => {
+		const url = new URL(response.url());
+		return url.pathname === `/api/runs/${RUN.refactor}` && url.searchParams.get('after') === '100';
+	});
+	await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+	await refreshed;
+	await expect(activity.locator('li')).toHaveCount(162);
+	await expect(step).toHaveAttribute('aria-expanded', 'true');
 });

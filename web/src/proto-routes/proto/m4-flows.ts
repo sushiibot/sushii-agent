@@ -1,4 +1,4 @@
-// M4 flows: the Threads list and thread chats, on the threads feature's fixtures.
+// M4 flows: the Conversations list and thread chats, on the threads feature's fixtures.
 import { ChatScreen, type ChatMessage } from '$lib/features/chat';
 import { ChatsScreen, ThreadScreen, threadMessages } from '$lib/features/threads';
 import * as t from '$lib/features/threads/fixtures';
@@ -10,7 +10,7 @@ const ready = { status: 'ready' } as const;
 const chats = t.chatsData(NOW);
 const tabs = { shell: true, tabBar: true, tab: 'chat', badges: { home: 2 } } as const;
 const detail = { shell: true, tab: 'chat' } as const;
-const back = { href: '/chats', label: 'Back to Threads' };
+const back = { href: '/chats', label: 'Back to Conversations' };
 
 const history = (id: string): ChatMessage[] =>
 	t.threadDetail(NOW, id)!.history.flatMap((h): ChatMessage[] =>
@@ -90,7 +90,7 @@ const mainProps = (messages: ChatMessage[], props: Record<string, unknown> = {})
 const chatsFrames: Frame[] = [
 	{
 		id: 'cs-1',
-		label: 'Threads: Main pinned, grouped by activity',
+		label: 'Conversations: Main pinned, grouped by activity',
 		screen: ChatsScreen,
 		props: list(),
 		...tabs,
@@ -160,7 +160,7 @@ const threadFrames: Frame[] = [
 		screen: ChatScreen,
 		props: mainProps(t.mainWithOffer),
 		...detail,
-		next: 'Start thread',
+		next: 'Start conversation',
 		hits: { 'start thread': 'th-2' }
 	},
 	{
@@ -207,7 +207,7 @@ const threadFrames: Frame[] = [
 	},
 	{
 		id: 'th-6',
-		label: 'Start a thread from a reply',
+		label: 'Start a conversation from a reply',
 		screen: WithBranch,
 		props: mainProps(t.mainWithOffer, {
 			branch: {
@@ -237,7 +237,7 @@ const closeFrames: Frame[] = [
 		screen: ThreadScreen,
 		props: thread(t.THREADS.trip, { sheet: 'thread-close' }),
 		...detail,
-		next: 'Archive thread',
+		next: 'Archive conversation',
 		hits: { 'archive thread': 'cl-2', 'keep current': 'th-3' }
 	},
 	{
@@ -289,7 +289,7 @@ export const m4Flows: Flow[] = [
 	{
 		id: 'chats',
 		code: 'CS',
-		title: 'Threads: Main and ongoing topics',
+		title: 'Conversations: Main and ongoing topics',
 		intro:
 			'Main is the general-purpose hub. Persistent topic threads group by activity, and inactive ones move into the visible Archived section after seven days. Every thread stays available to resume.',
 		frames: chatsFrames
