@@ -1,7 +1,14 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { runDetailPage } from '../src/lib/features/runs/fixtures';
 import { fakeBackend, type Scenario } from './fake-backend';
-import { axe, horizontalOverflow, push, smallTargets, stubStream } from './helpers';
+import {
+	axe,
+	horizontalOverflow,
+	push,
+	smallTargets,
+	stubStream,
+	openSharedInbox
+} from './helpers';
 
 const RUN = {
 	triage: '01K6B4D2F4H6K8M0P2R4T6V8X0',
@@ -281,7 +288,7 @@ test('View activity from a Home peek replaces the sheet, and the run stays in th
 }) => {
 	await server(context);
 	await page.goto('/inbox');
-	await page.locator('details[data-inbox="shared"] > summary').click();
+	await openSharedInbox(page);
 	await page.getByRole('button', { name: /Draft the quarterly expenses summary/ }).click();
 	await page.getByRole('dialog').getByRole('button', { name: 'View activity' }).click();
 	await expect(page).toHaveURL(new RegExp(`/runs/${RUN.expenses}$`));

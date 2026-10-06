@@ -240,7 +240,16 @@ export async function openDrawer(page: Page) {
 	return menu;
 }
 
-/** Inbox action tests expand each conversation's disclosure, including rows arriving on refresh. */
+/** Open the shared inbox after its records load; slow loads may already have expanded it. */
+export async function openSharedInbox(page: Page) {
+	const inbox = page.locator('details[data-inbox="shared"]');
+	await expect(inbox.locator('summary')).toContainText(/Inbox · \d+/);
+	if (!(await inbox.evaluate((element) => (element as HTMLDetailsElement).open)))
+		await inbox.locator('summary').click();
+	await expect(inbox).toHaveAttribute('open', '');
+}
+
+/** Inbox action tests keep disclosures expanded, including records arriving on refresh. */
 export async function expandConversationInboxes(context: BrowserContext) {
 	await context.addInitScript(() => {
 		const expand = () => {

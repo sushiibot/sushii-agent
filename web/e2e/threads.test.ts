@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { homeData, emailApproval } from '../src/lib/features/home/fixtures';
-import { checkScreen, fixtureApp, openDrawer } from './helpers';
+import { checkScreen, fixtureApp, openDrawer, openSharedInbox } from './helpers';
 
 const reply = {
 	type: 'assistant',
@@ -29,12 +29,39 @@ test('Conversations keeps Main first, a shared inbox and working thread search',
 		await expect(page.getByRole('heading', { name: new RegExp(`^${h}`) })).toBeVisible();
 	}
 	await expect(page.getByRole('region', { name: /^Archived/ })).toContainText('Couch delivery');
-	await page.locator('details[data-inbox="shared"] > summary').click();
+	await openSharedInbox(page);
 	await expect(page.locator('details[data-inbox="shared"]')).toContainText('nightly-sync failed');
 	await page.getByRole('searchbox').fill('lease');
 	await expect(page.getByRole('heading', { name: '1 matching' })).toBeVisible();
 	await page.getByRole('link', { name: /Lease renewal/ }).click();
 	await expect(page).toHaveURL(/\/chats\/lease$/);
+});
+
+test('closing an inbox expanded by a slow load stays closed when its records arrive', async ({
+	page,
+	context
+}) => {
+	await fixtureApp(context);
+	let release!: () => void;
+	const loaded = new Promise<void>((resolve) => (release = resolve));
+	const data = homeData(Date.now());
+	await context.route('**/api/home', async (route) => {
+		await loaded;
+		await route.fulfill({
+			json: { ...data, waiting: { approvals: [], asks: [], auth: data.auth }, openTurns: [] }
+		});
+	});
+	await page.goto('/chats');
+	const inbox = page.locator('details[data-inbox="shared"]');
+	try {
+		await expect(inbox).toHaveAttribute('open', '');
+		await inbox.locator('summary').click();
+		await expect(inbox).not.toHaveAttribute('open', '');
+	} finally {
+		release();
+	}
+	await expect(inbox.locator('summary')).toContainText(/Inbox · \d+/);
+	await expect(inbox).not.toHaveAttribute('open', '');
 });
 
 test('decisions name their source while topic work and heartbeats share one inbox', async ({
@@ -173,7 +200,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.goto('/chats');
 		await expect(page.getByRole('link', { name: /October trip/ })).toBeVisible();
 		await checkScreen(page);
-		await page.locator('details[data-inbox="shared"] > summary').click();
+		await openSharedInbox(page);
 		await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
 		await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
 		const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
@@ -427,7 +454,7 @@ test('Discuss puts a heartbeat in the selected topic draft, preserves text and d
 		.getByRole('textbox', { name: 'Message', exact: true })
 		.fill('Keep these travel notes.');
 	await page.getByRole('link', { name: 'Back to Conversations' }).click();
-	await page.locator('details[data-inbox="shared"] > summary').click();
+	await openSharedInbox(page);
 	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
 	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
 	const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
@@ -446,7 +473,7 @@ test('Discuss creates a named conversation with the heartbeat in an unsent draft
 }) => {
 	await fixtureApp(context);
 	await page.goto('/chats');
-	await page.locator('details[data-inbox="shared"] > summary').click();
+	await openSharedInbox(page);
 	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
 	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
 	const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });
@@ -468,7 +495,7 @@ test('Discuss can return to the item and recover from a conversation load failur
 		route.fulfill({ status: 500, json: { error: 'Temporarily unavailable' } })
 	);
 	await page.goto('/chats');
-	await page.locator('details[data-inbox="shared"] > summary').click();
+	await openSharedInbox(page);
 	await page.getByRole('button', { name: /Your passport renewal is due Friday/ }).click();
 	await page.getByRole('dialog').getByRole('button', { name: 'Discuss', exact: true }).click();
 	const picker = page.getByRole('dialog', { name: 'Discuss in a conversation' });

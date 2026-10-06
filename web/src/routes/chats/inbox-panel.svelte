@@ -80,6 +80,17 @@
 		error: data.error
 	});
 
+	// Auto-expand on a load problem, without letting later data updates reset a native toggle.
+	$effect(() => {
+		if (
+			remote.status === 'error' ||
+			remote.slow ||
+			(greeted && data.error) ||
+			(data.data?.workspace.state !== undefined && data.data.workspace.state !== 'online')
+		)
+			inboxDisclosure.expanded = true;
+	});
+
 	const items = $derived(Object.values(home.groups).flat());
 
 	/** Whether Home's records could say for sure that this item is gone. */
@@ -244,11 +255,7 @@
 	{@const groups = { ...home.groups, waiting: [] }}
 	{@const total = Object.values(groups).reduce((count, items) => count + items.length, 0)}
 	<details
-		open={inboxDisclosure.expanded ||
-			remote.status === 'error' ||
-			!!remote.slow ||
-			(greeted && !!data.error) ||
-			(data.data?.workspace.state !== undefined && data.data.workspace.state !== 'online')}
+		open={inboxDisclosure.expanded}
 		ontoggle={(event) => {
 			inboxDisclosure.expanded = event.currentTarget.open;
 		}}
