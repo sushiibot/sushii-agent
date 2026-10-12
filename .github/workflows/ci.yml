@@ -42,9 +42,9 @@ jobs:
         run: |
           curl -fsSL "https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz" \
             | tar -xz -C /usr/local/bin --strip-components=1 "lychee-x86_64-unknown-linux-gnu/lychee"
-      # The workspace image ships ripgrep for history/search; without it those tests skip rather than run.
-      - name: Install ripgrep and ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep ffmpeg
+      # Matches the Dockerfile's ripgrep (wiki search); without it those tests skip rather than run.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
       - run: bun install --frozen-lockfile
       # Keep Git subprocess tests on Bun's established sequential runner within each shard.
       - run: bun run test --shard=${{ matrix.shard }}/2
@@ -54,118 +54,8 @@ jobs:
           DISCORD_BOT_TOKEN: test-token
           OPENAI_API_KEY: test-key
 
-  # Web static checks and unit tests. Browser shards build and test the app separately.
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      - run: bun install --frozen-lockfile
-      - run: bun run check
-      - run: bun run lint
-
-  # Browser shards run independently; web checks and unit tests above run only once.
-  web-e2e:
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      - run: bun install --frozen-lockfile
-      # Each shard builds the production app and harness before preview.
-      # Notification tests require full Chromium, not headless shell.
-      - run: bunx playwright install --with-deps --no-shell chromium
-      - run: bun run test:e2e --shard=${{ matrix.shard }}/2
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !cancelled() }}
-        with:
-          name: web-e2e-${{ matrix.shard }}
-          path: |
-            web/test-results
-            web/playwright-results.json
-          retention-days: 7
-
-  # Real-process e2e (e2e-system/README.md): the built web app, the personal gateway and the workspace as processes,
-  # with a fake model and a Traefik stand-in dialing from loopback aliases.
-  e2e-system:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      # The workspace runs history/search with ripgrep, as in its image.
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
-      - run: bun install --frozen-lockfile
-      - run: bun install --frozen-lockfile
-        working-directory: web
-      - run: bun install --frozen-lockfile
-        working-directory: e2e-system
-      - run: bunx tsc --noEmit
-        working-directory: e2e-system
-      - run: bunx playwright install --with-deps --no-shell chromium
-        working-directory: e2e-system
-      # The harness needs 127.0.0.2/.3/.5; its preflight fails fast if they don't route to lo.
-      - name: Show loopback routes
-        run: ip -4 route show table local
-      - run: bun run e2e:system
-        env:
-          E2E_TMP_DIR: ${{ runner.temp }}/e2e-system
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
-        with:
-          name: e2e-system
-          path: |
-            ${{ runner.temp }}/e2e-system/logs
-            ${{ runner.temp }}/e2e-system/playwright
-          retention-days: 7
-
-  # Builds the image natively per arch (the deploy host is arm64) and drives a real browser in it.
-  browser-smoke:
-    strategy:
-      matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - run: docker build -t sushii-agent:smoke .
-      - run: docker run --rm --init --entrypoint sh sushii-agent:smoke scripts/browser-smoke.sh
-      # Workspace target under its production hardening (non-root, no caps, no privilege escalation),
-      # through its own entrypoint. docker-build-workspace needs this job, so a failure blocks the push.
-      - run: docker build --target workspace -t sushii-agent:smoke-workspace .
-      - run: >-
-          docker run --rm --init --user 1000:1000 --cap-drop ALL
-          --security-opt no-new-privileges --shm-size 1g
-          sushii-agent:smoke-workspace sh scripts/browser-smoke.sh
-
   docker-build:
-    needs: [typecheck, test, web, web-e2e, browser-smoke, e2e-system]
+    needs: [typecheck, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: sushiibot/sushii-workflows/.github/workflows/docker-build.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
     with:
@@ -174,44 +64,6 @@ jobs:
       contents: read
       packages: write
 
-  # Workspace image (Dockerfile `workspace` target). The reusable docker-build workflow has no
-  # target input, so this builds inline. Pushed as <sha>-workspace.
-  docker-build-workspace:
-    needs: [typecheck, test, browser-smoke, e2e-system]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    outputs:
-      short_sha: ${{ steps.version.outputs.short_sha }}
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - name: Set image version
-        id: version
-        run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
-        with:
-          context: .
-          target: workspace
-          platforms: linux/amd64,linux/arm64
-          push: true
-          # No :latest -- that tag belongs to the bot image in the same package.
-          tags: ghcr.io/sushiibot/sushii-agent:${{ steps.version.outputs.short_sha }}-workspace
-          cache-from: |
-            type=registry,ref=ghcr.io/sushiibot/sushii-agent:buildcache
-            type=registry,ref=ghcr.io/sushiibot/sushii-agent:buildcache-workspace
-          cache-to: type=registry,ref=ghcr.io/sushiibot/sushii-agent:buildcache-workspace,mode=max
-
   deploy:
     needs: docker-build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -219,37 +71,6 @@ jobs:
     with:
       service: private-bots/sushii-agent
       image_version: ${{ needs.docker-build.outputs.image_version }}
-      host: apps
-    secrets:
-      ANSIBLE_REPO_TOKEN: ${{ secrets.ANSIBLE_REPO_TOKEN }}
-      ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
-      ANSIBLE_KNOWN_HOSTS: ${{ secrets.ANSIBLE_KNOWN_HOSTS }}
-      ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-
-  # Serial bot → personal → workspace: each deploy pushes a tag bump to sushii-ansible, and parallel
-  # deploys would race those pushes. The personal gateway runs the bot image with `bun src/personal.ts`.
-  deploy-personal:
-    needs: [deploy, docker-build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: sushiibot/sushii-workflows/.github/workflows/deploy.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
-    with:
-      service: private-bots/omakase
-      image_version: ${{ needs.docker-build.outputs.image_version }}
-      host: apps
-    secrets:
-      ANSIBLE_REPO_TOKEN: ${{ secrets.ANSIBLE_REPO_TOKEN }}
-      ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
-      ANSIBLE_KNOWN_HOSTS: ${{ secrets.ANSIBLE_KNOWN_HOSTS }}
-      ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-
-  # After the personal gateway: a new workspace may send fields an older gateway drops.
-  deploy-workspace:
-    needs: [deploy-personal, docker-build-workspace]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: sushiibot/sushii-workflows/.github/workflows/deploy.yml@main # zizmor: ignore[unpinned-uses] first-party, tracked at @main by design
-    with:
-      service: private-bots/omakase-workspace
-      image_version: ${{ needs.docker-build-workspace.outputs.short_sha }}
       host: apps
     secrets:
       ANSIBLE_REPO_TOKEN: ${{ secrets.ANSIBLE_REPO_TOKEN }}
