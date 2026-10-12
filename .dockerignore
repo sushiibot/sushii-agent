@@ -6,17 +6,3 @@ feedback-export/
 *.bak
 .claude/
 .kanban/
-.playwright-mcp/
-test-results/
-web/node_modules/
-web/build/
-web/build-proto/
-web/.svelte-kit/
-web/proto-screenshots/
-web/test-results/
-web/playwright-report/
-web/.env*
-e2e-system/node_modules/
-e2e-system/test-results/
-
-web/playwright-results.json

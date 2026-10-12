@@ -17,8 +17,6 @@ export interface Config {
   /** Auto-derive durable memory from each finished turn (write-side of proactive memory). Default on;
    *  set MEMORY_DERIVER=0 to disable if the per-turn extraction cost isn't worth it. */
   memoryDeriverEnabled: boolean;
-  /** OpenRouter transcription (ASR) model for voice messages. */
-  transcriptionModel: string;
   openaiContextLimit: number;
   databasePath: string;
   feedbackPath: string;
@@ -142,25 +140,12 @@ export function resolveOwnerPrincipals(
         "principals.json owner's discord identity differs from OWNER_DISCORD_ID; the file wins",
       );
     }
-    return lowercaseWebLogins(raw);
+    return raw;
   }
   if (Object.keys(raw).length === 0 && ownerDiscordId) {
     return { owner: { owner: true, identities: { discord: ownerDiscordId } } };
   }
-  return lowercaseWebLogins(raw);
-}
-
-/** Web actors carry logins normalized as surfaces/web/actor.ts's normalizeLogin does (trim + lowercase),
- *  so a mixed-case `web` identity would never match one. */
-function lowercaseWebLogins(raw: Record<string, PrincipalConfig>): Record<string, PrincipalConfig> {
-  let out: Record<string, PrincipalConfig> | undefined;
-  for (const [id, p] of Object.entries(raw)) {
-    const web = p?.identities?.["web"];
-    if (typeof web !== "string" || web === web.trim().toLowerCase()) continue;
-    out ??= { ...raw };
-    out[id] = { ...p, identities: { ...p.identities, web: web.trim().toLowerCase() } };
-  }
-  return out ?? raw;
+  return raw;
 }
 
 /** Load + validate the manual principal registry. A missing DEFAULT file means "empty" (subject to
@@ -272,7 +257,6 @@ export const config: Config = {
   // empty falls back to openaiModel.
   compactionModel: optional("COMPACTION_MODEL", ""),
   memoryDeriverEnabled: !["0", "false", "no"].includes(optional("MEMORY_DERIVER", "1").toLowerCase()),
-  transcriptionModel: optional("TRANSCRIPTION_MODEL", "openai/whisper-large-v3"),
   openaiContextLimit: parseInt(optional("OPENAI_CONTEXT_LIMIT", "200000"), 10),
   databasePath: optional("DATABASE_PATH", "./data/sushii-agent.db"),
   feedbackPath: optional("FEEDBACK_PATH", "./data/feedback"),

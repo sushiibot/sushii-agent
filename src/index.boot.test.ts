@@ -6,8 +6,6 @@ import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const READY = "MCP bridge HTTP server listening";
-/** The personal gateway's default web and workspace ports; the bot must bind neither. */
-const PERSONAL_PORTS = [8790, 8788];
 
 function freePort(): Promise<number> {
   const srv = net.createServer();
@@ -19,22 +17,13 @@ function freePort(): Promise<number> {
   );
 }
 
-function listening(port: number): Promise<boolean> {
-  return new Promise((res) => {
-    const sock = net.connect({ host: "127.0.0.1", port });
-    sock.once("connect", () => (sock.destroy(), res(true)));
-    sock.once("error", () => res(false));
-  });
-}
-
-test("the bot boots on the bot env alone and binds no personal-gateway port", async () => {
+test("the bot boots on the bot env alone", async () => {
   const dir = mkdtempSync(join(tmpdir(), "bot-boot-"));
-  const busyBefore = await Promise.all(PERSONAL_PORTS.map(listening));
   writeFileSync(join(dir, "principals.json"), "{}");
   writeFileSync(join(dir, "teams.json"), "{}");
   const proc = Bun.spawn([process.execPath, "--no-env-file", "--preload", "./src/test/discordLoginStub.preload.ts", "src/index.ts"], {
     cwd: ROOT,
-    // Built from scratch: no WEB_*, ORCH_*, VAPID_* or GITHUB_* reaches the bot.
+    // Built from scratch so the host's env can't satisfy a requirement the deploy doesn't set.
     env: {
       PATH: process.env["PATH"] ?? "/usr/bin:/bin",
       HOME: dir,
@@ -67,9 +56,6 @@ test("the bot boots on the bot env alone and binds no personal-gateway port", as
     if (!out.includes(READY)) proc.kill("SIGKILL");
     const err = out.includes(READY) ? "" : await new Response(proc.stderr).text();
     expect({ ready: out.includes(READY), err }).toEqual({ ready: true, err: "" });
-    for (const [i, port] of PERSONAL_PORTS.entries()) {
-      if (!busyBefore[i]) expect({ port, listening: await listening(port) }).toEqual({ port, listening: false });
-    }
   } finally {
     proc.kill("SIGTERM");
     await Promise.race([proc.exited, Bun.sleep(5000).then(() => proc.kill("SIGKILL"))]);

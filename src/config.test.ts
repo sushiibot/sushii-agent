@@ -136,13 +136,6 @@ describe("teamGuildConfigs", () => {
   });
 });
 
-describe("principals web logins", () => {
-  test("a mixed-case web identity is lowercased at load, other surfaces are left alone", () => {
-    const out = resolveOwnerPrincipals({ drk: { owner: true, identities: { discord: "AbC1", web: " DrkLee3@GitHub " } } }, undefined, () => {});
-    expect(out.drk!.identities).toEqual({ discord: "AbC1", web: "drklee3@github" });
-  });
-});
-
 test("config imports without DISCORD_BOT_TOKEN, and requireDiscordBotToken names it", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "cfg-import-"));
   try {
