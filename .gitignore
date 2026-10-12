@@ -1,15 +1,17 @@
 node_modules/
 .env
+.env.temp*
 data/
 feedback-export/
+test-results/
 *.bak
+.venv/
+
+# Local per-deployment config (see teams.example.json)
+teams.json
+principals.json
+
+# Local tool state
 .claude/settings.local.json
 .kanban/
 .playwright-mcp/
-test-results/
-
-# ad-hoc secret staging files (never commit)
-.env.temp*
-
-# Generated visual review captures
-.impeccable/review/

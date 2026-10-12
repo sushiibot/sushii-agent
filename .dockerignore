@@ -1,8 +1,12 @@
 .git
 node_modules/
 .env
+.env.temp*
 data/
 feedback-export/
 *.bak
 .claude/
 .kanban/
+.venv/
+teams.json
+principals.json

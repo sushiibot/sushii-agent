@@ -1,9 +1,0 @@
-services:
-  modassist:
-    build: .
-    volumes:
-      - ./data:/data
-    env_file: .env
-    restart: unless-stopped
-    environment:
-      - DATABASE_PATH=/data/modassist.db
