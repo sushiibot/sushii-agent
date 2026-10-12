@@ -1,12 +1,6 @@
 import { config } from "../../config.ts";
 
-/**
- * Loki and Tempo aren't reachable directly from sushii-agent's deploy host — Loki has no
- * exposed port at all (Grafana reaches it over localhost inside the same LGTM container),
- * and Tempo's port is bound Tailscale-only. Grafana itself is the one thing with a routable
- * address (grafana.infra.sushii.bot, gated by Tailscale but reachable that way), so every
- * query goes through its datasource-proxy API instead of hitting Loki/Tempo ports directly.
- */
+/** Loki and Tempo aren't reachable from the deploy host, so queries go through Grafana's datasource proxy. */
 function datasourceProxyUrl(datasourceUid: string, path: string): URL {
   if (!config.grafanaBaseUrl) throw new Error("GRAFANA_BASE_URL is not configured.");
   return new URL(`/api/datasources/proxy/uid/${datasourceUid}${path}`, config.grafanaBaseUrl);

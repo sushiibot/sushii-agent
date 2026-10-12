@@ -8,7 +8,7 @@ const OWNER = "owner-123";
 const DM_SPACE = spaceKey("discord", "dm");
 const GUILD_SPACE = spaceKey("discord", "guild-456");
 
-// drk's real identity ids (mirrors principals.json) for the configured-registry suite.
+// Owner identity ids for the configured-registry suite.
 const DRK_DISCORD = "100000000000000000";
 const DRK_SLACK = "U0OWNERTEST0";
 const DRK_BUZZ = "00000000000000000000000000000000000000000000000000000000deadbeef";

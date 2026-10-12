@@ -7,7 +7,7 @@
 // Usage (agent key from BUZZ_PRIVATE_KEY, relay from BUZZ_RELAY_URL unless --relay given):
 //   BUZZ_PRIVATE_KEY=<nsec|hex> bun run scripts/upload-buzz-avatar.ts --file ./avatar.png
 //   BUZZ_PRIVATE_KEY=<nsec|hex> bun run scripts/upload-buzz-avatar.ts --url <image url>  # e.g. the Discord avatar
-//   ... [--relay wss://buzz.dreamcatcher.inc]
+//   ... [--relay wss://relay.example]
 
 import { finalizeEvent } from "nostr-tools/pure";
 import * as nip19 from "nostr-tools/nip19";

@@ -1,4 +1,4 @@
-// Discord output conventions shared by every Discord persona (moderation, general, personal):
+// Discord output conventions shared by every Discord persona (moderation, general):
 // the u:/c:/t:/msg:/e: token rules and the house tone. Kept verbatim from the original moderation
 // prompt so that prompt stays byte-identical when rebuilt from these parts.
 export const DISCORD_FORMATTING = `## Formatting

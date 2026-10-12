@@ -234,6 +234,9 @@ export const screeningVerdicts = sqliteTable(
   ],
 );
 
+// Legacy: the tables below belong to the removed personal agent. No code reads or writes them; the
+// tables stay so existing databases and migrations keep matching.
+
 /** Workspace outbox ids already rendered to Discord, so a resent chat/deliver is only re-acked. */
 export const workspaceOutboxSeen = sqliteTable("workspace_outbox_seen", {
   outboxId: text("outbox_id").primaryKey(),
@@ -259,7 +262,7 @@ export const kv = sqliteTable("kv", {
   value: text("value").notNull(),
 });
 
-/** Web Push subscriptions for the personal web app; endpoint is the push service URL. */
+/** Web Push subscriptions; endpoint is the push service URL. */
 export const webPushSubscriptions = sqliteTable("web_push_subscriptions", {
   endpoint: text("endpoint").primaryKey(),
   p256dh: text("p256dh").notNull(),

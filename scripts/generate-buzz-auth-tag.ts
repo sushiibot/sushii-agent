@@ -2,8 +2,7 @@
 //
 // The owner (a human keypair the relay already admits) signs a tag vouching for the agent's pubkey.
 // Publishing that tag on the agent's kind:0 profile is what makes buzz clients render it as an owned
-// agent instead of a plain user. Run this once per agent key; paste the output into BUZZ_AUTH_TAG
-// (and the ansible vault as vault_sushii_agent_buzz_auth_tag).
+// agent instead of a plain user. Run this once per agent key; paste the output into BUZZ_AUTH_TAG.
 //
 // Usage:
 //   BUZZ_OWNER_PRIVATE_KEY=<nsec|hex> bun run scripts/generate-buzz-auth-tag.ts [options]
