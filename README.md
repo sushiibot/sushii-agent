@@ -10,6 +10,8 @@ Discord moderation intelligence bot. Mention it in a whitelisted channel with a 
 
 **Read-only** — never writes moderation actions.
 
+The personal agent (web app and workspace) lives in [sushiibot/omakase](https://github.com/sushiibot/omakase).
+
 ## Features
 
 - **30-day message cache** — SQLite with FTS5 full-text search
@@ -73,8 +75,7 @@ Create `teams.json` from `teams.example.json` — it's the only source of per-sp
 **Finding IDs:** Enable Developer Mode (Settings → Advanced), then right-click any server/user/channel to copy its ID.
 
 ```bash
-bun src/index.ts          # run the community bot
-bun src/personal.ts       # run the personal gateway (web app + workspace control plane), DB ./data/personal.db
+bun src/index.ts          # run the bot
 docker compose up -d      # or Docker (./data volume for SQLite)
 ```
 
@@ -82,12 +83,12 @@ docker compose up -d      # or Docker (./data volume for SQLite)
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DISCORD_BOT_TOKEN` | bot only | — | Bot token from Discord Developer Portal; `src/personal.ts` never reads it |
+| `DISCORD_BOT_TOKEN` | yes | — | Bot token from Discord Developer Portal |
 | `DISCORD_MESSAGE_CONTENT` | no | `false` | Set to `true` once the privileged Message Content intent is approved. Off, the bot reads only messages that mention it; message caching, wiki-sync, server auto-scan, screening and the auto-mod trigger stand down |
 | `OPENAI_API_KEY` | yes | — | API key for your LLM provider |
 | `OPENAI_BASE_URL` | no | `https://api.anthropic.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | no | `claude-opus-4-6` | Model name |
-| `DATABASE_PATH` | no | `./data/sushii-agent.db` (bot), `./data/personal.db` (`src/personal.ts`) | SQLite path |
+| `DATABASE_PATH` | no | `./data/sushii-agent.db` | SQLite path |
 | `PRINCIPALS_PATH` | no | `./principals.json` | Path to the manual cross-platform identity registry; missing file = unconfigured |
 | `TEAMS_PATH` | no | `./teams.json` | Path to the team grouping config — the only source of per-space configuration; missing file = unconfigured |
 
@@ -184,157 +185,9 @@ conversations  (thread_id, guild_id, messages JSON, created_at, updated_at)
 
 WAL mode. Messages older than 30 days purged daily.
 
-## Personal agent workspace
-
-The owner's web chat (agent.sushii.bot) goes to a long-lived Pi coding-agent session in its own container
-(`src/workspace/`, image tag `<sha>-workspace`, service `private-bots/omakase-workspace`), not
-to the in-process loop. The bot is the transport: it relays chat over a JSON-RPC WebSocket
-(`src/orchestration/workspace/`), proxies bot-side tools (Exa, Grafana, Linear, `team_config`) with
-owner approval for writes, and mints GitHub App tokens so `git`/`gh` run as `sushii-runner[bot]`.
-If the workspace is down, web messages wait and are resent once it reconnects. Discord DMs are
-ignored, the owner's included; the bot only sends the owner a fixed-text Discord DM when an approval
-can't reach the web app. Guild, thread, Slack and buzz traffic stays in-process.
-
-- **Home** (`/data/home`, git-versioned): `AGENTS.md`, `SOUL.md`, `USER.md`, `MEMORY.md`, `TASKS.md`
-  and `memory/catalog.md` are loaded into every chat session. The catalog has a 4000-character cap.
-  Durable decisions and research live in `memory/topics/<slug>.md`, with sources and verification dates.
-  Topic bodies, daily notes, `tasks/<project>.md` and `DREAMS.md` are read on demand.
-  The agent consults relevant notes before substantial work and updates changed guidance before its final reply.
-  Catalog edits refresh the live prompt after a turn settles. Topic files use the existing memory guards and Git commits.
-  Unedited template files upgrade themselves on start.
-- **Models:** ChatGPT sign-in first (main, subagents, jobs and the auto-mode judge share one
-  backend), OpenRouter when the subscription is out.
-- **Context:** old tool output is cleared at 150K tokens; compaction (anchored summary, sent as a
-  cached continuation) at 200K keeping 40K; after 25 idle minutes over 100K the session rotates to
-  a new one seeded with a recap.
-- **Jobs:** nightly memory consolidation, heartbeat with daily task review, `~/schedule.md`.
-- **Commands** (web chat): `!new`, `!stop`, `!compact`, `!model [alias]`, `!tasks [project]`,
-  `!login chatgpt`.
-- **Run history:** `runs.jsonl` in the state dir; `ws-runs` inside the container.
-
-Pi coding-agent and Pi Durable use version 1.0.0. One `workspace.sqlite` database in the workspace
-state directory stores accepted input receipts and queued instructions. Main and all topics
-share one connection. Conversation IDs select separate documents inside that database.
-Pi Durable owns the SQLite adapter, atomic commits, and document storage. The application
-supplies a versioned inbox document family and a checkpoint hook for the coding-agent session.
-
-After a workspace restart, queued instructions resume when the bot connects. Their original
-text, origin, and image attachments remain available. Consumed inputs do not replay because
-their tools can have external effects. The checkpoint hook blocks tools if the consumed-input
-commit fails. Stop and new-session commands withdraw queued instructions.
-
-The first start imports existing `recent-ids.json` receipts. Existing Pi transcripts, provider
-fallback, guards, and delivery outboxes keep their current formats. Active turns and subagents
-still stop on restart. Full task recovery requires the Durable harness and explicit replay rules
-for each tool. The inbox uses the standalone Durable session API, so it does not require a harness migration.
-
-### Storage ownership
-
-Each state item has one authoritative store. New workspace runtime state belongs in
-`workspace.sqlite`, through the shared `DurableState` connection and versioned Durable documents.
-Domain modules define documents. They do not open another database for each feature or topic.
-
-| Data | Current store | Consolidation direction |
-|---|---|---|
-| Bot messages, routing, web events, and OAuth state | Bot SQLite database | Keep with the bot process. |
-| Workspace input receipts and queued instructions | `workspace.sqlite` | Shared Durable documents, scoped by conversation. |
-| Session pointers, topic metadata, scheduler state, and proactive limits | `state.json`, `topics.json`, `scheduler.json`, `proactive.json` | Migrate to versioned documents in `workspace.sqlite`. |
-| Delivery receipts, subagent results, and run records | `outbox.jsonl`, `subagent-results.jsonl`, `runs.jsonl` | Migrate runtime records to `workspace.sqlite`. Keep history files as exports. |
-| Pi transcripts and Pi-owned credentials | Pi JSONL sessions and `auth.json` | Keep Pi's formats until an explicit harness or credential migration. |
-| Memory, tasks, skills, and schedules | Markdown files under the workspace home | Keep editable content as files. |
-| Uploads, delivery attachments, and repository files | Filesystem | Store file references in runtime records. |
-
-The remaining JSON and JSONL migrations are separate work. A migration must import existing
-data before switching its authoritative store. It must stop writes to the old store and cover
-restart recovery. The input-receipt migration follows this rule and does not write `recent-ids.json`.
-
-Conversation storage must remain accessible through read-only history commands and APIs.
-`ws-runs search` searches historical sessions. `ws-runs show <id> --full` exposes full tool traces,
-with credential redaction. History exports and chat APIs provide historical conversation access.
-If transcripts move to SQLite, these interfaces must retain original messages and tool results,
-including entries removed from the model's context by compaction. Markdown history can remain a derived export.
-The agent reads history through these interfaces without direct database write access.
-
-Deploy: pushing to `main` builds both images, deploys the bot, then the personal gateway
-(`private-bots/omakase`, the bot image running `bun src/personal.ts`), then the workspace
-(CI bumps `workspace_image_tag` in sushii-ansible). The workspace connects to the personal gateway, not the bot. A manual redeploy is
-`./deploy.sh -y apps private-bots/omakase-workspace`. Tunables (`WORKSPACE_MODELS`,
-`WORKSPACE_COMPACT_TOKENS`, `WORKSPACE_TASK_*`, …; defaults in `src/workspace/config.ts`) go in
-`workspace_env_overrides` there. `DM_WORKSPACE_ENABLED` on the personal gateway routes the owner's web chat to it.
-
 ## Development
 
 ```bash
 bun --watch src/index.ts   # auto-restart
 bunx tsc --noEmit          # type-check
 ```
-
-## MCP connections
-
-The personal workspace supports remote MCP servers through the web app's Connectors screen.
-The agent can list current tools and call them during a chat turn.
-Other chat surfaces and scheduled jobs do not receive these tools.
-
-1. Open **Connectors → Add a server**.
-2. Enter the server's HTTPS address.
-3. For token authentication, enter an API token.
-4. For OAuth authentication, leave the token blank and follow the sign-in steps.
-
-For Fastmail, use `https://api.fastmail.com/mcp`.
-Create an API token with **Type: MCP** and only **Read data** selected.
-Fastmail enforces this permission on its server.
-This permission covers email, contacts, and calendars.
-Fastmail's MCP server does not support attachments.
-See [Fastmail's MCP instructions](https://www.fastmail.help/hc/en-us/articles/15869557281295-Connecting-AI-tools-via-Fastmail-s-MCP-server).
-
-The workspace stores credentials in `connectors.json` under its protected Pi agent directory, with file mode `0600`.
-The browser receives no saved credentials.
-Disconnect disables agent access and retains credentials for reconnection.
-Remove erases the saved connection and its credentials.
-Remove does not revoke the token at the provider.
-
-Connecting a server authorizes the agent to use its tools, including new or changed definitions.
-Tool snapshots show changes for tracking. They do not block calls or require per-call approval.
-The annotation comes from the MCP server. Use a read-only token to enforce read-only access.
-Connections support Streamable HTTP, bearer tokens, and OAuth with dynamic client registration.
-Local servers, stdio, legacy SSE, and OAuth clients that need manual registration are outside this UI's scope.
-
-## Owner-approved GitHub pushes
-
-The personal workspace can commit directly on the default branch when the owner requests that workflow.
-The `github_push` tool asks the owner to approve the repository, destination branch, and exact commit.
-It pushes only that commit and does not force-push.
-The pre-push hook permits only the approved URL, branch, and commit for that call.
-Ordinary shell pushes to the default branch remain blocked.
-Autonomous work uses a task branch and PR.
-GitHub branch protection and GitHub App permissions still apply.
-
-The shipped home `AGENTS.md` describes this policy.
-Unedited home instructions upgrade automatically after deployment.
-If the owner edited that file, the workspace preserves it. Update its GitHub instructions manually.
-The repository's root instructions live in `AGENTS.md`. `CLAUDE.md` is a symlink to that file.
-
-## One-time browser location
-
-In the owner's personal conversation, `request_current_location({ reason })` can ask for a
-location fix to answer a nearby question. The request appears in the web chat and Inbox using
-the existing authenticated approval stream; **Share current location** is the only action that
-calls the user's own browser's `navigator.geolocation.getCurrentPosition`. The server/workspace
-browser is not used. The user can deny or cancel. Browser permission is still required, even
-if permission was previously granted; there is no watch or background tracking.
-
-The browser requests high accuracy, no cached fix, and a 15-second acquisition timeout (with a
-20-second UI fallback covering unanswered permission prompts). Requests expire after 90 seconds
-if no client responds. Errors tell the agent to ask for a city/area instead. This currently supports
-only the owner's `main` conversation, not guild chats, subagents or scheduled jobs. The web gateway
-must be enabled and served in a secure browser context (HTTPS, or localhost for development).
-
-Replies are capped, strictly validated (coordinate ranges, finite numbers, accuracy and timestamp
-freshness), owner-authenticated, same-origin, and correlated by a single-use random nonce to the
-pending tool call and workspace connection. Browser-provided positions are not attested: the owner
-can override their own device's location. Coordinates are returned only to the requesting tool,
-not copied into the bot's approval records, push payloads, analytics or audit logs. Pi tool/session
-history necessarily stores the returned fix and the model provider receives it; chat replies may
-also be retained. The UI discloses this before sharing. The tool and memory-flush instructions tell
-the agent not to save exact fixes in durable memory or repeat them in replies unnecessarily; this
-is not a sandbox preventing the general coding agent from writing arbitrary files.
