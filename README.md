@@ -1,6 +1,8 @@
 # sushii-agent
 
-Discord moderation intelligence bot. Mention it in a whitelisted channel with a plain-English question — it creates a thread, runs a tool-calling agent against a local message cache, and posts a synthesized answer. Follow-ups in the same thread resume the conversation.
+AI agent community bot for Discord, Slack and buzz. Mention it with a plain-English question. It
+runs a tool-calling agent against a local message cache and the platform's API, then posts an
+answer. Follow-ups in the same thread continue the conversation.
 
 ```
 @sushii-agent has user 123456789 been causing problems recently?
@@ -8,186 +10,120 @@ Discord moderation intelligence bot. Mention it in a whitelisted channel with a 
 @sushii-agent what channels does this user post in most?
 ```
 
-**Read-only** — never writes moderation actions.
-
-The personal agent (web app and workspace) lives in [sushiibot/omakase](https://github.com/sushiibot/omakase).
+The personal agent lives in [sushiibot/omakase](https://github.com/sushiibot/omakase).
 
 ## Features
 
-- **30-day message cache** — SQLite with FTS5 full-text search
-- **Agent loop** — LLM calls tools iteratively until it has enough context
-- **Thread-scoped conversations** — independent sessions, persist across restarts
-- **Soft deletes** — deleted messages are tombstoned, not removed
-- **Multi-guild** — single process, per-guild config
-- **Provider-agnostic** — any OpenAI-compatible API (Anthropic, OpenRouter, local)
-
-## Agent tools
-
-| Tool | Description |
-|---|---|
-| `search_messages` | FTS5 full-text search with optional user/channel/time filters |
-| `get_conversation_context` | Messages around a message ID, with reply chain |
-| `get_user_profile` | First seen, message count, channel distribution, daily frequency |
-| `get_recent_activity` | Most recent N messages from a user across all channels |
-| `get_current_member_info` | Live Discord API — roles, join date, membership status |
+- **Message cache**: Discord messages in SQLite with FTS5 search, kept for 30 days.
+- **Thread conversations**: each thread is its own session and survives restarts.
+- **Per-team config**: one process serves many Discord guilds, Slack workspaces and buzz relays.
+- **Modules** per Discord guild (`enabledModules`):
+  - `moderation`: the auto-mod flow, triggered by pinging `modRoleId`, can time out members,
+    delete messages and post an alert.
+  - `screening`: checks new members.
+  - `ops-triage`: Grafana and Linear tools.
+  - `mcp`: sushii MCP tools.
+- **Wiki sync**: summarizes channel history into a git-backed wiki on a schedule.
+- **MCP server**: exposes tools to external MCP clients over HTTP with Discord OAuth.
+- **Provider-agnostic**: any OpenAI-compatible API (Anthropic, OpenRouter, local).
 
 ## Setup
 
-**Prerequisites:** [Bun](https://bun.sh) v1.0+, a Discord bot token with the **Server Members** privileged intent (and **Message Content** once approved, see `DISCORD_MESSAGE_CONTENT`), and bot permissions: Read Messages, Send Messages, Create/Send in Threads, Read Message History.
+**Prerequisites:** [Bun](https://bun.sh) and a Discord bot token with the **Server Members**
+privileged intent. Turn on **Message Content** once it is approved (see `DISCORD_MESSAGE_CONTENT`).
+Bot permissions: Read Messages, Send Messages, Create/Send in Threads, Read Message History. The
+`moderation` module also needs Moderate Members (timeouts), Manage Messages (deletes), View Audit
+Log and Manage Server (AutoMod rules).
 
 ```bash
-git clone <repo> && cd sushii-agent
 bun install
-cp .env.example .env
+cp .env.example .env               # fill in DISCORD_BOT_TOKEN and OPENAI_API_KEY
+cp teams.example.json teams.json   # replace the IDs with your own
+bun src/index.ts
 ```
 
-Edit `.env`:
-
-```env
-DISCORD_BOT_TOKEN=your_bot_token_here
-OPENAI_API_KEY=your_api_key_here
-OPENAI_BASE_URL=https://api.anthropic.com/v1   # or OpenRouter, Ollama, etc.
-OPENAI_MODEL=claude-opus-4-6
-DATABASE_PATH=./data/sushii-agent.db
-```
-
-Create `teams.json` from `teams.example.json` — it's the only source of per-space configuration:
-
-```json
-{
-  "your-team": {
-    "spaces": [
-      {
-        "surface": "discord",
-        "spaceId": "YOUR_GUILD_ID",
-        "discord": {
-          "allowedRoles": ["MOD_ROLE_ID"],
-          "emojis": ["<:blobheart:123456789012345678>"],
-          "promptTemplate": "general",
-          "enabledModules": ["moderation"]
-        }
-      }
-    ]
-  }
-}
-```
-
-**Finding IDs:** Enable Developer Mode (Settings → Advanced), then right-click any server/user/channel to copy its ID.
-
-```bash
-bun src/index.ts          # run the bot
-docker compose up -d      # or Docker (./data volume for SQLite)
-```
+To find IDs, turn on Developer Mode (Settings → Advanced), then right-click a server, user or
+channel and copy its ID.
 
 ## Configuration reference
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DISCORD_BOT_TOKEN` | yes | — | Bot token from Discord Developer Portal |
-| `DISCORD_MESSAGE_CONTENT` | no | `false` | Set to `true` once the privileged Message Content intent is approved. Off, the bot reads only messages that mention it; message caching, wiki-sync, server auto-scan, screening and the auto-mod trigger stand down |
+| `DISCORD_BOT_TOKEN` | yes | — | Bot token from the Discord Developer Portal |
 | `OPENAI_API_KEY` | yes | — | API key for your LLM provider |
 | `OPENAI_BASE_URL` | no | `https://api.anthropic.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | no | `claude-opus-4-6` | Model name |
 | `DATABASE_PATH` | no | `./data/sushii-agent.db` | SQLite path |
-| `PRINCIPALS_PATH` | no | `./principals.json` | Path to the manual cross-platform identity registry; missing file = unconfigured |
-| `TEAMS_PATH` | no | `./teams.json` | Path to the team grouping config — the only source of per-space configuration; missing file = unconfigured |
+| `DISCORD_MESSAGE_CONTENT` | no | `false` | Set `true` once the Message Content intent is approved. When off, the bot reads only messages that mention it, and message caching, wiki sync, server auto-scan, screening and the auto-mod trigger are off |
+| `TEAMS_PATH` | no | `./teams.json` | Team config, the only source of per-space configuration. A missing file means nothing is configured |
+| `PRINCIPALS_PATH` | no | `./principals.json` | Cross-platform identity registry. A missing file means none |
+| `OWNER_DISCORD_ID` | no | — | Creates a single owner principal when the registry is empty |
 
-A `teams.json` entry groups a team's spaces (Discord guild, Slack workspace, buzz relay) plus its
-own wiki/Linear scoping, trusted members, and each space's own settings. See `teams.example.json`
-for a full worked entry.
+Optional integrations (see `src/config.ts`):
 
-```json
-{
-  "dreamcatcher": {
-    "spaces": [
-      {
-        "surface": "discord",
-        "spaceId": "123456789012345678",
-        "wiki": "source",
-        "statusChannelId": "234567890123456789",
-        "discord": {
-          "allowedRoles": ["MOD_ROLE_ID"],
-          "emojis": ["<:blobheart:123456789012345678>"],
-          "promptTemplate": "general",
-          "enabledModules": ["moderation"]
-        }
-      },
-      { "surface": "slack", "spaceId": "T000TEAMA0", "wiki": "read" },
-      {
-        "surface": "buzz",
-        "spaceId": "buzz:https://relay.example",
-        "wiki": "read",
-        "buzz": { "avatarUrl": "https://relay.example/avatar.png" }
-      }
-    ],
-    "wiki": { "wikiId": "123456789012345678" },
-    "members": { "some-principal-id": { "trusted": true } },
-    "linear": { "teamId": "DREAM", "apiKeyEnv": "DREAMCATCHER_LINEAR_API_KEY" },
-    "trustSpaceMembers": false
-  }
-}
-```
+- Slack: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`
+- buzz: `BUZZ_PRIVATE_KEY`, `BUZZ_RELAY_URL`, `BUZZ_AUTH_TAG`, `BUZZ_DISPLAY_NAME`, `BUZZ_AVATAR_URL`
+- Wiki sync: `WIKI_SYNC_REPO_URL`, `WIKI_SYNC_HTTPS_TOKEN` (or `WIKI_SYNC_SSH_PRIVATE_KEY_B64`, read by
+  the Docker entrypoint), other `WIKI_SYNC_*` tuning
+- Memory backend: `MNEMOSYNE_MCP_URL`, `MNEMOSYNE_MCP_TOKEN`. Without them, memory stays in SQLite.
+- sushii MCP tools: `SUSHII_MCP_URL`, `SUSHII_MCP_TOKEN`
+- Ops triage: `GRAFANA_BASE_URL`, `GRAFANA_API_TOKEN`, `LINEAR_API_KEY`, `LINEAR_TEAM_ID`
+- MCP server (always listens on `MCP_BRIDGE_PORT`, default `8787`): OAuth needs `DISCORD_OAUTH_CLIENT_ID`,
+  `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_OAUTH_REDIRECT_URI`
+- Web search: `EXA_API_KEY`
+- Telemetry: `OTEL_EXPORTER_OTLP_ENDPOINT`
 
-- `wiki.wikiId` names the wiki this team owns; a space feeds it (`wiki: "source"`) and/or reads it
-  (`wiki: "read"`). Wiki participation is entirely determined by these two fields — there's no
-  other way for a space to feed or read a wiki.
-- `discord` takes the same shape as `GuildConfig` (`allowedRoles` required) and is only allowed on
-  a `surface: "discord"` space. It's the sole source of `config.guildConfig`, keyed by the space's
-  `spaceId`, with the space's own `statusChannelId` folded in as `wiki.statusChannelId` — set
-  `statusChannelId` on the space itself, not `discord.wiki.statusChannelId` (rejected at load).
-- `buzz.avatarUrl` is only allowed on a `surface: "buzz"` space, and takes precedence over the
-  global `BUZZ_AVATAR_URL` fallback for that relay.
-- `linear.apiKeyEnv` names the env var holding the team's Linear API key, read at resolve time.
-- `trustSpaceMembers` — see [Permissions](#permissions).
+### teams.json
+
+Each entry groups a team's spaces (Discord guild, Slack workspace, buzz relay) with its wiki,
+Linear scoping, trusted members and per-space settings. See
+[`teams.example.json`](teams.example.json) for a full entry.
+
+- `wiki.wikiId` names the team's wiki. A space feeds it (`wiki: "source"`) or reads it
+  (`wiki: "read"`). Only these two fields control wiki participation.
+- `discord` is allowed only on a `surface: "discord"` space and takes the `GuildConfig` shape
+  (`allowedRoles` required). Set `statusChannelId` on the space itself, not inside `discord`.
+- `buzz.avatarUrl` is allowed only on a `surface: "buzz"` space and overrides `BUZZ_AVATAR_URL`.
+- `linear.apiKeyEnv` names the env var that holds the team's Linear API key.
+- `trustSpaceMembers`: see [Permissions](#permissions).
 
 ## Permissions
 
 Two independent layers.
 
-**Entry gate — who can trigger the bot at all, per surface.** Discord guilds are public spaces:
-only a member holding one of the guild's `allowedRoles` can mention/reply to trigger the bot — this
-applies to everyone, including the owner. Slack workspaces and buzz relays are private and
-invite-only, so being in the space is itself the gate; there's no role check there.
-`enabledModules`/`moderation` never gates this — a guild with no modules enabled still gets chat as
-long as it's configured. `moderation` only turns on moderation features: the auto-mod trigger
-(pinging `modRoleId`), moderation-only tools, and the "Moderator:/Roles:" prompt lines.
+**Entry gate: who can trigger the bot.** Discord guilds are public, so only a member with one of
+the guild's `allowedRoles` can trigger the bot, the owner included. Slack workspaces and buzz
+relays are invite-only, so membership is the gate. `enabledModules` does not affect this: a guild
+with no modules still gets chat.
 
-**Trust — which tools.** The owner, or a member listed as `trusted` in the space's team
-(`members` above), gets `team_config` and ops-triage tools. `trustSpaceMembers`
-extends this: set it `true` on a team whose Slack/buzz spaces are already invite-only vetting, and
-any caller present in one of those spaces is trusted — no `members` entry needed. It never applies
-to a Discord space, since Discord guilds are public and need an explicit trusted member or the
-owner.
+**Trust: which tools.** The owner, or a member marked `trusted` in the team's `members`, gets
+`team_config` and the ops-triage tools. With `trustSpaceMembers: true`, anyone in one of the
+team's Slack or buzz spaces is trusted. It never applies to Discord spaces.
 
 ## Architecture
 
 ```
-messageCreate → insertMessage (SQLite)
-             ↘ if @mention + whitelisted
-                → resolveOrCreateThread
-                → loadConversation (SQLite)
-                → runAgentLoop
-                   ├─ LLM call (OpenAI-compat API)
-                   ├─ tool_calls → runTools → SQLite / Discord API
-                   └─ repeat until stop
-                → thread.send(response)
-                → saveConversation (SQLite)
-                → renameThread (if new)
+src/index.ts
+  ├─ src/surfaces/{discord,slack,buzz}   platform gateways: ingest, triggers, delivery
+  ├─ src/core/agentCore.ts, loop.ts      agent loop (AI SDK) and tool registry (src/core/tools)
+  ├─ src/modules/                        moderation, screening, ops-triage, wiki-sync
+  ├─ src/mcp/server/                     HTTP MCP server with Discord OAuth
+  └─ src/db/                             SQLite (Drizzle, WAL mode); schema in src/db/schema.ts
 ```
 
-**Schema:**
-```sql
-messages       (discord_id, guild_id, channel_id, author_id, content,
-                reply_to_id, created_at, edited_at, deleted_at)
-messages_fts   -- FTS5 external content table
-conversations  (thread_id, guild_id, messages JSON, created_at, updated_at)
-```
+Migrations live in `drizzle/`.
 
-WAL mode. Messages older than 30 days purged daily.
+## Scripts
+
+- `scripts/generate-buzz-auth-tag.ts`: creates the owner-attestation tag for `BUZZ_AUTH_TAG`.
+- `scripts/upload-buzz-avatar.ts`: uploads an avatar to a buzz relay and prints the URL for `BUZZ_AVATAR_URL`.
 
 ## Development
 
 ```bash
-bun --watch src/index.ts   # auto-restart
-bunx tsc --noEmit          # type-check
+bun dev                            # watch mode with pretty logs
+bunx tsc --noEmit                  # type-check
+OPENAI_API_KEY=dummy bun test      # tests
 ```
+
+See [PRIVACY.md](PRIVACY.md) and [TOS.md](TOS.md) for the bot's privacy policy and terms.
