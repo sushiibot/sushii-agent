@@ -54,3 +54,74 @@ describe("logger redaction", () => {
     expect(output()).not.toContain("other-secret");
   });
 });
+
+describe("err serializer never throws", () => {
+  function logged(err: unknown): string {
+    const { log, output } = capture();
+    expect(() => log.error({ err }, "failed")).not.toThrow();
+    return output();
+  }
+
+  test("cyclic error fields", () => {
+    const ctx: Record<string, unknown> = {};
+    ctx["back"] = ctx;
+    const err = Object.assign(new Error("cyclic"), { ctx }) as Error & { self?: unknown };
+    err.self = err;
+    expect(logged(err)).toContain("[Circular]");
+  });
+
+  test("BigInt fields", () => {
+    expect(logged(Object.assign(new Error("big"), { n: 10n }))).toContain('"n":"10"');
+  });
+
+  test("a field whose toJSON throws", () => {
+    const bad = {
+      toJSON() {
+        throw new Error("no");
+      },
+    };
+    expect(logged(Object.assign(new Error("tojson"), { bad }))).toContain("[Unserializable]");
+  });
+
+  test.each([
+    ['fetch "https://discord.com/api/v10/webhooks/1/quoted-webhook-tok" failed', "quoted-webhook-tok"],
+    ['GET "https://x.test/a?token=quoted-query-tok" 401', "quoted-query-tok"],
+    ['header "Bearer quoted-bearer-tok" bad', "quoted-bearer-tok"],
+  ])("a quoted token in the message: %s", (message, token) => {
+    const out = logged(new Error(message));
+    expect(out).not.toContain(token);
+    expect(out).toContain("REDACTED");
+  });
+
+  test("a simple-git error's argv and Basic auth header are scrubbed", () => {
+    const header = `Authorization: Basic ${Buffer.from("oauth2:git-https-token").toString("base64")}`;
+    const err = Object.assign(new Error(`clone failed: ${header}`), {
+      task: { commands: ["clone", "--config", `http.extraHeader=${header}`, "https://git.test/r.git", "/tmp/r"] },
+    });
+    const out = logged(err);
+    expect(out).not.toContain(Buffer.from("oauth2:git-https-token").toString("base64"));
+    expect(out).not.toContain('"task"');
+  });
+});
+
+describe("message and field scrubbing", () => {
+  test("an Error logged directly has its message scrubbed in msg", () => {
+    const { log, output } = capture();
+    log.error(new Error("post to https://discord.com/api/v10/webhooks/1/msg-webhook-tok failed"));
+    expect(output()).not.toContain("msg-webhook-tok");
+    expect(JSON.parse(output()).msg).toContain("webhooks/1/REDACTED");
+  });
+
+  test("an { err } object without a message has the derived msg scrubbed", () => {
+    const { log, output } = capture();
+    log.error({ err: new Error("GET https://x.test/a?key=derived-msg-key") });
+    expect(output()).not.toContain("derived-msg-key");
+  });
+
+  test("string args and top-level string fields are scrubbed", () => {
+    const { log, output } = capture();
+    log.info({ url: "https://x.test/a?access_token=field-tok" }, "calling %s", "https://x.test/b?token=arg-tok");
+    expect(output()).not.toContain("field-tok");
+    expect(output()).not.toContain("arg-tok");
+  });
+});

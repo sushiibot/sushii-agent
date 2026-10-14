@@ -5,7 +5,7 @@ import simpleGit, { type SimpleGit } from "simple-git";
 import { gitEnv } from "../../childEnv.ts";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
-import { secrets } from "../../secrets.ts";
+import { registerSecretValue, secrets } from "../../secrets.ts";
 
 const logger = getLogger("wiki-sync:git");
 
@@ -59,7 +59,10 @@ export function resolveGitAuth(repoUrl: string, httpsToken = secrets.WIKI_SYNC_H
     if (!httpsToken) {
       throw new Error("wiki-sync repo URL is http(s):// but WIKI_SYNC_HTTPS_TOKEN is not set");
     }
-    const authHeader = `Authorization: Basic ${Buffer.from(`oauth2:${httpsToken}`).toString("base64")}`;
+    const encoded = Buffer.from(`oauth2:${httpsToken}`).toString("base64");
+    registerSecretValue(httpsToken);
+    registerSecretValue(encoded);
+    const authHeader = `Authorization: Basic ${encoded}`;
     return { env: {}, configPairs: [["http.extraHeader", authHeader]] };
   }
 

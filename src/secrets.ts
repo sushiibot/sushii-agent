@@ -36,10 +36,15 @@ export function readSecret(name: string, env: NodeJS.ProcessEnv = process.env): 
   }
 }
 
+/** Adds a value derived at runtime (e.g. an encoded auth header) to log scrubbing. */
+export function registerSecretValue(value: string): void {
+  extraValues.add(value);
+}
+
 /** For secrets whose env var name comes from runtime config: reads it and adds the value to log scrubbing. */
 export function readDynamicSecret(name: string): string | undefined {
   const value = readSecret(name);
-  if (value) extraValues.add(value);
+  if (value) registerSecretValue(value);
   return value;
 }
 
