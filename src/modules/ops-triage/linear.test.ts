@@ -56,6 +56,15 @@ describe("resolveLinearAccount", () => {
     expect(resolveLinearAccount("discord", "1000000000000000011")).toEqual({ apiKey: DEFAULT_KEY, teamId: DEFAULT_TEAM });
   });
 
+  test("an unreadable apiKeyEnv _FILE falls through to the default account instead of throwing", () => {
+    process.env["TEST_UNSET_LINEAR_API_KEY_FILE"] = "/nonexistent/linear-key";
+    try {
+      expect(resolveLinearAccount("discord", "1000000000000000011")).toEqual({ apiKey: DEFAULT_KEY, teamId: DEFAULT_TEAM });
+    } finally {
+      delete process.env["TEST_UNSET_LINEAR_API_KEY_FILE"];
+    }
+  });
+
   test("a space in no team falls through to the SUSHI default", () => {
     expect(resolveLinearAccount("discord", "9999999999999999999")).toEqual({ apiKey: DEFAULT_KEY, teamId: DEFAULT_TEAM });
   });

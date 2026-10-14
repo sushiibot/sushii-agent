@@ -34,13 +34,21 @@ export function __setDefaultLinearApiKey(value: string | undefined): void {
  *  `linear` is absent). Absent entirely → no key, same fallthrough. */
 function resolveApiKey(teamId: string, linear: TeamLinear): string | undefined {
   if (!linear.apiKeyEnv) return undefined;
-  const fromEnv = readDynamicSecret(linear.apiKeyEnv);
+  let fromEnv: string | undefined;
+  let unreadableFile = false;
+  try {
+    fromEnv = readDynamicSecret(linear.apiKeyEnv);
+  } catch {
+    unreadableFile = true;
+  }
   if (fromEnv) return fromEnv;
   if (!warnedUnsetEnv.has(teamId)) {
     warnedUnsetEnv.add(teamId);
     logger.warn(
       { teamId, apiKeyEnv: linear.apiKeyEnv },
-      "team's linear.apiKeyEnv names an unset/empty env var — falling back to the default Linear account",
+      unreadableFile
+        ? "team's linear.apiKeyEnv _FILE could not be read — falling back to the default Linear account"
+        : "team's linear.apiKeyEnv names an unset/empty env var — falling back to the default Linear account",
     );
   }
   return undefined;
