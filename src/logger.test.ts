@@ -125,3 +125,9 @@ describe("message and field scrubbing", () => {
     expect(output()).not.toContain("arg-tok");
   });
 });
+
+test("auth scheme scrubbing leaves ordinary prose alone", () => {
+  expect(scrubUrl("using basic auth for basic setup")).toBe("using basic auth for basic setup");
+  expect(scrubUrl("Authorization: Basic b2F1dGgyOnNlY3JldHRva2Vu")).toBe("Authorization: Basic REDACTED");
+  expect(scrubUrl("authorization: bearer abcdefgh12345")).toBe("authorization: bearer REDACTED");
+});

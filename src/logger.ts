@@ -2,35 +2,39 @@ import { trace } from "@opentelemetry/api";
 import pino, { type LoggerOptions } from "pino";
 import { knownSecretValues } from "./secrets.ts";
 
+// Case-sensitive auth schemes with token-shaped values, so prose like "basic setup" survives.
 const URL_TOKENS =
-  /(\/(?:webhooks|interactions)\/\d+\/)[^/?\s"]+|([?&](?:key|token|api_key|access_token)=)[^&\s"]+|((?:Bearer|Basic)\s+)[^\s"]+/gi;
+  /(\/(?:webhooks|interactions)\/\d+\/)[^/?\s"]+|([?&](?:key|token|api_key|access_token)=)[^&\s"]+|((?:[Bb]earer)\s+)[A-Za-z0-9._~+/=-]{8,}|(Basic\s+)[A-Za-z0-9+/=]{12,}/g;
 
 export function scrubUrl(s: string): string {
-  return s.replace(URL_TOKENS, (_m, path, query, scheme) => `${path ?? query ?? scheme}REDACTED`);
+  return s.replace(URL_TOKENS, (_m, path, query, bearer, basic) => `${path ?? query ?? bearer ?? basic}REDACTED`);
 }
 
 export function scrubSecrets(s: string, known: readonly string[] = knownSecretValues()): string {
   return known.reduce((acc, v) => acc.split(v).join("[REDACTED]"), scrubUrl(s));
 }
 
-function scrubDeep(value: unknown, known: readonly string[], seen: WeakSet<object>): unknown {
+const MAX_DEPTH = 10;
+
+function scrubDeep(value: unknown, known: readonly string[], seen: WeakSet<object>, depth = 0): unknown {
   if (typeof value === "string") return scrubSecrets(value, known);
   if (typeof value === "bigint") return value.toString();
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return "[Circular]";
+  if (depth >= MAX_DEPTH) return "[Truncated]";
   seen.add(value);
   try {
     const toJSON = (value as { toJSON?: unknown }).toJSON;
     if (typeof toJSON === "function") {
       try {
-        return scrubDeep(toJSON.call(value), known, seen);
+        return scrubDeep(toJSON.call(value), known, seen, depth + 1);
       } catch {
         return "[Unserializable]";
       }
     }
-    if (Array.isArray(value)) return value.map((v) => scrubDeep(v, known, seen));
+    if (Array.isArray(value)) return value.map((v) => scrubDeep(v, known, seen, depth + 1));
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = scrubDeep(v, known, seen);
+    for (const [k, v] of Object.entries(value)) out[k] = scrubDeep(v, known, seen, depth + 1);
     return out;
   } finally {
     // Ancestors only, so an object referenced twice (not cyclically) is still serialized both times.
