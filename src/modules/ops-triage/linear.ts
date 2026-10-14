@@ -2,6 +2,7 @@ import { LinearClient, LinearDocument, type Issue } from "@linear/sdk";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { resolveTeam, type TeamLinear } from "../../orchestration/teams.ts";
+import { readDynamicSecret, secrets } from "../../secrets.ts";
 
 const logger = getLogger("ops-triage:linear");
 
@@ -21,12 +22,19 @@ export function __resetLinearWarnDedup(): void {
   warnedUnsetEnv.clear();
 }
 
+let defaultApiKey = secrets.LINEAR_API_KEY;
+
+/** Test-only: secrets are frozen at import, so tests set the default account's key here. */
+export function __setDefaultLinearApiKey(value: string | undefined): void {
+  defaultApiKey = value;
+}
+
 /** `linear.apiKeyEnv` names the env var to read for this team's key. Unset/empty → the team's
  *  Linear is treated as fully unconfigured (falls through to the default account, same as when
  *  `linear` is absent). Absent entirely → no key, same fallthrough. */
 function resolveApiKey(teamId: string, linear: TeamLinear): string | undefined {
   if (!linear.apiKeyEnv) return undefined;
-  const fromEnv = process.env[linear.apiKeyEnv];
+  const fromEnv = readDynamicSecret(linear.apiKeyEnv);
   if (fromEnv) return fromEnv;
   if (!warnedUnsetEnv.has(teamId)) {
     warnedUnsetEnv.add(teamId);
@@ -48,7 +56,7 @@ export function resolveLinearAccount(surface: string, spaceId: string): LinearAc
     const apiKey = resolveApiKey(team!.id, own);
     if (apiKey) return { apiKey, teamId: own.teamId };
   }
-  return { apiKey: config.linearApiKey ?? "", teamId: config.linearTeamId ?? "" };
+  return { apiKey: defaultApiKey ?? "", teamId: config.linearTeamId ?? "" };
 }
 
 /** Accepts a bare identifier ("ENG-123"), a UUID, or a full issue URL. */

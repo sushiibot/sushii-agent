@@ -6,6 +6,7 @@ import { client } from "./discordClient.ts";
 import { config, requireDiscordBotToken } from "./config.ts";
 import { buildMcpHttpApp } from "./mcp/server/http.ts";
 import logger from "./logger.ts";
+import { secrets } from "./secrets.ts";
 import { openaiProvider } from "./agent/client.ts";
 import { createAgentCore } from "./core/agentCore.ts";
 import { createHookBus } from "./core/hooks.ts";
@@ -67,7 +68,7 @@ async function main() {
   // satisfy the same MemoryProvider contract, so this is the only wiring difference. Per-call
   // retrieve is best-effort (deadline/error → null), so a slow or down server never blocks a turn.
   const mnemosyneCallTool = config.mnemosyneMcpUrl
-    ? createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: config.mnemosyneMcpToken })
+    ? createMnemosyneCallTool({ url: config.mnemosyneMcpUrl, token: secrets.MNEMOSYNE_MCP_TOKEN })
     : null;
   const memoryProvider = mnemosyneCallTool
     ? createMnemosyneMemoryProvider({ callTool: mnemosyneCallTool })
@@ -121,8 +122,8 @@ async function main() {
   // gate off (hosts:{}), so it runs the portable toolset. Disabled unless BUZZ_PRIVATE_KEY is set.
   // One key can serve multiple communities: one poll loop per relay URL, each with its own cursor
   // and memory space (communities are host-scoped and isolated), all sharing the one buzzCore.
-  if (config.buzz.privateKey) {
-    const privateKey = config.buzz.privateKey;
+  if (secrets.BUZZ_PRIVATE_KEY) {
+    const privateKey = secrets.BUZZ_PRIVATE_KEY;
     // One hook bus + progress registry shared by every relay's surface (all share buzzCore). Wiring
     // the bus is what gives buzz live tool-progress + never-silent failures, parity with Discord.
     const buzzBus = createHookBus();
@@ -169,9 +170,9 @@ async function main() {
   // phase can attach an agent-loop consumer to the same instance before start(). Disabled unless
   // both tokens are set; any Slack failure is isolated so it can't take down Discord/buzz.
   let slackApp: SlackApp | undefined;
-  if (config.slack.botToken && config.slack.appToken) {
+  if (secrets.SLACK_BOT_TOKEN && secrets.SLACK_APP_TOKEN) {
     try {
-      const slack = createSlackApp({ botToken: config.slack.botToken, appToken: config.slack.appToken });
+      const slack = createSlackApp({ botToken: secrets.SLACK_BOT_TOKEN, appToken: secrets.SLACK_APP_TOKEN });
       slackApp = slack.app;
       // Phase 1: durable ingestion of every message. Registered first, coexists with the agent loop.
       startSlackIngestion(slackApp, { db });

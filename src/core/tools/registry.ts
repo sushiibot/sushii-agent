@@ -3,6 +3,7 @@
 // the A/B/C surface-category matrix beyond that is deferred to U6.
 import type { SurfaceId, ToolEntry, ToolHosts, ToolRegistry, SurfaceSession } from "../contracts.ts";
 import { config } from "../../config.ts";
+import { secrets } from "../../secrets.ts";
 import "./hosts.ts";
 import { MESSAGE_CACHE_TOOL_ENTRIES } from "./messageCache/tools.ts";
 import { PORTABLE_TOOL_ENTRIES } from "./portable/tools.ts";
@@ -45,9 +46,9 @@ export interface ToolAvailability {
 
 function defaultAvailability(): ToolAvailability {
   return {
-    exa: !!config.exaApiKey,
+    exa: !!secrets.EXA_API_KEY,
     grafanaBaseUrl: !!config.grafanaBaseUrl,
-    linear: !!(config.linearApiKey && config.linearTeamId),
+    linear: !!(secrets.LINEAR_API_KEY && config.linearTeamId),
   };
 }
 

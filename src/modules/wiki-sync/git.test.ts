@@ -1,17 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { config } from "../../config.ts";
 import { resolveGitAuth } from "./git.ts";
 
-let originalHttpsToken: string | undefined;
 let originalSshAuthSock: string | undefined;
 
 beforeEach(() => {
-  originalHttpsToken = config.wikiSync.httpsToken;
   originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
 });
 
 afterEach(() => {
-  config.wikiSync.httpsToken = originalHttpsToken;
   if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
   else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
 });
@@ -30,8 +26,7 @@ describe("resolveGitAuth", () => {
   });
 
   test("https:// builds a Basic auth header from the token, not embedded in the URL", () => {
-    config.wikiSync.httpsToken = "my-token";
-    const auth = resolveGitAuth("https://example.com/org/repo.git");
+    const auth = resolveGitAuth("https://example.com/org/repo.git", "my-token");
     expect(auth.env).toEqual({});
     expect(auth.configPairs.length).toBe(1);
     const [key, value] = auth.configPairs[0]!;
@@ -40,8 +35,7 @@ describe("resolveGitAuth", () => {
   });
 
   test("https:// throws when WIKI_SYNC_HTTPS_TOKEN is not set", () => {
-    config.wikiSync.httpsToken = undefined;
-    expect(() => resolveGitAuth("https://example.com/org/repo.git")).toThrow(/WIKI_SYNC_HTTPS_TOKEN/);
+    expect(() => resolveGitAuth("https://example.com/org/repo.git", "")).toThrow(/WIKI_SYNC_HTTPS_TOKEN/);
   });
 
   test("throws for an unsupported scheme", () => {

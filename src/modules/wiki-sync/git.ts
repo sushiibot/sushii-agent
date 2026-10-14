@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
+import { secrets } from "../../secrets.ts";
 
 const logger = getLogger("wiki-sync:git");
 
@@ -43,7 +44,7 @@ const SSH_COMMAND = `timeout 30 ssh -o StrictHostKeyChecking=accept-new -o Conne
  *            (repoUrl flows into notify.ts's commit-link derivation and gets logged; a
  *            credential embedded in the URL itself would leak into both).
  */
-export function resolveGitAuth(repoUrl: string): GitAuth {
+export function resolveGitAuth(repoUrl: string, httpsToken = secrets.WIKI_SYNC_HTTPS_TOKEN): GitAuth {
   const scheme = new URL(repoUrl).protocol;
 
   if (scheme === "ssh:") {
@@ -54,10 +55,10 @@ export function resolveGitAuth(repoUrl: string): GitAuth {
   }
 
   if (scheme === "https:" || scheme === "http:") {
-    if (!config.wikiSync.httpsToken) {
+    if (!httpsToken) {
       throw new Error("wiki-sync repo URL is http(s):// but WIKI_SYNC_HTTPS_TOKEN is not set");
     }
-    const authHeader = `Authorization: Basic ${Buffer.from(`oauth2:${config.wikiSync.httpsToken}`).toString("base64")}`;
+    const authHeader = `Authorization: Basic ${Buffer.from(`oauth2:${httpsToken}`).toString("base64")}`;
     return { env: {}, configPairs: [["http.extraHeader", authHeader]] };
   }
 

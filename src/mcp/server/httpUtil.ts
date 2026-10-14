@@ -1,4 +1,12 @@
 import { config } from "../../config.ts";
+import { secrets } from "../../secrets.ts";
+
+let clientSecret = secrets.DISCORD_OAUTH_CLIENT_SECRET;
+
+/** Test-only: secrets are frozen at import, so tests set the OAuth client secret here. */
+export function __setOAuthClientSecret(value: string | undefined): void {
+  clientSecret = value;
+}
 
 export function escapeHtml(text: string): string {
   return text
@@ -14,9 +22,9 @@ export function errorPage(title: string, message: string): string {
 
 /** Returns the Discord OAuth app credentials, or null if any are unconfigured. */
 export function oauthConfig(): { clientId: string; clientSecret: string; redirectUri: string } | null {
-  const { discordOAuthClientId, discordOAuthClientSecret, discordOAuthRedirectUri } = config;
-  if (!discordOAuthClientId || !discordOAuthClientSecret || !discordOAuthRedirectUri) return null;
-  return { clientId: discordOAuthClientId, clientSecret: discordOAuthClientSecret, redirectUri: discordOAuthRedirectUri };
+  const { discordOAuthClientId, discordOAuthRedirectUri } = config;
+  if (!discordOAuthClientId || !clientSecret || !discordOAuthRedirectUri) return null;
+  return { clientId: discordOAuthClientId, clientSecret, redirectUri: discordOAuthRedirectUri };
 }
 
 /**

@@ -1,11 +1,12 @@
 import Exa from "exa-js";
+import { secrets } from "../secrets.ts";
 import { config } from "../config.ts";
 
 let client: Exa | null | undefined;
 
 function getClient(): Exa | null {
   if (client === undefined) {
-    client = config.exaApiKey ? new Exa(config.exaApiKey) : null;
+    client = secrets.EXA_API_KEY ? new Exa(secrets.EXA_API_KEY) : null;
   }
   return client;
 }

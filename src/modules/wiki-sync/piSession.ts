@@ -2,6 +2,7 @@ import { join, resolve, sep } from "node:path";
 import { type Span, SpanStatusCode } from "@opentelemetry/api";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
+import { secrets } from "../../secrets.ts";
 import { tracer } from "../../telemetry.ts";
 import { assertExactTools, autoCompactionSettings, maxOutputTokensFor, resolveModelInfo } from "./piShared.ts";
 import { createEmbedAttachmentTool } from "./embedTool.ts";
@@ -293,7 +294,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
   modelRuntime.registerProvider(PROVIDER_ID, {
     name: "sushii OpenRouter",
     baseUrl: config.openaiBaseUrl,
-    apiKey: config.openaiApiKey,
+    apiKey: secrets.OPENAI_API_KEY,
     api: "openai-completions",
     models: [
       {

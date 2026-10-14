@@ -1,4 +1,5 @@
 import { config } from "../../config.ts";
+import { secrets } from "../../secrets.ts";
 import type { ScreeningRule, ScreeningRuleId } from "./rules.ts";
 
 export const TEXT_MODEL = "typesafe/jev-1.13";
@@ -38,7 +39,7 @@ async function postOnce(fetchFn: Fetch, path: string, body: unknown): Promise<un
   try {
     res = await fetchFn(`${baseUrl()}${path}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${secrets.OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(20_000),
     });

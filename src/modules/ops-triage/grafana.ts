@@ -1,4 +1,5 @@
 import { config } from "../../config.ts";
+import { secrets } from "../../secrets.ts";
 
 /** Loki and Tempo aren't reachable from the deploy host, so queries go through Grafana's datasource proxy. */
 function datasourceProxyUrl(datasourceUid: string, path: string): URL {
@@ -7,7 +8,7 @@ function datasourceProxyUrl(datasourceUid: string, path: string): URL {
 }
 
 function grafanaHeaders(extra?: Record<string, string>): Record<string, string> {
-  return { ...(config.grafanaApiToken ? { Authorization: `Bearer ${config.grafanaApiToken}` } : {}), ...extra };
+  return { ...(secrets.GRAFANA_API_TOKEN ? { Authorization: `Bearer ${secrets.GRAFANA_API_TOKEN}` } : {}), ...extra };
 }
 
 const REPO_TO_CONTAINER: Record<string, string> = {

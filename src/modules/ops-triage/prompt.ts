@@ -1,4 +1,5 @@
 import { config } from "../../config.ts";
+import { secrets } from "../../secrets.ts";
 
 /**
  * Appended to the system prompt only when the triggering user is the configured owner (see
@@ -9,7 +10,7 @@ import { config } from "../../config.ts";
  */
 export function buildOpsTriagePromptSection(): string | undefined {
   const hasGrafana = !!config.grafanaBaseUrl;
-  const hasLinear = !!(config.linearApiKey && config.linearTeamId);
+  const hasLinear = !!(secrets.LINEAR_API_KEY && config.linearTeamId);
   if (!hasGrafana && !hasLinear) return undefined;
 
   const lines = [

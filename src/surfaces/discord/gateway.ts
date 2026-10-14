@@ -16,6 +16,7 @@ import { DiscordSpaceMemoryStore } from "../../core/stores/memoryStore.ts";
 import { config, buildEmojiMap } from "../../config.ts";
 import { autoModGateOpen, chatEntryGateOpen } from "../../guildConfig.ts";
 import { getLogger } from "../../logger.ts";
+import { secrets } from "../../secrets.ts";
 import { getDb } from "../../db/index.ts";
 import { insertMessage, updateMessageContent, softDeleteMessage, deleteOldMessages } from "../../db/messages.ts";
 import { savePendingQuestion, loadPendingQuestion, deletePendingQuestion, deleteStalePendingQuestions } from "../../db/pendingQuestions.ts";
@@ -187,7 +188,7 @@ async function resolveOrCreateThread(message: Message): Promise<{ thread: Thread
 
 function buildHosts(client: Client<true>, guildId: string): ToolHosts {
   const guildConfig = config.guildConfig[guildId];
-  const mcp = config.sushiiMcpUrl && config.sushiiMcpToken ? new SushiMcpHost(config.sushiiMcpUrl, config.sushiiMcpToken, guildId) : undefined;
+  const mcp = config.sushiiMcpUrl && secrets.SUSHII_MCP_TOKEN ? new SushiMcpHost(config.sushiiMcpUrl, secrets.SUSHII_MCP_TOKEN, guildId) : undefined;
   // The read/search/list_files tools are host-gated on `fs`: expose them only for a guild whose
   // team wiki this space reads, rooted at it.
   const wiki = wikiFor("discord", guildId);

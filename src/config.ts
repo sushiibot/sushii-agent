@@ -7,10 +7,11 @@ import { parseRelayUrls } from "./surfaces/buzz/relayUrl.ts";
 import { getLogger } from "./logger.ts";
 import { z } from "zod";
 
+export { requireDiscordBotToken } from "./secrets.ts";
+
 const logger = getLogger("config");
 
 export interface Config {
-  openaiApiKey: string;
   openaiBaseUrl: string;
   openaiModel: string;
   compactionModel: string;
@@ -33,30 +34,22 @@ export interface Config {
    *  to the global default. See orchestration/teams.ts. */
   teams: Record<string, TeamConfig>;
   sushiiMcpUrl: string | undefined;
-  sushiiMcpToken: string | undefined;
   /** mnemosyne MCP server (streamable-http). Unset → the semantic memory backend is disabled and
    *  the local FTS provider is used instead. */
   mnemosyneMcpUrl: string | undefined;
-  mnemosyneMcpToken: string | undefined;
-  exaApiKey: string | undefined;
   /** Seeds the synthesized owner principal when principals.json is absent (see resolveOwnerPrincipals),
    *  and drives owner-DM routing in the Discord gateway. Does not itself gate any tool. */
   ownerDiscordId: string | undefined;
-  linearApiKey: string | undefined;
   linearTeamId: string | undefined;
   /** Grafana's own HTTP API — Loki/Tempo aren't independently reachable from sushii-agent's deploy host, so every log/trace query goes through Grafana's datasource-proxy at this base URL. */
   grafanaBaseUrl: string | undefined;
-  grafanaApiToken: string | undefined;
   discordOAuthClientId: string | undefined;
-  discordOAuthClientSecret: string | undefined;
   discordOAuthRedirectUri: string | undefined;
   mcpBridgePort: number;
   /** Request the privileged MessageContent intent (DISCORD_MESSAGE_CONTENT=true). Off → guild message
    *  text is blank except for messages that mention the bot, so content-dependent features stand down. */
   discordMessageContent: boolean;
   buzz: {
-    /** Nostr private key (hex or nsec). Unset → the buzz surface is disabled entirely. */
-    privateKey: string | undefined;
     /** Relay base URLs (one community per relay). Comma-separated in BUZZ_RELAY_URL; empty lets the
      *  `buzz` CLI use its own default (http://localhost:3000). Each becomes its own poll loop. */
     relayUrls: string[];
@@ -68,17 +61,8 @@ export interface Config {
      *  `buzz.avatarUrl` (see orchestration/teams.ts's buzzAvatarFor). */
     avatarUrl: string | undefined;
   };
-  slack: {
-    /** Bot token (xoxb-). Unset → the Slack surface is disabled. */
-    botToken: string | undefined;
-    /** App-level token (xapp-, needs `connections:write`) for Socket Mode. Unset → surface disabled.
-     *  The surface starts only when BOTH tokens are present. */
-    appToken: string | undefined;
-  };
   wikiSync: {
     repoUrl: string | undefined;
-    /** Access token for an https:// repoUrl. Unused for ssh:// (ssh-agent handles auth instead). */
-    httpsToken: string | undefined;
     cloneDir: string;
     inboxDir: string;
     agentDir: string;
@@ -91,17 +75,6 @@ export interface Config {
     /** Per-turn output cap passed to the provider as max_tokens. Required by Pi's registerProvider API (no "unbounded" option). */
     maxOutputTokens: number;
   };
-}
-
-function required(name: string): string {
-  const val = process.env[name];
-  if (!val) throw new Error(`Missing required env var: ${name}`);
-  return val;
-}
-
-/** Only the Discord bot needs the token, so it is read on demand rather than at import. */
-export function requireDiscordBotToken(): string {
-  return required("DISCORD_BOT_TOKEN");
 }
 
 function optional(name: string, defaultValue: string): string {
@@ -250,7 +223,6 @@ const loadedTeams = loadTeams();
 const derivedGuildConfig = teamGuildConfigs(loadedTeams);
 
 export const config: Config = {
-  openaiApiKey: required("OPENAI_API_KEY"),
   openaiBaseUrl: optional("OPENAI_BASE_URL", "https://api.anthropic.com/v1"),
   openaiModel: optional("OPENAI_MODEL", "claude-opus-4-6"),
   // Model for the compaction summarize-fold. Runs over long histories, so a cheap model is ideal;
@@ -264,34 +236,22 @@ export const config: Config = {
   principals: loadPrincipals(),
   teams: loadedTeams,
   sushiiMcpUrl: process.env["SUSHII_MCP_URL"],
-  sushiiMcpToken: process.env["SUSHII_MCP_TOKEN"],
   mnemosyneMcpUrl: process.env["MNEMOSYNE_MCP_URL"],
-  mnemosyneMcpToken: process.env["MNEMOSYNE_MCP_TOKEN"],
-  exaApiKey: process.env["EXA_API_KEY"],
   ownerDiscordId: process.env["OWNER_DISCORD_ID"],
-  linearApiKey: process.env["LINEAR_API_KEY"],
   linearTeamId: process.env["LINEAR_TEAM_ID"],
   grafanaBaseUrl: process.env["GRAFANA_BASE_URL"],
-  grafanaApiToken: process.env["GRAFANA_API_TOKEN"],
   discordOAuthClientId: process.env["DISCORD_OAUTH_CLIENT_ID"],
-  discordOAuthClientSecret: process.env["DISCORD_OAUTH_CLIENT_SECRET"],
   discordOAuthRedirectUri: process.env["DISCORD_OAUTH_REDIRECT_URI"],
   mcpBridgePort: optionalPort("MCP_BRIDGE_PORT", 8787),
   discordMessageContent: process.env["DISCORD_MESSAGE_CONTENT"] === "true",
   buzz: {
-    privateKey: process.env["BUZZ_PRIVATE_KEY"],
     relayUrls: parseRelayUrls(process.env["BUZZ_RELAY_URL"]),
     authTag: process.env["BUZZ_AUTH_TAG"],
     displayName: optional("BUZZ_DISPLAY_NAME", "sushii-agent"),
     avatarUrl: process.env["BUZZ_AVATAR_URL"],
   },
-  slack: {
-    botToken: process.env["SLACK_BOT_TOKEN"],
-    appToken: process.env["SLACK_APP_TOKEN"],
-  },
   wikiSync: {
     repoUrl: process.env["WIKI_SYNC_REPO_URL"],
-    httpsToken: process.env["WIKI_SYNC_HTTPS_TOKEN"],
     cloneDir: optional("WIKI_SYNC_CLONE_DIR", "./data/wiki-sync/repo"),
     inboxDir: optional("WIKI_SYNC_INBOX_DIR", "./data/wiki-sync/inbox"),
     agentDir: optional("WIKI_SYNC_AGENT_DIR", "./data/wiki-sync/agent"),

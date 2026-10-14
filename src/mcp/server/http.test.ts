@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Client } from "discord.js";
 import { config } from "../../config.ts";
 import { buildMcpHttpApp } from "./http.ts";
+import { __setOAuthClientSecret } from "./httpUtil.ts";
 import { AuthorizationCodeStore, ClientStore, PendingAuthorizationStore, PendingConsentStore, verifyPkce } from "./oauthServer.ts";
 import { SessionStore } from "./session.ts";
 
 // oauthConfig() reads these fresh on every call, so setting them here (rather than via env vars,
 // which config.ts only reads once at import time) makes OAuth "configured" for this whole file.
 config.discordOAuthClientId = "test-discord-client-id";
-config.discordOAuthClientSecret = "test-discord-client-secret";
+__setOAuthClientSecret("test-discord-client-secret");
 config.discordOAuthRedirectUri = "https://bridge.example.com/oauth/callback";
 
 // A valid RFC 7636 code_verifier: 43-128 chars from the unreserved URL charset.

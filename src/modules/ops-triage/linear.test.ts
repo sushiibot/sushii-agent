@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { config } from "../../config.ts";
 import type { TeamConfig } from "../../orchestration/teams.ts";
-import { __resetLinearWarnDedup, linearFor, resolveLinearAccount } from "./linear.ts";
+import { secrets } from "../../secrets.ts";
+import { __resetLinearWarnDedup, __setDefaultLinearApiKey, linearFor, resolveLinearAccount } from "./linear.ts";
 
 // Placeholder credentials only — never a real API key or team id in a public repo.
 const DEFAULT_KEY = "sushi-default-key";
@@ -28,11 +29,10 @@ const TEAMS: Record<string, TeamConfig> = {
 
 describe("resolveLinearAccount", () => {
   const prevC = config.teams;
-  const prevKey = config.linearApiKey;
   const prevTeam = config.linearTeamId;
   beforeEach(() => {
     config.teams = TEAMS;
-    config.linearApiKey = DEFAULT_KEY;
+    __setDefaultLinearApiKey(DEFAULT_KEY);
     config.linearTeamId = DEFAULT_TEAM;
     process.env["TEST_ENVKEY_LINEAR_API_KEY"] = "envkey-key";
     delete process.env["TEST_UNSET_LINEAR_API_KEY"];
@@ -41,7 +41,7 @@ describe("resolveLinearAccount", () => {
   });
   afterEach(() => {
     config.teams = prevC;
-    config.linearApiKey = prevKey;
+    __setDefaultLinearApiKey(secrets.LINEAR_API_KEY);
     config.linearTeamId = prevTeam;
     delete process.env["TEST_ENVKEY_LINEAR_API_KEY"];
     delete process.env["TEST_UNSET_LINEAR_API_KEY"];
@@ -66,7 +66,7 @@ describe("resolveLinearAccount", () => {
 
   test("both team and default unconfigured → empty account (linearFor decides the throw)", () => {
     config.teams = {};
-    config.linearApiKey = undefined;
+    __setDefaultLinearApiKey(undefined);
     config.linearTeamId = undefined;
     expect(resolveLinearAccount("discord", "any")).toEqual({ apiKey: "", teamId: "" });
   });
@@ -74,18 +74,17 @@ describe("resolveLinearAccount", () => {
 
 describe("linearFor — per-account caching", () => {
   const prevC = config.teams;
-  const prevKey = config.linearApiKey;
   const prevTeam = config.linearTeamId;
   beforeEach(() => {
     config.teams = TEAMS;
-    config.linearApiKey = DEFAULT_KEY;
+    __setDefaultLinearApiKey(DEFAULT_KEY);
     config.linearTeamId = DEFAULT_TEAM;
     process.env["TEST_ENVKEY_LINEAR_API_KEY"] = "envkey-key";
     process.env["TEST_TEAMX_LINEAR_API_KEY"] = "teamx-key";
   });
   afterEach(() => {
     config.teams = prevC;
-    config.linearApiKey = prevKey;
+    __setDefaultLinearApiKey(secrets.LINEAR_API_KEY);
     config.linearTeamId = prevTeam;
     delete process.env["TEST_ENVKEY_LINEAR_API_KEY"];
     delete process.env["TEST_TEAMX_LINEAR_API_KEY"];
@@ -109,7 +108,7 @@ describe("linearFor — per-account caching", () => {
 
   test("throws only when neither team nor default has a key", () => {
     config.teams = {};
-    config.linearApiKey = undefined;
+    __setDefaultLinearApiKey(undefined);
     config.linearTeamId = undefined;
     expect(() => linearFor("discord", "any")).toThrow(/LINEAR_API_KEY is not configured/);
   });
