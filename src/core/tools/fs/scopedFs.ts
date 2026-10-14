@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { childEnv } from "../../../childEnv.ts";
 import { getLogger } from "../../../logger.ts";
 
 // Generic filesystem primitives, hard-scoped to a `root` directory (traversal outside is rejected).
@@ -33,7 +34,7 @@ export async function grepInRoot(root: string, pattern: string, limit = DEFAULT_
   const matches: GrepMatch[] = [];
   let out: string;
   try {
-    const proc = Bun.spawn(["rg", "--json", "-i", "-e", pattern, root], { stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn(["rg", "--json", "-i", "-e", pattern, root], { stdout: "pipe", stderr: "pipe", env: childEnv() });
     const [stdout, , code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     if (code === 2) logger.warn({ root }, "ripgrep reported an error");
     out = stdout;

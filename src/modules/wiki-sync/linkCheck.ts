@@ -1,3 +1,5 @@
+import { childEnv } from "../../childEnv.ts";
+
 export interface BrokenLink {
   /** Repo-relative path of the page containing the broken link. */
   file: string;
@@ -31,6 +33,7 @@ export async function findBrokenLinks(repoDir: string): Promise<BrokenLink[]> {
   const proc = Bun.spawn({
     cmd: ["lychee", "--offline", "--no-progress", "--include-fragments", "--format", "json", "."],
     cwd: repoDir,
+    env: childEnv(),
     stdout: "pipe",
     stderr: "pipe",
   });

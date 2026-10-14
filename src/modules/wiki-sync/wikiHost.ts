@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import simpleGit from "simple-git";
+import { childEnv } from "../../childEnv.ts";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import type { FsHost } from "../../core/contracts.ts";
@@ -21,7 +22,7 @@ export function createWikiFsHost(guildId: string): FsHost {
     refPromise ??= (async () => {
       if (!existsSync(join(dir, ".git"))) return null;
       try {
-        return (await simpleGit(dir).revparse(["HEAD"])).trim();
+        return (await simpleGit(dir).env(childEnv()).revparse(["HEAD"])).trim();
       } catch (err) {
         logger.warn({ err, guildId }, "could not resolve wiki HEAD for citation links");
         return null;

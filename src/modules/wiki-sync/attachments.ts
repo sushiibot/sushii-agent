@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AttachmentSource, FetchedAttachment, Replacement } from "./context.ts";
 import type { WikiSyncMessage } from "../../db/wikiSync.ts";
+import { childEnv } from "../../childEnv.ts";
 import { getLogger } from "../../logger.ts";
 
 const logger = getLogger("wiki-sync:attachments");
@@ -75,7 +76,7 @@ async function downloadBytes(attachment: FetchedAttachment): Promise<Uint8Array 
 /** Catches sync ENOENT from a missing binary and kills the process on timeout, so a bad PDF can't stall the pool. */
 export async function runSpawn(cmd: string[], timeoutMs = PDF_TIMEOUT_MS): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   try {
-    const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "pipe", env: childEnv() });
     let timedOut = false;
     // SIGKILL, not the default SIGTERM: a poppler process that traps/ignores SIGTERM (or is slow
     // to handle it during CPU-bound work) would otherwise keep running and `await proc.exited`

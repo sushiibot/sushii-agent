@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
+import { gitEnv } from "../../childEnv.ts";
 import { config } from "../../config.ts";
 import { getLogger } from "../../logger.ts";
 import { secrets } from "../../secrets.ts";
@@ -84,11 +85,11 @@ export async function openWikiRepo(guildId: string): Promise<WikiRepo> {
     logger.info({ guildId, dir }, "cloning wiki repo");
     const cloneArgs = auth.configPairs.flatMap(([key, value]) => ["--config", `${key}=${value}`]);
     await simpleGit({ baseDir: dirname(dir) })
-      .env({ ...process.env, ...auth.env })
+      .env(gitEnv(auth.env))
       .clone(repoUrl, dir, cloneArgs);
   }
 
-  const git = simpleGit({ baseDir: dir }).env({ ...process.env, ...auth.env });
+  const git = simpleGit({ baseDir: dir }).env(gitEnv(auth.env));
 
   // Applied again even right after a fresh clone (redundant with the --config clone args, but
   // cheap) so an existing checkout whose config predates a scheme/token change stays correct.
