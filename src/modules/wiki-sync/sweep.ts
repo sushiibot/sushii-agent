@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { SpanStatusCode } from "@opentelemetry/api";
 import { join } from "node:path";
 import { config } from "../../config.ts";
@@ -78,6 +79,7 @@ async function sweepSource(
     `wiki_sync.source ${source.surface}`,
     { attributes: { "wiki_sync.surface": source.surface, "wiki_sync.space_id": source.spaceId } },
     async (span) => {
+      const inboxDir = join(config.wikiSync.inboxDir, wikiId, source.surface, source.spaceId);
       try {
         const messages = await ctx.messages.fetchUnprocessed(source.spaceId, watermark, until, config.wikiSync.maxMessagesPerSweep);
         span.setAttribute("wiki_sync.message_count", messages.length);
@@ -92,7 +94,6 @@ async function sweepSource(
         // Sibling of the repo checkout, outside its git working tree entirely — see inbox.ts.
         // Deepened per source so concurrent-per-wiki sources can't clobber each other's inbox;
         // it is wiped and rebuilt every sweep, so this path change carries no on-disk migration.
-        const inboxDir = join(config.wikiSync.inboxDir, wikiId, source.surface, source.spaceId);
         const { files: allFiles } = await writeMessageInbox(inboxDir, ctx, messages);
 
         // The status channel (and any thread on a message wiki-sync posted there, e.g. the
@@ -126,7 +127,8 @@ async function sweepSource(
         span.setStatus({ code: SpanStatusCode.ERROR, message: errMsg });
         throw err;
       } finally {
-        span.end();
+        try { await rm(inboxDir, { recursive: true, force: true }); }
+        finally { span.end(); }
       }
     },
   );

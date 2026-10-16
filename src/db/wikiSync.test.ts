@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,10 @@ import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { applySchema } from "./index.ts";
 import * as schema from "./schema.ts";
 import { getUnprocessedMessages, getWikiSyncWatermark, setWikiSyncWatermark } from "./wikiSync.ts";
+
+let clock: ReturnType<typeof spyOn>;
+beforeEach(() => { clock = spyOn(Date, "now").mockReturnValue(1000); });
+afterEach(() => clock.mockRestore());
 
 const realMigrationsDir = join(import.meta.dir, "..", "..", "drizzle");
 

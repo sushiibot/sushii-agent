@@ -34,7 +34,7 @@ export const conversations = sqliteTable("conversations", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
   initialThreadContext: text("initial_thread_context"),
-});
+}, (t) => [index("idx_conversations_created_at").on(t.createdAt)]);
 
 export const serverContext = sqliteTable("server_context", {
   guildId: text("guild_id").primaryKey(),
@@ -64,7 +64,7 @@ export const pendingQuestions = sqliteTable("pending_questions", {
   choices: text("choices").notNull(),
   triggeredByUserId: text("triggered_by_user_id").notNull(),
   createdAt: integer("created_at").notNull(),
-});
+}, (t) => [index("idx_pending_questions_created_at").on(t.createdAt)]);
 
 export const mcpOauthClients = sqliteTable("mcp_oauth_clients", {
   clientId: text("client_id").primaryKey(),
@@ -226,6 +226,7 @@ export const screeningVerdicts = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
+    index("idx_screening_created_at").on(table.createdAt),
     index("idx_screening_guild_user").on(table.guildId, table.userId, table.createdAt),
     index("idx_screening_pfp").on(table.userId, table.avatarHash),
     index("idx_screening_image").on(table.imageKey),

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,9 +18,13 @@ mock.module("./git.ts", () => ({
   ...realGit,
   openWikiRepo: async () => ({ dir: "/tmp/wiki-sync-test-repo", git: {} }),
 }));
+let failSession = false;
 mock.module("./piSession.ts", () => ({
   ...realPiSession,
-  runWikiSyncSession: async () => ({ finalText: "", commitSha: null }),
+  runWikiSyncSession: async () => {
+    if (failSession) throw new Error("session failed");
+    return { finalText: "", commitSha: null };
+  },
 }));
 
 const { getDb, initDb, closeDb } = await import("../../db/index.ts");
@@ -54,6 +59,7 @@ afterAll(async () => {
 });
 
 afterEach(() => {
+  failSession = false;
   config.guildConfig = saved.guildConfig;
   config.teams = saved.teams;
   config.discordMessageContent = saved.discordMessageContent;
@@ -107,7 +113,17 @@ describe("runWikiSyncSweep (multi-source)", () => {
     const db = getDb();
     expect(getWikiSyncWatermark(db, "w1", "discord", "a")).toBe(1000);
     expect(getWikiSyncWatermark(db, "w1", "discord", "b")).toBe(2000);
+    expect(existsSync(join(config.wikiSync.inboxDir, "w1", "discord", "a"))).toBe(false);
   });
+});
+
+test("failed wiki sessions remove the raw inbox and leave the source watermark unchanged", async () => {
+  config.teams = { failTeam: { wiki: { wikiId: "failWiki" }, spaces: [{ surface: "discord", spaceId: "failSpace", wiki: "source" }] } };
+  failSession = true;
+  const result = await runWikiSyncSweep("failWiki", (source) => contextFor(source, Date.now()));
+  expect(result.sources[0]?.ran).toBe(false);
+  expect(getWikiSyncWatermark(getDb(), "failWiki", "discord", "failSpace")).toBe(0);
+  expect(existsSync(join(config.wikiSync.inboxDir, "failWiki", "discord", "failSpace"))).toBe(false);
 });
 
 describe("runWikiSyncSweep without the MessageContent intent", () => {

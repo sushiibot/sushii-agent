@@ -14,7 +14,7 @@ The personal agent lives in [sushiibot/omakase](https://github.com/sushiibot/oma
 
 ## Features
 
-- **Message cache**: Discord messages in SQLite with FTS5 search, kept for 30 days.
+- **Message cache**: Discord messages in SQLite with FTS5 search, retained for at most 30 days.
 - **Thread conversations**: each thread is its own session and survives restarts.
 - **Per-team config**: one process serves many Discord guilds, Slack workspaces and buzz relays.
 - **Modules** per Discord guild (`enabledModules`):
@@ -112,6 +112,28 @@ src/index.ts
 ```
 
 Migrations live in `drizzle/`.
+
+## Message and transcript retention
+
+Raw Discord messages, conversation transcripts, screening records, feedback and raw wiki-sync
+scratch files have a 30-day maximum. Startup and hourly cleanup delete at 29 days for scheduling
+headroom. Cache/conversation/screening reads enforce the 30-day boundary independently. Conversations
+expire by creation time, even when active; an in-flight turn cannot resurrect an expired transcript.
+Curated wiki pages and persistent memory remain separate and do not expire on this schedule.
+
+Feedback no longer duplicates conversations, unflagged screening checks retain no message snapshot,
+and screening/wiki logs omit message bodies and model/tool payloads. New wiki sessions run in memory;
+raw inboxes are removed after a sweep, including failures. Existing raw scratch files are aged out.
+
+The retention migration enables FTS5 secure deletion (SQLite 3.42+), rebuilds the message index and
+adds cleanup indexes. SQLite secure deletion and WAL truncation complement encrypted storage; they
+do not erase external backups, existing log exports or content already posted to Discord.
+
+Before deploying, verify encrypted storage and backup expiry. A stopped process cannot erase data:
+cleanup runs before requests are served on restart. Backups must expire by the content's deadline,
+not simply 30 days after the backup was made. Existing plaintext copies and old exports need a
+separate migration cleanup. The database migration rebuilds FTS once, so allow startup time and disk
+headroom for a large cache.
 
 ## Scripts
 

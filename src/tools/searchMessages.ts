@@ -1,3 +1,4 @@
+import { purgeMessageCache } from "../db/retention.ts";
 import { getDb } from "../db/index.ts";
 
 interface SearchMessagesArgs {
@@ -32,6 +33,7 @@ interface MessageRow {
 
 export function searchMessages(args: SearchMessagesArgs): MessageRow[] | { error: string } {
   const db = getDb();
+  purgeMessageCache(db);
   const limit = Math.min(args.limit ?? 20, 100);
 
   if (args.query) {

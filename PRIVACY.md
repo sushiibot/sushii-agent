@@ -1,6 +1,6 @@
 # Privacy Policy — sushii-agent
 
-Last updated: August 14, 2026
+Last updated: October 16, 2026
 
 This policy covers the sushii-agent Discord application ("the bot", "we", "us"). It is
 separate from, and does not apply to, other sushii bots or services.
@@ -59,11 +59,23 @@ rely on that admin's authority to configure the bot for their server, consistent
 
 | Data | Retention |
 |---|---|
-| Raw message content | 30 days |
-| Conversation transcripts (multi-turn context) | 90 days |
-| Server memory notes | Capped at 25 per server; pruned/overwritten as new ones are added, no fixed expiry |
+| Cached Discord message content | Up to 30 days from the message timestamp |
+| Conversation transcripts, including tool results and initial context | Up to 30 days from the conversation record's creation; continued activity does not extend its lifetime |
+| Screening verdicts and flagged-message evidence | Up to 30 days from the screening record's creation |
+| Submitted feedback | Up to 30 days; no separate conversation snapshot is stored |
+| Pending questions | Up to 24 hours |
+| Raw wiki-sync inbox files and legacy session transcripts | Up to 30 days; new wiki sessions run in memory and inbox files are removed when the sweep finishes |
+| Curated wiki knowledge and persistent memory | Kept while needed for the enabled feature, until removed; not subject to the message/transcript expiry |
 
-Data is deleted automatically on this schedule — no action is required from you.
+Scheduled cleanup starts at 29 days and runs at startup and hourly, leaving headroom
+before the 30-day limit. Cache, conversation, and screening reads also enforce expiry.
+If the service is stopped, cleanup runs before it resumes serving requests. A conversation
+that expires starts with fresh stored context on the next interaction.
+
+We keep curated wiki knowledge and memory separately from raw message history. The local
+memory store allows up to 100 entries per space; an external memory backend may also be
+configured. Removing a source message or expiring a transcript does not automatically
+remove derived wiki knowledge or memory. Deletion requests can include these stores.
 
 ## Requesting deletion
 

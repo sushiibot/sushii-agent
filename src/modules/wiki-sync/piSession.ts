@@ -26,39 +26,28 @@ const MAX_EMPTY_TURN_RETRIES = 2;
 const CONTINUE_NUDGE_PROMPT =
   "Your last response had no text and made no tool calls. If you're not finished, continue working. If you are finished, call commit_and_push (or explain in text why there's nothing to change).";
 
-/** Keeps log lines (and Loki structured-metadata fields, which silently drop oversized values) from ballooning on large tool payloads. */
-function preview(value: unknown, max = 400): string {
-  const str = typeof value === "string" ? value : JSON.stringify(value);
-  return str.length > max ? `${str.slice(0, max)}… (${str.length} chars total)` : str;
-}
-
-/**
- * Everything the Pi session actually does — every tool call, every turn, whether a turn was
- * cut off by the provider's token cap — previously lived only in the on-disk session transcript,
- * invisible to Grafana/Loki. Wired to a dedicated child logger so it's filterable independently
- * of the sparse start/end lines sweep.ts and this file already log.
- */
+/** Log lifecycle metadata only; prompts, model text and tool payloads can contain messages. */
 function logSessionEvent(log: ReturnType<typeof getLogger>, event: AgentSessionEvent): void {
   switch (event.type) {
     case "turn_start":
       log.info("turn started");
       break;
     case "tool_execution_start":
-      log.info({ toolCallId: event.toolCallId, toolName: event.toolName, args: preview(event.args) }, "tool call started");
+      log.info({ toolCallId: event.toolCallId, toolName: event.toolName }, "tool call started");
       break;
     case "tool_execution_end":
       log.info(
-        { toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError, result: preview(event.result) },
+        { toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError },
         "tool call finished",
       );
       break;
     case "message_update":
       switch (event.assistantMessageEvent.type) {
         case "thinking_end":
-          log.info({ content: preview(event.assistantMessageEvent.content) }, "thinking");
+          log.info("thinking completed");
           break;
         case "text_end":
-          log.info({ content: preview(event.assistantMessageEvent.content) }, "text");
+          log.info("text completed");
           break;
         // "length" here is the tell for a response getting cut off by the provider's max_tokens
         // cap (see WIKI_SYNC_MAX_OUTPUT_TOKENS) -- previously indistinguishable from a clean
@@ -94,8 +83,7 @@ const GEN_AI_PROVIDER_NAME = "deepseek";
  * completion is the closest standard fit for what this harness calls a turn.
  *
  * Deliberately excludes prompt/completion/tool-argument content from span attributes (sizes
- * only) -- traces are lower-friction to query/aggregate across than logs, so anything sensitive
- * belongs in the logs (already truncated there) rather than duplicated here.
+ * only). Logs follow the same rule.
  */
 function createSessionSpans() {
   const toolSpans = new Map<string, Span>();
@@ -238,7 +226,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
       }
 
       // Appended in code, not asked of the model -- guarantees every commit is traceable to the
-      // session that produced it (Grafana logs/traces, and the on-disk transcript on the host)
+      // session that produced it (Grafana lifecycle logs/traces)
       // regardless of whether the model remembers to include it or formats it consistently.
       const message = `${params.message as string}\n\nSync-run: ${opts.runId}`;
       try {
@@ -349,7 +337,7 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     tools: WIKI_SYNC_TOOLS,
     excludeTools: ["bash", "ask_question"],
     customTools: [commitAndPushTool, embedAttachmentTool],
-    sessionManager: SessionManager.create(opts.repo.dir, join(config.wikiSync.agentDir, "sessions")),
+    sessionManager: SessionManager.inMemory(opts.repo.dir),
   });
   assertExactTools(session, WIKI_SYNC_TOOLS, "wiki-sync");
 
@@ -389,10 +377,10 @@ export async function runWikiSyncSession(opts: { repo: WikiRepo; prompt: string;
     }
   } finally {
     spans.endAll();
+    session.dispose();
   }
-  session.dispose();
 
-  logger.info({ wikiId: opts.wikiId, commitSha, finalText: finalText.slice(0, 2000), hadActivity: turnHadActivity }, "session finished");
+  logger.info({ wikiId: opts.wikiId, commitSha, hadActivity: turnHadActivity }, "session finished");
 
   // Surface a failed push as a thrown error rather than a successful-looking result — tool
   // execution errors are reported back to the model as a turn result, not rethrown out of

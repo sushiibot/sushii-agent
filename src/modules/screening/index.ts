@@ -1,3 +1,4 @@
+import { purgeMessageCache } from "../../db/retention.ts";
 import type { Database } from "bun:sqlite";
 import type { ContainerBuilder } from "discord.js";
 import { resolvedModules, type GuildConfig } from "../../guildConfig.ts";
@@ -87,10 +88,9 @@ function withCheckSpan<T>(kind: string, message: { guildId: string; author: { id
 }
 
 /** Inserts and logs the verdict. The footer shows its ref (`scr-<id>`), so a pasted ref finds
- *  this log line in Loki (and its trace) with the full scores and judged text. */
+ *  this metadata-only log line in Loki (and its trace). Message content stays out of logs. */
 function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
   const row = insertVerdict(db, v);
-  const judged = row.judged ? (JSON.parse(row.judged) as { target?: JudgedLine[]; reason?: string }) : null;
   trace.getActiveSpan()?.setAttributes({
     "screening.verdict_id": row.id,
     "screening.flagged": row.flagged === 1,
@@ -113,10 +113,7 @@ function saveVerdict(db: Database, v: NewVerdict): VerdictRow {
       ordinal: row.ordinal,
       model: row.model,
       cost: row.cost,
-      error: row.error,
-      sourceUrl: row.sourceUrl,
-      target: judged?.target?.map((l) => `${l.author}: ${l.text.slice(0, 300)}`),
-      reason: judged?.reason,
+      hasError: row.error != null,
     },
     "screening verdict",
   );
@@ -201,6 +198,7 @@ function authorName(r: CachedRow): string {
 
 async function screenText(message: ScreenedMessage, cfg: GuildConfig, deps: ScreeningDeps, now: number): Promise<void> {
   if (!message.content.trim()) return;
+  purgeMessageCache(deps.db, now);
   const rows = deps.db
     .query<CachedRow, [string, string, number, number]>(
       `SELECT discord_id, author_id, author_username, author_display_name, content FROM messages

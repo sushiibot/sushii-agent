@@ -1,4 +1,5 @@
 import { MessageType, type Message } from "discord.js";
+import { CONTENT_RETENTION_MS, purgeMessageCache } from "./retention.ts";
 import { config } from "../config.ts";
 import { getDb } from "./index.ts";
 import { buildMessageContent } from "../utils/flattenMessage.ts";
@@ -16,7 +17,7 @@ export function hasMessageContent(message: Message): boolean {
 }
 
 export function insertMessage(message: Message): void {
-  if (!message.guildId) return;
+  if (!message.guildId || message.createdTimestamp <= Date.now() - CONTENT_RETENTION_MS) return;
   if (!hasMessageContent(message)) return;
 
   const db = getDb();
@@ -71,9 +72,7 @@ export function softDeleteMessage(discordId: string): void {
 
 export function deleteOldMessages(): void {
   const db = getDb();
-  const threshold = Date.now() - 30 * 24 * 60 * 60 * 1000;
-
-  const result = db.run(`DELETE FROM messages WHERE created_at < ?`, [threshold]);
+  const result = { changes: purgeMessageCache(db) };
   if (result.changes > 0) {
     logger.info({ changes: result.changes }, "deleted old messages");
   }

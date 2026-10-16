@@ -1,3 +1,4 @@
+import { purgeMessageCache } from "../../../db/retention.ts";
 // Concrete MessageCacheHost — reads the SQLite message cache directly. Ports
 // src/tools/{searchMessages,getConversationContext,getRecentActivity,resolveUsersByName,
 // getUserProfile}.ts.
@@ -65,10 +66,15 @@ const MESSAGE_ROW_JOIN = "LEFT JOIN messages p ON m.reply_to_id = p.discord_id A
 
 export class DiscordMessageCacheHost {
   constructor(
-    private readonly db: Database,
+    private readonly database: Database,
     private readonly guildId: string,
     private readonly client?: Client<true>,
   ) {}
+
+  private get db(): Database {
+    purgeMessageCache(this.database);
+    return this.database;
+  }
 
   searchMessages(args: {
     query?: string; userIds?: string[]; channelId?: string; since?: number; until?: number;

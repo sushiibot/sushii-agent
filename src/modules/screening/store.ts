@@ -1,3 +1,4 @@
+import { purgeScreening } from "../../db/retention.ts";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -18,11 +19,16 @@ export interface Judged {
 }
 
 function orm(db: Database) {
+  purgeScreening(db);
   return drizzle({ client: db, schema: { screeningVerdicts } });
 }
 
 export function insertVerdict(db: Database, v: NewVerdict): VerdictRow {
-  return orm(db).insert(screeningVerdicts).values(v).returning().get();
+  return orm(db).insert(screeningVerdicts).values({
+    ...v,
+    // Unflagged checks need dedupe/outcome metadata, not another message transcript.
+    judged: v.flagged === 1 ? v.judged : null,
+  }).returning().get();
 }
 
 export function getVerdict(db: Database, id: number): VerdictRow | undefined {

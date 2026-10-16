@@ -47,7 +47,7 @@ function fakeMessage(id: string, opts: { authorId?: string; mentionsBot?: boolea
     messageSnapshots: new Map(),
     reference: null,
     type: MessageType.Default,
-    createdTimestamp: 1000,
+    createdTimestamp: Date.now(),
   } as unknown as Message;
 }
 

@@ -763,6 +763,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
     handleScreeningDeletes(client, message.guildId, [message.id]);
   });
   client.on(Events.MessageBulkDelete, (messages, channel) => {
+    for (const id of messages.keys()) softDeleteMessage(id);
     handleScreeningDeletes(client, channel.guildId, [...messages.keys()]);
   });
   client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => handleScreeningAuditEntry(client, entry, guild));
@@ -777,8 +778,7 @@ export function startDiscordSurface(deps: DiscordSurfaceDeps): void {
   // Startup cleanup schedules (ported from the old startBot()).
   deleteOldMessages();
   setInterval(deleteOldMessages, 24 * 60 * 60 * 1000);
-  store.deleteStale(90 * 24 * 60 * 60 * 1000);
-  setInterval(() => store.deleteStale(90 * 24 * 60 * 60 * 1000), 24 * 60 * 60 * 1000);
+  // Database-wide retention runs before serving traffic and hourly in initDb().
   deleteStalePendingQuestions(24 * 60 * 60 * 1000);
   setInterval(() => deleteStalePendingQuestions(24 * 60 * 60 * 1000), 60 * 60 * 1000);
 }

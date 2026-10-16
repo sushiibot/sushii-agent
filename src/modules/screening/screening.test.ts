@@ -401,7 +401,7 @@ describe("AutoMod blocks", () => {
     expect(row.kind).toBe("automod");
     expect(row.flagged).toBe(0);
     expect(JSON.parse(row.scores!).scam).toBe(0.9);
-    expect(JSON.parse(row.judged!).automod).toEqual({ rule: "Slurs", keyword: "blocked" });
+    expect(row.judged).toBeNull(); // Silent checks keep metadata, not blocked-message copies.
   });
 
   test("blocks before a flag show up on the new post", async () => {

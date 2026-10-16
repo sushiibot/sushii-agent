@@ -1,3 +1,4 @@
+import { purgeMessageCache } from "./retention.ts";
 import type { Database } from "bun:sqlite";
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -77,6 +78,7 @@ export function getUnprocessedMessages(
   until: number,
   limit: number,
 ): WikiSyncMessage[] {
+  purgeMessageCache(db);
   const rows = db
     .query(
       `SELECT
@@ -85,7 +87,7 @@ export function getUnprocessedMessages(
          r.author_username AS reply_author_username, r.author_display_name AS reply_author_display_name,
          r.content AS reply_content
        FROM messages m
-       LEFT JOIN messages r ON r.discord_id = m.reply_to_id
+       LEFT JOIN messages r ON r.discord_id = m.reply_to_id AND r.guild_id = m.guild_id AND r.deleted_at IS NULL
        WHERE m.guild_id = ? AND m.created_at > ? AND m.created_at <= ? AND m.deleted_at IS NULL AND m.is_bot = 0
        ORDER BY m.created_at ASC
        LIMIT ?`,

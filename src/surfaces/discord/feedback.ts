@@ -38,7 +38,7 @@ export async function handleFeedbackButton(interaction: ButtonInteraction): Prom
 }
 
 /** Modal submit handler for fbm:{threadId}:{sentiment} — saves the feedback file. */
-export async function handleFeedbackModal(interaction: ModalSubmitInteraction, store: ConversationStore): Promise<void> {
+export async function handleFeedbackModal(interaction: ModalSubmitInteraction, _store: ConversationStore): Promise<void> {
   const rest = interaction.customId.slice(FEEDBACK_MODAL_PREFIX.length);
   const parts = rest.split(":");
   if (parts.length < 2) return;
@@ -50,7 +50,6 @@ export async function handleFeedbackModal(interaction: ModalSubmitInteraction, s
   try {
     const guildId = interaction.guildId;
     if (!guildId) return;
-    const { messages: conversation } = store.load({ surface: "discord", spaceId: guildId, conversationId: threadId });
 
     saveFeedback({
       threadId,
@@ -60,7 +59,6 @@ export async function handleFeedbackModal(interaction: ModalSubmitInteraction, s
       sentiment: sentiment === "up" ? "positive" : "negative",
       feedback: feedbackText,
       timestamp: new Date().toISOString(),
-      conversation,
     });
   } catch (err) {
     logger.error({ err }, "Error saving feedback");
