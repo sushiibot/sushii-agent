@@ -98,5 +98,5 @@ platform, Discord's terms control.
 
 ## Contact
 
-- Email: contact@sushii.xyz
+- Email: contact@sushii.bot
 - Discord support server: https://discord.gg/PjDRRXSSAF

@@ -80,7 +80,7 @@ remove derived wiki knowledge or memory. Deletion requests can include these sto
 ## Requesting deletion
 
 You can ask us to delete your data (message history and any stored conversation context)
-at any time by emailing **contact@sushii.xyz** or messaging us in our
+at any time by emailing **contact@sushii.bot** or messaging us in our
 [Discord support server](https://discord.gg/PjDRRXSSAF). Include your Discord user ID and
 the server(s) you'd like data removed from. We'll confirm once it's done.
 
@@ -104,5 +104,5 @@ updated "Last updated" date above.
 
 ## Contact
 
-- Email: contact@sushii.xyz
+- Email: contact@sushii.bot
 - Discord support server: https://discord.gg/PjDRRXSSAF
